@@ -259,7 +259,7 @@ def substitutions(text):
     return found
 
 
-def shell_commands(source):
+def shell_commands(source):  # noqa: C901
     """Split shell source into (arguments, in_subshell, after_and_or) for simple commands.
 
     Handles quotes, escapes, continuations, separators, comments, redirections,
@@ -505,7 +505,7 @@ def push_config(cwd, location):
     return tuple(found)
 
 
-def push_reason(args, cwd, location, head_moves, config_unknown=False):
+def push_reason(args, cwd, location, head_moves, config_unknown=False):  # noqa: C901
     if args in (["-h"], ["--help"]):
         return None
     parsed = list(options(args, value_flags="o", value_long=PUSH_VALUE_LONG))
@@ -767,7 +767,7 @@ def without_repo_flags(args):
     return kept
 
 
-def gh_reason(args, cwd, alone=True):
+def gh_reason(args, cwd, alone=True):  # noqa: C901
     args = without_repo_flags(args)
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)

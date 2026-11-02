@@ -14,13 +14,7 @@ export const PRINTER_SEND_QUEUE_SETTINGS_KEY = "printer.send_queue";
 const SETTINGS_KEY = PRINTER_SEND_QUEUE_SETTINGS_KEY;
 const MAX_ITEMS = 50;
 
-const STATES = new Set<PrinterSendQueueState>([
-  "queued",
-  "sending",
-  "done",
-  "error",
-  "cancelled",
-]);
+const STATES = new Set<PrinterSendQueueState>(["queued", "sending", "done", "error", "cancelled"]);
 
 function normalizeUnit(x: unknown): PrinterCheckoffUnit | null {
   if (!x || typeof x !== "object") return null;
@@ -42,12 +36,10 @@ function parseItem(raw: unknown): PrinterSendQueueItem | null {
   if (typeof state !== "string" || !STATES.has(state as PrinterSendQueueState)) return null;
   const id = typeof row.id === "string" ? row.id.trim() : "";
   const filename = typeof row.filename === "string" ? row.filename.trim() : "";
-  const artifactPath =
-    typeof row.artifact_path === "string" ? row.artifact_path.trim() : "";
+  const artifactPath = typeof row.artifact_path === "string" ? row.artifact_path.trim() : "";
   const printerId = typeof row.printer_id === "string" ? row.printer_id.trim() : "";
   if (!id || !filename || !artifactPath || !printerId) return null;
-  const profileId =
-    row.profile_id == null ? undefined : Number(row.profile_id);
+  const profileId = row.profile_id == null ? undefined : Number(row.profile_id);
   const item: PrinterSendQueueItem = {
     id,
     filename,
@@ -139,10 +131,7 @@ export function migratePrinterSendQueueArtifactPaths(
       continue;
     }
     const target = resolve(tenantUploads, relativeArtifact);
-    if (
-      existsSync(current) ||
-      !resolvedFileUnderRoot(tenantUploads, target)
-    ) {
+    if (existsSync(current) || !resolvedFileUnderRoot(tenantUploads, target)) {
       continue;
     }
     item.artifact_path = target;
@@ -172,8 +161,7 @@ export function enqueuePrinterSend(
   const artifactPath = input.artifact_path.trim();
   const printerId = input.printer_id.trim();
   if (!filename || !artifactPath || !printerId) return null;
-  const match: PrinterSendQueueMatch =
-    input.match === "compatible" ? "compatible" : "pinned";
+  const match: PrinterSendQueueMatch = input.match === "compatible" ? "compatible" : "pinned";
   return repo.transaction(() => {
     const now = new Date().toISOString();
     const item: PrinterSendQueueItem = {
@@ -214,12 +202,7 @@ export function updatePrinterSendQueueItem(
   patch: Partial<
     Pick<
       PrinterSendQueueItem,
-      | "state"
-      | "upload_job_id"
-      | "error"
-      | "updated_at"
-      | "host_name"
-      | "printer_id"
+      "state" | "upload_job_id" | "error" | "updated_at" | "host_name" | "printer_id"
     >
   >,
   options?: {
@@ -276,10 +259,7 @@ export function listActivePrinterSendQueue(repo: AppRepository): PrinterSendQueu
 }
 
 /** Ensure artifact paths stay under exports/printer-uploads. */
-export function assertPrinterUploadArtifactPath(
-  exportsDir: string,
-  artifactPath: string,
-): string {
+export function assertPrinterUploadArtifactPath(exportsDir: string, artifactPath: string): string {
   const uploadsRoot = resolve(exportsDir, "printer-uploads");
   const resolved = resolve(artifactPath);
   const rel = relative(uploadsRoot, resolved);

@@ -195,7 +195,11 @@ export function reconcilePrinterCheckoff(
       if (decision.progress != null) {
         patch.last_progress = Math.max(link.last_progress ?? 0, decision.progress);
       }
-      if (link.saw_active && (patch.last_progress == null || patch.last_progress === link.last_progress)) continue;
+      if (
+        link.saw_active &&
+        (patch.last_progress == null || patch.last_progress === link.last_progress)
+      )
+        continue;
       updatePrinterCheckoffLink(repo, link.id, patch, { requireState: "watching" });
       continue;
     }

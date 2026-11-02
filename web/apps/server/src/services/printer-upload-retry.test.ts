@@ -27,17 +27,30 @@ async function fixture() {
   const ports = createSelfHostPorts(dir);
   await ports.db.connect();
   const repo = ports.repository;
-  const integrations = createIntegrationPort({ repo, getAdapter: getIntegrationAdapter, statusExecution: new StatusExecution() });
+  const integrations = createIntegrationPort({
+    repo,
+    getAdapter: getIntegrationAdapter,
+    statusExecution: new StatusExecution(),
+  });
   const integration = integrations.create({
-    type: "moonraker", name: "Fixture host",
+    type: "moonraker",
+    name: "Fixture host",
     config: { base_url: "http://127.0.0.1:1", enabled: true },
   });
-  saveFleet(repo, [{
-    id: "fixture-printer", name: "Fixture", model: "Fixture",
-    bed_width_mm: 250, bed_depth_mm: 250, bed_height_mm: 250,
-    margin_mm: 5, max_filament_slots: 1, loaded_filaments: [],
-    integration_id: integration.id,
-  }]);
+  saveFleet(repo, [
+    {
+      id: "fixture-printer",
+      name: "Fixture",
+      model: "Fixture",
+      bed_width_mm: 250,
+      bed_depth_mm: 250,
+      bed_height_mm: 250,
+      margin_mm: 5,
+      max_filament_slots: 1,
+      loaded_filaments: [],
+      integration_id: integration.id,
+    },
+  ]);
   const jobs = createJobRunner(() => repo, dir);
   const exportsDir = jobs.getExportsDir("default");
   const app = Fastify();
@@ -63,15 +76,20 @@ async function fixture() {
   function enqueue(id: string, start = false) {
     const path = stage(id);
     const item = enqueuePrinterSend(repo, {
-      filename: "plate.gcode", artifact_path: path, printer_id: "fixture-printer",
-      start, wait_for_idle: true, match: "pinned",
+      filename: "plate.gcode",
+      artifact_path: path,
+      printer_id: "fixture-printer",
+      start,
+      wait_for_idle: true,
+      match: "pinned",
     });
     if (!item) throw new Error("Fixture queue item was not created");
     return item;
   }
 
   const dispatchDeps = {
-    startJob: (payload: Parameters<typeof jobs.start>[1]) => jobs.start("printer-upload", payload, "default"),
+    startJob: (payload: Parameters<typeof jobs.start>[1]) =>
+      jobs.start("printer-upload", payload, "default"),
     getStatus: async () => ({ state: "idle" as const }),
   };
 
@@ -102,7 +120,12 @@ describe("printer upload artifact ownership", () => {
     expect((await f.dispatch(item.id)).status).toBe("done");
     expect(getPrinterSendQueueItem(f.repo, item.id)?.state).toBe("done");
     expect(f.upload).toHaveBeenCalledTimes(2);
-    expect(f.upload).toHaveBeenLastCalledWith(expect.anything(), { path: item.artifact_path }, "plate.gcode", { start: true });
+    expect(f.upload).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { path: item.artifact_path },
+      "plate.gcode",
+      { start: true },
+    );
     expect(existsSync(item.artifact_path)).toBe(false);
     expect(f.fetch).not.toHaveBeenCalled();
   });
@@ -111,41 +134,64 @@ describe("printer upload artifact ownership", () => {
     const f = await fixture();
     const path = f.stage(`direct-${status}`);
     if (status === "error") f.upload.mockRejectedValueOnce(new Error("direct upload failed"));
-    const jobId = await f.jobs.start("printer-upload", {
-      printer_id: "fixture-printer", artifact_path: path, filename: "plate.gcode", start: false,
-    }, "default");
+    const jobId = await f.jobs.start(
+      "printer-upload",
+      {
+        printer_id: "fixture-printer",
+        artifact_path: path,
+        filename: "plate.gcode",
+        start: false,
+      },
+      "default",
+    );
     expect((await f.jobs.waitForTerminal(jobId, 3000, "default")).status).toBe(status);
     expect(existsSync(path)).toBe(false);
     expect(f.fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["queued", "error"] as const)("cleans a %s queue artifact when removed", async (state) => {
-    const f = await fixture();
-    const item = f.enqueue(`remove-${state}`);
-    if (state === "error") {
-      f.upload.mockRejectedValueOnce(new Error("temporary upload failure"));
-      expect((await f.dispatch(item.id)).status).toBe("error");
-    }
-    expect(existsSync(item.artifact_path)).toBe(true);
-    const response = await f.app.inject({ method: "DELETE", url: `/printer-send-queue/${item.id}` });
-    expect(response.statusCode).toBe(200);
-    expect(getPrinterSendQueueItem(f.repo, item.id)?.state).toBe("cancelled");
-    expect(existsSync(item.artifact_path)).toBe(false);
-  });
+  it.each(["queued", "error"] as const)(
+    "cleans a %s queue artifact when removed",
+    async (state) => {
+      const f = await fixture();
+      const item = f.enqueue(`remove-${state}`);
+      if (state === "error") {
+        f.upload.mockRejectedValueOnce(new Error("temporary upload failure"));
+        expect((await f.dispatch(item.id)).status).toBe("error");
+      }
+      expect(existsSync(item.artifact_path)).toBe(true);
+      const response = await f.app.inject({
+        method: "DELETE",
+        url: `/printer-send-queue/${item.id}`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(getPrinterSendQueueItem(f.repo, item.id)?.state).toBe("cancelled");
+      expect(existsSync(item.artifact_path)).toBe(false);
+    },
+  );
 
   it("refuses removal while an upload still owns the artifact", async () => {
     const f = await fixture();
     const item = f.enqueue("sending");
-    let finishUpload: () => void = () => { throw new Error("Upload gate was not created"); };
+    let finishUpload: () => void = () => {
+      throw new Error("Upload gate was not created");
+    };
     const transfer = new Promise<{ ok: boolean; started: boolean }>((resolve) => {
       finishUpload = () => resolve({ ok: true, started: false });
     });
     f.upload.mockReturnValueOnce(transfer);
-    const dispatched = await dispatchPrinterSendQueueItem(f.repo, f.exportsDir, item.id, f.dispatchDeps);
+    const dispatched = await dispatchPrinterSendQueueItem(
+      f.repo,
+      f.exportsDir,
+      item.id,
+      f.dispatchDeps,
+    );
     if ("error" in dispatched) throw new Error(dispatched.error);
     try {
       await vi.waitFor(() => expect(f.upload).toHaveBeenCalledOnce());
-      const response = await f.app.inject({ method: "DELETE", url: `/printer-send-queue/${item.id}` });
+      const response = await f.app.inject({
+        method: "DELETE",
+        url: `/printer-send-queue/${item.id}`,
+      });
       expect(response.statusCode).toBe(409);
       expect(getPrinterSendQueueItem(f.repo, item.id)?.state).toBe("sending");
       expect(existsSync(item.artifact_path)).toBe(true);
@@ -162,10 +208,16 @@ describe("printer upload artifact ownership", () => {
     const outsideFile = join(outsideDir, "plate.gcode");
     writeFileSync(outsideFile, "must remain untouched");
     const item = enqueuePrinterSend(f.repo, {
-      filename: "plate.gcode", artifact_path: outsideFile, printer_id: "fixture-printer", start: false,
+      filename: "plate.gcode",
+      artifact_path: outsideFile,
+      printer_id: "fixture-printer",
+      start: false,
     });
     if (!item) throw new Error("Fixture queue item was not created");
-    const response = await f.app.inject({ method: "DELETE", url: `/printer-send-queue/${item.id}` });
+    const response = await f.app.inject({
+      method: "DELETE",
+      url: `/printer-send-queue/${item.id}`,
+    });
     expect(response.statusCode).toBe(200);
     expect(getPrinterSendQueueItem(f.repo, item.id)?.state).toBe("cancelled");
     expect(readFileSync(outsideFile, "utf8")).toBe("must remain untouched");

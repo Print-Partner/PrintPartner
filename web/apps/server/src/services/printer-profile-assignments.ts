@@ -66,7 +66,8 @@ export function buildAssignmentView(
       filament_profile_id: bySlot.get(i) ?? null,
     });
   }
-  const machine = machineProfileId != null ? repo.getSlicerPrinterProfileById(machineProfileId) : null;
+  const machine =
+    machineProfileId != null ? repo.getSlicerPrinterProfileById(machineProfileId) : null;
   const filamentTs = filament_slots.map((s) =>
     s.filament_profile_id != null
       ? repo.getSlicerFilamentProfileById(s.filament_profile_id)?.lastSyncedAt

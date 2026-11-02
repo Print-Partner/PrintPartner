@@ -4,15 +4,15 @@ import type { AppRepository } from "../db/repository.js";
 
 import { wantedFilamentIdsForQueueItem } from "./printer-farm-match.js";
 
-function fakeRepo(parts: Array<{ id: number; filament_color_id?: string | null }> = []): AppRepository {
+function fakeRepo(
+  parts: Array<{ id: number; filament_color_id?: string | null }> = [],
+): AppRepository {
   return {
     listParts: () => ({ parts, total: parts.length }),
   } as unknown as AppRepository;
 }
 
-function queueItem(
-  partial: Partial<PrinterSendQueueItem> = {},
-): PrinterSendQueueItem {
+function queueItem(partial: Partial<PrinterSendQueueItem> = {}): PrinterSendQueueItem {
   return {
     id: "q1",
     filename: "a.gcode",

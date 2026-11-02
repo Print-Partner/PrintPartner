@@ -26,12 +26,7 @@ const LINK_STATES = new Set<PrinterCheckoffLinkState>([
   "applied",
 ]);
 
-const HOST_OUTCOMES = new Set<PrinterHostOutcome>([
-  "unknown",
-  "success",
-  "failed",
-  "cancelled",
-]);
+const HOST_OUTCOMES = new Set<PrinterHostOutcome>(["unknown", "success", "failed", "cancelled"]);
 
 const DRIFT_REASONS: Record<PrinterFileDriftReason, true> = {
   missing: true,
@@ -87,7 +82,11 @@ function parseFileIdentity(raw: unknown): PrinterFileIdentity | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const row = raw as Record<string, unknown>;
   const identity: PrinterFileIdentity = {};
-  if (typeof row.size_bytes === "number" && Number.isFinite(row.size_bytes) && row.size_bytes >= 0) {
+  if (
+    typeof row.size_bytes === "number" &&
+    Number.isFinite(row.size_bytes) &&
+    row.size_bytes >= 0
+  ) {
     identity.size_bytes = Math.round(row.size_bytes);
   }
   if (typeof row.modified_at === "string" && row.modified_at.trim()) {
@@ -183,12 +182,18 @@ function parseLink(raw: unknown): PrinterCheckoffLink | null {
   // Plan-only links (empty units / unlabeled) stay loadable so Printers farm can
   // show the bound plan after Send. Unlabeled-only links stay loadable for Progress.
   const id = typeof row.id === "string" ? row.id.trim() : "";
-  const integrationId =
-    typeof row.integration_id === "string" ? row.integration_id.trim() : "";
+  const integrationId = typeof row.integration_id === "string" ? row.integration_id.trim() : "";
   const printerId = typeof row.printer_id === "string" ? row.printer_id.trim() : "";
   const filename = typeof row.filename === "string" ? row.filename.trim() : "";
   const profileId = Number(row.profile_id);
-  if (!id || !integrationId || !printerId || !filename || !Number.isInteger(profileId) || profileId <= 0) {
+  if (
+    !id ||
+    !integrationId ||
+    !printerId ||
+    !filename ||
+    !Number.isInteger(profileId) ||
+    profileId <= 0
+  ) {
     return null;
   }
   const hostOutcomeRaw = row.host_outcome;
@@ -207,9 +212,7 @@ function parseLink(raw: unknown): PrinterCheckoffLink | null {
     integration_id: integrationId,
     printer_id: printerId,
     host_name:
-      typeof row.host_name === "string" && row.host_name.trim()
-        ? row.host_name.trim()
-        : "Printer",
+      typeof row.host_name === "string" && row.host_name.trim() ? row.host_name.trim() : "Printer",
     filename,
     remote_path:
       typeof row.remote_path === "string" && row.remote_path.trim()
@@ -250,8 +253,7 @@ function parseLink(raw: unknown): PrinterCheckoffLink | null {
         : typeof row.applied_at === "string" && row.applied_at
           ? row.applied_at
           : undefined,
-    applied_at:
-      typeof row.applied_at === "string" && row.applied_at ? row.applied_at : undefined,
+    applied_at: typeof row.applied_at === "string" && row.applied_at ? row.applied_at : undefined,
     units_marked:
       typeof row.units_marked === "number" && Number.isFinite(row.units_marked)
         ? row.units_marked

@@ -74,8 +74,7 @@ export function parsePrinterMachine(data: Record<string, unknown>): PrinterMachi
   }
   if (data.preferred_slicer != null) {
     const raw = String(data.preferred_slicer).trim().toLowerCase();
-    machine.preferred_slicer =
-      raw === "orca" || raw === "prusa" || raw === "bambu" ? raw : null;
+    machine.preferred_slicer = raw === "orca" || raw === "prusa" || raw === "bambu" ? raw : null;
   } else {
     machine.preferred_slicer = null;
   }

@@ -1,12 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -105,13 +98,17 @@ describe("accepted Part media routes", () => {
     const thumbnailIdentity = acceptedPartMediaIdentity(part, "thumbnail");
     const artifactDigest = part.artifact.expectedSha256;
     const legacyBasis = (variant: "mesh" | "thumbnail") =>
-      createHash("sha256").update([
-        "accepted-media-v1",
-        variant,
-        artifactDigest,
-        part.effectiveRole.trim().toLowerCase(),
-        meshIdentity.hex ?? "",
-      ].join("\0")).digest("hex");
+      createHash("sha256")
+        .update(
+          [
+            "accepted-media-v1",
+            variant,
+            artifactDigest,
+            part.effectiveRole.trim().toLowerCase(),
+            meshIdentity.hex ?? "",
+          ].join("\0"),
+        )
+        .digest("hex");
     const oldThumbnailBasis = legacyBasis("thumbnail");
     const thumbsDir = join(directory, "thumbs");
     writeAcceptedMediaPng({ thumbsDir, basis: oldThumbnailBasis, png });
@@ -181,7 +178,9 @@ describe("accepted Part media routes", () => {
         },
       });
       expect(preflight.statusCode).toBe(204);
-      expect(preflight.headers["access-control-allow-headers"]).toContain("x-thumbnail-renderer-version");
+      expect(preflight.headers["access-control-allow-headers"]).toContain(
+        "x-thumbnail-renderer-version",
+      );
     } finally {
       await app.close();
     }
@@ -677,7 +676,9 @@ describe("accepted Part media routes", () => {
 
       const getPartRow = repo.getPartRow.bind(repo);
       repo.getPartRow = () => {
-        throw new Error(`private Part lookup detail ${join(directory, "thumbs")} ${thumbnailBasis}`);
+        throw new Error(
+          `private Part lookup detail ${join(directory, "thumbs")} ${thumbnailBasis}`,
+        );
       };
       const lookupFailure = await app.inject({
         method: "GET",

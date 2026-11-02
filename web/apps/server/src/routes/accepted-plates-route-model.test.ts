@@ -88,9 +88,11 @@ describe("accepted plates route model", () => {
         target_plate_id: "plate_0123456789abcdef0123456789abcdef",
       }),
     ).toMatchObject({ targetPlateId: "plate_0123456789abcdef0123456789abcdef" });
-    expect(parseTransferRequest({ ...revisionBody, target_printer_id: "printer-1" })).toMatchObject({
-      targetPrinterId: "printer-1",
-    });
+    expect(parseTransferRequest({ ...revisionBody, target_printer_id: "printer-1" })).toMatchObject(
+      {
+        targetPrinterId: "printer-1",
+      },
+    );
     expect(
       parseTransferRequest({
         ...revisionBody,

@@ -15,10 +15,7 @@ import { acceptedPlanBasis } from "../db/accepted-plan-progress.js";
 import { parseRequiredUnitToken } from "../services/required-units.js";
 import { AppRepository, type SchemaTables } from "../db/repository.js";
 import * as pgSchema from "../db/schema-pg.js";
-import {
-  registerPostgresSyncQuery,
-  unregisterPostgresSyncQuery,
-} from "../db/sync-db-bridge.js";
+import { registerPostgresSyncQuery, unregisterPostgresSyncQuery } from "../db/sync-db-bridge.js";
 import { registerPartRoutes } from "./parts.js";
 import { registerPlanRoutes } from "./plans.js";
 
@@ -121,11 +118,15 @@ describe("accepted Plan read routes", () => {
     acceptPlanForTest(repo, profile.id);
     const priorPart = repo.listParts(profile.id).parts[0];
     if (!priorPart) throw new Error("test Part is missing");
-    const remappedPartId = editAcceptedPartsForTest(repo, profile.id, [{
-      projectionPartId: priorPart.id,
-      quantityOverride: 1,
-    }]).get(priorPart.id)!;
-    const part = repo.listParts(profile.id).parts.find((candidate) => candidate.id === remappedPartId)!;
+    const remappedPartId = editAcceptedPartsForTest(repo, profile.id, [
+      {
+        projectionPartId: priorPart.id,
+        quantityOverride: 1,
+      },
+    ]).get(priorPart.id)!;
+    const part = repo
+      .listParts(profile.id)
+      .parts.find((candidate) => candidate.id === remappedPartId)!;
 
     const initialAccepted = repo.readAcceptedPlanOperationalSnapshot(profile.id);
     if (initialAccepted.kind !== "ready") throw new Error("accepted Plan is not ready");
@@ -141,12 +142,9 @@ describe("accepted Plan read routes", () => {
       assembled: true,
     });
 
-    const progressBeforeRead = new Database(
-      join(directory, "print-partner.db"),
-      {
-        readonly: true,
-      },
-    );
+    const progressBeforeRead = new Database(join(directory, "print-partner.db"), {
+      readonly: true,
+    });
     const progressBeforeRequests = progressBeforeRead
       .prepare("SELECT * FROM print_progress WHERE part_id = ? ORDER BY id")
       .all(part.id);
@@ -319,10 +317,7 @@ describe("accepted Plan read routes", () => {
       });
       expect(acceptedReadCount).toBe(8);
 
-      const dirtyProfile = repo.createProfile(
-        "Dirty accepted route Plan",
-        source.id,
-      );
+      const dirtyProfile = repo.createProfile("Dirty accepted route Plan", source.id);
       acceptPlanForTest(repo, dirtyProfile.id);
       const dirtyPart = repo.listParts(dirtyProfile.id).parts[0];
       if (!dirtyPart) throw new Error("dirty test Part is missing");
@@ -506,12 +501,9 @@ describe("accepted Plan read routes", () => {
         detail: "Internal Server Error",
       });
 
-      const progressAfterFailures = new Database(
-        join(directory, "print-partner.db"),
-        {
-          readonly: true,
-        },
-      );
+      const progressAfterFailures = new Database(join(directory, "print-partner.db"), {
+        readonly: true,
+      });
       expect(
         progressAfterFailures
           .prepare("SELECT * FROM print_progress WHERE part_id = ? ORDER BY id")

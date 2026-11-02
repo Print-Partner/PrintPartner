@@ -39,7 +39,8 @@ async function fixture(apiKey?: string) {
   return { app, profile };
 }
 
-async function trackedFixture(stl = `solid tracked
+async function trackedFixture(
+  stl = `solid tracked
 facet normal 0 0 1
 outer loop
 vertex 0 0 0
@@ -47,7 +48,8 @@ vertex 30 0 0
 vertex 0 20 10
 endloop
 endfacet
-endsolid tracked`) {
+endsolid tracked`,
+) {
   const root = mkdtempSync(join(tmpdir(), "pp-accepted-plate-route-tracked-"));
   process.env.PRINT_PARTNER_DATA_DIR = root;
   delete process.env.PRINT_PARTNER_API_KEY;
@@ -112,27 +114,30 @@ endsolid tracked`) {
     .flatMap((part) => part.units)
     .find((candidate) => candidate.required);
   if (!unit) throw new Error("tracked Required unit is missing");
-  saveFleet(repo, [{
-    id: "printer-one",
-    name: "Printer One",
-    model: "Model One",
-    bed_width_mm: 250,
-    bed_depth_mm: 210,
-    bed_height_mm: 200,
-    margin_mm: 4,
-    max_filament_slots: 1,
-    loaded_filaments: [{ slot: 1, filament_color_id: "wrong", label: "Wrong" }],
-  }, {
-    id: "printer-two",
-    name: "Printer Two",
-    model: "Model Two",
-    bed_width_mm: 220,
-    bed_depth_mm: 220,
-    bed_height_mm: 250,
-    margin_mm: 4,
-    max_filament_slots: 1,
-    loaded_filaments: [],
-  }]);
+  saveFleet(repo, [
+    {
+      id: "printer-one",
+      name: "Printer One",
+      model: "Model One",
+      bed_width_mm: 250,
+      bed_depth_mm: 210,
+      bed_height_mm: 200,
+      margin_mm: 4,
+      max_filament_slots: 1,
+      loaded_filaments: [{ slot: 1, filament_color_id: "wrong", label: "Wrong" }],
+    },
+    {
+      id: "printer-two",
+      name: "Printer Two",
+      model: "Model Two",
+      bed_width_mm: 220,
+      bed_depth_mm: 220,
+      bed_height_mm: 250,
+      margin_mm: 4,
+      max_filament_slots: 1,
+      loaded_filaments: [],
+    },
+  ]);
   const app = await buildApp(loadConfig(), ports);
   cleanups.push(async () => {
     await app.close();
@@ -186,15 +191,12 @@ describe("accepted Plate routes", () => {
 
     const health = await app.inject({ method: "GET", url: "/health" });
     const capabilities = health.json().capabilities as string[];
-    expect(capabilities).toEqual(expect.arrayContaining([
-      "accepted_plate_revisions",
-      "accepted_plate_export",
-    ]));
-    expect(capabilities).not.toEqual(expect.arrayContaining([
-      "export-3mf",
-      "pack-preview",
-      "auto-slice",
-    ]));
+    expect(capabilities).toEqual(
+      expect.arrayContaining(["accepted_plate_revisions", "accepted_plate_export"]),
+    );
+    expect(capabilities).not.toEqual(
+      expect.arrayContaining(["export-3mf", "pack-preview", "auto-slice"]),
+    );
   });
 
   it("returns stable boundary codes for missing and malformed Plan IDs", async () => {
@@ -308,10 +310,21 @@ describe("accepted Plate routes", () => {
     expect(ready).toMatchObject({
       kind: "ready",
       plate_revision_number: 1,
-      plates: [{
-        printer: { id: "printer-one", model: "Model One" },
-        units: [{ token, x_um: 4_000, y_um: 4_000, width_um: 30_000, depth_um: 20_000, height_um: 10_000 }],
-      }],
+      plates: [
+        {
+          printer: { id: "printer-one", model: "Model One" },
+          units: [
+            {
+              token,
+              x_um: 4_000,
+              y_um: 4_000,
+              width_um: 30_000,
+              depth_um: 20_000,
+              height_um: 10_000,
+            },
+          ],
+        },
+      ],
     });
 
     const replay = await app.inject({
@@ -425,15 +438,26 @@ endsolid degenerate`);
     const initialized = await app.inject({
       method: "POST",
       url: `/plans/${profile.id}/plates/initialize`,
-      payload: { expected, expected_plate_revision_id: null, assignments: [{ token, printer_id: "printer-one" }] },
+      payload: {
+        expected,
+        expected_plate_revision_id: null,
+        assignments: [{ token, printer_id: "printer-one" }],
+      },
     });
-    const ready = initialized.json() as { plate_revision_id: number; plates: Array<{ plate_id: string }> };
+    const ready = initialized.json() as {
+      plate_revision_id: number;
+      plates: Array<{ plate_id: string }>;
+    };
     const plateId = ready.plates[0]?.plate_id;
     if (!plateId) throw new Error("initialized Plate is missing");
     const transferred = await app.inject({
       method: "POST",
       url: `/plans/${profile.id}/plates/${plateId}/units/${token}/transfer`,
-      payload: { expected, expected_plate_revision_id: ready.plate_revision_id, target_printer_id: "printer-two" },
+      payload: {
+        expected,
+        expected_plate_revision_id: ready.plate_revision_id,
+        target_printer_id: "printer-two",
+      },
     });
     expect(transferred.statusCode).toBe(200);
     const workspace = await app.inject({ method: "GET", url: `/plans/${profile.id}/plates` });

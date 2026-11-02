@@ -18,8 +18,7 @@ type AcceptedPlateRevisionRequest = Readonly<{
 type AcceptedPlateMoveRequest = AcceptedPlateRevisionRequest &
   Readonly<{ xUm: number; yUm: number }>;
 
-type AcceptedPlatePinRequest = AcceptedPlateRevisionRequest &
-  Readonly<{ pinned: boolean }>;
+type AcceptedPlatePinRequest = AcceptedPlateRevisionRequest & Readonly<{ pinned: boolean }>;
 
 type AcceptedPlateTransferRequest = AcceptedPlateRevisionRequest &
   (Readonly<{ targetPlateId: string }> | Readonly<{ targetPrinterId: string }>);
@@ -86,7 +85,10 @@ export function parseInitializeRequest(value: unknown): AcceptedPlateInitializeR
     value.expected_plate_revision_id === null
       ? null
       : positiveSafeInteger(value.expected_plate_revision_id);
-  if (!expected || (expectedPlateRevisionId === null && value.expected_plate_revision_id !== null)) {
+  if (
+    !expected ||
+    (expectedPlateRevisionId === null && value.expected_plate_revision_id !== null)
+  ) {
     return null;
   }
 
@@ -134,15 +136,15 @@ export function parsePinRequest(value: unknown): AcceptedPlatePinRequest | null 
 export function parseTransferRequest(value: unknown): AcceptedPlateTransferRequest | null {
   const revision = parseRevisionRequest(value);
   if (!revision || !isRecord(value)) return null;
-  const targetPlateId = typeof value.target_plate_id === "string" ? value.target_plate_id.trim() : null;
-  const targetPrinterId = typeof value.target_printer_id === "string" ? value.target_printer_id.trim() : null;
+  const targetPlateId =
+    typeof value.target_plate_id === "string" ? value.target_plate_id.trim() : null;
+  const targetPrinterId =
+    typeof value.target_printer_id === "string" ? value.target_printer_id.trim() : null;
   if ((targetPlateId === null) === (targetPrinterId === null)) return null;
   if (targetPlateId !== null) {
     return /^plate_[0-9a-f]{32}$/.test(targetPlateId) ? { ...revision, targetPlateId } : null;
   }
-  return targetPrinterId && targetPrinterId.length <= 200
-    ? { ...revision, targetPrinterId }
-    : null;
+  return targetPrinterId && targetPrinterId.length <= 200 ? { ...revision, targetPrinterId } : null;
 }
 
 export function parseArrangeRequest(value: unknown): AcceptedPlateArrangeRequest | null {

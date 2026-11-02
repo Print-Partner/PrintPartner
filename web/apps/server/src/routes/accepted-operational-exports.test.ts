@@ -14,10 +14,7 @@ import { AcceptedPlanOperationalIntegrityError } from "../db/accepted-plan-opera
 import { AppRepository, type SchemaTables } from "../db/repository.js";
 import * as schema from "../db/schema.js";
 import * as pgSchema from "../db/schema-pg.js";
-import {
-  registerPostgresSyncQuery,
-  unregisterPostgresSyncQuery,
-} from "../db/sync-db-bridge.js";
+import { registerPostgresSyncQuery, unregisterPostgresSyncQuery } from "../db/sync-db-bridge.js";
 import { loadConfig } from "../config.js";
 import { AuthStore } from "../services/auth-store.js";
 import { getLogger } from "../services/logger.js";
@@ -143,7 +140,10 @@ describe("accepted operational export routes", () => {
   it("returns a sanitized accepted integrity failure from filename grouping", async () => {
     const { dir, repo, profile } = fixture();
     vi.spyOn(repo, "readAcceptedPlanOperationalSnapshot").mockImplementation(() => {
-      throw new AcceptedPlanOperationalIntegrityError("progress", "private SQL and token ppu_secret");
+      throw new AcceptedPlanOperationalIntegrityError(
+        "progress",
+        "private SQL and token ppu_secret",
+      );
     });
     const runner = new InProcessJobRunner({
       getRepo: () => repo,
@@ -180,7 +180,9 @@ describe("accepted operational export routes", () => {
       exportsDir: join(dir, "exports"),
       dataDir: dir,
     });
-    const app = Fastify({ logger: { level: "error", stream: { write: (line) => requestLog.push(line) } } });
+    const app = Fastify({
+      logger: { level: "error", stream: { write: (line) => requestLog.push(line) } },
+    });
     cleanups.push(() => app.close());
     await registerRequestLoggingMiddleware(app);
     await registerJobRoutes(app, runner, { statusExecution: new StatusExecution() });
@@ -195,74 +197,89 @@ describe("accepted operational export routes", () => {
     expect.soft(response.body).not.toContain(sentinel);
     expect.soft(requestLog.join("\n")).not.toContain(sentinel);
     expect.soft(JSON.stringify(workflowLog.mock.calls)).not.toContain(sentinel);
-    expect(workflowLog).toHaveBeenCalledWith(expect.objectContaining({
-      method: "GET",
-      url: `/plans/${profile.id}/filename-grouping`,
-      statusCode: 500,
-    }));
-  });
-
-  it.each([false, true])("preserves filename grouping success with accepted Parts: %s", async (apply) => {
-    const { dir, repo, source, profile } = fixture(false);
-    if (apply) applyTrackedPlan(repo, source.id, profile.id);
-    const runner = new InProcessJobRunner({
-      getRepo: () => repo,
-      reposDir: join(dir, "repos"),
-      exportsDir: join(dir, "exports"),
-      dataDir: dir,
-    });
-    const app = Fastify();
-    cleanups.push(() => app.close());
-    await registerJobRoutes(app, runner, { statusExecution: new StatusExecution() });
-
-    const response = await app.inject(`/plans/${profile.id}/filename-grouping`);
-
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.definition).toEqual(miloFilenameGrouping);
-    if (apply) {
-      expect(body.parts).toEqual([{
-        relativePath: "part.stl",
-        sourceLayer: "base:Source",
-        role: "primary",
-        units: [{ token: expect.stringMatching(/^ppu_[0-9a-f]{32}$/), completed: false }],
-      }]);
-    } else {
-      expect(body.parts).toEqual([]);
-    }
-    expect((await app.inject("/plans/999999/filename-grouping")).statusCode).toBe(404);
-  });
-
-  it.each([false, true])("preserves quota errors in kit export jobs with print progress: %s", async (includePrintProgress) => {
-    const { dir, repo, source, profile } = fixture(false);
-    applyTrackedPlan(repo, source.id, profile.id);
-    const runner = new InProcessJobRunner({
-      getRepo: () => repo,
-      reposDir: join(dir, "repos"),
-      exportsDir: join(dir, "exports"),
-      dataDir: dir,
-      tenantDiskQuotaBytes: 128,
-    });
-
-    const jobId = await runner.start(
-      "export-kit-bundle",
-      { profile_id: profile.id, include_print_progress: includePrintProgress },
-      "default",
+    expect(workflowLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        url: `/plans/${profile.id}/filename-grouping`,
+        statusCode: 500,
+      }),
     );
-    const job = await runner.waitForTerminal(jobId, 20_000, "default");
-
-    expect(job.status).toBe("error");
-    expect(job.error).toBe(new TenantDiskQuotaError().message);
-    expect(job.result).toBeNull();
-    expect(readdirSync(join(dir, "exports"), { recursive: true, encoding: "utf8" }).filter(
-      (entry) => entry.endsWith(".zip") || entry.endsWith(".tmp"),
-    )).toEqual([]);
   });
+
+  it.each([false, true])(
+    "preserves filename grouping success with accepted Parts: %s",
+    async (apply) => {
+      const { dir, repo, source, profile } = fixture(false);
+      if (apply) applyTrackedPlan(repo, source.id, profile.id);
+      const runner = new InProcessJobRunner({
+        getRepo: () => repo,
+        reposDir: join(dir, "repos"),
+        exportsDir: join(dir, "exports"),
+        dataDir: dir,
+      });
+      const app = Fastify();
+      cleanups.push(() => app.close());
+      await registerJobRoutes(app, runner, { statusExecution: new StatusExecution() });
+
+      const response = await app.inject(`/plans/${profile.id}/filename-grouping`);
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.definition).toEqual(miloFilenameGrouping);
+      if (apply) {
+        expect(body.parts).toEqual([
+          {
+            relativePath: "part.stl",
+            sourceLayer: "base:Source",
+            role: "primary",
+            units: [{ token: expect.stringMatching(/^ppu_[0-9a-f]{32}$/), completed: false }],
+          },
+        ]);
+      } else {
+        expect(body.parts).toEqual([]);
+      }
+      expect((await app.inject("/plans/999999/filename-grouping")).statusCode).toBe(404);
+    },
+  );
+
+  it.each([false, true])(
+    "preserves quota errors in kit export jobs with print progress: %s",
+    async (includePrintProgress) => {
+      const { dir, repo, source, profile } = fixture(false);
+      applyTrackedPlan(repo, source.id, profile.id);
+      const runner = new InProcessJobRunner({
+        getRepo: () => repo,
+        reposDir: join(dir, "repos"),
+        exportsDir: join(dir, "exports"),
+        dataDir: dir,
+        tenantDiskQuotaBytes: 128,
+      });
+
+      const jobId = await runner.start(
+        "export-kit-bundle",
+        { profile_id: profile.id, include_print_progress: includePrintProgress },
+        "default",
+      );
+      const job = await runner.waitForTerminal(jobId, 20_000, "default");
+
+      expect(job.status).toBe("error");
+      expect(job.error).toBe(new TenantDiskQuotaError().message);
+      expect(job.result).toBeNull();
+      expect(
+        readdirSync(join(dir, "exports"), { recursive: true, encoding: "utf8" }).filter(
+          (entry) => entry.endsWith(".zip") || entry.endsWith(".tmp"),
+        ),
+      ).toEqual([]);
+    },
+  );
 
   it("returns the fixed explicit-progress job failure without private integrity detail", async () => {
     const { dir, repo, profile } = fixture();
     repo.readAcceptedPlanOperationalSnapshot = () => {
-      throw new AcceptedPlanOperationalIntegrityError("progress", "private SQL and token ppu_secret");
+      throw new AcceptedPlanOperationalIntegrityError(
+        "progress",
+        "private SQL and token ppu_secret",
+      );
     };
     const runner = new InProcessJobRunner({
       getRepo: () => repo,
@@ -394,9 +411,7 @@ describe("accepted operational export routes", () => {
     expect(JSON.stringify(webhookCapture.events)).not.toContain(sentinel);
     expect(JSON.stringify(log.mock.calls)).not.toContain(sentinel);
     expect(webhookCapture.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ event: "job.error" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ event: "job.error" })]),
     );
   });
 
@@ -413,7 +428,9 @@ describe("accepted operational export routes", () => {
       if (normalized.includes('from "build_profiles"')) {
         const version = terminalReads < 2 ? 0 : terminalReads < 4 ? 1 : 2;
         return {
-          rows: [[1, "default", "PostgreSQL Build", null, null, null, null, null, null, null, version]],
+          rows: [
+            [1, "default", "PostgreSQL Build", null, null, null, null, null, null, null, version],
+          ],
           rowCount: 1,
         };
       }
@@ -439,11 +456,7 @@ describe("accepted operational export routes", () => {
     });
     cleanups.push(() => unregisterPostgresSyncQuery(postgres));
 
-    const jobId = await runner.start(
-      "export-checklist-html",
-      { profile_id: 1 },
-      "default",
-    );
+    const jobId = await runner.start("export-checklist-html", { profile_id: 1 }, "default");
     const job = await runner.waitForTerminal(jobId, 20_000, "default");
 
     expect(job.status).toBe("error");
@@ -493,11 +506,7 @@ describe("accepted operational export routes", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    const jobId = await runner.start(
-      "export-checklist-html",
-      { profile_id: 1 },
-      "default",
-    );
+    const jobId = await runner.start("export-checklist-html", { profile_id: 1 }, "default");
     const job = await runner.waitForTerminal(jobId, 20_000, "default");
 
     expect(job.status).toBe("done");

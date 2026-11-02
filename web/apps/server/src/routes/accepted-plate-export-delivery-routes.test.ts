@@ -31,7 +31,10 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function waitForJob(app: Awaited<ReturnType<typeof buildApp>>, jobId: string): Promise<JobSnapshot> {
+async function waitForJob(
+  app: Awaited<ReturnType<typeof buildApp>>,
+  jobId: string,
+): Promise<JobSnapshot> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const response = await app.inject({ method: "GET", url: `/jobs/${jobId}` });
     const snapshot: JobSnapshot = response.json();
@@ -67,7 +70,9 @@ async function fixture(
   const locator = `${source.id}/revisions/accepted`;
   const snapshotRoot = join(root, "repos", locator);
   mkdirSync(snapshotRoot, { recursive: true });
-  writeFileSync(join(snapshotRoot, options.filename ?? "part.stl"), `solid accepted
+  writeFileSync(
+    join(snapshotRoot, options.filename ?? "part.stl"),
+    `solid accepted
 facet normal 0 0 1
 outer loop
 vertex 0 0 0
@@ -75,7 +80,8 @@ vertex 30 0 0
 vertex 0 20 10
 endloop
 endfacet
-endsolid accepted`);
+endsolid accepted`,
+  );
   const sourceRevision = repo.recordSourceRevision({
     sourceId: source.id,
     upstreamRevisionKey: "accepted",
@@ -129,24 +135,28 @@ endsolid accepted`);
       profileId: profile.id,
       expected: acceptedPlanBasis(accepted.snapshot),
       expectedPlateRevisionId: null,
-      plates: [{
-        plateId: `plate_${"c".repeat(32)}`,
-        printerId: "printer-one",
-        printerName: "Printer One",
-        printerModel: "Model One",
-        bedWidthUm: 250_000,
-        bedDepthUm: 210_000,
-        bedHeightUm: 200_000,
-        marginUm: 4_000,
-        units: [{
-          token: unit.token,
-          xUm: 4_000,
-          yUm: 4_000,
-          widthUm: 30_000,
-          depthUm: 20_000,
-          heightUm: 10_000,
-        }],
-      }],
+      plates: [
+        {
+          plateId: `plate_${"c".repeat(32)}`,
+          printerId: "printer-one",
+          printerName: "Printer One",
+          printerModel: "Model One",
+          bedWidthUm: 250_000,
+          bedDepthUm: 210_000,
+          bedHeightUm: 200_000,
+          marginUm: 4_000,
+          units: [
+            {
+              token: unit.token,
+              xUm: 4_000,
+              yUm: 4_000,
+              widthUm: 30_000,
+              depthUm: 20_000,
+              heightUm: 10_000,
+            },
+          ],
+        },
+      ],
     });
     if (published.kind !== "published") throw new Error("Plate was not published");
     plateRevisionId = published.plateRevisionId;
@@ -159,12 +169,15 @@ endsolid accepted`);
     watchPath: "",
     enabled: true,
   });
-  const jobs = new InProcessJobRunner({
-    getRepo: () => repo,
-    reposDir: join(root, "repos"),
-    exportsDir: join(root, "exports"),
-    dataDir: root,
-  }, jobOptions);
+  const jobs = new InProcessJobRunner(
+    {
+      getRepo: () => repo,
+      reposDir: join(root, "repos"),
+      exportsDir: join(root, "exports"),
+      dataDir: root,
+    },
+    jobOptions,
+  );
   ports.jobs = jobs;
   const app = await buildApp({ ...loadConfig(), dataDir: root, exchangeDir }, ports);
   cleanups.push(async () => {
@@ -172,68 +185,119 @@ endsolid accepted`);
     ports.db.close();
     rmSync(root, { recursive: true, force: true });
   });
-  return { app, root, exchangeDir, repo, jobs, profile, plateRevisionId, slicer, token: unit.token };
+  return {
+    app,
+    root,
+    exchangeDir,
+    repo,
+    jobs,
+    profile,
+    plateRevisionId,
+    slicer,
+    token: unit.token,
+  };
 }
 
 describe("accepted Plate export delivery routes", () => {
-  it.each(["completed", "selected"])("prepares and exports only two chosen copies after a %s copy had its own Plate", async (priorBatch) => {
-    const { app, repo, profile } = await fixture(undefined, { publishPlates: false, filename: "part_x3.stl" });
-    saveFleet(repo, [{
-      id: "printer-one", name: "Printer One", model: "Model One",
-      bed_width_mm: 250, bed_depth_mm: 210, bed_height_mm: 200, margin_mm: 4,
-      max_filament_slots: 1, loaded_filaments: [],
-    }]);
-    const read = repo.readAcceptedPlanOperationalSnapshot(profile.id);
-    if (read.kind !== "ready") throw new Error("Expected accepted Plan");
-    const part = read.snapshot.parts[0];
-    if (!part) throw new Error("Expected accepted part");
-    const marked = await app.inject({ method: "PATCH", url: `/parts/${part.projectionPartId}/progress`, payload: { unit_index: 0, completed: true } });
-    expect(marked.statusCode).toBe(200);
-    const setup = parseAcceptedPlateWorkspace((await app.inject({ method: "GET", url: `/plans/${profile.id}/plates` })).json());
-    if (setup.kind !== "setup") throw new Error("Expected initial Plate setup");
-    expect(setup.units).toHaveLength(3);
-    const completed = setup.units.filter((unit) => unit.completed);
-    const selected = setup.units.filter((unit) => !unit.completed);
-    expect(completed).toHaveLength(1);
-    expect(selected).toHaveLength(2);
-    const previousUnits = priorBatch === "completed" ? completed : selected.slice(0, 1);
-    const first = await app.inject({
-      method: "POST", url: `/plans/${profile.id}/plates/initialize`,
-      payload: { expected: setup.basis, expected_plate_revision_id: null,
-        assignments: previousUnits.map((unit) => ({ token: unit.token, printer_id: "printer-one" })) },
-    });
-    expect(first.statusCode).toBe(200);
-    const previous = parseAcceptedPlateWorkspace(first.json());
-    if (previous.kind !== "ready") throw new Error("Expected prior Plate");
-    const prepared = await app.inject({
-      method: "POST", url: `/plans/${profile.id}/plates/initialize`,
-      payload: { expected: setup.basis, expected_plate_revision_id: previous.plate_revision_id,
-        assignments: selected.map((unit) => ({ token: unit.token, printer_id: "printer-one" })) },
-    });
-    expect(prepared.statusCode).toBe(200);
-    const workspace = parseAcceptedPlateWorkspace(prepared.json());
-    if (workspace.kind !== "ready") throw new Error("Expected selected Plate");
-    expect(workspace.plate_revision_id).not.toBe(previous.plate_revision_id);
-    expect(workspace.plate_revision_number).toBe(previous.plate_revision_number + 1);
-    expect(workspace.plates.flatMap((plate) => plate.units.map((unit) => unit.token)).sort())
-      .toEqual(selected.map((unit) => unit.token).sort());
-    expect(workspace.unassigned.map((unit) => unit.token)).toEqual(completed.map((unit) => unit.token));
-    const started = await app.inject({ method: "POST", url: "/jobs/export-accepted-plate-3mf", payload: {
-      profile_id: profile.id, expected_plate_revision_id: workspace.plate_revision_id,
-    } });
-    expect(started.statusCode).toBe(200);
-    const job = await waitForJob(app, started.json().job_id);
-    expect(job.status).toBe("done");
-    const exported = parseAcceptedPlateExportJobResult(job.result);
-    const objects: string[] = [];
-    for (const plate of exported.plates) {
-      const downloaded = await app.inject({ method: "GET", url: plate.download_url });
-      expect(downloaded.statusCode).toBe(200);
-      const xml = modelXml(downloaded.rawPayload);
-      objects.push(...[...xml.matchAll(/<object\b[^>]*partnumber="([^"]+)"/g)].map((match) => match[1]));
-    }
-    expect(objects.sort()).toEqual(selected.map((unit) => unit.token).sort());
-  });
+  it.each(["completed", "selected"])(
+    "prepares and exports only two chosen copies after a %s copy had its own Plate",
+    async (priorBatch) => {
+      const { app, repo, profile } = await fixture(undefined, {
+        publishPlates: false,
+        filename: "part_x3.stl",
+      });
+      saveFleet(repo, [
+        {
+          id: "printer-one",
+          name: "Printer One",
+          model: "Model One",
+          bed_width_mm: 250,
+          bed_depth_mm: 210,
+          bed_height_mm: 200,
+          margin_mm: 4,
+          max_filament_slots: 1,
+          loaded_filaments: [],
+        },
+      ]);
+      const read = repo.readAcceptedPlanOperationalSnapshot(profile.id);
+      if (read.kind !== "ready") throw new Error("Expected accepted Plan");
+      const part = read.snapshot.parts[0];
+      if (!part) throw new Error("Expected accepted part");
+      const marked = await app.inject({
+        method: "PATCH",
+        url: `/parts/${part.projectionPartId}/progress`,
+        payload: { unit_index: 0, completed: true },
+      });
+      expect(marked.statusCode).toBe(200);
+      const setup = parseAcceptedPlateWorkspace(
+        (await app.inject({ method: "GET", url: `/plans/${profile.id}/plates` })).json(),
+      );
+      if (setup.kind !== "setup") throw new Error("Expected initial Plate setup");
+      expect(setup.units).toHaveLength(3);
+      const completed = setup.units.filter((unit) => unit.completed);
+      const selected = setup.units.filter((unit) => !unit.completed);
+      expect(completed).toHaveLength(1);
+      expect(selected).toHaveLength(2);
+      const previousUnits = priorBatch === "completed" ? completed : selected.slice(0, 1);
+      const first = await app.inject({
+        method: "POST",
+        url: `/plans/${profile.id}/plates/initialize`,
+        payload: {
+          expected: setup.basis,
+          expected_plate_revision_id: null,
+          assignments: previousUnits.map((unit) => ({
+            token: unit.token,
+            printer_id: "printer-one",
+          })),
+        },
+      });
+      expect(first.statusCode).toBe(200);
+      const previous = parseAcceptedPlateWorkspace(first.json());
+      if (previous.kind !== "ready") throw new Error("Expected prior Plate");
+      const prepared = await app.inject({
+        method: "POST",
+        url: `/plans/${profile.id}/plates/initialize`,
+        payload: {
+          expected: setup.basis,
+          expected_plate_revision_id: previous.plate_revision_id,
+          assignments: selected.map((unit) => ({ token: unit.token, printer_id: "printer-one" })),
+        },
+      });
+      expect(prepared.statusCode).toBe(200);
+      const workspace = parseAcceptedPlateWorkspace(prepared.json());
+      if (workspace.kind !== "ready") throw new Error("Expected selected Plate");
+      expect(workspace.plate_revision_id).not.toBe(previous.plate_revision_id);
+      expect(workspace.plate_revision_number).toBe(previous.plate_revision_number + 1);
+      expect(
+        workspace.plates.flatMap((plate) => plate.units.map((unit) => unit.token)).sort(),
+      ).toEqual(selected.map((unit) => unit.token).sort());
+      expect(workspace.unassigned.map((unit) => unit.token)).toEqual(
+        completed.map((unit) => unit.token),
+      );
+      const started = await app.inject({
+        method: "POST",
+        url: "/jobs/export-accepted-plate-3mf",
+        payload: {
+          profile_id: profile.id,
+          expected_plate_revision_id: workspace.plate_revision_id,
+        },
+      });
+      expect(started.statusCode).toBe(200);
+      const job = await waitForJob(app, started.json().job_id);
+      expect(job.status).toBe("done");
+      const exported = parseAcceptedPlateExportJobResult(job.result);
+      const objects: string[] = [];
+      for (const plate of exported.plates) {
+        const downloaded = await app.inject({ method: "GET", url: plate.download_url });
+        expect(downloaded.statusCode).toBe(200);
+        const xml = modelXml(downloaded.rawPayload);
+        objects.push(
+          ...[...xml.matchAll(/<object\b[^>]*partnumber="([^"]+)"/g)].map((match) => match[1]),
+        );
+      }
+      expect(objects.sort()).toEqual(selected.map((unit) => unit.token).sort());
+    },
+  );
 
   it("exports one unarranged named-object 3MF without published Plates", async () => {
     const { app, profile, token } = await fixture(undefined, { publishPlates: false });
@@ -285,7 +349,10 @@ describe("accepted Plate export delivery routes", () => {
   it("returns root and v1 jobs with byte-exact download URLs", async () => {
     const { app, root, profile, plateRevisionId } = await fixture();
     const completedJobIds: string[] = [];
-    for (const url of ["/jobs/export-accepted-plate-3mf", "/api/v1/jobs/export-accepted-plate-3mf"]) {
+    for (const url of [
+      "/jobs/export-accepted-plate-3mf",
+      "/api/v1/jobs/export-accepted-plate-3mf",
+    ]) {
       const started = await app.inject({
         method: "POST",
         url,
@@ -309,7 +376,9 @@ describe("accepted Plate export delivery routes", () => {
         plate_revision_id: plateRevisionId,
         download_url: result.plates[0]?.download_url,
       });
-      expect(JSON.stringify(result)).not.toMatch(/pp-accepted-export-routes|\/private\/var|\/tmp\//);
+      expect(JSON.stringify(result)).not.toMatch(
+        /pp-accepted-export-routes|\/private\/var|\/tmp\//,
+      );
       for (const downloadUrl of [
         result.download_url,
         result.manifest_download_url,
@@ -318,12 +387,16 @@ describe("accepted Plate export delivery routes", () => {
       ]) {
         const downloaded = await app.inject({ method: "GET", url: downloadUrl });
         expect(downloaded.statusCode).toBe(200);
-        expect(downloaded.rawPayload).toEqual(readFileSync(join(
-          root,
-          "exports",
-          "tenant-default",
-          ...downloadUrl.replace(/^\/exports\//, "").split("/"),
-        )));
+        expect(downloaded.rawPayload).toEqual(
+          readFileSync(
+            join(
+              root,
+              "exports",
+              "tenant-default",
+              ...downloadUrl.replace(/^\/exports\//, "").split("/"),
+            ),
+          ),
+        );
       }
     }
 
@@ -332,12 +405,14 @@ describe("accepted Plate export delivery routes", () => {
       url: `/api/v1/plans/${profile.id}/artifacts`,
     });
     expect(artifacts.statusCode).toBe(200);
-    expect(artifacts.json().artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        kind: "export-accepted-plate-3mf",
-        download_url: expect.stringMatching(/^\/exports\//),
-      }),
-    ]));
+    expect(artifacts.json().artifacts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "export-accepted-plate-3mf",
+          download_url: expect.stringMatching(/^\/exports\//),
+        }),
+      ]),
+    );
     expect(dispatchWebhooks).toHaveBeenCalledWith(
       expect.anything(),
       "plan.exported",
@@ -347,11 +422,16 @@ describe("accepted Plate export delivery routes", () => {
         download_url: expect.stringMatching(/^\/exports\//),
       }),
     );
-    const exportedCalls = vi.mocked(dispatchWebhooks).mock.calls
-      .filter(([, event]) => event === "plan.exported");
+    const exportedCalls = vi
+      .mocked(dispatchWebhooks)
+      .mock.calls.filter(([, event]) => event === "plan.exported");
     expect(exportedCalls).toHaveLength(completedJobIds.length);
-    expect(exportedCalls.map(([, , payload]) => payload.job_id).sort()).toEqual(completedJobIds.sort());
-    expect((await app.inject({ method: "GET", url: "/api/v2/jobs/not-a-job" })).statusCode).toBe(404);
+    expect(exportedCalls.map(([, , payload]) => payload.job_id).sort()).toEqual(
+      completedJobIds.sort(),
+    );
+    expect((await app.inject({ method: "GET", url: "/api/v2/jobs/not-a-job" })).statusCode).toBe(
+      404,
+    );
   });
 
   it("logs only coarse context for an unexpected accepted Plate job failure", async () => {
@@ -385,16 +465,12 @@ describe("accepted Plate export delivery routes", () => {
       result: null,
       error: "Accepted Plate export failed.",
     });
-    expect(log).toHaveBeenCalledWith(
-      "error",
-      "Accepted Plate export failed unexpectedly",
-      {
-        operation: "accepted_plate_export",
-        failure: "unexpected",
-        profileId: profile.id,
-        expectedPlateRevisionId: plateRevisionId,
-      },
-    );
+    expect(log).toHaveBeenCalledWith("error", "Accepted Plate export failed unexpectedly", {
+      operation: "accepted_plate_export",
+      failure: "unexpected",
+      profileId: profile.id,
+      expectedPlateRevisionId: plateRevisionId,
+    });
     expect(log).toHaveBeenCalledTimes(1);
     expect(dispatchWebhooks).toHaveBeenCalledWith(
       expect.anything(),
@@ -408,7 +484,9 @@ describe("accepted Plate export delivery routes", () => {
     const observable = JSON.stringify({
       response: statusResponse.json(),
       snapshot,
-      webhooks: vi.mocked(dispatchWebhooks).mock.calls.map(([, event, payload]) => ({ event, payload })),
+      webhooks: vi
+        .mocked(dispatchWebhooks)
+        .mock.calls.map(([, event, payload]) => ({ event, payload })),
       logs: log.mock.calls,
     });
     for (const value of privateValues) expect(observable).not.toContain(value);
@@ -488,8 +566,12 @@ describe("accepted Plate export delivery routes", () => {
     });
     await waitForJob(app, second.json().job_id);
 
-    expect((await app.inject({ method: "GET", url: `/jobs/${first.json().job_id}` })).statusCode).toBe(404);
-    expect((await app.inject({ method: "GET", url: firstResult.download_url })).statusCode).toBe(200);
+    expect(
+      (await app.inject({ method: "GET", url: `/jobs/${first.json().job_id}` })).statusCode,
+    ).toBe(404);
+    expect((await app.inject({ method: "GET", url: firstResult.download_url })).statusCode).toBe(
+      200,
+    );
   });
 
   it("rejects missing or disabled slicers and an unavailable exchange before export", async () => {
@@ -588,16 +670,18 @@ describe("accepted Plate export delivery routes", () => {
       detail: "Accepted Plate handoff failed.",
       code: "internal_error",
     });
-    expect(capturedErrors).toEqual([[
-      {
-        operation: "accepted_plate_slicer_handoff",
-        failure: "unexpected",
-        profileId: profile.id,
-        expectedPlateRevisionId: plateRevisionId,
-        slicerInstanceId: slicer.id,
-      },
-      "Accepted Plate slicer handoff failed unexpectedly",
-    ]]);
+    expect(capturedErrors).toEqual([
+      [
+        {
+          operation: "accepted_plate_slicer_handoff",
+          failure: "unexpected",
+          profileId: profile.id,
+          expectedPlateRevisionId: plateRevisionId,
+          slicerInstanceId: slicer.id,
+        },
+        "Accepted Plate slicer handoff failed unexpectedly",
+      ],
+    ]);
     const observable = JSON.stringify({ response: response.json(), logs: capturedErrors });
     for (const value of privateValues) expect(observable).not.toContain(value);
   });
@@ -635,8 +719,12 @@ describe("accepted Plate export delivery routes", () => {
     expect(retry.statusCode).toBe(200);
     expect(retry.json()).toEqual(result);
 
-    const history = (await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json<{ jobs: JobSnapshot[] }>().jobs;
-    const exported = history.filter((job) => job.kind === "export-accepted-plate-3mf" && job.status === "done");
+    const history = (
+      await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })
+    ).json<{ jobs: JobSnapshot[] }>().jobs;
+    const exported = history.filter(
+      (job) => job.kind === "export-accepted-plate-3mf" && job.status === "done",
+    );
     expect(exported).toHaveLength(1);
     const receipt = parseAcceptedPlateExportJobResult(exported[0]!.result);
     expect(receipt).toMatchObject({
@@ -650,12 +738,20 @@ describe("accepted Plate export delivery routes", () => {
     for (const url of [receipt.manifest_download_url, receipt.bundle_download_url]) {
       expect((await app.inject({ method: "GET", url })).statusCode).toBe(200);
     }
-    const concurrent = await Promise.all(Array.from({ length: 3 }, () => app.inject({
-      method: "POST", url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
-      payload: { profile_id: profile.id, expected_plate_revision_id: plateRevisionId },
-    })));
+    const concurrent = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        app.inject({
+          method: "POST",
+          url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
+          payload: { profile_id: profile.id, expected_plate_revision_id: plateRevisionId },
+        }),
+      ),
+    );
     expect(concurrent.map((response) => response.statusCode)).toEqual([200, 200, 200]);
-    expect((await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json().jobs).toEqual(history);
+    expect(
+      (await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json()
+        .jobs,
+    ).toEqual(history);
     expect(dispatchWebhooks).not.toHaveBeenCalled();
     expect(jobs.listJobs({ profile_id: profile.id }, "other-tenant")).toEqual([]);
     expect(await jobs.get(exported[0]!.job_id, "other-tenant")).toBeNull();
@@ -673,43 +769,64 @@ describe("accepted Plate export delivery routes", () => {
       code: "output_conflict",
     });
     expect(readFileSync(stagedPath, "utf8")).toBe("tampered");
-    expect((await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json().jobs).toEqual(history);
+    expect(
+      (await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json()
+        .jobs,
+    ).toEqual(history);
   });
 
   it("reuses a completed download export when the same accepted Plates are staged", async () => {
     const { app, profile, plateRevisionId, slicer } = await fixture();
     const started = await app.inject({
-      method: "POST", url: "/jobs/export-accepted-plate-3mf",
+      method: "POST",
+      url: "/jobs/export-accepted-plate-3mf",
       payload: { profile_id: profile.id, expected_plate_revision_id: plateRevisionId },
     });
     const downloaded = await waitForJob(app, started.json().job_id);
     expect(downloaded.status).toBe("done");
-    const before = (await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json().jobs;
+    const before = (
+      await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })
+    ).json().jobs;
     const staged = await app.inject({
-      method: "POST", url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
+      method: "POST",
+      url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
       payload: { profile_id: profile.id, expected_plate_revision_id: plateRevisionId },
     });
     expect(staged.statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json().jobs).toEqual(before);
+    expect(
+      (await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json()
+        .jobs,
+    ).toEqual(before);
   });
 
   it("does not complete an export when managed staging conflicts or the requested Plate revision is stale", async () => {
     const { app, exchangeDir, profile, plateRevisionId, slicer } = await fixture();
-    const inbox = join(exchangeDir, "pp-inbox", slicer.id, `profile-${profile.id}`, `revision-${plateRevisionId}`);
+    const inbox = join(
+      exchangeDir,
+      "pp-inbox",
+      slicer.id,
+      `profile-${profile.id}`,
+      `revision-${plateRevisionId}`,
+    );
     mkdirSync(inbox, { recursive: true });
     writeFileSync(join(inbox, "0001.3mf"), "conflicting exchange bytes");
     const conflict = await app.inject({
-      method: "POST", url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
+      method: "POST",
+      url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
       payload: { profile_id: profile.id, expected_plate_revision_id: plateRevisionId },
     });
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json().code).toBe("output_conflict");
     const stale = await app.inject({
-      method: "POST", url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
+      method: "POST",
+      url: `/slicer-instances/${slicer.id}/open-accepted-plates`,
       payload: { profile_id: profile.id, expected_plate_revision_id: plateRevisionId + 1 },
     });
     expect(stale.statusCode).toBe(409);
     expect(stale.json().code).toBe("plate_revision_changed");
-    expect((await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json().jobs).toEqual([]);
+    expect(
+      (await app.inject({ method: "GET", url: `/api/v1/jobs?profile_id=${profile.id}` })).json()
+        .jobs,
+    ).toEqual([]);
   });
 });

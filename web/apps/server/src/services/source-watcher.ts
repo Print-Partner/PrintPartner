@@ -8,7 +8,10 @@ import { getLogger } from "./logger.js";
 import { tenantStorage, getRequestTenantId } from "../middleware/tenant-context.js";
 import { runWithTenantDiskQuota } from "../lib/tenant-disk-quota.js";
 import { readStoredSourceUpdateIntervalHours } from "./source-monitoring-settings.js";
-import { OwnershipAdmissionError, requireSourceSyncParticipant } from "../ownership/source-sync-admission.js";
+import {
+  OwnershipAdmissionError,
+  requireSourceSyncParticipant,
+} from "../ownership/source-sync-admission.js";
 
 type SourceWatcherSettings = {
   discordWebhookUrl: string | null;
@@ -111,9 +114,7 @@ export function createSourceWatcherCoordinator(
           tenantSchedules.set(tenantId, {
             intervalHours: nextIntervalHours,
             nextCheckAt:
-              nextIntervalHours === 0
-                ? null
-                : dependencies.now() + nextIntervalHours * HOUR_MS,
+              nextIntervalHours === 0 ? null : dependencies.now() + nextIntervalHours * HOUR_MS,
           });
         }
       });
@@ -194,20 +195,33 @@ async function syncUnsyncedSources(
     );
   if (sources.length === 0) return;
 
-  logger.log("info", `[source-watcher] Auto-syncing ${sources.length} unsynced source(s) on startup`);
+  logger.log(
+    "info",
+    `[source-watcher] Auto-syncing ${sources.length} unsynced source(s) on startup`,
+  );
 
   const coversDir = join(dirname(reposDir), "covers");
 
   for (const source of sources) {
     requireSourceSyncParticipant("startup.startSourceWatcher");
     try {
-      logger.log("info", `[source-watcher] Auto-syncing new source: ${source.name} (id=${source.id})`);
-      const result = await runWithTenantDiskQuota({
-        dataDir: dirname(reposDir), reposDir, tenantId: getRequestTenantId(),
-        quotaBytes, sourceIds: () => repo.listSources().map((item) => item.id),
-      }, () => syncProjectById(repo, reposDir, source.id, coversDir, {
-        beforePublish: () => requireSourceSyncParticipant("startup.startSourceWatcher"),
-      }));
+      logger.log(
+        "info",
+        `[source-watcher] Auto-syncing new source: ${source.name} (id=${source.id})`,
+      );
+      const result = await runWithTenantDiskQuota(
+        {
+          dataDir: dirname(reposDir),
+          reposDir,
+          tenantId: getRequestTenantId(),
+          quotaBytes,
+          sourceIds: () => repo.listSources().map((item) => item.id),
+        },
+        () =>
+          syncProjectById(repo, reposDir, source.id, coversDir, {
+            beforePublish: () => requireSourceSyncParticipant("startup.startSourceWatcher"),
+          }),
+      );
 
       const settings = getSettings();
       if (settings.discordWebhookUrl && settings.notifyOnSync) {
@@ -308,12 +322,19 @@ async function runPeriodicUpdateCheck(
       // Auto-sync
       try {
         logger.log("info", `[source-watcher] Auto-syncing updated source: ${source.name}`);
-        const result = await runWithTenantDiskQuota({
-        dataDir: dirname(reposDir), reposDir, tenantId: getRequestTenantId(),
-        quotaBytes, sourceIds: () => repo.listSources().map((item) => item.id),
-      }, () => syncProjectById(repo, reposDir, source.id, coversDir, {
-        beforePublish: () => requireSourceSyncParticipant("worker.startSourceWatcher"),
-      }));
+        const result = await runWithTenantDiskQuota(
+          {
+            dataDir: dirname(reposDir),
+            reposDir,
+            tenantId: getRequestTenantId(),
+            quotaBytes,
+            sourceIds: () => repo.listSources().map((item) => item.id),
+          },
+          () =>
+            syncProjectById(repo, reposDir, source.id, coversDir, {
+              beforePublish: () => requireSourceSyncParticipant("worker.startSourceWatcher"),
+            }),
+        );
         const updatedRow = repo.getProjectRow(source.id);
         requireSourceSyncParticipant("worker.startSourceWatcher");
         repo.recordAppEvent({
@@ -437,9 +458,19 @@ export function startSourceWatcher(input: {
     readIntervalHours: () =>
       readStoredSourceUpdateIntervalHours(input.repo.getSetting("source_update_check_hours")),
     runStartupForCurrentTenant: () =>
-      syncUnsyncedSources(input.repo, input.reposDir, input.getSettings, input.tenantDiskQuotaBytes ?? null),
+      syncUnsyncedSources(
+        input.repo,
+        input.reposDir,
+        input.getSettings,
+        input.tenantDiskQuotaBytes ?? null,
+      ),
     runPeriodicForCurrentTenant: () =>
-      runPeriodicUpdateCheck(input.repo, input.reposDir, input.getSettings, input.tenantDiskQuotaBytes ?? null),
+      runPeriodicUpdateCheck(
+        input.repo,
+        input.reposDir,
+        input.getSettings,
+        input.tenantDiskQuotaBytes ?? null,
+      ),
     now: Date.now,
   });
 

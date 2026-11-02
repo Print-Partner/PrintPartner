@@ -1,9 +1,4 @@
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import type { SyncDocKind } from "./github-sync.js";
 import { DOCS_TEXT_DIR, docTitleFromPath } from "./pdf-text-extract.js";

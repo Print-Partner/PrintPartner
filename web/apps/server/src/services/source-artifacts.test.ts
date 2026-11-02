@@ -18,6 +18,8 @@ describe("Source artifact scanning", () => {
       expect.objectContaining({ path: "parts/frame.stl", format: "stl", printable: true }),
       expect.objectContaining({ path: "plate.3mf", format: "3mf", printable: true }),
     ]);
-    expect(scanSourceArtifacts(root).every((artifact) => /^[0-9a-f]{64}$/.test(artifact.sha256))).toBe(true);
+    expect(
+      scanSourceArtifacts(root).every((artifact) => /^[0-9a-f]{64}$/.test(artifact.sha256)),
+    ).toBe(true);
   });
 });

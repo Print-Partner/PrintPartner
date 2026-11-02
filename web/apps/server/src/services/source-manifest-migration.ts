@@ -1,6 +1,9 @@
 import type { AppRepository } from "../db/repository.js";
 import { tenantStorage } from "../middleware/tenant-context.js";
-import { OwnershipAdmissionError, requireSourceSyncParticipant } from "../ownership/source-sync-admission.js";
+import {
+  OwnershipAdmissionError,
+  requireSourceSyncParticipant,
+} from "../ownership/source-sync-admission.js";
 import {
   archiveLegacySourceManifest,
   inspectLegacySourceManifest,
@@ -35,9 +38,7 @@ export function migrateLegacySourceManifestOverridesForTenant(
   repo: AppRepository,
   tenantId: string,
 ): Promise<LegacySourceManifestMigrationReport> {
-  return tenantStorage.run(tenantId, () =>
-    migrateLegacySourceManifestOverrides(repo),
-  );
+  return tenantStorage.run(tenantId, () => migrateLegacySourceManifestOverrides(repo));
 }
 
 function errorMessage(error: unknown): string {
@@ -50,7 +51,8 @@ export async function migrateLegacySourceManifestOverrides(
     inspectLegacy?: typeof inspectLegacySourceManifest;
   } = {},
 ): Promise<LegacySourceManifestMigrationReport> {
-  const checkAdmission = () => requireSourceSyncParticipant("migration.migrateLegacySourceManifestOverridesForTenant");
+  const checkAdmission = () =>
+    requireSourceSyncParticipant("migration.migrateLegacySourceManifestOverridesForTenant");
   checkAdmission();
   const migrated: LegacySourceManifestMigration[] = [];
   const retained: RetainedLegacySourceManifest[] = [];
@@ -58,9 +60,7 @@ export async function migrateLegacySourceManifestOverrides(
   for (const source of repo.listSources()) {
     const observedSource = repo.getSourceActivationObservation(source.id);
     if (!observedSource) continue;
-    const observedLegacy = await (
-      dependencies.inspectLegacy ?? inspectLegacySourceManifest
-    )({
+    const observedLegacy = await (dependencies.inspectLegacy ?? inspectLegacySourceManifest)({
       reposDir: repo.reposDir,
       sourceId: source.id,
     });

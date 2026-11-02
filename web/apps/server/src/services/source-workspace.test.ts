@@ -61,25 +61,26 @@ async function activateTrackedSnapshot(input: {
     kind: path.endsWith(".stl") ? "stl" : "artifact",
     sizeHintBytes: content.byteLength,
   }));
-  const snapshot = await new LocalSourceSnapshotStore({ reposDir: input.repo.reposDir })
-    .materialize({
-      sourceId: input.sourceId,
-      upstreamRevisionKey: revisionKey,
-      files,
-      selection: {
-        maxStlFiles: 500,
-        maxDocumentationBytes: 1024 * 1024,
-        omittedFiles: [],
-      },
-      openFile: async (file) => {
-        const content = contents.get(file.path);
-        if (!content) throw new Error(`Missing test content: ${file.path}`);
-        return {
-          stream: Readable.from(content),
-          contentLengthBytes: content.byteLength,
-        };
-      },
-    });
+  const snapshot = await new LocalSourceSnapshotStore({
+    reposDir: input.repo.reposDir,
+  }).materialize({
+    sourceId: input.sourceId,
+    upstreamRevisionKey: revisionKey,
+    files,
+    selection: {
+      maxStlFiles: 500,
+      maxDocumentationBytes: 1024 * 1024,
+      omittedFiles: [],
+    },
+    openFile: async (file) => {
+      const content = contents.get(file.path);
+      if (!content) throw new Error(`Missing test content: ${file.path}`);
+      return {
+        stream: Readable.from(content),
+        contentLengthBytes: content.byteLength,
+      };
+    },
+  });
   const revision = input.repo.recordSourceRevision({
     sourceId: input.sourceId,
     upstreamRevisionKey: snapshot.upstreamRevisionKey,
@@ -134,7 +135,11 @@ describe("Source workspace derived paths", () => {
     const storage = sourcePdfTextStorage(repo, source.id, revisionRoot);
 
     expect(storage.cacheRoot).toBe(
-      revisionPdfTextCacheRoot({ reposDir: repo.reposDir, sourceId: source.id, manifestDigest: digest }),
+      revisionPdfTextCacheRoot({
+        reposDir: repo.reposDir,
+        sourceId: source.id,
+        manifestDigest: digest,
+      }),
     );
     expect(storage.cacheRoot.startsWith(revisionRoot)).toBe(false);
     expect(storage.legacyCacheRoots).toContain(join(revisionRoot, ".docs-text"));
@@ -152,15 +157,11 @@ describe("Source workspace derived paths", () => {
     mkdirSync(revisionRoot, { recursive: true });
     writeFileSync(legacyPath, "project: legacy\n", "utf8");
 
-    expect(
-      findSourceManifestPath(revisionRoot),
-    ).toBe(legacyPath);
+    expect(findSourceManifestPath(revisionRoot)).toBe(legacyPath);
 
     const editablePath = legacySourceManifestOverridePath(repo.reposDir, source.id);
     writeFileSync(editablePath, "project: editable\n", "utf8");
-    expect(
-      findSourceManifestPath(revisionRoot),
-    ).toBe(legacyPath);
+    expect(findSourceManifestPath(revisionRoot)).toBe(legacyPath);
     sqlite.close();
   });
 });
@@ -195,8 +196,9 @@ describe("repo manifest routes", () => {
     expect(readFileSync(outside, "utf8")).toBe("secret: outside\n");
     const active = repo.getSource(source.id);
     expect(active?.current_source_revision_id).toEqual(expect.any(Number));
-    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: overwritten\n");
+    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8")).toBe(
+      "project: overwritten\n",
+    );
 
     await app.close();
     sqlite.close();
@@ -232,16 +234,19 @@ describe("repo manifest routes", () => {
       yaml: "project: edited\n",
       document: { format: "print-partner-manifest-v2", version: 2 },
     });
-    expect(readFileSync(join(base.snapshot.absolutePath, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: upstream\n");
-    expect(readFileSync(join(base.snapshot.absolutePath, "cube.stl"), "utf8"))
-      .toBe("solid cube\nendsolid cube\n");
+    expect(
+      readFileSync(join(base.snapshot.absolutePath, "print-partner.manifest.yaml"), "utf8"),
+    ).toBe("project: upstream\n");
+    expect(readFileSync(join(base.snapshot.absolutePath, "cube.stl"), "utf8")).toBe(
+      "solid cube\nendsolid cube\n",
+    );
     expect(existsSync(legacySourceManifestOverridePath(repo.reposDir, source.id))).toBe(false);
     const active = repo.getSource(source.id);
     expect(active?.current_source_revision_id).not.toBe(base.revision.id);
     expect(active?.last_commit_sha).toBe("commit-a");
-    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: edited\n");
+    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8")).toBe(
+      "project: edited\n",
+    );
     expect(repo.getProfileHeader(plan.id)?.freshness).toMatchObject({
       status: "stale",
       reasons: [{ kind: "source_revision_changed", source_id: source.id }],
@@ -259,16 +264,15 @@ describe("repo manifest routes", () => {
       payload: { yaml: "project: edited twice\n" },
     });
     expect(secondResponse.statusCode).toBe(200);
-    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: edited\n");
+    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8")).toBe(
+      "project: edited\n",
+    );
     const twiceEdited = repo.getSource(source.id);
     expect(twiceEdited?.last_commit_sha).toBe("commit-a");
-    expect(twiceEdited?.current_source_revision_id)
-      .not.toBe(active!.current_source_revision_id);
-    expect(readFileSync(
-      join(twiceEdited!.local_path!, "print-partner.manifest.yaml"),
-      "utf8",
-    )).toBe("project: edited twice\n");
+    expect(twiceEdited?.current_source_revision_id).not.toBe(active!.current_source_revision_id);
+    expect(
+      readFileSync(join(twiceEdited!.local_path!, "print-partner.manifest.yaml"), "utf8"),
+    ).toBe("project: edited twice\n");
 
     await app.close();
     sqlite.close();
@@ -297,8 +301,9 @@ describe("repo manifest routes", () => {
     expect(response.statusCode).toBe(400);
     expect(repo.getSource(source.id)?.current_source_revision_id).toBe(base.revision.id);
     expect(repo.listSourceRevisions(source.id)).toHaveLength(1);
-    expect(readFileSync(join(base.snapshot.absolutePath, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: upstream\n");
+    expect(
+      readFileSync(join(base.snapshot.absolutePath, "print-partner.manifest.yaml"), "utf8"),
+    ).toBe("project: upstream\n");
     await app.close();
     sqlite.close();
   });
@@ -335,8 +340,9 @@ describe("repo manifest routes", () => {
       last_commit_sha: "commit-a",
       branch: "release",
     });
-    expect(readFileSync(join(base.snapshot.absolutePath, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: upstream\n");
+    expect(
+      readFileSync(join(base.snapshot.absolutePath, "print-partner.manifest.yaml"), "utf8"),
+    ).toBe("project: upstream\n");
     await app.close();
     sqlite.close();
   });

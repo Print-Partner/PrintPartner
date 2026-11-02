@@ -10,7 +10,10 @@ import * as schema from "../db/schema.js";
 import { registerSourceDocsRoutes } from "../routes/source-docs.js";
 import { extractPendingPdfsForSource, indexSourceDocsFromDisk } from "./source-docs-index.js";
 import * as pdf from "./pdf-text-extract.js";
-import { beginSourceSyncAdmission, packagedSourceSyncManifestPath } from "../ownership/source-sync-admission.js";
+import {
+  beginSourceSyncAdmission,
+  packagedSourceSyncManifestPath,
+} from "../ownership/source-sync-admission.js";
 import { createJobRunner } from "./job-runner.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -24,13 +27,19 @@ async function fixture(indexed = true) {
   const directory = mkdtempSync(join(tmpdir(), "pp-doc-extraction-race-"));
   const sqlite = new SqliteDatabase(directory);
   sqlite.connect();
-  cleanups.push(() => { sqlite.close(); rmSync(directory, { recursive: true, force: true }); });
+  cleanups.push(() => {
+    sqlite.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
   const db = getDb(sqlite);
   const repo = new AppRepository(db, undefined, sqlite.reposDir);
   const source = repo.createSource({ name: "Docs", url: "https://example.test/docs" });
   const oldRoot = join(directory, "old");
   const newRoot = join(directory, "new");
-  for (const [root, contents] of [[oldRoot, "old PDF bytes"], [newRoot, "replacement PDF bytes"]]) {
+  for (const [root, contents] of [
+    [oldRoot, "old PDF bytes"],
+    [newRoot, "replacement PDF bytes"],
+  ]) {
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, "manual.pdf"), contents);
   }
@@ -39,7 +48,8 @@ async function fixture(indexed = true) {
   const app = Fastify();
   cleanups.push(() => app.close());
   await registerSourceDocsRoutes(app, { repo });
-  const docRow = () => db.select().from(schema.sourceDocs).where(eq(schema.sourceDocs.projectId, source.id)).get();
+  const docRow = () =>
+    db.select().from(schema.sourceDocs).where(eq(schema.sourceDocs.projectId, source.id)).get();
   const replace = () => {
     repo.updateSource(source.id, { local_path: newRoot });
     indexSourceDocsFromDisk(repo, source.id, newRoot);
@@ -50,14 +60,20 @@ async function fixture(indexed = true) {
 
 function extracted(root: string, pageCount = 1): Awaited<ReturnType<typeof pdf.extractPdfText>> {
   return {
-    status: "ready", hash: pdf.contentHashForFile(join(root, "manual.pdf")),
-    pageCount, text: "extracted manual", chunks: [], cachePath: null,
+    status: "ready",
+    hash: pdf.contentHashForFile(join(root, "manual.pdf")),
+    pageCount,
+    text: "extracted manual",
+    chunks: [],
+    cachePath: null,
   };
 }
 
 function deferredExtraction() {
   let resolve: ((result: Awaited<ReturnType<typeof pdf.extractPdfText>>) => void) | undefined;
-  const promise = new Promise<Awaited<ReturnType<typeof pdf.extractPdfText>>>((onResolve) => { resolve = onResolve; });
+  const promise = new Promise<Awaited<ReturnType<typeof pdf.extractPdfText>>>((onResolve) => {
+    resolve = onResolve;
+  });
   if (!resolve) throw new Error("Extraction promise was not initialized");
   return { promise, resolve };
 }
@@ -81,7 +97,10 @@ it("refuses a deferred PDF job's database result after admission changes during 
     writeFileSync(manifest, `${original}\n`);
     extraction.resolve(extracted(f.oldRoot));
     await vi.waitFor(async () => {
-      expect(await jobs.get(jobId, "default")).toMatchObject({ status: "error", error: expect.stringMatching(/runtime manifest does not match/) });
+      expect(await jobs.get(jobId, "default")).toMatchObject({
+        status: "error",
+        error: expect.stringMatching(/runtime manifest does not match/),
+      });
     });
     expect(f.docRow()).toEqual(before);
   } finally {
@@ -90,46 +109,61 @@ it("refuses a deferred PDF job's database result after admission changes during 
   }
 });
 
-it.each(["background", "request"] as const)("ignores a replaced PDF row when a late %s extraction completes", async (caller) => {
-  const f = await fixture();
-  const oldRow = f.docRow();
-  const previous = deferredExtraction();
-  const extract = vi.spyOn(pdf, "extractPdfText").mockReturnValueOnce(previous.promise);
-  const pending = caller === "background"
-    ? extractPendingPdfsForSource(f.repo, f.source.id, f.oldRoot)
-    : f.app.inject(`/sources/${f.source.id}/docs/manual.pdf`);
-  await vi.waitFor(() => expect(extract).toHaveBeenCalledTimes(1));
-  const replacement = f.replace();
-  expect(replacement?.id).not.toBe(oldRow?.id);
+it.each(["background", "request"] as const)(
+  "ignores a replaced PDF row when a late %s extraction completes",
+  async (caller) => {
+    const f = await fixture();
+    const oldRow = f.docRow();
+    const previous = deferredExtraction();
+    const extract = vi.spyOn(pdf, "extractPdfText").mockReturnValueOnce(previous.promise);
+    const pending =
+      caller === "background"
+        ? extractPendingPdfsForSource(f.repo, f.source.id, f.oldRoot)
+        : f.app.inject(`/sources/${f.source.id}/docs/manual.pdf`);
+    await vi.waitFor(() => expect(extract).toHaveBeenCalledTimes(1));
+    const replacement = f.replace();
+    expect(replacement?.id).not.toBe(oldRow?.id);
 
-  previous.resolve(extracted(f.oldRoot));
-  const result = await pending;
+    previous.resolve(extracted(f.oldRoot));
+    const result = await pending;
 
-  expect(f.docRow()).toEqual(replacement);
-  if (caller === "background") expect(result).toEqual({ extracted: 0, errors: 0 });
-  extract.mockResolvedValueOnce(extracted(f.newRoot, 2));
-  expect(await extractPendingPdfsForSource(f.repo, f.source.id, f.newRoot)).toEqual({ extracted: 1, errors: 0 });
-  expect(f.docRow()).toMatchObject({
-    id: replacement?.id, extractStatus: "ready", pageCount: 2,
-    contentHash: pdf.contentHashForFile(join(f.newRoot, "manual.pdf")),
-  });
-});
+    expect(f.docRow()).toEqual(replacement);
+    if (caller === "background") expect(result).toEqual({ extracted: 0, errors: 0 });
+    extract.mockResolvedValueOnce(extracted(f.newRoot, 2));
+    expect(await extractPendingPdfsForSource(f.repo, f.source.id, f.newRoot)).toEqual({
+      extracted: 1,
+      errors: 0,
+    });
+    expect(f.docRow()).toMatchObject({
+      id: replacement?.id,
+      extractStatus: "ready",
+      pageCount: 2,
+      contentHash: pdf.contentHashForFile(join(f.newRoot, "manual.pdf")),
+    });
+  },
+);
 
-it.each(["background", "request"] as const)("updates an unchanged indexed PDF from a %s extraction", async (caller) => {
-  const f = await fixture();
-  const original = f.docRow();
-  vi.spyOn(pdf, "extractPdfText").mockResolvedValueOnce(extracted(f.oldRoot, 3));
+it.each(["background", "request"] as const)(
+  "updates an unchanged indexed PDF from a %s extraction",
+  async (caller) => {
+    const f = await fixture();
+    const original = f.docRow();
+    vi.spyOn(pdf, "extractPdfText").mockResolvedValueOnce(extracted(f.oldRoot, 3));
 
-  if (caller === "background") {
-    expect(await extractPendingPdfsForSource(f.repo, f.source.id, f.oldRoot)).toEqual({ extracted: 1, errors: 0 });
-  } else {
-    const response = await f.app.inject(`/sources/${f.source.id}/docs/manual.pdf`);
-    expect(response.statusCode).toBe(200);
-    expect(response.json().markdown).toBe("extracted manual");
-  }
+    if (caller === "background") {
+      expect(await extractPendingPdfsForSource(f.repo, f.source.id, f.oldRoot)).toEqual({
+        extracted: 1,
+        errors: 0,
+      });
+    } else {
+      const response = await f.app.inject(`/sources/${f.source.id}/docs/manual.pdf`);
+      expect(response.statusCode).toBe(200);
+      expect(response.json().markdown).toBe("extracted manual");
+    }
 
-  expect(f.docRow()).toMatchObject({ id: original?.id, extractStatus: "ready", pageCount: 3 });
-});
+    expect(f.docRow()).toMatchObject({ id: original?.id, extractStatus: "ready", pageCount: 3 });
+  },
+);
 
 it("does not update a row indexed after an unindexed PDF request began", async () => {
   const f = await fixture(false);

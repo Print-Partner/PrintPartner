@@ -2,16 +2,17 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import * as fsPromises from "node:fs/promises";
-import { beginSourceSyncAdmission, packagedSourceSyncManifestPath, requireSourceSyncParticipant } from "../ownership/source-sync-admission.js";
+import {
+  beginSourceSyncAdmission,
+  packagedSourceSyncManifestPath,
+  requireSourceSyncParticipant,
+} from "../ownership/source-sync-admission.js";
 vi.mock("node:fs/promises", { spy: true });
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  runWithTenantDiskQuota,
-  TenantDiskQuotaError,
-} from "../lib/tenant-disk-quota.js";
+import { runWithTenantDiskQuota, TenantDiskQuotaError } from "../lib/tenant-disk-quota.js";
 import {
   LocalSourceSnapshotStore,
   MAX_SOURCE_SNAPSHOT_BYTES,
@@ -33,7 +34,11 @@ function tempReposDir(): string {
   return root;
 }
 
-function file(path: string, kind: SnapshotFile["kind"], content: string): {
+function file(
+  path: string,
+  kind: SnapshotFile["kind"],
+  content: string,
+): {
   descriptor: SnapshotFile;
   content: Buffer;
 } {
@@ -93,11 +98,16 @@ describe("LocalSourceSnapshotStore", () => {
         return actualFs.mkdtemp(...args);
       });
       const part = file("cube.stl", "stl", "solid cube");
-      await expect(new LocalSourceSnapshotStore({ reposDir }).materialize({
-        sourceId: 1, upstreamRevisionKey: "candidate-admission", files: [part.descriptor], selection: selection(),
-        beforePublish: () => requireSourceSyncParticipant("job.sync"),
-        openFile: async () => response(part.content),
-      })).rejects.toThrow(/runtime manifest does not match/);
+      await expect(
+        new LocalSourceSnapshotStore({ reposDir }).materialize({
+          sourceId: 1,
+          upstreamRevisionKey: "candidate-admission",
+          files: [part.descriptor],
+          selection: selection(),
+          beforePublish: () => requireSourceSyncParticipant("job.sync"),
+          openFile: async () => response(part.content),
+        }),
+      ).rejects.toThrow(/runtime manifest does not match/);
       expect(candidates).toEqual([]);
       expect(await candidateNames(reposDir, 1)).toEqual([]);
     } finally {
@@ -113,23 +123,30 @@ describe("LocalSourceSnapshotStore", () => {
     const previous = process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST;
     const readContent = vi.fn();
     const part = file("cube.stl", "stl", "solid cube");
-    const stream = Readable.from((async function* () {
-      readContent();
-      yield part.content;
-    })());
+    const stream = Readable.from(
+      (async function* () {
+        readContent();
+        yield part.content;
+      })(),
+    );
     try {
       writeFileSync(manifest, original);
       process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST = manifest;
       beginSourceSyncAdmission(reposDir);
-      await expect(new LocalSourceSnapshotStore({ reposDir }).materialize({
-        sourceId: 1, upstreamRevisionKey: "open-file-admission", files: [part.descriptor], selection: selection(),
-        beforePublish: () => requireSourceSyncParticipant("job.sync"),
-        openFile: async () => {
-          await Promise.resolve();
-          writeFileSync(manifest, `${original}\n`);
-          return { stream, contentLengthBytes: part.content.length };
-        },
-      })).rejects.toThrow(/runtime manifest does not match/);
+      await expect(
+        new LocalSourceSnapshotStore({ reposDir }).materialize({
+          sourceId: 1,
+          upstreamRevisionKey: "open-file-admission",
+          files: [part.descriptor],
+          selection: selection(),
+          beforePublish: () => requireSourceSyncParticipant("job.sync"),
+          openFile: async () => {
+            await Promise.resolve();
+            writeFileSync(manifest, `${original}\n`);
+            return { stream, contentLengthBytes: part.content.length };
+          },
+        }),
+      ).rejects.toThrow(/runtime manifest does not match/);
       expect(readContent).not.toHaveBeenCalled();
       expect(stream.destroyed).toBe(true);
       expect(await candidateNames(reposDir, 1)).toEqual([]);
@@ -153,22 +170,30 @@ describe("LocalSourceSnapshotStore", () => {
       process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST = manifest;
       beginSourceSyncAdmission(reposDir);
       vi.mocked(fsPromises.writeFile).mockImplementation(async (...args) => {
-        if (String(args[0]).endsWith(SOURCE_SNAPSHOT_MANIFEST_FILE)) metadataWrites.push(String(args[0]));
+        if (String(args[0]).endsWith(SOURCE_SNAPSHOT_MANIFEST_FILE))
+          metadataWrites.push(String(args[0]));
         return actualFs.writeFile(...args);
       });
       const store = new LocalSourceSnapshotStore({ reposDir });
       const part = file("cube.stl", "stl", "solid cube");
-      await expect(store.materialize({
-        sourceId: 1, upstreamRevisionKey: "admission-stream", files: [part.descriptor], selection: selection(),
-        beforePublish: () => requireSourceSyncParticipant("job.sync"),
-        openFile: async () => ({
-          contentLengthBytes: part.content.length,
-          stream: Readable.from((async function* () {
-            yield part.content;
-            writeFileSync(manifest, `${original}\n`);
-          })()),
+      await expect(
+        store.materialize({
+          sourceId: 1,
+          upstreamRevisionKey: "admission-stream",
+          files: [part.descriptor],
+          selection: selection(),
+          beforePublish: () => requireSourceSyncParticipant("job.sync"),
+          openFile: async () => ({
+            contentLengthBytes: part.content.length,
+            stream: Readable.from(
+              (async function* () {
+                yield part.content;
+                writeFileSync(manifest, `${original}\n`);
+              })(),
+            ),
+          }),
         }),
-      })).rejects.toThrow(/runtime manifest does not match/);
+      ).rejects.toThrow(/runtime manifest does not match/);
       expect(metadataWrites).toEqual([]);
       expect(await candidateNames(reposDir, 1)).toEqual([]);
       expect(existsSync(join(reposDir, "1/revisions/admission-stream"))).toBe(false);
@@ -209,12 +234,7 @@ describe("LocalSourceSnapshotStore", () => {
     expect(result.snapshotLocator).toBe("42/revisions/abc123def456");
     expect(result.absolutePath).toBe(join(reposDir, "42", "revisions", "abc123def456"));
     expect(observedRenames).toHaveLength(1);
-    const candidatePrefix = join(
-      reposDir,
-      "42",
-      "revisions",
-      ".candidate-abc123def456-",
-    );
+    const candidatePrefix = join(reposDir, "42", "revisions", ".candidate-abc123def456-");
     expect(observedRenames[0]?.from.startsWith(candidatePrefix)).toBe(true);
     expect(observedRenames[0]?.to).toBe(result.absolutePath);
     expect(readFileSync(join(result.absolutePath, "parts/bracket.stl"), "utf8")).toBe(
@@ -224,9 +244,7 @@ describe("LocalSourceSnapshotStore", () => {
       join(result.absolutePath, SOURCE_SNAPSHOT_MANIFEST_FILE),
       "utf8",
     );
-    const expectedDigest = createHash("sha256")
-      .update(JSON.stringify(result.files))
-      .digest("hex");
+    const expectedDigest = createHash("sha256").update(JSON.stringify(result.files)).digest("hex");
     expect(result.manifestDigest).toBe(expectedDigest);
     expect(manifestText).toContain(`"manifestDigest": "${expectedDigest}"`);
     expect(await candidateNames(reposDir, 42)).toEqual([]);
@@ -245,9 +263,7 @@ describe("LocalSourceSnapshotStore", () => {
       files: [oldPart.descriptor, retained.descriptor],
       selection: selection(),
       openFile: async (descriptor) =>
-        response(
-          descriptor.path === oldPart.descriptor.path ? oldPart.content : retained.content,
-        ),
+        response(descriptor.path === oldPart.descriptor.path ? oldPart.content : retained.content),
     });
     const second = await store.materialize({
       sourceId: 8,
@@ -255,9 +271,7 @@ describe("LocalSourceSnapshotStore", () => {
       files: [renamed.descriptor, retained.descriptor],
       selection: selection(),
       openFile: async (descriptor) =>
-        response(
-          descriptor.path === renamed.descriptor.path ? renamed.content : retained.content,
-        ),
+        response(descriptor.path === renamed.descriptor.path ? renamed.content : retained.content),
     });
 
     expect(existsSync(join(first.absolutePath, "parts/old-name.stl"))).toBe(true);
@@ -274,12 +288,14 @@ describe("LocalSourceSnapshotStore", () => {
     const store = new LocalSourceSnapshotStore({ reposDir });
     const part = file("parts/part.stl", "stl", "solid part");
     const omittedReadme = file("README.md", "readme", "omitted notes");
-    const baseSelection = selection([{
-      path: omittedReadme.descriptor.path,
-      kind: "readme",
-      sizeHintBytes: omittedReadme.content.byteLength,
-      reason: "documentation-byte-budget",
-    }]);
+    const baseSelection = selection([
+      {
+        path: omittedReadme.descriptor.path,
+        kind: "readme",
+        sizeHintBytes: omittedReadme.content.byteLength,
+        reason: "documentation-byte-budget",
+      },
+    ]);
     const first = await store.materialize({
       sourceId: 81,
       upstreamRevisionKey: "commit-a",
@@ -306,9 +322,7 @@ describe("LocalSourceSnapshotStore", () => {
       "print-partner.manifest.yaml",
     ]);
     expect(existsSync(join(first.absolutePath, "print-partner.manifest.yaml"))).toBe(false);
-    expect(readFileSync(join(first.absolutePath, "parts/part.stl"), "utf8")).toBe(
-      "solid part",
-    );
+    expect(readFileSync(join(first.absolutePath, "parts/part.stl"), "utf8")).toBe("solid part");
   });
 
   it("keeps derived snapshots distinct when equal content has different selection metadata", async () => {
@@ -459,50 +473,51 @@ describe("LocalSourceSnapshotStore", () => {
   it.each([
     ["invalid", -1, "non-negative safe integer"],
     ["oversized", MAX_SOURCE_SNAPSHOT_BYTES + 1, "stored-content limit"],
-  ])("closes a response stream with an %s declared length", async (
-    label,
-    contentLengthBytes,
-    errorMessage,
-  ) => {
-    const reposDir = tempReposDir();
-    const store = new LocalSourceSnapshotStore({ reposDir });
-    const stream = Readable.from(Buffer.from("unread"));
+  ])(
+    "closes a response stream with an %s declared length",
+    async (label, contentLengthBytes, errorMessage) => {
+      const reposDir = tempReposDir();
+      const store = new LocalSourceSnapshotStore({ reposDir });
+      const stream = Readable.from(Buffer.from("unread"));
 
-    await expect(
-      store.materialize({
-        sourceId: 103,
-        upstreamRevisionKey: `${label}-response`,
-        files: [
-          {
-            path: sourceRelativePath("part.stl"),
-            kind: "stl",
-            sizeHintBytes: null,
-          },
-        ],
-        selection: selection(),
-        openFile: async () => ({
-          stream,
-          contentLengthBytes,
+      await expect(
+        store.materialize({
+          sourceId: 103,
+          upstreamRevisionKey: `${label}-response`,
+          files: [
+            {
+              path: sourceRelativePath("part.stl"),
+              kind: "stl",
+              sizeHintBytes: null,
+            },
+          ],
+          selection: selection(),
+          openFile: async () => ({
+            stream,
+            contentLengthBytes,
+          }),
         }),
-      }),
-    ).rejects.toThrow(errorMessage);
+      ).rejects.toThrow(errorMessage);
 
-    expect(stream.destroyed).toBe(true);
-    expect(await candidateNames(reposDir, 103)).toEqual([]);
-  });
+      expect(stream.destroyed).toBe(true);
+      expect(await candidateNames(reposDir, 103)).toEqual([]);
+    },
+  );
 
   it("enforces the documentation budget using actual bytes when tree size is unknown", async () => {
     const reposDir = tempReposDir();
     const store = new LocalSourceSnapshotStore({ reposDir });
     const manual = file("manual.pdf", "pdf", "larger than budget");
 
-    await expect(store.materialize({
-      sourceId: 101,
-      upstreamRevisionKey: "unknown-doc-size",
-      files: [{ ...manual.descriptor, sizeHintBytes: null }],
-      selection: { ...selection(), maxDocumentationBytes: 4 },
-      openFile: async () => response(manual.content),
-    })).rejects.toThrow("documentation exceeds");
+    await expect(
+      store.materialize({
+        sourceId: 101,
+        upstreamRevisionKey: "unknown-doc-size",
+        files: [{ ...manual.descriptor, sizeHintBytes: null }],
+        selection: { ...selection(), maxDocumentationBytes: 4 },
+        openFile: async () => response(manual.content),
+      }),
+    ).rejects.toThrow("documentation exceeds");
 
     expect(existsSync(join(reposDir, "101", "revisions", "unknown-doc-size"))).toBe(false);
     expect(await candidateNames(reposDir, 101)).toEqual([]);
@@ -514,15 +529,16 @@ describe("LocalSourceSnapshotStore", () => {
     const first = file("first.stl", "stl", "one");
     const second = file("second.stl", "stl", "two");
 
-    await expect(store.materialize({
-      sourceId: 102,
-      upstreamRevisionKey: "too-many-stls",
-      files: [first.descriptor, second.descriptor],
-      selection: { ...selection(), maxStlFiles: 1 },
-      openFile: async (descriptor) => response(
-        descriptor.path === first.descriptor.path ? first.content : second.content,
-      ),
-    })).rejects.toThrow("exceeding the limit");
+    await expect(
+      store.materialize({
+        sourceId: 102,
+        upstreamRevisionKey: "too-many-stls",
+        files: [first.descriptor, second.descriptor],
+        selection: { ...selection(), maxStlFiles: 1 },
+        openFile: async (descriptor) =>
+          response(descriptor.path === first.descriptor.path ? first.content : second.content),
+      }),
+    ).rejects.toThrow("exceeding the limit");
 
     expect(existsSync(join(reposDir, "102", "revisions", "too-many-stls"))).toBe(false);
     expect(await candidateNames(reposDir, 102)).toEqual([]);
@@ -547,9 +563,7 @@ describe("LocalSourceSnapshotStore", () => {
     });
 
     expect(published.files[0]?.sizeBytes).toBe(content.byteLength);
-    expect(published.files[0]?.sha256).toBe(
-      createHash("sha256").update(content).digest("hex"),
-    );
+    expect(published.files[0]?.sha256).toBe(createHash("sha256").update(content).digest("hex"));
   });
 
   it("fails EXDEV promotion without copying or leaving a candidate", async () => {
@@ -613,12 +627,14 @@ describe("LocalSourceSnapshotStore", () => {
       sourceId: 120,
       upstreamRevisionKey: "fixed-policy-revision",
       files: [part.descriptor],
-      selection: selection([{
-        path: readme.descriptor.path,
-        kind: "readme",
-        sizeHintBytes: readme.content.byteLength,
-        reason: "documentation-byte-budget",
-      }]),
+      selection: selection([
+        {
+          path: readme.descriptor.path,
+          kind: "readme",
+          sizeHintBytes: readme.content.byteLength,
+          reason: "documentation-byte-budget",
+        },
+      ]),
       openFile: async () => ({
         stream: Readable.from(part.content),
         contentLengthBytes: part.content.byteLength,
@@ -682,12 +698,8 @@ describe("LocalSourceSnapshotStore", () => {
 
   it("rejects unsafe and case-colliding paths before opening a stream", async () => {
     expect(() => sourceRelativePath("../outside.stl")).toThrow("Unsafe Source snapshot path");
-    expect(() => sourceRelativePath("parts\\outside.stl")).toThrow(
-      "Unsafe Source snapshot path",
-    );
-    expect(() => sourceRelativePath("cafe\u0301.stl")).toThrow(
-      "Unsafe Source snapshot path",
-    );
+    expect(() => sourceRelativePath("parts\\outside.stl")).toThrow("Unsafe Source snapshot path");
+    expect(() => sourceRelativePath("cafe\u0301.stl")).toThrow("Unsafe Source snapshot path");
     expect(() => sourceRelativePath(SOURCE_SNAPSHOT_MANIFEST_FILE)).toThrow("reserved path");
 
     const reposDir = tempReposDir();
@@ -720,7 +732,8 @@ describe("LocalSourceSnapshotStore", () => {
       selection: selection(),
       openFile: async () => response(part.content),
     });
-    const { lstat: actualLstat } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const { lstat: actualLstat } =
+      await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
     let sawDirectory = false;
     vi.mocked(lstat).mockImplementation(async (path, options) => {
       const stat = await actualLstat(path, options);
@@ -766,7 +779,8 @@ describe("LocalSourceSnapshotStore", () => {
       selection: selection(),
       openFile: async () => response(part.content),
     });
-    const { lstat: actualLstat } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const { lstat: actualLstat } =
+      await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
     let hidDirectory = false;
     let sawDirectory = false;
     vi.mocked(lstat).mockImplementation(async (path, options) => {
@@ -833,15 +847,17 @@ describe("LocalSourceSnapshotStore", () => {
       openFile: async () => response(winner.content),
     });
     const absent = join(reposDir, "8", "revisions", "digest-absent");
-    await expect(store.materialize({
-      sourceId: 8,
-      upstreamRevisionKey: "digest-absent",
-      files: [loser.descriptor],
-      selection: selection(),
-      openFile: async () => {
-        throw new Error("stop before publish");
-      },
-    })).rejects.toThrow("stop before publish");
+    await expect(
+      store.materialize({
+        sourceId: 8,
+        upstreamRevisionKey: "digest-absent",
+        files: [loser.descriptor],
+        selection: selection(),
+        openFile: async () => {
+          throw new Error("stop before publish");
+        },
+      }),
+    ).rejects.toThrow("stop before publish");
     expect(sharedSnapshotHolderCount(absent)).toBe(0);
     expect(existsSync(absent)).toBe(false);
     releaseSharedSnapshot(lost);

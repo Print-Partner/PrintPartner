@@ -50,7 +50,8 @@ function isGitSource(row: {
 
 export async function checkAllSourceUpdates(
   repo: AppRepository,
-  participant: "worker.startSourceWatcher" | "job.check-source-updates" = "job.check-source-updates",
+  participant:
+    "worker.startSourceWatcher" | "job.check-source-updates" = "job.check-source-updates",
 ): Promise<{
   checked: Array<{ source_id: number; name: string; update_status: RemoteUpdateStatus }>;
   skipped: Array<{ source_id: number; name: string; reason: string }>;

@@ -10,16 +10,14 @@ type SourceMonitoringUpdate = {
 };
 
 type SourceMonitoringUpdateParseResult =
-  | { kind: "valid"; update: SourceMonitoringUpdate }
-  | { kind: "invalid"; detail: string };
+  { kind: "valid"; update: SourceMonitoringUpdate } | { kind: "invalid"; detail: string };
 
 function isSourceUpdateIntervalHours(value: unknown): value is number {
   return (
     typeof value === "number" &&
     Number.isInteger(value) &&
     (value === 0 ||
-      (value >= MIN_SOURCE_UPDATE_INTERVAL_HOURS &&
-        value <= MAX_SOURCE_UPDATE_INTERVAL_HOURS))
+      (value >= MIN_SOURCE_UPDATE_INTERVAL_HOURS && value <= MAX_SOURCE_UPDATE_INTERVAL_HOURS))
   );
 }
 

@@ -2,8 +2,7 @@ import { lstatSync, realpathSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
 export type SourceFilesystemPolicy =
-  | Readonly<{ kind: "isolated" }>
-  | Readonly<{ kind: "trusted_single_user" }>;
+  Readonly<{ kind: "isolated" }> | Readonly<{ kind: "trusted_single_user" }>;
 
 export const ISOLATED_SOURCE_FILESYSTEM: SourceFilesystemPolicy = Object.freeze({
   kind: "isolated",
@@ -43,10 +42,12 @@ export function resolveSourceFilesystemRoot(
   try {
     const canonicalConfiguredWorkspace = sourceWorkspaceRoot(realpathSync(reposDir), sourceId);
     if (
-      candidate !== workspace && !candidate.startsWith(`${workspace}${sep}`) &&
+      candidate !== workspace &&
+      !candidate.startsWith(`${workspace}${sep}`) &&
       candidate !== canonicalConfiguredWorkspace &&
       !candidate.startsWith(`${canonicalConfiguredWorkspace}${sep}`)
-    ) return null;
+    )
+      return null;
     const workspaceStat = lstatSync(workspace);
     if (workspaceStat.isSymbolicLink() || !workspaceStat.isDirectory()) return null;
     const canonicalWorkspace = realpathSync(workspace);

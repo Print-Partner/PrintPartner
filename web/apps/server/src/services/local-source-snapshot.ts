@@ -1,26 +1,8 @@
 import { createHash } from "node:crypto";
-import {
-  createReadStream,
-  createWriteStream,
-  type Dirent,
-} from "node:fs";
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { createReadStream, createWriteStream, type Dirent } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, resolve } from "node:path";
-import {
-  Readable,
-  Transform,
-  Writable,
-  type TransformCallback,
-} from "node:stream";
+import { Readable, Transform, Writable, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { chargeTenantDiskBytes } from "../lib/tenant-disk-quota.js";
 import { isRecord } from "../lib/guards.js";
@@ -193,7 +175,9 @@ function parseFileKind(value: unknown): SnapshotFileKind {
 function parseDocumentationKind(value: unknown): SnapshotDocumentationKind {
   const kind = parseFileKind(value);
   if (kind === "stl" || kind === "artifact") {
-    throw new Error("Snapshot manifest cannot omit a printable artifact through the documentation budget");
+    throw new Error(
+      "Snapshot manifest cannot omit a printable artifact through the documentation budget",
+    );
   }
   return kind;
 }
@@ -256,17 +240,10 @@ function normalizeSelection(
   const omittedFiles = selection.omittedFiles.map((file) => {
     const path = sourceRelativePath(file.path);
     const foldedPath = path.toLocaleLowerCase("en-US");
-    if (
-      omittedPaths.has(path) ||
-      foldedPaths.has(foldedPath) ||
-      selectedPaths.has(path)
-    ) {
+    if (omittedPaths.has(path) || foldedPaths.has(foldedPath) || selectedPaths.has(path)) {
       throw new Error(`Duplicate selected or omitted Source snapshot path: ${path}`);
     }
-    if (
-      file.reason !== "documentation-byte-budget" &&
-      file.reason !== "unknown-document-size"
-    ) {
+    if (file.reason !== "documentation-byte-budget" && file.reason !== "unknown-document-size") {
       throw new Error(`Invalid omission reason for ${path}`);
     }
     omittedPaths.add(path);
@@ -338,7 +315,11 @@ function byteMeter(
       }
       sizeBytes += buffer.byteLength;
       if (sizeBytes > maxBytes) {
-        callback(new Error(`Source snapshot exceeds the ${MAX_SOURCE_SNAPSHOT_BYTES} byte stored-content limit`));
+        callback(
+          new Error(
+            `Source snapshot exceeds the ${MAX_SOURCE_SNAPSHOT_BYTES} byte stored-content limit`,
+          ),
+        );
         return;
       }
       if (options.chargeBytes && buffer.byteLength > 0) {
@@ -376,7 +357,9 @@ async function writeSnapshotFile(args: {
       `Content-Length for ${args.file.path}`,
     );
     if (contentLengthBytes != null && contentLengthBytes > args.maxBytes) {
-      throw new Error(`Source snapshot exceeds the ${MAX_SOURCE_SNAPSHOT_BYTES} byte stored-content limit`);
+      throw new Error(
+        `Source snapshot exceeds the ${MAX_SOURCE_SNAPSHOT_BYTES} byte stored-content limit`,
+      );
     }
     args.beforePublish?.();
   } catch (error) {
@@ -384,11 +367,7 @@ async function writeSnapshotFile(args: {
     throw error;
   }
   const meter = byteMeter(args.maxBytes, { chargeBytes: true });
-  await pipeline(
-    response.stream,
-    meter.stream,
-    createWriteStream(destination, { flags: "wx" }),
-  );
+  await pipeline(response.stream, meter.stream, createWriteStream(destination, { flags: "wx" }));
   const measured = meter.result();
   if (contentLengthBytes !== null && measured.sizeBytes !== contentLengthBytes) {
     throw new Error(
@@ -421,10 +400,9 @@ async function inspectDirectory(args: {
   const relativeDir = args.relativeDir ?? "";
   let entries: Dirent[];
   try {
-    entries = await readdir(
-      relativeDir ? join(args.root, ...relativeDir.split("/")) : args.root,
-      { withFileTypes: true },
-    );
+    entries = await readdir(relativeDir ? join(args.root, ...relativeDir.split("/")) : args.root, {
+      withFileTypes: true,
+    });
   } catch (error) {
     throw new Error(`Cannot inspect Source snapshot directory ${args.root}`, { cause: error });
   }
@@ -514,10 +492,7 @@ function parseManifestFile(value: unknown): SnapshotContentFile {
 function parseOmittedFile(value: unknown): OmittedSnapshotFile {
   if (!isRecord(value)) throw new Error("Snapshot manifest has an invalid omitted entry");
   const path = sourceRelativePath(typeof value.path === "string" ? value.path : "");
-  if (
-    value.reason !== "documentation-byte-budget" &&
-    value.reason !== "unknown-document-size"
-  ) {
+  if (value.reason !== "documentation-byte-budget" && value.reason !== "unknown-document-size") {
     throw new Error(`Snapshot manifest has an invalid omission reason for ${path}`);
   }
   return {
@@ -585,10 +560,7 @@ function validateStoredManifest(manifest: SnapshotManifest, revisionKey: string)
   }
 }
 
-async function loadExistingSnapshot(args: {
-  finalDir: string;
-  revisionKey: string;
-}): Promise<{
+async function loadExistingSnapshot(args: { finalDir: string; revisionKey: string }): Promise<{
   digest: string;
   files: readonly SnapshotContentFile[];
   selection: SnapshotSelection;
@@ -631,8 +603,7 @@ export class LocalSourceSnapshotStore {
     this.#reposDir = resolve(options.reposDir);
     this.#retainUntilRelease = options.retainUntilRelease === true;
     this.#dependencies = {
-      renameDirectory:
-        options.dependencies?.renameDirectory ?? defaultDependencies.renameDirectory,
+      renameDirectory: options.dependencies?.renameDirectory ?? defaultDependencies.renameDirectory,
     };
   }
 
@@ -670,9 +641,7 @@ export class LocalSourceSnapshotStore {
     }
   }
 
-  async deriveFileReplacement(
-    input: DeriveFileReplacementInput,
-  ): Promise<PublishedSourceSnapshot> {
+  async deriveFileReplacement(input: DeriveFileReplacementInput): Promise<PublishedSourceSnapshot> {
     validateSourceId(input.sourceId);
     validateRevisionKey(input.baseRevisionKey);
     if (!input.sourceVersion.trim()) throw new Error("Source version is required");
@@ -704,11 +673,7 @@ export class LocalSourceSnapshotStore {
       return {
         upstreamRevisionKey: input.baseRevisionKey,
         manifestDigest: base.digest,
-        snapshotLocator: posix.join(
-          String(input.sourceId),
-          "revisions",
-          input.baseRevisionKey,
-        ),
+        snapshotLocator: posix.join(String(input.sourceId), "revisions", input.baseRevisionKey),
         absolutePath: baseDir,
         files: base.files,
         selection: base.selection,
@@ -717,11 +682,13 @@ export class LocalSourceSnapshotStore {
     }
 
     const derivedIdentityDigest = createHash("sha256")
-      .update(JSON.stringify({
-        manifestDigest: derivedDigest,
-        selection: base.selection,
-        sourceVersion: input.sourceVersion,
-      }))
+      .update(
+        JSON.stringify({
+          manifestDigest: derivedDigest,
+          selection: base.selection,
+          sourceVersion: input.sourceVersion,
+        }),
+      )
       .digest("hex");
     const upstreamRevisionKey = `derived-${derivedIdentityDigest}`;
     const files: SnapshotFile[] = derivedContent.map((file) => ({
@@ -817,11 +784,10 @@ export class LocalSourceSnapshotStore {
       const manifestBytes = `${JSON.stringify(manifest, null, 2)}\n`;
       input.beforePublish?.();
       chargeTenantDiskBytes(Buffer.byteLength(manifestBytes));
-      await writeFile(
-        join(candidateDir, SOURCE_SNAPSHOT_MANIFEST_FILE),
-        manifestBytes,
-        { encoding: "utf8", flag: "wx" },
-      );
+      await writeFile(join(candidateDir, SOURCE_SNAPSHOT_MANIFEST_FILE), manifestBytes, {
+        encoding: "utf8",
+        flag: "wx",
+      });
 
       try {
         input.beforePublish?.();
@@ -857,9 +823,7 @@ export class LocalSourceSnapshotStore {
       return snapshot;
     };
 
-    let outcome:
-      | { ok: true; value: PublishedSourceSnapshot }
-      | { ok: false; error: unknown };
+    let outcome: { ok: true; value: PublishedSourceSnapshot } | { ok: false; error: unknown };
     try {
       outcome = { ok: true, value: await publishCandidate() };
     } catch (error) {

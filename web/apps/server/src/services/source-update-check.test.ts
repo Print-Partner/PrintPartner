@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getDb, SqliteDatabase } from "../db/client.js";
 import { AppRepository } from "../db/repository.js";
-import { beginSourceSyncAdmission, packagedSourceSyncManifestPath } from "../ownership/source-sync-admission.js";
+import {
+  beginSourceSyncAdmission,
+  packagedSourceSyncManifestPath,
+} from "../ownership/source-sync-admission.js";
 
 const github = vi.hoisted(() => ({ getCommit: vi.fn() }));
 
@@ -39,8 +42,18 @@ describe("source update checks", () => {
     "refuses writes after a manifest replacement during a remote lookup for %s",
     async (participant) => {
       const repo = makeRepo();
-      const first = repo.createSource({ name: "A first", url: "https://github.com/example/first", source_kind: "github", local_path: join(repo.reposDir, "first") });
-      const second = repo.createSource({ name: "B second", url: "https://github.com/example/second", source_kind: "github", local_path: join(repo.reposDir, "second") });
+      const first = repo.createSource({
+        name: "A first",
+        url: "https://github.com/example/first",
+        source_kind: "github",
+        local_path: join(repo.reposDir, "first"),
+      });
+      const second = repo.createSource({
+        name: "B second",
+        url: "https://github.com/example/second",
+        source_kind: "github",
+        local_path: join(repo.reposDir, "second"),
+      });
       repo.markSourceSynced(first.id, "old-sha");
       repo.markSourceSynced(second.id, "old-sha");
       const dataDir = join(repo.reposDir, "..");
@@ -56,7 +69,9 @@ describe("source update checks", () => {
           writeFileSync(manifest, `${original}\n`);
           return { data: { sha: "new-sha" } };
         });
-        await expect(checkAllSourceUpdates(repo, participant)).rejects.toThrow(/runtime manifest does not match/);
+        await expect(checkAllSourceUpdates(repo, participant)).rejects.toThrow(
+          /runtime manifest does not match/,
+        );
         expect(github.getCommit).toHaveBeenCalledOnce();
         expect([repo.getProjectRow(first.id), repo.getProjectRow(second.id)]).toEqual(before);
         expect(repo.listAppEvents({ kinds: ["source.update_available"] })).toEqual([]);

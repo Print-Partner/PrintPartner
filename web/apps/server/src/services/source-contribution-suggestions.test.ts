@@ -57,23 +57,25 @@ describe("Source contribution suggestions", () => {
 
     // No catalog aliases: fall back to the first meaningful folder name rather
     // than guessing a functional slot from a product name.
-    expect(suggestSourceContributions({
-      evidenceId: "printer-mod",
-      sourceName: "Toolhead mods",
-      printablePaths: paths,
-      knownSlots,
-    })).toEqual([
-      expect.objectContaining({ slot: "stealthburner", confidence: "medium" }),
-    ]);
+    expect(
+      suggestSourceContributions({
+        evidenceId: "printer-mod",
+        sourceName: "Toolhead mods",
+        printablePaths: paths,
+        knownSlots,
+      }),
+    ).toEqual([expect.objectContaining({ slot: "stealthburner", confidence: "medium" })]);
 
     // With the catalog naming that product for a slot, it resolves.
-    expect(suggestSourceContributions({
-      evidenceId: "printer-mod",
-      sourceName: "Toolhead mods",
-      printablePaths: paths,
-      knownSlots,
-      slotAliases: new Map([["hotend", ["rapido"]]]),
-    })).toEqual([
+    expect(
+      suggestSourceContributions({
+        evidenceId: "printer-mod",
+        sourceName: "Toolhead mods",
+        printablePaths: paths,
+        knownSlots,
+        slotAliases: new Map([["hotend", ["rapido"]]]),
+      }),
+    ).toEqual([
       expect.objectContaining({
         slot: "hotend",
         confidence: "high",

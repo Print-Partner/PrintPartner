@@ -35,10 +35,7 @@ export function legacySourceManifestOverridePath(reposDir: string, sourceId: num
 }
 
 export function findSourceManifestPath(contentRoot: string): string | null {
-  return resolvedFileUnderRoot(
-    contentRoot,
-    join(contentRoot, SOURCE_MANIFEST_FILENAME),
-  );
+  return resolvedFileUnderRoot(contentRoot, join(contentRoot, SOURCE_MANIFEST_FILENAME));
 }
 
 export function revisionPdfTextCacheRoot(input: {
@@ -56,9 +53,7 @@ export function revisionPdfTextCacheRoot(input: {
 
 function activeRevisionId(row: ProjectRow): number | null {
   const value = row.currentSourceRevisionId;
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function activeManifestDigest(

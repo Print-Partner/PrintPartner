@@ -3,11 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppRepository } from "../db/repository.js";
 import type { SyncDocEntry } from "./github-sync.js";
-import {
-  PDF_BG_EXTRACT_BYTES,
-  contentHashForFile,
-  extractPdfText,
-} from "./pdf-text-extract.js";
+import { PDF_BG_EXTRACT_BYTES, contentHashForFile, extractPdfText } from "./pdf-text-extract.js";
 import { walkSourceDocs } from "./source-docs-scan.js";
 
 function hashOfFile(repoRoot: string, relativePath: string): string | null {
@@ -37,9 +33,7 @@ export function indexSourceDocsFromDisk(
   beforePublish?: () => undefined,
 ): { doc_count: number; pending_pdfs: number } {
   const discovered = walkSourceDocs(repoRoot);
-  const sizeByPath = new Map(
-    (syncDocs ?? []).map((d) => [d.path, d.sizeBytes] as const),
-  );
+  const sizeByPath = new Map((syncDocs ?? []).map((d) => [d.path, d.sizeBytes] as const));
 
   const rows = discovered.map((d) => {
     const size = sizeByPath.get(d.path) || d.sizeBytes;
@@ -121,12 +115,17 @@ export async function extractPendingPdfsForSource(
       },
     });
     options?.beforePublish?.();
-    const updated = repo.updateSourceDocExtract(projectId, doc.path, {
-      extractStatus: result.status,
-      contentHash: result.hash || null,
-      pageCount: result.pageCount || null,
-      extractError: result.error ?? null,
-    }, doc.id);
+    const updated = repo.updateSourceDocExtract(
+      projectId,
+      doc.path,
+      {
+        extractStatus: result.status,
+        contentHash: result.hash || null,
+        pageCount: result.pageCount || null,
+        extractError: result.error ?? null,
+      },
+      doc.id,
+    );
     if (!updated) continue;
     if (result.status === "ready") extracted += 1;
     else errors += 1;

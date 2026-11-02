@@ -27,11 +27,11 @@ import {
   migrateLegacySourceManifestOverrides,
   migrateLegacySourceManifestOverridesForTenant,
 } from "./source-manifest-migration.js";
+import { legacySourceManifestOverridePath, sourceWorkspaceRoot } from "./source-workspace.js";
 import {
-  legacySourceManifestOverridePath,
-  sourceWorkspaceRoot,
-} from "./source-workspace.js";
-import { beginSourceSyncAdmission, packagedSourceSyncManifestPath } from "../ownership/source-sync-admission.js";
+  beginSourceSyncAdmission,
+  packagedSourceSyncManifestPath,
+} from "../ownership/source-sync-admission.js";
 
 vi.mock("node:fs/promises", { spy: true });
 
@@ -59,11 +59,7 @@ function migratedBackupPaths(legacyPath: string): string[] {
     .sort();
 }
 
-async function trackedSource(input: {
-  dataDir: string;
-  repo: AppRepository;
-  name: string;
-}) {
+async function trackedSource(input: { dataDir: string; repo: AppRepository; name: string }) {
   const source = input.repo.createSource({
     name: input.name,
     source_kind: "local",
@@ -71,10 +67,7 @@ async function trackedSource(input: {
   const workingTree = join(input.dataDir, `incoming-${source.id}`);
   mkdirSync(workingTree, { recursive: true });
   writeFileSync(join(workingTree, "cube.stl"), "solid cube\nendsolid cube\n");
-  writeFileSync(
-    join(workingTree, "print-partner.manifest.yaml"),
-    "project: upstream\n",
-  );
+  writeFileSync(join(workingTree, "print-partner.manifest.yaml"), "project: upstream\n");
   const activated = await publishLocalSourceWorkingTree({
     repo: input.repo,
     reposDir: input.repo.reposDir,
@@ -92,43 +85,48 @@ afterEach(() => {
 });
 
 describe("legacy Source manifest migration", () => {
-  it.each([false, true])("refuses legacy publication or archival after admission changes (alreadyCutOver=%s)", async (alreadyCutOver) => {
-    const f = fixture();
-    const previous = process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST;
-    try {
-      const { source } = await trackedSource({ ...f, name: "Migration admission" });
-      const manifest = join(f.dataDir, "ownership.json");
-      const original = readFileSync(packagedSourceSyncManifestPath(), "utf8");
-      writeFileSync(manifest, original);
-      process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST = manifest;
-      beginSourceSyncAdmission(f.dataDir);
-      const legacyPath = legacySourceManifestOverridePath(f.repo.reposDir, source.id);
-      writeFileSync(legacyPath, "project: legacy\n");
-      if (alreadyCutOver) {
-        await migrateLegacySourceManifestOverrides(f.repo);
-        writeFileSync(legacyPath, "project: restored legacy\n");
+  it.each([false, true])(
+    "refuses legacy publication or archival after admission changes (alreadyCutOver=%s)",
+    async (alreadyCutOver) => {
+      const f = fixture();
+      const previous = process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST;
+      try {
+        const { source } = await trackedSource({ ...f, name: "Migration admission" });
+        const manifest = join(f.dataDir, "ownership.json");
+        const original = readFileSync(packagedSourceSyncManifestPath(), "utf8");
+        writeFileSync(manifest, original);
+        process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST = manifest;
+        beginSourceSyncAdmission(f.dataDir);
+        const legacyPath = legacySourceManifestOverridePath(f.repo.reposDir, source.id);
+        writeFileSync(legacyPath, "project: legacy\n");
+        if (alreadyCutOver) {
+          await migrateLegacySourceManifestOverrides(f.repo);
+          writeFileSync(legacyPath, "project: restored legacy\n");
+        }
+        const legacyBytes = readFileSync(legacyPath);
+        const revisions = f.repo.listSourceRevisions(source.id);
+        const before = f.repo.getProjectRow(source.id);
+        const backups = migratedBackupPaths(legacyPath);
+        await expect(
+          migrateLegacySourceManifestOverrides(f.repo, {
+            inspectLegacy: async (input) => {
+              const observed = await inspectLegacySourceManifest(input);
+              writeFileSync(manifest, `${original}\n`);
+              return observed;
+            },
+          }),
+        ).rejects.toThrow(/runtime manifest does not match/);
+        expect(readFileSync(legacyPath)).toEqual(legacyBytes);
+        expect(f.repo.getProjectRow(source.id)).toEqual(before);
+        expect(f.repo.listSourceRevisions(source.id)).toEqual(revisions);
+        expect(migratedBackupPaths(legacyPath)).toEqual(backups);
+      } finally {
+        if (previous === undefined) delete process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST;
+        else process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST = previous;
+        f.sqlite.close();
       }
-      const legacyBytes = readFileSync(legacyPath);
-      const revisions = f.repo.listSourceRevisions(source.id);
-      const before = f.repo.getProjectRow(source.id);
-      const backups = migratedBackupPaths(legacyPath);
-      await expect(migrateLegacySourceManifestOverrides(f.repo, {
-        inspectLegacy: async (input) => {
-          const observed = await inspectLegacySourceManifest(input);
-          writeFileSync(manifest, `${original}\n`);
-          return observed;
-        },
-      })).rejects.toThrow(/runtime manifest does not match/);
-      expect(readFileSync(legacyPath)).toEqual(legacyBytes);
-      expect(f.repo.getProjectRow(source.id)).toEqual(before);
-      expect(f.repo.listSourceRevisions(source.id)).toEqual(revisions);
-      expect(migratedBackupPaths(legacyPath)).toEqual(backups);
-    } finally {
-      if (previous === undefined) delete process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST;
-      else process.env.PP_SOURCE_SYNC_OWNERSHIP_MANIFEST = previous;
-      f.sqlite.close();
-    }
-  });
+    },
+  );
 
   it("retains legacy overrides when publication transactions are unsupported", async () => {
     const { sqlite, repo } = fixture();
@@ -143,10 +141,14 @@ describe("legacy Source manifest migration", () => {
       const report = await migrateLegacySourceManifestOverrides(repo);
       expect(report).toEqual({
         migrated: [],
-        retained: [{
-          sourceId: source.id, legacyPath,
-          reason: "Source revision publication is unavailable on experimental PostgreSQL because atomic publication transactions are not supported.",
-        }],
+        retained: [
+          {
+            sourceId: source.id,
+            legacyPath,
+            reason:
+              "Source revision publication is unavailable on experimental PostgreSQL because atomic publication transactions are not supported.",
+          },
+        ],
       });
       expect(repo.getProjectRow(source.id)).toEqual(before);
       expect(repo.listSourceRevisions(source.id)).toEqual([]);
@@ -170,11 +172,7 @@ describe("legacy Source manifest migration", () => {
     if (observed.kind !== "file") throw new Error("Expected a legacy manifest file");
     writeFileSync(legacyPath, "project: replaced\n");
 
-    const archived = await archiveLegacySourceManifest(
-      observed,
-      repo.reposDir,
-      source.id,
-    );
+    const archived = await archiveLegacySourceManifest(observed, repo.reposDir, source.id);
 
     expect(archived?.matchesObservedContent).toBe(false);
     expect(readFileSync(archived!.backupPath, "utf8")).toBe("project: replaced\n");
@@ -204,12 +202,15 @@ describe("legacy Source manifest migration", () => {
     expect(report.migrated).toHaveLength(1);
     const active = repo.getSource(source.id);
     expect(active?.current_source_revision_id).toEqual(expect.any(Number));
-    expect(readFileSync(join(active!.local_path!, "cube.stl"), "utf8"))
-      .toBe("solid local\nendsolid local\n");
-    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe(legacyYaml);
-    expect(readFileSync(join(workingTree, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: working tree\n");
+    expect(readFileSync(join(active!.local_path!, "cube.stl"), "utf8")).toBe(
+      "solid local\nendsolid local\n",
+    );
+    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8")).toBe(
+      legacyYaml,
+    );
+    expect(readFileSync(join(workingTree, "print-partner.manifest.yaml"), "utf8")).toBe(
+      "project: working tree\n",
+    );
     expect(readFileSync(report.migrated[0]!.backupPath!, "utf8")).toBe(legacyYaml);
     sqlite.close();
   });
@@ -234,16 +235,16 @@ describe("legacy Source manifest migration", () => {
     expect(dirname(report.migrated[0]!.backupPath!)).toContain(
       "print-partner.manifest.yaml.migrated-",
     );
-    expect(basename(report.migrated[0]!.backupPath!))
-      .toBe("print-partner.manifest.yaml.migrated");
+    expect(basename(report.migrated[0]!.backupPath!)).toBe("print-partner.manifest.yaml.migrated");
     expect(existsSync(legacyPath)).toBe(false);
     expect(readFileSync(`${legacyPath}.migrated`, "utf8")).toBe("older backup\n");
     expect(readFileSync(report.migrated[0]!.backupPath!, "utf8")).toBe(legacyYaml);
     const active = repo.getSource(source.id);
     expect(active?.current_source_revision_id).not.toBe(base.current_source_revision_id);
     expect(active?.last_commit_sha).toBe(base.last_commit_sha);
-    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe(legacyYaml);
+    expect(readFileSync(join(active!.local_path!, "print-partner.manifest.yaml"), "utf8")).toBe(
+      legacyYaml,
+    );
 
     const activeRevisionId = active!.current_source_revision_id;
     await expect(migrateLegacySourceManifestOverrides(repo)).resolves.toEqual({
@@ -267,12 +268,11 @@ describe("legacy Source manifest migration", () => {
     const report = await migrateLegacySourceManifestOverrides(repo);
 
     expect(report.migrated).toEqual([]);
-    expect(report.retained).toEqual([
-      expect.objectContaining({ sourceId: source.id, legacyPath }),
-    ]);
+    expect(report.retained).toEqual([expect.objectContaining({ sourceId: source.id, legacyPath })]);
     expect(readFileSync(legacyPath, "utf8")).toBe("option_groups: [");
-    expect(repo.getSource(source.id)?.current_source_revision_id)
-      .toBe(activated.current_source_revision_id);
+    expect(repo.getSource(source.id)?.current_source_revision_id).toBe(
+      activated.current_source_revision_id,
+    );
     sqlite.close();
   });
 
@@ -287,10 +287,7 @@ describe("legacy Source manifest migration", () => {
     const parentSource = repo.createSource({ name: "Parent symlink", source_kind: "local" });
     const parentOutside = join(dataDir, "parent-outside");
     mkdirSync(parentOutside, { recursive: true });
-    writeFileSync(
-      join(parentOutside, "print-partner.manifest.yaml"),
-      "project: parent outside\n",
-    );
+    writeFileSync(join(parentOutside, "print-partner.manifest.yaml"), "project: parent outside\n");
     symlinkSync(parentOutside, sourceWorkspaceRoot(repo.reposDir, parentSource.id), "dir");
 
     const report = await migrateLegacySourceManifestOverrides(repo);
@@ -300,8 +297,9 @@ describe("legacy Source manifest migration", () => {
       [leafSource.id, parentSource.id].sort(),
     );
     expect(readFileSync(leafOutside, "utf8")).toBe("project: leaf outside\n");
-    expect(readFileSync(join(parentOutside, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: parent outside\n");
+    expect(readFileSync(join(parentOutside, "print-partner.manifest.yaml"), "utf8")).toBe(
+      "project: parent outside\n",
+    );
     sqlite.close();
   });
 
@@ -324,8 +322,9 @@ describe("legacy Source manifest migration", () => {
       "Source changed during sync",
     );
     expect(readFileSync(legacyPath, "utf8")).toBe("project: legacy\n");
-    expect(repo.getSource(source.id)?.current_source_revision_id)
-      .toBe(base.current_source_revision_id);
+    expect(repo.getSource(source.id)?.current_source_revision_id).toBe(
+      base.current_source_revision_id,
+    );
     spy.mockRestore();
 
     const app = Fastify();
@@ -337,8 +336,9 @@ describe("legacy Source manifest migration", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(existsSync(legacyPath)).toBe(false);
-    expect(migratedBackupPaths(legacyPath).map((path) => readFileSync(path, "utf8")))
-      .toEqual(["project: legacy\n"]);
+    expect(migratedBackupPaths(legacyPath).map((path) => readFileSync(path, "utf8"))).toEqual([
+      "project: legacy\n",
+    ]);
     const apiRevisionId = repo.getSource(source.id)?.current_source_revision_id;
     expect(apiRevisionId).not.toBe(base.current_source_revision_id);
 
@@ -346,8 +346,12 @@ describe("legacy Source manifest migration", () => {
     const restart = await migrateLegacySourceManifestOverrides(repo);
     expect(restart.migrated).toHaveLength(1);
     expect(repo.getSource(source.id)?.current_source_revision_id).toBe(apiRevisionId);
-    expect(readFileSync(join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: API edit\n");
+    expect(
+      readFileSync(
+        join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"),
+        "utf8",
+      ),
+    ).toBe("project: API edit\n");
     expect(
       migratedBackupPaths(legacyPath)
         .map((path) => readFileSync(path, "utf8"))
@@ -391,10 +395,7 @@ describe("legacy Source manifest migration", () => {
     const active = repo.getSource(source.id);
     expect(
       JSON.parse(
-        readFileSync(
-          join(active!.local_path!, ".printpartner-source-snapshot.json"),
-          "utf8",
-        ),
+        readFileSync(join(active!.local_path!, ".printpartner-source-snapshot.json"), "utf8"),
       ),
     ).toMatchObject({
       files: [
@@ -405,12 +406,15 @@ describe("legacy Source manifest migration", () => {
       ],
     });
     expect(repo.listSourceRevisions(source.id)).toHaveLength(1);
-    expect(readFileSync(join(active!.local_path!, "cube.stl"), "utf8"))
-      .toBe("solid root\nendsolid root\n");
-    expect(readFileSync(join(active!.local_path!, "revisions", "v2", "revision-part.stl"), "utf8"))
-      .toBe("solid revision\n");
-    expect(readFileSync(join(active!.local_path!, "derived", "v2", "derived-part.stl"), "utf8"))
-      .toBe("solid derived\n");
+    expect(readFileSync(join(active!.local_path!, "cube.stl"), "utf8")).toBe(
+      "solid root\nendsolid root\n",
+    );
+    expect(
+      readFileSync(join(active!.local_path!, "revisions", "v2", "revision-part.stl"), "utf8"),
+    ).toBe("solid revision\n");
+    expect(
+      readFileSync(join(active!.local_path!, "derived", "v2", "derived-part.stl"), "utf8"),
+    ).toBe("solid derived\n");
     sqlite.close();
   });
 
@@ -441,17 +445,18 @@ describe("legacy Source manifest migration", () => {
     expect(existsSync(legacyPath)).toBe(true);
     const committedRevisionId = repo.getSource(source.id)?.current_source_revision_id;
     expect(repo.getProjectRow(source.id)?.legacyManifestCutover).toBe(true);
-    expect(readFileSync(join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: committed edit\n");
+    expect(
+      readFileSync(
+        join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"),
+        "utf8",
+      ),
+    ).toBe("project: committed edit\n");
     renameSpy.mockRestore();
 
     const syncedTree = join(dataDir, "archive-retry-synced");
     mkdirSync(syncedTree, { recursive: true });
     writeFileSync(join(syncedTree, "cube.stl"), "solid synced\n");
-    writeFileSync(
-      join(syncedTree, "print-partner.manifest.yaml"),
-      "project: synced upstream\n",
-    );
+    writeFileSync(join(syncedTree, "print-partner.manifest.yaml"), "project: synced upstream\n");
     const synced = await publishLocalSourceWorkingTree({
       repo,
       reposDir: repo.reposDir,
@@ -463,13 +468,19 @@ describe("legacy Source manifest migration", () => {
 
     const restart = await migrateLegacySourceManifestOverrides(repo);
     expect(restart.migrated).toHaveLength(1);
-    expect(repo.getSource(source.id)?.current_source_revision_id)
-      .toBe(synced.current_source_revision_id);
-    expect(readFileSync(join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: synced upstream\n");
+    expect(repo.getSource(source.id)?.current_source_revision_id).toBe(
+      synced.current_source_revision_id,
+    );
+    expect(
+      readFileSync(
+        join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"),
+        "utf8",
+      ),
+    ).toBe("project: synced upstream\n");
     expect(existsSync(legacyPath)).toBe(false);
-    expect(migratedBackupPaths(legacyPath).map((path) => readFileSync(path, "utf8")))
-      .toEqual(["project: legacy\n"]);
+    expect(migratedBackupPaths(legacyPath).map((path) => readFileSync(path, "utf8"))).toEqual([
+      "project: legacy\n",
+    ]);
     await app.close();
     sqlite.close();
   });
@@ -509,16 +520,22 @@ describe("legacy Source manifest migration", () => {
       payload: { yaml: "project: upstream\n" },
     });
     expect(put.statusCode).toBe(200);
-    expect(repo.getSource(source.id)?.current_source_revision_id)
-      .toBe(base.current_source_revision_id);
+    expect(repo.getSource(source.id)?.current_source_revision_id).toBe(
+      base.current_source_revision_id,
+    );
     expect(repo.getProjectRow(source.id)?.legacyManifestCutover).toBe(true);
 
     resumeInspection();
     await expect(migration).rejects.toThrow("Source changed during sync");
-    expect(repo.getSource(source.id)?.current_source_revision_id)
-      .toBe(base.current_source_revision_id);
-    expect(readFileSync(join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"), "utf8"))
-      .toBe("project: upstream\n");
+    expect(repo.getSource(source.id)?.current_source_revision_id).toBe(
+      base.current_source_revision_id,
+    );
+    expect(
+      readFileSync(
+        join(repo.getSource(source.id)!.local_path!, "print-partner.manifest.yaml"),
+        "utf8",
+      ),
+    ).toBe("project: upstream\n");
     await app.close();
     sqlite.close();
   });
@@ -543,9 +560,8 @@ describe("legacy Source manifest migration", () => {
       });
     }
 
-    const firstReport = await tenantStorage.run(
-      "tenant-a",
-      () => migrateLegacySourceManifestOverrides(repo),
+    const firstReport = await tenantStorage.run("tenant-a", () =>
+      migrateLegacySourceManifestOverrides(repo),
     );
 
     expect(firstReport.migrated.map((entry) => entry.sourceId)).toEqual([
@@ -553,14 +569,17 @@ describe("legacy Source manifest migration", () => {
     ]);
     expect(existsSync(sources.get("tenant-a")!.legacyPath)).toBe(false);
     expect(existsSync(sources.get("tenant-b")!.legacyPath)).toBe(true);
-    expect(tenantStorage.run("tenant-a", () => repo.getSource(sources.get("tenant-a")!.id))
-      ?.current_source_revision_id).toEqual(expect.any(Number));
-    expect(tenantStorage.run("tenant-b", () => repo.getSource(sources.get("tenant-b")!.id))
-      ?.current_source_revision_id).toBeNull();
+    expect(
+      tenantStorage.run("tenant-a", () => repo.getSource(sources.get("tenant-a")!.id))
+        ?.current_source_revision_id,
+    ).toEqual(expect.any(Number));
+    expect(
+      tenantStorage.run("tenant-b", () => repo.getSource(sources.get("tenant-b")!.id))
+        ?.current_source_revision_id,
+    ).toBeNull();
 
-    const secondReport = await tenantStorage.run(
-      "tenant-b",
-      () => migrateLegacySourceManifestOverrides(repo),
+    const secondReport = await tenantStorage.run("tenant-b", () =>
+      migrateLegacySourceManifestOverrides(repo),
     );
     expect(secondReport.migrated.map((entry) => entry.sourceId)).toEqual([
       sources.get("tenant-b")!.id,
@@ -588,9 +607,7 @@ describe("legacy Source manifest migration", () => {
     );
 
     expect(report.migrated.map((entry) => entry.sourceId)).toEqual([source.id]);
-    expect(repo.getSource(source.id)?.current_source_revision_id).toEqual(
-      expect.any(Number),
-    );
+    expect(repo.getSource(source.id)?.current_source_revision_id).toEqual(expect.any(Number));
     expect(repo.getProjectRow(source.id)?.legacyManifestCutover).toBe(true);
     expect(existsSync(legacyPath)).toBe(false);
     sqlite.close();
@@ -609,13 +626,9 @@ describe("legacy Source manifest migration", () => {
     mkdirSync(sourceWorkspaceRoot(repo.reposDir, source.id), { recursive: true });
     const legacyPath = legacySourceManifestOverridePath(repo.reposDir, source.id);
     writeFileSync(legacyPath, "project: external-local\n");
-    const isolatedRepo = new AppRepository(
-      getDb(sqlite),
-      "default",
-      sqlite.reposDir,
-      undefined,
-      { sourceFilesystemPolicy: ISOLATED_SOURCE_FILESYSTEM },
-    );
+    const isolatedRepo = new AppRepository(getDb(sqlite), "default", sqlite.reposDir, undefined, {
+      sourceFilesystemPolicy: ISOLATED_SOURCE_FILESYSTEM,
+    });
 
     const report = await migrateLegacySourceManifestOverrides(isolatedRepo);
 

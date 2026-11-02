@@ -39,10 +39,7 @@ import {
 import { workflowGuideForExternalAccess } from "./workflow-guide.js";
 import { sendDiscordNotification } from "../services/discord-notify.js";
 import { sourceIdFromParams } from "./settings-route-model.js";
-import {
-  readExternalAccessSettings,
-  saveExternalAccessMode,
-} from "../services/external-access.js";
+import { readExternalAccessSettings, saveExternalAccessMode } from "../services/external-access.js";
 import {
   parseSourceMonitoringUpdate,
   readStoredSourceUpdateIntervalHours,
@@ -285,10 +282,7 @@ export async function registerSettingsRoutes(app: FastifyInstance, deps: RouteDe
       deps.repo.setSetting("source_update_check_hours", String(parsed.update.intervalHours));
     }
     if (parsed.update.autoSyncUpdates !== undefined) {
-      deps.repo.setSetting(
-        "discord_auto_sync_updates",
-        parsed.update.autoSyncUpdates ? "1" : "0",
-      );
+      deps.repo.setSetting("discord_auto_sync_updates", parsed.update.autoSyncUpdates ? "1" : "0");
     }
     return {
       interval_hours: readStoredSourceUpdateIntervalHours(
@@ -318,8 +312,13 @@ export async function registerSettingsRoutes(app: FastifyInstance, deps: RouteDe
     const profileId = body.profile_id == null ? null : Number(body.profile_id);
     const bindings = loadPlanBindings();
     const idx = bindings.findIndex((b) => b.integration_id === integrationId);
-    const entry: PlanBinding = { integration_id: integrationId, profile_id: profileId, updated_at: new Date().toISOString() };
-    if (idx >= 0) bindings[idx] = entry; else bindings.push(entry);
+    const entry: PlanBinding = {
+      integration_id: integrationId,
+      profile_id: profileId,
+      updated_at: new Date().toISOString(),
+    };
+    if (idx >= 0) bindings[idx] = entry;
+    else bindings.push(entry);
     deps.repo.setSetting("printer.plan_bindings", JSON.stringify(bindings));
     return { bindings };
   });
@@ -332,7 +331,10 @@ export async function registerSettingsRoutes(app: FastifyInstance, deps: RouteDe
   });
 }
 
-export async function registerSourceNamingRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
+export async function registerSourceNamingRoutes(
+  app: FastifyInstance,
+  deps: RouteDeps,
+): Promise<void> {
   app.get("/sources/:id/naming", async (request, reply) => {
     const sourceId = sourceIdFromParams(request.params);
     if (sourceId === null) {
@@ -371,9 +373,7 @@ export async function registerSourceNamingRoutes(app: FastifyInstance, deps: Rou
     }
     const result = deps.repo.saveSourceNaming(
       sourceId,
-      input.use_defaults
-        ? { kind: "use_defaults" }
-        : { kind: "override", profile: input.override },
+      input.use_defaults ? { kind: "use_defaults" } : { kind: "override", profile: input.override },
     );
     switch (result.kind) {
       case "saved":
@@ -454,9 +454,7 @@ export async function registerStubRoutes(app: FastifyInstance, deps: RouteDeps):
       } else {
         try {
           const filaments = await listSpoolmanFilaments(integration.config);
-          spoolman_colors = filaments.map((f) =>
-            spoolmanFilamentToCatalogColor(integration.id, f),
-          );
+          spoolman_colors = filaments.map((f) => spoolmanFilamentToCatalogColor(integration.id, f));
           if (filaments.length === 0) {
             spoolman_status = "empty";
             spoolman_error =

@@ -1,20 +1,32 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { featurePatchSchema, type FeatureSettings } from "@print-partner/contracts";
 import type { AppRepository } from "../db/repository.js";
-import { desktopFeaturesEnabled, featureKeys, parseFeatureLayer, resolveFeatures } from "../lib/feature-toggles.js";
+import {
+  desktopFeaturesEnabled,
+  featureKeys,
+  parseFeatureLayer,
+  resolveFeatures,
+} from "../lib/feature-toggles.js";
 
 function invalidStorage(reply: FastifyReply) {
   return reply.status(500).send({
-    detail: "Stored feature toggles are invalid.", code: "FEATURE_TOGGLES_INVALID",
+    detail: "Stored feature toggles are invalid.",
+    code: "FEATURE_TOGGLES_INVALID",
   });
 }
 
-export async function registerTenantFeatureRoutes(app: FastifyInstance, repo: AppRepository): Promise<void> {
+export async function registerTenantFeatureRoutes(
+  app: FastifyInstance,
+  repo: AppRepository,
+): Promise<void> {
   app.get("/settings/features", async (_request, reply) => {
     if (!desktopFeaturesEnabled()) return reply.status(404).send({ detail: "Not found" });
     const user = parseFeatureLayer(repo.getSettingSnapshot("feature_toggles"));
     if (!user) return invalidStorage(reply);
-    return { choices: user.choices, effective: resolveFeatures(user.choices, {}) } satisfies FeatureSettings;
+    return {
+      choices: user.choices,
+      effective: resolveFeatures(user.choices, {}),
+    } satisfies FeatureSettings;
   });
 
   app.patch("/settings/features", async (request, reply) => {
@@ -37,7 +49,13 @@ export async function registerTenantFeatureRoutes(app: FastifyInstance, repo: Ap
           choices[key] = value;
         }
       }
-      if (repo.compareAndSetSetting({ key: "feature_toggles", expected: snapshot, value: JSON.stringify(raw) })) {
+      if (
+        repo.compareAndSetSetting({
+          key: "feature_toggles",
+          expected: snapshot,
+          value: JSON.stringify(raw),
+        })
+      ) {
         return { choices, effective: resolveFeatures(choices, {}) } satisfies FeatureSettings;
       }
     }

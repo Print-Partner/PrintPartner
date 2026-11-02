@@ -19,15 +19,15 @@ export async function registerWebhookRoutes(app: FastifyInstance, deps: RouteDep
       secret?: string | null;
     };
     const url = String(body.url ?? "").trim();
-    
+
     if (!url) {
       return sendProblem(reply, 400, "Bad Request", "url is required");
     }
-    
+
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       return sendProblem(reply, 400, "Bad Request", "url must be http(s)");
     }
-    
+
     try {
       const hook = await createWebhook(deps.repo, {
         url,

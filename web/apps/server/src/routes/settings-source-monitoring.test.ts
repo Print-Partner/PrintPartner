@@ -13,8 +13,9 @@ describe("/settings/source-update-check", () => {
     const dir = mkdtempSync(join(tmpdir(), "pp-source-monitoring-"));
     const { app, ports } = await makeApp(dir);
     try {
-      expect((await app.inject({ method: "GET", url: "/settings/source-update-check" })).json())
-        .toEqual({ interval_hours: 24, auto_sync_updates: true, last_checked_at: null });
+      expect(
+        (await app.inject({ method: "GET", url: "/settings/source-update-check" })).json(),
+      ).toEqual({ interval_hours: 24, auto_sync_updates: true, last_checked_at: null });
 
       const disabled = await app.inject({
         method: "PUT",
@@ -52,8 +53,9 @@ describe("/settings/source-update-check", () => {
         expect(response.json()).toEqual({
           detail: "interval_hours must be 0 or a whole number from 1 through 168",
         });
-        expect((await app.inject({ method: "GET", url: "/settings/source-update-check" })).json())
-          .toMatchObject({ interval_hours: 24 });
+        expect(
+          (await app.inject({ method: "GET", url: "/settings/source-update-check" })).json(),
+        ).toMatchObject({ interval_hours: 24 });
       } finally {
         await app.close();
         ports.db.close();

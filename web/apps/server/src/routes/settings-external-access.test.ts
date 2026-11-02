@@ -6,10 +6,7 @@ import { createSelfHostPorts } from "../adapters/self-host/index.js";
 import { buildApp } from "../app.js";
 import { loadConfig } from "../config.js";
 
-async function makeApp(
-  directory: string,
-  integrationApiKey: string | null = "external-tool-key",
-) {
+async function makeApp(directory: string, integrationApiKey: string | null = "external-tool-key") {
   const config = {
     ...loadConfig(),
     dataDir: directory,

@@ -15,8 +15,18 @@ import * as discordNotify from "../services/discord-notify.js";
 import * as printerFleet from "../services/printer-fleet.js";
 import { registerDiscordDigestRoute } from "./discord-digest.js";
 
-const disabled = { status: 403, title: "Forbidden", detail: "Feature farm is disabled.", code: "FEATURE_DISABLED" };
-const invalid = { status: 500, title: "Internal Server Error", detail: "Stored feature toggles are invalid.", code: "FEATURE_TOGGLES_INVALID" };
+const disabled = {
+  status: 403,
+  title: "Forbidden",
+  detail: "Feature farm is disabled.",
+  code: "FEATURE_DISABLED",
+};
+const invalid = {
+  status: 500,
+  title: "Internal Server Error",
+  detail: "Stored feature toggles are invalid.",
+  code: "FEATURE_TOGGLES_INVALID",
+};
 const webhook = "https://discord.example/webhook/digest";
 
 describe("Discord digest farm feature admission", () => {
@@ -38,9 +48,16 @@ describe("Discord digest farm feature admission", () => {
     sqlite.connect();
     repo = new AppRepository(getDb(sqlite), undefined, sqlite.reposDir);
     statusExecution = new StatusExecution();
-    integrations = createIntegrationPort({ repo, getAdapter: getIntegrationAdapter, statusExecution });
+    integrations = createIntegrationPort({
+      repo,
+      getAdapter: getIntegrationAdapter,
+      statusExecution,
+    });
     repo.setSetting("discord_notify_webhook_url", webhook);
-    repo.setSetting("printer.fleet", JSON.stringify([{ id: "printer", name: "Workshop", integration_id: "connector" }]));
+    repo.setSetting(
+      "printer.fleet",
+      JSON.stringify([{ id: "printer", name: "Workshop", integration_id: "connector" }]),
+    );
     app = Fastify();
     app.decorate("config", { authRequired: true });
     app.decorateRequest("tenantId", "default");
@@ -49,13 +66,23 @@ describe("Discord digest farm feature admission", () => {
       const tenant = request.headers["x-test-tenant"];
       request.tenantId = typeof tenant === "string" ? tenant : "default";
       if (request.headers["x-test-session"] === "1") {
-        request.sessionUser = { user_id: "user", tenant_id: request.tenantId, login: "user",
-          display_name: "User", email: null, provider: "basic", is_admin: false };
+        request.sessionUser = {
+          user_id: "user",
+          tenant_id: request.tenantId,
+          login: "user",
+          display_name: "User",
+          email: null,
+          provider: "basic",
+          is_admin: false,
+        };
       }
       tenantStorage.run(request.tenantId, done);
     });
     for (const prefix of ["", "/api/v1"]) {
-      await app.register(async (routes) => registerDiscordDigestRoute(routes, { repo, integrations }), { prefix });
+      await app.register(
+        async (routes) => registerDiscordDigestRoute(routes, { repo, integrations }),
+        { prefix },
+      );
     }
     await app.ready();
   });
@@ -70,7 +97,11 @@ describe("Discord digest farm feature admission", () => {
   });
 
   function post(url: string, tenant = "default") {
-    return app.inject({ method: "POST", url, headers: { authorization: "Bearer test-key", "x-test-tenant": tenant } });
+    return app.inject({
+      method: "POST",
+      url,
+      headers: { authorization: "Bearer test-key", "x-test-tenant": tenant },
+    });
   }
 
   function observeOptionalWork() {
@@ -97,20 +128,35 @@ describe("Discord digest farm feature admission", () => {
       for (const call of work) expect(call).not.toHaveBeenCalled();
     });
 
-    it.each(["{", "[]", "null", '{"farm":"yes"}', '{"farm":null}', '{"farm":0}', '{"farm":true,"spoolman":0}'])(
-      `${url} denies malformed stored %j before optional work`, async (value) => {
-        repo.setSetting("feature_toggles", value);
-        const work = observeOptionalWork();
-        const response = await post(url);
-        expect(response.statusCode).toBe(500);
-        expect(response.json()).toEqual(invalid);
-        for (const call of work) expect(call).not.toHaveBeenCalled();
-      });
+    it.each([
+      "{",
+      "[]",
+      "null",
+      '{"farm":"yes"}',
+      '{"farm":null}',
+      '{"farm":0}',
+      '{"farm":true,"spoolman":0}',
+    ])(`${url} denies malformed stored %j before optional work`, async (value) => {
+      repo.setSetting("feature_toggles", value);
+      const work = observeOptionalWork();
+      const response = await post(url);
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual(invalid);
+      for (const call of work) expect(call).not.toHaveBeenCalled();
+    });
 
     it(`${url} sends the expected digest and supports live revoke and re-enable`, async () => {
       const plan = repo.createProfile("Overnight Run");
       const now = new Date().toISOString();
-      repo.insertPrintJob({ id: randomUUID(), profileId: plan.id, printerId: "printer", material: "PLA", status: "completed", at: now, completedAt: now });
+      repo.insertPrintJob({
+        id: randomUUID(),
+        profileId: plan.id,
+        printerId: "printer",
+        material: "PLA",
+        status: "completed",
+        at: now,
+        completedAt: now,
+      });
       const status = vi.spyOn(integrations, "getStatus").mockResolvedValue({ state: "idle" });
       const send = vi.spyOn(discordNotify, "sendFarmDigest");
       for (const enabled of [true, false, true]) {
@@ -127,14 +173,22 @@ describe("Discord digest farm feature admission", () => {
         if (enabled) {
           expect(status).toHaveBeenCalledWith("connector");
           expect(send).toHaveBeenCalledWith(webhook, {
-            platesOvernight: 1, windowHours: 8,
+            platesOvernight: 1,
+            windowHours: 8,
             printers: [{ name: "Workshop", state: "idle", active_job: null }],
-            activePlans: { kind: "available", plans: [{ plan_name: "Overnight Run", progress: { kind: "empty" } }] },
+            activePlans: {
+              kind: "available",
+              plans: [{ plan_name: "Overnight Run", progress: { kind: "empty" } }],
+            },
           });
-          expect(network).toHaveBeenCalledWith(webhook, expect.objectContaining({
-            method: "POST",
-            body: expect.stringContaining("**1** plate(s) sent to printers overnight."),
-          }), { allowPrivate: false });
+          expect(network).toHaveBeenCalledWith(
+            webhook,
+            expect.objectContaining({
+              method: "POST",
+              body: expect.stringContaining("**1** plate(s) sent to printers overnight."),
+            }),
+            { allowPrivate: false },
+          );
         }
       }
     });
@@ -158,7 +212,10 @@ describe("Discord digest farm feature admission", () => {
       repo.setSetting("feature_toggles", '{"farm":false}');
       expect((await app.inject({ method: "POST", url })).json()).toEqual(disabled);
       repo.setSetting("feature_toggles", '{"farm":true}');
-      expect((await app.inject({ method: "POST", url })).json()).toEqual({ ok: true, plates_overnight: 0 });
+      expect((await app.inject({ method: "POST", url })).json()).toEqual({
+        ok: true,
+        plates_overnight: 0,
+      });
     });
   }
 
@@ -181,7 +238,8 @@ describe("Discord digest farm feature admission", () => {
   });
 
   it.each([undefined, "0", "false", "TRUE", "true ", "yes", "2", ""])(
-    "preserves legacy behavior without feature reads for flag %j", async (flag) => {
+    "preserves legacy behavior without feature reads for flag %j",
+    async (flag) => {
       if (flag === undefined) delete process.env.PP_DESKTOP_REBUILD;
       else vi.stubEnv("PP_DESKTOP_REBUILD", flag);
       repo.setSetting("feature_toggles", "invalid JSON");
@@ -191,7 +249,8 @@ describe("Discord digest farm feature admission", () => {
       }
       expect(reads).not.toHaveBeenCalled();
       expect(network).toHaveBeenCalledTimes(2);
-    });
+    },
+  );
 
   it("accepts exact true and unknown future settings while keeping default-off admission", async () => {
     vi.stubEnv("PP_DESKTOP_REBUILD", "true");

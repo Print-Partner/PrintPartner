@@ -49,8 +49,10 @@ export async function registerDiscordDigestRoute(
     if (access.kind !== "allowed") {
       const status = access.kind === "disabled" ? 403 : 500;
       return reply.status(status).send({
-        status, title: access.kind === "disabled" ? "Forbidden" : "Internal Server Error",
-        detail: access.error, code: access.code,
+        status,
+        title: access.kind === "disabled" ? "Forbidden" : "Internal Server Error",
+        detail: access.error,
+        code: access.code,
       });
     }
 
@@ -89,11 +91,10 @@ export async function registerDiscordDigestRoute(
       };
     } catch {
       activePlans = { kind: "unavailable" };
-      logger.log(
-        "error",
-        "[discord-digest] Plan progress collection unavailable",
-        { failure: "unexpected", operation: "discord_digest_plan_progress" },
-      );
+      logger.log("error", "[discord-digest] Plan progress collection unavailable", {
+        failure: "unexpected",
+        operation: "discord_digest_plan_progress",
+      });
     }
 
     const digestData: FarmDigestData = {
@@ -111,7 +112,11 @@ export async function registerDiscordDigestRoute(
       });
       return reply.send({ ok: true, plates_overnight: platesOvernight });
     } catch (err) {
-      logger.log("error", `[discord-digest] Failed: ${err instanceof Error ? err.message : String(err)}`, {});
+      logger.log(
+        "error",
+        `[discord-digest] Failed: ${err instanceof Error ? err.message : String(err)}`,
+        {},
+      );
       return reply.status(500).send({ detail: "Failed to send digest" });
     }
   });

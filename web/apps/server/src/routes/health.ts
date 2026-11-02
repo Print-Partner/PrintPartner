@@ -57,7 +57,8 @@ export async function registerHealthRoutes(
       authenticated: request.sessionUser !== null,
       authentication_required: config.authRequired,
       registration_open:
-        !mapped && config.registrationOpen &&
+        !mapped &&
+        config.registrationOpen &&
         (config.multiUser || (config.singleUserAuth && (authStore?.countUsers() ?? 0) === 0)),
       data_dir: config.dataDir,
       port: config.port,
@@ -67,8 +68,7 @@ export async function registerHealthRoutes(
         connected: dbOk,
         driver: saasDb.bundle?.driver ?? "sqlite",
         postgres: postgresOk,
-        support_status:
-          saasDb.bundle?.driver === "postgres" ? "experimental" : "supported",
+        support_status: saasDb.bundle?.driver === "postgres" ? "experimental" : "supported",
       },
       deployment: deploymentCapability({
         databaseDriver: saasDb.bundle?.driver === "postgres" ? "postgres" : "sqlite",
@@ -90,7 +90,12 @@ function healthCapabilities(config: ServerConfig, mapped: boolean): string[] {
     "jobs_ws",
     "fleet_presets",
     "integrations_api",
-    ...(config.multiUser ? [...(!mapped ? ["multi_user_auth"] : []), ...(hosted ? [INVITE_BOARD_CAPABILITY] : ["plan_sharing"])] : []),
+    ...(config.multiUser
+      ? [
+          ...(!mapped ? ["multi_user_auth"] : []),
+          ...(hosted ? [INVITE_BOARD_CAPABILITY] : ["plan_sharing"]),
+        ]
+      : []),
     ...(config.singleUserAuth && !mapped ? ["single_user_auth"] : []),
     ...(config.smtpConfigured && !mapped ? ["password_reset_email"] : []),
     ...(hosted

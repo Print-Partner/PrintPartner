@@ -3,10 +3,7 @@ import type { AcceptedProfileProgress, AppRepository } from "../db/repository.js
 import { loadFleet } from "../services/printer-fleet.js";
 import { probeFleetHostStatus } from "../services/printer-fleet-status.js";
 import type { IntegrationPort } from "../integrations/store.js";
-import {
-  extractApiKey,
-  type ApiKeyValidator,
-} from "../middleware/api-key.js";
+import { extractApiKey, type ApiKeyValidator } from "../middleware/api-key.js";
 import { getLogger } from "../services/logger.js";
 import { readFarmAccess } from "../lib/farm-access.js";
 
@@ -81,7 +78,10 @@ export async function registerMetricsRoutes(
     const farmAccess = readFarmAccess(() => deps.repo);
     if (farmAccess.kind === "invalid") {
       return reply.status(500).send({
-        status: 500, title: "Internal Server Error", detail: farmAccess.error, code: farmAccess.code,
+        status: 500,
+        title: "Internal Server Error",
+        detail: farmAccess.error,
+        code: farmAccess.code,
       });
     }
 
@@ -131,7 +131,13 @@ export async function registerMetricsRoutes(
       const repo = deps.repo;
 
       // Query print_jobs table for counter metrics (grouped by printer_id, material, status)
-      type JobRow = { printer_id: string; material: string; status: string; cnt: number; filament_sum: number | null };
+      type JobRow = {
+        printer_id: string;
+        material: string;
+        status: string;
+        cnt: number;
+        filament_sum: number | null;
+      };
       let jobRows: JobRow[] = [];
       try {
         jobRows = repo.printJobMetrics();
@@ -149,7 +155,8 @@ export async function registerMetricsRoutes(
       for (const row of jobRows) {
         const key = `printer_id="${escape(row.printer_id)}",material="${escape(row.material)}"`;
         if (row.status === "sent") sentMap.set(key, (sentMap.get(key) ?? 0) + row.cnt);
-        if (row.status === "completed") completedMap.set(key, (completedMap.get(key) ?? 0) + row.cnt);
+        if (row.status === "completed")
+          completedMap.set(key, (completedMap.get(key) ?? 0) + row.cnt);
         if (row.status === "failed") failedMap.set(key, (failedMap.get(key) ?? 0) + row.cnt);
         filamentConsumedTotal += row.filament_sum ?? 0;
       }
@@ -187,7 +194,9 @@ export async function registerMetricsRoutes(
       }
       lines.push("");
 
-      lines.push("# HELP filament_consumed_g Total filament consumed in grams (from recorded print jobs)");
+      lines.push(
+        "# HELP filament_consumed_g Total filament consumed in grams (from recorded print jobs)",
+      );
       lines.push("# TYPE filament_consumed_g gauge");
       lines.push(`filament_consumed_g ${filamentConsumedTotal}`);
       lines.push("");
@@ -220,11 +229,10 @@ export async function registerMetricsRoutes(
         lines.push("");
       } catch {
         lines.push("plan_progress_collection_available 0", "");
-        getLogger().log(
-          "error",
-          "[metrics] Accepted Plan progress collection unavailable",
-          { failure: "unexpected", operation: "metrics_plan_progress" },
-        );
+        getLogger().log("error", "[metrics] Accepted Plan progress collection unavailable", {
+          failure: "unexpected",
+          operation: "metrics_plan_progress",
+        });
       }
 
       // printers_idle / printers_printing from fleet + live integration status
@@ -269,12 +277,7 @@ function escapeLabel(s: string): string {
 }
 
 type AcceptedProgressMetricState =
-  | "ready"
-  | "empty"
-  | "compatibility_dirty"
-  | "uninitialized"
-  | "integrity"
-  | "concurrent_update";
+  "ready" | "empty" | "compatibility_dirty" | "uninitialized" | "integrity" | "concurrent_update";
 
 function acceptedProgressMetricState(
   progress: AcceptedProfileProgress,

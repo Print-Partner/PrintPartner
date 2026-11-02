@@ -15,7 +15,9 @@ describe("GitHub token settings", () => {
     try {
       for (const token of ["synthetic-first-token", "synthetic-replacement-token", ""]) {
         const saved = await first.app.inject({
-          method: "PUT", url: "/settings/github-pat", payload: { token },
+          method: "PUT",
+          url: "/settings/github-pat",
+          payload: { token },
         });
         expect(saved.statusCode).toBe(200);
         expect(saved.json().configured).toBe(Boolean(token));

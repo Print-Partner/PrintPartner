@@ -132,9 +132,7 @@ describe("POST /printers", () => {
       method: "PUT",
       url: "/printers",
       payload: {
-        printers: [
-          { ...machine, integration_id: integration.id, device_id: "default" },
-        ],
+        printers: [{ ...machine, integration_id: integration.id, device_id: "default" }],
       },
     });
 
@@ -214,7 +212,6 @@ describe("POST /printers", () => {
 });
 
 describe("PUT /printers/:id", () => {
-
   it("sets an explicit preferred_slicer override", async () => {
     const app = await makeApp();
     const printer = await addPrinter(app, "Redoubt");
@@ -228,7 +225,9 @@ describe("PUT /printers/:id", () => {
     expect(res.json()).toMatchObject({ id: printer.id, preferred_slicer: "prusa" });
 
     const list = await app.inject({ method: "GET", url: "/printers" });
-    const fleet = list.json() as { printers: Array<{ id: string; preferred_slicer?: string | null }> };
+    const fleet = list.json() as {
+      printers: Array<{ id: string; preferred_slicer?: string | null }>;
+    };
     expect(fleet.printers.find((p) => p.id === printer.id)?.preferred_slicer).toBe("prusa");
   });
 
@@ -331,10 +330,7 @@ describe("PUT /printers/:id/details", () => {
       device_id: "default",
       preferred_slicer: "prusa",
       preset_id: null,
-      loaded_filaments: [
-        loadedFilament,
-        { slot: 2, filament_color_id: null, label: "" },
-      ],
+      loaded_filaments: [loadedFilament, { slot: 2, filament_color_id: null, label: "" }],
     });
   });
 
@@ -545,10 +541,7 @@ describe("PUT /printers/:id/details", () => {
     [{ bed_depth_mm: -1 }, "bed_depth_mm must be greater than 0"],
     [{ bed_height_mm: 0 }, "bed_height_mm must be null or greater than 0"],
     [{ margin_mm: -1 }, "margin_mm must be 0 or greater"],
-    [
-      { margin_mm: 105 },
-      "margin_mm must be less than half of bed width and depth",
-    ],
+    [{ margin_mm: 105 }, "margin_mm must be less than half of bed width and depth"],
     [{ max_filament_slots: 5 }, "max_filament_slots must be an integer from 1 to 4"],
   ])("rejects invalid editable details %j", async (invalid, detail) => {
     const app = await makeApp();

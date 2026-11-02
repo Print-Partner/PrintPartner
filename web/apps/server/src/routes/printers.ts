@@ -29,7 +29,10 @@ import type {
 import { sendProblem } from "../lib/api-error.js";
 import { cancelResponseBody } from "../lib/bounded-response.js";
 import { getLogger } from "../services/logger.js";
-import { capturePrinterFile, printerFileSnapshotSource } from "../services/printer-file-snapshots.js";
+import {
+  capturePrinterFile,
+  printerFileSnapshotSource,
+} from "../services/printer-file-snapshots.js";
 import { printerStoredFileIdentity } from "../services/printer-checkoff.js";
 
 type RouteDeps = { repo: AppRepository };
@@ -50,10 +53,7 @@ type PrinterHostCapability =
       adapter: NonNullable<ReturnType<typeof getIntegrationAdapter>>;
     };
 
-function printerHostCapability(
-  repo: AppRepository,
-  printerId: string,
-): PrinterHostCapability {
+function printerHostCapability(repo: AppRepository, printerId: string): PrinterHostCapability {
   const printer = findFleetPrinter(repo, printerId);
   if (!printer) return { ok: false, error: "printer_not_found" };
   const integrationId = printer.integration_id?.trim();
@@ -208,9 +208,18 @@ export async function registerPrinterRoutes(app: FastifyInstance, deps: RouteDep
     "/printers/:id/files/content",
     { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      const profileId = request.query.profile_id === undefined ? undefined : Number(request.query.profile_id);
-      if (profileId !== undefined && (!Number.isInteger(profileId) || profileId <= 0 || !deps.repo.getProfileHeader(profileId))) {
-        return sendProblem(reply, 400, "Bad Request", "Choose an existing Build before opening a print file");
+      const profileId =
+        request.query.profile_id === undefined ? undefined : Number(request.query.profile_id);
+      if (
+        profileId !== undefined &&
+        (!Number.isInteger(profileId) || profileId <= 0 || !deps.repo.getProfileHeader(profileId))
+      ) {
+        return sendProblem(
+          reply,
+          400,
+          "Bad Request",
+          "Choose an existing Build before opening a print file",
+        );
       }
       const requested = String(request.query.path ?? "").trim();
       if (!requested) return sendProblem(reply, 400, "Bad Request", "path is required");
@@ -231,7 +240,10 @@ export async function registerPrinterRoutes(app: FastifyInstance, deps: RouteDep
         failure: { log: "Printer file open failed", detail: "Could not open printer file" },
         use: async (files, config) => {
           const startedAt = Date.now();
-          const snapshotSource = profileId === undefined ? null : printerFileSnapshotSource(deps.repo, request.params.id);
+          const snapshotSource =
+            profileId === undefined
+              ? null
+              : printerFileSnapshotSource(deps.repo, request.params.id);
           // Only open something the host actually listed, so a crafted path
           // cannot reach a file outside the browsable storage tree.
           const listing = await files.browse(config, directory);
@@ -245,9 +257,18 @@ export async function registerPrinterRoutes(app: FastifyInstance, deps: RouteDep
             return reply;
           }
           if (profileId !== undefined && listed.kind === "file" && response.ok && response.body) {
-            const captured = capturePrinterFile(deps.repo, {
-              profileId, printerId: request.params.id, remotePath: filePath, filename: listed.name,
-            }, printerStoredFileIdentity(listed), response, snapshotSource);
+            const captured = capturePrinterFile(
+              deps.repo,
+              {
+                profileId,
+                printerId: request.params.id,
+                remotePath: filePath,
+                filename: listed.name,
+              },
+              printerStoredFileIdentity(listed),
+              response,
+              snapshotSource,
+            );
             response = captured.response;
             reply.header("X-PrintPartner-Snapshot", captured.token);
             reply.header("Access-Control-Expose-Headers", "X-PrintPartner-Snapshot");
@@ -428,11 +449,7 @@ export async function registerPrinterRoutes(app: FastifyInstance, deps: RouteDep
           model: body.model.trim(),
           bed_width_mm: positiveMm(body.bed_width_mm, 250, "bed_width_mm"),
           bed_depth_mm: positiveMm(body.bed_depth_mm, 210, "bed_depth_mm"),
-          bed_height_mm: nullablePositiveMm(
-            body.bed_height_mm,
-            250,
-            "bed_height_mm",
-          ),
+          bed_height_mm: nullablePositiveMm(body.bed_height_mm, 250, "bed_height_mm"),
           margin_mm: 4,
           max_filament_slots: Math.max(1, Number(body.max_filament_slots ?? 1) || 1),
           loaded_filaments: [{ slot: 1, filament_color_id: null, label: "" }],
@@ -476,10 +493,7 @@ export async function registerPrinterRoutes(app: FastifyInstance, deps: RouteDep
         return reply.status(400).send({ detail: "Unknown Printer preset" });
       }
       const currentDetails = currentPresetDetails(preset, details.name);
-      if (
-        details.preset_id === existingPresetId &&
-        !samePresetSnapshot(details, currentDetails)
-      ) {
+      if (details.preset_id === existingPresetId && !samePresetSnapshot(details, currentDetails)) {
         return reply.status(400).send({
           detail: "Preset details must match the stored snapshot or current preset",
         });
@@ -506,9 +520,7 @@ export async function registerPrinterRoutes(app: FastifyInstance, deps: RouteDep
     }
     saveFleet(
       deps.repo,
-      fleet.map((printer) =>
-        printer.id === id ? { ...printer, ...details } : printer,
-      ),
+      fleet.map((printer) => (printer.id === id ? { ...printer, ...details } : printer)),
     );
     const saved = findFleetPrinter(deps.repo, id);
     if (!saved) throw new Error("Saved Printer was not found");

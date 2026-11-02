@@ -52,10 +52,7 @@ import {
   type PrinterCheckoffLinkPatch,
 } from "../services/printer-checkoff-store.js";
 import { summarizePrintOutcomes } from "../services/printer-outcomes-store.js";
-import {
-  groupObjectsByPart,
-  matchObjectsToFilenames,
-} from "../services/gcode-object-parser.js";
+import { groupObjectsByPart, matchObjectsToFilenames } from "../services/gcode-object-parser.js";
 import {
   claimUnattributedPrint,
   createUnattributedPrint,
@@ -84,7 +81,10 @@ import {
 import { MAX_PRINT_FILE_UPLOAD_BYTES as MAX_UPLOAD_BYTES } from "../services/upload-limits.js";
 import { HOSTED_TENANT_DISK_QUOTA_BYTES } from "@print-partner/contracts";
 import { sendIfTenantDiskQuotaExceeded } from "../lib/tenant-disk-quota.js";
-import { readPrinterFileSnapshot, consumePrinterFileSnapshot } from "../services/printer-file-snapshots.js";
+import {
+  readPrinterFileSnapshot,
+  consumePrinterFileSnapshot,
+} from "../services/printer-file-snapshots.js";
 
 type RouteDeps = {
   repo: AppRepository;
@@ -148,17 +148,15 @@ function repairEmptyAwaitingLinks(
   beforeRepair: (link: PrinterCheckoffLink) => void,
 ): PrinterCheckoffLink[] {
   return links.map((link) => {
-    if (link.state !== "awaiting_verify" || link.units.length > 0 || link.imported_inventory) return link;
+    if (link.state !== "awaiting_verify" || link.units.length > 0 || link.imported_inventory)
+      return link;
     beforeRepair(link);
     const repaired = repo.materializeAcceptedPrinterLink({ kind: "repair", expectedLink: link });
     return repaired.kind === "repaired" ? repaired.link : link;
   });
 }
 
-function claimMatchingUnattributedPrints(
-  repo: AppRepository,
-  link: PrinterCheckoffLink,
-): void {
+function claimMatchingUnattributedPrints(repo: AppRepository, link: PrinterCheckoffLink): void {
   for (const print of listOpenUnattributedPrints(repo)) {
     const normalizedFilename = normalizePrinterFilename(print.filename);
     if (
@@ -271,10 +269,7 @@ async function readBoundedBody(response: Response): Promise<Uint8Array | null> {
 /** A host that can actually serve print files, with the config to reach it. */
 type PrinterFileGateway = { files: PrinterFileAccess; config: IntegrationConfig };
 
-function printerFileGateway(
-  repo: AppRepository,
-  integrationId: string,
-): PrinterFileGateway | null {
+function printerFileGateway(repo: AppRepository, integrationId: string): PrinterFileGateway | null {
   const integration = getIntegrationConfig(repo, integrationId);
   if (!integration || integration.config.enabled === false) return null;
   const files = getIntegrationAdapter(integration.type)?.files;
@@ -560,7 +555,8 @@ function parsePrintFileRequest(repo: AppRepository, raw: unknown): PrintFileRequ
   if (remotePath && uploadToken) {
     return invalid("Send remote_path or upload_token, not both");
   }
-  const snapshotToken = typeof body.snapshot_token === "string" ? body.snapshot_token.trim() : undefined;
+  const snapshotToken =
+    typeof body.snapshot_token === "string" ? body.snapshot_token.trim() : undefined;
   if (body.snapshot_token !== undefined && (!snapshotToken || !remotePath || uploadToken)) {
     return invalid("A snapshot token requires its original printer file path");
   }
@@ -570,9 +566,14 @@ function parsePrintFileRequest(repo: AppRepository, raw: unknown): PrintFileRequ
     fromPrinterStorage: remotePath !== undefined,
   });
   if (printer.outcome === "invalid") return printer;
-  if (Array.isArray(body.object_names) && (body.object_names.length > 500 ||
-    body.object_names.some((name) => typeof name !== "string" || name.trim().length > 200))) {
-    return invalid("Import supports at most 500 object names of up to 200 characters; no objects were imported");
+  if (
+    Array.isArray(body.object_names) &&
+    (body.object_names.length > 500 ||
+      body.object_names.some((name) => typeof name !== "string" || name.trim().length > 200))
+  ) {
+    return invalid(
+      "Import supports at most 500 object names of up to 200 characters; no objects were imported",
+    );
   }
   return {
     outcome: "parsed",
@@ -606,10 +607,17 @@ async function inspectPrintFile(
   parsed: ParsedPrintFileRequest,
 ): Promise<PrintFileInspection> {
   if (parsed.snapshotToken && parsed.remotePath) {
-    return readPrinterFileSnapshot(repo, parsed.snapshotToken, {
-      profileId: parsed.profileId, printerId: parsed.printerId,
-      remotePath: parsed.remotePath, filename: parsed.filename,
-    }) ?? { outcome: "rejected", detail: "This file preview expired or its source changed. Cancel and reopen the file." };
+    return (
+      readPrinterFileSnapshot(repo, parsed.snapshotToken, {
+        profileId: parsed.profileId,
+        printerId: parsed.printerId,
+        remotePath: parsed.remotePath,
+        filename: parsed.filename,
+      }) ?? {
+        outcome: "rejected",
+        detail: "This file preview expired or its source changed. Cancel and reopen the file.",
+      }
+    );
   }
   if (parsed.remotePath) return inspectRemoteFile(repo, parsed.integrationId, parsed.remotePath);
   if (parsed.uploadToken) return inspectUploadedFile(parsed.uploadToken, parsed.profileId);
@@ -631,7 +639,10 @@ function suggestPrintFileAttribution(
   plan_revision_id: number;
   match_review: PrintFileMatchReview;
 } {
-  const suggestion = resolveAcceptedPrinterAttribution(snapshot, { ...observation, positiveOnly: true });
+  const suggestion = resolveAcceptedPrinterAttribution(snapshot, {
+    ...observation,
+    positiveOnly: true,
+  });
   const named = confirmAcceptedPrinterUnits({ snapshot, confirmed: suggestion.units });
   return {
     suggested_units:
@@ -648,17 +659,31 @@ function suggestPrintFileAttribution(
     plan_revision_id: snapshot.revisionId,
     match_review: {
       notices: suggestion.outcomes.flatMap((outcome) =>
-        outcome.kind === "already_completed" ? [`${outcome.rawName} is already checked off.`] :
-        outcome.kind === "duplicate_observation" ? [`${outcome.rawName} repeats the same identified unit; it is not another copy.`] : []),
+        outcome.kind === "already_completed"
+          ? [`${outcome.rawName} is already checked off.`]
+          : outcome.kind === "duplicate_observation"
+            ? [`${outcome.rawName} repeats the same identified unit; it is not another copy.`]
+            : [],
+      ),
       objects: suggestion.outcomes.flatMap((outcome) =>
         outcome.kind === "unmatched" || outcome.kind === "ambiguous_filename"
-          ? [{ object_index: outcome.inputIndex, name: outcome.rawName }] : []),
-      parts: snapshot.parts.filter((part) => part.included && part.units.some((unit) => unit.required))
+          ? [{ object_index: outcome.inputIndex, name: outcome.rawName }]
+          : [],
+      ),
+      parts: snapshot.parts
+        .filter((part) => part.included && part.units.some((unit) => unit.required))
         .map((part) => ({
-          part_id: part.projectionPartId, filename: part.filename,
-          relative_path: part.relativePath || part.filename, source_label: part.sourceLayer,
-          units: part.units.filter((unit) => unit.required && !unit.completed)
-            .map((unit) => ({ part_id: part.projectionPartId, unit_index: unit.unitIndex, object_name: unit.objectName })),
+          part_id: part.projectionPartId,
+          filename: part.filename,
+          relative_path: part.relativePath || part.filename,
+          source_label: part.sourceLayer,
+          units: part.units
+            .filter((unit) => unit.required && !unit.completed)
+            .map((unit) => ({
+              part_id: part.projectionPartId,
+              unit_index: unit.unitIndex,
+              object_name: unit.objectName,
+            })),
         })),
     },
   };
@@ -722,13 +747,13 @@ export async function registerPrinterCheckoffRoutes(
       const integrationId = query.integration_id?.trim();
       const profileIdRaw = query.profile_id?.trim();
       const profileId =
-        profileIdRaw && Number.isInteger(Number(profileIdRaw))
-          ? Number(profileIdRaw)
-          : undefined;
+        profileIdRaw && Number.isInteger(Number(profileIdRaw)) ? Number(profileIdRaw) : undefined;
 
       if (query.state === "watching") {
         const links = listWatchingPrinterCheckoffLinks(deps.repo, integrationId);
-        return { links: profileId == null ? links : links.filter((link) => link.profile_id === profileId) };
+        return {
+          links: profileId == null ? links : links.filter((link) => link.profile_id === profileId),
+        };
       }
       let links =
         query.state === "awaiting_verify"
@@ -813,30 +838,23 @@ export async function registerPrinterCheckoffRoutes(
       }
 
       // Handle externally-completed prints (no watching link transitioned)
-      if (
-        status.state === "complete" &&
-        updates.length === 0 &&
-        status.filename
-      ) {
+      if (status.state === "complete" && updates.length === 0 && status.filename) {
         const normalizedFilename = normalizePrinterFilename(status.filename);
         // Check if we already stored this as unattributed
         const alreadyTracked = () =>
           listUnattributedPrints(deps.repo).some(
-            (p) => p.integration_id === integrationId &&
+            (p) =>
+              p.integration_id === integrationId &&
               normalizePrinterFilename(p.filename) === normalizedFilename,
-          ) || loadPrinterCheckoffLinks(deps.repo).some(
-            (link) => link.integration_id === integrationId &&
+          ) ||
+          loadPrinterCheckoffLinks(deps.repo).some(
+            (link) =>
+              link.integration_id === integrationId &&
               normalizePrinterFilename(link.filename) === normalizedFilename,
           );
         if (!alreadyTracked()) {
-          const objectNames = await getObjectListForIntegration(
-            deps.repo,
-            integrationId,
-          );
-          const candidates = await buildCandidatesFromObjectNames(
-            deps.repo,
-            objectNames,
-          );
+          const objectNames = await getObjectListForIntegration(deps.repo, integrationId);
+          const candidates = await buildCandidatesFromObjectNames(deps.repo, objectNames);
           if (!alreadyTracked()) {
             const unattributedPrint = createUnattributedPrint(
               integrationId,
@@ -857,10 +875,7 @@ export async function registerPrinterCheckoffRoutes(
         integrationId,
       );
 
-      if (
-        (status.state === "printing" || status.state === "paused") &&
-        status.filename
-      ) {
+      if ((status.state === "printing" || status.state === "paused") && status.filename) {
         const normalizedFilename = normalizePrinterFilename(status.filename);
         const dismissedIds = listUnattributedPrints(deps.repo)
           .filter(
@@ -886,10 +901,7 @@ export async function registerPrinterCheckoffRoutes(
             const binding = bindings.find((b) => b.integration_id === integrationId);
             if (binding?.profile_id) {
               attributionProfileId = binding.profile_id;
-              const objectNames = await getObjectListForIntegration(
-                deps.repo,
-                integrationId,
-              );
+              const objectNames = await getObjectListForIntegration(deps.repo, integrationId);
               const fleet = loadFleet(deps.repo);
               const machine = fleet.find((m) => m.integration_id === integrationId);
               const created = deps.repo.materializeAcceptedPrinterLink({
@@ -912,9 +924,7 @@ export async function registerPrinterCheckoffRoutes(
                 {
                   failure: "integrity",
                   code: error.code,
-                  ...(attributionProfileId == null
-                    ? {}
-                    : { profileId: attributionProfileId }),
+                  ...(attributionProfileId == null ? {} : { profileId: attributionProfileId }),
                   integrationId,
                 },
                 "Accepted printer auto-attribution failed",
@@ -923,9 +933,7 @@ export async function registerPrinterCheckoffRoutes(
               request.log.error(
                 {
                   failure: "unexpected",
-                  ...(attributionProfileId == null
-                    ? {}
-                    : { profileId: attributionProfileId }),
+                  ...(attributionProfileId == null ? {} : { profileId: attributionProfileId }),
                   integrationId,
                 },
                 "Accepted printer auto-attribution failed",
@@ -950,20 +958,26 @@ export async function registerPrinterCheckoffRoutes(
     "/printer-checkoff/verify",
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      const body = request.body as { link_id?: string; decisions?: unknown; additional_decisions?: unknown };
+      const body = request.body as {
+        link_id?: string;
+        decisions?: unknown;
+        additional_decisions?: unknown;
+      };
       const linkId = String(body.link_id ?? "").trim();
       if (!linkId) {
         return sendProblem(reply, 400, "Bad Request", "link_id is required");
       }
       let result;
       try {
-        result = verifyPrinterCheckoff(deps.repo, linkId, body.decisions, body.additional_decisions);
+        result = verifyPrinterCheckoff(
+          deps.repo,
+          linkId,
+          body.decisions,
+          body.additional_decisions,
+        );
       } catch (error) {
         if (error instanceof AcceptedPlanOperationalIntegrityError) {
-          request.log.error(
-            { code: error.code, linkId },
-            "Accepted Plan integrity failure",
-          );
+          request.log.error({ code: error.code, linkId }, "Accepted Plan integrity failure");
           return sendProblem(
             reply,
             500,
@@ -1277,18 +1291,44 @@ export async function registerPrinterCheckoffRoutes(
       let objectMappings: PrinterObjectMapping[] | undefined;
       if (body.object_mappings !== undefined) {
         if (!Array.isArray(body.object_mappings) || body.object_mappings.length > 500) {
-          return sendProblem(reply, 400, "Bad Request", "object_mappings must be a list of at most 500 choices");
+          return sendProblem(
+            reply,
+            400,
+            "Bad Request",
+            "object_mappings must be a list of at most 500 choices",
+          );
         }
         objectMappings = [];
         for (const entry of body.object_mappings) {
           const value: unknown = entry;
-          if (typeof value !== "object" || value === null ||
-            !("object_index" in value) || typeof value.object_index !== "number" || !Number.isInteger(value.object_index) || value.object_index < 0 ||
-            !("part_id" in value) || typeof value.part_id !== "number" || !Number.isInteger(value.part_id) || value.part_id <= 0 ||
-            !("unit_index" in value) || typeof value.unit_index !== "number" || !Number.isInteger(value.unit_index) || value.unit_index < 0) {
-            return sendProblem(reply, 400, "Bad Request", "object_mappings contains an invalid choice");
+          if (
+            typeof value !== "object" ||
+            value === null ||
+            !("object_index" in value) ||
+            typeof value.object_index !== "number" ||
+            !Number.isInteger(value.object_index) ||
+            value.object_index < 0 ||
+            !("part_id" in value) ||
+            typeof value.part_id !== "number" ||
+            !Number.isInteger(value.part_id) ||
+            value.part_id <= 0 ||
+            !("unit_index" in value) ||
+            typeof value.unit_index !== "number" ||
+            !Number.isInteger(value.unit_index) ||
+            value.unit_index < 0
+          ) {
+            return sendProblem(
+              reply,
+              400,
+              "Bad Request",
+              "object_mappings contains an invalid choice",
+            );
           }
-          objectMappings.push({ object_index: value.object_index, part_id: value.part_id, unit_index: value.unit_index });
+          objectMappings.push({
+            object_index: value.object_index,
+            part_id: value.part_id,
+            unit_index: value.unit_index,
+          });
         }
       }
 
@@ -1312,7 +1352,12 @@ export async function registerPrinterCheckoffRoutes(
       }
       if (inspection.outcome === "inspected") {
         if (!alreadyPrinted && !isPrintReady(inspection.classification)) {
-          return sendProblem(reply, 409, "Conflict", printFileNextAction(inspection.classification));
+          return sendProblem(
+            reply,
+            409,
+            "Conflict",
+            printFileNextAction(inspection.classification),
+          );
         }
         classification = inspection.classification;
         remoteIdentity = inspection.identity;
@@ -1344,7 +1389,7 @@ export async function registerPrinterCheckoffRoutes(
           expectedPlanRevisionId: planRevisionId,
           objectNames: parsed.objectNames,
           confirmedUnits,
-          objectMappings: body.retain_unmatched === true ? objectMappings ?? [] : objectMappings,
+          objectMappings: body.retain_unmatched === true ? (objectMappings ?? []) : objectMappings,
           retainUnmatched: body.retain_unmatched === true,
           link: {
             integrationId: parsed.integrationId,

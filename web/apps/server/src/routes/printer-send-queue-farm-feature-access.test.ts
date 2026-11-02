@@ -39,17 +39,26 @@ function upload(fields: Fields) {
   return {
     headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
     payload: Buffer.concat([
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="plate.gcode"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="plate.gcode"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      ),
       bytes,
       Buffer.from("\r\n"),
-      ...fields.map(([name, value]) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`)),
+      ...fields.map(([name, value]) =>
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+        ),
+      ),
       Buffer.from(`--${boundary}--\r\n`),
     ]),
   };
 }
 
 function configureHost(repo: AppRepository, type = "moonraker") {
-  repo.setSetting("integrations", JSON.stringify([{ id: "host", type, name: "Workshop", config: {} }]));
+  repo.setSetting(
+    "integrations",
+    JSON.stringify([{ id: "host", type, name: "Workshop", config: {} }]),
+  );
   repo.setSetting("printer.fleet", JSON.stringify([{ id: "printer", integration_id: "host" }]));
 }
 
@@ -88,7 +97,11 @@ describe("printer send queue farm admission", () => {
     vi.spyOn(jobs, "start").mockResolvedValue("upload-job");
     execution = new StatusExecution();
     vi.spyOn(execution, "probe").mockResolvedValue({ state: "idle", message: "Ready" });
-    integrations = createIntegrationPort({ repo, getAdapter: getIntegrationAdapter, statusExecution: execution });
+    integrations = createIntegrationPort({
+      repo,
+      getAdapter: getIntegrationAdapter,
+      statusExecution: execution,
+    });
     vi.spyOn(integrations, "getStatus").mockResolvedValue({ state: "idle", message: "Ready" });
     app = Fastify();
     await app.register(multipart);
@@ -99,7 +112,10 @@ describe("printer send queue farm admission", () => {
       tenantStorage.run(request.tenantId, done);
     });
     for (const prefix of ["", "/api/v1"]) {
-      await app.register(async (routes) => registerPrinterSendQueueRoutes(routes, { repo, jobs, integrations }), { prefix });
+      await app.register(
+        async (routes) => registerPrinterSendQueueRoutes(routes, { repo, jobs, integrations }),
+        { prefix },
+      );
     }
     await app.ready();
   });
@@ -114,12 +130,21 @@ describe("printer send queue farm admission", () => {
   });
 
   function fields(plan = profileId): Fields {
-    return [["printer_id", "printer"], ["profile_id", String(plan)], ["start", "true"]];
+    return [
+      ["printer_id", "printer"],
+      ["profile_id", String(plan)],
+      ["start", "true"],
+    ];
   }
 
   function enqueue(url = urls[0], tenant = "default", metadata = fields()) {
     const body = upload(metadata);
-    return app.inject({ method: "POST", url, ...body, headers: { ...body.headers, "x-test-tenant": tenant } });
+    return app.inject({
+      method: "POST",
+      url,
+      ...body,
+      headers: { ...body.headers, "x-test-tenant": tenant },
+    });
   }
 
   function act(action: "dispatch" | "drain", id: string, url = urls[0], tenant = "default") {
@@ -175,7 +200,11 @@ describe("printer send queue farm admission", () => {
     const response = await enqueue();
     expect(response.statusCode).toBe(200);
     expect(loadPrinterSendQueue(repo)).toHaveLength(1);
-    expect(response.json().item).toMatchObject({ state: "queued", profile_id: profileId, printer_id: "printer" });
+    expect(response.json().item).toMatchObject({
+      state: "queued",
+      profile_id: profileId,
+      printer_id: "printer",
+    });
     expect(jobs.start).not.toHaveBeenCalled();
   });
 
@@ -203,16 +232,19 @@ describe("printer send queue farm admission", () => {
     },
   );
 
-  it.each(["dispatch", "drain"] as const)("%s denies a stored Moonraker item when farm is off and does not start a job", async (action) => {
-    const item = seed();
-    const before = repo.getSetting(PRINTER_SEND_QUEUE_SETTINGS_KEY);
-    const response = await act(action, item.id);
-    expect(response.json()).toEqual(farmOff);
-    expect(repo.getSetting(PRINTER_SEND_QUEUE_SETTINGS_KEY)).toBe(before);
-    expect(jobs.get).not.toHaveBeenCalled();
-    expect(jobs.start).not.toHaveBeenCalled();
-    expect(integrations.getStatus).not.toHaveBeenCalled();
-  });
+  it.each(["dispatch", "drain"] as const)(
+    "%s denies a stored Moonraker item when farm is off and does not start a job",
+    async (action) => {
+      const item = seed();
+      const before = repo.getSetting(PRINTER_SEND_QUEUE_SETTINGS_KEY);
+      const response = await act(action, item.id);
+      expect(response.json()).toEqual(farmOff);
+      expect(repo.getSetting(PRINTER_SEND_QUEUE_SETTINGS_KEY)).toBe(before);
+      expect(jobs.get).not.toHaveBeenCalled();
+      expect(jobs.start).not.toHaveBeenCalled();
+      expect(integrations.getStatus).not.toHaveBeenCalled();
+    },
+  );
 
   it("drain denies the batch when any selected Plan has farm off", async () => {
     repo.setSetting("feature_toggles", '{"farm":true}');
@@ -222,11 +254,16 @@ describe("printer send queue farm admission", () => {
     configureHost(repo);
     const blocked = seed();
     const open = seed("default", allowed);
-    repo.setSetting("printer.fleet", JSON.stringify([
-      { id: "printer", integration_id: "host" },
-      { id: "other", integration_id: "host" },
-    ]));
-    const queued = loadPrinterSendQueue(repo).map((item) => item.id === open.id ? { ...item, printer_id: "other" } : item);
+    repo.setSetting(
+      "printer.fleet",
+      JSON.stringify([
+        { id: "printer", integration_id: "host" },
+        { id: "other", integration_id: "host" },
+      ]),
+    );
+    const queued = loadPrinterSendQueue(repo).map((item) =>
+      item.id === open.id ? { ...item, printer_id: "other" } : item,
+    );
     repo.setSetting(PRINTER_SEND_QUEUE_SETTINGS_KEY, JSON.stringify(queued));
     const response = await act("drain", blocked.id);
     expect(response.json()).toEqual(farmOff);
@@ -275,21 +312,24 @@ describe("printer send queue farm admission", () => {
     },
   );
 
-  it.each(["1", "true"])("exact flag %j enforces farm on both PrusaLink enqueue and dispatch", async (flag) => {
-    vi.stubEnv("PP_DESKTOP_REBUILD", flag);
-    configureHost(repo, "prusalink");
-    const denied = await enqueue(urls[1]);
-    expect(denied.json()).toEqual(farmOff);
-    expect(loadPrinterSendQueue(repo)).toEqual([]);
-    repo.setSetting("feature_toggles", '{"farm":true}');
-    const accepted = await enqueue(urls[1]);
-    expect(accepted.statusCode).toBe(200);
-    const item = loadPrinterSendQueue(repo)[0];
-    if (!item) throw new Error("missing queued item");
-    const dispatched = await act("dispatch", item.id, urls[1]);
-    expect(dispatched.statusCode).toBe(200);
-    expect(dispatched.json()).toMatchObject({ job_id: "upload-job" });
-  });
+  it.each(["1", "true"])(
+    "exact flag %j enforces farm on both PrusaLink enqueue and dispatch",
+    async (flag) => {
+      vi.stubEnv("PP_DESKTOP_REBUILD", flag);
+      configureHost(repo, "prusalink");
+      const denied = await enqueue(urls[1]);
+      expect(denied.json()).toEqual(farmOff);
+      expect(loadPrinterSendQueue(repo)).toEqual([]);
+      repo.setSetting("feature_toggles", '{"farm":true}');
+      const accepted = await enqueue(urls[1]);
+      expect(accepted.statusCode).toBe(200);
+      const item = loadPrinterSendQueue(repo)[0];
+      if (!item) throw new Error("missing queued item");
+      const dispatched = await act("dispatch", item.id, urls[1]);
+      expect(dispatched.statusCode).toBe(200);
+      expect(dispatched.json()).toMatchObject({ job_id: "upload-job" });
+    },
+  );
 
   it("isolates tenant farm choices", async () => {
     repo.setSetting("feature_toggles", '{"farm":true}');
@@ -299,7 +339,11 @@ describe("printer send queue farm admission", () => {
       repo.setSetting("feature_toggles", '{"farm":false}');
       return plan;
     });
-    const denied = await enqueue(urls[0], "other", [["printer_id", "printer"], ["profile_id", String(otherPlan)], ["start", "true"]]);
+    const denied = await enqueue(urls[0], "other", [
+      ["printer_id", "printer"],
+      ["profile_id", String(otherPlan)],
+      ["start", "true"],
+    ]);
     expect(denied.json()).toEqual(farmOff);
     const accepted = await enqueue();
     expect(accepted.statusCode).toBe(200);

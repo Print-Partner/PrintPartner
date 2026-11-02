@@ -51,10 +51,7 @@ describe("printer-checkoff route model", () => {
 
   it("matches filenames after printer normalization", () => {
     expect(
-      printMatchesLink(
-        print({ filename: "Plate_1.gcode" }),
-        link({ filename: "plate_1.gcode" }),
-      ),
+      printMatchesLink(print({ filename: "Plate_1.gcode" }), link({ filename: "plate_1.gcode" })),
     ).toBe(true);
   });
 

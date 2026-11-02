@@ -7,7 +7,11 @@ import { tmpdir } from "node:os";
 import type { PrinterStorageListing } from "@print-partner/contracts";
 import { getDb, SqliteDatabase } from "../db/client.js";
 import { AppRepository } from "../db/repository.js";
-import type { IntegrationAdapter, PrinterCameraAccess, PrinterFileAccess } from "../integrations/store.js";
+import type {
+  IntegrationAdapter,
+  PrinterCameraAccess,
+  PrinterFileAccess,
+} from "../integrations/store.js";
 import { parsePrinterMachine, saveFleet } from "../services/printer-fleet.js";
 import { registerPrinterRoutes } from "./printers.js";
 import { getLogger } from "../services/logger.js";
@@ -269,21 +273,33 @@ describe("GET /printers/:id/files", () => {
 });
 
 describe("GET /printers/:id/files/content", () => {
-  it.each([200, 404])("rejects an unusable HTTP %s file response and cancels its body", async (status) => {
-    const { app } = await setup();
-    const cancel = vi.fn();
-    registry.adapter = fakeAdapter({
-      files: {
-        browse: async () => ({ path: "", entries: [{ kind: "file", path: "bracket.gcode", name: "bracket.gcode" }] }),
-        open: async () => new Response(status === 200 ? null : new ReadableStream<Uint8Array>({ cancel }), { status }),
-      },
-    });
+  it.each([200, 404])(
+    "rejects an unusable HTTP %s file response and cancels its body",
+    async (status) => {
+      const { app } = await setup();
+      const cancel = vi.fn();
+      registry.adapter = fakeAdapter({
+        files: {
+          browse: async () => ({
+            path: "",
+            entries: [{ kind: "file", path: "bracket.gcode", name: "bracket.gcode" }],
+          }),
+          open: async () =>
+            new Response(status === 200 ? null : new ReadableStream<Uint8Array>({ cancel }), {
+              status,
+            }),
+        },
+      });
 
-    const res = await app.inject({ method: "GET", url: "/printers/hosted/files/content?path=bracket.gcode" });
+      const res = await app.inject({
+        method: "GET",
+        url: "/printers/hosted/files/content?path=bracket.gcode",
+      });
 
-    expect(res.statusCode).toBe(status === 404 ? 404 : 502);
-    expect(cancel).toHaveBeenCalledTimes(status === 404 ? 1 : 0);
-  });
+      expect(res.statusCode).toBe(status === 404 ? 404 : 502);
+      expect(cancel).toHaveBeenCalledTimes(status === 404 ? 1 : 0);
+    },
+  );
 
   it("records a download stream failure without leaking the file path or upstream error", async () => {
     const { app } = await setup();
@@ -291,28 +307,41 @@ describe("GET /printers/:id/files/content", () => {
     const privatePath = "private-customer-part.bgcode";
     registry.adapter = fakeAdapter({
       files: {
-        browse: async () => ({ path: "", entries: [{ kind: "file", path: privatePath, name: privatePath }] }),
-        open: async () => new Response(new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("partial"));
-            setTimeout(() => controller.error(new Error("secret-password upstream-host")), 10);
-          },
-        })),
+        browse: async () => ({
+          path: "",
+          entries: [{ kind: "file", path: privatePath, name: privatePath }],
+        }),
+        open: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("partial"));
+                setTimeout(() => controller.error(new Error("secret-password upstream-host")), 10);
+              },
+            }),
+          ),
       },
     });
 
     try {
-      await expect(app.inject({
-        method: "GET", url: `/printers/hosted/files/content?path=${privatePath}`,
-      })).rejects.toThrow("response destroyed before completion");
+      await expect(
+        app.inject({
+          method: "GET",
+          url: `/printers/hosted/files/content?path=${privatePath}`,
+        }),
+      ).rejects.toThrow("response destroyed before completion");
       expect(log).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledWith(expect.objectContaining({
-        severity: "error",
-        url: "/printers/:id/files/content",
-        message: "Printer file download interrupted",
-        context: { printerId: "hosted", failure: "stream_interrupted" },
-      }));
-      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-customer|secret-password|upstream-host/);
+      expect(log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          severity: "error",
+          url: "/printers/:id/files/content",
+          message: "Printer file download interrupted",
+          context: { printerId: "hosted", failure: "stream_interrupted" },
+        }),
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(
+        /private-customer|secret-password|upstream-host/,
+      );
     } finally {
       log.mockRestore();
     }

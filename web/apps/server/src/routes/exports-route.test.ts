@@ -1,22 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
 import { buildApp } from "../app.js";
 import { loadConfig } from "../config.js";
 import { createSelfHostPorts } from "../adapters/self-host/index.js";
-import {
-  enqueuePrinterSend,
-  loadPrinterSendQueue,
-} from "../services/printer-send-queue-store.js";
+import { enqueuePrinterSend, loadPrinterSendQueue } from "../services/printer-send-queue-store.js";
 import { tenantExportDirectory } from "../lib/secure-path.js";
 import { registerExportRoutes } from "./exports.js";
 
@@ -58,20 +48,10 @@ describe("GET /exports/*", () => {
     await ports.db.connect();
     const legacyRoot = join(dir, "exports");
     const legacyArtifact = join(legacyRoot, "printer-uploads", "queued", "plate.gcode");
-    const collidingArtifact = join(
-      legacyRoot,
-      "printer-uploads",
-      "colliding",
-      "plate.gcode",
-    );
+    const collidingArtifact = join(legacyRoot, "printer-uploads", "colliding", "plate.gcode");
     const tenantRoot = join(legacyRoot, "tenant-default");
     const targetArtifact = join(tenantRoot, "printer-uploads", "queued", "plate.gcode");
-    const collidingTarget = join(
-      tenantRoot,
-      "printer-uploads",
-      "colliding",
-      "plate.gcode",
-    );
+    const collidingTarget = join(tenantRoot, "printer-uploads", "colliding", "plate.gcode");
     mkdirSync(join(legacyRoot, "printer-uploads", "queued"), { recursive: true });
     mkdirSync(join(legacyRoot, "printer-uploads", "colliding"), { recursive: true });
     mkdirSync(join(tenantRoot, "printer-uploads", "colliding"), { recursive: true });
@@ -191,11 +171,16 @@ describe("GET /exports/*", () => {
     const name = 'Milo "pièce".zip';
     const bytes = Buffer.from([0x50, 0x4b, 3, 4]);
     writeFileSync(join(exportDir, name), bytes);
-    const response = await app.inject({ method: "GET", url: `/exports/bundles/${encodeURIComponent(name)}` });
+    const response = await app.inject({
+      method: "GET",
+      url: `/exports/bundles/${encodeURIComponent(name)}`,
+    });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe("application/zip");
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
-    expect(response.headers["content-disposition"]).toBe(`attachment; filename="Milo _pi_ce_.zip"; filename*=UTF-8''${encodeURIComponent(name)}`);
+    expect(response.headers["content-disposition"]).toBe(
+      `attachment; filename="Milo _pi_ce_.zip"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    );
     expect(response.rawPayload).toEqual(bytes);
   });
 

@@ -57,9 +57,7 @@ describe("administrative route authentication", () => {
           url: "/backups",
           remoteAddress: "127.0.0.1",
           headers:
-            testCase.name === "proxy trust"
-              ? { "x-forwarded-for": "203.0.113.10" }
-              : undefined,
+            testCase.name === "proxy trust" ? { "x-forwarded-for": "203.0.113.10" } : undefined,
         });
 
         expect.soft(response.statusCode, testCase.name).toBe(401);

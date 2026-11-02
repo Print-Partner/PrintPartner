@@ -97,8 +97,9 @@ describe("live backup restore", () => {
         exists: true,
         yaml: "project: restored legacy\n",
       });
-      expect(ports.repository.getSource(source.id)?.current_source_revision_id)
-        .toEqual(expect.any(Number));
+      expect(ports.repository.getSource(source.id)?.current_source_revision_id).toEqual(
+        expect.any(Number),
+      );
       expect(ports.repository.getProjectRow(source.id)?.legacyManifestCutover).toBe(true);
     } finally {
       await app.close();

@@ -27,9 +27,9 @@ export async function registerExportRoutes(app: FastifyInstance, deps: RouteDeps
         ? "text/html; charset=utf-8"
         : is3mf
           ? "model/3mf"
-        : isPng
-          ? "image/png"
-          : "application/octet-stream";
+          : isPng
+            ? "image/png"
+            : "application/octet-stream";
     return reply
       .header("Content-Type", type)
       .header("X-Content-Type-Options", "nosniff")

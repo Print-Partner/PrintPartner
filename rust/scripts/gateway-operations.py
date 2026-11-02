@@ -25,7 +25,7 @@ def normalize_owner(value):
     return value
 
 
-def planted_ownership_error(document):
+def planted_ownership_error(document):  # noqa: C901
     """Reject worker, startup, and MCP ownership the route table cannot see."""
     section_keys = ('workers', 'startup', 'mcp', 'operations')
     if not any(key in document for key in section_keys):

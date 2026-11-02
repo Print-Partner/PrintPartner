@@ -252,7 +252,7 @@ def command(*args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs).strip()
 
 
-def run_bundle_probe(argv, *, cwd, env, timeout_seconds):
+def run_bundle_probe(argv, *, cwd, env, timeout_seconds):  # noqa: C901
     process = subprocess.Popen(
         argv,
         cwd=cwd,
@@ -378,7 +378,7 @@ def bundle_probe_environment(environment):
     return {key: value for key, value in environment.items() if key not in ('NODE_OPTIONS', 'NODE_PATH')}
 
 
-def verify_macho(root, arch, executable, receipt):
+def verify_macho(root, arch, executable, receipt):  # noqa: C901
     records, sysroot = {}, set()
     receipt['mach_o'] = records
     receipt['sysroot_libraries'] = []

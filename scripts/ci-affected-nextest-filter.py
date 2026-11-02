@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import sys
 
 
 CRATE_PATH = re.compile(r"^rust/crates/([^/]+)/")

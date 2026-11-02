@@ -6,11 +6,7 @@ export function resolvePlanIdForPrinterFetch(
   storedPlanId: number | null | undefined,
   activeSpinePlanId: number | null | undefined,
 ): number | null {
-  if (
-    typeof storedPlanId === "number" &&
-    Number.isInteger(storedPlanId) &&
-    storedPlanId > 0
-  ) {
+  if (typeof storedPlanId === "number" && Number.isInteger(storedPlanId) && storedPlanId > 0) {
     return storedPlanId;
   }
   if (

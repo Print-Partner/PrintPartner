@@ -12,10 +12,7 @@ import {
   trimPrinterSendQueue,
 } from "./printer-send-queue-store.js";
 
-function item(
-  id: string,
-  state: PrinterSendQueueItem["state"],
-): PrinterSendQueueItem {
+function item(id: string, state: PrinterSendQueueItem["state"]): PrinterSendQueueItem {
   return {
     id,
     filename: `${id}.gcode`,
@@ -95,9 +92,7 @@ describe("migratePrinterSendQueueArtifactPaths", () => {
         start: false,
       });
 
-      expect(
-        migratePrinterSendQueueArtifactPaths(repo, legacyRoot, tenantRoot),
-      ).toBe(0);
+      expect(migratePrinterSendQueueArtifactPaths(repo, legacyRoot, tenantRoot)).toBe(0);
       expect(loadPrinterSendQueue(repo)[0]?.artifact_path).toBe(legacyArtifact);
     } finally {
       rmSync(dir, { recursive: true, force: true });

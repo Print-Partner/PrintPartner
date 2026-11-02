@@ -61,16 +61,16 @@ type PrinterUploadJobInput = {
   upload_job_id?: string;
 };
 
-type PrinterUploadJobEmit = (patch: {
-  message?: string;
-  progress?: number;
-}) => void;
+type PrinterUploadJobEmit = (patch: { message?: string; progress?: number }) => void;
 
 function queueSendRow(repo: AppRepository, input: PrinterUploadJobInput) {
   if (input.upload_job_id === undefined) return null;
-  return listActivePrinterSendQueue(repo).find((item) =>
-    item.upload_job_id === input.upload_job_id &&
-    item.artifact_path === input.artifact_path) ?? null;
+  return (
+    listActivePrinterSendQueue(repo).find(
+      (item) =>
+        item.upload_job_id === input.upload_job_id && item.artifact_path === input.artifact_path,
+    ) ?? null
+  );
 }
 
 export async function runPrinterUploadJob(
@@ -104,9 +104,11 @@ async function runPrinterUploadJobInner(
   emit: PrinterUploadJobEmit,
   ownedAtStart: ReturnType<typeof queueSendRow>,
 ): Promise<Record<string, unknown>> {
-  if (desktopFeaturesEnabled() && ownedAtStart && (
-    ownedAtStart.printer_id !== input.printer_id || ownedAtStart.profile_id !== input.profile_id
-  )) {
+  if (
+    desktopFeaturesEnabled() &&
+    ownedAtStart &&
+    (ownedAtStart.printer_id !== input.printer_id || ownedAtStart.profile_id !== input.profile_id)
+  ) {
     throw new Error("Stored printer upload does not match its queue item");
   }
   const fleet = loadFleet(repo);
@@ -188,20 +190,17 @@ async function runPrinterUploadJobInner(
     throw new Error(INTERRUPTED_PRINTER_SEND_ERROR);
   }
   const ownedAfterUpload = queueSendRow(repo, input);
-  const lostOwnedSend = ownedAtStart?.state === "sending"
-    && (
-      !ownedAfterUpload
-      || ownedAfterUpload.id !== ownedAtStart.id
-      || ownedAfterUpload.state !== "sending"
-    );
+  const lostOwnedSend =
+    ownedAtStart?.state === "sending" &&
+    (!ownedAfterUpload ||
+      ownedAfterUpload.id !== ownedAtStart.id ||
+      ownedAfterUpload.state !== "sending");
   if (lostOwnedSend || (ownedAfterUpload && ownedAfterUpload.state !== "sending")) {
     throw new Error(INTERRUPTED_PRINTER_SEND_ERROR);
   }
 
   emit({
-    message: result.started
-      ? `Printing on ${hostLabel}`
-      : `Uploaded ${filename} to ${hostLabel}`,
+    message: result.started ? `Printing on ${hostLabel}` : `Uploaded ${filename} to ${hostLabel}`,
     progress: 90,
   });
 

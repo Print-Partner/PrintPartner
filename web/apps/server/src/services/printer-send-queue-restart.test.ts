@@ -168,7 +168,10 @@ describe("printer send restart reconciliation", () => {
       { requireState: "queued" },
     );
 
-    const changed = await reconcilePrinterSendsAgainstLiveJobs(repo, async (jobId) => jobId === "job-live");
+    const changed = await reconcilePrinterSendsAgainstLiveJobs(
+      repo,
+      async (jobId) => jobId === "job-live",
+    );
 
     expect(changed).toEqual([]);
     expect(loadPrinterSendQueue(repo)[0]).toMatchObject({
@@ -220,9 +223,10 @@ describe("printer send restart reconciliation", () => {
     const repo = memoryRepo();
     let releaseUpload: (result: Record<string, unknown>) => void = () => undefined;
     runPrinterUploadJobMock.mockImplementation(
-      () => new Promise((resolve) => {
-        releaseUpload = resolve;
-      }),
+      () =>
+        new Promise((resolve) => {
+          releaseUpload = resolve;
+        }),
     );
     const jobs = createJobRunner(() => repo, dataDir);
     const path = stage(jobs.getExportsDir("default"), "live", "plate.gcode");
@@ -334,7 +338,9 @@ describe("printer send restart reconciliation", () => {
       expect(drainedJobId).toEqual(expect.any(String));
       await jobs.waitForTerminal(drainedJobId ?? "", 3000, "default");
       expect(seen).toEqual([{ path: queuedPath, bytes: ORIGINAL, start: false }]);
-      expect(loadPrinterSendQueue(repo).find((item) => item.id === interrupted!.id)?.state).toBe("error");
+      expect(loadPrinterSendQueue(repo).find((item) => item.id === interrupted!.id)?.state).toBe(
+        "error",
+      );
       expect(readFileSync(interruptedPath)).toEqual(ORIGINAL);
 
       seen.length = 0;
@@ -345,9 +351,7 @@ describe("printer send restart reconciliation", () => {
       });
       expect(retried.statusCode).toBe(200);
       await jobs.waitForTerminal(retried.json().job_id, 3000, "default");
-      expect(seen).toEqual([
-        { path: interruptedPath, bytes: ORIGINAL, start: true },
-      ]);
+      expect(seen).toEqual([{ path: interruptedPath, bytes: ORIGINAL, start: true }]);
     } finally {
       await app.close();
     }

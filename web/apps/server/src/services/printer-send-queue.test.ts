@@ -253,9 +253,7 @@ describe("printer-send-queue dispatch/drain", () => {
 
     expect(results).toEqual([{ item_id: first.id, job_id: "job-scoped" }]);
     expect(started).toEqual(["p1"]);
-    expect(loadPrinterSendQueue(repo).find((item) => item.id === second.id)?.state).toBe(
-      "queued",
-    );
+    expect(loadPrinterSendQueue(repo).find((item) => item.id === second.id)?.state).toBe("queued");
   });
 
   it("does not send a sliced file to a same-bed twin when the queued Printer is busy", async () => {
@@ -349,5 +347,4 @@ describe("printer-send-queue dispatch/drain", () => {
     expect(started).toEqual([]);
     expect(loadPrinterSendQueue(repo).find((row) => row.id === second.id)?.state).toBe("queued");
   });
-
 });

@@ -168,8 +168,7 @@ export function appendPrintOutcomes(
 
   // Group events by (profile_id, link_id) into jobs. One job per unique
   // (profile_id × link_id) combo in this batch.
-  const jobKey = (e: Omit<PrintOutcomeEvent, "id" | "at">) =>
-    `${e.profile_id}:${e.link_id ?? ""}`;
+  const jobKey = (e: Omit<PrintOutcomeEvent, "id" | "at">) => `${e.profile_id}:${e.link_id ?? ""}`;
   const jobMap = new Map<string, string>(); // key → job id
 
   const parts = events.map((e) => {

@@ -29,10 +29,7 @@ type PrinterQueueSuggestion = {
   item_count: number;
 };
 
-function loadedFilamentOverlap(
-  printer: PrinterMachine,
-  wanted: Set<string>,
-): number {
+function loadedFilamentOverlap(printer: PrinterMachine, wanted: Set<string>): number {
   if (wanted.size === 0) return 0;
   let score = 0;
   for (const lf of printer.loaded_filaments) {

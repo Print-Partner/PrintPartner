@@ -18,10 +18,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 import * as pgSchema from "../db/schema-pg.js";
 import type { SchemaTables } from "../db/repository.js";
-import {
-  registerPostgresSyncQuery,
-  unregisterPostgresSyncQuery,
-} from "../db/sync-db-bridge.js";
+import { registerPostgresSyncQuery, unregisterPostgresSyncQuery } from "../db/sync-db-bridge.js";
 
 function setupPlan() {
   const dir = mkdtempSync(join(tmpdir(), "pp-verify-"));
@@ -57,9 +54,11 @@ function setupPlan() {
 function acceptedPrintUnits(repo: AppRepository, profileId: number, partId: number): boolean[] {
   const accepted = repo.readAcceptedPlanOperationalSnapshot(profileId);
   if (accepted.kind !== "ready") throw new Error("accepted fixture is unavailable");
-  return accepted.snapshot.parts
-    .find((part) => part.projectionPartId === partId)
-    ?.units.map((unit) => unit.completed) ?? [];
+  return (
+    accepted.snapshot.parts
+      .find((part) => part.projectionPartId === partId)
+      ?.units.map((unit) => unit.completed) ?? []
+  );
 }
 
 describe("printer checkoff verify-first flow", () => {
@@ -78,9 +77,7 @@ describe("printer checkoff verify-first flow", () => {
     );
     try {
       expect(
-        verifyPrinterCheckoff(repo, "link-1", [
-          { part_id: 1, unit_index: 0, result: "confirmed" },
-        ]),
+        verifyPrinterCheckoff(repo, "link-1", [{ part_id: 1, unit_index: 0, result: "confirmed" }]),
       ).toEqual({ error: "Accepted Plan update is unavailable", status: 503 });
       expect(statements).toEqual([]);
     } finally {
@@ -189,10 +186,12 @@ describe("printer checkoff verify-first flow", () => {
   it("verifies a current unit while preserving a legal surplus Progress row", () => {
     const { dir, sqlite, repo, plan, bracket } = setupPlan();
     const raw = (sqlite as unknown as { sqlite: Database.Database }).sqlite;
-    raw.prepare(
-      `INSERT INTO print_progress (tenant_id, part_id, unit_index, completed, assembled)
+    raw
+      .prepare(
+        `INSERT INTO print_progress (tenant_id, part_id, unit_index, completed, assembled)
        VALUES ('default', ?, 7, 1, 1)`,
-    ).run(bracket.id);
+      )
+      .run(bracket.id);
     const surplus = () =>
       raw
         .prepare(

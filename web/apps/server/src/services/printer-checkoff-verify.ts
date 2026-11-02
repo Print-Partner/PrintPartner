@@ -5,17 +5,9 @@ import type {
   PrinterCheckoffLink,
 } from "@print-partner/contracts";
 import type { AppRepository } from "../db/repository.js";
-import {
-  pendingCheckoffUnits,
-  unitKey,
-} from "./printer-checkoff.js";
-import {
-  getPrinterCheckoffLink,
-  updatePrinterCheckoffLink,
-} from "./printer-checkoff-store.js";
-import {
-  isPrintRejectReason,
-} from "./printer-outcomes-store.js";
+import { pendingCheckoffUnits, unitKey } from "./printer-checkoff.js";
+import { getPrinterCheckoffLink, updatePrinterCheckoffLink } from "./printer-checkoff-store.js";
+import { isPrintRejectReason } from "./printer-outcomes-store.js";
 import { acceptedPlanBasis, type AcceptedUnitDecision } from "../db/accepted-plan-progress.js";
 import { parseRequiredUnitToken } from "./required-units.js";
 import { readAdditionalDecisions } from "./imported-print-inventory.js";
@@ -109,9 +101,7 @@ export function verifyPrinterCheckoff(
   }
   const decisions = parsed;
 
-  const pending = new Set(
-    pendingCheckoffUnits(link).map((u) => unitKey(u.part_id, u.unit_index)),
-  );
+  const pending = new Set(pendingCheckoffUnits(link).map((u) => unitKey(u.part_id, u.unit_index)));
   for (const d of decisions) {
     if (!pending.has(unitKey(d.part_id, d.unit_index))) {
       return { error: "All decisions must target pending units on this link", status: 400 };
@@ -124,9 +114,10 @@ export function verifyPrinterCheckoff(
       return { error: "Accepted Plan has no required units", status: 409 };
     }
     return {
-      error: accepted.kind === "compatibility_dirty"
-        ? "Accepted Plan requires compatibility repair"
-        : "Accepted Plan operational state is not initialized",
+      error:
+        accepted.kind === "compatibility_dirty"
+          ? "Accepted Plan requires compatibility repair"
+          : "Accepted Plan operational state is not initialized",
       status: 409,
     };
   }
@@ -177,9 +168,10 @@ export function verifyPrinterCheckoff(
   }
   if (result.kind === "accepted_state_unavailable") {
     return {
-      error: result.reason === "compatibility_dirty"
-        ? "Accepted Plan requires compatibility repair"
-        : "Accepted Plan operational state is not initialized",
+      error:
+        result.reason === "compatibility_dirty"
+          ? "Accepted Plan requires compatibility repair"
+          : "Accepted Plan operational state is not initialized",
       status: 409,
     };
   }

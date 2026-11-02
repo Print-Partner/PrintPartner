@@ -103,10 +103,7 @@ export async function dispatchPrinterSendQueueItem(
     force?: boolean;
     excludePrinterIds?: Set<string>;
   },
-): Promise<
-  | { item: PrinterSendQueueItem; job_id: string }
-  | { error: string; status: number }
-> {
+): Promise<{ item: PrinterSendQueueItem; job_id: string } | { error: string; status: number }> {
   const item = getPrinterSendQueueItem(repo, itemId);
   if (!item) return { error: "Queue item not found", status: 404 };
   if (item.state !== "queued" && item.state !== "error") {
@@ -175,10 +172,16 @@ export async function dispatchPrinterSendQueueItem(
 /** Max queue items examined in one HTTP drain request (status checks can be slow). */
 export const DRAIN_ITEM_CAP = 8;
 
-export function selectPrinterSendQueueDrainItems(repo: AppRepository, printerId?: string): PrinterSendQueueItem[] {
-  return listActivePrinterSendQueue(repo).filter(
-    (item) => item.state === "queued" && (printerId === undefined || item.printer_id === printerId),
-  ).slice(0, DRAIN_ITEM_CAP);
+export function selectPrinterSendQueueDrainItems(
+  repo: AppRepository,
+  printerId?: string,
+): PrinterSendQueueItem[] {
+  return listActivePrinterSendQueue(repo)
+    .filter(
+      (item) =>
+        item.state === "queued" && (printerId === undefined || item.printer_id === printerId),
+    )
+    .slice(0, DRAIN_ITEM_CAP);
 }
 
 /**
@@ -229,10 +232,7 @@ export async function drainPrinterSendQueue(
 export const INTERRUPTED_PRINTER_SEND_ERROR =
   "Interrupted by process restart. Printer outcome is unknown, so this send was not marked successful. The staged file remains for an explicit retry. This process will not retry a print on its own.";
 
-function interruptSendingItem(
-  repo: AppRepository,
-  itemId: string,
-): PrinterSendQueueItem | null {
+function interruptSendingItem(repo: AppRepository, itemId: string): PrinterSendQueueItem | null {
   return updatePrinterSendQueueItem(
     repo,
     itemId,
@@ -247,9 +247,7 @@ export function reconcilePrinterSendsAfterProcessStart(
   return interruptInFlightPrinterSends(repo);
 }
 
-export function interruptInFlightPrinterSends(
-  repo: AppRepository,
-): PrinterSendQueueItem[] {
+export function interruptInFlightPrinterSends(repo: AppRepository): PrinterSendQueueItem[] {
   const changed: PrinterSendQueueItem[] = [];
   for (const item of loadPrinterSendQueue(repo)) {
     if (item.state !== "sending") continue;
@@ -264,13 +262,19 @@ type ShutdownPorts = {
   db?: { defaultRepository?: AppRepository | null };
 };
 
-export function interruptPrinterUploadsOnShutdown(dataDir: string, source: ShutdownPorts, tenantId?: string): PrinterSendQueueItem[] {
+export function interruptPrinterUploadsOnShutdown(
+  dataDir: string,
+  source: ShutdownPorts,
+  tenantId?: string,
+): PrinterSendQueueItem[] {
   printerUploadsHalted = true;
   // After cutover the sending rows are Rust's uploads, which outlive this process.
-  if (rustOwnedNodeParticipants(dataDir).has("shutdown.interruptPrinterUploadsOnShutdown")) return [];
+  if (rustOwnedNodeParticipants(dataDir).has("shutdown.interruptPrinterUploadsOnShutdown"))
+    return [];
   const repo = source.repository ?? source.db?.defaultRepository ?? null;
   if (!repo) return [];
-  if (tenantId !== undefined) return tenantStorage.run(tenantId, () => interruptInFlightPrinterSends(repo));
+  if (tenantId !== undefined)
+    return tenantStorage.run(tenantId, () => interruptInFlightPrinterSends(repo));
   const tenantIds = new Set<string>(["default"]);
   if (typeof repo.listTenantIdsForSetting === "function") {
     for (const tenantId of repo.listTenantIdsForSetting(PRINTER_SEND_QUEUE_SETTINGS_KEY)) {

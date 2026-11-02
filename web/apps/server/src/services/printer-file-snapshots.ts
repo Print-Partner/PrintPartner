@@ -1,12 +1,19 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { AppRepository } from "../db/repository.js";
 import type { PrinterFileIdentity, PrintFileClassification } from "@print-partner/contracts";
-import { classifyPrintFileBytes, MAX_CLASSIFIABLE_BYTES } from "../lib/print-file-classification.js";
+import {
+  classifyPrintFileBytes,
+  MAX_CLASSIFIABLE_BYTES,
+} from "../lib/print-file-classification.js";
 import { loadFleet } from "./printer-fleet.js";
 import { getIntegrationConfig } from "../integrations/store.js";
 
 type Scope = { profileId: number; printerId: string; remotePath: string; filename: string };
-type Inspection = { outcome: "inspected"; classification: PrintFileClassification; identity: PrinterFileIdentity };
+type Inspection = {
+  outcome: "inspected";
+  classification: PrintFileClassification;
+  identity: PrinterFileIdentity;
+};
 type Snapshot = { scope: Scope; source: string; expiresAt: number; inspection: Inspection };
 type Store = { active: boolean; ready: Map<string, Snapshot> };
 const stores = new WeakMap<AppRepository, Store>();
@@ -26,15 +33,30 @@ function storeFor(repo: AppRepository): Store {
 
 export function printerFileSnapshotSource(repo: AppRepository, printerId: string): string | null {
   const printer = loadFleet(repo).find((entry) => entry.id === printerId);
-  const integration = printer?.integration_id ? getIntegrationConfig(repo, printer.integration_id) : null;
+  const integration = printer?.integration_id
+    ? getIntegrationConfig(repo, printer.integration_id)
+    : null;
   if (!integration || integration.config.enabled === false) return null;
   return createHash("sha256").update(JSON.stringify(integration)).digest("hex");
 }
 
 /** Capture only bytes pulled by the client. A token becomes usable at successful EOF. */
-export function capturePrinterFile(repo: AppRepository, scope: Scope, identity: PrinterFileIdentity, response: Response, source: string | null) {
+export function capturePrinterFile(
+  repo: AppRepository,
+  scope: Scope,
+  identity: PrinterFileIdentity,
+  response: Response,
+  source: string | null,
+) {
   const store = storeFor(repo);
-  if (!response.body || !response.ok || !source || source !== printerFileSnapshotSource(repo, scope.printerId) || store.active || store.ready.size >= 128) {
+  if (
+    !response.body ||
+    !response.ok ||
+    !source ||
+    source !== printerFileSnapshotSource(repo, scope.printerId) ||
+    store.active ||
+    store.ready.size >= 128
+  ) {
     void response.body?.cancel().catch(() => undefined);
     throw new Error("File inspection unavailable. Finish the current file, then reopen this file.");
   }
@@ -57,20 +79,30 @@ export function capturePrinterFile(repo: AppRepository, scope: Scope, identity: 
         if (finished) return;
         if (!next.done) {
           length += next.value.byteLength;
-          if (length > MAX_CLASSIFIABLE_BYTES) throw new Error("Printer file exceeds inspection size limit");
+          if (length > MAX_CLASSIFIABLE_BYTES)
+            throw new Error("Printer file exceeds inspection size limit");
           chunks.push(next.value.slice());
           controller.enqueue(next.value);
           return;
         }
         const bytes = new Uint8Array(length);
         let offset = 0;
-        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
         const classified = classifyPrintFileBytes(bytes);
-        if (classified.outcome === "rejected") throw new Error("Printer file could not be inspected");
+        if (classified.outcome === "rejected")
+          throw new Error("Printer file could not be inspected");
         store.ready.set(token, {
-          scope, source, expiresAt: Date.now() + TTL,
-          inspection: { outcome: "inspected", classification: classified.classification,
-            identity: { ...identity, size_bytes: classified.size_bytes, sha256: classified.sha256 } },
+          scope,
+          source,
+          expiresAt: Date.now() + TTL,
+          inspection: {
+            outcome: "inspected",
+            classification: classified.classification,
+            identity: { ...identity, size_bytes: classified.size_bytes, sha256: classified.sha256 },
+          },
         });
         release();
         reader.releaseLock();
@@ -86,7 +118,11 @@ export function capturePrinterFile(repo: AppRepository, scope: Scope, identity: 
     async cancel(reason) {
       release();
       store.ready.delete(token);
-      try { await reader.cancel(reason); } finally { reader.releaseLock(); }
+      try {
+        await reader.cancel(reason);
+      } finally {
+        reader.releaseLock();
+      }
     },
   });
   const headers = new Headers(response.headers);
@@ -95,12 +131,21 @@ export function capturePrinterFile(repo: AppRepository, scope: Scope, identity: 
   return { token, response: new Response(body, { status: response.status, headers }) };
 }
 
-export function readPrinterFileSnapshot(repo: AppRepository, token: string, scope: Scope): Inspection | null {
+export function readPrinterFileSnapshot(
+  repo: AppRepository,
+  token: string,
+  scope: Scope,
+): Inspection | null {
   const snapshot = storeFor(repo).ready.get(token);
-  if (!snapshot || snapshot.source !== printerFileSnapshotSource(repo, scope.printerId)) return null;
+  if (!snapshot || snapshot.source !== printerFileSnapshotSource(repo, scope.printerId))
+    return null;
   const saved = snapshot.scope;
-  return saved.profileId === scope.profileId && saved.printerId === scope.printerId &&
-    saved.remotePath === scope.remotePath && saved.filename === scope.filename ? snapshot.inspection : null;
+  return saved.profileId === scope.profileId &&
+    saved.printerId === scope.printerId &&
+    saved.remotePath === scope.remotePath &&
+    saved.filename === scope.filename
+    ? snapshot.inspection
+    : null;
 }
 
 export function consumePrinterFileSnapshot(repo: AppRepository, token: string) {

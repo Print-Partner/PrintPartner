@@ -55,12 +55,7 @@ function queueItem(
 describe("computePrinterQueueSuggestions", () => {
   it("returns empty when no queue items", () => {
     const p = machine({ id: "p1", name: "Voron", integration_id: "int-p1" });
-    const result = computePrinterQueueSuggestions(
-      fakeRepo(),
-      [p],
-      new Set(["int-p1"]),
-      [],
-    );
+    const result = computePrinterQueueSuggestions(fakeRepo(), [p], new Set(["int-p1"]), []);
     expect(result).toEqual([]);
   });
 
@@ -104,12 +99,9 @@ describe("computePrinterQueueSuggestions", () => {
       match: "pinned",
     });
     // p2 is idle, but item is pinned to p1
-    const result = computePrinterQueueSuggestions(
-      fakeRepo(),
-      [p1, p2],
-      new Set(["int-p2"]),
-      [item],
-    );
+    const result = computePrinterQueueSuggestions(fakeRepo(), [p1, p2], new Set(["int-p2"]), [
+      item,
+    ]);
     expect(result).toHaveLength(0);
   });
 
@@ -121,12 +113,7 @@ describe("computePrinterQueueSuggestions", () => {
       filename: "red.gcode",
       match: "pinned",
     });
-    const result = computePrinterQueueSuggestions(
-      fakeRepo(),
-      [p1],
-      new Set(["int-p1"]),
-      [item],
-    );
+    const result = computePrinterQueueSuggestions(fakeRepo(), [p1], new Set(["int-p1"]), [item]);
     expect(result).toHaveLength(1);
     expect(result[0].printer_id).toBe("p1");
   });
@@ -145,12 +132,10 @@ describe("computePrinterQueueSuggestions", () => {
       filename: "blue.gcode",
       state: "done",
     });
-    const result = computePrinterQueueSuggestions(
-      fakeRepo(),
-      [p],
-      new Set(["int-p1"]),
-      [sending, done],
-    );
+    const result = computePrinterQueueSuggestions(fakeRepo(), [p], new Set(["int-p1"]), [
+      sending,
+      done,
+    ]);
     expect(result).toHaveLength(0);
   });
 
@@ -180,12 +165,11 @@ describe("computePrinterQueueSuggestions", () => {
       printer_id: "p1",
       filename: "red_blue.gcode",
     });
-    const result = computePrinterQueueSuggestions(
-      fakeRepo(),
-      [printer],
-      new Set(["int-p1"]),
-      [noOverlap, oneOverlap, twoOverlap],
-    );
+    const result = computePrinterQueueSuggestions(fakeRepo(), [printer], new Set(["int-p1"]), [
+      noOverlap,
+      oneOverlap,
+      twoOverlap,
+    ]);
     expect(result).toHaveLength(1);
     const ids = result[0].items.map((i) => i.item_id);
     expect(ids).toEqual(["q3", "q2", "q1"]); // 2 overlap, 1 overlap, 0 overlap
@@ -199,12 +183,7 @@ describe("computePrinterQueueSuggestions", () => {
       filename: "red.gcode",
       match: "compatible",
     });
-    const result = computePrinterQueueSuggestions(
-      fakeRepo(),
-      [p],
-      new Set(["int-p1"]),
-      [item],
-    );
+    const result = computePrinterQueueSuggestions(fakeRepo(), [p], new Set(["int-p1"]), [item]);
     expect(result).toHaveLength(1);
     expect(result[0].printer_id).toBe("p1");
   });

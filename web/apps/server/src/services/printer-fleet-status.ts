@@ -15,22 +15,28 @@ export async function probeFleetHostStatus(
   integrations: IntegrationPort | null | undefined,
   fleet: readonly PrinterMachine[],
 ): Promise<(PrinterHostStatus | null)[]> {
-  const isBambu = fleet.map((m) => desktopFeaturesEnabled() && !!m.integration_id
-    && getIntegrationConfig(repo, m.integration_id)?.type === "bambu");
+  const isBambu = fleet.map(
+    (m) =>
+      desktopFeaturesEnabled() &&
+      !!m.integration_id &&
+      getIntegrationConfig(repo, m.integration_id)?.type === "bambu",
+  );
   const bambuDenial = (): PrinterHostStatus | null => {
     const access = readFeatureAccess(() => repo, "bambu");
     return access.kind === "allowed" ? null : { state: "unknown", message: access.error };
   };
-  const probed = await Promise.all(fleet.map(async (m, i): Promise<PrinterHostStatus | null> => {
-    const denial = isBambu[i] ? bambuDenial() : null;
-    if (denial) return denial;
-    if (!m.integration_id || !integrations) return null;
-    try {
-      return await integrations.getStatus(m.integration_id);
-    } catch {
-      return { state: "offline" };
-    }
-  }));
+  const probed = await Promise.all(
+    fleet.map(async (m, i): Promise<PrinterHostStatus | null> => {
+      const denial = isBambu[i] ? bambuDenial() : null;
+      if (denial) return denial;
+      if (!m.integration_id || !integrations) return null;
+      try {
+        return await integrations.getStatus(m.integration_id);
+      } catch {
+        return { state: "offline" };
+      }
+    }),
+  );
   const denial = isBambu.some(Boolean) ? bambuDenial() : null;
   return probed.map((status, i) => (isBambu[i] && denial ? denial : status));
 }

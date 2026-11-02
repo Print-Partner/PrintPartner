@@ -1,13 +1,6 @@
 import { OutboundUrlError } from "../../lib/outbound-url.js";
-import {
-  cancelResponseBody,
-  readBoundedJsonResponse,
-} from "../../lib/bounded-response.js";
-import type {
-  SearchAdapterDependencies,
-  SearchHit,
-  WebSearchOptions,
-} from "./types.js";
+import { cancelResponseBody, readBoundedJsonResponse } from "../../lib/bounded-response.js";
+import type { SearchAdapterDependencies, SearchHit, WebSearchOptions } from "./types.js";
 import { isRecord } from "../../lib/guards.js";
 
 const EXA_ENDPOINT = "https://api.exa.ai/search";
@@ -44,22 +37,25 @@ export async function searchExa(
       return { hits: [], error: `Exa Search HTTP ${res.status}` };
     }
     const body = await readBoundedJsonResponse(res, MAX_SEARCH_RESPONSE_BYTES);
-    const results = isRecord(body) && Array.isArray(body.results)
-      ? body.results.filter(isRecord)
-      : [];
-    const hits: SearchHit[] = results.flatMap((result) => {
-      if (typeof result.url !== "string") return [];
-      return [{
-        title: typeof result.title === "string" && result.title ? result.title : result.url,
-        url: result.url,
-        snippet:
-          typeof result.text === "string"
-            ? result.text.slice(0, 500)
-            : typeof result.snippet === "string"
-              ? result.snippet.slice(0, 500)
-              : "",
-      }];
-    }).slice(0, numResults);
+    const results =
+      isRecord(body) && Array.isArray(body.results) ? body.results.filter(isRecord) : [];
+    const hits: SearchHit[] = results
+      .flatMap((result) => {
+        if (typeof result.url !== "string") return [];
+        return [
+          {
+            title: typeof result.title === "string" && result.title ? result.title : result.url,
+            url: result.url,
+            snippet:
+              typeof result.text === "string"
+                ? result.text.slice(0, 500)
+                : typeof result.snippet === "string"
+                  ? result.snippet.slice(0, 500)
+                  : "",
+          },
+        ];
+      })
+      .slice(0, numResults);
     return { hits };
   } catch (err) {
     const msg =

@@ -1,13 +1,6 @@
 import { OutboundUrlError } from "../../lib/outbound-url.js";
-import {
-  cancelResponseBody,
-  readBoundedJsonResponse,
-} from "../../lib/bounded-response.js";
-import type {
-  SearchAdapterDependencies,
-  SearchHit,
-  WebSearchOptions,
-} from "./types.js";
+import { cancelResponseBody, readBoundedJsonResponse } from "../../lib/bounded-response.js";
+import type { SearchAdapterDependencies, SearchHit, WebSearchOptions } from "./types.js";
 import { isRecord } from "../../lib/guards.js";
 
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
@@ -39,14 +32,18 @@ export async function searchBrave(
     const body = await readBoundedJsonResponse(res, MAX_SEARCH_RESPONSE_BYTES);
     const web = isRecord(body) && isRecord(body.web) ? body.web : null;
     const results = Array.isArray(web?.results) ? web.results.filter(isRecord) : [];
-    const hits: SearchHit[] = results.flatMap((result) => {
-      if (typeof result.url !== "string" || typeof result.title !== "string") return [];
-      return [{
-        title: result.title,
-        url: result.url,
-        snippet: typeof result.description === "string" ? result.description.slice(0, 500) : "",
-      }];
-    }).slice(0, count);
+    const hits: SearchHit[] = results
+      .flatMap((result) => {
+        if (typeof result.url !== "string" || typeof result.title !== "string") return [];
+        return [
+          {
+            title: result.title,
+            url: result.url,
+            snippet: typeof result.description === "string" ? result.description.slice(0, 500) : "",
+          },
+        ];
+      })
+      .slice(0, count);
     return { hits };
   } catch (err) {
     const msg =

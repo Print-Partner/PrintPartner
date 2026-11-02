@@ -85,7 +85,12 @@ describe("loadAcceptedArtifactGeometry", () => {
     expect(opens).toBe(1);
     expect(result.kind).toBe("ready");
     if (result.kind !== "ready") throw new Error("Accepted geometry load failed");
-    expect([...result.geometryByToken.entries()].map(([token, geometry]) => [token, geometry.dimensions])).toEqual([
+    expect(
+      [...result.geometryByToken.entries()].map(([token, geometry]) => [
+        token,
+        geometry.dimensions,
+      ]),
+    ).toEqual([
       [tokens[0], { widthUm: 3_000, depthUm: 5_000, heightUm: 10_000 }],
       [tokens[1], { widthUm: 3_000, depthUm: 5_000, heightUm: 10_000 }],
     ]);
@@ -96,7 +101,11 @@ describe("loadAcceptedArtifactGeometry", () => {
     bytes.write("tracked binary", 0, "ascii");
     bytes.writeUInt32LE(1, 80);
     let offset = 96;
-    for (const [x, y, z] of [[-2, -3, -4], [1, -3, -4], [-2, 2, 6]]) {
+    for (const [x, y, z] of [
+      [-2, -3, -4],
+      [1, -3, -4],
+      [-2, 2, 6],
+    ]) {
       bytes.writeFloatLE(x, offset);
       bytes.writeFloatLE(y, offset + 4);
       bytes.writeFloatLE(z, offset + 8);
@@ -134,16 +143,18 @@ describe("loadAcceptedArtifactGeometry", () => {
 
   it("rejects unavailable accepted artifacts before parsing", async () => {
     const token = parseRequiredUnitToken("ppu_00000000000000000000000000000001");
-    await expect(loadAcceptedArtifactGeometry({
-      reposDir: "/tmp/unused-accepted-geometry",
-      units: [{ token, artifact: { kind: "unavailable", reason: "untracked_source" } }],
-      limits: {
-        maxArtifactBytes: 1,
-        maxTotalSourceBytes: 1,
-        maxObjects: 1,
-        maxTriangles: 1,
-      },
-    })).resolves.toEqual({ kind: "artifact_unavailable", token, reason: "untracked_source" });
+    await expect(
+      loadAcceptedArtifactGeometry({
+        reposDir: "/tmp/unused-accepted-geometry",
+        units: [{ token, artifact: { kind: "unavailable", reason: "untracked_source" } }],
+        limits: {
+          maxArtifactBytes: 1,
+          maxTotalSourceBytes: 1,
+          maxObjects: 1,
+          maxTriangles: 1,
+        },
+      }),
+    ).resolves.toEqual({ kind: "artifact_unavailable", token, reason: "untracked_source" });
   });
 
   it("distinguishes parseable STL with degenerate geometry from invalid STL", async () => {
@@ -159,15 +170,17 @@ endsolid degenerate`);
     const { artifact, reposDir } = trackedFixture(bytes);
     const token = parseRequiredUnitToken("ppu_00000000000000000000000000000003");
 
-    await expect(loadAcceptedArtifactGeometry({
-      reposDir,
-      units: [{ token, artifact }],
-      limits: {
-        maxArtifactBytes: 1_000_000,
-        maxTotalSourceBytes: 1_000_000,
-        maxObjects: 1,
-        maxTriangles: 1,
-      },
-    })).resolves.toEqual({ kind: "degenerate_geometry", token });
+    await expect(
+      loadAcceptedArtifactGeometry({
+        reposDir,
+        units: [{ token, artifact }],
+        limits: {
+          maxArtifactBytes: 1_000_000,
+          maxTotalSourceBytes: 1_000_000,
+          maxObjects: 1,
+          maxTriangles: 1,
+        },
+      }),
+    ).resolves.toEqual({ kind: "degenerate_geometry", token });
   });
 });

@@ -198,9 +198,7 @@ describe("readAcceptedPlanReview", () => {
     );
     expect(body.issues.map((issue) => `${issue.code}:${issue.message}`)).toEqual([
       ...sortedNames.map((name) => `missing_stl:STL not found on disk: ${name}`),
-      ...sortedNames.map(
-        (name) => `merge_conflict:${mergeConflictIssueMessage(name)}`,
-      ),
+      ...sortedNames.map((name) => `merge_conflict:${mergeConflictIssueMessage(name)}`),
     ]);
     expect(summarizeAcceptedPlanReview(body).sample_issues).toEqual(
       body.issues.slice(0, 8).map((issue) => ({

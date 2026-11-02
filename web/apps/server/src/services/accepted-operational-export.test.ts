@@ -171,11 +171,17 @@ describe("captureAcceptedOperationalExport", () => {
   });
 
   it.each([
-    [{ kind: "compatibility_dirty" }, { kind: "accepted_state_unavailable", reason: "compatibility_dirty" }],
+    [
+      { kind: "compatibility_dirty" },
+      { kind: "accepted_state_unavailable", reason: "compatibility_dirty" },
+    ],
     [{ kind: "uninitialized" }, { kind: "accepted_state_unavailable", reason: "uninitialized" }],
   ] satisfies readonly (readonly [
     ReadAcceptedPlanOperationalSnapshotResult,
-    { readonly kind: "accepted_state_unavailable"; readonly reason: "compatibility_dirty" | "uninitialized" },
+    {
+      readonly kind: "accepted_state_unavailable";
+      readonly reason: "compatibility_dirty" | "uninitialized";
+    },
   ])[])("maps %o to %o", (accepted, expected) => {
     expect(
       captureAcceptedOperationalExport({

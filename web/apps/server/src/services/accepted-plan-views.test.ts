@@ -6,10 +6,7 @@ import type {
   AcceptedPlanOperationalSnapshot,
   ReadAcceptedPlanOperationalSnapshotResult,
 } from "../db/accepted-plan-operational.js";
-import {
-  toAcceptedCheckoffView,
-  toAcceptedPartAssembledView,
-} from "./accepted-plan-views.js";
+import { toAcceptedCheckoffView, toAcceptedPartAssembledView } from "./accepted-plan-views.js";
 
 function productionTypeScriptFiles(directory: string): string[] {
   const files: string[] = [];
@@ -175,7 +172,10 @@ function readySnapshot(): AcceptedPlanOperationalSnapshot {
 describe("accepted Plan views", () => {
   it("builds the existing Checkoff body from accepted identity and progress", () => {
     const snapshot = readySnapshot();
-    const accepted = { kind: "ready", snapshot } satisfies ReadAcceptedPlanOperationalSnapshotResult;
+    const accepted = {
+      kind: "ready",
+      snapshot,
+    } satisfies ReadAcceptedPlanOperationalSnapshotResult;
     const before = structuredClone(snapshot);
     const result = toAcceptedCheckoffView({
       profileId: 7,
@@ -247,9 +247,7 @@ describe("accepted Plan views", () => {
   });
 
   it("distinguishes empty and unavailable Checkoff states", () => {
-    expect(
-      toAcceptedCheckoffView({ profileId: 7, accepted: { kind: "empty" } }),
-    ).toEqual({
+    expect(toAcceptedCheckoffView({ profileId: 7, accepted: { kind: "empty" } })).toEqual({
       kind: "empty",
       body: {
         profile_id: 7,
@@ -266,9 +264,7 @@ describe("accepted Plan views", () => {
       kind: "accepted_state_unavailable",
       reason: "compatibility_dirty",
     });
-    expect(
-      toAcceptedCheckoffView({ profileId: 7, accepted: { kind: "uninitialized" } }),
-    ).toEqual({
+    expect(toAcceptedCheckoffView({ profileId: 7, accepted: { kind: "uninitialized" } })).toEqual({
       kind: "accepted_state_unavailable",
       reason: "uninitialized",
     });
@@ -291,9 +287,9 @@ describe("accepted Plan views", () => {
     expect(toAcceptedPartAssembledView({ partId: 999, accepted })).toEqual({
       kind: "part_not_found",
     });
-    expect(
-      toAcceptedPartAssembledView({ partId: 90, accepted: { kind: "empty" } }),
-    ).toEqual({ kind: "part_not_found" });
+    expect(toAcceptedPartAssembledView({ partId: 90, accepted: { kind: "empty" } })).toEqual({
+      kind: "part_not_found",
+    });
     expect(
       toAcceptedPartAssembledView({
         partId: 90,

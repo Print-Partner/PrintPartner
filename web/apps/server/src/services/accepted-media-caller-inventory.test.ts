@@ -98,18 +98,9 @@ describe("known accepted media production caller inventory", () => {
         "services/printer-checkoff-verify.ts",
       ],
       getAcceptedProfileStlRoots: ["services/part-paths.ts"],
-      resolvePartStl: [
-        "routes/plans.ts",
-        "services/plan-thumbnails.ts",
-      ],
-      globalThumbnailPath: [
-        "lib/secure-path.ts",
-        "services/plan-thumbnails.ts",
-      ],
-      globalPreviewPath: [
-        "lib/secure-path.ts",
-        "services/plan-thumbnails.ts",
-      ],
+      resolvePartStl: ["routes/plans.ts", "services/plan-thumbnails.ts"],
+      globalThumbnailPath: ["lib/secure-path.ts", "services/plan-thumbnails.ts"],
+      globalPreviewPath: ["lib/secure-path.ts", "services/plan-thumbnails.ts"],
       thumbnailCacheDigest: [],
       previewCacheDigest: [],
       openStlThumbStream: ["routes/sources.ts"],

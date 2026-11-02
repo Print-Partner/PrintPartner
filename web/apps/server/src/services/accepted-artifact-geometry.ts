@@ -10,10 +10,7 @@ import {
 export type AcceptedArtifactOpener = typeof openVerifiedAcceptedArtifact;
 
 export type AcceptedArtifactGeometryLimit =
-  | "artifact_bytes"
-  | "total_source_bytes"
-  | "objects"
-  | "triangles";
+  "artifact_bytes" | "total_source_bytes" | "objects" | "triangles";
 
 export type AcceptedArtifactGeometryLimits = Readonly<{
   maxArtifactBytes?: number;
@@ -50,7 +47,9 @@ type GeometryUnit = Readonly<{
   artifact: AcceptedOperationalArtifact;
 }>;
 
-function descriptorKey(artifact: Extract<AcceptedOperationalArtifact, { kind: "tracked" }>): string {
+function descriptorKey(
+  artifact: Extract<AcceptedOperationalArtifact, { kind: "tracked" }>,
+): string {
   return JSON.stringify([
     artifact.sourceId,
     artifact.sourceRevisionId,
@@ -60,12 +59,14 @@ function descriptorKey(artifact: Extract<AcceptedOperationalArtifact, { kind: "t
   ]);
 }
 
-export async function loadAcceptedArtifactGeometry(input: Readonly<{
-  reposDir: string;
-  units: readonly GeometryUnit[];
-  limits: AcceptedArtifactGeometryLimits;
-  openArtifact?: AcceptedArtifactOpener;
-}>): Promise<LoadAcceptedArtifactGeometryResult> {
+export async function loadAcceptedArtifactGeometry(
+  input: Readonly<{
+    reposDir: string;
+    units: readonly GeometryUnit[];
+    limits: AcceptedArtifactGeometryLimits;
+    openArtifact?: AcceptedArtifactOpener;
+  }>,
+): Promise<LoadAcceptedArtifactGeometryResult> {
   if (!Object.values(input.limits).every((value) => Number.isSafeInteger(value) && value >= 0)) {
     throw new RangeError("Accepted artifact geometry limits must be nonnegative safe integers");
   }

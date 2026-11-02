@@ -1,13 +1,8 @@
-import type {
-  AcceptedPlanBasisContract,
-  AcceptedPlatePrinter,
-} from "@print-partner/contracts";
+import type { AcceptedPlanBasisContract, AcceptedPlatePrinter } from "@print-partner/contracts";
 import type { PrinterMachine } from "@print-partner/domain";
 import type { AcceptedPlanBasis } from "../db/accepted-plan-progress.js";
 
-export function basisContract(
-  basis: AcceptedPlanBasis,
-): AcceptedPlanBasisContract {
+export function basisContract(basis: AcceptedPlanBasis): AcceptedPlanBasisContract {
   return {
     profile_id: basis.profileId,
     plan_version: basis.planVersion,
@@ -17,10 +12,7 @@ export function basisContract(
   };
 }
 
-export function sameAcceptedPlanBasis(
-  left: AcceptedPlanBasis,
-  right: AcceptedPlanBasis,
-): boolean {
+export function sameAcceptedPlanBasis(left: AcceptedPlanBasis, right: AcceptedPlanBasis): boolean {
   return (
     left.profileId === right.profileId &&
     left.planVersion === right.planVersion &&
@@ -35,15 +27,11 @@ export function millimetresToMicrometres(value: number): number | null {
   return Number.isSafeInteger(converted) ? converted : null;
 }
 
-export function acceptedPrinter(
-  machine: PrinterMachine,
-): AcceptedPlatePrinter | null {
+export function acceptedPrinter(machine: PrinterMachine): AcceptedPlatePrinter | null {
   const bedWidthUm = millimetresToMicrometres(machine.bed_width_mm);
   const bedDepthUm = millimetresToMicrometres(machine.bed_depth_mm);
   const bedHeightUm =
-    machine.bed_height_mm == null
-      ? null
-      : millimetresToMicrometres(machine.bed_height_mm);
+    machine.bed_height_mm == null ? null : millimetresToMicrometres(machine.bed_height_mm);
   const marginUm = millimetresToMicrometres(machine.margin_mm);
   const id = machine.id.trim();
   const name = machine.name.trim();

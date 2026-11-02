@@ -1,4 +1,8 @@
-import { folderKeyFromRelativePath, mergeConflictIssueMessage, ROOT_FOLDER } from "@print-partner/domain";
+import {
+  folderKeyFromRelativePath,
+  mergeConflictIssueMessage,
+  ROOT_FOLDER,
+} from "@print-partner/domain";
 import type { AcceptedPlanBasisContract, PartRow } from "@print-partner/contracts";
 import type { AppRepository } from "../db/repository.js";
 import type {
@@ -9,10 +13,11 @@ import type {
 import type { SpoolSummary } from "../integrations/spoolman-client.js";
 import { formatSpoolSummaryBadge } from "../integrations/spoolman-client.js";
 import { observeAcceptedMediaPng } from "../lib/accepted-media-cache.js";
-import { createAcceptedArtifactObserver, observeAcceptedSnapshotRoot } from "./accepted-artifacts.js";
 import {
-  acceptedPartMediaIdentity,
-} from "./accepted-part-media.js";
+  createAcceptedArtifactObserver,
+  observeAcceptedSnapshotRoot,
+} from "./accepted-artifacts.js";
+import { acceptedPartMediaIdentity } from "./accepted-part-media.js";
 import { getColorById, resolvePartFilamentHex } from "./filament-catalog.js";
 import type { FilamentResolveContext } from "./filament-resolve.js";
 
@@ -64,10 +69,7 @@ export type AcceptedPlanReviewBody = {
   }[];
 };
 
-type AcceptedFilamentContext = Pick<
-  FilamentResolveContext,
-  "resolve" | "spoolSummariesForPart"
->;
+type AcceptedFilamentContext = Pick<FilamentResolveContext, "resolve" | "spoolSummariesForPart">;
 
 type ReadAcceptedPlanReviewInput = {
   readonly repo: AppRepository;
@@ -75,7 +77,12 @@ type ReadAcceptedPlanReviewInput = {
   readonly includeExcluded: boolean;
   readonly reposDir: string;
   readonly thumbsDir: string | null;
-  readonly reportTiming?: (timings: { snapshotMs: number; filamentMs: number; observationMs: number; projectionMs: number }) => void;
+  readonly reportTiming?: (timings: {
+    snapshotMs: number;
+    filamentMs: number;
+    observationMs: number;
+    projectionMs: number;
+  }) => void;
   readonly loadFilamentContext?: (
     colorIds: readonly (string | null)[],
   ) => Promise<AcceptedFilamentContext>;
@@ -278,40 +285,39 @@ export function projectAcceptedPlanReview(input: {
         Buffer.compare(Buffer.from(left.filename), Buffer.from(right.filename)) ||
         left.projectionPartId - right.projectionPartId,
     );
-  const projectedResults = displayParts
-    .map((part) => {
-      const media = input.mediaByPartId.get(part.projectionPartId);
-      if (part.included && !media) {
-        throw new Error("Included Part is missing accepted media observation");
-      }
-      const result = reviewPart({
-        part,
-        media: media ?? {
-          artifactMissing: false,
-          thumbEmpty: false,
-        },
-        context: input.filamentContext,
-      });
-      return { part, result };
+  const projectedResults = displayParts.map((part) => {
+    const media = input.mediaByPartId.get(part.projectionPartId);
+    if (part.included && !media) {
+      throw new Error("Included Part is missing accepted media observation");
+    }
+    const result = reviewPart({
+      part,
+      media: media ?? {
+        artifactMissing: false,
+        thumbEmpty: false,
+      },
+      context: input.filamentContext,
     });
+    return { part, result };
+  });
   for (const { part, result } of projectedResults) {
     if (part.included && result.artifactMissing) {
-        issues.push({
-          severity: "blocker",
-          code: "missing_stl",
-          message: `STL not found on disk: ${part.filename}`,
-          link_hint: "sources",
-        });
+      issues.push({
+        severity: "blocker",
+        code: "missing_stl",
+        message: `STL not found on disk: ${part.filename}`,
+        link_hint: "sources",
+      });
     }
   }
   for (const { part } of projectedResults) {
     if (part.included && part.status === "conflict") {
-        issues.push({
-          severity: "warning",
-          code: "merge_conflict",
-          message: mergeConflictIssueMessage(part.filename),
-          link_hint: "build",
-        });
+      issues.push({
+        severity: "warning",
+        code: "merge_conflict",
+        message: mergeConflictIssueMessage(part.filename),
+        link_hint: "build",
+      });
     }
   }
   const projected = projectedResults.map(({ result }) => result.row);
@@ -420,14 +426,21 @@ export async function readAcceptedPlanReview(
   if (accepted.kind !== "ready") {
     return { kind: "accepted_state_unavailable", reason: accepted.kind };
   }
-  const body = await projectCapturedPlanReview({ ...input, snapshot: accepted.snapshot,
-    reportTiming: input.reportTiming ? (timing) => input.reportTiming?.({ ...timing, snapshotMs: snapshotDone - started }) : undefined,
+  const body = await projectCapturedPlanReview({
+    ...input,
+    snapshot: accepted.snapshot,
+    reportTiming: input.reportTiming
+      ? (timing) => input.reportTiming?.({ ...timing, snapshotMs: snapshotDone - started })
+      : undefined,
   });
   return { kind: "ready", body };
 }
 
 export async function projectCapturedPlanReview(
-  input: Pick<ReadAcceptedPlanReviewInput, "includeExcluded" | "reposDir" | "thumbsDir" | "loadFilamentContext" | "reportTiming"> & {
+  input: Pick<
+    ReadAcceptedPlanReviewInput,
+    "includeExcluded" | "reposDir" | "thumbsDir" | "loadFilamentContext" | "reportTiming"
+  > & {
     readonly snapshot: AcceptedPlanOperationalSnapshot;
   },
 ): Promise<AcceptedPlanReviewBody> {

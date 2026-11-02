@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AcceptedOperationalPart } from "../db/accepted-plan-operational.js";
-import {
-  acceptedPartMediaIdentity,
-} from "./accepted-part-media.js";
+import { acceptedPartMediaIdentity } from "./accepted-part-media.js";
 
 function part(
   overrides: Partial<
@@ -35,26 +33,26 @@ describe("acceptedPartMediaIdentity", () => {
   it.each([
     { colorId: "asa::black", hex: "#000000", oldHex: "#bfb1a3" },
     { colorId: "asa::super-grey", hex: "#747874", oldHex: "#baa895" },
-  ])("renders $colorId in its filament color instead of packaging tan", ({ colorId, hex, oldHex }) => {
-    const acceptedPart = part({ filamentColorId: colorId });
-    for (const variant of ["mesh", "thumbnail", "preview"] as const) {
-      const corrected = acceptedPartMediaIdentity(acceptedPart, variant);
-      const previous = acceptedPartMediaIdentity(
-        part({ filamentColorId: colorId, filamentCustomHex: oldHex }),
-        variant,
-      );
+  ])(
+    "renders $colorId in its filament color instead of packaging tan",
+    ({ colorId, hex, oldHex }) => {
+      const acceptedPart = part({ filamentColorId: colorId });
+      for (const variant of ["mesh", "thumbnail", "preview"] as const) {
+        const corrected = acceptedPartMediaIdentity(acceptedPart, variant);
+        const previous = acceptedPartMediaIdentity(
+          part({ filamentColorId: colorId, filamentCustomHex: oldHex }),
+          variant,
+        );
 
-      expect(corrected.hex).toBe(hex);
-      expect(corrected.basis).not.toBe(previous.basis);
-    }
-  });
+        expect(corrected.hex).toBe(hex);
+        expect(corrected.basis).not.toBe(previous.basis);
+      }
+    },
+  );
 
   it("returns the normalized accepted custom color and full derivative basis", () => {
     expect(
-      acceptedPartMediaIdentity(
-        part({ filamentCustomHex: " #AbCdEf " }),
-        "thumbnail",
-      ),
+      acceptedPartMediaIdentity(part({ filamentCustomHex: " #AbCdEf " }), "thumbnail"),
     ).toEqual({
       hex: "#abcdef",
       basis: "6ee6d6c0172a7b2f06592dc1ec39cc27a39660943bb549e240064a5ea057a9bc",

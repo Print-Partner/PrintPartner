@@ -16,12 +16,7 @@ import {
 } from "./accepted-artifact-geometry.js";
 
 export type AcceptedPlate3mfLimit =
-  | "artifact_bytes"
-  | "total_source_bytes"
-  | "objects"
-  | "triangles"
-  | "output_bytes"
-  | "plates";
+  "artifact_bytes" | "total_source_bytes" | "objects" | "triangles" | "output_bytes" | "plates";
 
 export type AcceptedPlate3mfLimits = Readonly<{
   maxArtifactBytes?: number;
@@ -62,8 +57,14 @@ export type GenerateAcceptedPlate3mfArtifactsResult =
       readonly plates: readonly GeneratedAcceptedPlate3mf[];
       readonly bundle: Uint8Array | null;
     }
-  | { readonly kind: "empty_plan" | "plates_not_published" | "stale_accepted_plan" | "unplaced_units" }
-  | { readonly kind: "accepted_state_unavailable"; readonly reason: "compatibility_dirty" | "uninitialized" }
+  | {
+      readonly kind:
+        "empty_plan" | "plates_not_published" | "stale_accepted_plan" | "unplaced_units";
+    }
+  | {
+      readonly kind: "accepted_state_unavailable";
+      readonly reason: "compatibility_dirty" | "uninitialized";
+    }
   | { readonly kind: "transaction_unavailable" }
   | { readonly kind: "plate_revision_changed" }
   | {
@@ -72,7 +73,10 @@ export type GenerateAcceptedPlate3mfArtifactsResult =
       readonly reason: "legacy" | "untracked_source" | AcceptedArtifactVerificationFailure;
     }
   | { readonly kind: "invalid_stl"; readonly token: AcceptedPlateExportUnit["token"] }
-  | { readonly kind: "artifact_geometry_mismatch"; readonly token: AcceptedPlateExportUnit["token"] }
+  | {
+      readonly kind: "artifact_geometry_mismatch";
+      readonly token: AcceptedPlateExportUnit["token"];
+    }
   | { readonly kind: "limit_exceeded"; readonly limit: AcceptedPlate3mfLimit };
 
 function validLimits(limits: AcceptedPlate3mfLimits): boolean {
@@ -123,7 +127,8 @@ export async function generateAcceptedPlate3mfArtifacts(
     includeBundle?: boolean;
   }>,
 ): Promise<GenerateAcceptedPlate3mfArtifactsResult> {
-  if (!validLimits(dependencies.limits)) throw new RangeError("Accepted Plate 3MF limits must be nonnegative safe integers");
+  if (!validLimits(dependencies.limits))
+    throw new RangeError("Accepted Plate 3MF limits must be nonnegative safe integers");
   const resolved = dependencies.repository.readAcceptedPlateExportInput(command.profileId);
   if (resolved.kind !== "ready") return resolved;
   const input = resolved.input;
@@ -134,7 +139,10 @@ export async function generateAcceptedPlate3mfArtifacts(
     return { kind: "limit_exceeded", limit: "plates" };
   }
   const units = input.plates.flatMap((plate) => plate.units);
-  const plateByToken = new Map<AcceptedPlateExportUnit["token"], AcceptedPlateExportInput["plates"][number]>();
+  const plateByToken = new Map<
+    AcceptedPlateExportUnit["token"],
+    AcceptedPlateExportInput["plates"][number]
+  >();
   for (const plate of input.plates) {
     for (const unit of plate.units) plateByToken.set(unit.token, plate);
   }
@@ -171,14 +179,23 @@ export async function generateAcceptedPlate3mfArtifacts(
     plateId: plate.plateId,
     ordinal: plate.ordinal,
     entryName: entryName(plate.ordinal),
-    bytes: encodeAcceptedPlate3mf(plate.units.map((unit) => {
-      const geometry = loaded.geometryByToken.get(unit.token);
-      if (!geometry) throw new Error("Accepted Plate export mesh is missing");
-      return { token: unit.token, objectName: unit.objectName, xUm: unit.xUm, yUm: unit.yUm, mesh: geometry.mesh };
-    })),
+    bytes: encodeAcceptedPlate3mf(
+      plate.units.map((unit) => {
+        const geometry = loaded.geometryByToken.get(unit.token);
+        if (!geometry) throw new Error("Accepted Plate export mesh is missing");
+        return {
+          token: unit.token,
+          objectName: unit.objectName,
+          xUm: unit.xUm,
+          yUm: unit.yUm,
+          mesh: geometry.mesh,
+        };
+      }),
+    ),
   }));
   const manifest = manifestBytes(input);
-  const baseOutputBytes = manifest.length + plates.reduce((sum, plate) => sum + plate.bytes.length, 0);
+  const baseOutputBytes =
+    manifest.length + plates.reduce((sum, plate) => sum + plate.bytes.length, 0);
   if (baseOutputBytes > dependencies.limits.maxOutputBytes) {
     return { kind: "limit_exceeded", limit: "output_bytes" };
   }

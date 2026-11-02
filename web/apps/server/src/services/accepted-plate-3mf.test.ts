@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strFromU8, unzipSync } from "fflate";
@@ -7,7 +15,10 @@ import { MAX_ACCEPTED_PLATES } from "@print-partner/domain";
 import { afterEach, describe, expect, it } from "vitest";
 import { acceptedPlanBasis } from "../db/accepted-plan-progress.js";
 import type { AcceptedOperationalArtifact } from "../db/accepted-plan-operational.js";
-import type { AcceptedPlateExportInput, ReadAcceptedPlateExportInputResult } from "../db/accepted-plates.js";
+import type {
+  AcceptedPlateExportInput,
+  ReadAcceptedPlateExportInputResult,
+} from "../db/accepted-plates.js";
 import { getDb, SqliteDatabase } from "../db/client.js";
 import { AppRepository } from "../db/repository.js";
 import { parseRequiredUnitToken } from "./required-units.js";
@@ -58,7 +69,9 @@ endsolid accepted`);
     relativePath: "part.stl",
     expectedSha256: createHash("sha256").update(bytes).digest("hex"),
   };
-  const tokens = [1, 2].map((value) => parseRequiredUnitToken(`ppu_${value.toString(16).padStart(32, "0")}`));
+  const tokens = [1, 2].map((value) =>
+    parseRequiredUnitToken(`ppu_${value.toString(16).padStart(32, "0")}`),
+  );
   const input: AcceptedPlateExportInput = {
     basis: {
       profileId: 7,
@@ -81,7 +94,18 @@ endsolid accepted`);
         bedDepthUm: 250_000,
         bedHeightUm: 250_000,
         marginUm: 0,
-        units: [{ token: tokens[0]!, objectName: "First & Exact", xUm: 1_250, yUm: 2_500, widthUm: 3_000, depthUm: 5_000, heightUm: 10_000, artifact }],
+        units: [
+          {
+            token: tokens[0]!,
+            objectName: "First & Exact",
+            xUm: 1_250,
+            yUm: 2_500,
+            widthUm: 3_000,
+            depthUm: 5_000,
+            heightUm: 10_000,
+            artifact,
+          },
+        ],
       },
       {
         plateId: "a-second",
@@ -93,7 +117,18 @@ endsolid accepted`);
         bedDepthUm: 250_000,
         bedHeightUm: 250_000,
         marginUm: 0,
-        units: [{ token: tokens[1]!, objectName: "Second Exact", xUm: 5_000, yUm: 6_000, widthUm: 3_000, depthUm: 5_000, heightUm: 10_000, artifact }],
+        units: [
+          {
+            token: tokens[1]!,
+            objectName: "Second Exact",
+            xUm: 5_000,
+            yUm: 6_000,
+            widthUm: 3_000,
+            depthUm: 5_000,
+            heightUm: 10_000,
+            artifact,
+          },
+        ],
       },
       {
         plateId: "empty-third",
@@ -126,17 +161,20 @@ describe("generateAcceptedPlate3mfArtifacts", () => {
     let artifactOpens = 0;
     let bundleEncodes = 0;
 
-    const result = await generateAcceptedPlate3mfArtifacts({
-      ...dependencies(input, reposDir),
-      openArtifact: () => {
-        artifactOpens += 1;
-        throw new Error("artifact opened");
+    const result = await generateAcceptedPlate3mfArtifacts(
+      {
+        ...dependencies(input, reposDir),
+        openArtifact: () => {
+          artifactOpens += 1;
+          throw new Error("artifact opened");
+        },
+        bundleEncoder: () => {
+          bundleEncodes += 1;
+          throw new Error("bundle encoded");
+        },
       },
-      bundleEncoder: () => {
-        bundleEncodes += 1;
-        throw new Error("bundle encoded");
-      },
-    }, { profileId: 7, expectedPlateRevisionId: input.plateRevisionId + 1, includeBundle: true });
+      { profileId: 7, expectedPlateRevisionId: input.plateRevisionId + 1, includeBundle: true },
+    );
 
     expect(result).toEqual({ kind: "plate_revision_changed" });
     expect(artifactOpens).toBe(0);
@@ -146,24 +184,27 @@ describe("generateAcceptedPlate3mfArtifacts", () => {
   it("reads the accepted Plate revision once during generation", async () => {
     const { reposDir, input } = fixture();
     let reads = 0;
-    const result = await generateAcceptedPlate3mfArtifacts({
-      repository: {
-        readAcceptedPlateExportInput: () => {
-          reads += 1;
-          return reads === 1
-            ? { kind: "ready", input }
-            : {
-                kind: "ready",
-                input: { ...input, plateRevisionId: input.plateRevisionId + 1 },
-              };
+    const result = await generateAcceptedPlate3mfArtifacts(
+      {
+        repository: {
+          readAcceptedPlateExportInput: () => {
+            reads += 1;
+            return reads === 1
+              ? { kind: "ready", input }
+              : {
+                  kind: "ready",
+                  input: { ...input, plateRevisionId: input.plateRevisionId + 1 },
+                };
+          },
         },
+        reposDir,
+        limits: generous,
       },
-      reposDir,
-      limits: generous,
-    }, {
-      profileId: input.basis.profileId,
-      expectedPlateRevisionId: input.plateRevisionId,
-    });
+      {
+        profileId: input.basis.profileId,
+        expectedPlateRevisionId: input.plateRevisionId,
+      },
+    );
 
     expect(result).toMatchObject({
       kind: "generated",
@@ -178,24 +219,44 @@ describe("generateAcceptedPlate3mfArtifacts", () => {
     [{ kind: "plates_not_published" }, { kind: "plates_not_published" }],
     [{ kind: "stale_accepted_plan" }, { kind: "stale_accepted_plan" }],
     [{ kind: "unplaced_units" }, { kind: "unplaced_units" }],
-    [{ kind: "accepted_state_unavailable", reason: "compatibility_dirty" }, { kind: "accepted_state_unavailable", reason: "compatibility_dirty" }],
-    [{ kind: "accepted_state_unavailable", reason: "uninitialized" }, { kind: "accepted_state_unavailable", reason: "uninitialized" }],
+    [
+      { kind: "accepted_state_unavailable", reason: "compatibility_dirty" },
+      { kind: "accepted_state_unavailable", reason: "compatibility_dirty" },
+    ],
+    [
+      { kind: "accepted_state_unavailable", reason: "uninitialized" },
+      { kind: "accepted_state_unavailable", reason: "uninitialized" },
+    ],
     [{ kind: "transaction_unavailable" }, { kind: "transaction_unavailable" }],
   ] satisfies readonly (readonly [ReadAcceptedPlateExportInputResult, object])[];
 
-  it.each(repositoryStates)("forwards accepted repository state %# without inventing output", async (state, expected) => {
-    const result = await generateAcceptedPlate3mfArtifacts({
-      repository: { readAcceptedPlateExportInput: () => state },
-      reposDir: "/unused",
-      limits: generous,
-    }, { profileId: 7, expectedPlateRevisionId: 19 });
-    expect(result).toEqual(expected);
-  });
+  it.each(repositoryStates)(
+    "forwards accepted repository state %# without inventing output",
+    async (state, expected) => {
+      const result = await generateAcceptedPlate3mfArtifacts(
+        {
+          repository: { readAcceptedPlateExportInput: () => state },
+          reposDir: "/unused",
+          limits: generous,
+        },
+        { profileId: 7, expectedPlateRevisionId: 19 },
+      );
+      expect(result).toEqual(expected);
+    },
+  );
 
   it("preserves ordinal order, exact identity, empty Plates, and deterministic bytes", async () => {
     const { reposDir, input, tokens } = fixture();
-    const first = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), { profileId: 7, expectedPlateRevisionId: 19, includeBundle: true });
-    const second = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), { profileId: 7, expectedPlateRevisionId: 19, includeBundle: true });
+    const first = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), {
+      profileId: 7,
+      expectedPlateRevisionId: 19,
+      includeBundle: true,
+    });
+    const second = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), {
+      profileId: 7,
+      expectedPlateRevisionId: 19,
+      includeBundle: true,
+    });
     expect(first).toEqual(second);
     expect(first.kind).toBe("generated");
     if (first.kind !== "generated") throw new Error("generation failed");
@@ -204,11 +265,18 @@ describe("generateAcceptedPlate3mfArtifacts", () => {
       ["a-second", "plates/0002.3mf"],
       ["empty-third", "plates/0003.3mf"],
     ]);
-    const models = first.plates.map((plate) => strFromU8(unzipSync(plate.bytes)["3D/3dmodel.model"]!));
+    const models = first.plates.map((plate) =>
+      strFromU8(unzipSync(plate.bytes)["3D/3dmodel.model"]!),
+    );
     expect(models.join("\n").match(new RegExp(tokens[0]!, "g"))).toHaveLength(2);
     expect(models[0]).toContain('name="First &amp; Exact"');
     expect(models[0]).toContain('vertex x="1.25" y="2.5" z="0"');
-    expect(Object.keys(unzipSync(first.bundle!))).toEqual(["manifest.json", "plates/0001.3mf", "plates/0002.3mf", "plates/0003.3mf"]);
+    expect(Object.keys(unzipSync(first.bundle!))).toEqual([
+      "manifest.json",
+      "plates/0001.3mf",
+      "plates/0002.3mf",
+      "plates/0003.3mf",
+    ]);
   });
 
   it("generates from a real tracked accepted Plan and durable Plate revision", async () => {
@@ -253,7 +321,11 @@ endsolid tracked`);
       sourceVersion: sourceRevision.upstream_revision_key,
     });
     const profile = repo.createProfile("Tracked 3MF Build", source.id);
-    const created = repo.recomputePlanDraft({ profileId: profile.id, actor: "test:user", idempotencyKey: "3mf-draft" });
+    const created = repo.recomputePlanDraft({
+      profileId: profile.id,
+      actor: "test:user",
+      idempotencyKey: "3mf-draft",
+    });
     if (created.kind !== "created") throw new Error("tracked draft was not created");
     const reconciled = repo.savePlanDraftRequiredUnitReconciliation({
       profileId: profile.id,
@@ -278,30 +350,47 @@ endsolid tracked`);
     if (accepted.kind !== "ready") throw new Error("tracked accepted Plan is unavailable");
     const part = accepted.snapshot.parts.find((candidate) => candidate.included);
     const unit = part?.units.find((candidate) => candidate.required);
-    if (!part || !unit || part.artifact.kind !== "tracked") throw new Error("tracked accepted artifact is missing");
-    expect(repo.publishAcceptedPlates({
-      profileId: profile.id,
-      expected: acceptedPlanBasis(accepted.snapshot),
-      expectedPlateRevisionId: null,
-      plates: [{
-        plateId: "tracked-plate",
-        printerId: "printer-one",
-        printerName: "Printer One",
-        printerModel: "Model One",
-        bedWidthUm: 250_000,
-        bedDepthUm: 250_000,
-        bedHeightUm: 250_000,
-        marginUm: 5_000,
-        units: [{ token: unit.token, xUm: 5_000, yUm: 5_000, widthUm: 3_000, depthUm: 5_000, heightUm: 10_000 }],
-      }],
-    })).toMatchObject({ kind: "published" });
+    if (!part || !unit || part.artifact.kind !== "tracked")
+      throw new Error("tracked accepted artifact is missing");
+    expect(
+      repo.publishAcceptedPlates({
+        profileId: profile.id,
+        expected: acceptedPlanBasis(accepted.snapshot),
+        expectedPlateRevisionId: null,
+        plates: [
+          {
+            plateId: "tracked-plate",
+            printerId: "printer-one",
+            printerName: "Printer One",
+            printerModel: "Model One",
+            bedWidthUm: 250_000,
+            bedDepthUm: 250_000,
+            bedHeightUm: 250_000,
+            marginUm: 5_000,
+            units: [
+              {
+                token: unit.token,
+                xUm: 5_000,
+                yUm: 5_000,
+                widthUm: 3_000,
+                depthUm: 5_000,
+                heightUm: 10_000,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toMatchObject({ kind: "published" });
 
     const plateRevision = repo.readAcceptedPlates(profile.id);
     if (plateRevision.kind !== "ready") throw new Error("tracked Plate revision is unavailable");
-    const generated = await generateAcceptedPlate3mfArtifacts({ repository: repo, reposDir: database.reposDir, limits: generous }, {
-      profileId: profile.id,
-      expectedPlateRevisionId: plateRevision.plateRevisionId,
-    });
+    const generated = await generateAcceptedPlate3mfArtifacts(
+      { repository: repo, reposDir: database.reposDir, limits: generous },
+      {
+        profileId: profile.id,
+        expectedPlateRevisionId: plateRevision.plateRevisionId,
+      },
+    );
     expect(generated.kind).toBe("generated");
     if (generated.kind !== "generated") throw new Error("tracked generation failed");
     const xml = strFromU8(unzipSync(generated.plates[0]!.bytes)["3D/3dmodel.model"]!);
@@ -315,15 +404,91 @@ endsolid tracked`);
   it("fails the whole operation on unavailable, mismatched, and invalid artifacts", async () => {
     const { reposDir, snapshotRoot, artifact, input, tokens } = fixture();
     const cases: Array<[AcceptedPlateExportInput, object]> = [
-      [{ ...input, plates: [{ ...input.plates[0]!, units: [{ ...input.plates[0]!.units[0]!, artifact: { kind: "unavailable", reason: "legacy" } }] }] }, { kind: "artifact_unavailable", token: tokens[0], reason: "legacy" }],
-      [{ ...input, plates: [{ ...input.plates[0]!, units: [{ ...input.plates[0]!.units[0]!, artifact: { kind: "unavailable", reason: "untracked_source" } }] }] }, { kind: "artifact_unavailable", token: tokens[0], reason: "untracked_source" }],
-      [{ ...input, plates: [{ ...input.plates[0]!, units: [{ ...input.plates[0]!.units[0]!, artifact: { ...artifact, expectedSha256: "f".repeat(64) } }] }] }, { kind: "artifact_unavailable", token: tokens[0], reason: "digest_mismatch" }],
+      [
+        {
+          ...input,
+          plates: [
+            {
+              ...input.plates[0]!,
+              units: [
+                {
+                  ...input.plates[0]!.units[0]!,
+                  artifact: { kind: "unavailable", reason: "legacy" },
+                },
+              ],
+            },
+          ],
+        },
+        { kind: "artifact_unavailable", token: tokens[0], reason: "legacy" },
+      ],
+      [
+        {
+          ...input,
+          plates: [
+            {
+              ...input.plates[0]!,
+              units: [
+                {
+                  ...input.plates[0]!.units[0]!,
+                  artifact: { kind: "unavailable", reason: "untracked_source" },
+                },
+              ],
+            },
+          ],
+        },
+        { kind: "artifact_unavailable", token: tokens[0], reason: "untracked_source" },
+      ],
+      [
+        {
+          ...input,
+          plates: [
+            {
+              ...input.plates[0]!,
+              units: [
+                {
+                  ...input.plates[0]!.units[0]!,
+                  artifact: { ...artifact, expectedSha256: "f".repeat(64) },
+                },
+              ],
+            },
+          ],
+        },
+        { kind: "artifact_unavailable", token: tokens[0], reason: "digest_mismatch" },
+      ],
     ];
     writeFileSync(join(snapshotRoot, "bad.stl"), "not an stl");
     const bad = Buffer.from("not an stl");
-    cases.push([{ ...input, plates: [{ ...input.plates[0]!, units: [{ ...input.plates[0]!.units[0]!, artifact: { kind: "tracked", sourceId: 1, sourceRevisionId: 2, snapshotRoot, relativePath: "bad.stl", expectedSha256: createHash("sha256").update(bad).digest("hex") } }] }] }, { kind: "invalid_stl", token: tokens[0] }]);
+    cases.push([
+      {
+        ...input,
+        plates: [
+          {
+            ...input.plates[0]!,
+            units: [
+              {
+                ...input.plates[0]!.units[0]!,
+                artifact: {
+                  kind: "tracked",
+                  sourceId: 1,
+                  sourceRevisionId: 2,
+                  snapshotRoot,
+                  relativePath: "bad.stl",
+                  expectedSha256: createHash("sha256").update(bad).digest("hex"),
+                },
+              },
+            ],
+          },
+        ],
+      },
+      { kind: "invalid_stl", token: tokens[0] },
+    ]);
     for (const [candidate, expected] of cases) {
-      await expect(generateAcceptedPlate3mfArtifacts(dependencies(candidate, reposDir), { profileId: 7, expectedPlateRevisionId: candidate.plateRevisionId })).resolves.toMatchObject(expected);
+      await expect(
+        generateAcceptedPlate3mfArtifacts(dependencies(candidate, reposDir), {
+          profileId: 7,
+          expectedPlateRevisionId: candidate.plateRevisionId,
+        }),
+      ).resolves.toMatchObject(expected);
     }
   });
 
@@ -349,16 +514,20 @@ endsolid degenerate`);
     };
     const candidate = {
       ...input,
-      plates: [{
-        ...input.plates[0]!,
-        units: [{ ...input.plates[0]!.units[0]!, artifact }],
-      }],
+      plates: [
+        {
+          ...input.plates[0]!,
+          units: [{ ...input.plates[0]!.units[0]!, artifact }],
+        },
+      ],
     };
 
-    await expect(generateAcceptedPlate3mfArtifacts(
-      dependencies(candidate, reposDir),
-      { profileId: 7, expectedPlateRevisionId: candidate.plateRevisionId },
-    )).resolves.toEqual({ kind: "artifact_geometry_mismatch", token: tokens[0] });
+    await expect(
+      generateAcceptedPlate3mfArtifacts(dependencies(candidate, reposDir), {
+        profileId: 7,
+        expectedPlateRevisionId: candidate.plateRevisionId,
+      }),
+    ).resolves.toEqual({ kind: "artifact_geometry_mismatch", token: tokens[0] });
   });
 
   it.each([
@@ -371,7 +540,12 @@ endsolid degenerate`);
     const { reposDir, input, tokens } = fixture();
     const unit = { ...input.plates[0]!.units[0]!, ...change };
     const candidate = { ...input, plates: [{ ...input.plates[0]!, units: [unit] }] };
-    await expect(generateAcceptedPlate3mfArtifacts(dependencies(candidate, reposDir), { profileId: 7, expectedPlateRevisionId: candidate.plateRevisionId })).resolves.toEqual({
+    await expect(
+      generateAcceptedPlate3mfArtifacts(dependencies(candidate, reposDir), {
+        profileId: 7,
+        expectedPlateRevisionId: candidate.plateRevisionId,
+      }),
+    ).resolves.toEqual({
       kind: "artifact_geometry_mismatch",
       token: tokens[0],
     });
@@ -385,35 +559,46 @@ endsolid degenerate`);
   ])("rechecks captured build volume against verified geometry %#", async (plateChange) => {
     const { reposDir, input, tokens } = fixture();
     const candidate = { ...input, plates: [{ ...input.plates[0]!, ...plateChange }] };
-    await expect(generateAcceptedPlate3mfArtifacts(dependencies(candidate, reposDir), { profileId: 7, expectedPlateRevisionId: candidate.plateRevisionId })).resolves.toEqual({
+    await expect(
+      generateAcceptedPlate3mfArtifacts(dependencies(candidate, reposDir), {
+        profileId: 7,
+        expectedPlateRevisionId: candidate.plateRevisionId,
+      }),
+    ).resolves.toEqual({
       kind: "artifact_geometry_mismatch",
       token: tokens[0],
     });
   });
 
-  it.each(["replace", "append"] satisfies readonly ("replace" | "append")[])("uses the verified descriptor lease across a source %s race", async (race) => {
-    const { reposDir, snapshotRoot, input } = fixture();
-    const path = join(snapshotRoot, "part.stl");
-    const result = await generateAcceptedPlate3mfArtifacts({
-      ...dependencies(input, reposDir),
-      openArtifact(request) {
-        const opened = openVerifiedAcceptedArtifact(request);
-        if (opened.kind !== "verified") return opened;
-        if (race === "append") appendFileSync(path, "malicious append");
-        else {
-          const replacement = join(snapshotRoot, "replacement.stl");
-          writeFileSync(replacement, "not an stl");
-          renameSync(replacement, path);
-        }
-        return opened;
-      },
-    }, { profileId: 7, expectedPlateRevisionId: input.plateRevisionId });
+  it.each(["replace", "append"] satisfies readonly ("replace" | "append")[])(
+    "uses the verified descriptor lease across a source %s race",
+    async (race) => {
+      const { reposDir, snapshotRoot, input } = fixture();
+      const path = join(snapshotRoot, "part.stl");
+      const result = await generateAcceptedPlate3mfArtifacts(
+        {
+          ...dependencies(input, reposDir),
+          openArtifact(request) {
+            const opened = openVerifiedAcceptedArtifact(request);
+            if (opened.kind !== "verified") return opened;
+            if (race === "append") appendFileSync(path, "malicious append");
+            else {
+              const replacement = join(snapshotRoot, "replacement.stl");
+              writeFileSync(replacement, "not an stl");
+              renameSync(replacement, path);
+            }
+            return opened;
+          },
+        },
+        { profileId: 7, expectedPlateRevisionId: input.plateRevisionId },
+      );
 
-    expect(result.kind).toBe("generated");
-    if (result.kind !== "generated") throw new Error("generation failed");
-    const xml = strFromU8(unzipSync(result.plates[0]!.bytes)["3D/3dmodel.model"]!);
-    expect(xml).toContain('vertex x="1.25" y="2.5" z="0"');
-  });
+      expect(result.kind).toBe("generated");
+      if (result.kind !== "generated") throw new Error("generation failed");
+      const xml = strFromU8(unzipSync(result.plates[0]!.bytes)["3D/3dmodel.model"]!);
+      expect(xml).toContain('vertex x="1.25" y="2.5" z="0"');
+    },
+  );
 
   it("contains no compatibility packing or path-based mesh imports", () => {
     const source = readFileSync(new URL("./accepted-plate-3mf.ts", import.meta.url), "utf8");
@@ -426,16 +611,37 @@ endsolid degenerate`);
       "fleet",
       "filament",
       "compatibility Parts",
-    ]) expect(source).not.toContain(forbidden);
+    ])
+      expect(source).not.toContain(forbidden);
   });
 
   it("passes each limit exactly and fails at one less", async () => {
     const { reposDir, input, bytes } = fixture();
-    const baseline = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), { profileId: 7, expectedPlateRevisionId: input.plateRevisionId, includeBundle: true });
+    const baseline = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), {
+      profileId: 7,
+      expectedPlateRevisionId: input.plateRevisionId,
+      includeBundle: true,
+    });
     if (baseline.kind !== "generated") throw new Error("baseline failed");
-    const outputBytes = baseline.manifest.length + baseline.plates.reduce((sum, plate) => sum + plate.bytes.length, 0) + baseline.bundle!.length;
-    const exact = { ...generous, maxArtifactBytes: bytes.length, maxTotalSourceBytes: bytes.length, maxObjects: 2, maxTriangles: 2, maxOutputBytes: outputBytes };
-    await expect(generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir, exact), { profileId: 7, expectedPlateRevisionId: input.plateRevisionId, includeBundle: true })).resolves.toMatchObject({ kind: "generated" });
+    const outputBytes =
+      baseline.manifest.length +
+      baseline.plates.reduce((sum, plate) => sum + plate.bytes.length, 0) +
+      baseline.bundle!.length;
+    const exact = {
+      ...generous,
+      maxArtifactBytes: bytes.length,
+      maxTotalSourceBytes: bytes.length,
+      maxObjects: 2,
+      maxTriangles: 2,
+      maxOutputBytes: outputBytes,
+    };
+    await expect(
+      generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir, exact), {
+        profileId: 7,
+        expectedPlateRevisionId: input.plateRevisionId,
+        includeBundle: true,
+      }),
+    ).resolves.toMatchObject({ kind: "generated" });
     for (const [limit, value] of [
       ["artifact_bytes", { maxArtifactBytes: bytes.length - 1 }],
       ["total_source_bytes", { maxTotalSourceBytes: bytes.length - 1 }],
@@ -443,39 +649,62 @@ endsolid degenerate`);
       ["triangles", { maxTriangles: 1 }],
       ["output_bytes", { maxOutputBytes: outputBytes - 1 }],
     ] satisfies readonly (readonly [AcceptedPlate3mfLimit, Partial<AcceptedPlate3mfLimits>])[]) {
-      await expect(generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir, { ...exact, ...value }), { profileId: 7, expectedPlateRevisionId: input.plateRevisionId, includeBundle: true })).resolves.toEqual({ kind: "limit_exceeded", limit });
+      await expect(
+        generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir, { ...exact, ...value }), {
+          profileId: 7,
+          expectedPlateRevisionId: input.plateRevisionId,
+          includeBundle: true,
+        }),
+      ).resolves.toEqual({ kind: "limit_exceeded", limit });
     }
   });
 
   it("checks base output before allocating an optional bundle", async () => {
     const { reposDir, input } = fixture();
-    const baseline = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), { profileId: 7, expectedPlateRevisionId: input.plateRevisionId });
+    const baseline = await generateAcceptedPlate3mfArtifacts(dependencies(input, reposDir), {
+      profileId: 7,
+      expectedPlateRevisionId: input.plateRevisionId,
+    });
     if (baseline.kind !== "generated") throw new Error("baseline failed");
-    const baseBytes = baseline.manifest.length + baseline.plates.reduce((sum, plate) => sum + plate.bytes.length, 0);
-    const result = await generateAcceptedPlate3mfArtifacts({
-      ...dependencies(input, reposDir, { ...generous, maxOutputBytes: baseBytes - 1 }),
-      bundleEncoder() {
-        throw new Error("bundle must not be allocated");
+    const baseBytes =
+      baseline.manifest.length +
+      baseline.plates.reduce((sum, plate) => sum + plate.bytes.length, 0);
+    const result = await generateAcceptedPlate3mfArtifacts(
+      {
+        ...dependencies(input, reposDir, { ...generous, maxOutputBytes: baseBytes - 1 }),
+        bundleEncoder() {
+          throw new Error("bundle must not be allocated");
+        },
       },
-    }, { profileId: 7, expectedPlateRevisionId: input.plateRevisionId, includeBundle: true });
+      { profileId: 7, expectedPlateRevisionId: input.plateRevisionId, includeBundle: true },
+    );
     expect(result).toEqual({ kind: "limit_exceeded", limit: "output_bytes" });
   });
 
   it("passes the Plate limit exactly and rejects one over before artifact work", async () => {
     const { reposDir, input } = fixture();
-    await expect(generateAcceptedPlate3mfArtifacts(
-      dependencies(input, reposDir, { ...generous, maxPlates: 3 }),
-      { profileId: 7, expectedPlateRevisionId: input.plateRevisionId },
-    )).resolves.toMatchObject({ kind: "generated" });
-    await expect(generateAcceptedPlate3mfArtifacts({
-      ...dependencies(input, reposDir, { ...generous, maxPlates: 2 }),
-      openArtifact() {
-        throw new Error("artifact work must not start");
-      },
-    }, { profileId: 7, expectedPlateRevisionId: input.plateRevisionId })).resolves.toEqual({ kind: "limit_exceeded", limit: "plates" });
-    await expect(generateAcceptedPlate3mfArtifacts(
-      dependencies(input, reposDir, { ...generous, maxPlates: MAX_ACCEPTED_PLATES + 1 }),
-      { profileId: 7, expectedPlateRevisionId: input.plateRevisionId },
-    )).rejects.toThrow(/limits/i);
+    await expect(
+      generateAcceptedPlate3mfArtifacts(
+        dependencies(input, reposDir, { ...generous, maxPlates: 3 }),
+        { profileId: 7, expectedPlateRevisionId: input.plateRevisionId },
+      ),
+    ).resolves.toMatchObject({ kind: "generated" });
+    await expect(
+      generateAcceptedPlate3mfArtifacts(
+        {
+          ...dependencies(input, reposDir, { ...generous, maxPlates: 2 }),
+          openArtifact() {
+            throw new Error("artifact work must not start");
+          },
+        },
+        { profileId: 7, expectedPlateRevisionId: input.plateRevisionId },
+      ),
+    ).resolves.toEqual({ kind: "limit_exceeded", limit: "plates" });
+    await expect(
+      generateAcceptedPlate3mfArtifacts(
+        dependencies(input, reposDir, { ...generous, maxPlates: MAX_ACCEPTED_PLATES + 1 }),
+        { profileId: 7, expectedPlateRevisionId: input.plateRevisionId },
+      ),
+    ).rejects.toThrow(/limits/i);
   });
 });

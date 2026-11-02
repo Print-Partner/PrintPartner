@@ -21,10 +21,17 @@ it("scans shared directories once per observation batch, but rechecks on the nex
   const snapshotRoot = join(reposDir, "snapshot");
   mkdirSync(join(snapshotRoot, "parts"), { recursive: true });
   for (const name of ["a.stl", "b.stl"]) writeFileSync(join(snapshotRoot, "parts", name), "solid");
-  const input = (name: string) => ({ reposDir, artifact: {
-    kind: "tracked" as const, sourceId: 1, sourceRevisionId: 1, snapshotRoot,
-    relativePath: `parts/${name}`, expectedSha256: "a".repeat(64),
-  } });
+  const input = (name: string) => ({
+    reposDir,
+    artifact: {
+      kind: "tracked" as const,
+      sourceId: 1,
+      sourceRevisionId: 1,
+      snapshotRoot,
+      relativePath: `parts/${name}`,
+      expectedSha256: "a".repeat(64),
+    },
+  });
   const observe = createAcceptedArtifactObserver();
   expect(observe(input("a.stl"))).toEqual({ kind: "available" });
   expect(observe(input("b.stl"))).toEqual({ kind: "available" });
@@ -41,10 +48,17 @@ it("does not cache file safety checks within a batch", () => {
   mkdirSync(snapshotRoot);
   const file = join(snapshotRoot, "a.stl");
   writeFileSync(file, "solid");
-  const input = { reposDir, artifact: {
-    kind: "tracked" as const, sourceId: 1, sourceRevisionId: 1, snapshotRoot,
-    relativePath: "a.stl", expectedSha256: "a".repeat(64),
-  } };
+  const input = {
+    reposDir,
+    artifact: {
+      kind: "tracked" as const,
+      sourceId: 1,
+      sourceRevisionId: 1,
+      snapshotRoot,
+      relativePath: "a.stl",
+      expectedSha256: "a".repeat(64),
+    },
+  };
   const observe = createAcceptedArtifactObserver();
   expect(observe(input)).toEqual({ kind: "available" });
   rmSync(file);

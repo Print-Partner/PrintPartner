@@ -42,7 +42,10 @@ export type MaterializeDirectExport3mfResult =
   | MaterializedDirectExport3mf
   | { readonly kind: "profile_not_found" }
   | { readonly kind: "empty_plan" }
-  | { readonly kind: "accepted_state_unavailable"; readonly reason: "compatibility_dirty" | "uninitialized" }
+  | {
+      readonly kind: "accepted_state_unavailable";
+      readonly reason: "compatibility_dirty" | "uninitialized";
+    }
   | { readonly kind: "unknown_token"; readonly token: string }
   | {
       readonly kind: "artifact_unavailable";
@@ -51,13 +54,18 @@ export type MaterializeDirectExport3mfResult =
     }
   | { readonly kind: "invalid_stl"; readonly token: RequiredUnitToken }
   | { readonly kind: "artifact_geometry_mismatch"; readonly token: RequiredUnitToken }
-  | { readonly kind: "limit_exceeded"; readonly limit: AcceptedArtifactGeometryLimit | "output_bytes" }
+  | {
+      readonly kind: "limit_exceeded";
+      readonly limit: AcceptedArtifactGeometryLimit | "output_bytes";
+    }
   | { readonly kind: "output_failure" };
 
 export type MaterializeDirectExport3mfDependencies = Readonly<{
   repository: Pick<
     AppRepository,
-    "getOwnedProfileIdentity" | "readAcceptedPlanOperationalSnapshot" | "readAcceptedPlateWorkspaceInput"
+    | "getOwnedProfileIdentity"
+    | "readAcceptedPlanOperationalSnapshot"
+    | "readAcceptedPlateWorkspaceInput"
   >;
   reposDir: string;
   tenantExportsDir: string;
@@ -182,16 +190,18 @@ export async function materializeDirectExport3mf(
     placements: arrangement.placements,
     plates: arrangement.plates,
   });
-  const bytes = encodeAcceptedPlate3mf(selected.map((unit) => {
-    const position = positions.get(unit.token) ?? { xUm: 0, yUm: 0 };
-    return {
-      token: unit.token,
-      objectName: unit.objectName,
-      xUm: position.xUm,
-      yUm: position.yUm,
-      mesh: geometryOf(unit.token).mesh,
-    };
-  }));
+  const bytes = encodeAcceptedPlate3mf(
+    selected.map((unit) => {
+      const position = positions.get(unit.token) ?? { xUm: 0, yUm: 0 };
+      return {
+        token: unit.token,
+        objectName: unit.objectName,
+        xUm: position.xUm,
+        yUm: position.yUm,
+        mesh: geometryOf(unit.token).mesh,
+      };
+    }),
+  );
   if (bytes.byteLength > limits.maxOutputBytes) {
     return { kind: "limit_exceeded", limit: "output_bytes" };
   }

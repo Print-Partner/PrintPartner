@@ -1,8 +1,5 @@
 import type { AcceptedOperationalPart } from "../db/accepted-plan-operational.js";
-import {
-  acceptedMediaBasis,
-  type AcceptedMediaVariant,
-} from "../lib/accepted-media-cache.js";
+import { acceptedMediaBasis, type AcceptedMediaVariant } from "../lib/accepted-media-cache.js";
 import { getColorById } from "./filament-catalog.js";
 
 type AcceptedPartMediaFields = Pick<

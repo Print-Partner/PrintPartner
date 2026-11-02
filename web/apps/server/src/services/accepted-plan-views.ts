@@ -89,10 +89,8 @@ export function toAcceptedCheckoffView(input: {
       const catalogColor =
         !resolved && part.filamentColorId ? getColorById(part.filamentColorId) : null;
       const spoolSummary =
-        input.filamentContext?.spoolSummariesForPart(
-          part.filamentColorId,
-          part.spoolmanSpoolId,
-        ) ?? [];
+        input.filamentContext?.spoolSummariesForPart(part.filamentColorId, part.spoolmanSpoolId) ??
+        [];
       const base = {
         id: part.projectionPartId,
         filename: part.filename,

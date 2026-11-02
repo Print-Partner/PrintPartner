@@ -1,0 +1,78 @@
+{
+  "public visits": {
+    "raw": 508928,
+    "gzip": 157696
+  },
+  "authenticated visits": {
+    "raw": 913408,
+    "gzip": 288768
+  },
+  "src/pages/BoardPage.tsx": {
+    "raw": 927744,
+    "gzip": 293888
+  },
+  "src/pages/BuildPage.tsx": {
+    "raw": 1022976,
+    "gzip": 327680
+  },
+  "src/pages/CheckoffPage.tsx": {
+    "raw": 1193984,
+    "gzip": 380928
+  },
+  "src/pages/ExportPage.tsx": {
+    "raw": 1139712,
+    "gzip": 362496
+  },
+  "src/pages/ForgotPasswordPage.tsx": {
+    "raw": 595968,
+    "gzip": 184320
+  },
+  "src/pages/GlobalProductionPage.tsx": {
+    "raw": 977920,
+    "gzip": 312320
+  },
+  "src/pages/HelpPage.tsx": {
+    "raw": 935936,
+    "gzip": 296960
+  },
+  "src/pages/LoginPage.tsx": {
+    "raw": 596992,
+    "gzip": 184320
+  },
+  "src/pages/NotFoundPage.tsx": {
+    "raw": 914432,
+    "gzip": 288768
+  },
+  "src/pages/PartsPage.tsx": {
+    "raw": 1075200,
+    "gzip": 343040
+  },
+  "src/pages/PlansPage.tsx": {
+    "raw": 933888,
+    "gzip": 296960
+  },
+  "src/pages/PrintersPage.tsx": {
+    "raw": 1009664,
+    "gzip": 324608
+  },
+  "src/pages/ResetPasswordPage.tsx": {
+    "raw": 594944,
+    "gzip": 184320
+  },
+  "src/pages/SettingsPage.tsx": {
+    "raw": 1150976,
+    "gzip": 361472
+  },
+  "src/pages/SourcesPage.tsx": {
+    "raw": 1139712,
+    "gzip": 363520
+  },
+  "all JavaScript": {
+    "raw": 2571264,
+    "gzip": 771072
+  },
+  "largest JavaScript file": {
+    "raw": 577536,
+    "gzip": 144384
+  }
+}

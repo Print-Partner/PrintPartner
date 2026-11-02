@@ -112,6 +112,46 @@ The baseline caps existing duplication; it does not mean those clones are fixed.
 It expects the web dependencies to be installed, as they are after `web-assets`
 in a full local run.
 
+## Web JavaScript byte budgets
+
+Web CI's existing `web-build` job runs `test:bundles` after the production build.
+The check keeps Three.js out of static route imports and enforces raw and gzip
+byte limits from `web/apps/web/scripts/route-budgets.json`. Run it locally with:
+
+```sh
+npm --prefix web run build
+npm --prefix web run test:bundles -w @print-partner/web
+```
+
+The limits cover the public entry, authenticated shell, and each route's full
+static import closure including its shared baseline. Each output file counts
+once per closure. The printed route rows still show bytes added to the baseline.
+Separate total and single-file limits count every JavaScript file in `dist`,
+including lazy previews, workers and public scripts not listed in Vite's manifest.
+Gzip totals sum each file's compressed size using Node's default gzip settings.
+CSS, images, source maps and native binaries are outside this JavaScript check.
+
+The initial budgets come from main `0c50c15d`, built with locked Vite 8.3.4 and
+Node 24.21.0. Each limit allows 5% above that measurement, rounded up to the next
+KiB, to absorb small build and compression differences. These limits cap growth;
+they do not claim the existing bundles are small. Checks compare exact bytes,
+not the rounded table values. Missing budgets, including for new routes, fail.
+
+Remove unnecessary imports or lazy-load code when a limit fails. If a deliberate
+change needs a new budget, rebuild first, then generate proposed limits:
+
+```sh
+cd web/apps/web
+node scripts/route-bundles.mjs --write-budgets
+```
+
+Review the JSON diff and explain any increases in the PR. Generation replaces
+all limits with the current measurements plus the same allowance. Do not run it
+as part of normal checks or CI. It still rejects static Three.js imports.
+The fixture tests prove failures for raw and gzip growth, lazy chunks, a
+one-byte overage, missing budgets and invalid manifests without changing real
+build outputs.
+
 ## Unused Rust dependencies
 
 The `cargo-machete` job in `rust-deps-weekly.yml` now fails on unused dependencies

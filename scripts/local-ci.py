@@ -53,6 +53,11 @@ NEXTEST = (("cargo", None), ("cargo-nextest", None))
 # The workflow's install step owns the scanner version.
 MACHETE_VERSION = re.search(r"tool: cargo-machete@([0-9.]+)",
                             (ROOT / ".github/workflows/rust-deps-weekly.yml").read_text())[1]
+RUFF_VERSION = re.search(
+    r'^required-version = "==([0-9.]+)"$',
+    (ROOT / "ruff.toml").read_text(),
+    re.MULTILINE,
+)[1]
 CARGO = "cargo {} --manifest-path rust/Cargo.toml --locked --workspace"
 
 STEPS = [
@@ -69,6 +74,11 @@ STEPS = [
          ("python3 -B -m unittest discover -s scripts -p test_check_large_files.py -v",
           "python3 -B scripts/check-large-files.py"),
          ("actionlint.yml#Check tracked file sizes",), requires=(("python3", None), ("git", None))),
+    Step("python-lint", "Ruff unused-import and complexity lint",
+         ("python3 -B -m unittest discover -s scripts -p test_ruff_lint.py -v",
+          "ruff check scripts rust/scripts web/scripts slicer-sidecar .factory/hooks"),
+         ("actionlint.yml#Lint Python with Ruff",),
+         requires=(("python3", None), ("ruff", RUFF_VERSION))),
     Step("zizmor", "zizmor (required check)",
          setup=("zizmor --min-severity informational --config .github/zizmor.yml .",),
          requires=(("zizmor", "1.31.1"),)),

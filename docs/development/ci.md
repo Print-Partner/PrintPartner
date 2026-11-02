@@ -67,6 +67,28 @@ Keep formatting in separate bounded PRs, then enforce the checks in CI and the
 opt-in hook. Do not treat configuration alone as a passing formatter readiness
 criterion or add broad source exclusions to manufacture a pass.
 
+## Python lint
+
+The `python-lint` job in `actionlint.yml` runs `ruff check` with the pinned Ruff
+from `requirements-dev.txt` on repository scripts, hooks and the legacy sidecar.
+It runs on every ready PR and main push. It enforces two rules from `ruff.toml`:
+
+- F401 rejects unused imports.
+- C901 rejects functions with cyclomatic complexity above 20, the same limit
+  ESLint applies to TypeScript.
+
+Six existing functions in `.factory/hooks/guard.py`,
+`rust/scripts/check-macos-bundle.py` and `rust/scripts/gateway-operations.py`
+are over the limit. Each carries a `# noqa: C901` on its `def` line, which
+exempts only that function. Split a function to remove its exemption; do not
+add new ones. `scripts/test_ruff_lint.py` proves an unused import, a complexity
+of 21 and a second function next to an exempt one all fail.
+
+```sh
+.venv/bin/python -m pip install -r requirements-dev.txt
+PATH="$PWD/.venv/bin:$PATH" just ci --only python-lint
+```
+
 ## Duplicated code
 
 The `duplication` job in `duplication.yml` caps duplicated tokens with jscpd 5.4.2.

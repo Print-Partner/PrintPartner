@@ -3,6 +3,14 @@ target-version = "py311"
 line-length = 100
 extend-exclude = [".audit"]
 
+[lint]
+# Unused imports and the cyclomatic complexity limit ESLint applies to TypeScript.
+# Existing functions over the limit carry a line-level noqa; lower, never add.
+select = ["C901", "F401"]
+
+[lint.mccabe]
+max-complexity = 20
+
 [format]
 quote-style = "double"
 indent-style = "space"

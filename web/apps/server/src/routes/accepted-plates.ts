@@ -51,15 +51,17 @@ function fleetPrinterGeometry(
 ): Omit<AcceptedPlateInput, "plateId" | "units"> | null {
   const machine = loadFleet(repo).find((candidate) => candidate.id === printerId);
   const printer = machine ? acceptedPrinter(machine) : null;
-  return printer ? {
-    printerId: printer.id,
-    printerName: printer.name,
-    printerModel: printer.model,
-    bedWidthUm: printer.bed_width_um,
-    bedDepthUm: printer.bed_depth_um,
-    bedHeightUm: printer.bed_height_um,
-    marginUm: printer.margin_um,
-  } : null;
+  return printer
+    ? {
+        printerId: printer.id,
+        printerName: printer.name,
+        printerModel: printer.model,
+        bedWidthUm: printer.bed_width_um,
+        bedDepthUm: printer.bed_depth_um,
+        bedHeightUm: printer.bed_height_um,
+        marginUm: printer.margin_um,
+      }
+    : null;
 }
 
 function sendError(
@@ -72,17 +74,28 @@ function sendError(
   return reply.status(status).send({ detail, code, ...fields });
 }
 
-function sendReadFailure(reply: FastifyReply, result: Exclude<ReturnType<typeof readAcceptedPlateWorkspace>, { kind: "workspace" }>) {
+function sendReadFailure(
+  reply: FastifyReply,
+  result: Exclude<ReturnType<typeof readAcceptedPlateWorkspace>, { kind: "workspace" }>,
+) {
   if (result.kind === "profile_not_found") {
     return sendError(reply, 404, "profile_not_found", "Plan not found");
   }
   if (result.kind === "transaction_unavailable") {
-    return sendError(reply, 503, "accepted_plate_update_unavailable", "Accepted Plate update is unavailable");
+    return sendError(
+      reply,
+      503,
+      "accepted_plate_update_unavailable",
+      "Accepted Plate update is unavailable",
+    );
   }
   return sendError(reply, 409, "accepted_state_unavailable", "Accepted Plan state is unavailable");
 }
 
-function sendInitializeFailure(reply: FastifyReply, result: Exclude<InitializeAcceptedPlatesResult, { kind: "workspace" }>) {
+function sendInitializeFailure(
+  reply: FastifyReply,
+  result: Exclude<InitializeAcceptedPlatesResult, { kind: "workspace" }>,
+) {
   switch (result.kind) {
     case "profile_not_found":
       return sendError(reply, 404, "profile_not_found", "Plan not found");
@@ -92,21 +105,49 @@ function sendInitializeFailure(reply: FastifyReply, result: Exclude<InitializeAc
     case "duplicate_assignment":
     case "unknown_unit_token":
     case "unassigned_units":
-      return sendError(reply, 422, result.kind, "Printer assignments are incomplete", { tokens: result.tokens });
+      return sendError(reply, 422, result.kind, "Printer assignments are incomplete", {
+        tokens: result.tokens,
+      });
     case "printer_not_found":
-      return sendError(reply, 422, "printer_not_found", "Printer was not found", { printer_ids: result.printerIds });
+      return sendError(reply, 422, "printer_not_found", "Printer was not found", {
+        printer_ids: result.printerIds,
+      });
     case "missing_printer_geometry":
-      return sendError(reply, 422, "missing_printer_geometry", "Printer build geometry is incomplete", { printer_ids: result.printerIds });
+      return sendError(
+        reply,
+        422,
+        "missing_printer_geometry",
+        "Printer build geometry is incomplete",
+        { printer_ids: result.printerIds },
+      );
     case "unit_too_large":
-      return sendError(reply, 422, "unit_too_large", "Required unit does not fit the selected Printer", { token: result.token, printer_id: result.printerId });
+      return sendError(
+        reply,
+        422,
+        "unit_too_large",
+        "Required unit does not fit the selected Printer",
+        { token: result.token, printer_id: result.printerId },
+      );
     case "artifact_unavailable":
-      return sendError(reply, 409, result.reason, "Accepted artifact is unavailable", { token: result.token });
+      return sendError(reply, 409, result.reason, "Accepted artifact is unavailable", {
+        token: result.token,
+      });
     case "invalid_stl":
-      return sendError(reply, 409, "invalid_stl", "Accepted artifact is not a valid STL", { token: result.token });
+      return sendError(reply, 409, "invalid_stl", "Accepted artifact is not a valid STL", {
+        token: result.token,
+      });
     case "degenerate_geometry":
-      return sendError(reply, 422, "degenerate_geometry", "Accepted artifact geometry cannot be arranged", { token: result.token });
+      return sendError(
+        reply,
+        422,
+        "degenerate_geometry",
+        "Accepted artifact geometry cannot be arranged",
+        { token: result.token },
+      );
     case "limit_exceeded":
-      return sendError(reply, 413, "limit_exceeded", "Accepted Plate limit exceeded", { limit: result.limit });
+      return sendError(reply, 413, "limit_exceeded", "Accepted Plate limit exceeded", {
+        limit: result.limit,
+      });
     case "stale_accepted_plan":
       return sendError(reply, 409, "accepted_plan_changed", "Accepted Plan changed");
     case "plate_revision_changed":
@@ -114,17 +155,33 @@ function sendInitializeFailure(reply: FastifyReply, result: Exclude<InitializeAc
     case "plan_archived":
       return sendError(reply, 409, "plan_archived", "Plan is archived");
     case "accepted_state_unavailable":
-      return sendError(reply, 409, "accepted_state_unavailable", "Accepted Plan state is unavailable");
+      return sendError(
+        reply,
+        409,
+        "accepted_state_unavailable",
+        "Accepted Plan state is unavailable",
+      );
     case "invalid_units":
       return sendError(reply, 422, "invalid_units", "Accepted Plate units are invalid");
     case "invalid_geometry":
       return sendError(reply, 422, result.reason, "Accepted Plate geometry is invalid");
     case "transaction_unavailable":
-      return sendError(reply, 503, "accepted_plate_update_unavailable", "Accepted Plate update is unavailable");
+      return sendError(
+        reply,
+        503,
+        "accepted_plate_update_unavailable",
+        "Accepted Plate update is unavailable",
+      );
   }
 }
 
-function sendMoveFailure(reply: FastifyReply, result: Exclude<ReturnType<AppRepository["moveAcceptedPlateUnit"]>, { kind: "moved" | "unchanged" }>) {
+function sendMoveFailure(
+  reply: FastifyReply,
+  result: Exclude<
+    ReturnType<AppRepository["moveAcceptedPlateUnit"]>,
+    { kind: "moved" | "unchanged" }
+  >,
+) {
   switch (result.kind) {
     case "stale_accepted_plan":
       return sendError(reply, 409, "accepted_plan_changed", "Accepted Plan changed");
@@ -133,19 +190,32 @@ function sendMoveFailure(reply: FastifyReply, result: Exclude<ReturnType<AppRepo
     case "plan_archived":
       return sendError(reply, 409, "plan_archived", "Plan is archived");
     case "accepted_state_unavailable":
-      return sendError(reply, 409, "accepted_state_unavailable", "Accepted Plan state is unavailable");
+      return sendError(
+        reply,
+        409,
+        "accepted_state_unavailable",
+        "Accepted Plan state is unavailable",
+      );
     case "unit_not_found":
     case "invalid_units":
       return sendError(reply, 422, result.kind, "Accepted Plate unit is invalid");
     case "invalid_geometry":
       return sendError(reply, 422, result.reason, "Accepted Plate geometry is invalid");
     case "transaction_unavailable":
-      return sendError(reply, 503, "accepted_plate_update_unavailable", "Accepted Plate update is unavailable");
+      return sendError(
+        reply,
+        503,
+        "accepted_plate_update_unavailable",
+        "Accepted Plate update is unavailable",
+      );
   }
 }
 
 function sendIntegrityFailure(request: FastifyRequest, reply: FastifyReply, error: unknown) {
-  if (error instanceof AcceptedPlateIntegrityError || error instanceof AcceptedPlanOperationalIntegrityError) {
+  if (
+    error instanceof AcceptedPlateIntegrityError ||
+    error instanceof AcceptedPlanOperationalIntegrityError
+  ) {
     request.log.error(
       { err: error, operation: "accepted_plate", code: error.code },
       "Accepted Plate integrity failure",
@@ -176,19 +246,25 @@ export async function registerAcceptedPlateRoutes(
     }
   });
 
-  app.post("/plans/:id/plates/initialize", { bodyLimit: MAX_BULK_JSON_BODY_BYTES }, async (request, reply) => {
-    const id = profileId(request);
-    const body = parseInitializeRequest(request.body);
-    if (id == null || !body || body.expected.profileId !== id) {
-      return sendError(reply, 400, "invalid_request", "Request is invalid");
-    }
-    try {
-      const result = await initializeAcceptedPlates(service, { profileId: id, ...body });
-      return result.kind === "workspace" ? result.workspace : sendInitializeFailure(reply, result);
-    } catch (error) {
-      return sendIntegrityFailure(request, reply, error);
-    }
-  });
+  app.post(
+    "/plans/:id/plates/initialize",
+    { bodyLimit: MAX_BULK_JSON_BODY_BYTES },
+    async (request, reply) => {
+      const id = profileId(request);
+      const body = parseInitializeRequest(request.body);
+      if (id == null || !body || body.expected.profileId !== id) {
+        return sendError(reply, 400, "invalid_request", "Request is invalid");
+      }
+      try {
+        const result = await initializeAcceptedPlates(service, { profileId: id, ...body });
+        return result.kind === "workspace"
+          ? result.workspace
+          : sendInitializeFailure(reply, result);
+      } catch (error) {
+        return sendIntegrityFailure(request, reply, error);
+      }
+    },
+  );
 
   app.patch("/plans/:id/plates/:plateId/units/:token", async (request, reply) => {
     const id = profileId(request);
@@ -196,7 +272,14 @@ export async function registerAcceptedPlateRoutes(
     const plateId = typeof params.plateId === "string" ? params.plateId.trim() : "";
     const token = parseToken(params.token);
     const body = parseMoveRequest(request.body);
-    if (id == null || !plateId || plateId.length > 200 || !token || !body || body.expected.profileId !== id) {
+    if (
+      id == null ||
+      !plateId ||
+      plateId.length > 200 ||
+      !token ||
+      !body ||
+      body.expected.profileId !== id
+    ) {
       return sendError(reply, 400, "invalid_request", "Request is invalid");
     }
     try {
@@ -227,7 +310,13 @@ export async function registerAcceptedPlateRoutes(
     const plateId = typeof params.plateId === "string" ? params.plateId.trim() : "";
     const token = parseToken(params.token);
     const body = parsePinRequest(request.body);
-    if (id == null || !/^plate_[0-9a-f]{32}$/.test(plateId) || !token || !body || body.expected.profileId !== id) {
+    if (
+      id == null ||
+      !/^plate_[0-9a-f]{32}$/.test(plateId) ||
+      !token ||
+      !body ||
+      body.expected.profileId !== id
+    ) {
       return sendError(reply, 400, "invalid_request", "Request is invalid");
     }
     try {
@@ -240,7 +329,10 @@ export async function registerAcceptedPlateRoutes(
         pinned: body.pinned,
       });
       if (result.kind === "moved" || result.kind === "unchanged") {
-        return { plate_revision_id: result.plateRevisionId, plate_revision_number: result.plateRevisionNumber };
+        return {
+          plate_revision_id: result.plateRevisionId,
+          plate_revision_number: result.plateRevisionNumber,
+        };
       }
       return sendMoveFailure(reply, result);
     } catch (error) {
@@ -254,7 +346,13 @@ export async function registerAcceptedPlateRoutes(
     const plateId = typeof params.plateId === "string" ? params.plateId.trim() : "";
     const token = parseToken(params.token);
     const body = parseRevisionRequest(request.body);
-    if (id == null || !/^plate_[0-9a-f]{32}$/.test(plateId) || !token || !body || body.expected.profileId !== id) {
+    if (
+      id == null ||
+      !/^plate_[0-9a-f]{32}$/.test(plateId) ||
+      !token ||
+      !body ||
+      body.expected.profileId !== id
+    ) {
       return sendError(reply, 400, "invalid_request", "Request is invalid");
     }
     try {
@@ -266,7 +364,10 @@ export async function registerAcceptedPlateRoutes(
         token,
       });
       if (result.kind === "moved" || result.kind === "unchanged") {
-        return { plate_revision_id: result.plateRevisionId, plate_revision_number: result.plateRevisionNumber };
+        return {
+          plate_revision_id: result.plateRevisionId,
+          plate_revision_number: result.plateRevisionNumber,
+        };
       }
       return sendMoveFailure(reply, result);
     } catch (error) {
@@ -280,15 +381,22 @@ export async function registerAcceptedPlateRoutes(
     const plateId = typeof params.plateId === "string" ? params.plateId.trim() : "";
     const token = parseToken(params.token);
     const body = parseTransferRequest(request.body);
-    if (id == null || !/^plate_[0-9a-f]{32}$/.test(plateId) || !token || !body || body.expected.profileId !== id) {
+    if (
+      id == null ||
+      !/^plate_[0-9a-f]{32}$/.test(plateId) ||
+      !token ||
+      !body ||
+      body.expected.profileId !== id
+    ) {
       return sendError(reply, 400, "invalid_request", "Request is invalid");
     }
-    const target = "targetPlateId" in body
-      ? { targetPlateId: body.targetPlateId }
-      : (() => {
-          const targetPrinter = fleetPrinterGeometry(dependencies.repo, body.targetPrinterId);
-          return targetPrinter ? { targetPrinter } : null;
-        })();
+    const target =
+      "targetPlateId" in body
+        ? { targetPlateId: body.targetPlateId }
+        : (() => {
+            const targetPrinter = fleetPrinterGeometry(dependencies.repo, body.targetPrinterId);
+            return targetPrinter ? { targetPrinter } : null;
+          })();
     if (!target) return sendError(reply, 422, "printer_not_found", "Printer was not found");
     try {
       const result = dependencies.repo.transferAcceptedPlateUnit({
@@ -300,7 +408,10 @@ export async function registerAcceptedPlateRoutes(
         ...target,
       });
       if (result.kind === "moved" || result.kind === "unchanged") {
-        return { plate_revision_id: result.plateRevisionId, plate_revision_number: result.plateRevisionNumber };
+        return {
+          plate_revision_id: result.plateRevisionId,
+          plate_revision_number: result.plateRevisionNumber,
+        };
       }
       return sendMoveFailure(reply, result);
     } catch (error) {
@@ -334,7 +445,9 @@ export async function registerAcceptedPlateRoutes(
         return sendMoveFailure(reply, result);
       }
       const workspace = readAcceptedPlateWorkspace(service, id);
-      return workspace.kind === "workspace" ? workspace.workspace : sendReadFailure(reply, workspace);
+      return workspace.kind === "workspace"
+        ? workspace.workspace
+        : sendReadFailure(reply, workspace);
     } catch (error) {
       return sendIntegrityFailure(request, reply, error);
     }

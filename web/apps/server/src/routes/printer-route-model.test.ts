@@ -52,9 +52,7 @@ describe("printer route model", () => {
   it("parses optional positive dimensions", () => {
     expect(positiveMm(undefined, 250, "bed_width_mm")).toBe(250);
     expect(positiveMm(300, 250, "bed_width_mm")).toBe(300);
-    expect(() => positiveMm(0, 250, "bed_width_mm")).toThrow(
-      "bed_width_mm must be greater than 0",
-    );
+    expect(() => positiveMm(0, 250, "bed_width_mm")).toThrow("bed_width_mm must be greater than 0");
 
     expect(nullablePositiveMm(undefined, 270, "bed_height_mm")).toBe(270);
     expect(nullablePositiveMm(null, 270, "bed_height_mm")).toBeNull();

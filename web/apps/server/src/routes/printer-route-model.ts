@@ -56,10 +56,7 @@ export function parsePrinterDetails(value: unknown): PrinterDetailsInput {
     throw new Error("max_filament_slots must be an integer from 1 to 4");
   }
   const rawPresetId = value.preset_id;
-  if (
-    rawPresetId !== null &&
-    (typeof rawPresetId !== "string" || !rawPresetId.trim())
-  ) {
+  if (rawPresetId !== null && (typeof rawPresetId !== "string" || !rawPresetId.trim())) {
     throw new Error("preset_id must be null or a non-empty string");
   }
   const bedWidth = requiredNumber(value.bed_width_mm, "bed_width_mm", false);
@@ -85,11 +82,7 @@ export function positiveMm(value: unknown, fallback: number, field: string): num
   return value;
 }
 
-export function nullablePositiveMm(
-  value: unknown,
-  fallback: number,
-  field: string,
-): number | null {
+export function nullablePositiveMm(value: unknown, fallback: number, field: string): number | null {
   if (value === undefined) return fallback;
   if (value === null) return null;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {

@@ -37,7 +37,11 @@ type RouteDeps = {
 
 const QUEUE_HOSTS = new Set(["moonraker", "prusalink"]);
 
-function deniedFeature(access: { kind: "disabled" | "invalid"; error: string; code: "FEATURE_DISABLED" | "FEATURE_TOGGLES_INVALID" }) {
+function deniedFeature(access: {
+  kind: "disabled" | "invalid";
+  error: string;
+  code: "FEATURE_DISABLED" | "FEATURE_TOGGLES_INVALID";
+}) {
   const disabled = access.kind === "disabled";
   return {
     status: disabled ? 403 : 500,
@@ -51,7 +55,9 @@ function storedQueueAdmissionProblem(repo: AppRepository, items: PrinterSendQueu
   if (!desktopFeaturesEnabled()) return null;
   const fleet = loadFleet(repo);
   for (const item of items) {
-    const integrationId = fleet.find((printer) => printer.id === item.printer_id)?.integration_id?.trim();
+    const integrationId = fleet
+      .find((printer) => printer.id === item.printer_id)
+      ?.integration_id?.trim();
     const type = integrationId ? getIntegrationConfig(repo, integrationId)?.type : undefined;
     if (type != null && QUEUE_HOSTS.has(type)) {
       const farm = readFeatureAccess(() => repo, "farm", item.profile_id);
@@ -59,7 +65,11 @@ function storedQueueAdmissionProblem(repo: AppRepository, items: PrinterSendQueu
     }
     if (type !== "bambu") continue;
     if (item.profile_id == null) {
-      return { status: 400, title: "Bad Request", detail: "Pick a plan to bind this send (profile_id required)" };
+      return {
+        status: 400,
+        title: "Bad Request",
+        detail: "Pick a plan to bind this send (profile_id required)",
+      };
     }
     if (!repo.getOwnedProfileIdentity(item.profile_id)) {
       return { status: 404, title: "Not Found", detail: "Profile not found" };
@@ -85,23 +95,25 @@ export async function registerPrinterSendQueueRoutes(
       return snap != null;
     });
 
-  const makeStartJob = (tenantId: string) => async (payload: {
-    printer_id: string;
-    artifact_path: string;
-    filename: string;
-    start: boolean;
-    host_name?: string;
-    profile_id?: number;
-    checkoff_units?: ReturnType<typeof parseCheckoffUnits>;
-  }) =>
-    deps.jobs.start(
-      "printer-upload",
-      {
-        ...payload,
-        upload_job_id: undefined,
-      },
-      tenantId,
-    );
+  const makeStartJob =
+    (tenantId: string) =>
+    async (payload: {
+      printer_id: string;
+      artifact_path: string;
+      filename: string;
+      start: boolean;
+      host_name?: string;
+      profile_id?: number;
+      checkoff_units?: ReturnType<typeof parseCheckoffUnits>;
+    }) =>
+      deps.jobs.start(
+        "printer-upload",
+        {
+          ...payload,
+          upload_job_id: undefined,
+        },
+        tenantId,
+      );
 
   const getStatus = (integrationId: string) => deps.integrations.getStatus(integrationId);
 
@@ -132,7 +144,10 @@ export async function registerPrinterSendQueueRoutes(
         return reply.status(status).send({
           status,
           title: access.kind === "disabled" ? "Forbidden" : "Internal Server Error",
-          detail: access.kind === "disabled" ? "Feature farm is disabled." : "Stored feature toggles are invalid.",
+          detail:
+            access.kind === "disabled"
+              ? "Feature farm is disabled."
+              : "Stored feature toggles are invalid.",
           code: access.kind === "disabled" ? "FEATURE_DISABLED" : "FEATURE_TOGGLES_INVALID",
         });
       }
@@ -145,12 +160,7 @@ export async function registerPrinterSendQueueRoutes(
           .filter(Boolean),
       );
       const fleet = loadFleet(deps.repo);
-      const suggestions = computePrinterQueueSuggestions(
-        deps.repo,
-        fleet,
-        idleIds,
-        access.items,
-      );
+      const suggestions = computePrinterQueueSuggestions(deps.repo, fleet, idleIds, access.items);
       return { suggestions };
     },
   );
@@ -167,12 +177,7 @@ export async function registerPrinterSendQueueRoutes(
           allowQueueFields: true,
         });
         if (!parsed.ok) {
-          return sendProblem(
-            reply,
-            parsed.error.status,
-            parsed.error.title,
-            parsed.error.detail,
-          );
+          return sendProblem(reply, parsed.error.status, parsed.error.title, parsed.error.detail);
         }
 
         const {
@@ -222,8 +227,10 @@ export async function registerPrinterSendQueueRoutes(
           if (access.kind !== "allowed") {
             const status = access.kind === "disabled" ? 403 : 500;
             return reply.status(status).send({
-              status, title: access.kind === "disabled" ? "Forbidden" : "Internal Server Error",
-              detail: access.error, code: access.code,
+              status,
+              title: access.kind === "disabled" ? "Forbidden" : "Internal Server Error",
+              detail: access.error,
+              code: access.code,
             });
           }
         }
@@ -277,7 +284,10 @@ export async function registerPrinterSendQueueRoutes(
       if (problem) return reply.status(problem.status).send(problem);
       await reconcileLiveSends(request.tenantId);
       const currentItem = getPrinterSendQueueItem(deps.repo, id);
-      const currentProblem = storedQueueAdmissionProblem(deps.repo, currentItem ? [currentItem] : []);
+      const currentProblem = storedQueueAdmissionProblem(
+        deps.repo,
+        currentItem ? [currentItem] : [],
+      );
       if (currentProblem) return reply.status(currentProblem.status).send(currentProblem);
       const result = await dispatchPrinterSendQueueItem(
         deps.repo,
@@ -317,19 +327,19 @@ export async function registerPrinterSendQueueRoutes(
         rawPrinterId !== undefined &&
         (typeof rawPrinterId !== "string" || !rawPrinterId.trim())
       ) {
-        return sendProblem(
-          reply,
-          400,
-          "Bad Request",
-          "printer_id must be a non-empty string",
-        );
+        return sendProblem(reply, 400, "Bad Request", "printer_id must be a non-empty string");
       }
-      const printerId =
-        typeof rawPrinterId === "string" ? rawPrinterId.trim() : undefined;
-      const problem = storedQueueAdmissionProblem(deps.repo, selectPrinterSendQueueDrainItems(deps.repo, printerId));
+      const printerId = typeof rawPrinterId === "string" ? rawPrinterId.trim() : undefined;
+      const problem = storedQueueAdmissionProblem(
+        deps.repo,
+        selectPrinterSendQueueDrainItems(deps.repo, printerId),
+      );
       if (problem) return reply.status(problem.status).send(problem);
       await reconcileLiveSends(request.tenantId);
-      const currentProblem = storedQueueAdmissionProblem(deps.repo, selectPrinterSendQueueDrainItems(deps.repo, printerId));
+      const currentProblem = storedQueueAdmissionProblem(
+        deps.repo,
+        selectPrinterSendQueueDrainItems(deps.repo, printerId),
+      );
       if (currentProblem) return reply.status(currentProblem.status).send(currentProblem);
       const results = await drainPrinterSendQueue(
         deps.repo,
@@ -362,7 +372,10 @@ export async function registerPrinterSendQueueRoutes(
       );
       cleanupPrinterUploadArtifactDir(artifactPath);
     } catch {
-      request.log.warn({ queueItemId: item.id }, "Skipped cleanup of invalid cancelled upload path");
+      request.log.warn(
+        { queueItemId: item.id },
+        "Skipped cleanup of invalid cancelled upload path",
+      );
     }
     return { item };
   });

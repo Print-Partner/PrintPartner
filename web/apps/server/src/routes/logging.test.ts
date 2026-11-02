@@ -34,26 +34,65 @@ describe("logging routes", () => {
     const app = await fixture();
     const before = getLogger().getLogs();
     try {
-      const disabled = await app.inject({ method: "POST", url: "/settings/logging/config", payload: { enableWorkflowTracking: false } });
+      const disabled = await app.inject({
+        method: "POST",
+        url: "/settings/logging/config",
+        payload: { enableWorkflowTracking: false },
+      });
       expect(disabled.statusCode).toBe(200);
       expect(disabled.json().enableWorkflowTracking).toBe(false);
-      expect((await app.inject("/settings/logging/config")).json().enableWorkflowTracking).toBe(false);
-      getLogger().logWorkflow({ method: "GET", url: "/disabled", duration: 1, statusCode: 200, severity: "info", message: "Not captured" });
-      getLogger().logWorkflow({ method: "GET", url: "/disabled-error", duration: 1, statusCode: 500, severity: "error", message: "Not captured" });
+      expect((await app.inject("/settings/logging/config")).json().enableWorkflowTracking).toBe(
+        false,
+      );
+      getLogger().logWorkflow({
+        method: "GET",
+        url: "/disabled",
+        duration: 1,
+        statusCode: 200,
+        severity: "info",
+        message: "Not captured",
+      });
+      getLogger().logWorkflow({
+        method: "GET",
+        url: "/disabled-error",
+        duration: 1,
+        statusCode: 500,
+        severity: "error",
+        message: "Not captured",
+      });
       expect(getLogger().getLogs()).toEqual(before);
-      const enabled = await app.inject({ method: "POST", url: "/settings/logging/config", payload: { enableWorkflowTracking: true } });
+      const enabled = await app.inject({
+        method: "POST",
+        url: "/settings/logging/config",
+        payload: { enableWorkflowTracking: true },
+      });
       expect(enabled.json().enableWorkflowTracking).toBe(true);
-      getLogger().logWorkflow({ method: "GET", url: "/enabled", duration: 1, statusCode: 200, severity: "info", message: "Captured" });
+      getLogger().logWorkflow({
+        method: "GET",
+        url: "/enabled",
+        duration: 1,
+        statusCode: 200,
+        severity: "info",
+        message: "Captured",
+      });
       expect(getLogger().getLogs()).toHaveLength(before.length + 1);
     } finally {
-      await app.inject({ method: "POST", url: "/settings/logging/config", payload: { enableWorkflowTracking: true } });
+      await app.inject({
+        method: "POST",
+        url: "/settings/logging/config",
+        payload: { enableWorkflowTracking: true },
+      });
     }
   });
 
   it("rejects invalid configuration before applying any setting", async () => {
     const app = await fixture();
     const before = getLogger().getConfig();
-    const response = await app.inject({ method: "POST", url: "/settings/logging/config", payload: { minSeverity: "debug", enableWorkflowTracking: "invalid" } });
+    const response = await app.inject({
+      method: "POST",
+      url: "/settings/logging/config",
+      payload: { minSeverity: "debug", enableWorkflowTracking: "invalid" },
+    });
     expect(response.statusCode).toBe(400);
     expect(getLogger().getConfig()).toEqual(before);
   });

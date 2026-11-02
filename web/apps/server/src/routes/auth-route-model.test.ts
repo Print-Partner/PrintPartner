@@ -59,9 +59,11 @@ describe("auth route model", () => {
   });
 
   it("requires a stable GitHub identity", () => {
-    expect(
-      parseGitHubOAuthProfile({ id: 42, login: " octocat ", name: " Octo Cat " }),
-    ).toEqual({ providerUserId: "42", login: "octocat", displayName: "Octo Cat" });
+    expect(parseGitHubOAuthProfile({ id: 42, login: " octocat ", name: " Octo Cat " })).toEqual({
+      providerUserId: "42",
+      login: "octocat",
+      displayName: "Octo Cat",
+    });
     expect(parseGitHubOAuthProfile({ login: "octocat" })).toBeNull();
     expect(parseGitHubOAuthProfile({ id: 42 })).toBeNull();
     expect(parseGitHubOAuthProfile({ id: -1, login: "octocat" })).toBeNull();

@@ -55,30 +55,83 @@ describe("production authentication routes", () => {
     const foreign = auth.createUser({ email: "foreign@example.test", displayName: "Foreign" });
     auth.createSession(foreign.id, "email");
     const db = new Database(join(dir, "print-partner.db"), { readonly: true });
-    const snapshot = () => ["users", "sessions", "auth_identities", "password_reset_tokens"].map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    const snapshot = () =>
+      ["users", "sessions", "auth_identities", "password_reset_tokens"].map((table) =>
+        db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+      );
     const before = snapshot();
     const app = Fastify();
     await app.register(cookie);
     app.decorateRequest("sessionUser", null);
     app.addHook("onRequest", async (request) => {
-      request.sessionUser = { user_id: "account-a", tenant_id: "account-a", login: "selected", display_name: "Selected", email: null, provider: "desktop", is_admin: false };
+      request.sessionUser = {
+        user_id: "account-a",
+        tenant_id: "account-a",
+        login: "selected",
+        display_name: "Selected",
+        email: null,
+        provider: "desktop",
+        is_admin: false,
+      };
     });
-    const config = { ...loadConfig(), multiUser: true, registrationOpen: true, smtpConfigured: true, githubOAuthConfigured: true, discordOAuthConfigured: true };
+    const config = {
+      ...loadConfig(),
+      multiUser: true,
+      registrationOpen: true,
+      smtpConfigured: true,
+      githubOAuthConfigured: true,
+      discordOAuthConfigured: true,
+    };
     registerAuthRoutes(app, config, auth);
     await registerHealthRoutes(app, config, ports, auth);
     try {
-      expect((await app.inject({ method: "GET", url: "/auth/me" })).json().user.user_id).toBe("account-a");
-      for (const url of ["/auth/dev-login", "/auth/logout", "/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password", "/auth/change-password"]) {
-        expect((await app.inject({ method: "POST", url, payload: { login: "fixture", email: "fixture@example.test", password: "fixture-password" } })).statusCode, url).toBe(404);
+      expect((await app.inject({ method: "GET", url: "/auth/me" })).json().user.user_id).toBe(
+        "account-a",
+      );
+      for (const url of [
+        "/auth/dev-login",
+        "/auth/logout",
+        "/auth/login",
+        "/auth/register",
+        "/auth/forgot-password",
+        "/auth/reset-password",
+        "/auth/change-password",
+      ]) {
+        expect(
+          (
+            await app.inject({
+              method: "POST",
+              url,
+              payload: {
+                login: "fixture",
+                email: "fixture@example.test",
+                password: "fixture-password",
+              },
+            })
+          ).statusCode,
+          url,
+        ).toBe(404);
       }
-      for (const url of ["/auth/github", "/auth/callback", "/auth/discord", "/auth/discord/callback"]) {
+      for (const url of [
+        "/auth/github",
+        "/auth/callback",
+        "/auth/discord",
+        "/auth/discord/callback",
+      ]) {
         expect((await app.inject({ method: "GET", url })).statusCode, url).toBe(404);
       }
       expect(snapshot()).toEqual(before);
       const health = await app.inject({ method: "GET", url: "/health" });
       expect(health.statusCode).toBe(200);
       expect(health.json().registration_open).toBe(false);
-      for (const capability of ["backups", "multi_user_auth", "password_reset_email", "github_oauth", "discord_oauth"]) expect(health.json().capabilities).not.toContain(capability);
+      for (const capability of [
+        "backups",
+        "multi_user_auth",
+        "password_reset_email",
+        "github_oauth",
+        "discord_oauth",
+      ])
+        expect(health.json().capabilities).not.toContain(capability);
     } finally {
       await app.close();
       db.close();
@@ -309,12 +362,24 @@ describe("production authentication routes", () => {
 
   it("reports whether the health request has an authenticated session", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pp-auth-production-health-"));
-    const { app, ports } = await makeProductionApp(dir, { smtpConfigured: true, githubOAuthConfigured: true, discordOAuthConfigured: true });
+    const { app, ports } = await makeProductionApp(dir, {
+      smtpConfigured: true,
+      githubOAuthConfigured: true,
+      discordOAuthConfigured: true,
+    });
 
     try {
       const anonymous = await app.inject({ method: "GET", url: "/health" });
       expect(anonymous.json()).toMatchObject({ multi_user: true, authenticated: false });
-      expect(anonymous.json().capabilities).toEqual(expect.arrayContaining(["backups", "multi_user_auth", "password_reset_email", "github_oauth", "discord_oauth"]));
+      expect(anonymous.json().capabilities).toEqual(
+        expect.arrayContaining([
+          "backups",
+          "multi_user_auth",
+          "password_reset_email",
+          "github_oauth",
+          "discord_oauth",
+        ]),
+      );
 
       const registration = await app.inject({
         method: "POST",
@@ -462,9 +527,7 @@ describe("production authentication routes", () => {
         )
         .mockResolvedValueOnce(
           new Response(
-            JSON.stringify([
-              { email: "victim@example.com", primary: true, verified: false },
-            ]),
+            JSON.stringify([{ email: "victim@example.com", primary: true, verified: false }]),
             { headers: { "Content-Type": "application/json" } },
           ),
         );
@@ -528,10 +591,9 @@ describe("production authentication routes", () => {
           }),
         )
         .mockResolvedValueOnce(
-          new Response(
-            JSON.stringify({ id: 42, login: "octocat", name: "Octo Cat" }),
-            { headers: { "Content-Type": "application/json" } },
-          ),
+          new Response(JSON.stringify({ id: 42, login: "octocat", name: "Octo Cat" }), {
+            headers: { "Content-Type": "application/json" },
+          }),
         )
         .mockResolvedValueOnce(emailResponse);
 
@@ -599,14 +661,16 @@ describe("production authentication routes", () => {
         );
 
       const firstStart = await app.inject({ method: "GET", url: "/auth/github" });
-      const firstState = firstStart.cookies.find((cookie) => cookie.name === "oauth_state")?.value ?? "";
+      const firstState =
+        firstStart.cookies.find((cookie) => cookie.name === "oauth_state")?.value ?? "";
       const firstCallback = await app.inject({
         method: "GET",
         url: `/auth/callback?code=first-code&state=${firstState}`,
         cookies: { oauth_state: firstState },
       });
       expect(firstCallback.statusCode).toBe(302);
-      const firstSession = firstCallback.cookies.find((cookie) => cookie.name === "pp_session")?.value ?? "";
+      const firstSession =
+        firstCallback.cookies.find((cookie) => cookie.name === "pp_session")?.value ?? "";
       const firstUser = await app.inject({
         method: "GET",
         url: "/auth/me",

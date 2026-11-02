@@ -6,18 +6,13 @@ export function isValidEmailInput(email: string): boolean {
   return Boolean(email && email.includes("@"));
 }
 
-export function defaultDisplayName(input: {
-  displayName: unknown;
-  email: string;
-}): string {
+export function defaultDisplayName(input: { displayName: unknown; email: string }): string {
   const explicit = typeof input.displayName === "string" ? input.displayName.trim() : "";
   return explicit || input.email.split("@")[0] || "User";
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
 function trimmedString(value: unknown): string | null {

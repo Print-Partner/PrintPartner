@@ -48,10 +48,7 @@ class OAuthProviderRequestError extends Error {
   }
 }
 
-async function fetchOAuthProvider(
-  input: string,
-  init: RequestInit = {},
-): Promise<Response> {
+async function fetchOAuthProvider(input: string, init: RequestInit = {}): Promise<Response> {
   try {
     return await fetch(input, {
       ...init,
@@ -321,7 +318,8 @@ export function registerAuthRoutes(
         return reply.status(401).send({ detail: "Authentication required" });
       }
       const body = request.body as { current_password?: unknown; new_password?: unknown };
-      const currentPassword = typeof body.current_password === "string" ? body.current_password : "";
+      const currentPassword =
+        typeof body.current_password === "string" ? body.current_password : "";
       const newPassword = typeof body.new_password === "string" ? body.new_password : "";
       if (!currentPassword || !newPassword) {
         return reply.status(400).send({ detail: "Current and new passwords are required" });
@@ -421,7 +419,14 @@ export function registerAuthRoutes(
           displayName: ghUser.displayName,
           email,
         });
-        finishOAuthLogin(authStore, user, "github", reply, config.authSuccessRedirect, config.sessionCookieSecure);
+        finishOAuthLogin(
+          authStore,
+          user,
+          "github",
+          reply,
+          config.authSuccessRedirect,
+          config.sessionCookieSecure,
+        );
       } catch (error) {
         return replyToOAuthProviderFailure("GitHub", error, request, reply);
       }
@@ -429,7 +434,8 @@ export function registerAuthRoutes(
   } else {
     app.get("/auth/github", async (_request, reply) => {
       return reply.status(501).send({
-        detail: "GitHub OAuth not configured. Set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_CALLBACK_URL.",
+        detail:
+          "GitHub OAuth not configured. Set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_CALLBACK_URL.",
       });
     });
     app.get("/auth/callback", async (_request, reply) => {
@@ -478,7 +484,9 @@ export function registerAuthRoutes(
         const tokenJson = await readJsonResponse(tokenRes);
         const accessToken = parseOAuthAccessToken(tokenJson);
         if (!tokenRes.ok || !accessToken) {
-          return reply.status(401).send({ detail: readOAuthError(tokenJson) ?? "Discord OAuth failed" });
+          return reply
+            .status(401)
+            .send({ detail: readOAuthError(tokenJson) ?? "Discord OAuth failed" });
         }
         const userRes = await fetchOAuthProvider("https://discord.com/api/users/@me", {
           headers: { Authorization: `Bearer ${accessToken}` },
@@ -487,14 +495,7 @@ export function registerAuthRoutes(
         if (!userRes.ok || !dcUser) {
           return reply.status(502).send({ detail: "Discord returned an invalid user profile" });
         }
-        if (
-          !singleUserOAuthCanContinue(
-            config,
-            authStore,
-            "discord",
-            dcUser.providerUserId,
-          )
-        ) {
+        if (!singleUserOAuthCanContinue(config, authStore, "discord", dcUser.providerUserId)) {
           return reply.status(403).send({ detail: "The single-user administrator already exists" });
         }
         if (!oauthRegistrationAllowed(config, authStore, "discord", dcUser.providerUserId)) {
@@ -506,7 +507,14 @@ export function registerAuthRoutes(
           displayName: dcUser.displayName,
           email: dcUser.email,
         });
-        finishOAuthLogin(authStore, user, "discord", reply, config.authSuccessRedirect, config.sessionCookieSecure);
+        finishOAuthLogin(
+          authStore,
+          user,
+          "discord",
+          reply,
+          config.authSuccessRedirect,
+          config.sessionCookieSecure,
+        );
       } catch (error) {
         return replyToOAuthProviderFailure("Discord", error, request, reply);
       }
@@ -622,7 +630,12 @@ export function registerTenantMiddleware(
     if (path.startsWith("/auth/")) return;
     if (isSpaClientPath(path) && isBrowserDocumentNavigation(request)) return;
 
-    if (config.deployMode === "self-host" && config.basicAuthUser && config.basicAuthPass && !config.multiUser) {
+    if (
+      config.deployMode === "self-host" &&
+      config.basicAuthUser &&
+      config.basicAuthPass &&
+      !config.multiUser
+    ) {
       const header = request.headers.authorization ?? "";
       const expected = `Basic ${Buffer.from(`${config.basicAuthUser}:${config.basicAuthPass}`).toString("base64")}`;
       if (header !== expected) {

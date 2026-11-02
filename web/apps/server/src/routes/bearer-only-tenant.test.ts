@@ -92,7 +92,12 @@ function profileNames(response: { json: () => unknown }): string[] {
     throw new Error("missing profiles");
   }
   return body.profiles.map((profile) => {
-    if (!profile || typeof profile !== "object" || !("name" in profile) || typeof profile.name !== "string") {
+    if (
+      !profile ||
+      typeof profile !== "object" ||
+      !("name" in profile) ||
+      typeof profile.name !== "string"
+    ) {
       throw new Error("missing profile name");
     }
     return profile.name;
@@ -236,13 +241,41 @@ describe("multi-user bearer-only tenant keys", () => {
 
       const sessionRejection = { detail: "Authentication required" };
       const bearerCases = [
-        { method: "GET" as const, url: "/api/v1/plans", headers: { authorization: `Bearer ${settingsKey}` } },
-        { method: "GET" as const, url: "/api/v1/plans", headers: { authorization: `Bearer ${planted.key}` } },
-        { method: "GET" as const, url: "/api/v1/plans", headers: { "x-print-partner-api-key": planted.key } },
-        { method: "GET" as const, url: "/api/v1/plans", headers: { authorization: `Bearer ${DEPLOYMENT_KEY}` } },
-        { method: "GET" as const, url: "/plans", headers: { authorization: `Bearer ${settingsKey}` } },
-        { method: "GET" as const, url: `/api/v1/plans/${planAId}`, headers: { authorization: `Bearer ${planted.key}` } },
-        { method: "GET" as const, url: `/api/v1/plans/${planBId}`, headers: { authorization: `Bearer ${settingsKey}` } },
+        {
+          method: "GET" as const,
+          url: "/api/v1/plans",
+          headers: { authorization: `Bearer ${settingsKey}` },
+        },
+        {
+          method: "GET" as const,
+          url: "/api/v1/plans",
+          headers: { authorization: `Bearer ${planted.key}` },
+        },
+        {
+          method: "GET" as const,
+          url: "/api/v1/plans",
+          headers: { "x-print-partner-api-key": planted.key },
+        },
+        {
+          method: "GET" as const,
+          url: "/api/v1/plans",
+          headers: { authorization: `Bearer ${DEPLOYMENT_KEY}` },
+        },
+        {
+          method: "GET" as const,
+          url: "/plans",
+          headers: { authorization: `Bearer ${settingsKey}` },
+        },
+        {
+          method: "GET" as const,
+          url: `/api/v1/plans/${planAId}`,
+          headers: { authorization: `Bearer ${planted.key}` },
+        },
+        {
+          method: "GET" as const,
+          url: `/api/v1/plans/${planBId}`,
+          headers: { authorization: `Bearer ${settingsKey}` },
+        },
       ];
       for (const item of bearerCases) {
         const response = await app.inject({

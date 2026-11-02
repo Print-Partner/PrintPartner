@@ -1,19 +1,9 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  symlinkSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeAcceptedMediaPng } from "../lib/accepted-media-cache.js";
-import {
-  runWithTenantDiskQuota,
-  TenantDiskQuotaError,
-} from "../lib/tenant-disk-quota.js";
+import { runWithTenantDiskQuota, TenantDiskQuotaError } from "../lib/tenant-disk-quota.js";
 import { acceptedPartMediaIdentity } from "./accepted-part-media.js";
 import type {
   AcceptedExportPart,
@@ -74,10 +64,7 @@ function capture(
   part: AcceptedExportPart,
   profileName = "Accepted <Build>",
   profileId = 7,
-): Extract<
-  CaptureAcceptedOperationalExportResult,
-  { readonly kind: "ready" }
-> {
+): Extract<CaptureAcceptedOperationalExportResult, { readonly kind: "ready" }> {
   return {
     kind: "ready",
     export: {
@@ -109,18 +96,24 @@ describe("materializeAcceptedChecklistHtml", () => {
   it("preserves quota rejection from accepted export publication", async () => {
     const paths = fixture();
 
-    await expect(runWithTenantDiskQuota({
-      dataDir: dirname(paths.tenantExportsDir),
-      reposDir: join(dirname(paths.tenantExportsDir), "repos"),
-      tenantId: "default",
-      sourceIds: () => [],
-      quotaBytes: 1,
-    }, async () => materializeAcceptedChecklistHtml({
-      capture: capture(acceptedPart()),
-      ...paths,
-      dateFormat: "ymd_24h",
-      generatedAt: "2026-08-21T15:00:00.000Z",
-    }))).rejects.toBeInstanceOf(TenantDiskQuotaError);
+    await expect(
+      runWithTenantDiskQuota(
+        {
+          dataDir: dirname(paths.tenantExportsDir),
+          reposDir: join(dirname(paths.tenantExportsDir), "repos"),
+          tenantId: "default",
+          sourceIds: () => [],
+          quotaBytes: 1,
+        },
+        async () =>
+          materializeAcceptedChecklistHtml({
+            capture: capture(acceptedPart()),
+            ...paths,
+            dateFormat: "ymd_24h",
+            generatedAt: "2026-08-21T15:00:00.000Z",
+          }),
+      ),
+    ).rejects.toBeInstanceOf(TenantDiskQuotaError);
   });
 
   it("renders accepted quantity, completion, escaping, and content-addressed thumbnail bytes", () => {
@@ -159,7 +152,10 @@ describe("materializeAcceptedChecklistHtml", () => {
 
   it("renders legacy accepted Parts without consulting a working thumbnail path", () => {
     const paths = fixture();
-    const part = { ...acceptedPart(), artifact: { kind: "unavailable", reason: "legacy" } } satisfies AcceptedExportPart;
+    const part = {
+      ...acceptedPart(),
+      artifact: { kind: "unavailable", reason: "legacy" },
+    } satisfies AcceptedExportPart;
 
     const result = materializeAcceptedChecklistHtml({
       capture: capture(part),

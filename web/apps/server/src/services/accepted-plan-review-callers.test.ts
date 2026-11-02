@@ -84,7 +84,9 @@ function acceptedSnapshot(name = "Accepted Plan"): AcceptedPlanOperationalSnapsh
 
 function repository(
   profile: { id: number; name: string } | null = { id: 7, name: "Plan" },
-  accepted: ReadAcceptedPlanOperationalSnapshotResult | (() => ReadAcceptedPlanOperationalSnapshotResult) = {
+  accepted:
+    | ReadAcceptedPlanOperationalSnapshotResult
+    | (() => ReadAcceptedPlanOperationalSnapshotResult) = {
     kind: "empty",
   },
 ) {
@@ -137,8 +139,7 @@ describe("accepted Plan Review callers", () => {
       }));
     };
     const before = snapshotTables();
-    const cacheSnapshot = () =>
-      existsSync(thumbsDir) ? readdirSync(thumbsDir).sort() : null;
+    const cacheSnapshot = () => (existsSync(thumbsDir) ? readdirSync(thumbsDir).sort() : null);
     const cacheBefore = cacheSnapshot();
     const app = Fastify({ logger: false });
     apps.push(app);
@@ -321,8 +322,7 @@ describe("accepted Plan Review callers", () => {
       ],
     });
     expect(numeric.json().part_groups[0].parts.map((part: { id: number }) => part.id)).toEqual([
-      10,
-      20,
+      10, 20,
     ]);
     expect(textual.json()).toEqual(numeric.json());
     expect(falseValue.json()).toEqual(standard.json());

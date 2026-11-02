@@ -2,10 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  runWithTenantDiskQuota,
-  TenantDiskQuotaError,
-} from "../lib/tenant-disk-quota.js";
+import { runWithTenantDiskQuota, TenantDiskQuotaError } from "../lib/tenant-disk-quota.js";
 import { tenantExportDirectory } from "../lib/secure-path.js";
 import { writeAcceptedExportFile } from "./accepted-export-publication.js";
 
@@ -33,18 +30,22 @@ describe("writeAcceptedExportFile quota", () => {
   it("serializes same-tenant exports and rejects the second before its temporary write", async () => {
     const paths = fixture();
     const operation = (filename: string) =>
-      runWithTenantDiskQuota({
-        dataDir: paths.dataDir,
-        reposDir: paths.reposDir,
-        tenantId: "tenant-a",
-        sourceIds: () => [],
-        quotaBytes: 10,
-      }, async () => writeAcceptedExportFile({
-        root: paths.exportsDir,
-        directorySegments: ["direct"],
-        filename,
-        bytes: Buffer.from("123456"),
-      }));
+      runWithTenantDiskQuota(
+        {
+          dataDir: paths.dataDir,
+          reposDir: paths.reposDir,
+          tenantId: "tenant-a",
+          sourceIds: () => [],
+          quotaBytes: 10,
+        },
+        async () =>
+          writeAcceptedExportFile({
+            root: paths.exportsDir,
+            directorySegments: ["direct"],
+            filename,
+            bytes: Buffer.from("123456"),
+          }),
+      );
 
     const [first, second] = await Promise.allSettled([
       operation("first.3mf"),
@@ -62,18 +63,22 @@ describe("writeAcceptedExportFile quota", () => {
 
   it("keeps self-host writes unlimited", async () => {
     const paths = fixture();
-    const output = await runWithTenantDiskQuota({
-      dataDir: paths.dataDir,
-      reposDir: paths.reposDir,
-      tenantId: "default",
-      sourceIds: () => [],
-      quotaBytes: null,
-    }, async () => writeAcceptedExportFile({
-      root: paths.exportsDir,
-      directorySegments: ["direct"],
-      filename: "large.3mf",
-      bytes: Buffer.alloc(128),
-    }));
+    const output = await runWithTenantDiskQuota(
+      {
+        dataDir: paths.dataDir,
+        reposDir: paths.reposDir,
+        tenantId: "default",
+        sourceIds: () => [],
+        quotaBytes: null,
+      },
+      async () =>
+        writeAcceptedExportFile({
+          root: paths.exportsDir,
+          directorySegments: ["direct"],
+          filename: "large.3mf",
+          bytes: Buffer.alloc(128),
+        }),
+    );
 
     expect(existsSync(output)).toBe(true);
   });

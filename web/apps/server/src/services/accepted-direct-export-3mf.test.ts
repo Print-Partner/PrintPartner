@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strFromU8, unzipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  runWithTenantDiskQuota,
-  TenantDiskQuotaError,
-} from "../lib/tenant-disk-quota.js";
+import { runWithTenantDiskQuota, TenantDiskQuotaError } from "../lib/tenant-disk-quota.js";
 import type {
   AcceptedOperationalArtifact,
   AcceptedPlanOperationalSnapshot,
 } from "../db/accepted-plan-operational.js";
-import type { AcceptedPlate, ReadAcceptedPlateWorkspaceInputResult } from "../db/accepted-plates.js";
+import type {
+  AcceptedPlate,
+  ReadAcceptedPlateWorkspaceInputResult,
+} from "../db/accepted-plates.js";
 import { parseRequiredUnitToken } from "./required-units.js";
 import {
   materializeDirectExport3mf,
@@ -25,7 +25,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-const tokens = [1, 2].map((value) => parseRequiredUnitToken(`ppu_${value.toString(16).padStart(32, "0")}`));
+const tokens = [1, 2].map((value) =>
+  parseRequiredUnitToken(`ppu_${value.toString(16).padStart(32, "0")}`),
+);
 
 /** A 4mm x 4mm x 4mm corner tetrahedron with its minimum at the origin. */
 const stl = Buffer.from(`solid accepted
@@ -70,44 +72,52 @@ function snapshot(artifact: AcceptedOperationalArtifact): AcceptedPlanOperationa
     acceptedAt: "2026-01-01T00:00:00.000Z",
     provenance: { kind: "legacy" },
     requiredUnitMappingDigest: "b".repeat(64),
-    parts: [{
-      revisionPartId: 1,
-      projectionPartId: 1,
-      partKey: "part",
-      relativePath: "part.stl",
-      filename: "part.stl",
-      sourceLayer: "base",
-      status: "active",
-      roleInferred: "part",
-      roleOverride: null,
-      effectiveRole: "part",
-      filamentColorId: null,
-      filamentCustomHex: null,
-      spoolmanSpoolId: null,
-      quantityInferred: 2,
-      quantityOverride: null,
-      quantityEffective: 2,
-      included: true,
-      notes: "",
-      githubBlobUrl: null,
-      geometrySame: null,
-      requirement: null,
-      optionGroupId: null,
-      manifestSource: null,
-      artifact,
-      units: tokens.map((token, index) => ({
-        unitIndex: index + 1,
-        required: true,
-        token,
-        objectName: `Part ${index + 1}`,
-        completed: false,
-        assembled: false,
-      })),
-    }],
+    parts: [
+      {
+        revisionPartId: 1,
+        projectionPartId: 1,
+        partKey: "part",
+        relativePath: "part.stl",
+        filename: "part.stl",
+        sourceLayer: "base",
+        status: "active",
+        roleInferred: "part",
+        roleOverride: null,
+        effectiveRole: "part",
+        filamentColorId: null,
+        filamentCustomHex: null,
+        spoolmanSpoolId: null,
+        quantityInferred: 2,
+        quantityOverride: null,
+        quantityEffective: 2,
+        included: true,
+        notes: "",
+        githubBlobUrl: null,
+        geometrySame: null,
+        requirement: null,
+        optionGroupId: null,
+        manifestSource: null,
+        artifact,
+        units: tokens.map((token, index) => ({
+          unitIndex: index + 1,
+          required: true,
+          token,
+          objectName: `Part ${index + 1}`,
+          completed: false,
+          assembled: false,
+        })),
+      },
+    ],
   };
 }
 
-function plate(ordinal: number, plateId: string, token: string, xUm: number, yUm: number): AcceptedPlate {
+function plate(
+  ordinal: number,
+  plateId: string,
+  token: string,
+  xUm: number,
+  yUm: number,
+): AcceptedPlate {
   return {
     plateId,
     ordinal,
@@ -118,7 +128,18 @@ function plate(ordinal: number, plateId: string, token: string, xUm: number, yUm
     bedDepthUm: 250_000,
     bedHeightUm: 250_000,
     marginUm: 0,
-    units: [{ token, objectName: "Part", xUm, yUm, widthUm: 4_000, depthUm: 4_000, heightUm: 4_000, placement: "auto" }],
+    units: [
+      {
+        token,
+        objectName: "Part",
+        xUm,
+        yUm,
+        widthUm: 4_000,
+        depthUm: 4_000,
+        heightUm: 4_000,
+        placement: "auto",
+      },
+    ],
   };
 }
 
@@ -141,7 +162,12 @@ function fixture(workspace: ReadAcceptedPlateWorkspaceInputResult) {
     reposDir,
     tenantExportsDir: join(root, "exports"),
     repository: {
-      getOwnedProfileIdentity: () => ({ id: 7, name: "Build", orderNumber: null, archivedAt: null }),
+      getOwnedProfileIdentity: () => ({
+        id: 7,
+        name: "Build",
+        orderNumber: null,
+        archivedAt: null,
+      }),
       readAcceptedPlanOperationalSnapshot: () => ({ kind: "ready", snapshot: snapshot(artifact) }),
       readAcceptedPlateWorkspaceInput: () => workspace,
     },
@@ -151,16 +177,21 @@ function fixture(workspace: ReadAcceptedPlateWorkspaceInputResult) {
 
 function vertexOrigins(path: string): Array<{ x: number; y: number }> {
   const model = strFromU8(unzipSync(readFileSync(path))["3D/3dmodel.model"]!);
-  return model.split("<object ").slice(1).map((object) => {
-    const vertices = [...object.matchAll(/<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"\/>/g)];
-    return {
-      x: Math.min(...vertices.map((vertex) => Number(vertex[1]))),
-      y: Math.min(...vertices.map((vertex) => Number(vertex[2]))),
-    };
-  });
+  return model
+    .split("<object ")
+    .slice(1)
+    .map((object) => {
+      const vertices = [...object.matchAll(/<vertex x="([^"]+)" y="([^"]+)" z="([^"]+)"\/>/g)];
+      return {
+        x: Math.min(...vertices.map((vertex) => Number(vertex[1]))),
+        y: Math.min(...vertices.map((vertex) => Number(vertex[2]))),
+      };
+    });
 }
 
-const readyWorkspace = (plates: readonly AcceptedPlate[]): ReadAcceptedPlateWorkspaceInputResult => ({
+const readyWorkspace = (
+  plates: readonly AcceptedPlate[],
+): ReadAcceptedPlateWorkspaceInputResult => ({
   kind: "ready",
   basis: {
     profileId: 7,
@@ -182,23 +213,31 @@ describe("materializeDirectExport3mf", () => {
     const dependencies = fixture(readyWorkspace([]));
     const dataDir = join(dependencies.tenantExportsDir, "..");
 
-    await expect(runWithTenantDiskQuota({
-      dataDir,
-      reposDir: dependencies.reposDir,
-      tenantId: "default",
-      sourceIds: () => [],
-      quotaBytes: 1,
-    }, async () => materializeDirectExport3mf(dependencies, {
-      profileId: 7,
-      tokens: [tokens[0]!],
-    }))).rejects.toBeInstanceOf(TenantDiskQuotaError);
+    await expect(
+      runWithTenantDiskQuota(
+        {
+          dataDir,
+          reposDir: dependencies.reposDir,
+          tenantId: "default",
+          sourceIds: () => [],
+          quotaBytes: 1,
+        },
+        async () =>
+          materializeDirectExport3mf(dependencies, {
+            profileId: 7,
+            tokens: [tokens[0]!],
+          }),
+      ),
+    ).rejects.toBeInstanceOf(TenantDiskQuotaError);
   });
 
   it("keeps the arrangement the Plates step showed, one Plate beside the next", async () => {
-    const dependencies = fixture(readyWorkspace([
-      plate(1, "plate-one", tokens[0]!, 12_000, 34_000),
-      plate(2, "plate-two", tokens[1]!, 12_000, 34_000),
-    ]));
+    const dependencies = fixture(
+      readyWorkspace([
+        plate(1, "plate-one", tokens[0]!, 12_000, 34_000),
+        plate(2, "plate-two", tokens[1]!, 12_000, 34_000),
+      ]),
+    );
     const result = await materializeDirectExport3mf(dependencies, { profileId: 7, tokens });
     expect(result.kind).toBe("materialized");
     if (result.kind !== "materialized") return;

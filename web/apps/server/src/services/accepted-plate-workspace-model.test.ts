@@ -46,9 +46,7 @@ describe("accepted plate workspace model", () => {
 
   it("compares accepted plan basis fields", () => {
     expect(sameAcceptedPlanBasis(basis, { ...basis })).toBe(true);
-    expect(sameAcceptedPlanBasis(basis, { ...basis, planVersion: 99 })).toBe(
-      false,
-    );
+    expect(sameAcceptedPlanBasis(basis, { ...basis, planVersion: 99 })).toBe(false);
     expect(
       sameAcceptedPlanBasis(basis, {
         ...basis,

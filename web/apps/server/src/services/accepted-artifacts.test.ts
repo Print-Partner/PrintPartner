@@ -13,10 +13,7 @@ import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcceptedOperationalArtifact } from "../db/accepted-plan-operational.js";
-import {
-  observeAcceptedSnapshotRoot,
-  openVerifiedAcceptedArtifact,
-} from "./accepted-artifacts.js";
+import { observeAcceptedSnapshotRoot, openVerifiedAcceptedArtifact } from "./accepted-artifacts.js";
 
 const temporaryRoots: string[] = [];
 

@@ -21,7 +21,7 @@ function errorCode(error: unknown): string | undefined {
 
 function isContained(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
-  return path === "" || path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 function isSafeSegment(segment: string): boolean {
@@ -63,12 +63,14 @@ function ensureAcceptedExportDirectory(root: string, segments: readonly string[]
   return current;
 }
 
-export function writeAcceptedExportFile(input: Readonly<{
-  root: string;
-  directorySegments: readonly string[];
-  filename: string;
-  bytes: Uint8Array;
-}>): string {
+export function writeAcceptedExportFile(
+  input: Readonly<{
+    root: string;
+    directorySegments: readonly string[];
+    filename: string;
+    bytes: Uint8Array;
+  }>,
+): string {
   if (!isSafeSegment(input.filename)) throw new Error("Invalid accepted export filename");
   const directory = ensureAcceptedExportDirectory(input.root, input.directorySegments);
   const target = join(directory, input.filename);

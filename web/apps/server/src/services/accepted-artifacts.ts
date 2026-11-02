@@ -25,8 +25,7 @@ export type AcceptedArtifactObservationFailure =
   | "io_error";
 
 export type AcceptedArtifactVerificationFailure =
-  | AcceptedArtifactObservationFailure
-  | "digest_mismatch";
+  AcceptedArtifactObservationFailure | "digest_mismatch";
 
 type AcceptedArtifactObservation =
   | { readonly kind: "available" }
@@ -151,9 +150,7 @@ function resolveArtifactPath(input: {
         entries = readdirSync(current);
         input.directoryEntries?.set(current, entries);
       }
-      const matches = entries.filter(
-        (entry) => entry.toLowerCase() === segment.toLowerCase(),
-      );
+      const matches = entries.filter((entry) => entry.toLowerCase() === segment.toLowerCase());
       const [match] = matches;
       if (!match) return { kind: "unusable", reason: "missing" };
       if (matches.length > 1) {

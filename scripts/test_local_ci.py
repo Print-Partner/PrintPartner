@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -19,6 +20,7 @@ TOOLS = {
     "node": "v24.21.0", "npm": "11.0.0", "cargo": "cargo 1.99.0", "cargo-nextest": "0.9.148",
     "python3": "Python 3.12.0", "git": "git version 2.50.0", "ast-grep": "ast-grep 0.50.0",
     "actionlint": "1.7.12", "zizmor": "zizmor 1.31.1", "cargo-machete": "0.9.2",
+    "ruff": f"ruff {local_ci.RUFF_VERSION}",
 }
 
 
@@ -128,6 +130,29 @@ class LocalCiTests(unittest.TestCase):
             self.assertEqual(ci.summary["rust-deps"], "SKIP")
             self.assertEqual(ci.ran, [])
             self.assertIn("cargo-machete", ci.output)
+
+    def test_python_lint_requires_the_version_from_ruff_config(self):
+        configured = re.search(
+            r'^required-version = "==([0-9.]+)"$',
+            (ROOT / "ruff.toml").read_text(),
+            re.MULTILINE,
+        )[1]
+        self.assertEqual(local_ci.RUFF_VERSION, configured)
+
+        wrong_version = "0.0.0" if configured != "0.0.0" else "0.0.1"
+        for version in (None, f"ruff {wrong_version}"):
+            tools = {k: v for k, v in TOOLS.items() if k != "ruff"}
+            if version:
+                tools["ruff"] = version
+            ci = LocalCi(self, tools=tools)
+            self.assertEqual(ci("--only", "python-lint", "--fail-on-skip"), 1)
+            self.assertEqual(ci.summary["python-lint"], "SKIP")
+            self.assertEqual(ci.ran, [])
+            self.assertIn(configured, ci.output)
+
+        ci = LocalCi(self)
+        self.assertEqual(ci("--only", "python-lint", "--fail-on-skip"), 0)
+        self.assertEqual(ci.ran, ["python-lint"])
 
     def test_fail_on_skip_rejects_missing_tools_and_wrong_versions(self):
         for tools in ({k: v for k, v in TOOLS.items() if k != "npm"},

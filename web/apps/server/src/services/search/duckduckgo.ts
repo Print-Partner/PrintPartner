@@ -5,11 +5,7 @@
 
 import { OutboundUrlError } from "../../lib/outbound-url.js";
 import { cancelResponseBody, readBoundedResponseText } from "../../lib/bounded-response.js";
-import type {
-  SearchAdapterDependencies,
-  SearchHit,
-  WebSearchOptions,
-} from "./types.js";
+import type { SearchAdapterDependencies, SearchHit, WebSearchOptions } from "./types.js";
 
 const DDG_HTML = "https://html.duckduckgo.com/html/";
 const MAX_SEARCH_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -27,7 +23,12 @@ function decodeHtmlEntities(s: string): string {
 }
 
 function stripTags(s: string): string {
-  return decodeHtmlEntities(s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+  return decodeHtmlEntities(
+    s
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
 }
 
 /** Unwrap DuckDuckGo redirect URLs when present. */
@@ -49,8 +50,7 @@ export function parseDuckDuckGoHtml(html: string, maxResults: number): SearchHit
   const seen = new Set<string>();
 
   // Classic result__a links
-  const linkRe =
-    /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const linkRe = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
   const anchors: Array<{ url: string; title: string; index: number }> = [];
   while ((m = linkRe.exec(html)) != null) {
@@ -66,9 +66,8 @@ export function parseDuckDuckGoHtml(html: string, maxResults: number): SearchHit
     seen.add(a.url);
     // Snippet: look for result__snippet near this anchor
     const window = html.slice(a.index, a.index + 1200);
-    const snipMatch = /class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|td|div|span)>/i.exec(
-      window,
-    );
+    const snipMatch =
+      /class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|td|div|span)>/i.exec(window);
     const snippet = snipMatch ? stripTags(snipMatch[1]!).slice(0, 500) : "";
     hits.push({ title: a.title || a.url, url: a.url, snippet });
     if (hits.length >= maxResults) break;

@@ -35,9 +35,7 @@ import {
 
 const WEB_SEARCH_REQUEST_TIMEOUT_MS = 30_000;
 
-export type {
-  SearchProviderId,
-} from "./types.js";
+export type { SearchProviderId } from "./types.js";
 
 export function getSearchSetupGuidance(): SearchSetupOption[] {
   return [
@@ -59,7 +57,8 @@ export function getSearchSetupGuidance(): SearchSetupOption[] {
       id: "brave",
       label: "Brave Search",
       summary: "Official Brave Search API (recommended paid option).",
-      setup: "SEARCH_PROVIDER=brave and SEARCH_API_KEY (or BRAVE_API_KEY) from https://brave.com/search/api/",
+      setup:
+        "SEARCH_PROVIDER=brave and SEARCH_API_KEY (or BRAVE_API_KEY) from https://brave.com/search/api/",
     },
     {
       id: "exa",
@@ -71,7 +70,8 @@ export function getSearchSetupGuidance(): SearchSetupOption[] {
       id: "duckduckgo",
       label: "DuckDuckGo (HTML)",
       summary: "No API key — brittle HTML scrape fallback.",
-      setup: "Default when no API key. Force with SEARCH_PROVIDER=duckduckgo. Prefer Brave/Exa for reliability.",
+      setup:
+        "Default when no API key. Force with SEARCH_PROVIDER=duckduckgo. Prefer Brave/Exa for reliability.",
     },
     {
       id: "none",
@@ -162,10 +162,7 @@ export function resolveSearchProvider(input: ResolveSearchInput): SearchProvider
   return "duckduckgo";
 }
 
-export function searchConfigured(
-  provider: SearchProviderId,
-  input: ResolveSearchInput,
-): boolean {
+export function searchConfigured(provider: SearchProviderId, input: ResolveSearchInput): boolean {
   if (provider === "none") return false;
   if (provider === "duckduckgo") return true;
   if (provider === "brave" || provider === "exa") return Boolean(input.searchApiKey);
@@ -195,16 +192,12 @@ function setupHintFor(provider: SearchProviderId, missingKey?: boolean): string 
   const options = getSearchSetupGuidance();
   if (provider === "brave" || provider === "exa") {
     const opt = options.find((o) => o.id === provider);
-    return missingKey
-      ? `Missing API key. ${opt?.setup ?? ""}`
-      : (opt?.setup ?? "");
+    return missingKey ? `Missing API key. ${opt?.setup ?? ""}` : (opt?.setup ?? "");
   }
   if (provider === "none") {
     return options.find((o) => o.id === "none")!.setup;
   }
-  return (
-    "Set SEARCH_PROVIDER=brave|exa with SEARCH_API_KEY for reliable results, or leave unset for DuckDuckGo HTML fallback."
-  );
+  return "Set SEARCH_PROVIDER=brave|exa with SEARCH_API_KEY for reliable results, or leave unset for DuckDuckGo HTML fallback.";
 }
 
 /**
@@ -267,11 +260,7 @@ export async function searchWeb(
         setup_hint: setupHintFor("brave", true),
       };
     }
-    const { hits, error } = await searchBrave(
-      options,
-      input.searchApiKey,
-      adapterDependencies,
-    );
+    const { hits, error } = await searchBrave(options, input.searchApiKey, adapterDependencies);
     return {
       provider,
       hits,
@@ -291,11 +280,7 @@ export async function searchWeb(
         setup_hint: setupHintFor("exa", true),
       };
     }
-    const { hits, error } = await searchExa(
-      options,
-      input.searchApiKey,
-      adapterDependencies,
-    );
+    const { hits, error } = await searchExa(options, input.searchApiKey, adapterDependencies);
     return {
       provider,
       hits,
@@ -316,10 +301,6 @@ export async function searchWeb(
     hits,
     untrusted_banner: SEARCH_UNTRUSTED_BANNER,
     http_backend: "duckduckgo",
-    ...(error
-      ? { error, setup_hint: setupHintFor(provider) }
-      : note
-        ? { setup_hint: note }
-        : {}),
+    ...(error ? { error, setup_hint: setupHintFor(provider) } : note ? { setup_hint: note } : {}),
   };
 }

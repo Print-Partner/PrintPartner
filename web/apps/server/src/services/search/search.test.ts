@@ -26,34 +26,28 @@ function baseInput(over: Partial<ResolveSearchInput> = {}): ResolveSearchInput {
 
 describe("resolveSearchProvider", () => {
   it("uses explicit SEARCH_PROVIDER when set", () => {
-    expect(
-      resolveSearchProvider(baseInput({ searchProvider: "brave", searchApiKey: "k" })),
-    ).toBe("brave");
-    expect(resolveSearchProvider(baseInput({ searchProvider: "exa" }))).toBe("exa");
-    expect(resolveSearchProvider(baseInput({ searchProvider: "duckduckgo" }))).toBe(
-      "duckduckgo",
+    expect(resolveSearchProvider(baseInput({ searchProvider: "brave", searchApiKey: "k" }))).toBe(
+      "brave",
     );
+    expect(resolveSearchProvider(baseInput({ searchProvider: "exa" }))).toBe("exa");
+    expect(resolveSearchProvider(baseInput({ searchProvider: "duckduckgo" }))).toBe("duckduckgo");
     expect(resolveSearchProvider(baseInput({ searchProvider: "none" }))).toBe("none");
   });
 
   it("prefers anthropic-native when AI is anthropic with a key", () => {
     expect(
-      resolveSearchProvider(
-        baseInput({ aiProvider: "anthropic", anthropicApiKey: "sk-ant" }),
-      ),
+      resolveSearchProvider(baseInput({ aiProvider: "anthropic", anthropicApiKey: "sk-ant" })),
     ).toBe("anthropic-native");
   });
 
   it("prefers openai-native when AI is openai with a key", () => {
-    expect(
-      resolveSearchProvider(baseInput({ aiProvider: "openai", openaiApiKey: "sk-oai" })),
-    ).toBe("openai-native");
+    expect(resolveSearchProvider(baseInput({ aiProvider: "openai", openaiApiKey: "sk-oai" }))).toBe(
+      "openai-native",
+    );
   });
 
   it("falls back to duckduckgo when no native credentials", () => {
-    expect(resolveSearchProvider(baseInput({ aiProvider: "anthropic" }))).toBe(
-      "duckduckgo",
-    );
+    expect(resolveSearchProvider(baseInput({ aiProvider: "anthropic" }))).toBe("duckduckgo");
     expect(resolveSearchProvider(baseInput({ aiProvider: "ollama" }))).toBe("duckduckgo");
     expect(resolveSearchProvider(baseInput())).toBe("duckduckgo");
   });
@@ -73,16 +67,14 @@ describe("resolveSearchProvider", () => {
 
 describe("searchConfigured", () => {
   it("requires API key for brave and exa", () => {
-    expect(
-      searchConfigured("brave", baseInput({ searchProvider: "brave" })),
-    ).toBe(false);
+    expect(searchConfigured("brave", baseInput({ searchProvider: "brave" }))).toBe(false);
     expect(
       searchConfigured("brave", baseInput({ searchProvider: "brave", searchApiKey: "k" })),
     ).toBe(true);
     expect(searchConfigured("exa", baseInput({ searchProvider: "exa" }))).toBe(false);
-    expect(
-      searchConfigured("exa", baseInput({ searchProvider: "exa", searchApiKey: "k" })),
-    ).toBe(true);
+    expect(searchConfigured("exa", baseInput({ searchProvider: "exa", searchApiKey: "k" }))).toBe(
+      true,
+    );
   });
 
   it("duckduckgo is always configured; none is not", () => {
@@ -186,31 +178,33 @@ describe("parseDuckDuckGoHtml", () => {
 
 describe("remote search response limits", () => {
   it("parses a bounded Brave response", async () => {
-    const response = new Response(JSON.stringify({
-      web: {
-        results: [{
-          title: "Voron documentation",
-          url: "https://docs.vorondesign.com/",
-          description: "Build documentation",
-        }],
-      },
-    }));
-
-    const result = await searchBrave(
-      { query: "Voron" },
-      "search-key",
-      {
-        fetchFn: async () => response,
-        signal: new AbortController().signal,
-      },
+    const response = new Response(
+      JSON.stringify({
+        web: {
+          results: [
+            {
+              title: "Voron documentation",
+              url: "https://docs.vorondesign.com/",
+              description: "Build documentation",
+            },
+          ],
+        },
+      }),
     );
 
+    const result = await searchBrave({ query: "Voron" }, "search-key", {
+      fetchFn: async () => response,
+      signal: new AbortController().signal,
+    });
+
     expect(result).toEqual({
-      hits: [{
-        title: "Voron documentation",
-        url: "https://docs.vorondesign.com/",
-        snippet: "Build documentation",
-      }],
+      hits: [
+        {
+          title: "Voron documentation",
+          url: "https://docs.vorondesign.com/",
+          snippet: "Build documentation",
+        },
+      ],
     });
   });
 
@@ -220,14 +214,10 @@ describe("remote search response limits", () => {
       headers: { "Content-Length": String(2 * 1024 * 1024 + 1) },
     });
 
-    const result = await searchBrave(
-      { query: "Voron" },
-      "search-key",
-      {
-        fetchFn: async () => response,
-        signal: new AbortController().signal,
-      },
-    );
+    const result = await searchBrave({ query: "Voron" }, "search-key", {
+      fetchFn: async () => response,
+      signal: new AbortController().signal,
+    });
 
     expect(result.hits).toEqual([]);
     expect(result.error).toContain("Response body exceeds 2097152 bytes");
@@ -237,25 +227,23 @@ describe("remote search response limits", () => {
   it("stops a search when its caller aborts", async () => {
     const controller = new AbortController();
     let requestSignal: AbortSignal | null | undefined;
-    const fetchFn = vi.fn<typeof fetch>().mockImplementation(
-      async (_input, init) => {
-        requestSignal = init?.signal;
-        return await new Promise<Response>((resolve, reject) => {
-          const fallback = setTimeout(
-            () => resolve(new Response(JSON.stringify({ web: { results: [] } }))),
-            250,
-          );
-          requestSignal?.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(fallback);
-              reject(requestSignal?.reason);
-            },
-            { once: true },
-          );
-        });
-      },
-    );
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      requestSignal = init?.signal;
+      return await new Promise<Response>((resolve, reject) => {
+        const fallback = setTimeout(
+          () => resolve(new Response(JSON.stringify({ web: { results: [] } }))),
+          250,
+        );
+        requestSignal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(fallback);
+            reject(requestSignal?.reason);
+          },
+          { once: true },
+        );
+      });
+    });
     const config = {
       ...loadConfig(),
       searchProvider: "brave" as const,
@@ -263,11 +251,11 @@ describe("remote search response limits", () => {
       aiProvider: "none" as const,
     };
 
-    const pending = searchWeb(
-      { query: "Voron" },
-      config,
-      { fetchFn, signal: controller.signal, timeoutMs: 1_000 },
-    );
+    const pending = searchWeb({ query: "Voron" }, config, {
+      fetchFn,
+      signal: controller.signal,
+      timeoutMs: 1_000,
+    });
     controller.abort(new Error("caller stopped"));
 
     const result = await pending;
@@ -278,30 +266,28 @@ describe("remote search response limits", () => {
 
   it("keeps the search deadline active while reading the response body", async () => {
     let requestSignal: AbortSignal | null | undefined;
-    const fetchFn = vi.fn<typeof fetch>().mockImplementation(
-      async (_input, init) => {
-        requestSignal = init?.signal;
-        return new Response(
-          new ReadableStream({
-            start(streamController) {
-              const fallback = setTimeout(
-                () => streamController.error(new Error("test stream fallback")),
-                250,
-              );
-              requestSignal?.addEventListener(
-                "abort",
-                () => {
-                  clearTimeout(fallback);
-                  streamController.error(requestSignal?.reason);
-                },
-                { once: true },
-              );
-            },
-          }),
-          { headers: { "Content-Type": "application/json" } },
-        );
-      },
-    );
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      requestSignal = init?.signal;
+      return new Response(
+        new ReadableStream({
+          start(streamController) {
+            const fallback = setTimeout(
+              () => streamController.error(new Error("test stream fallback")),
+              250,
+            );
+            requestSignal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(fallback);
+                streamController.error(requestSignal?.reason);
+              },
+              { once: true },
+            );
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    });
     const config = {
       ...loadConfig(),
       searchProvider: "brave" as const,
@@ -309,11 +295,7 @@ describe("remote search response limits", () => {
       aiProvider: "none" as const,
     };
 
-    const result = await searchWeb(
-      { query: "Voron" },
-      config,
-      { fetchFn, timeoutMs: 25 },
-    );
+    const result = await searchWeb({ query: "Voron" }, config, { fetchFn, timeoutMs: 25 });
 
     expect(result.hits).toEqual([]);
     expect(result.error).toMatch(/aborted|timeout/i);

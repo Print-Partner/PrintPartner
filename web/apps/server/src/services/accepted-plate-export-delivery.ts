@@ -64,12 +64,25 @@ type AcceptedArtifactFailure = "legacy" | "untracked_source" | AcceptedArtifactV
 export type MaterializeAcceptedPlateExportResult =
   | MaterializedAcceptedPlateExport
   | { readonly kind: "profile_not_found" }
-  | { readonly kind: "empty_plan" | "plates_not_published" | "stale_accepted_plan" | "unplaced_units" }
+  | {
+      readonly kind:
+        "empty_plan" | "plates_not_published" | "stale_accepted_plan" | "unplaced_units";
+    }
   | { readonly kind: "plate_revision_changed" }
-  | { readonly kind: "accepted_state_unavailable"; readonly reason: "compatibility_dirty" | "uninitialized" }
+  | {
+      readonly kind: "accepted_state_unavailable";
+      readonly reason: "compatibility_dirty" | "uninitialized";
+    }
   | { readonly kind: "transaction_unavailable" }
-  | { readonly kind: "artifact_unavailable"; readonly token: RequiredUnitToken; readonly reason: AcceptedArtifactFailure }
-  | { readonly kind: "invalid_stl" | "artifact_geometry_mismatch"; readonly token: RequiredUnitToken }
+  | {
+      readonly kind: "artifact_unavailable";
+      readonly token: RequiredUnitToken;
+      readonly reason: AcceptedArtifactFailure;
+    }
+  | {
+      readonly kind: "invalid_stl" | "artifact_geometry_mismatch";
+      readonly token: RequiredUnitToken;
+    }
   | { readonly kind: "limit_exceeded"; readonly limit: AcceptedPlate3mfLimit }
   | { readonly kind: "output_conflict" };
 
@@ -108,7 +121,7 @@ function expectedFile(relativePath: string, bytes: Uint8Array): ExpectedFile {
 
 function isUnderRoot(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
-  return path === "" || path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -138,7 +151,8 @@ async function writeExclusive(path: string, bytes: Uint8Array): Promise<void> {
 async function regularFileMatches(path: string, expected: ExpectedFile): Promise<boolean> {
   try {
     const before = await lstat(path);
-    if (!before.isFile() || before.isSymbolicLink() || before.size !== expected.byteLength) return false;
+    if (!before.isFile() || before.isSymbolicLink() || before.size !== expected.byteLength)
+      return false;
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const opened = await handle.stat();
@@ -205,11 +219,15 @@ async function publishedTreeMatches(
     if (!actual) return false;
     const expectedPaths = expectedFiles.map((file) => file.relativePath).sort();
     if (actual.files.sort().join("\0") !== expectedPaths.join("\0")) return false;
-    if (actual.directories.sort().join("\0") !== expectedDirectories(expectedFiles).join("\0")) return false;
-    return (await Promise.all(expectedFiles.map((file) => regularFileMatches(
-      join(finalDirectory, ...file.relativePath.split("/")),
-      file,
-    )))).every(Boolean);
+    if (actual.directories.sort().join("\0") !== expectedDirectories(expectedFiles).join("\0"))
+      return false;
+    return (
+      await Promise.all(
+        expectedFiles.map((file) =>
+          regularFileMatches(join(finalDirectory, ...file.relativePath.split("/")), file),
+        ),
+      )
+    ).every(Boolean);
   } catch {
     return false;
   }
@@ -266,7 +284,9 @@ async function publishTree(
   }
   chargeTenantDiskBytes(stagedBytes);
   const parent = dirname(finalDirectory);
-  const tempDirectory = await mkdtemp(join(parent, `.${finalDirectory.split(sep).at(-1) ?? "publication"}.tmp-`));
+  const tempDirectory = await mkdtemp(
+    join(parent, `.${finalDirectory.split(sep).at(-1) ?? "publication"}.tmp-`),
+  );
   let published = false;
   try {
     await chmod(tempDirectory, 0o700);
@@ -305,7 +325,11 @@ function materializedFile(
   return {
     filename: file.filename,
     relativePath: `${revisionRelativePath}/${file.relativePath}`,
-    absolutePath: join(tenantRoot, ...revisionRelativePath.split("/"), ...file.relativePath.split("/")),
+    absolutePath: join(
+      tenantRoot,
+      ...revisionRelativePath.split("/"),
+      ...file.relativePath.split("/"),
+    ),
     byteLength: file.byteLength,
     sha256: file.sha256,
   };
@@ -315,21 +339,27 @@ export async function materializeAcceptedPlateExport(
   dependencies: MaterializeAcceptedPlateExportDependencies,
   command: MaterializeAcceptedPlateExportCommand,
 ): Promise<MaterializeAcceptedPlateExportResult> {
-  if (!positiveSafeInteger(command.profileId) || !positiveSafeInteger(command.expectedPlateRevisionId)) {
+  if (
+    !positiveSafeInteger(command.profileId) ||
+    !positiveSafeInteger(command.expectedPlateRevisionId)
+  ) {
     throw new RangeError("Accepted Plate export identifiers must be positive safe integers");
   }
   const tenantRoot = resolve(dependencies.tenantExportsDir);
   await mkdir(tenantRoot, { recursive: true, mode: 0o700 });
   const resolvedTenantRoot = await realpath(tenantRoot);
-  const generated = await generateAcceptedPlate3mfArtifacts({
-    repository: dependencies.repository,
-    reposDir: dependencies.reposDir,
-    limits: dependencies.limits,
-  }, {
-    profileId: command.profileId,
-    expectedPlateRevisionId: command.expectedPlateRevisionId,
-    includeBundle: true,
-  });
+  const generated = await generateAcceptedPlate3mfArtifacts(
+    {
+      repository: dependencies.repository,
+      reposDir: dependencies.reposDir,
+      limits: dependencies.limits,
+    },
+    {
+      profileId: command.profileId,
+      expectedPlateRevisionId: command.expectedPlateRevisionId,
+      includeBundle: true,
+    },
+  );
   if (generated.kind !== "generated") return generated;
   if (!generated.bundle) throw new Error("Accepted Plate bundle was not generated");
 
@@ -348,7 +378,7 @@ export async function materializeAcceptedPlateExport(
     ordinal: plate.ordinal,
   }));
   const files = [manifest, bundle, ...plates];
-  if (!await publishTree(resolvedTenantRoot, finalDirectory, files)) {
+  if (!(await publishTree(resolvedTenantRoot, finalDirectory, files))) {
     return { kind: "output_conflict" };
   }
   return {
@@ -382,7 +412,9 @@ export type StageAcceptedPlateExportResult =
     }
   | { readonly kind: "output_conflict" };
 
-async function readMaterializedFile(file: MaterializedAcceptedPlateFile): Promise<Uint8Array | null> {
+async function readMaterializedFile(
+  file: MaterializedAcceptedPlateFile,
+): Promise<Uint8Array | null> {
   try {
     const before = await lstat(file.absolutePath);
     if (!before.isFile() || before.isSymbolicLink() || before.size !== file.byteLength) return null;
@@ -411,13 +443,18 @@ export async function stageAcceptedPlateExport(
   const instanceId = sanitizedInstanceId(command.instanceId);
   if (!instanceId) return { kind: "output_conflict" };
   const { materialized } = command;
-  if (!positiveSafeInteger(materialized.basis.profileId) || !positiveSafeInteger(materialized.plateRevisionId)) {
+  if (
+    !positiveSafeInteger(materialized.basis.profileId) ||
+    !positiveSafeInteger(materialized.plateRevisionId)
+  ) {
     return { kind: "output_conflict" };
   }
-  const loaded = await Promise.all(materialized.plates.map(async (plate) => ({
-    plate,
-    bytes: await readMaterializedFile(plate),
-  })));
+  const loaded = await Promise.all(
+    materialized.plates.map(async (plate) => ({
+      plate,
+      bytes: await readMaterializedFile(plate),
+    })),
+  );
   const expectedFiles: ExpectedFile[] = [];
   for (const item of loaded) {
     if (!item.bytes) return { kind: "output_conflict" };
@@ -439,13 +476,16 @@ export async function stageAcceptedPlateExport(
   ]);
   if (!resolvedParent) return { kind: "output_conflict" };
   const finalDirectory = join(resolvedParent, `revision-${materialized.plateRevisionId}`);
-  if (!await publishTree(resolvedExchangeRoot, finalDirectory, expectedFiles)) {
+  if (!(await publishTree(resolvedExchangeRoot, finalDirectory, expectedFiles))) {
     return { kind: "output_conflict" };
   }
   return {
     kind: "staged",
     inboxRelativePath,
     absoluteDirectory: finalDirectory,
-    staged: materialized.plates.map((plate) => ({ ordinal: plate.ordinal, filename: plate.filename })),
+    staged: materialized.plates.map((plate) => ({
+      ordinal: plate.ordinal,
+      filename: plate.filename,
+    })),
   };
 }

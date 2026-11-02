@@ -1,15 +1,21 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statfsSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { availableParallelism, loadavg, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import AdmZip from "adm-zip";
 import { miloFilenameGrouping } from "@print-partner/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  runWithTenantDiskQuota,
-  TenantDiskQuotaError,
-} from "../lib/tenant-disk-quota.js";
+import { runWithTenantDiskQuota, TenantDiskQuotaError } from "../lib/tenant-disk-quota.js";
 import type {
   AcceptedExportPart,
   AcceptedOperationalExport,
@@ -22,7 +28,10 @@ import {
 } from "./export-stl-pack.js";
 
 type ExportDiagnostic = {
-  outcome: { kind: "running" } | { kind: "returned"; resultKind: string; elapsedMs: number } | { kind: "threw"; elapsedMs: number };
+  outcome:
+    | { kind: "running" }
+    | { kind: "returned"; resultKind: string; elapsedMs: number }
+    | { kind: "threw"; elapsedMs: number };
   start: number;
   firstZipSourceAt: number | null;
   flushCalls: number;
@@ -66,7 +75,10 @@ vi.mock("node:fs", async (importOriginal) => {
       if (measurement) {
         measurement.flushCalls++;
         measurement.flushInflight++;
-        measurement.flushMaxInflight = Math.max(measurement.flushMaxInflight, measurement.flushInflight);
+        measurement.flushMaxInflight = Math.max(
+          measurement.flushMaxInflight,
+          measurement.flushInflight,
+        );
       }
       actual.fsync(descriptor, (error) => {
         if (measurement) {
@@ -82,20 +94,32 @@ vi.mock("node:fs", async (importOriginal) => {
     },
     createReadStream(...args: Parameters<typeof actual.createReadStream>) {
       const [path, options] = args;
-      if (acceptedArtifactTestHook.failZipRead && typeof path === "string" && path.includes("/.tmp-") && path.endsWith(".stl")) {
+      if (
+        acceptedArtifactTestHook.failZipRead &&
+        typeof path === "string" &&
+        path.includes("/.tmp-") &&
+        path.endsWith(".stl")
+      ) {
         acceptedArtifactTestHook.zipReadFailures++;
         return actual.createReadStream(`${path}.missing`, options);
       }
       const stream = actual.createReadStream(...args);
       const measurement = acceptedArtifactTestHook.diagnostic.current;
-      if (measurement && typeof path === "string" && path.split(sep).some((segment) => segment.startsWith(".tmp-")) && path.endsWith(".stl")) {
+      if (
+        measurement &&
+        typeof path === "string" &&
+        path.split(sep).some((segment) => segment.startsWith(".tmp-")) &&
+        path.endsWith(".stl")
+      ) {
         measurement.firstZipSourceAt ??= performance.now();
         measurement.zipSources++;
         stream.once("end", () => {
           measurement.zipEnds++;
           measurement.zipBytes += stream.bytesRead;
         });
-        stream.once("error", () => { measurement.zipErrors++; });
+        stream.once("error", () => {
+          measurement.zipErrors++;
+        });
       }
       return stream;
     },
@@ -107,20 +131,24 @@ vi.mock("node:child_process", async (importOriginal) => {
   const callbackOf = (args: readonly unknown[]) => {
     const last = args[args.length - 1];
     return typeof last === "function"
-      ? last as (error: Error | null, stdout: string, stderr: string) => void
+      ? (last as (error: Error | null, stdout: string, stderr: string) => void)
       : null;
   };
   const execFile = ((...args: readonly [string, ...(readonly unknown[])]) => {
     const callback = callbackOf(args);
     if (args[0] !== "sync" || !callback) return Reflect.apply(actual.execFile, actual, args);
     acceptedArtifactTestHook.syncCalls += 1;
-    if (acceptedArtifactTestHook.syncMode === "real") return Reflect.apply(actual.execFile, actual, args);
-    const timer = setInterval(() => { acceptedArtifactTestHook.syncLoopTicks += 1; }, 5);
+    if (acceptedArtifactTestHook.syncMode === "real")
+      return Reflect.apply(actual.execFile, actual, args);
+    const timer = setInterval(() => {
+      acceptedArtifactTestHook.syncLoopTicks += 1;
+    }, 5);
     setTimeout(() => {
       clearInterval(timer);
-      const error = acceptedArtifactTestHook.syncMode === "missing"
-        ? Object.assign(new Error("spawn sync ENOENT"), { code: "ENOENT" })
-        : Object.assign(new Error("sync -f failed"), { code: 1 });
+      const error =
+        acceptedArtifactTestHook.syncMode === "missing"
+          ? Object.assign(new Error("spawn sync ENOENT"), { code: "ENOENT" })
+          : Object.assign(new Error("sync -f failed"), { code: 1 });
       callback(error, "", "");
     }, 40);
     return undefined;
@@ -136,9 +164,7 @@ vi.mock("./accepted-artifacts.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./accepted-artifacts.js")>();
   return {
     ...actual,
-    openVerifiedAcceptedArtifact(
-      input: Parameters<typeof actual.openVerifiedAcceptedArtifact>[0],
-    ) {
+    openVerifiedAcceptedArtifact(input: Parameters<typeof actual.openVerifiedAcceptedArtifact>[0]) {
       const result = actual.openVerifiedAcceptedArtifact(input);
       const hook = acceptedArtifactTestHook.afterVerifiedOpen;
       acceptedArtifactTestHook.afterVerifiedOpen = undefined;
@@ -161,8 +187,10 @@ function diagnosticFile(path: string): string | null {
 }
 
 function cgroupCpuContext() {
-  const cgroup = diagnosticFile("/proc/self/cgroup")?.split("\n")
-    .find((line) => line.startsWith("0::/"))?.slice(3);
+  const cgroup = diagnosticFile("/proc/self/cgroup")
+    ?.split("\n")
+    .find((line) => line.startsWith("0::/"))
+    ?.slice(3);
   if (!cgroup || cgroup.split("/").includes("..")) return null;
   const mount = "/sys/fs/cgroup";
   let directory = join(mount, cgroup.slice(1));
@@ -182,10 +210,19 @@ function cgroupCpuContext() {
 function flushMeasurement(): ExportDiagnostic {
   return {
     outcome: { kind: "running" },
-    start: performance.now(), firstZipSourceAt: null,
-    flushCalls: 0, flushCallbacks: 0, flushErrors: 0, flushInflight: 0,
-    flushMaxInflight: 0, flushLatencyTotalMs: 0, flushLatencyMaxMs: 0,
-    zipSources: 0, zipEnds: 0, zipErrors: 0, zipBytes: 0,
+    start: performance.now(),
+    firstZipSourceAt: null,
+    flushCalls: 0,
+    flushCallbacks: 0,
+    flushErrors: 0,
+    flushInflight: 0,
+    flushMaxInflight: 0,
+    flushLatencyTotalMs: 0,
+    flushLatencyMaxMs: 0,
+    zipSources: 0,
+    zipEnds: 0,
+    zipErrors: 0,
+    zipBytes: 0,
   };
 }
 
@@ -199,33 +236,41 @@ function measureLargeExport(root: string) {
   const emit = (event: "start" | "progress" | "test-ended") => {
     const now = performance.now();
     const cpu = process.cpuUsage(cpuStart);
-    process.stdout.write(`GRE-928 accepted-STL diagnostic ${JSON.stringify({
-      event, node: process.version,
-      runner: process.env.RUNNER_NAME ?? null,
-      runnerEnvironment: process.env.RUNNER_ENVIRONMENT ?? null,
-      runId: process.env.GITHUB_RUN_ID ?? null,
-      runAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
-      workerPool: process.env.UV_THREADPOOL_SIZE ?? "default (4)",
-      customTmpdir: process.env.TMPDIR !== undefined,
-      availableParallelism: availableParallelism(), loadAverage: loadavg(),
-      filesystemType: `0x${filesystem.type.toString(16)}`,
-      cgroupV2Cpu: cgroupCpuContext(),
-      cpuQuotaV1: diagnosticFile("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
-      cpuPeriodV1: diagnosticFile("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
-      cpuPressure: diagnosticFile("/proc/pressure/cpu"),
-      ioPressure: diagnosticFile("/proc/pressure/io"),
-      elapsedMs: now - measurement.start,
-      copiesUntilFirstZipSourceMs: measurement.firstZipSourceAt === null
-        ? null : measurement.firstZipSourceAt - measurement.start,
-      firstZipSourceUntilNowMs: measurement.firstZipSourceAt === null
-        ? null : now - measurement.firstZipSourceAt,
-      cpuUserMs: cpu.user / 1000, cpuSystemMs: cpu.system / 1000,
-      eventLoopDelayMs: {
-        mean: Number.isFinite(eventLoop.mean) ? eventLoop.mean / 1e6 : null,
-        max: eventLoop.max / 1e6, p99: eventLoop.percentile(99) / 1e6,
-      },
-      measurement,
-    })}\n`);
+    process.stdout.write(
+      `GRE-928 accepted-STL diagnostic ${JSON.stringify({
+        event,
+        node: process.version,
+        runner: process.env.RUNNER_NAME ?? null,
+        runnerEnvironment: process.env.RUNNER_ENVIRONMENT ?? null,
+        runId: process.env.GITHUB_RUN_ID ?? null,
+        runAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
+        workerPool: process.env.UV_THREADPOOL_SIZE ?? "default (4)",
+        customTmpdir: process.env.TMPDIR !== undefined,
+        availableParallelism: availableParallelism(),
+        loadAverage: loadavg(),
+        filesystemType: `0x${filesystem.type.toString(16)}`,
+        cgroupV2Cpu: cgroupCpuContext(),
+        cpuQuotaV1: diagnosticFile("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+        cpuPeriodV1: diagnosticFile("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
+        cpuPressure: diagnosticFile("/proc/pressure/cpu"),
+        ioPressure: diagnosticFile("/proc/pressure/io"),
+        elapsedMs: now - measurement.start,
+        copiesUntilFirstZipSourceMs:
+          measurement.firstZipSourceAt === null
+            ? null
+            : measurement.firstZipSourceAt - measurement.start,
+        firstZipSourceUntilNowMs:
+          measurement.firstZipSourceAt === null ? null : now - measurement.firstZipSourceAt,
+        cpuUserMs: cpu.user / 1000,
+        cpuSystemMs: cpu.system / 1000,
+        eventLoopDelayMs: {
+          mean: Number.isFinite(eventLoop.mean) ? eventLoop.mean / 1e6 : null,
+          max: eventLoop.max / 1e6,
+          p99: eventLoop.percentile(99) / 1e6,
+        },
+        measurement,
+      })}\n`,
+    );
   };
   emit("start");
   const timer = setInterval(() => emit("progress"), 15_000);
@@ -357,10 +402,9 @@ function part(input: {
   };
 }
 
-function capture(parts: readonly AcceptedExportPart[]): Extract<
-  CaptureAcceptedOperationalExportResult,
-  { readonly kind: "ready" }
-> {
+function capture(
+  parts: readonly AcceptedExportPart[],
+): Extract<CaptureAcceptedOperationalExportResult, { readonly kind: "ready" }> {
   const accepted: AcceptedOperationalExport = {
     basis: {
       profileId: 7,
@@ -402,30 +446,50 @@ describe("materializeAcceptedStlBundle", () => {
     const result = await materializeAcceptedStlBundle({
       ...paths,
       capture: capture([part({ snapshotRoot: paths.snapshotRoot, completed: [false] })]),
-      selection: "all", groupBy: "color", roleOrder: ["accent"],
+      selection: "all",
+      groupBy: "color",
+      roleOrder: ["accent"],
     });
 
     expect(result).toEqual({ kind: "output_failure" });
     const entries = readdirSync(paths.tenantExportsDir, { recursive: true });
-    expect(entries.some((entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"))).toBe(false);
+    expect(
+      entries.some(
+        (entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"),
+      ),
+    ).toBe(false);
   });
 
   it("removes partial copies when a later unit exceeds the quota", async () => {
     const paths = fixture();
-    await expect(runWithTenantDiskQuota({
-      dataDir: dirname(paths.tenantExportsDir),
-      reposDir: paths.reposDir,
-      tenantId: "default",
-      sourceIds: () => [],
-      quotaBytes: 24,
-    }, async () => materializeAcceptedStlBundle({
-      ...paths,
-      capture: capture([part({ snapshotRoot: paths.snapshotRoot, completed: [false, false, false, false] })]),
-      selection: "all", groupBy: "color", roleOrder: ["accent"],
-    }))).rejects.toBeInstanceOf(TenantDiskQuotaError);
+    await expect(
+      runWithTenantDiskQuota(
+        {
+          dataDir: dirname(paths.tenantExportsDir),
+          reposDir: paths.reposDir,
+          tenantId: "default",
+          sourceIds: () => [],
+          quotaBytes: 24,
+        },
+        async () =>
+          materializeAcceptedStlBundle({
+            ...paths,
+            capture: capture([
+              part({ snapshotRoot: paths.snapshotRoot, completed: [false, false, false, false] }),
+            ]),
+            selection: "all",
+            groupBy: "color",
+            roleOrder: ["accent"],
+          }),
+      ),
+    ).rejects.toBeInstanceOf(TenantDiskQuotaError);
 
     const entries = readdirSync(paths.tenantExportsDir, { recursive: true });
-    expect(entries.some((entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"))).toBe(false);
+    expect(
+      entries.some(
+        (entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"),
+      ),
+    ).toBe(false);
   });
 
   it("propagates quota rejection and removes copied and ZIP staging", async () => {
@@ -433,27 +497,37 @@ describe("materializeAcceptedStlBundle", () => {
     const dataDir = dirname(paths.tenantExportsDir);
     const input = {
       ...paths,
-      capture: capture([part({
-        snapshotRoot: paths.snapshotRoot,
-        bytes: Buffer.from("accepted-stl"),
-        completed: [false],
-      })]),
+      capture: capture([
+        part({
+          snapshotRoot: paths.snapshotRoot,
+          bytes: Buffer.from("accepted-stl"),
+          completed: [false],
+        }),
+      ]),
       selection: "all",
       groupBy: "color",
       roleOrder: ["accent"],
     } satisfies Parameters<typeof materializeAcceptedStlBundle>[0];
 
-    await expect(runWithTenantDiskQuota({
-      dataDir,
-      reposDir: paths.reposDir,
-      tenantId: "default",
-      sourceIds: () => [],
-      quotaBytes: 5,
-    }, async () => materializeAcceptedStlBundle(input)))
-      .rejects.toBeInstanceOf(TenantDiskQuotaError);
+    await expect(
+      runWithTenantDiskQuota(
+        {
+          dataDir,
+          reposDir: paths.reposDir,
+          tenantId: "default",
+          sourceIds: () => [],
+          quotaBytes: 5,
+        },
+        async () => materializeAcceptedStlBundle(input),
+      ),
+    ).rejects.toBeInstanceOf(TenantDiskQuotaError);
 
     const entries = readdirSync(paths.tenantExportsDir, { recursive: true });
-    expect(entries.some((entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"))).toBe(false);
+    expect(
+      entries.some(
+        (entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"),
+      ),
+    ).toBe(false);
   });
 
   it("returns output_failure and removes staging when a lazy ZIP source cannot be read", async () => {
@@ -462,49 +536,123 @@ describe("materializeAcceptedStlBundle", () => {
     const result = await materializeAcceptedStlBundle({
       ...paths,
       capture: capture([part({ snapshotRoot: paths.snapshotRoot, completed: [false] })]),
-      selection: "all", groupBy: "color", roleOrder: ["accent"],
+      selection: "all",
+      groupBy: "color",
+      roleOrder: ["accent"],
     });
     expect(acceptedArtifactTestHook.zipReadFailures).toBe(1);
     expect(result).toEqual({ kind: "output_failure" });
     const entries = readdirSync(paths.tenantExportsDir, { recursive: true });
-    expect(entries.some((entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"))).toBe(false);
+    expect(
+      entries.some(
+        (entry) => String(entry).includes(".tmp-") || String(entry).includes("content-"),
+      ),
+    ).toBe(false);
   });
   it("preserves Unicode custom folder names in the ZIP", async () => {
     const paths = fixture();
-    const result = await materializeAcceptedStlBundle({ ...paths, capture: capture([part({ snapshotRoot: paths.snapshotRoot, filename: "mount-S.stl", completed: [false] })]), selection: "all", groupBy: "color", roleOrder: ["accent"], filenameGrouping: { definition: { name: "設定", rules: [{ suffix: "-S", group: "構造" }], overrides: {} }, arrangement: "group" } });
+    const result = await materializeAcceptedStlBundle({
+      ...paths,
+      capture: capture([
+        part({ snapshotRoot: paths.snapshotRoot, filename: "mount-S.stl", completed: [false] }),
+      ]),
+      selection: "all",
+      groupBy: "color",
+      roleOrder: ["accent"],
+      filenameGrouping: {
+        definition: { name: "設定", rules: [{ suffix: "-S", group: "構造" }], overrides: {} },
+        arrangement: "group",
+      },
+    });
     expect(result.kind).toBe("materialized");
     if (result.kind !== "materialized") return;
-    expect(new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName)).toEqual(["構造/mount-S_01.stl"]);
+    expect(
+      new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName),
+    ).toEqual(["構造/mount-S_01.stl"]);
   });
   it("refuses overlapping rules instead of duplicating selected files", async () => {
     const paths = fixture();
-    const result = await materializeAcceptedStlBundle({ ...paths, capture: capture([part({ snapshotRoot: paths.snapshotRoot, filename: "mount-S.stl" })]), selection: "all", groupBy: "color", roleOrder: ["accent"], filenameGrouping: { definition: { ...miloFilenameGrouping, rules: [...miloFilenameGrouping.rules, { suffix: "S", group: "Other" }] }, arrangement: "group" } });
+    const result = await materializeAcceptedStlBundle({
+      ...paths,
+      capture: capture([part({ snapshotRoot: paths.snapshotRoot, filename: "mount-S.stl" })]),
+      selection: "all",
+      groupBy: "color",
+      roleOrder: ["accent"],
+      filenameGrouping: {
+        definition: {
+          ...miloFilenameGrouping,
+          rules: [...miloFilenameGrouping.rules, { suffix: "S", group: "Other" }],
+        },
+        arrangement: "group",
+      },
+    });
     expect(result).toEqual({ kind: "grouping_conflict" });
   });
   it("intersects color and filename settings with inclusion, remaining units and selected tokens", async () => {
     const paths = fixture();
-    const structural = part({ snapshotRoot: paths.snapshotRoot, filename: "mount-S.stl", completed: [true, false] });
-    const other = part({ snapshotRoot: paths.snapshotRoot, filename: "cover-A.stl", revisionPartId: 32 });
-    const primary = { ...part({ snapshotRoot: paths.snapshotRoot, filename: "primary-S.stl", revisionPartId: 33 }), role: "primary" };
-    const excluded = { ...part({ snapshotRoot: paths.snapshotRoot, filename: "excluded-S.stl", revisionPartId: 34 }), included: false };
+    const structural = part({
+      snapshotRoot: paths.snapshotRoot,
+      filename: "mount-S.stl",
+      completed: [true, false],
+    });
+    const other = part({
+      snapshotRoot: paths.snapshotRoot,
+      filename: "cover-A.stl",
+      revisionPartId: 32,
+    });
+    const primary = {
+      ...part({ snapshotRoot: paths.snapshotRoot, filename: "primary-S.stl", revisionPartId: 33 }),
+      role: "primary",
+    };
+    const excluded = {
+      ...part({ snapshotRoot: paths.snapshotRoot, filename: "excluded-S.stl", revisionPartId: 34 }),
+      included: false,
+    };
     const result = await materializeAcceptedStlBundle({
-      ...paths, capture: capture([structural, other, primary, excluded]), selection: "missing", groupBy: "color", roleOrder: ["primary", "accent"],
+      ...paths,
+      capture: capture([structural, other, primary, excluded]),
+      selection: "missing",
+      groupBy: "color",
+      roleOrder: ["primary", "accent"],
       unitTokens: [unitToken(31, 0), unitToken(31, 1), unitToken(32, 1), unitToken(33, 1)],
-      filenameGrouping: { definition: miloFilenameGrouping, arrangement: "color_group", role: "accent", group: "Structural" },
+      filenameGrouping: {
+        definition: miloFilenameGrouping,
+        arrangement: "color_group",
+        role: "accent",
+        group: "Structural",
+      },
     });
     expect(result.kind).toBe("materialized");
     if (result.kind !== "materialized") return;
-    expect(new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName)).toEqual(["accent/Structural/mount-S_02.stl"]);
-    expect(readFileSync(join(result.rootPath, "accent/Structural/mount-S_02.stl"))).toEqual(Buffer.from("accepted-stl"));
+    expect(
+      new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName),
+    ).toEqual(["accent/Structural/mount-S_02.stl"]);
+    expect(readFileSync(join(result.rootPath, "accent/Structural/mount-S_02.stl"))).toEqual(
+      Buffer.from("accepted-stl"),
+    );
   });
 
-  it.each(["group", "group_color"] as const)("keeps unmatched files with %s ordering", async (arrangement) => {
-    const paths = fixture();
-    const result = await materializeAcceptedStlBundle({ ...paths, capture: capture([part({ snapshotRoot: paths.snapshotRoot, completed: [false] })]), selection: "all", groupBy: "color", roleOrder: ["accent"], filenameGrouping: { definition: miloFilenameGrouping, arrangement } });
-    expect(result.kind).toBe("materialized");
-    if (result.kind !== "materialized") return;
-    expect(new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName)).toEqual([arrangement === "group" ? "Unassigned/widget_01.stl" : "Unassigned/accent/widget_01.stl"]);
-  });
+  it.each(["group", "group_color"] as const)(
+    "keeps unmatched files with %s ordering",
+    async (arrangement) => {
+      const paths = fixture();
+      const result = await materializeAcceptedStlBundle({
+        ...paths,
+        capture: capture([part({ snapshotRoot: paths.snapshotRoot, completed: [false] })]),
+        selection: "all",
+        groupBy: "color",
+        roleOrder: ["accent"],
+        filenameGrouping: { definition: miloFilenameGrouping, arrangement },
+      });
+      expect(result.kind).toBe("materialized");
+      if (result.kind !== "materialized") return;
+      expect(
+        new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName),
+      ).toEqual([
+        arrangement === "group" ? "Unassigned/widget_01.stl" : "Unassigned/accent/widget_01.stl",
+      ]);
+    },
+  );
   it("exports one byte-identical file per selected accepted Required unit", async () => {
     const fixturePaths = fixture();
     const bytes = Buffer.from("verified descriptor bytes");
@@ -693,15 +841,20 @@ describe("materializeAcceptedStlBundle", () => {
       selection: "all",
       groupBy: "color_dir",
       roleOrder: ["primary", "accent", "clear", "opaque"],
-    }).then((value) => {
-      measurement.outcome = {
-        kind: "returned", resultKind: value.kind, elapsedMs: performance.now() - measurement.start,
-      };
-      return value;
-    }, (error: unknown) => {
-      measurement.outcome = { kind: "threw", elapsedMs: performance.now() - measurement.start };
-      throw error;
-    });
+    }).then(
+      (value) => {
+        measurement.outcome = {
+          kind: "returned",
+          resultKind: value.kind,
+          elapsedMs: performance.now() - measurement.start,
+        };
+        return value;
+      },
+      (error: unknown) => {
+        measurement.outcome = { kind: "threw", elapsedMs: performance.now() - measurement.start };
+        throw error;
+      },
+    );
     expect(result).toMatchObject({ kind: "materialized", fileCounts: { accent: 10_001 } });
     if (result.kind !== "materialized") return;
     const published = join(result.rootPath, "accent", "_root");
@@ -731,8 +884,13 @@ describe("materializeAcceptedStlBundle", () => {
     // and the stage. Copies are not flushed.
     expect(acceptedArtifactTestHook.syncCalls).toBe(1);
     expect(measurement).toMatchObject({
-      flushCalls: 4, flushCallbacks: 4, flushErrors: 0, flushInflight: 0,
-      zipSources: 10_001, zipEnds: 10_001, zipErrors: 0,
+      flushCalls: 4,
+      flushCallbacks: 4,
+      flushErrors: 0,
+      flushInflight: 0,
+      zipSources: 10_001,
+      zipEnds: 10_001,
+      zipErrors: 0,
       zipBytes: 10_001 * Buffer.byteLength("accepted-stl"),
     });
     expect(measurement.firstZipSourceAt).not.toBeNull();
@@ -745,7 +903,12 @@ describe("materializeAcceptedStlBundle", () => {
     const result = await materializeAcceptedStlBundle({
       capture: capture([
         part({ snapshotRoot: fixturePaths.snapshotRoot, completed: [false, false] }),
-        part({ snapshotRoot: fixturePaths.snapshotRoot, revisionPartId: 32, filename: "peer.stl", completed: [false] }),
+        part({
+          snapshotRoot: fixturePaths.snapshotRoot,
+          revisionPartId: 32,
+          filename: "peer.stl",
+          completed: [false],
+        }),
       ]),
       ...fixturePaths,
       selection: "all",
@@ -756,16 +919,23 @@ describe("materializeAcceptedStlBundle", () => {
     expect(result.kind).toBe("materialized");
     expect(acceptedArtifactTestHook.syncCalls).toBe(1);
     expect(measurement).toMatchObject({
-      flushCalls: 4, flushCallbacks: 4, flushErrors: 0, flushInflight: 0,
+      flushCalls: 4,
+      flushCallbacks: 4,
+      flushErrors: 0,
+      flushInflight: 0,
     });
     if (result.kind !== "materialized") return;
     const published = join(result.rootPath, "accent");
-    const paths = ["widget_01.stl", "widget_02.stl", "peer_01.stl"].map((name) => join(published, name));
-    const inodes = new Set(paths.map((path) => {
-      const stats = statSync(path);
-      expect(stats.nlink).toBe(1);
-      return stats.ino;
-    }));
+    const paths = ["widget_01.stl", "widget_02.stl", "peer_01.stl"].map((name) =>
+      join(published, name),
+    );
+    const inodes = new Set(
+      paths.map((path) => {
+        const stats = statSync(path);
+        expect(stats.nlink).toBe(1);
+        return stats.ino;
+      }),
+    );
     expect(inodes.size).toBe(3);
     writeFileSync(paths[0]!, Buffer.from("edited-unit!"));
     expect(readFileSync(paths[1]!)).toEqual(Buffer.from("accepted-stl"));
@@ -782,7 +952,12 @@ describe("materializeAcceptedStlBundle", () => {
       const result = await materializeAcceptedStlBundle({
         capture: capture([
           part({ snapshotRoot: fixturePaths.snapshotRoot, completed: [false, false] }),
-          part({ snapshotRoot: fixturePaths.snapshotRoot, revisionPartId: 32, filename: "peer.stl", completed: [false] }),
+          part({
+            snapshotRoot: fixturePaths.snapshotRoot,
+            revisionPartId: 32,
+            filename: "peer.stl",
+            completed: [false],
+          }),
         ]),
         ...fixturePaths,
         selection: "all",
@@ -795,16 +970,23 @@ describe("materializeAcceptedStlBundle", () => {
       expect(acceptedArtifactTestHook.syncLoopTicks).toBeGreaterThan(0);
       // Two source flushes, three copy flushes, then accent and the stage.
       expect(measurement).toMatchObject({
-        flushCalls: 7, flushCallbacks: 7, flushErrors: 0, flushInflight: 0,
+        flushCalls: 7,
+        flushCallbacks: 7,
+        flushErrors: 0,
+        flushInflight: 0,
       });
       if (result.kind !== "materialized") return;
       const published = join(result.rootPath, "accent");
-      const paths = ["widget_01.stl", "widget_02.stl", "peer_01.stl"].map((name) => join(published, name));
-      const inodes = new Set(paths.map((path) => {
-        const stats = statSync(path);
-        expect(stats.nlink).toBe(1);
-        return stats.ino;
-      }));
+      const paths = ["widget_01.stl", "widget_02.stl", "peer_01.stl"].map((name) =>
+        join(published, name),
+      );
+      const inodes = new Set(
+        paths.map((path) => {
+          const stats = statSync(path);
+          expect(stats.nlink).toBe(1);
+          return stats.ino;
+        }),
+      );
       expect(inodes.size).toBe(3);
       writeFileSync(paths[0]!, Buffer.from("edited-unit!"));
       expect(readFileSync(paths[1]!)).toEqual(Buffer.from("accepted-stl"));
@@ -814,15 +996,20 @@ describe("materializeAcceptedStlBundle", () => {
 
   it("exports more than 256 MiB of source files and 512 MiB of copies", async () => {
     const fixturePaths = fixture();
-    const base = part({ snapshotRoot: fixturePaths.snapshotRoot, completed: [false, false], bytes: Buffer.alloc(15 * 1024 * 1024, 65) });
+    const base = part({
+      snapshotRoot: fixturePaths.snapshotRoot,
+      completed: [false, false],
+      bytes: Buffer.alloc(15 * 1024 * 1024, 65),
+    });
     const parts = Array.from({ length: 18 }, (_, index) => ({
       ...base,
       revisionPartId: index + 1,
       projectionPartId: index + 101,
       partKey: `part:${index + 1}`,
-      artifact: base.artifact.kind === "tracked"
-        ? { ...base.artifact, sourceId: index + 1 }
-        : base.artifact,
+      artifact:
+        base.artifact.kind === "tracked"
+          ? { ...base.artifact, sourceId: index + 1 }
+          : base.artifact,
     }));
 
     await expect(
@@ -859,9 +1046,7 @@ describe("materializeAcceptedStlBundle", () => {
 
     await expect(
       materializeAcceptedStlBundle({
-        capture: capture([
-          part({ snapshotRoot: fixturePaths.snapshotRoot, completed: [false] }),
-        ]),
+        capture: capture([part({ snapshotRoot: fixturePaths.snapshotRoot, completed: [false] })]),
         ...fixturePaths,
         selection: "all",
         groupBy: "color",
@@ -912,10 +1097,9 @@ describe("materializeAcceptedStlBundle", () => {
     expect(result.kind).toBe("materialized");
     if (result.kind !== "materialized") return;
     expect(result.fileCounts).toEqual({ accent: 2 });
-    expect(new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName)).toEqual([
-      "accent/widget_01.stl",
-      "accent/widget_03.stl",
-    ]);
+    expect(
+      new AdmZip(result.bundlePath ?? "").getEntries().map((entry) => entry.entryName),
+    ).toEqual(["accent/widget_01.stl", "accent/widget_03.stl"]);
     expect(readFileSync(join(result.rootPath, "accent", "widget_01.stl"))).toEqual(bytes);
     expect(() => readFileSync(join(result.rootPath, "accent", "widget_02.stl"))).toThrow();
   });
@@ -1063,9 +1247,7 @@ describe("parseStlPackUnitTokens", () => {
     expect(parseStlPackUnitTokens(["31:0"])).toBe("invalid");
     expect(parseStlPackUnitTokens([`ppu_${"A".repeat(32)}`])).toBe("invalid");
     expect(
-      parseStlPackUnitTokens(
-        Array.from({ length: 10_001 }, () => unitToken(31, 0)),
-      ),
+      parseStlPackUnitTokens(Array.from({ length: 10_001 }, () => unitToken(31, 0))),
     ).toHaveLength(10_001);
   });
 });

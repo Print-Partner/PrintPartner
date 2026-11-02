@@ -2,21 +2,14 @@ import multipart from "@fastify/multipart";
 import Fastify from "fastify";
 import { zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
-import {
-  KIT_JSON_TOO_LARGE_DETAIL,
-  MAX_KIT_JSON_BYTES,
-} from "../services/export-kit.js";
+import { KIT_JSON_TOO_LARGE_DETAIL, MAX_KIT_JSON_BYTES } from "../services/export-kit.js";
 import { registerImportRoutes } from "./imports.js";
 
 function oversizedDeclaredKitArchive(): Buffer {
-  const payload = Buffer.from(
-    '{"format":"print-partner-kit","version":3,"layers":[],"parts":[]}',
-  );
+  const payload = Buffer.from('{"format":"print-partner-kit","version":3,"layers":[],"parts":[]}');
   const archive = Buffer.from(zipSync({ "kit.json": payload }, { level: 9 }));
   const localHeader = archive.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
-  const centralHeader = archive.lastIndexOf(
-    Buffer.from([0x50, 0x4b, 0x01, 0x02]),
-  );
+  const centralHeader = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
   if (localHeader < 0 || centralHeader < 0) {
     throw new Error("ZIP fixture is missing its entry headers");
   }

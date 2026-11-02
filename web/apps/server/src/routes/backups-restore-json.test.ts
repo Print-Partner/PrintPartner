@@ -1,20 +1,10 @@
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
-import {
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  InsufficientRestoreSpaceError,
-  type BackupMetadata,
-} from "../services/backup-restore.js";
+import { InsufficientRestoreSpaceError, type BackupMetadata } from "../services/backup-restore.js";
 import { registerBackupRoutes } from "./backups.js";
 
 const restoreBackup = vi.hoisted(() =>
@@ -96,10 +86,7 @@ describe("POST /backups/restore JSON contract", () => {
           sufficient: true,
         },
       });
-      expect(inspectRestore).toHaveBeenCalledWith(
-        realpathSync(join(backupsDir, name)),
-        dataDir,
-      );
+      expect(inspectRestore).toHaveBeenCalledWith(realpathSync(join(backupsDir, name)), dataDir);
     } finally {
       await app.close();
     }

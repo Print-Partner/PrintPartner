@@ -1,10 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import {
-  createReadStream,
-  createWriteStream,
-  mkdirSync,
-  mkdtempSync,
-} from "node:fs";
+import { createReadStream, createWriteStream, mkdirSync, mkdtempSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promises as fs } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -75,10 +70,7 @@ async function removeTemporaryUploadDirectory(path: string): Promise<void> {
   }
 }
 
-export async function registerBackupRoutes(
-  app: FastifyInstance,
-  deps: RouteDeps,
-): Promise<void> {
+export async function registerBackupRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   let restoreInProgress = false;
 
   app.get<{ Reply: StorageInventory | { detail: string } }>(
@@ -181,9 +173,7 @@ export async function registerBackupRoutes(
 
   app.get<{
     Params: { name: string };
-    Reply:
-      | { metadata: BackupMetadata; restorePreflight: RestorePreflight }
-      | { detail: string };
+    Reply: { metadata: BackupMetadata; restorePreflight: RestorePreflight } | { detail: string };
   }>("/backups/:name/preflight", async (request, reply) => {
     try {
       const backupsDir = join(deps.dataDir, "backups");
@@ -258,8 +248,7 @@ export async function registerBackupRoutes(
    */
   app.post<{
     Reply:
-      | { valid: true; metadata: object; restorePreflight: RestorePreflight }
-      | { detail: string };
+      { valid: true; metadata: object; restorePreflight: RestorePreflight } | { detail: string };
   }>(
     "/backups/validate",
     {
@@ -324,9 +313,7 @@ export async function registerBackupRoutes(
    */
   app.post<{
     Body: { backupName?: string };
-    Reply:
-      | { success: boolean; message: string }
-      | { detail: string; preflight?: RestorePreflight };
+    Reply: { success: boolean; message: string } | { detail: string; preflight?: RestorePreflight };
   }>(
     "/backups/restore",
     {

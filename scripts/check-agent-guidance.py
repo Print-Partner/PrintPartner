@@ -19,7 +19,7 @@ DOCUMENTS = (
 )
 LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
 HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$")
-FENCE = re.compile(r"^\s*(```|~~~)")
+FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 INLINE_LINK = re.compile(r"\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])")
 CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
@@ -44,17 +44,29 @@ def rendered_text(source):
 
 def anchors(markdown):
     """Return the heading anchors GitHub generates for a Markdown document."""
-    found, seen, fenced = set(), {}, False
+    found, seen, opening = set(), {}, None
     for line in markdown.splitlines():
-        if FENCE.match(line):
-            fenced = not fenced
+        fence = FENCE.match(line)
+        if opening:
+            # Only the same character, at least as long and with nothing after it, closes a fence.
+            if fence and fence.group(1)[0] == opening[0] and len(fence.group(1)) >= len(opening) \
+                    and not fence.group(2).strip():
+                opening = None
             continue
-        heading = None if fenced else HEADING.match(line)
+        if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
+            opening = fence.group(1)
+            continue
+        heading = HEADING.match(line)
         if heading:
             slug = re.sub(r"[^\w\- ]", "", rendered_text(heading.group(1)).lower()).replace(" ", "-")
+            # GitHub skips a suffix that an earlier heading already produced.
             count = seen.get(slug, 0)
+            candidate = f"{slug}-{count}" if count else slug
+            while candidate in found:
+                count += 1
+                candidate = f"{slug}-{count}"
             seen[slug] = count + 1
-            found.add(f"{slug}-{count}" if count else slug)
+            found.add(candidate)
     return found
 
 

@@ -23,7 +23,8 @@ def load_policy():
     return module
 
 
-def decide(policy, payload):
+def decide(payload):
+    policy = load_policy()
     if not isinstance(payload, dict):
         return "Expected a JSON object."
     tool = payload.get("tool_name", "")
@@ -48,7 +49,7 @@ def main():
         return 2
     # Any failure to load or run the policy blocks the call; a crash would otherwise let it through.
     try:
-        reason = decide(load_policy(), payload)
+        reason = decide(payload)
     except Exception as error:
         print(f"pp guard: internal error: {error!r}", file=sys.stderr)
         return 2

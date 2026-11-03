@@ -54,6 +54,15 @@ class AgentGuidanceTests(unittest.TestCase):
                          {"setup", "see-the-guide", "emphasis-and-bold-keys", "snake_case-names",
                           "run-_raw_-xy", "code-link"})
 
+    def test_duplicate_anchors_skip_suffixes_already_used(self):
+        self.assertEqual(GUIDANCE.anchors("## Notes\n## Notes\n## Notes-1\n## Notes 1\n"),
+                         {"notes", "notes-1", "notes-1-1", "notes-1-2"})
+
+    def test_fence_closes_only_on_matching_delimiter(self):
+        markdown = ("````text\n~~~\n```\n# Inside\n````\n## After\n"
+                    "~~~\n```\n~~~~\n## Last\n")
+        self.assertEqual(GUIDANCE.anchors(markdown), {"after", "last"})
+
     def test_link_to_heading_with_link_text_passes(self):
         self.write("docs/setup.md", "# Setup\n")
         self.write("AGENTS.md", "# Guide\n[section](#setup)\n\n## [Setup](docs/setup.md)\n")

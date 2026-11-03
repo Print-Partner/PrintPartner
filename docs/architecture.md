@@ -51,6 +51,23 @@ action and never auto-retry an uncertain outcome. Sharing defaults off; MCP alwa
 requires authentication, including loopback. No multi-user, SaaS, Postgres, product
 analytics, or default-on telemetry. Sentry remains opt-in.
 
+## Out of scope
+
+Order features no longer wait until Rust reaches parity with Node. The
+2026-11-02 decisions put new order fields, transactional duplicate-order
+protection and Spoolman shortfall tasks in this program. These stay out:
+
+- Multi-user accounts, SaaS, hosted planning and tenant modes, Postgres, and the
+  community board. They have no target owner.
+- Product analytics and default-on telemetry. Sentry stays opt-in.
+- Porting the old screens, and old-screen visual or route-shape parity
+  ([ADR 0008](adr/0008-replace-the-old-screens.md)).
+- STEP conversion and the Machine tab. They are parked; re-entry needs Chad's
+  approval.
+- Headless modes other than Docker: launchd, systemd and Windows Service.
+- An `/api/v3` namespace, or old route aliases kept only for screen parity.
+- Turning on `desktop_rebuild` or `PP_DESKTOP_REBUILD` by default.
+
 ## Current state and transition
 
 The shipped gateway still supervises Node through `pp-compat` and a private Unix
@@ -60,7 +77,9 @@ implementations behind `desktop_rebuild`, but the baseline shipped launchers do
 not mount the product routers. A registered router is not a delivered operation.
 
 The baseline gateway inventory has 781 compatibility routes. The operation
-manifest has eight Node-owned operations and 82 reviewed resource sets. Its
+manifest has eight Node-owned operations and 82 reviewed resource sets. The
+[operation inventory](development/operation-inventory.md) report tracks that
+split; it lists 0 of the 781 routes as migrated to Rust. The
 per-route cutover machinery works. Whole-runtime cutover makes it unused, not
 defective; removal is scheduled retirement work after replacement evidence.
 
@@ -294,8 +313,8 @@ explicitly limited API-key compatibility mode remains a release decision.
 
 ## Replacement UI and desktop shell
 
-Use a separate Vite workspace app, proposed `web/apps/ui`, and generated client,
-proposed `web/packages/rust-client`, so deleting frozen `web/apps/web` pages cannot
+Use a separate Vite workspace app, proposed `web/apps/ui`, and the generated
+client `web/packages/rust-client`, so deleting frozen `web/apps/web` pages cannot
 delete the replacement. Final package names and router follow the first bounded
 integration slice. Enforce an import graph without old pages, Node server,
 hand-maintained contracts or legacy domain rules.

@@ -36,7 +36,7 @@ will autosave into a draft and require an explicit Accept.
 | Page | Covers |
 |------|--------|
 | [Architecture](architecture.md) | Target design, current state, and the crate map. |
-| [Storage](storage.md) | Data directory, single-writer lock, and migrations. |
+| [Storage](storage.md) | Data directory, single-writer lock, migrations, and synthetic installations. |
 | [HTTP API](api.md) | The versioned integration API. |
 | [MCP](mcp.md) | The MCP server in the Rust core. |
 | [Network sharing](network-sharing.md) | "Share on network" in the desktop app. |

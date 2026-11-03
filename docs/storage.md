@@ -70,7 +70,7 @@ The durable ownership marker is `<data-dir>/.pp-rust-owned.json`. The fixtures w
 
 ## Synthetic installations
 
-`web/scripts/synthetic-dataset/generate.mts` writes a synthetic Node schema-34 data directory shaped like a long-lived installation. The invariant tests use it. Owner UX checks and the cutover rehearsal can fall back to it when no production backup copy is available. It is not the representative copy that step 2 of [Whole-runtime cutover](architecture.md#whole-runtime-cutover-and-rollback) requires, and evidence built on it must say so.
+`web/scripts/synthetic-dataset/generate.mts` writes a synthetic Node schema-34 data directory shaped like a long-lived installation, for invariant tests to run against. Owner UX checks and the cutover rehearsal can fall back to it when no production backup copy is available. It is not the representative copy that step 2 of [Whole-runtime cutover](architecture.md#whole-runtime-cutover-and-rollback) requires, and evidence built on it must say so.
 
 From `web/`, with Node 24.21 and `better-sqlite3` built for it:
 

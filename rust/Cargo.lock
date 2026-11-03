@@ -3312,6 +3312,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "ryu-js",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",
@@ -3366,6 +3367,7 @@ name = "pp-contracts"
 version = "0.1.0"
 dependencies = [
  "pp-api-types",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
 ]
@@ -3568,11 +3570,13 @@ dependencies = [
  "libc",
  "pp-contracts",
  "pp-domain",
+ "pp-testkit",
  "rand 0.9.5",
  "regress 0.11.1",
  "rusqlite",
  "ryu-js",
  "saphyr-parser",
+ "schemars 0.8.22",
  "scrypt",
  "serde",
  "serde_json",
@@ -3581,6 +3585,17 @@ dependencies = [
  "tar",
  "tempfile",
  "time",
+]
+
+[[package]]
+name = "pp-testkit"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

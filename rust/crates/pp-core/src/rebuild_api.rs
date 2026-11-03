@@ -521,18 +521,14 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    #[tokio::test]
-    async fn runtime_setting_on_serves_auth_through_the_rebuild_client() {
-        let (owner, directory) = owner();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let router = router(
-            DesktopRebuild::from_value(Some("1")),
-            &owner,
-            routes(&origin),
-        )
-        .unwrap()
-        .unwrap();
+    /// Serves `router` on `listener` until the returned sender fires.
+    fn serve(
+        listener: tokio::net::TcpListener,
+        router: axum::Router,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             axum::serve(
@@ -545,22 +541,144 @@ mod tests {
             .await
             .unwrap();
         });
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        (stop, server)
+    }
+
+    /// Registers the first account and returns its session cookie.
+    async fn session(client: &reqwest::Client, origin: &str, email: &str) -> String {
         let registered = client
             .post(format!("{origin}/auth/register"))
-            .header("Origin", &origin)
-            .json(&json!({"email":"rebuild@example.com","password":"password-1234"}))
+            .header("Origin", origin)
+            .json(&json!({"email": email, "password": "password-1234"}))
             .send()
             .await
             .unwrap();
         assert_eq!(registered.status(), 200);
-        let cookie = registered.headers()["set-cookie"]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        let cookie = registered.headers()["set-cookie"].to_str().unwrap();
+        cookie.split(';').next().unwrap().to_owned()
+    }
+
+    /// A body each client route's request DTO accepts.
+    fn sample_body(dto: &str) -> Value {
+        match dto {
+            "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
+                "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
+            "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            other => panic!("no sample body for {other}"),
+        }
+    }
+
+    /// Every `pp_api::client_contract::CLIENT_ROUTES` entry, which generates
+    /// `web/packages/rust-client`, is registered on the composed routers with
+    /// its stated method and authentication.
+    #[tokio::test]
+    async fn client_routes_match_registrations() {
+        use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
+        let (owner, directory) = owner();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let rebuild = DesktopRebuild::from_value(Some("1"));
+        let (policy, lifetimes) = (desktop_policy(), lifetimes());
+        let drafts = draft_router(rebuild, &owner, policy, lifetimes, &origin, "default", None);
+        let owner = Arc::new(std::sync::Mutex::new(owner));
+        let reads = read_router(
+            rebuild,
+            Arc::clone(&owner),
+            routes(&origin),
+            &origin,
+            "default",
+            None,
+        );
+        let (stop, server) = serve(
+            listener,
+            reads.unwrap().unwrap().merge(drafts.unwrap().unwrap()),
+        );
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let send = |method: &str, path: &str, cookie: Option<&str>, body: Option<Value>| {
+            let mut request = client
+                .request(method.parse().unwrap(), format!("{origin}{path}"))
+                .header("Origin", &origin);
+            if let Some(cookie) = cookie {
+                request = request.header("Cookie", cookie);
+            }
+            if let Some(body) = body {
+                request = request.json(&body);
+            }
+            request.send()
+        };
+        let cookie = session(&client, &origin, "client@example.com").await;
+        let created = send(
+            "POST",
+            "/api/v2/plans",
+            Some(&cookie),
+            Some(json!({"name": "Client contract"})),
+        );
+        let created: Value = created.await.unwrap().json().await.unwrap();
+        let build = created["id"]
+            .as_i64()
+            .expect("created Build id")
+            .to_string();
+        // An unregistered path answers 404 with no body; a registered one
+        // answers from its handler.
+        let unregistered = send(
+            "GET",
+            &format!("/api/v2/plans/{build}/nope"),
+            Some(&cookie),
+            None,
+        );
+        let unregistered = unregistered.await.unwrap();
+        assert_eq!(unregistered.status(), 404);
+        assert_eq!(unregistered.text().await.unwrap(), "");
+        for route in CLIENT_ROUTES {
+            let path = route
+                .path
+                .replace("{id}", &build)
+                .replace("{draft_id}", "1");
+            let body = route.request.map(sample_body);
+            let anonymous = send(route.method, &path, None, body.clone()).await.unwrap();
+            let expected = match route.auth {
+                ClientAuth::Credential => 401,
+                ClientAuth::None => 200,
+            };
+            assert_eq!(
+                anonymous.status(),
+                expected,
+                "{} {path} without credentials",
+                route.method
+            );
+            let response = send(route.method, &path, Some(&cookie), body)
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            let body: Value = response.json().await.unwrap_or(Value::Null);
+            assert!(
+                status == 200 || (status == 404 && body["code"] == "draft_not_found"),
+                "{} {path}: {status} {body}",
+                route.method
+            );
+        }
+        stop.send(()).unwrap();
+        server.await.unwrap();
+        let owner = Arc::into_inner(owner).expect("routers dropped");
+        owner.into_inner().unwrap().shutdown().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_setting_on_serves_auth_through_the_rebuild_client() {
+        let (owner, directory) = owner();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let router = router(
+            DesktopRebuild::from_value(Some("1")),
+            &owner,
+            routes(&origin),
+        )
+        .unwrap()
+        .unwrap();
+        let (stop, server) = serve(listener, router);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let cookie = session(&client, &origin, "rebuild@example.com").await;
         let me: Value = client
             .get(format!("{origin}/auth/me"))
             .header("Origin", &origin)

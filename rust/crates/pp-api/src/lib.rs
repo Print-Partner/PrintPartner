@@ -9,6 +9,8 @@ pub mod builds;
 #[cfg(feature = "desktop_rebuild")]
 pub mod catalog;
 #[cfg(feature = "desktop_rebuild")]
+pub mod client_contract;
+#[cfg(feature = "desktop_rebuild")]
 pub mod drafts;
 #[cfg(feature = "desktop_rebuild")]
 pub mod fixtures;

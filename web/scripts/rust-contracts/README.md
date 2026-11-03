@@ -81,3 +81,11 @@ route, worker, and transaction authority. The generated module is authoritative
 for the three proven production parsers.
 
 Generated integer parsers normalize negative zero to zero after validation, matching native unsigned serialization. Raw-input controls cover zero-allowed root and nested DTO fields and reject negative zero for positive receipt and array decision quantities. A planted emitter regression must fail exact-output parity.
+
+## Generated client package
+
+`client.mjs` generates `web/packages/rust-client/src` from
+`pp_api::client_contract` with its own emitter, `rust-client-zod/1`. It leaves
+`generate.mjs` and `rust-wire.generated.ts` unchanged. `client.test.mjs` runs
+the round-trip tests. See the
+[package README](../../packages/rust-client/README.md).

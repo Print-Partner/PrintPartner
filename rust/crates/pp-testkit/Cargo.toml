@@ -1,0 +1,15 @@
+[package]
+name = "pp-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Disposable Print Partner installations for tests. Only a dev-dependency."
+
+[dependencies]
+rusqlite.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tempfile = "=3.27.0"

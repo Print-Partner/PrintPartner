@@ -9,8 +9,10 @@ publish = false
 [features]
 default = []
 desktop_rebuild = ["pp-api-types/desktop_rebuild"]
+codegen = ["dep:schemars", "pp-api-types/codegen"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 pp-api-types = { path = "../pp-api-types" }
+schemars = { version = "=0.8.22", optional = true }

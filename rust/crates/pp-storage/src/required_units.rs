@@ -19,8 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 pub use view::{
-    AcceptedReference, Change, ConflictView, Diff, DomainCode, DraftBase, DraftIdentity, Outcome,
-    PartView, ReconciliationView, Workspace,
+    AcceptedReference, Change, ConflictView, Diff, DomainCode, DraftBase, DraftIdentity,
+    DraftListResponse, Outcome, PartView, ReconciliationView, Workspace,
 };
 
 #[derive(Debug, Clone, Deserialize)]

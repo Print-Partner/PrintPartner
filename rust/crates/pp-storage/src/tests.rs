@@ -1,4 +1,7 @@
 use super::*;
+use pp_testkit::node_schema::{
+    self, Statement as HistoricalStatement, execute as execute_historical, parse_schema_migrations,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::DirBuilderExt;
@@ -2440,12 +2443,6 @@ const HISTORICAL_SCHEMA_34: PinnedSchema = PinnedSchema {
     bytes: include_bytes!("../data/historical/schema-34.ts"),
 };
 
-#[derive(Clone)]
-struct HistoricalStatement {
-    comments: Vec<String>,
-    sql: String,
-}
-
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
@@ -2478,105 +2475,8 @@ fn historical_source(pinned: &PinnedSchema) -> String {
     std::str::from_utf8(pinned.bytes).unwrap().to_owned()
 }
 
-fn template_literal(source: &str, start: usize) -> (String, usize) {
-    assert_eq!(source.as_bytes()[start], b'`');
-    let bytes = source.as_bytes();
-    let mut index = start + 1;
-    let mut sql = String::new();
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            sql.push(bytes[index + 1] as char);
-            index += 2;
-            continue;
-        }
-        if bytes[index] == b'`' {
-            return (sql, index + 1);
-        }
-        sql.push(bytes[index] as char);
-        index += 1;
-    }
-    panic!("unterminated historical template");
-}
-
-fn exported_template(source: &str, name: &str) -> String {
-    let marker = format!("export const {name} = `");
-    let start = source
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing {name}"));
-    template_literal(source, start + marker.len() - 1).0
-}
-
-fn parse_schema_migrations(source: &str) -> Vec<HistoricalStatement> {
-    let marker = "export const schemaMigrations: string[] = [";
-    let mut index = source.find(marker).expect("schemaMigrations") + marker.len();
-    let mut statements = Vec::new();
-    let mut comments = Vec::new();
-    while index < source.len() {
-        index += source[index..]
-            .chars()
-            .take_while(|ch| ch.is_whitespace() || *ch == ',')
-            .map(char::len_utf8)
-            .sum::<usize>();
-        if source[index..].starts_with("];") {
-            break;
-        }
-        if source[index..].starts_with("//") {
-            let end = source[index..].find('\n').unwrap();
-            comments.push(source[index..index + end].trim().to_owned());
-            index += end + 1;
-            continue;
-        }
-        if source.as_bytes()[index] == b'`' {
-            let (sql, next) = template_literal(source, index);
-            statements.push(HistoricalStatement {
-                comments: std::mem::take(&mut comments),
-                sql,
-            });
-            index = next;
-            continue;
-        }
-        let length = source[index..]
-            .chars()
-            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-            .map(char::len_utf8)
-            .sum::<usize>();
-        assert!(length > 0, "unexpected schemaMigrations token");
-        let name = &source[index..index + length];
-        statements.push(HistoricalStatement {
-            comments: std::mem::take(&mut comments),
-            sql: exported_template(source, name),
-        });
-        index += length;
-    }
-    statements
-}
-
-fn execute_historical(
-    connection: &Connection,
-    statements: &[HistoricalStatement],
-) -> Result<(), String> {
-    for statement in statements {
-        if let Err(error) = connection.execute_batch(&statement.sql) {
-            let message = error.to_string();
-            if statement.sql.trim_start().starts_with("ALTER TABLE ")
-                && message.to_lowercase().contains("duplicate column name")
-            {
-                continue;
-            }
-            return Err(message);
-        }
-    }
-    Ok(())
-}
-
 fn stamp_schema_version(connection: &Connection, version: u64) {
-    connection
-        .execute(
-            "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'schema_version', ?1)
-             ON CONFLICT(tenant_id, key) DO UPDATE SET value = excluded.value",
-            [version.to_string()],
-        )
-        .unwrap();
+    node_schema::stamp_schema_version(connection, version).unwrap();
 }
 
 fn build_historical_database(
@@ -2662,9 +2562,9 @@ fn ticket_t_7_migrations_historical_order() {
         ],
         [31, 33, 34]
     );
-    let statements_31 = parse_schema_migrations(&source_31);
-    let statements_33 = parse_schema_migrations(&source_33);
-    let statements_34 = parse_schema_migrations(&source_34);
+    let statements_31 = parse_schema_migrations(&source_31).unwrap();
+    let statements_33 = parse_schema_migrations(&source_33).unwrap();
+    let statements_34 = parse_schema_migrations(&source_34).unwrap();
     assert_eq!(statements_31.len(), 175);
     assert_eq!(statements_33.len(), 176);
     assert_eq!(statements_34.len(), 180);
@@ -3367,7 +3267,7 @@ fn insert_historical_plan_inputs(db: &Path) {
 #[test]
 fn ticket_t_7_migrations_preserves_plan_revision_inputs() {
     let source_31 = historical_source(&HISTORICAL_SCHEMA_31);
-    let statements = parse_schema_migrations(&source_31);
+    let statements = parse_schema_migrations(&source_31).unwrap();
     let historical = build_historical_database("plan-input-history", &statements, 31);
     insert_historical_plan_inputs(&historical.join("print-partner.db"));
     let before = tree_hashes(&historical);
@@ -3513,8 +3413,8 @@ fn ticket_t_7_migrations_preserves_plan_revision_inputs() {
 fn pinned_historical_copies() -> Vec<(&'static str, u64, PathBuf)> {
     let source_31 = historical_source(&HISTORICAL_SCHEMA_31);
     let source_33 = historical_source(&HISTORICAL_SCHEMA_33);
-    let statements_31 = parse_schema_migrations(&source_31);
-    let statements_33 = parse_schema_migrations(&source_33);
+    let statements_31 = parse_schema_migrations(&source_31).unwrap();
+    let statements_33 = parse_schema_migrations(&source_33).unwrap();
     let v32 = statements_33
         .iter()
         .find(|statement| {
@@ -3526,7 +3426,7 @@ fn pinned_historical_copies() -> Vec<(&'static str, u64, PathBuf)> {
         .unwrap();
     let mut statements_32 = statements_31.clone();
     statements_32.push(v32.clone());
-    let statements_34 = parse_schema_migrations(&historical_source(&HISTORICAL_SCHEMA_34));
+    let statements_34 = parse_schema_migrations(&historical_source(&HISTORICAL_SCHEMA_34)).unwrap();
     vec![
         (
             "schema-31",

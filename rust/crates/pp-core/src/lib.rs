@@ -233,6 +233,8 @@ async fn start_resources(
         );
     }
     let mut owner = StorageLease::acquire(&data_dir)?;
+    // A Rust-marked directory never reaches the Node child.
+    pp_storage::ownership_marker::refuse_marked(owner.data_dir())?;
     let account_pin =
         pp_compat::DesktopAccountPin::capture(owner.data_dir(), desktop_rebuild.enabled())?;
     let (owners, boot) = cutover::recover(owner.data_dir(), ownership)

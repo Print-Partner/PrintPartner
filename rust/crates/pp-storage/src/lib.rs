@@ -26,6 +26,7 @@ pub mod manifest_options;
 pub mod manifest_text;
 #[cfg(feature = "desktop_rebuild")]
 pub mod native_secrets;
+pub mod ownership_marker;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plan_publication;
 #[cfg(feature = "desktop_rebuild")]
@@ -446,8 +447,27 @@ impl Drop for ReaderCheckout {
     }
 }
 impl WriterOwner {
+    /// In a `desktop_rebuild` build, applies the ownership marker decision
+    /// ([`ownership_marker`]) with the gate from `PP_DESKTOP_REBUILD` before any
+    /// schema write.
     pub fn open(directory: &Path, limits: Limits) -> Result<(Self, SchemaReady)> {
-        Self::open_with_effect_policy(directory, limits, jobs::EffectAdmissionPolicy::Legacy)
+        Self::open_with_effect_policy(
+            directory,
+            limits,
+            jobs::EffectAdmissionPolicy::Legacy,
+            ownership_marker::WriterGate::from_env(),
+        )
+    }
+
+    /// [`WriterOwner::open`] with an explicit gate, for tests of the marker
+    /// decision. Absent from release builds.
+    #[cfg(any(test, feature = "test-unmarked-writer"))]
+    pub fn open_with_gate(
+        directory: &Path,
+        limits: Limits,
+        gate: ownership_marker::WriterGate,
+    ) -> Result<(Self, SchemaReady)> {
+        Self::open_with_effect_policy(directory, limits, jobs::EffectAdmissionPolicy::Legacy, gate)
     }
 
     /// Enforces feature choices for new Spoolman deductions on every worker.
@@ -461,6 +481,7 @@ impl WriterOwner {
             directory,
             limits,
             jobs::EffectAdmissionPolicy::EnforceFeatures,
+            ownership_marker::WriterGate::from_env(),
         )
     }
 
@@ -468,6 +489,7 @@ impl WriterOwner {
         directory: &Path,
         limits: Limits,
         effect_policy: jobs::EffectAdmissionPolicy,
+        gate: ownership_marker::WriterGate,
     ) -> Result<(Self, SchemaReady)> {
         let now = time::OffsetDateTime::now_utc();
         let timestamp = format!(
@@ -480,7 +502,7 @@ impl WriterOwner {
             now.second(),
             now.millisecond()
         );
-        Self::open_at_with_effect_policy(directory, limits, &timestamp, effect_policy)
+        Self::open_at_with_effect_policy(directory, limits, &timestamp, effect_policy, gate)
     }
 
     pub fn open_at(
@@ -493,6 +515,7 @@ impl WriterOwner {
             limits,
             seed_timestamp,
             jobs::EffectAdmissionPolicy::Legacy,
+            ownership_marker::WriterGate::from_env(),
         )
     }
 
@@ -501,12 +524,14 @@ impl WriterOwner {
         limits: Limits,
         seed_timestamp: &str,
         effect_policy: jobs::EffectAdmissionPolicy,
+        gate: ownership_marker::WriterGate,
     ) -> Result<(Self, SchemaReady)> {
         ensure!(
             limits.queued_writes > 0 && limits.readers > 0,
             "Storage limits must be positive"
         );
         let locked = lease::admit_directory(directory)?.lock()?;
+        ownership_marker::admit_writer(&locked, gate)?;
         locked.preflight()?;
         let lease = lease::StorageLease::acquire_locked(locked)?;
         let path = lease.data_dir().join("print-partner.db");

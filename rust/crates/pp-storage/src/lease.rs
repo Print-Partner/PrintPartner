@@ -142,6 +142,11 @@ impl LockedDirectory {
     pub(crate) fn preflight(&self) -> Result<()> {
         self.admitted.preflight()
     }
+
+    /// The canonical data directory this lock holds.
+    pub(crate) fn path(&self) -> &Path {
+        &self.admitted.path
+    }
 }
 
 pub(crate) fn admit_directory(path: &Path) -> Result<AdmittedDirectory> {
@@ -225,6 +230,16 @@ impl AdmittedDirectory {
     pub(crate) fn lock(self) -> Result<LockedDirectory> {
         self.validate_identity()?;
         validate_resolved_ancestors(&self.path, false)?;
+        // A standalone Node lease is a directory. Refuse it before creating
+        // printpartner.lock, so Rust writes nothing while Node holds the lease.
+        // The reservation below still refuses a lease published after this check.
+        if std::fs::symlink_metadata(self.path.join(".desktop-lease"))
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            anyhow::bail!(
+                "Data directory already owned by standalone Node; stop it before starting Rust"
+            );
+        }
         let path = self.path.join("printpartner.lock");
         let lock = self.open_lock(c"printpartner.lock")?;
         self.validate_identity()?;

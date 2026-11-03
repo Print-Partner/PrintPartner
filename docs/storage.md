@@ -60,7 +60,31 @@ The durable ownership marker is `<data-dir>/.pp-rust-owned.json`. The fixtures w
 {"version":1,"owner":"rust","created_at":"2026-11-03T00:00:00Z"}
 ```
 
-`version` is the integer 1. `owner` is the string `rust`. `created_at` is UTC in the form `YYYY-MM-DDTHH:MM:SSZ`. A reader refuses any other key, version, owner, or timestamp shape. `Marker::parse` in the kit is the test oracle for these rules. The product writer and reader do not exist yet; when they land, they use this format and their tests compare bytes with the kit.
+`version` is the integer 1. `owner` is the string `rust`. `created_at` is UTC in the form `YYYY-MM-DDTHH:MM:SSZ`. A reader refuses any other key, version, owner, or timestamp shape. `Marker::parse` in the kit is the test oracle for these rules. The product reader and writer are `pp_storage::ownership_marker`; its tests compare bytes with the kit.
+
+### Ownership marker decision
+
+The marker is separate from the `.desktop-owner.json` process lease record. `pp_storage::ownership_marker` reads it without following symlinks and refuses a marker that is not a regular file, is over 1,024 bytes, is empty or truncated, is not JSON, has an unknown or missing key, has a version other than 1, has an owner other than `rust`, or has a `created_at` that is not a real UTC time.
+
+In a `desktop_rebuild` build, `WriterOwner::open`, `open_at` and `open_with_job_feature_admission` take the directory lock first. While the lock is held, and before the schema preflight, storage directories or any schema write, they apply this decision:
+
+| `PP_DESKTOP_REBUILD` | Marker | Directory | Result |
+| --- | --- | --- | --- |
+| `1` or `true` | valid | any | Open. The marker is not rewritten. |
+| `1` or `true` | absent | empty | Write the marker, then open. |
+| `1` or `true` | absent | not empty | Refuse. Nothing changes. |
+| `1` or `true` | present but invalid | any | Refuse. Nothing changes. |
+| unset or anything else | any | any | Refuse before any write. |
+
+The writer creates `.pp-rust-owned.json.tmp-<16 hex>` in the data directory with mode `0600` and `O_EXCL`, writes and fsyncs it, renames it onto `.pp-rust-owned.json`, then fsyncs the directory. If the write fails, it removes the temporary file and opens nothing. After a successful write it removes older temporary files.
+
+"Empty" means only these top-level entries: `printpartner.lock`, `.desktop-lease` (a Rust file, or a Node directory holding only `owner.json` and `previous-marker.json`), `.desktop-lease-candidate-*`, `.desktop-lease-release-*`, `.desktop-lease-retired-*`, `.desktop-owner.json`, `.desktop-owner-release-*.json`, `lost+found`, and the marker writer's own `.pp-rust-owned.json.tmp-*` crash leftover. A `.desktop-owner.json` whose pid is running and whose `process_identity` still matches (`<boot id>:<start time>` from `/proc`, as Node computes it) makes the directory non-empty. So does an unreadable record, or a running pid whose identity cannot be looked up. The test `lease_names_in_rust_and_node_lease_code_and_the_marker_name_match_the_allowlist` reads `pp-storage/src/lease.rs`, `web/apps/server/src/storage-lease.ts` and `web/apps/server/src/desktop-context.ts` and fails if their lease names and the allowlist differ.
+
+A standalone Node lease is a `.desktop-lease` directory. The Rust lock refuses it before creating `printpartner.lock`, so Rust writes nothing while Node holds the lease. A Node lease published after that check still fails the existing `.desktop-lease` reservation.
+
+The Node-backed runtime (`pp-core` supervising the Node child) calls `ownership_marker::refuse_marked` right after taking the lease. Any marker entry, valid or not, refuses the start before cutover recovery, Source Sync admission or the Node child. Unmarked directories start as before. Node itself reads schema 34 and refuses newer databases (`web/apps/server/src/db/client.ts`).
+
+The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision off for `WriterOwner::open` in tests that open unmarked fixture directories. Only `[dev-dependencies]` entries enable it (pp-storage on itself, pp-api and pp-core), and `rust/scripts/check-boundaries.py` refuses it in any feature table, default, or normal dependency, so release builds never contain it. With it on, `WriterOwner::open_with_gate` takes an explicit gate; the marker tests in `rust/crates/pp-storage/tests/ownership_marker.rs` use it on pp-testkit installations and copied Node schema 34 databases. A manual run of a pp-storage fixture binary in a `desktop_rebuild` build adds `--features desktop_rebuild,test-unmarked-writer`.
 
 ## Ownership today
 

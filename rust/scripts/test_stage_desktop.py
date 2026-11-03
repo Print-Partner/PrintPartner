@@ -182,6 +182,32 @@ class StageWorkspaceLinkTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("FileNotFoundError", result.stderr)
 
+    def test_source_manifest_records_but_does_not_follow_unshipped_workspace_links(self):
+        # A source checkout: the build-desktop-manifest step measures web/ in place,
+        # with every workspace link npm created, and Vitest keeps a cache in apps/ui.
+        write(self.web / "node_modules/left-pad/index.js", "module.exports = 1\n")
+        write(self.web / "apps/ui/package.json", "{}")
+        write(self.web / "apps/ui/node_modules/react-router/index.js", "")
+        links = self.web / "node_modules/@print-partner"
+        links.mkdir(parents=True)
+        (links / "contracts").symlink_to("../../packages/contracts")
+        (links / "ui").symlink_to("../../apps/ui")
+        result = self.build_manifest()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before = json.loads((self.root / "manifest.json").read_text())["dependencies"]
+        self.assertEqual(before["unshipped_links"], ["web/node_modules/@print-partner/ui"])
+        self.assertEqual(before["links"]["web/node_modules/@print-partner/ui"], "../../apps/ui")
+        self.assertIn("web/packages/contracts/package.json", before["files"])
+        self.assertFalse([path for path in before["files"] if path.startswith("web/apps/ui/")])
+        self.assertNotIn("web/apps/ui/node_modules", before["roots"])
+
+        write(self.web / "apps/ui/node_modules/.vite/vitest/results.json", "{}")
+        write(self.web / "apps/ui/dist/index.html", "<!doctype html>")
+        result = self.build_manifest()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = json.loads((self.root / "manifest.json").read_text())["dependencies"]
+        self.assertEqual(after, before)
+
 
 if __name__ == "__main__":
     unittest.main()

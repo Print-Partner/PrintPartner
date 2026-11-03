@@ -11,6 +11,11 @@ struct DependencyInventory {
     roots: Vec<String>,
     files: BTreeMap<String, String>,
     links: BTreeMap<String, String>,
+    /// Links to workspaces the desktop does not ship, such as
+    /// `node_modules/@print-partner/ui` in a source checkout. Each is also in
+    /// `links`; verification checks the link but does not follow it.
+    #[serde(default)]
+    unshipped_links: std::collections::BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -249,6 +254,12 @@ fn verify_dependencies(
         !inventory.files.is_empty() && !inventory.roots.is_empty(),
         "Dependency inventory empty"
     );
+    ensure!(
+        inventory
+            .unshipped_links
+            .is_subset(&inventory.links.keys().cloned().collect()),
+        "Unshipped dependency link is not inventoried"
+    );
     let mut actual_files = std::collections::BTreeSet::new();
     let mut actual_links = std::collections::BTreeSet::new();
     let mut visited = std::collections::BTreeSet::new();
@@ -275,6 +286,9 @@ fn verify_dependencies(
                 let kind = entry.file_type()?;
                 if kind.is_symlink() {
                     actual_links.insert(key.clone());
+                    if inventory.unshipped_links.contains(&key) {
+                        continue;
+                    }
                     let target = path.canonicalize()?;
                     ensure!(target.starts_with(&root), "Dependency link escaped package");
                     if target.is_file() {
@@ -362,6 +376,7 @@ mod tests {
                 "Resources/desktop-runtime/web/node_modules/addon.node".into(),
                 target.to_string_lossy().into_owned(),
             )]),
+            unshipped_links: Default::default(),
         };
         verify_dependencies(&web, &inventory, &CancellationToken::new()).unwrap();
         let moved = root.with_extension("relocated");
@@ -387,6 +402,59 @@ mod tests {
         std::fs::remove_file(&alias).unwrap();
         symlink("/usr/bin/node", &alias).unwrap();
         assert!(verify_dependencies(&web, &inventory, &CancellationToken::new()).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unshipped_workspace_links_are_checked_but_not_followed() {
+        let root = std::env::temp_dir().join(format!(
+            "pp-unshipped-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        let web = root.join("web");
+        let scope = web.join("node_modules/@print-partner");
+        let library = web.join("node_modules/left-pad/index.js");
+        let cache = web.join("apps/ui/node_modules/.vite/vitest/results.json");
+        std::fs::create_dir_all(&scope).unwrap();
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"module.exports = 1;\n").unwrap();
+        std::fs::write(web.join("apps/ui/package.json"), b"{}").unwrap();
+        symlink("../../apps/ui", scope.join("ui")).unwrap();
+        let link = "web/node_modules/@print-partner/ui".to_string();
+        let mut inventory = DependencyInventory {
+            web_path: "web".into(),
+            roots: vec!["web/node_modules".into()],
+            files: BTreeMap::from([(
+                "web/node_modules/left-pad/index.js".into(),
+                measure(&library).unwrap(),
+            )]),
+            links: BTreeMap::from([(link.clone(), "../../apps/ui".into())]),
+            unshipped_links: [link.clone()].into(),
+        };
+        let stop = CancellationToken::new();
+        verify_dependencies(&web, &inventory, &stop).unwrap();
+        std::fs::write(&cache, b"{\"results\":{}}").unwrap();
+        verify_dependencies(&web, &inventory, &stop).unwrap();
+
+        inventory.unshipped_links.clear();
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency file inventory mismatch");
+        inventory.unshipped_links.insert(link.clone());
+
+        inventory.links.clear();
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Unshipped dependency link is not inventoried"
+        );
+        inventory.links.insert(link.clone(), "../../apps/ui".into());
+
+        std::fs::create_dir_all(web.join("apps/other")).unwrap();
+        std::fs::remove_file(scope.join("ui")).unwrap();
+        symlink("../../apps/other", scope.join("ui")).unwrap();
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency link changed");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

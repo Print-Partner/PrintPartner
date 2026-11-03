@@ -216,9 +216,7 @@ class LocalCiTests(unittest.TestCase):
         for script in ("lint", "test", "build"):
             self.assertIn(f"npm --prefix web run {script} --workspace @print-partner/ui", step.setup)
         self.assertNotIn("npm --prefix web run typecheck --workspace @print-partner/ui", step.setup)
-        build = step.setup.index("npm --prefix web run build --workspace @print-partner/ui")
-        manifest = next(i for i, line in enumerate(step.setup) if "build-desktop-manifest.py" in line)
-        self.assertLess(build, manifest)
+        self.assertFalse([line for line in step.setup if "build-desktop-manifest.py" in line])
 
     def test_ui_package_skips_without_node_24(self):
         ci = LocalCi(self, tools={**TOOLS, "node": "v22.23.3"})

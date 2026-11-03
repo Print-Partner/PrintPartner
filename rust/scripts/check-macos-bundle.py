@@ -83,8 +83,8 @@ def dependency_roots(root, web):
         if ancestor == root:
             break
         ancestor = ancestor.parent
-    for workspace in [*(p for p in web.glob('apps/*') if p.is_dir() and p.name != 'node_modules'),
-                      *(p for p in web.glob('packages/*') if p.is_dir() and p.name != 'node_modules')]:
+    # The shipped workspaces, as build-desktop-manifest.py measures them.
+    for workspace in {web / pathlib.Path(path).parts[0] / pathlib.Path(path).parts[1] for path in ARTIFACTS.values()}:
         for directory in [workspace, workspace / 'dist', workspace / 'dist/current']:
             search.add(directory / 'node_modules')
     return sorted(p.relative_to(root).as_posix() for p in search)
@@ -172,6 +172,7 @@ def verify_resources(root, manifest, arch):
         relative_path(name)
         require(isinstance(target, str) and target and not pathlib.Path(target).is_absolute(), 'Invalid alias target')
     require(deps.get('roots') == dependency_roots(root, web), 'Missing or changed resolver roots')
+    require(not deps.get('unshipped_links'), 'Bundle manifest lists unshipped workspace links')
     actual = dependency_inventory(root, deps['roots'])
     require(actual == {'files': deps['files'], 'links': deps['links']}, 'Changed dependency bytes or aliases')
     for name in ('contracts', 'domain'):

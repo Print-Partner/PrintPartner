@@ -15,6 +15,12 @@ Print Partner is moving its backend from Node to one Rust core. The core runs as
 
 ## Product workflow
 
+The [accepted replacement UI](product/ui-ux-target.md) defines Today, Build-local
+tabs, History/Accept and burst Checkoff. [CONTEXT.md](../CONTEXT.md) defines the
+product words. The paths below describe the current Node screens, not the new
+UI contract. The current app saves Plan changes automatically. The replacement
+will autosave into a draft and require an explicit Accept.
+
 | Area | Browser path | Task |
 |------|--------------|------|
 | Library | `/library` | Register and sync shared source repositories. |
@@ -80,6 +86,10 @@ Print Partner is moving its backend from Node to one Rust core. The core runs as
 - [ADR 0005: Keep one desktop product identity](adr/0005-desktop-product-identity.md)
 - [ADR 0006: Autosave text contains Unicode scalar values](adr/0006-autosave-text-contract.md)
 - [ADR 0007: Record the Rust crate layout and dependency edges](adr/0007-rust-crate-layout.md)
+- [ADR 0008: Replace the old screens](adr/0008-replace-the-old-screens.md)
+- [ADR 0009: Keep current crates and deepen modules](adr/0009-keep-crates-and-deepen-modules.md)
+- [ADR 0010: Whole-runtime cutover with explicit rollback limits](adr/0010-whole-runtime-cutover.md)
+- [ADR 0015: Share narrow filesystem portability mechanics](adr/0015-shared-filesystem-portability.md)
 
 ## Node server
 

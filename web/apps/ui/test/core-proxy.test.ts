@@ -37,24 +37,32 @@ describe("dev server core proxy", () => {
 
   it("presents the core's origin for loopback browsers and leaves other origins alone", () => {
     const listeners: Record<string, (proxyReq: unknown, req: unknown) => void> = {};
-    originBridge("http://127.0.0.1:8080")({
-      on: (event, listener) => {
-        listeners[event] = listener as (proxyReq: unknown, req: unknown) => void;
+    const fakeProxy = {
+      on: (event: string, listener: (proxyReq: unknown, req: unknown) => void) => {
+        listeners[event] = listener;
       },
-    });
+    };
+    originBridge("http://127.0.0.1:8080")(fakeProxy as never, {});
     expect(Object.keys(listeners).sort()).toEqual(["proxyReq", "proxyReqWs"]);
-    const forward = (origin: string | undefined) => {
+    const forward = (origin: string | undefined, host = "127.0.0.1:5174") => {
       const set: Record<string, string> = {};
       for (const listener of Object.values(listeners)) {
-        listener({ setHeader: (name: string, value: string) => (set[name] = value) }, { headers: { origin } });
+        listener(
+          { setHeader: (name: string, value: string) => (set[name] = value) },
+          { headers: { origin, host } },
+        );
       }
       return set.origin;
     };
     expect(forward("http://127.0.0.1:5174")).toBe("http://127.0.0.1:8080");
-    expect(forward("http://localhost:5174")).toBe("http://127.0.0.1:8080");
+    expect(forward("http://localhost:5174", "localhost:5174")).toBe("http://127.0.0.1:8080");
+    // Another local page on a different port must not borrow the core's origin.
+    expect(forward("http://127.0.0.1:9000")).toBeUndefined();
+    expect(forward("http://localhost:5174")).toBeUndefined();
     expect(forward("http://evil.example")).toBeUndefined();
     expect(forward("http://127.0.0.1.evil.example")).toBeUndefined();
     expect(forward(undefined)).toBeUndefined();
+    expect(forward("http://127.0.0.1:5174", "")).toBeUndefined();
   });
 
   it("wires the origin bridge into every proxied path", () => {

@@ -33,8 +33,14 @@ export const uiBoundary = {
   },
   create(context) {
     function check(source) {
-      if (source?.type !== "Literal" || typeof source.value !== "string") return;
-      const message = violation(source.value, context.filename);
+      let specifier;
+      if (source?.type === "Literal" && typeof source.value === "string") specifier = source.value;
+      // import(`@scope/pkg`) with no ${} expressions is as static as a quoted string.
+      else if (source?.type === "TemplateLiteral" && source.expressions.length === 0) {
+        specifier = source.quasis[0].value.cooked;
+      }
+      if (typeof specifier !== "string") return;
+      const message = violation(specifier, context.filename);
       if (message) context.report({ node: source, message });
     }
     return {

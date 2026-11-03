@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http";
 import type { ProxyOptions } from "vite";
 
 /** Names the Rust core that `npm run dev` forwards to, as an http(s) origin. */
@@ -36,37 +37,37 @@ export function coreProxy(env: Record<string, string | undefined>): Record<strin
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/** Whether origin is the dev server's own kind of origin: http(s) on loopback. */
-function isLoopbackOrigin(origin: string): boolean {
+/**
+ * Whether origin is this dev server's own page: an http(s) loopback origin whose
+ * host and port equal the Host the browser sent to the dev server. A page on any
+ * other port (another local service) does not qualify.
+ */
+function isDevServerOrigin(origin: string, host: string | undefined): boolean {
+  if (!host) return false;
   try {
     const parsed = new URL(origin);
     return (
       (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.origin === origin &&
       LOOPBACK_HOSTS.has(parsed.hostname) &&
-      parsed.origin === origin
+      parsed.host === host
     );
   } catch {
     return false;
   }
 }
 
-type ProxyRequest = { setHeader(name: string, value: string): void };
-type IncomingRequest = { headers: Record<string, string | string[] | undefined> };
-type ProxyEvents = {
-  on(event: "proxyReq" | "proxyReqWs", listener: (proxyReq: ProxyRequest, req: IncomingRequest) => void): void;
-};
-
 /**
  * The Rust core admits only its own Origin (pp-api loopback checks), and
- * changeOrigin rewrites Host but not Origin. For a browser on a loopback dev
- * server, present the core's origin upstream. Any other Origin is forwarded
- * unchanged, so the core still rejects it.
+ * changeOrigin rewrites Host but not Origin. For the dev server's own page,
+ * present the core's origin upstream. Any other Origin, including a loopback
+ * page on another port, is forwarded unchanged, so the core still rejects it.
  */
-export function originBridge(coreOrigin: string) {
-  return (proxy: ProxyEvents) => {
-    const adapt = (proxyReq: ProxyRequest, req: IncomingRequest) => {
+export function originBridge(coreOrigin: string): NonNullable<ProxyOptions["configure"]> {
+  return (proxy) => {
+    const adapt = (proxyReq: { setHeader(name: string, value: string): void }, req: IncomingMessage) => {
       const origin = req.headers.origin;
-      if (typeof origin === "string" && isLoopbackOrigin(origin)) {
+      if (typeof origin === "string" && isDevServerOrigin(origin, req.headers.host)) {
         proxyReq.setHeader("origin", coreOrigin);
       }
     };

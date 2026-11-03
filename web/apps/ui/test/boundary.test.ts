@@ -25,6 +25,7 @@ describe("apps/ui import boundary", () => {
     ['export * from "../../web/src/api/client";', "re-export"],
     ['export const load = () => import("../../server/src/app");', "dynamic import"],
     ['export type Legacy = typeof import("@print-partner/contracts");', "import type expression"],
+    ["export const lazy = () => import(`@print-partner/contracts`);", "template literal dynamic import"],
   ])("fails a planted import: %s (%s)", async (code) => {
     expect(await boundaryErrors(`${code}\nexport {};\n`)).toHaveLength(1);
   });

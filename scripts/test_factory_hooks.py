@@ -454,11 +454,21 @@ class GuardHookTests(unittest.TestCase):
                                 ("gh pr --foo merge 12", "after the subcommand"),
                                 ("gh -- pr merge 12", "after the subcommand"),
                                 ("gh --$flag pr merge 12", "shell expansion"),
+                                ("gh --help=$opts", "shell expansion"),
+                                ("gh -h=$opts", "shell expansion"),
+                                ("gh --version=$(cat words)", "shell expansion"),
+                                ("gh --repo=$repo", "shell expansion"),
+                                ("gh -R$repo", "shell expansion"),
+                                ("gh -R $repo", "shell expansion"),
+                                ("gh --repo \"$repo\" pr view 12", "shell expansion"),
+                                ("gh pr --help=$opts", "shell expansion"),
+                                ("gh variable -R $repo list", "shell expansion"),
                                 ("gh --help=false pr checkout 3 && git push origin HEAD", "destination branch")):
             with self.subTest(command=command):
                 self.assertBlocked("Execute", {"command": command}, reason)
         for command in ("gh --version", "gh --help", "gh -h", "gh pr --help", "gh -R o/r pr view 12",
-                        "gh --help=false pr view 12", "gh --repo o/r issue list", f"gh -R o/r variable --help=false list"):
+                        "gh --help=false pr view 12", "gh --repo o/r issue list", f"gh -R o/r variable --help=false list",
+                        'gh pr view 12 -R "$repo"', 'gh variable list --repo="$repo"'):
             with self.subTest(command=command):
                 self.assertAllowed("Execute", {"command": command})
 

@@ -802,19 +802,23 @@ def gh_command(args):
     still runs `variable set`. The path is one word, or two for a group in GH_GROUPS. Inside
     it, only -R/--repo and the GH_PATH_FLAGS, with an optional =value, are skipped. Any other
     option could take the next word as its value, so the path is unknown and gh_command refuses.
+    An expansion anywhere before the path ends, including a skipped option's value, is refused:
+    unquoted, it splits into more words, so `gh --help=$x` can supply the whole path.
     """
     path, i = [], 0
     while i < len(args) and len(path) < (2 if path[:1] and path[0] in GH_GROUPS else 1):
         arg = args[i]
         i += 1
+        if EXPANDED in arg:
+            raise Unclear(EXPANSION)
         if not arg.startswith("-"):
             path.append(arg)
         elif arg in ("-R", "--repo"):
+            if EXPANDED in "".join(args[i:i + 1]):
+                raise Unclear(EXPANSION)
             i += 1
         elif arg.startswith(("--repo=", "-R")):
             continue
-        elif EXPANDED in arg.split("=", 1)[0]:
-            raise Unclear(EXPANSION)
         elif arg.split("=", 1)[0] not in GH_PATH_FLAGS:
             raise Unclear(GH_OPTIONS)
     return path + without_repo_flags(args[i:])

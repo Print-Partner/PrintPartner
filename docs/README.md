@@ -88,6 +88,7 @@ will autosave into a draft and require an explicit Accept.
 - [ADR 0008: Replace the old screens](adr/0008-replace-the-old-screens.md)
 - [ADR 0009: Keep current crates and deepen modules](adr/0009-keep-crates-and-deepen-modules.md)
 - [ADR 0010: Whole-runtime cutover with explicit rollback limits](adr/0010-whole-runtime-cutover.md)
+- [ADR 0015: Share narrow filesystem portability mechanics](adr/0015-shared-filesystem-portability.md)
 
 ## Node server
 

@@ -5,6 +5,9 @@ This is a design contract, not a claim that the target ships today. Linear owns
 execution state. [ADR 0008](adr/0008-replace-the-old-screens.md) records screen
 replacement; [ADR 0009](adr/0009-keep-crates-and-deepen-modules.md) records module
 ownership; [ADR 0010](adr/0010-whole-runtime-cutover.md) records cutover.
+The owner-delegated research choice on 2026-11-03 keeps that design and adds
+[ADR 0015](adr/0015-shared-filesystem-portability.md) for narrow filesystem
+sharing. The amendment is chosen design, not implemented portability.
 
 ## Product and system shape
 
@@ -77,9 +80,11 @@ its parity-first sequencing and default-on proposal are superseded by these ADRs
 
 ## Crates and allowed edges
 
-Keep the existing 15 crates. Deepen modules inside them, not a blanket split,
-merge, or rename. Keep `pp-services`, `pp-source`, `pp-contracts`, and `pp-perf`
-in place. Delay any `pp-os` crate.
+Keep the existing operation crates and deepen their private family modules.
+Do not require a blanket split, consolidation or rename, or freeze the crate
+count. Keep `pp-services`, `pp-source`, `pp-contracts`, and `pp-perf` initially.
+Add a narrow `pp-os` filesystem crate during early Windows work, as specified
+in ADR 0015. This is not a move of all platform code into one crate.
 
 The following allowed workspace dependencies reflect
 [`check-boundaries.py`](../rust/scripts/check-boundaries.py) at the baseline.
@@ -89,7 +94,7 @@ An allowed edge does not mean every operation is implemented.
 | --- | --- | --- |
 | `pp-domain` | Bounded IDs/values and pure rules; no I/O, Tokio, SQL, HTTP, or Tauri | none |
 | `pp-api-types` | Wire DTOs, constructors, validation, serialization | `pp-domain` |
-| `pp-contracts` | Existing compatibility facade and parity tooling | `pp-api-types` |
+| `pp-contracts` | Existing operation contracts, compatibility facade and parity tooling | `pp-api-types` |
 | `pp-net` | Outbound target policy, checked connections, DNS/redirect restrictions | none |
 | `pp-drivers` | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
 | `pp-services` | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
@@ -103,7 +108,17 @@ An allowed edge does not mean every operation is implemented.
 | `pp-server` | Docker launcher, signals, headless lifecycle | `pp-core` |
 | `pp-perf` | Measurement records and regression comparison, not product telemetry | none |
 
-Use that graph as the initial target constraint. A concrete family slice may
+The table is the implemented baseline graph, not a manifest for the amendment.
+The proposed `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies.
+Its initial consumers are `pp-storage`, `pp-source` and `pp-core`; add each
+consumer edge to the checker and manifests only with that consumer's migration.
+It supplies directory-relative handle access, identity/no-follow checks, lock
+primitives and durable file publication. Storage keeps installation lease
+lifetime, migration ordering and SQL transactions. Source keeps snapshot policy.
+Native shell behavior and worker/signal orchestration stay with their owners.
+
+Use the baseline graph plus those bounded additions as the initial target
+constraint. A concrete family slice may
 propose a DTO or pure-domain edge, as ADR 0007 anticipated, but must update the
 checker, manifests, and dependency documentation together. Do not assume a new
 `pp-services -> pp-storage/net/drivers` edge. `pp-core` composes implementations
@@ -168,6 +183,14 @@ draft. Autosave is not acceptance. Accept checks the preview revision, saves the
 Build snapshot, applies the change and records history atomically. Preserve
 printed evidence and immutable identities. Restore creates a draft for the gate;
 it never rewinds Checkoff or a printer command.
+
+This separation remains implementation work. The baseline
+`WorkingDraftClient::save` creates a draft, reconciles it and calls
+`publish_in_transaction`; it is not draft-only autosave. The draft router does
+not mount `/save` or `/apply` either. Deliver durable draft-only saving and an
+explicitly authorized Accept operation through the shared family interfaces.
+Reuse allocation and reconciliation, but prove accepted-state isolation and
+snapshot/history atomicity rather than treating a rename as delivery.
 
 Enforce one authoritative Build per order transactionally. A duplicate is a
 detached experiment with lineage; promotion retires the former authority in the
@@ -370,7 +393,7 @@ are not product analytics; no default remote exporter or Sentry initialization.
 | Target | Delivery and required evidence | Baseline gap / release decision |
 | --- | --- | --- |
 | macOS first | Build and sign the app/DMG for the owner-approved architecture set; notarize/staple; test installed WKWebView and restart/update on each supported architecture | Declared 13.5 minimum needs oldest-OS proof; architecture coverage, public identity and key custody remain open |
-| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | Eight crates are excluded from baseline Windows CI. Port locks/private directories/reparse-point refusal/atomic activation/signals inside current modules; choose signing provider and OS/architecture minima |
+| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | Eight crates are excluded from baseline Windows CI. Share filesystem mechanics through narrow `pp-os`, port consumers incrementally, and keep signals with their runtime owner; choose signing provider and OS/architecture minima |
 | Linux before 1.0 | AppImage plus selected deb/rpm, WebKitGTK 4.1, no-tray recovery, package/update trust appropriate to format | Declare oldest glibc/distro matrix and hardware GPU evidence. CI software rendering is not hardware certification |
 | Docker | Non-root amd64/arm64, SQLite/volume migration, health, TERM/restart and optional slicer simulator | Runtime base, volume permissions and architecture execution require proof |
 | LAN browsers | Shared UI, authenticated pairing, HTTPS/cookies, revocation and reconnect, mobile accessibility | LAN admission is not delivered by loopback-only routing; certificate trust must work on actual devices |
@@ -378,9 +401,15 @@ are not product analytics; no default remote exporter or Sentry initialization.
 Set `WEBKIT_DISABLE_DMABUF_RENDERER=1` for WebKitGTK, matching the accepted UI
 target and the repository's existing workaround. Keep a non-WebGL plate preview
 fallback. Do not add other global GPU workarounds without a reproduced
-platform-specific failure. Test Windows filesystem races and Unix equivalents
-early, not after domain completion. Evaluate capability filesystem libraries
-inside existing modules without weakening no-follow checks.
+platform-specific failure. Start filesystem work in the existing P-WINDOWS track,
+in parallel with the gated product entry point, not after domain completion.
+Extract existing Unix behavior without changing formats, prove Windows behavior
+using real handles, and migrate storage, source and core one consumer at a time.
+Preserve no-follow/reparse refusal, identity, locking and durable publication
+under races. Capability libraries are candidates, not proof of those guarantees.
+If the shared interface loses a guarantee, stop extraction and keep the local
+adapter until corrected. This adds no separate assurance program beyond the
+existing invariants and platform evidence.
 
 Use real disposable on-disk SQLite, recorded protocol adapters and crash injection.
 Proposed invariant tests must cover imported ID-set equality, autosave receipt
@@ -395,7 +424,10 @@ signed-installer acceptance. A screenshot or successful build alone is insuffici
 
 Candidate 2 is the starting design because its family delivery order avoids a
 large reorganization prerequisite. Later Chad decisions override its crate renames,
-sidecar deletion, and assumed generator switch.
+sidecar deletion, and assumed generator switch. Owner-delegated comparison of
+the two design proposals retains operation crates and permits only the bounded
+filesystem amendment. ADR 0015 links the source traces and primary documentation.
+No compile-time, runtime or memory improvement has been measured.
 
 | Proposal/source | Disposition and reason |
 | --- | --- |
@@ -403,9 +435,9 @@ sidecar deletion, and assumed generator switch.
 | Candidate 1, explicit scope dispositions and named invariant proofs | Graft; retain data/protocol/export compatibility, not old-screen shape. Reconcile existing issues before any tracker action |
 | Candidate 3, explicit user send authority | Graft with private capability constructors; a public actor tag is insufficient |
 | Candidate 3, legacy name mapping | Graft here, not implementation detail in the glossary: `build_profiles`/legacy `profile_id` refer to Plan identity, `projects` to Sources, `print_jobs` to printer history, `durable_jobs` to app Jobs, `tenant_id=default` remains a format detail |
-| Candidate 3, capability filesystem and reviewed ownership history | Evaluate `cap-std`/`cap-fs-ext` in existing modules with Windows race tests; preserve reviewed resource sets at retirement |
+| Candidate 3, capability filesystem and reviewed ownership history | Evaluate `cap-std`/`cap-fs-ext` for narrow `pp-os` with real Windows race tests; preserve reviewed resource sets at retirement |
 | Candidate 1, crate Interface READMEs and boundary orchestration | Keep short interface docs; reuse `just ci`/existing checker before adding an xtask wrapper |
-| Candidate 1 family split; candidate 3 six-crate engine; candidate 2 `pp-app`/`pp-os`/`pp-export` and facade deletion | Reject now; current crates retain transaction locality and avoid invalidating family/readiness work. Deeper private modules address the actual ownership problem |
+| Candidate 1 family split; candidate 3 six-crate engine; candidate 2 broad crate moves and facade deletion | Reject wholesale reorganization; current crates retain transaction locality. Permit only narrow filesystem sharing under ADR 0015; deeper private family modules address operation ownership |
 | Candidate 1 generic public SQL closures and manual generated DTO rewrite | Reject; leaks transaction policy and replaces working generation without product gain |
 | Candidate 3 prerequisite schemars 1.x upgrade | Reject as prerequisite; prove one contract family before a generator/dialect migration |
 | Unified replacement for `/ws/printers` | Reject; preserve Chad-approved GRE-1014 path |

@@ -1,4 +1,68 @@
-# Source snapshots
+# pp-source
+
+`pp-source` stages and publishes immutable Source revision bytes on disk: snapshots of selected local files, bounded ZIP extraction, and 3MF-to-STL media preparation.
+
+Current ownership and allowed dependencies: [Architecture](../../../docs/architecture.md#crates-and-allowed-edges) and [ADR 0009](../../../docs/adr/0009-keep-crates-and-deepen-modules.md). [ADR 0007](../../../docs/adr/0007-rust-crate-layout.md) is historical dependency evidence only.
+
+## Purpose
+
+- Validates `SourcePath` values and publishes a revision under `<repos>/<source>/revisions/<revision key>/` with its `.printpartner-source-snapshot.json` manifest (`MANIFEST`).
+- Extracts ZIP archives into private staging within compressed, inflated, entry and ratio limits.
+- Converts selected 3MF meshes to STL files and discovers import rules.
+- Returns readiness receipts (`PublishedSnapshot`, `ExtractedArchive`, `PreparedMedia`) for the catalog to register.
+
+## Not responsible for
+
+- SQL, catalog registration and activation, and revision IDs: `pp-storage`. Sync policy: `pp-services`. Checked fetch and watchers: `pp-core`.
+- Authentication, Source ownership checks, upload routes and multipart handling: the host (`pp-api`, `pp-core`).
+- Tenant-global quota reservation. The caller reserves quota before each operation.
+- The desktop database lock. The per-Source lock here serializes artifact writers only.
+
+## Interface
+
+| Item | What it does |
+| --- | --- |
+| `TenantRepos::open`, `TenantRepos::source` | Open a trusted repository root and get the `SourceRoot` for a Source ID. |
+| `LocalFiles::open` | Wrap a host-authorized input directory. |
+| `SourceRoot::materialize`, `materialize_from_directory` | Publish or reuse a revision from a `SnapshotRequest` within an `ArtifactBudget`. |
+| `SourcePath`, `Selection`, `SelectedFile`, `FileKind`, `Error` | Request types and the error enum (`Error::category`). |
+| `archive` | `ZipInput::open`, `ArchiveLimits`, `SourceRoot::extract_zip`, `ExtractedArchive` (`files`, `receipt`, `discard`). |
+| `media` | `SourceRoot::prepare_media`, `MediaLimits`, `PreparedMedia`, `discover_import_rules`. |
+
+Behind `desktop_rebuild`:
+
+- `local_selection`: `LocalFiles::capture`, `local_snapshot_selection`, `stored_bytes`, `discard_owned`, `SourceRoot::verify_published` and `discard_staging`.
+- `observation`: `Inventory` scan and hash under a caller `ReadBudget`.
+- `retained_capture`: `RetainedCaptureVault` for retained input captures.
+- `SourceRoot::extract_zip_with_label_policy` and `ArchiveLabelPolicy::NfcAtAcquisition`.
+
+Binaries each read one JSON command on stdin (8 MiB cap for `pp-source`, 1 MiB for the others) and print a JSON receipt or `{"error": ...}`. They take no arguments.
+
+- `pp-source` (`src/main.rs`): materialize one snapshot.
+- `pp-source-archive`: extract a ZIP, then materialize the selection.
+- `pp-source-media`: prepare media from `files` or `zipPath`, then materialize.
+
+## Effects and flags
+
+- Reads and writes files under the configured repository root: revision directories, `.pp-source-candidate`, `.pp-source-archives` and `.pp-source-media` staging. It opens paths through no-follow directory handles and checks ancestor ownership, modes and (macOS) ACLs.
+- Takes an advisory exclusive lock on each Source's `revisions` directory.
+- With `desktop_rebuild`: writes `<data_dir>/source-captures` and `.pp-imports` staging, and draws capture IDs from `getrandom`.
+- No SQL, network, Tokio, threads, child processes or environment variables.
+
+Features: `desktop_rebuild` (default off) enables the three gated modules and the `getrandom` dependency. It does not read `PP_DESKTOP_REBUILD`; `pp-core` enables this feature.
+
+## Tests
+
+- `tests/`: `snapshots.rs`, `archive.rs`, `media.rs`, `cli.rs` (runs the binaries), `capabilities.rs`, `direct_model_binding.rs`, `source_path_props.rs` (proptest), `retained_capture.rs` (`desktop_rebuild` only). Unit tests sit in most `src` modules.
+- Fixtures: `tests/fixtures`, `tests/examples`, and `insta` snapshots in `tests/snapshots`. `tests/support` holds shared helpers.
+- `examples/source_path_corpus.rs` emits the corpus for `rust/tests/source-artifacts/source-path-replay.mjs`.
+
+```sh
+cargo nextest run --manifest-path rust/Cargo.toml -p pp-source
+cargo nextest run --manifest-path rust/Cargo.toml -p pp-source --features desktop_rebuild
+```
+
+## Source snapshots
 
 `pp-source` publishes a selected local file set as an immutable Source snapshot. The `pp-source` CLI uses the same `SourceRoot::materialize` API. The module owns filesystem bytes and the snapshot manifest. It does not own SQL, catalog activation, upload routes, or the desktop database lock. The media module composes bounded 3MF conversion with these immutable snapshots.
 

@@ -89,25 +89,26 @@ in ADR 0015. This is not a move of all platform code into one crate.
 The following allowed workspace dependencies reflect
 [`check-boundaries.py`](../rust/scripts/check-boundaries.py) at the baseline.
 An allowed edge does not mean every operation is implemented.
+Each crate's README lists its public interface, effects, flags and tests.
 
 | Crate | Responsibility and interface | Allowed `pp-*` dependencies |
 | --- | --- | --- |
-| `pp-domain` | Bounded IDs/values and pure rules; no I/O, Tokio, SQL, HTTP, or Tauri | none |
-| `pp-api-types` | Wire DTOs, constructors, validation, serialization | `pp-domain` |
-| `pp-contracts` | Existing operation contracts, compatibility facade and parity tooling | `pp-api-types` |
-| `pp-net` | Outbound target policy, checked connections, DNS/redirect restrictions | none |
-| `pp-drivers` | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
-| `pp-services` | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
-| `pp-storage` | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-domain`, `pp-contracts`, both gated |
-| `pp-source` | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | none |
-| `pp-api` | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
-| `pp-gateway` | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
-| `pp-compat` | Temporary Node supervision/private socket, retired with Node | none |
-| `pp-core` | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`; `pp-source`, `pp-net`, `pp-api` gated |
-| `pp-desktop` | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
-| `pp-server` | Docker launcher, signals, headless lifecycle | `pp-core` |
-| `pp-perf` | Measurement records and regression comparison, not product telemetry | none |
-| `pp-testkit` | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
+| [`pp-domain`](../rust/crates/pp-domain/README.md) | Bounded IDs/values and pure rules; no I/O, Tokio, SQL, HTTP, or Tauri | none |
+| [`pp-api-types`](../rust/crates/pp-api-types/README.md) | Wire DTOs, constructors, validation, serialization | `pp-domain` |
+| [`pp-contracts`](../rust/crates/pp-contracts/README.md) | Existing operation contracts, compatibility facade and parity tooling | `pp-api-types` |
+| [`pp-net`](../rust/crates/pp-net/README.md) | Outbound target policy, checked connections, DNS/redirect restrictions | none |
+| [`pp-drivers`](../rust/crates/pp-drivers/README.md) | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
+| [`pp-services`](../rust/crates/pp-services/README.md) | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
+| [`pp-storage`](../rust/crates/pp-storage/README.md) | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-domain`, `pp-contracts`, both gated |
+| [`pp-source`](../rust/crates/pp-source/README.md) | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | none |
+| [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
+| [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
+| [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | none |
+| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`; `pp-source`, `pp-net`, `pp-api` gated |
+| [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
+| [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
+| [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
+| [`pp-testkit`](../rust/crates/pp-testkit/README.md) | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented baseline graph, not a manifest for the amendment.
 The proposed `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies.

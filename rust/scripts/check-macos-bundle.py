@@ -19,11 +19,10 @@ import time
 import unittest
 from unittest.mock import patch
 
+from desktop_workspaces import ARTIFACTS, shipped_workspaces
 from macos_addon_slices import better_sqlite3_addon_path, select_better_sqlite3_prebuild
 
 WEB = 'Resources/desktop-runtime/web'
-ARTIFACTS = {'frontend': 'apps/web/dist', 'backend': 'apps/server/dist/current',
-             'contracts': 'packages/contracts/dist/current', 'domain': 'packages/domain/dist/current'}
 FLOOR = (13, 5, 0)
 MAX_PROBE_STREAM_BYTES = 4096
 PROBE_CLEANUP_SECONDS = 1
@@ -83,8 +82,7 @@ def dependency_roots(root, web):
         if ancestor == root:
             break
         ancestor = ancestor.parent
-    # The shipped workspaces, as build-desktop-manifest.py measures them.
-    for workspace in {web / pathlib.Path(path).parts[0] / pathlib.Path(path).parts[1] for path in ARTIFACTS.values()}:
+    for workspace in shipped_workspaces(web):
         for directory in [workspace, workspace / 'dist', workspace / 'dist/current']:
             search.add(directory / 'node_modules')
     return sorted(p.relative_to(root).as_posix() for p in search)

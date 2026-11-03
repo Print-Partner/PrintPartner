@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 
+from desktop_workspaces import ARTIFACTS, shipped_workspaces, workspace_parents
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--web', type=pathlib.Path, required=True)
 parser.add_argument('--node', type=pathlib.Path, required=True)
@@ -20,12 +22,8 @@ web = args.web.resolve(strict=True)
 package_root = (args.package_root or web).resolve(strict=True)
 web_path = web.relative_to(package_root).as_posix()
 
-# The workspace builds the desktop measures and ships. stage-desktop.py copies these
-# paths and check-macos-bundle.py lists the same ones.
-ARTIFACTS = {'frontend': 'apps/web/dist', 'backend': 'apps/server/dist/current',
-             'contracts': 'packages/contracts/dist/current', 'domain': 'packages/domain/dist/current'}
-SHIPPED_WORKSPACES = {web / pathlib.Path(path).parts[0] / pathlib.Path(path).parts[1] for path in ARTIFACTS.values()}
-WORKSPACE_PARENTS = {web / 'apps', web / 'packages'}
+SHIPPED_WORKSPACES = shipped_workspaces(web)
+WORKSPACE_PARENTS = workspace_parents(web)
 
 def digest(path):
     return hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()

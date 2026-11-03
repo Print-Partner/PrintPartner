@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 
+from desktop_workspaces import ARTIFACTS
 from stage_dependencies import stage_locked_dependencies
 
 NATIVE_NODE_HEADERS = frozenset({
@@ -74,7 +75,7 @@ web = stage / web_relative
 node = stage / node_relative
 node.parent.mkdir(parents=True)
 shutil.copy2(node_binary, node)
-for path in ['apps/server/dist/current', 'apps/web/dist', 'packages/contracts/dist/current', 'packages/domain/dist/current']:
+for path in ARTIFACTS.values():
     shutil.copytree(source / path, web / path)
 for path in ['package.json', 'package-lock.json', 'apps/server/package.json',
              'packages/contracts/package.json', 'packages/domain/package.json']:

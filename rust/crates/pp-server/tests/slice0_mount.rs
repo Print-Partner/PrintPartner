@@ -108,6 +108,13 @@ fn run(value: &str, root: &Path, rust: bool) {
 /// Desktop admission alone is not a session; Rust auth answers until a user
 /// registers.
 fn rust_routes(origin: &str, desktop: &str) -> String {
+    // The UI turns on its rebuild behavior only when health advertises this.
+    let response = exchange(origin, "GET", "/health", desktop, "");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains(r#""tenant_feature_toggles""#),
+        "{response}"
+    );
     let response = exchange(origin, "GET", "/api/v1/plans", desktop, "");
     assert!(response.starts_with("HTTP/1.1 401"), "{response}");
     assert!(response.contains("Authentication required"), "{response}");

@@ -317,7 +317,8 @@ pub fn product_router(
     let policy = desktop_policy();
     let lifetimes = AuthLifetimes::default();
     let auth = AuthRoutes {
-        http: AuthHttpConfig::new(origin, CookieTransport::LoopbackHttp, false, None, false)?,
+        http: AuthHttpConfig::new(origin, CookieTransport::LoopbackHttp, false, None, false)?
+            .with_tenant_feature_toggles(),
         policy,
         lifetimes,
         providers: ProviderClient::new(None, None)?,

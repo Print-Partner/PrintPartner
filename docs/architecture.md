@@ -35,8 +35,8 @@ adapters where crates cannot depend on one another.
 The [accepted UI target](product/ui-ux-target.md) owns Today, Build-local tabs,
 History/Accept, and burst Checkoff. New order fields, transactional duplicate-order
 protection, and Spoolman shortfall tasks are in this program. One order has one
-authoritative Build. STEP conversion and the Machine tab stay parked, including
-the target's listed slice 15, until Chad approves their re-entry. There is no
+authoritative Build. STEP conversion and the Machine tab stay parked and are not
+part of the current build order. Re-entry needs Chad's approval. There is no
 old-screen visual or route-shape parity requirement.
 
 Preserve single-user SQLite formats and history, immutable Plan/Plate/Required-unit
@@ -59,9 +59,12 @@ per-route cutover machinery works. Whole-runtime cutover makes it unused, not
 defective; removal is scheduled retirement work after replacement evidence.
 
 Mounting an authenticated Rust-only product entry point is the prerequisite to
-UI work, re-scoping GRE-621 with prerequisites GRE-794 and GRE-800. It must not
-wire new screens to Node or introduce a mutation fallback. Keep the old app
-independently buildable and maintained for correctness/data safety until cutover.
+UI work. Keep GRE-621's existing scope and issue untouched. Track any remaining
+product-entry-point work in a separate issue, without changing GRE-621 or adding
+relations to it. GRE-794 and GRE-800 are existing prerequisites; their issue
+content and state also stay unchanged. The new entry point must not wire screens
+to Node or introduce a mutation fallback. Maintain the old app for correctness
+and data safety until cutover.
 
 Keep the default-off Cargo feature and exact runtime opt-in
 `PP_DESKTOP_REBUILD=1` or `true`. Test both gates independently and together.
@@ -292,8 +295,9 @@ Build assets in a Node stage and `pp-server` in a pinned Rust stage. The runtime
 contains the Rust binary, assets, required system libraries/certificates and
 notices, not Node, npm, Python, a GUI or bundled slicers. Start non-root with an
 explicit volume-ownership migration procedure. Prefer a maintained slim runtime
-until actual linkage tests justify another base. Pin image digests and publish
-SBOM/provenance/signature evidence without leaking build secrets.
+until actual linkage tests justify another base. Keep build secrets out of image
+layers. Base-image pinning and SBOM/provenance artifacts follow existing release
+policy; this design does not add new acceptance gates for them.
 
 Use `/data` as the writable installation volume, read-only rootfs where supported,
 bounded temporary space, dropped capabilities and no-new-privileges. Liveness is
@@ -362,18 +366,18 @@ are not product analytics; no default remote exporter or Sentry initialization.
 
 | Target | Delivery and required evidence | Baseline gap / release decision |
 | --- | --- | --- |
-| macOS first | Separate arm64/x86_64 app/DMG and updater archives; final-inventory Developer ID signing, notarize/staple; installed WKWebView and restart/update proof | Declared 13.5 minimum needs oldest-OS proof; public identity/key custody and Intel support horizon remain open |
+| macOS first | Build and sign the app/DMG for the owner-approved architecture set; notarize/staple; test installed WKWebView and restart/update on each supported architecture | Declared 13.5 minimum needs oldest-OS proof; architecture coverage, public identity and key custody remain open |
 | Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | Eight crates are excluded from baseline Windows CI. Port locks/private directories/reparse-point refusal/atomic activation/signals inside current modules; choose signing provider and OS/architecture minima |
 | Linux before 1.0 | AppImage plus selected deb/rpm, WebKitGTK 4.1, no-tray recovery, package/update trust appropriate to format | Declare oldest glibc/distro matrix and hardware GPU evidence. CI software rendering is not hardware certification |
 | Docker | Non-root amd64/arm64, SQLite/volume migration, health, TERM/restart and optional slicer simulator | Runtime base, volume permissions and architecture execution require proof |
 | LAN browsers | Shared UI, authenticated pairing, HTTPS/cookies, revocation and reconnect, mobile accessibility | LAN admission is not delivered by loopback-only routing; certificate trust must work on actual devices |
 
-Keep `WEBKIT_DISABLE_DMABUF_RENDERER=1` in the known software-rendering/test path.
-For release Linux, expose a diagnosed fallback rather than silently imposing
-global GPU workarounds. This qualifies the UI target's broad "set" wording;
-required actions always retain a non-WebGL path. Test Windows filesystem races
-and Unix equivalents early, not after domain completion. Evaluate capability
-filesystem libraries inside existing modules without weakening no-follow checks.
+Set `WEBKIT_DISABLE_DMABUF_RENDERER=1` for WebKitGTK, matching the accepted UI
+target and the repository's existing workaround. Keep a non-WebGL plate preview
+fallback. Do not add other global GPU workarounds without a reproduced
+platform-specific failure. Test Windows filesystem races and Unix equivalents
+early, not after domain completion. Evaluate capability filesystem libraries
+inside existing modules without weakening no-follow checks.
 
 Use real disposable on-disk SQLite, recorded protocol adapters and crash injection.
 Proposed invariant tests must cover imported ID-set equality, autosave receipt

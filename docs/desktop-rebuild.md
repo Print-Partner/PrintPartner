@@ -1,5 +1,12 @@
 # Desktop rebuild flag
 
+> **Plan status:** This page documents the existing `desktop_rebuild` flag and
+> D-series work. Its screen sequence is historical; the current product target
+> and replacement build order live in [Architecture](architecture.md) and
+> [the UI target](product/ui-ux-target.md). GRE-621 keeps its existing D26
+> web-app-shell scope and must not be re-scoped for the replacement UI. Track
+> any missing Rust-only product entry point separately.
+
 GRE-596 adds a build gate and a runtime opt-in for the desktop rebuild in GRE-595. Both default to off.
 
 The `desktop_rebuild` Cargo feature is available on `pp-core`, `pp-contracts`, `pp-domain`, `pp-storage`, and `pp-desktop`. The desktop feature enables the core feature. The contracts feature exposes the new `build_identity`, `reconciliation`, `publication`, and `working_drafts` modules. Existing autosave contracts stay available in both builds.

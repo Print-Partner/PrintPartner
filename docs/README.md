@@ -18,7 +18,8 @@ Print Partner is moving its backend from Node to one Rust core. The core runs as
 The [accepted replacement UI](product/ui-ux-target.md) defines Today, Build-local
 tabs, History/Accept and burst Checkoff. [CONTEXT.md](../CONTEXT.md) defines the
 product words. The paths below describe the current Node screens, not the new
-UI contract. Autosave saves drafts; the replacement requires Accept for Plan changes.
+UI contract. The current app saves Plan changes automatically. The replacement
+will autosave into a draft and require an explicit Accept.
 
 | Area | Browser path | Task |
 |------|--------------|------|

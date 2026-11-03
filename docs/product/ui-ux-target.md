@@ -43,7 +43,7 @@ Five destinations in a left rail, plus a command palette.
 
 The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens the palette; `?` shows shortcuts.
 
-A Build workspace has tabs: **Overview, Sources, Plan, Production, Checkoff, History**, and **Machine** only when a converted STEP exists.
+A Build workspace has tabs: **Overview, Sources, Plan, Production, Checkoff, History**. The Machine tab is parked with STEP conversion and is not part of this delivery.
 
 Domain words come from [CONTEXT.md](../../CONTEXT.md). Build is the container; Plan is the requirements at one accepted revision.
 
@@ -148,7 +148,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Ranked task feed | `GET /api/v1/tasks` | New, a view over the workflow projection |
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
 | Match suggestions | `GET /printer-checkoff/unattributed/suggestions` | New |
-| Build history | `GET /plans/:id/history` | New (GRE-1023) |
+| Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
 | Accept preview with checks | `POST /plans/:id/drafts/:draftId/preview` | New |
 | Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant |
 | Printer stream | `GET /ws/printers` | New (GRE-1014) |
@@ -158,44 +158,39 @@ The task feed must be a read view over the ported Build Workflow projection (GRE
 
 ## Build order
 
-Every slice is one PR under about 1,500 changed lines, ships behind `desktop_rebuild`, and is usable on its own. This order includes a prerequisite no arena candidate had.
+Every slice is one PR under about 1,500 changed lines, ships behind `desktop_rebuild`, and leaves the product in a usable state. Linear owns issue IDs and execution state; this table defines product order.
 
-| # | Slice | Usable result | Ticket |
-| --- | --- | --- | --- |
-| 0 | Mount the Rust API behind the flag so a shipped binary serves it | The new UI can reach Rust at all | GRE-621, GRE-794, GRE-800 |
-| 1 | Tokens, type, status enum to UI codegen, app frame, palette shell | A real frame in all three webviews | GRE-1008 |
-| 2 | Builds list and Build Overview read-only | Browse Builds | GRE-421 |
-| 3 | Farm printers with honest states and the live pulse line | See every printer, including Annex K3 and Micron | GRE-360, GRE-1044, GRE-1014 |
-| 4 | Today v1 with the task feed over the workflow projection, single-bed confirm, undo | The evening loop works | GRE-1019, GRE-420 |
-| 5 | Clear beds batch and Match prints review | F1 and F3 targets | new verify-batch |
-| 6 | Plan tab and the Accept gate with snapshot on accept | Edit and accept in the new UI | GRE-1003 (absorbs GRE-1009) |
-| 7 | Order fields, duplicate check, due-date ranking | One order = one plan enforced | GRE-1004, GRE-1013, GRE-478 |
-| 8 | History tab and farm log with undo | Fix a wrong change in 2 steps | GRE-1023 |
-| 9 | Filament tasks from Spoolman | Short-stock tasks | GRE-1021 |
-| 10 | Production, send sheet, cancel with risk-scaled confirm | Send and cancel | GRE-1022, GRE-1018, GRE-1031 |
-| 11 | Phone bench and Share on network pairing, with LAN admission | Confirm beds from a phone | GRE-1026, GRE-350, GRE-376 |
-| 12 | Native menus, notifications, tray | Alerts outside the window | GRE-1027 |
-| 13 | First run, help, empty states, copy | New install to first Build | GRE-1025, GRE-1017, GRE-1012 |
-| 14 | Library and Sources tab | Manage Sources | GRE-429 |
-| 15 | Machine tab | 3D progress, only with a converted STEP | GRE-1007 |
+| # | Slice | Usable result |
+| --- | --- | --- |
+| 0 | Serve the authenticated Rust product entry point behind the flag | The replacement UI can reach Rust without Node fallback |
+| 1 | Tokens, type, status descriptors, app frame and command palette | A real frame in all three webviews |
+| 2 | Builds list and Build Overview, read-only | Browse Builds |
+| 3 | Farm printers with honest states and the live pulse line | See every printer, including Annex K3 and Micron |
+| 4 | Today task feed, single-bed confirmation and undo | The evening loop works |
+| 5 | Clear beds in batches and review unmatched prints | F1 and F3 targets |
+| 6 | Plan tab and Accept gate with a snapshot on accept | Edit and accept in the replacement UI |
+| 7 | Order fields, duplicate protection and due-date ranking | One authoritative Build per order |
+| 8 | History tab and farm log with undo | Fix a wrong change in two steps |
+| 9 | Spoolman shortfall tasks | See what stock needs attention |
+| 10 | Production, send sheet and risk-scaled cancel confirmation | Send and cancel explicitly |
+| 11 | Phone bench and Share on network pairing | Confirm beds from a phone |
+| 12 | Native menus, notifications and tray | See alerts outside the window |
+| 13 | First run, help, empty states and copy | Set up a new install and create the first Build |
+| 14 | Library and Sources tab | Manage Sources |
 
-### Ticket dispositions
+### Tracker rules
 
-**Keep:** GRE-1008, GRE-1012 (rewritten, not ported: see below), GRE-1019, GRE-1023, GRE-1022, GRE-1021, GRE-1025, GRE-1027, GRE-1013.
+Do not edit, comment on, change the status, labels, relations, assignee or milestone of any existing UI v11 screen ticket or protected per-route/cutover ticket. GRE-621 keeps its existing D26 scope. Create separate issues for replacement UI work and for any Rust-only product entry-point work that remains. Reuse a backend issue only when its current scope already matches and it is outside the protected set.
 
-**Merge:** GRE-1009 into GRE-1003. GRE-1026 into the phone slice. GRE-1011 into Clear beds. GRE-1010 and GRE-1028 into one queue-filters ticket.
+Track missing contract work separately: task feed, batch Checkoff, match suggestions, Build history, Accept preview, restore-as-draft, domain event stream, and health module flags. Use GRE-1014 for `/ws/printers` only if its existing contract fully covers the target. Do not create a duplicate contract ticket.
 
-**Park with a re-entry trigger:** GRE-1024, GRE-1015, GRE-1020, GRE-1029, GRE-1030 (queue and reflow work returns when more than 10 plates are sent in 30 days), and GRE-1007 (returns when a vision for STEP conversion is chosen; see the criteria in the arena rationale).
-
-**New tickets needed:** task feed, verify-batch, match suggestions, Build history, accept preview, restore-as-draft, `/ws/printers` if not covered by GRE-1014, domain event stream, health module flags, and the slice 0 mount.
+Machine and STEP conversion are parked. GRE-1007 stays untouched and outside this build order until Chad approves its re-entry.
 
 ### A live contradiction to fix
 
-`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That is the old autosave model and it contradicts the Accept gate. GRE-1012 must rewrite this copy, not port it. Any other shipped text describing autosave-only Plan edits needs the same review.
+`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged.
 
 ## Open questions
 
 1. Is one burst one plate? Validate on Build 22 before quoting the step counts.
 2. What is the match accuracy on the 18-print backlog? Hand-count it. Nothing auto-confirms until it is known.
-3. Do phones confirm beds at all? The bench slice is confirm-only and comes late; desktop and browser remain the only place that sends.
-4. Which of these screens is trimmed if the farm's printer links stay down? Today already degrades to manual checkoff, which is the answer, but confirm the priority.

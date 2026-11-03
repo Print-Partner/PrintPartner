@@ -47,6 +47,18 @@ class AgentGuidanceTests(unittest.TestCase):
         self.assertEqual(GUIDANCE.anchors("# Run `just ci`, then push!\n## Notes\n## Notes\n### Rust gateway ##\n"),
                          {"run-just-ci-then-push", "notes", "notes-1", "rust-gateway"})
 
+    def test_heading_anchors_use_rendered_text(self):
+        self.assertEqual(GUIDANCE.anchors("## [Setup](setup.md)\n## See [the guide][guide]\n"
+                                          "## _Emphasis_ and **bold** <kbd>keys</kbd>\n"
+                                          "## snake_case names\n## Run `_raw_ [x](y)`\n## [`code` link](x.md)\n"),
+                         {"setup", "see-the-guide", "emphasis-and-bold-keys", "snake_case-names",
+                          "run-_raw_-xy", "code-link"})
+
+    def test_link_to_heading_with_link_text_passes(self):
+        self.write("docs/setup.md", "# Setup\n")
+        self.write("AGENTS.md", "# Guide\n[section](#setup)\n\n## [Setup](docs/setup.md)\n")
+        self.assertEqual(GUIDANCE.check_document(self.root, "AGENTS.md"), [])
+
     def test_missing_link_fails(self):
         self.write("AGENTS.md", "# Guide\n[missing](docs/missing.md)\n")
         self.assertIn("missing or outside-checkout link",

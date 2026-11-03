@@ -142,23 +142,20 @@ Screenshot each screen the change affects, in both themes (`--theme dark`) if st
 The helper opens a fresh browser for each command, so chaining its `click` and `screenshot` commands loses an open dialog, menu, or dropdown. Interact and capture in one Playwright program instead. Save it outside the checkout, then run it inside the launch block above, after the `doctor` line, as `ROOT="$ROOT" UI_PORT="$UI_PORT" node /path/to/capture.mjs`. It loads Playwright from `web/node_modules`, so run it from the repository root after `npm --prefix web ci`:
 
 ```js
-import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const { chromium } = createRequire(resolve("web/package.json"))("playwright-core");
-const executablePath = [
-  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-].find((path) => path && existsSync(path));
-const browser = await chromium.launch({ headless: true, executablePath });try {
+const resolver = pathToFileURL(resolve("web/apps/web/test/browser/browserExecutable.mjs")).href;
+const { browserExecutable } = await import(resolver);
+const browser = await chromium.launch({ headless: true, executablePath: browserExecutable() });
+try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`http://127.0.0.1:${process.env.UI_PORT}/library`);
   // Replace these two steps with the interaction your change needs.
-  await page.getByRole("button", { name: "Add source" }).click();
+  // An empty Library has a second "Add source" button, so target the menu trigger.
+  await page.locator('button[aria-haspopup="menu"]').filter({ hasText: "Add source" }).click();
   await page.getByRole("menu").waitFor();
   await page.screenshot({ path: `${process.env.ROOT}/evidence/add-source-menu.png` });
 } finally {
@@ -166,7 +163,7 @@ const browser = await chromium.launch({ headless: true, executablePath });try {
 }
 ```
 
-`playwright-core` does not download a browser. Both programs use `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when it is set, then the same Chrome and Chromium paths the screenshot helper checks. The development container and the Factory cloud setup set the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows. If no browser is found, Playwright falls back to its own download, which needs `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture. In Droid, the `agent-browser` skill works too if one session covers the interaction and the capture.
+`playwright-core` does not download a browser. Both programs call `browserExecutable()` from `web/apps/web/test/browser/browserExecutable.mjs`, the resolver the browser tests use. It tries `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then a Chromium that Playwright downloaded, then the usual Chrome and Chromium install paths, and throws if it finds none. The development container and the Factory cloud setup set the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows, or run `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture. In Droid, the `agent-browser` skill works too if one session covers the interaction and the capture.
 
 ### Rust gateway
 
@@ -181,7 +178,7 @@ The Rust gateway requires a desktop session. A bare request returns `401 Desktop
   EVIDENCE_DIR="$(mktemp -d)"
   LOG="$LOG_DIR/launcher.log"
   LAUNCHER=""
-  trap '[ -z "$LAUNCHER" ] || { kill -TERM "$LAUNCHER" 2>/dev/null || true; wait "$LAUNCHER" || true; }; rm -rf "$PRIVATE_DIR"' 0
+  trap '[ -z "$LAUNCHER" ] || { kill -TERM "$LAUNCHER" 2>/dev/null || true; wait "$LAUNCHER" || echo "launcher status $?; see $LOG" >&2; }; rm -rf "$PRIVATE_DIR"' 0
   echo "launcher log: $LOG"
   echo "evidence: $EVIDENCE_DIR"
   python3 scripts/verify-rust-gateway/verify.py launch \
@@ -196,32 +193,28 @@ The Rust gateway requires a desktop session. A bare request returns `401 Desktop
   STATUS=0
   wait "$LAUNCHER" || STATUS=$?
   LAUNCHER=""
-  grep -q '^STOP: exit=0' "$LOG" || { echo "launcher status $STATUS without STOP: exit=0; see $LOG" >&2; exit 1; }
+  [ "$STATUS" -eq 0 ] && grep -q '^STOP: exit=0' "$LOG" || { echo "launcher status $STATUS; shutdown checks failed or missing; see $LOG" >&2; exit 1; }
   echo "launcher stopped cleanly"
 )
 ```
 
-`mktemp -d` creates a directory only you can read. The credential path must not exist before launch. The first run builds `pp-server`, so readiness can take minutes. The block stops the launcher itself and fails unless the log shows `STOP: exit=0`, which means `pp-server` shut down and its cleanup checks passed. On any earlier failure, the trap stops the launcher and removes the credential directory. The log holds server stderr but not the bootstrap URL. Read only the lines you need, never paste it whole, and remove `LOG_DIR` and `EVIDENCE_DIR` when you are done.
+`mktemp -d` creates a directory only you can read. The credential path must not exist before launch. The first run builds `pp-server`, so readiness can take minutes. The block stops the launcher itself and fails unless the launcher exits 0 and the log shows `STOP: exit=0`, which means `pp-server` shut down and its cleanup checks passed. On any earlier failure, the trap stops the launcher, prints a nonzero launcher status, and removes the credential directory. The log is not in that directory, so the shutdown result stays readable. The log holds server stderr but not the bootstrap URL. Read only the lines you need, never paste it whole, and remove `LOG_DIR` and `EVIDENCE_DIR` when you are done.
 
 The capture program, `capture-rust.mjs`, reads the bootstrap URL from the file and removes the file. It opens the URL so the redirect sets the session cookie, then works in that same browser context. It waits for the Builds heading before it interacts, because the page first shows "Loading...":
 
 ```js
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const { chromium } = createRequire(resolve("web/package.json"))("playwright-core");
-const executablePath = [
-  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-].find((path) => path && existsSync(path));
+const resolver = pathToFileURL(resolve("web/apps/web/test/browser/browserExecutable.mjs")).href;
+const { browserExecutable } = await import(resolver);
 const { bootstrap_url: bootstrapUrl } = JSON.parse(readFileSync(process.env.CREDENTIAL_FILE, "utf8"));
 rmSync(process.env.CREDENTIAL_FILE);
 const origin = new URL(bootstrapUrl).origin;
-const browser = await chromium.launch({ headless: true, executablePath });
+const browser = await chromium.launch({ headless: true, executablePath: browserExecutable() });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(bootstrapUrl);
@@ -242,6 +235,7 @@ try {
 Open the screenshot and confirm it shows the Builds page and the dialog, not a loading screen. Keep the credential and its URL out of command lines, logs, traces, screenshots, and PR text; the program prints only the path it captured. Capture only after the redirect has left the bootstrap page. The gateway rejects a request whose `Origin` header differs from its own origin and requires `Origin` on writes. The browser sets it for you; a script that calls the gateway with another HTTP client must send `Origin` equal to `PP_SERVER_URL` and the session cookie. A bare `401` does not prove an operation works.
 
 [The launch test](../../scripts/verify-rust-gateway/test_launch.py) holds the bootstrap and shutdown contract.
+
 ### Desktop app
 
 Desktop evidence comes from the native app built at the PR head, on a real display. Follow [Desktop and tray capture](../contributing/gate-evidence.md#desktop-and-tray-capture) for the lifecycle checks: close to tray, restore the same window, and quit with cleanup. Any native recorder works, such as macOS Screenshot (Shift-Command-5) or `screencapture`, Windows Snipping Tool, OBS, or the Homelab `evidence` CLI on Linux. The recorder changes nothing else: on Linux, disclose D-Bus tray activations as that section says.

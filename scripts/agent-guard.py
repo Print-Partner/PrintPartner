@@ -1003,9 +1003,9 @@ def run(argv):
     return check_request(request)
 
 
-def main(argv=None):
+def main():
     try:
-        reason = run(sys.argv[1:] if argv is None else argv)
+        reason = run(sys.argv[1:])
     except InvalidRequest as error:
         print(f"pp guard: invalid input: {error}", file=sys.stderr)
         return 2

@@ -20,6 +20,26 @@ DOCUMENTS = (
 LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
 HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
+INLINE_LINK = re.compile(r"\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])")
+CODE_SPAN = re.compile(r"(`+)(.+?)\1")
+HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
+EMPHASIS = re.compile(r"(?<![\w\\])(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)")
+
+
+def rendered_text(source):
+    """Return the heading text GitHub renders: link text without destinations, no emphasis markers."""
+    # Code spans render literally, so hide them while stripping the rest.
+    code = []
+
+    def hide(span):
+        code.append(span.group(2))
+        return f"\0{len(code) - 1}\0"
+
+    text = HTML_TAG.sub("", INLINE_LINK.sub(r"\1", CODE_SPAN.sub(hide, source)))
+    previous = None
+    while previous != text:
+        previous, text = text, EMPHASIS.sub(r"\2", text)
+    return re.sub(r"\0(\d+)\0", lambda match: code[int(match.group(1))], text)
 
 
 def anchors(markdown):
@@ -31,7 +51,7 @@ def anchors(markdown):
             continue
         heading = None if fenced else HEADING.match(line)
         if heading:
-            slug = re.sub(r"[^\w\- ]", "", heading.group(1).lower()).replace(" ", "-")
+            slug = re.sub(r"[^\w\- ]", "", rendered_text(heading.group(1)).lower()).replace(" ", "-")
             count = seen.get(slug, 0)
             seen[slug] = count + 1
             found.add(f"{slug}-{count}" if count else slug)

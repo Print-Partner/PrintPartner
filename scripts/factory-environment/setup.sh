@@ -21,10 +21,11 @@ case "$(uname -m)" in
   *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-# Native packages come from the development container; the cloud build has no browser.
+# Native packages come from the development container, browsers included, so a Mission can
+# capture the UI screenshot that web and desktop PRs need. Headless Chromium needs no display.
 mapfile -t native_packages < <(awk '/--no-install-recommends/ { on = 1; sub(/.*--no-install-recommends/, "") }
   on { for (i = 1; i <= NF; i++) { if ($i == "&&") { on = 0; break } if ($i != "\\") print $i } }' \
-  .devcontainer/Dockerfile | grep -vx chromium)
+  .devcontainer/Dockerfile)
 (( ${#native_packages[@]} )) || { echo "No packages found in .devcontainer/Dockerfile" >&2; exit 1; }
 packages=(build-essential ca-certificates curl git xz-utils "${native_packages[@]}")
 if [[ $(id -u) == 0 ]]; then
@@ -99,6 +100,7 @@ export PATH="$PREFIX/node24/bin:$CARGO_HOME/bin:\$PATH"
 export CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME"
 export PP_SCHEMA_PARITY_NODE="$PREFIX/node22/bin/node"
 export PP_SIDECAR_PYTHON="$PREFIX/sidecar-venv/bin/python"
+export PLAYWRIGHT_CHROMIUM_EXECUTABLE="/usr/bin/chromium"
 export INSTA_UPDATE=no
 ENV
 for profile in "$HOME/.bashrc" "$HOME/.profile"; do

@@ -44,10 +44,13 @@ Do not bake API keys, pairing credentials, production databases, or customer
 files into an Environment. Do not run this system-package installer on the
 host just to prepare a local session.
 
-The development container has Chromium. The cloud setup does not install a
-browser or native display; verify the chosen Environment's browser tooling
-before UI user testing. Missing interactive prerequisites remain blockers.
-A successful Debian simulation does not establish a Ready Factory build.
+The development container and the cloud setup install the same Chromium package.
+The setup sets `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium`, so a Mission can
+take the screenshot that web and desktop PRs need. Chromium runs headless, which
+needs no display. The cloud build still has no X or Wayland session and no native
+window, so desktop window and tray capture stays blocked there. A successful
+Debian simulation does not establish a Ready Factory build; confirm the browser
+works in the Environment before relying on it for evidence.
 
 ## Plan and validate a migration slice
 

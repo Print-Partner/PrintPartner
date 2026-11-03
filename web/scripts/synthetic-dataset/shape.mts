@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import Database from "better-sqlite3";
+import { readSchemaVersion } from "../../apps/server/src/db/upgrade-guard.js";
 
 export const GENERATOR_NAME = "print-partner-synthetic-dataset";
 export const GENERATOR_VERSION = 1;
@@ -103,14 +104,7 @@ export function measureShape(root: string): MeasuredShape {
       dismissed?: boolean;
     }>;
     return {
-      schemaVersion: Number(
-        db
-          .prepare(
-            "SELECT value FROM app_settings WHERE tenant_id = 'default' AND key = 'schema_version'",
-          )
-          .pluck()
-          .get(),
-      ),
+      schemaVersion: readSchemaVersion(db),
       sources: one("SELECT COUNT(*) FROM projects"),
       buildIds: db.prepare("SELECT id FROM build_profiles ORDER BY id").pluck().all() as number[],
       layers: {

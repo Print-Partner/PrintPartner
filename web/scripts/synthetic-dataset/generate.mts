@@ -18,6 +18,7 @@ import { acceptedPlanBasis } from "../../apps/server/src/db/accepted-plan-progre
 import type { AcceptedPlateInput } from "../../apps/server/src/db/accepted-plates.js";
 import { AppRepository } from "../../apps/server/src/db/repository.js";
 import { currentSchemaVersion } from "../../apps/server/src/db/schema.js";
+import { plateId } from "../../apps/server/src/services/accepted-plate-workspace.js";
 import { saveUnattributedPrint } from "../../apps/server/src/services/unattributed-print-store.js";
 import {
   acceptPlanForTest,
@@ -100,24 +101,6 @@ const pad = (n: number) => String(n).padStart(2, "0");
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const stl = (name: string) =>
   `solid ${name}\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid ${name}\n`;
-
-// Same identity format the Node Plate workspace uses for packed Plates.
-function plateId(
-  basis: ReturnType<typeof acceptedPlanBasis>,
-  printerId: string,
-  tokens: readonly string[],
-) {
-  const digest = sha256(
-    JSON.stringify([
-      "accepted-plate-v1",
-      basis.revisionDigest,
-      basis.requiredUnitMappingDigest,
-      printerId,
-      [...tokens].sort(),
-    ]),
-  );
-  return `plate_${digest.slice(0, 32)}`;
-}
 
 function chunk<T>(items: readonly T[], count: number): T[][] {
   return Array.from({ length: count }, (_, index) =>
@@ -407,7 +390,6 @@ function generate(seed: number, output: string) {
     seed,
     clock: CLOCK,
     node: process.version,
-    schemaVersion: measured.schemaVersion,
     digest: installationDigest(output),
     shape: {
       ...measured,

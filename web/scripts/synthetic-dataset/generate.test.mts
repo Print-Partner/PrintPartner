@@ -31,7 +31,6 @@ type Manifest = {
   seed: number;
   generator: { name: string; version: number };
   digest: string;
-  schemaVersion: number;
   shape: ReturnType<typeof measureShape> & { deletedBuildIds: number[]; buildIdDensity: number };
 };
 const manifest = (directory: string) =>
@@ -82,8 +81,8 @@ test("every run is labeled synthetic with its seed and generator version", () =>
 
 test("the shape counts match what the invariant suite and rehearsal name", () => {
   for (const directory of Object.values(outputs)) {
-    const { shape, schemaVersion } = manifest(directory);
-    assert.equal(schemaVersion, 34);
+    const { shape } = manifest(directory);
+    assert.equal(shape.schemaVersion, 34);
     assert.deepEqual(measureShape(directory), {
       schemaVersion: shape.schemaVersion,
       sources: shape.sources,

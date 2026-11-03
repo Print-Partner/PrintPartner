@@ -11,7 +11,6 @@ also exits 2, so a bad payload never lets a call through.
 
 import importlib.util
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -41,9 +40,7 @@ def decide(payload):
         raise ValueError("tool_input must be an object")
     policy = load_policy()
     if tool == "Bash":
-        cwd = field(payload, "cwd", "payload")
-        if not os.path.isabs(cwd) or not os.path.isdir(cwd):
-            raise ValueError(f"cwd must be an existing absolute directory: {cwd!r}")
+        cwd = policy.directory(field(payload, "cwd", "payload"))
         return policy.check_command(field(data, "command", "tool_input"), cwd)
     if tool in PATH_FIELDS:
         return policy.check_paths([field(data, PATH_FIELDS[tool], "tool_input")])

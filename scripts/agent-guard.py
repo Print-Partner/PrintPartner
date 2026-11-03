@@ -20,6 +20,7 @@ import itertools
 import json
 import os
 from pathlib import Path, PurePosixPath
+import posixpath
 import re
 import subprocess
 import sys
@@ -120,7 +121,8 @@ class Unclear(Exception):
 
 
 def protected_path(raw):
-    path = PurePosixPath(raw.replace("\\", "/"))
+    # Collapse "dir/../" so an alias such as .claude/agents/../settings.json is checked as its target.
+    path = PurePosixPath(posixpath.normpath(raw.replace("\\", "/")) if raw else raw)
     name = path.name
     if ".git" in path.parts:
         return "Do not edit Git metadata."

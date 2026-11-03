@@ -139,7 +139,9 @@ def ts(value):
 
 def protected(ident):
     """Whether ident is owner-protected. Logs the skipped write."""
-    if ident.upper() in PROTECTED:
+    # issue() reads GRE-01008 as GRE-1008, so compare the same canonical number.
+    team, _, number = ident.upper().rpartition("-")
+    if number.isdigit() and f"{team}-{int(number)}" in PROTECTED:
         print(f"{ident}: skipped, owner-protected ticket; the sync does not write it", file=sys.stderr)
         return True
     return False
@@ -218,6 +220,10 @@ def blocking(ident):
 def close_out(ident):
     """After a Fixes merge: confirm ident is Done (one retried write), then promote what it unblocked."""
     if protected(ident):
+        # The owner moves protected tickets; once one is Done, its unprotected dependents still get promoted.
+        current = issue(ident)
+        if current and current["state"]["name"] == "Done":
+            promote(ident)
         return
     current = issue(ident)
     if not current or current["state"]["type"] in TERMINAL - {"completed"}:

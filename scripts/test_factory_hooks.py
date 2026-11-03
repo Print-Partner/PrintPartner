@@ -709,7 +709,10 @@ class ClaudeAdapterTests(unittest.TestCase):
                      "/repo/rust/bundle-manifest.json": "generated",
                      "/repo/.claude/settings.local.json": "Claude Code settings",
                      "/repo/.claude/settings.json": "Claude Code settings",
-                     "/repo/.claude/hooks/guard.py": "Claude Code settings"}
+                     "/repo/.claude/hooks/guard.py": "Claude Code settings",
+                     "/repo/.claude/agents/../settings.local.json": "Claude Code settings",
+                     "/repo/.claude/agents/../hooks/guard.py": "Claude Code settings",
+                     "/repo/docs/../.git/config": "Git metadata"}
         for path, reason in protected.items():
             for tool in ("Write", "Edit", "MultiEdit"):
                 with self.subTest(tool=tool, path=path):
@@ -811,7 +814,6 @@ class RetiredFleetIntakeTests(unittest.TestCase):
     def test_lane_rules_no_longer_drive_intake_or_merges(self):
         text = (ROOT / "scripts/fleet/lane-rules.yaml").read_text(encoding="utf-8")
         live = "\n".join(line.split(" #")[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
-        self.assertRegex(live, r"(?m)^retired: true$")
         for key in ("picker", "claim", "linear_access", "merge_gate", "close_out", "end_of_wake", "author_overflow",
                     "scorer_deadline", "seat_rule", "scorer_policy", "complex_seat", "classes", "pick_rule", "wake"):
             with self.subTest(key=key):

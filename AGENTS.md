@@ -24,7 +24,7 @@ npm --prefix web run typecheck
 cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 just ci            # canonical local CI; same as python3 scripts/local-ci.py
 just ci --list     # step ids for --only / --skip
-just guidance      # checks this file and the repo skills
+just guidance      # checks this file, the repo skills, and the safety guard
 ```
 
 `just ci` exits 0 with SKIP lines when a tool is missing. A SKIP is not a pass: list it under Evidence. The [CI guide](docs/development/ci.md) maps each hosted check to a local command.
@@ -45,13 +45,10 @@ just guidance      # checks this file and the repo skills
 Follow the [definition of done](docs/development/definition-of-done.md):
 
 - One job per PR, under about 1,500 changed lines. Use `Refs GRE-xxx` for partial work and `Fixes GRE-xxx` only when the ticket is done.
-- Put what you ran and saw under `## Evidence`. For changes to the web UI or desktop app, attach a screenshot or video; the `pp-verify` skill shows how. The rules are in [Gate evidence](docs/contributing/gate-evidence.md).
-- Factory Droid reviews every ready PR. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads.
-- Run the `unslop` skill on docs, comments, and PR text. Use the `grilling` skill to stress-test a plan before large or risky work.
+- Put what you ran and saw under `## Evidence`. For changes to the web UI or desktop app, attach a screenshot or video. The rules are in [Gate evidence](docs/contributing/gate-evidence.md).
+- The required `droid-review` check runs Factory Droid review on every ready PR, and stays required until a provider-neutral review gate replaces it. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads.
+- Write docs, comments, and PR text plainly: concrete facts, commands, and numbers, active voice, no filler. Before large or risky work, write the plan, list how it could fail, and get open decisions answered. In Droid, the `unslop` and `grilling` skills do this.
 
-Repo skills live in `.factory/skills/`: [pp-verify](.factory/skills/pp-verify/SKILL.md) for screenshots and video, and [pp-readiness](.factory/skills/pp-readiness/SKILL.md) for agent-readiness work.
+[Agent and contributor workflow](docs/development/agent-workflow.md) is the shared procedure for any agent or person: task briefs exported from Notion, checks, the safety guard, running the app, evidence, and handoffs. The Factory skills in `.factory/skills/` link to it: [pp-verify](.factory/skills/pp-verify/SKILL.md) for screenshots and video, [pp-mission-qa](.factory/skills/pp-mission-qa/SKILL.md) for Mission user testing, and [pp-readiness](.factory/skills/pp-readiness/SKILL.md) for agent-readiness work.
 
-For local and cloud Missions, follow [Factory setup](docs/development/factory-missions.md).
-Use [pp-mission-qa](.factory/skills/pp-mission-qa/SKILL.md) for runtime launch,
-logs, driving, and cleanup. Keep scrutiny and user testing enabled. The project
-guard hook blocks common maintainer-only actions, but does not replace review.
+`scripts/agent-guard.py` refuses common maintainer-only actions. Droid's project hook runs it automatically; other runners must call it themselves. It does not replace review. For local and cloud Missions, follow [Factory setup](docs/development/factory-missions.md) and keep scrutiny and user testing enabled.

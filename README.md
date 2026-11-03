@@ -223,6 +223,7 @@ The monorepo contains four workspaces:
 - [Architecture](docs/architecture.md)
 - [Building](docs/development/building.md)
 - [Contributing](docs/development/contributing.md) and the [definition of done](docs/development/definition-of-done.md)
+- [Agent and contributor workflow](docs/development/agent-workflow.md): task briefs, checks, the safety guard, app verification, and evidence for any coding agent or person
 - [HTTP API](docs/api.md)
 - [MCP setup](docs/assistant-mcp.md)
 - [Deployment reference](web/DEPLOY.md)

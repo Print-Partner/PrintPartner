@@ -8,6 +8,8 @@ This page describes how work moves from a ticket to a merged pull request. [Buil
 - **Execution.** The Linear project "Print Partner Desktop (Rust core)". Milestones 1 to 9 are the delivery chunks. The desktop rebuild slices (D-slices) are sub-issues of GRE-595.
 - **Code and evidence.** The `main` branch of `poitee/PrintPartner`.
 
+Without Notion or Linear access, work from a task brief the task owner exports for you. [Agent and contributor workflow](agent-workflow.md#start-from-a-task-brief) lists its fields and when to stop and ask. The owner moves the ticket through its states.
+
 ## Pick a ticket
 
 1. Take the highest-priority unblocked ticket in the lowest-numbered milestone.

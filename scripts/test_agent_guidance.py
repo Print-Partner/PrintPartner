@@ -31,9 +31,41 @@ class AgentGuidanceTests(unittest.TestCase):
         self.assertIn("missing title", GUIDANCE.check_document(self.root, "AGENTS.md")[0])
 
     def test_existing_relative_links_and_external_links_pass_without_network(self):
-        self.write("docs/guide.md", "# Guide\n")
+        self.write("docs/guide.md", "# Guide\n\n## Section\n")
         self.write("AGENTS.md", "# Guide\n[local](docs/guide.md#section)\n"
-                   "[web](https://example.com/missing)\n[anchor](#section)\n")
+                   "[web](https://example.com/missing)\n[anchor](#rules)\n\n## Rules\n")
+        self.assertEqual(GUIDANCE.check_document(self.root, "AGENTS.md"), [])
+
+    def test_link_to_missing_heading_fails(self):
+        self.write("docs/guide.md", "# Guide\n\n```sh\n# Section\n```\n")
+        self.write("AGENTS.md", "# Guide\n[local](docs/guide.md#section)\n[here](#missing)\n")
+        errors = GUIDANCE.check_document(self.root, "AGENTS.md")
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("missing heading" in error for error in errors))
+
+    def test_heading_anchors_follow_github_rules(self):
+        self.assertEqual(GUIDANCE.anchors("# Run `just ci`, then push!\n## Notes\n## Notes\n### Rust gateway ##\n"),
+                         {"run-just-ci-then-push", "notes", "notes-1", "rust-gateway"})
+
+    def test_heading_anchors_use_rendered_text(self):
+        self.assertEqual(GUIDANCE.anchors("## [Setup](setup.md)\n## See [the guide][guide]\n"
+                                          "## _Emphasis_ and **bold** <kbd>keys</kbd>\n"
+                                          "## snake_case names\n## Run `_raw_ [x](y)`\n## [`code` link](x.md)\n"),
+                         {"setup", "see-the-guide", "emphasis-and-bold-keys", "snake_case-names",
+                          "run-_raw_-xy", "code-link"})
+
+    def test_duplicate_anchors_skip_suffixes_already_used(self):
+        self.assertEqual(GUIDANCE.anchors("## Notes\n## Notes\n## Notes-1\n## Notes 1\n"),
+                         {"notes", "notes-1", "notes-1-1", "notes-1-2"})
+
+    def test_fence_closes_only_on_matching_delimiter(self):
+        markdown = ("````text\n~~~\n```\n# Inside\n````\n## After\n"
+                    "~~~\n```\n~~~~\n## Last\n")
+        self.assertEqual(GUIDANCE.anchors(markdown), {"after", "last"})
+
+    def test_link_to_heading_with_link_text_passes(self):
+        self.write("docs/setup.md", "# Setup\n")
+        self.write("AGENTS.md", "# Guide\n[section](#setup)\n\n## [Setup](docs/setup.md)\n")
         self.assertEqual(GUIDANCE.check_document(self.root, "AGENTS.md"), [])
 
     def test_missing_link_fails(self):

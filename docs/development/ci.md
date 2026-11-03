@@ -77,7 +77,7 @@ It runs on every ready PR and main push. It enforces two rules from `ruff.toml`:
 - C901 rejects functions with cyclomatic complexity above 20, the same limit
   ESLint applies to TypeScript.
 
-Six existing functions in `.factory/hooks/guard.py`,
+Six existing functions in `scripts/agent-guard.py`,
 `rust/scripts/check-macos-bundle.py` and `rust/scripts/gateway-operations.py`
 are over the limit. Each carries a `# noqa: C901` on its `def` line, which
 exempts only that function. Split a function to remove its exemption; do not

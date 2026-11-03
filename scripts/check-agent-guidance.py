@@ -15,8 +15,59 @@ DOCUMENTS = (
     ".factory/skills/pp-verify/SKILL.md",
     ".factory/skills/pp-mission-qa/SKILL.md",
     "docs/development/factory-missions.md",
+    "docs/development/agent-workflow.md",
 )
 LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
+HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$")
+FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
+INLINE_LINK = re.compile(r"\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])")
+CODE_SPAN = re.compile(r"(`+)(.+?)\1")
+HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
+EMPHASIS = re.compile(r"(?<![\w\\])(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)")
+
+
+def rendered_text(source):
+    """Return the heading text GitHub renders: link text without destinations, no emphasis markers."""
+    # Code spans render literally, so hide them while stripping the rest.
+    code = []
+
+    def hide(span):
+        code.append(span.group(2))
+        return f"\0{len(code) - 1}\0"
+
+    text = HTML_TAG.sub("", INLINE_LINK.sub(r"\1", CODE_SPAN.sub(hide, source)))
+    previous = None
+    while previous != text:
+        previous, text = text, EMPHASIS.sub(r"\2", text)
+    return re.sub(r"\0(\d+)\0", lambda match: code[int(match.group(1))], text)
+
+
+def anchors(markdown):
+    """Return the heading anchors GitHub generates for a Markdown document."""
+    found, seen, opening = set(), {}, None
+    for line in markdown.splitlines():
+        fence = FENCE.match(line)
+        if opening:
+            # Only the same character, at least as long and with nothing after it, closes a fence.
+            if fence and fence.group(1)[0] == opening[0] and len(fence.group(1)) >= len(opening) \
+                    and not fence.group(2).strip():
+                opening = None
+            continue
+        if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
+            opening = fence.group(1)
+            continue
+        heading = HEADING.match(line)
+        if heading:
+            slug = re.sub(r"[^\w\- ]", "", rendered_text(heading.group(1)).lower()).replace(" ", "-")
+            # GitHub skips a suffix that an earlier heading already produced.
+            count = seen.get(slug, 0)
+            candidate = f"{slug}-{count}" if count else slug
+            while candidate in found:
+                count += 1
+                candidate = f"{slug}-{count}"
+            seen[slug] = count + 1
+            found.add(candidate)
+    return found
 
 
 def check_document(root, relative):
@@ -29,11 +80,14 @@ def check_document(root, relative):
         errors.append(f"{relative}: missing title")
     for target in LINK.findall(body):
         url = urlsplit(target)
-        if url.scheme or url.netloc or not url.path:
+        if url.scheme or url.netloc:
             continue
-        destination = (path.parent / unquote(url.path)).resolve()
+        destination = (path.parent / unquote(url.path)).resolve() if url.path else path.resolve()
         if not destination.is_relative_to(root.resolve()) or not destination.exists():
             errors.append(f"{relative}: missing or outside-checkout link {target}")
+        elif url.fragment and destination.suffix == ".md" and destination.is_file() \
+                and unquote(url.fragment) not in anchors(destination.read_text(encoding="utf-8")):
+            errors.append(f"{relative}: missing heading for link {target}")
     if path.name == "SKILL.md":
         parts = body.split("---\n", 2)
         if len(parts) != 3 or parts[0]:
@@ -66,7 +120,7 @@ def main():
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print(f"Agent guidance: {len(DOCUMENTS)} documents, local links, skill metadata, "
+    print(f"Agent guidance: {len(DOCUMENTS)} documents, local links, heading anchors, skill metadata, "
           "and Git trackability passed.")
     return 0
 

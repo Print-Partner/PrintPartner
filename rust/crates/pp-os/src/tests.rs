@@ -176,6 +176,42 @@ fn publish_rename_replaces_the_destination_durably() {
     assert!(sync_directory(&root.path().join("missing")).is_err());
 }
 
+#[test]
+fn create_new_over_a_directory_reports_already_exists() {
+    let root = scratch();
+    std::fs::create_dir(root.path().join("taken")).unwrap();
+    let dir = Dir::open(root.path()).unwrap();
+    assert_eq!(
+        dir.create_new_nofollow("taken").unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert!(dir.status_nofollow("taken").unwrap().is_dir());
+}
+
+#[test]
+fn publish_new_refuses_an_existing_destination() {
+    let root = scratch();
+    let temporary = root.path().join(".temporary");
+    let destination = root.path().join("published");
+    std::fs::write(&temporary, b"new").unwrap();
+    sync_file(&temporary).unwrap();
+    let identity = status_nofollow(&temporary).unwrap().identity();
+    publish_new(&temporary, &destination).unwrap();
+    sync_directory(root.path()).unwrap();
+    assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+    assert_eq!(status_nofollow(&destination).unwrap().identity(), identity);
+    assert!(!temporary.exists());
+
+    std::fs::write(&temporary, b"newer").unwrap();
+    assert_eq!(
+        publish_new(&temporary, &destination).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+    assert_eq!(std::fs::read(&temporary).unwrap(), b"newer");
+    assert!(sync_file(&root.path().join("missing")).is_err());
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -319,6 +355,26 @@ mod windows {
             std::fs::read(root.path().join("target")).unwrap(),
             b"secret"
         );
+    }
+
+    #[test]
+    fn replacing_the_link_used_to_open_a_directory_does_not_redirect_entries() {
+        let root = scratch();
+        std::fs::create_dir(root.path().join("first")).unwrap();
+        std::fs::create_dir(root.path().join("second")).unwrap();
+        let link = root.path().join("store");
+        if !symlink("first", &link, true) {
+            return;
+        }
+        let dir = Dir::open(&link).unwrap();
+        std::fs::remove_dir(&link).unwrap();
+        assert!(symlink("second", &link, true));
+        drop(dir.create_new_nofollow("entry").unwrap());
+        assert!(root.path().join("first").join("entry").is_file());
+        assert!(!root.path().join("second").join("entry").exists());
+        assert!(dir.status_nofollow("entry").unwrap().is_file());
+        dir.remove_file("entry").unwrap();
+        assert!(!root.path().join("first").join("entry").exists());
     }
 
     #[test]

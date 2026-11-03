@@ -118,7 +118,10 @@ fn ticket_t_7_writer_business_and_commit_errors_are_not_replayed() {
 }
 
 fn exited_true_pid() -> u32 {
+    #[cfg(unix)]
     let mut prior = Command::new("/usr/bin/true").spawn().unwrap();
+    #[cfg(windows)]
+    let mut prior = Command::new("cmd").args(["/C", "exit 0"]).spawn().unwrap();
     let pid = prior.id();
     prior.wait().unwrap();
     pid

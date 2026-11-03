@@ -10,11 +10,12 @@
 //!
 //! | Guarantee | Unix | Windows |
 //! | --- | --- | --- |
-//! | Entry access is relative to the opened directory | `openat`, `fstatat` and `unlinkat` on the directory descriptor | The directory handle denies delete sharing, so the directory cannot be renamed or removed while a [`Dir`] is open; entries are opened as `<directory path>\<name>` |
+//! | Entry access is relative to the opened directory | `openat`, `fstatat` and `unlinkat` on the directory descriptor | The directory handle denies delete sharing, so the directory cannot be renamed or removed while a [`Dir`] is open; entries are opened as `<final path>\<name>`, where the final path is read from the handle with junctions and links resolved |
 //! | No-follow | `O_NOFOLLOW` and `AT_SYMLINK_NOFOLLOW` | `FILE_FLAG_OPEN_REPARSE_POINT`, then refusal of any reparse point (symbolic links and junctions) |
 //! | Identity | device and inode | volume serial number and 64-bit file index |
 //! | Owner and mode | [`PosixAccess`] | `None`: access is governed by ACLs, which this crate does not inspect yet |
-//! | Durable rename | `rename`, then [`sync_directory`] | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`; [`sync_directory`] only checks that the directory opens |
+//! | Durable rename | `rename` ([`publish_rename`]) or `link` and `unlink` ([`publish_new`]), then [`sync_directory`] | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`; [`sync_directory`] only checks that the directory opens |
+//! | File flush | `fsync` on a read-only descriptor | `FlushFileBuffers` on a handle with write access |
 //! | Lock | `flock` through `fs4` | `LockFileEx` through `fs4` |
 //!
 //! [ADR 0015]: ../../../docs/adr/0015-shared-filesystem-portability.md
@@ -61,6 +62,7 @@ pub struct PosixAccess {
 }
 
 impl PosixAccess {
+    #[cfg(test)]
     pub fn uid(self) -> u32 {
         self.uid
     }
@@ -89,6 +91,7 @@ pub struct Status {
 }
 
 impl Status {
+    #[cfg(test)]
     pub fn kind(&self) -> Kind {
         self.kind
     }
@@ -157,6 +160,18 @@ pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
 /// [`sync_directory`] on the parent to make the new name durable.
 pub fn publish_rename(from: &Path, to: &Path) -> io::Result<()> {
     platform::publish_rename(from, to)
+}
+
+/// Move `from` to the new name `to`, failing with `AlreadyExists` when `to`
+/// exists. Follow with [`sync_directory`] on the parent to make the new name
+/// durable.
+pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
+    platform::publish_new(from, to)
+}
+
+/// Flush a file's contents to disk, given its path.
+pub fn sync_file(path: &Path) -> io::Result<()> {
+    platform::sync_file(path)
 }
 
 /// Flush a directory's entries, so renames and links in it survive a crash.

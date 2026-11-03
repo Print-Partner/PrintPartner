@@ -268,16 +268,12 @@ pub(crate) fn backup(conn: &Connection, path: &Path, replace: bool) -> Result<()
         let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         ensure!(integrity == "ok", "Backup integrity failed");
         drop(check);
-        File::open(&temp)
-            .context("schema::backup: open temporary backup")?
-            .sync_all()
-            .context("schema::backup: sync temporary backup")?;
+        pp_os::sync_file(&temp).context("schema::backup: sync temporary backup")?;
         if replace {
             pp_os::publish_rename(&temp, path)
                 .context("schema::backup: rename temporary backup")?;
         } else {
-            std::fs::hard_link(&temp, path).context("schema::backup: link temporary backup")?;
-            std::fs::remove_file(&temp).context("schema::backup: unlink temporary backup")?;
+            pp_os::publish_new(&temp, path).context("schema::backup: publish temporary backup")?;
         }
         pp_os::sync_directory(parent).context("schema::backup: sync parent directory")?;
         Ok(())

@@ -104,6 +104,15 @@ pub(crate) fn publish_rename(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }
 
+pub(crate) fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::hard_link(from, to)?;
+    std::fs::remove_file(from)
+}
+
+pub(crate) fn sync_file(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
 pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }

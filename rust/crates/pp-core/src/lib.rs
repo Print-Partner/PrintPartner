@@ -2,7 +2,7 @@
 pub mod production;
 
 use anyhow::{Context, Result, bail};
-use pp_compat::{Bundle, CompatHandle, SpawnSpec, Supervisor};
+use pp_compat::{Bundle, CompatHandle, MeasuredBundle, SpawnSpec, Supervisor};
 use pp_gateway::ownership::{
     cutover::{
         self, CutoverPlan, CutoverReceipt, CutoverRefusal, DrainEvidence, Evidence, OperationOwners,
@@ -179,16 +179,16 @@ enum Backend {
 }
 
 impl Resources {
-    fn with_lease<R>(&self, use_lease: impl FnOnce(&StorageLease) -> R) -> R {
+    /// `None` only once the Rust writer has shut down.
+    fn with_lease<R>(&self, use_lease: impl FnOnce(&StorageLease) -> R) -> Option<R> {
         match &self.backend {
-            Backend::Node { owner, .. } => use_lease(owner),
+            Backend::Node { owner, .. } => Some(use_lease(owner)),
             #[cfg(feature = "desktop_rebuild")]
-            Backend::Rust(writer) => use_lease(
-                writer
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .lease(),
-            ),
+            Backend::Rust(writer) => writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lease()
+                .map(use_lease),
         }
     }
 }
@@ -218,6 +218,34 @@ pub struct ShutdownReceipt {
 }
 
 impl ShutdownReceipt {
+    /// Before storage release, with the drain timeouts recorded.
+    fn drained(
+        tracked_idle: bool,
+        gateway_idle: bool,
+        compat_exit: Option<pp_compat::CompatExit>,
+        gateway_stopped: bool,
+    ) -> Self {
+        let mut receipt = Self {
+            proof_class: "headless_unsigned",
+            tracked_idle,
+            gateway_idle,
+            compat_exit,
+            compat_reaped: compat_exit.is_some(),
+            gateway_stopped,
+            storage_released: false,
+            marker_removed: false,
+            runtime_removed: false,
+            errors: Vec::new(),
+        };
+        if !tracked_idle {
+            receipt.errors.push("tracked_drain_timed_out");
+        }
+        if !gateway_idle {
+            receipt.errors.push("gateway_drain_timed_out");
+        }
+        receipt
+    }
+
     fn failed(category: &'static str) -> Self {
         Self {
             proof_class: "headless_unsigned",
@@ -248,27 +276,7 @@ async fn start_resources(
     ownership: Option<&OwnershipIndex>,
     desktop_rebuild: DesktopRebuild,
 ) -> Result<Resources> {
-    let assets = input
-        .assets
-        .canonicalize()
-        .context("React assets unavailable")?;
-    // Measure the release once, off the runtime and before the readiness budget starts.
-    let verified_assets = assets.clone();
-    let bundle = tokio::task::spawn_blocking(move || {
-        pp_compat::verify_bundle(input.bundle, &verified_assets)
-    })
-    .await
-    .context("Release verification task failed")??;
-    let data_dir = pp_storage::lease::prepare_directory(&input.data_dir)?;
-    if let Some(released) = StorageLease::retry_failed_release_if_present(&data_dir)? {
-        anyhow::ensure!(
-            released.marker_removed
-                && released.runtime_removed
-                && released.lock_released
-                && !released.ownership_retained,
-            "Storage cleanup still incomplete; ownership retained"
-        );
-    }
+    let (assets, bundle, data_dir) = admit_release(input).await?;
     let mut owner = StorageLease::acquire(&data_dir)?;
     let account_pin =
         pp_compat::DesktopAccountPin::capture(owner.data_dir(), desktop_rebuild.enabled())?;
@@ -359,23 +367,21 @@ async fn start_resources(
     })
 }
 
-/// Start without a Node child: the Rust writer owns the data directory and the
-/// gateway answers admitted requests from the `pp-api` routers. Use disposable
-/// directories only; refusing real ones is separate work.
-#[cfg(feature = "desktop_rebuild")]
-async fn start_rust_resources(
-    input: DesktopLaunch,
-    desktop_rebuild: DesktopRebuild,
-) -> Result<Resources> {
+/// Verify the release and prepare the data directory, retrying a failed
+/// release first. Returns the canonical assets, the measured bundle and the
+/// prepared directory.
+async fn admit_release(input: DesktopLaunch) -> Result<(PathBuf, MeasuredBundle, PathBuf)> {
     let assets = input
         .assets
         .canonicalize()
         .context("React assets unavailable")?;
-    let community_manifests = input.bundle.community_manifests_dir();
+    // Measure the release once, off the runtime and before the readiness budget starts.
     let verified_assets = assets.clone();
-    tokio::task::spawn_blocking(move || pp_compat::verify_bundle(input.bundle, &verified_assets))
-        .await
-        .context("Release verification task failed")??;
+    let bundle = tokio::task::spawn_blocking(move || {
+        pp_compat::verify_bundle(input.bundle, &verified_assets)
+    })
+    .await
+    .context("Release verification task failed")??;
     let data_dir = pp_storage::lease::prepare_directory(&input.data_dir)?;
     if let Some(released) = StorageLease::retry_failed_release_if_present(&data_dir)? {
         anyhow::ensure!(
@@ -386,6 +392,19 @@ async fn start_rust_resources(
             "Storage cleanup still incomplete; ownership retained"
         );
     }
+    Ok((assets, bundle, data_dir))
+}
+
+/// Start without a Node child: the Rust writer owns the data directory and the
+/// gateway answers admitted requests from the `pp-api` routers. Use disposable
+/// directories only; refusing real ones is separate work.
+#[cfg(feature = "desktop_rebuild")]
+async fn start_rust_resources(
+    input: DesktopLaunch,
+    desktop_rebuild: DesktopRebuild,
+) -> Result<Resources> {
+    let (assets, bundle, data_dir) = admit_release(input).await?;
+    let community_manifests = bundle.community_manifests_dir();
     let writer = tokio::task::spawn_blocking(move || {
         pp_storage::WriterOwner::open_with_job_feature_admission(
             &data_dir,
@@ -395,7 +414,8 @@ async fn start_rust_resources(
     .await
     .context("Storage open task failed")??
     .0;
-    let (listener, origin_change) = bind_origin(writer.lease()).await?;
+    let (listener, origin_change) =
+        bind_origin(writer.lease().context("Storage lease unavailable")?).await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let product = rebuild_api::product_router(
@@ -489,8 +509,13 @@ impl CoreRuntime {
                     let requested_by_gateway = resources.gateway.shutdown_requested();
                     let requested_by_adapter = requested_by_gateway.clone();
                     let (preferences, mut commands) = preferences::Client::channel();
-                    let public = resources.gateway.take_launch_target().map(|launch| {
-                        (
+                    let directories = resources.with_lease(|lease| {
+                        (lease.data_dir().to_owned(), lease.runtime_dir().to_owned())
+                    });
+                    let public = resources.gateway.take_launch_target().and_then(|launch| {
+                        let (data_dir, runtime_dir) =
+                            directories.context("Storage lease unavailable")?;
+                        Ok((
                             resources.gateway.origin().to_owned(),
                             CoreHandle {
                                 compat: resources.compat.clone(),
@@ -503,9 +528,9 @@ impl CoreRuntime {
                             requested_by_adapter,
                             resources.origin_change.clone(),
                             resources.owners.clone(),
-                            resources.with_lease(|lease| lease.data_dir().to_owned()),
-                            resources.with_lease(|lease| lease.runtime_dir().to_owned()),
-                        )
+                            data_dir,
+                            runtime_dir,
+                        ))
                     });
                     let mut plan = None;
                     if started.send(public).is_ok() {
@@ -521,7 +546,9 @@ impl CoreRuntime {
                                     break;
                                 },
                                 command = commands.recv() => match command {
-                                    Some(command) => resources.with_lease(|lease| command.execute(lease)),
+                                    Some(command) => {
+                                        resources.with_lease(|lease| command.execute(lease));
+                                    }
                                     None => break,
                                 }
                             }
@@ -705,26 +732,16 @@ async fn stop_rust(
     .await;
     gateway.finish_drain();
     let gateway_stopped = gateway.stop().await.is_ok();
-    let mut receipt = ShutdownReceipt {
-        proof_class: "headless_unsigned",
-        tracked_idle,
-        gateway_idle,
-        compat_exit: None,
-        compat_reaped: true,
-        gateway_stopped,
-        storage_released: false,
-        marker_removed: false,
-        runtime_removed: false,
-        errors: Vec::new(),
-    };
-    if !tracked_idle {
-        receipt.errors.push("tracked_drain_timed_out");
-    }
-    if !gateway_idle {
-        receipt.errors.push("gateway_drain_timed_out");
-    }
+    let mut receipt = ShutdownReceipt::drained(tracked_idle, gateway_idle, None, gateway_stopped);
+    receipt.compat_reaped = true;
     if !gateway_stopped {
         receipt.errors.push("gateway_join_failed");
+    }
+    if !tracked_idle {
+        // Tracked work may still use storage: keep the lock until process exit.
+        std::mem::forget(writer);
+        receipt.errors.push("storage_ownership_retained");
+        return receipt;
     }
     let released = match Arc::try_unwrap(writer) {
         Ok(writer) => tokio::task::spawn_blocking(move || {
@@ -771,24 +788,7 @@ async fn stop_node(
     let compat = supervisor.shutdown().await.ok();
     let compat_reaped = compat.is_some();
     let gateway_stopped = gateway.stop().await.is_ok();
-    let mut receipt = ShutdownReceipt {
-        proof_class: "headless_unsigned",
-        tracked_idle,
-        gateway_idle,
-        compat_exit: compat,
-        compat_reaped,
-        gateway_stopped,
-        storage_released: false,
-        marker_removed: false,
-        runtime_removed: false,
-        errors: Vec::new(),
-    };
-    if !tracked_idle {
-        receipt.errors.push("tracked_drain_timed_out");
-    }
-    if !gateway_idle {
-        receipt.errors.push("gateway_drain_timed_out");
-    }
+    let mut receipt = ShutdownReceipt::drained(tracked_idle, gateway_idle, compat, gateway_stopped);
     let cutover = plan.map(|plan| {
         plan.commit(
             owner.data_dir(),

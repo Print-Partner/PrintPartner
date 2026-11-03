@@ -80,10 +80,16 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   session or API-key authentication. Unknown paths get a Rust 404. Nothing is
   forwarded to Node, and `Gateway::compat_forwards()` counts any request that
   reaches the compatibility proxy.
-- The gateway refuses a non-loopback peer before the Rust routes, and the
-  routes refuse it again. LAN sharing is not part of this mode.
+- `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
+  session, then the gateway ends the desktop session and stops the runtime as
+  it does today.
+- The gateway listener is loopback only and passes the peer address to the
+  Rust routes as `ConnectInfo`; they refuse a non-loopback peer. LAN sharing is
+  not part of this mode.
 - Shutdown drains and stops the gateway, drops its routes, then shuts the
-  writer down. The receipt reports `compat_reaped: true` because no child ran.
+  writer down. If tracked shutdown work is still running, the writer and its
+  lock are kept until the process exits. The receipt reports
+  `compat_reaped: true` because no child ran.
 
 `CoreRuntime::start` and every other combination of gates keep the Node-backed
 runtime, so existing flag-on Node tests are unchanged. With the feature off,

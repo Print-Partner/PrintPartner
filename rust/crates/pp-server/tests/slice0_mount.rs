@@ -4,47 +4,16 @@
 
 #[path = "../../pp-storage/tests/common/process.rs"]
 mod child_process;
+#[path = "../../pp-core/tests/support/release.rs"]
+mod release;
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
-    path::{Path, PathBuf},
+    path::Path,
     process::Stdio,
     time::{Duration, Instant},
 };
-
-/// `--web`, `--node` and `--commit` for the measured release this build embeds.
-fn release() -> (PathBuf, PathBuf, String) {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .unwrap();
-    let manifest = std::env::var_os("PP_DESKTOP_RELEASE_MANIFEST")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("rust/bundle-manifest.json"));
-    let inventory: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
-    if inventory["dependencies"]["web_path"] == "." {
-        let node = std::env::var_os("PP_TEST_NODE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/usr/bin/node"));
-        let commit = inventory["commit"].as_str().unwrap().to_owned();
-        return (root.join("web"), node, commit);
-    }
-    let stage = manifest.parent().unwrap().canonicalize().unwrap();
-    let identity = if stage.join("release.json").is_file() {
-        stage.join("release.json")
-    } else {
-        stage.join("Resources/desktop-runtime/release.json")
-    };
-    let release: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(identity).unwrap()).unwrap();
-    (
-        stage.join(release["web"].as_str().unwrap()),
-        stage.join(release["node"].as_str().unwrap()),
-        release["commit"].as_str().unwrap().to_owned(),
-    )
-}
 
 /// One HTTP/1.1 exchange; returns the raw response.
 fn exchange(origin: &str, method: &str, path: &str, cookie: &str, body: &str) -> String {
@@ -76,13 +45,13 @@ fn cookie(response: &str) -> String {
 }
 
 fn run(value: &str, root: &Path, rust: bool) {
-    let (web, node, commit) = release();
+    let bundle = release::launch(root.join("data")).bundle;
     let credentials = root.join("credentials.json");
     let mut child = child_process::command(child_process::bin_exe("pp-server"))
         .args(["--data".as_ref(), root.join("data").as_os_str()])
-        .args(["--web".as_ref(), web.as_os_str()])
-        .args(["--node".as_ref(), node.as_os_str()])
-        .args(["--commit", &commit])
+        .args(["--web".as_ref(), bundle.web_root.as_os_str()])
+        .args(["--node".as_ref(), bundle.node.as_os_str()])
+        .args(["--commit", &bundle.commit])
         .args(["--test-credential-file".as_ref(), credentials.as_os_str()])
         .env("PP_DESKTOP_REBUILD", value)
         .stdout(Stdio::piped())
@@ -105,13 +74,21 @@ fn run(value: &str, root: &Path, rust: bool) {
     );
     assert!(response.starts_with("HTTP/1.1 303"), "{response}");
     let desktop = cookie(&response);
-    if rust {
-        rust_routes(&origin, &desktop);
-    }
+    let cookies = if rust {
+        rust_routes(&origin, &desktop)
+    } else {
+        desktop
+    };
 
     // The gateway's logout stops the binary, which prints its shutdown receipt.
-    let response = exchange(&origin, "POST", "/auth/logout", &desktop, "");
+    // With Rust routes, Rust revokes its session first.
+    let response = exchange(&origin, "POST", "/auth/logout", &cookies, "");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(
+        response.contains("set-cookie: pp_session=;"),
+        rust,
+        "{response}"
+    );
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -130,7 +107,7 @@ fn run(value: &str, root: &Path, rust: bool) {
 
 /// Desktop admission alone is not a session; Rust auth answers until a user
 /// registers.
-fn rust_routes(origin: &str, desktop: &str) {
+fn rust_routes(origin: &str, desktop: &str) -> String {
     let response = exchange(origin, "GET", "/api/v1/plans", desktop, "");
     assert!(response.starts_with("HTTP/1.1 401"), "{response}");
     assert!(response.contains("Authentication required"), "{response}");
@@ -146,6 +123,7 @@ fn rust_routes(origin: &str, desktop: &str) {
     let response = exchange(origin, "GET", "/api/v1/plans", &both, "");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.contains(r#""profiles":[]"#), "{response}");
+    both
 }
 
 #[test]

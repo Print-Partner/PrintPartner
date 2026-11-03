@@ -367,14 +367,6 @@ mod tests {
         time::Duration,
     };
 
-    fn policy() -> AuthPolicy {
-        AuthPolicy {
-            registration: RegistrationPolicy::FirstAccountOnly,
-            first_user: FirstUserTenant::NewUser,
-            session_tenant: SessionTenantPolicy::SingleAccountDefault,
-        }
-    }
-
     fn lifetimes() -> AuthLifetimes {
         AuthLifetimes::shorter(Duration::from_secs(3600), Some(Duration::from_secs(600))).unwrap()
     }
@@ -383,7 +375,7 @@ mod tests {
         AuthRoutes {
             http: AuthHttpConfig::new(origin, CookieTransport::LoopbackHttp, false, None, false)
                 .unwrap(),
-            policy: policy(),
+            policy: desktop_policy(),
             lifetimes: lifetimes(),
             providers: ProviderClient::new(None, None).unwrap(),
             mail: ResetMailer::disabled(),
@@ -425,7 +417,7 @@ mod tests {
                 clients(
                     DesktopRebuild::from_value(value),
                     &owner,
-                    policy(),
+                    desktop_policy(),
                     lifetimes(),
                     None,
                 )
@@ -445,7 +437,7 @@ mod tests {
         let (owner, directory) = owner();
         // ast-grep-ignore: no-writer-family-literal -- A test path for the read-only community manifests root.
         let manifests = directory.join("bundle/data/manifests");
-        let reads = source_reads(&owner, policy(), Some(&manifests)).unwrap();
+        let reads = source_reads(&owner, desktop_policy(), Some(&manifests)).unwrap();
         assert_eq!(reads.community_manifests(), Some(manifests.as_path()));
         assert_eq!(
             reads.filesystem_policy(),
@@ -453,7 +445,7 @@ mod tests {
         );
         let multi_user = AuthPolicy {
             session_tenant: SessionTenantPolicy::AccountTenant,
-            ..policy()
+            ..desktop_policy()
         };
         let reads = source_reads(&owner, multi_user, None).unwrap();
         assert_eq!(reads.community_manifests(), None);
@@ -470,7 +462,7 @@ mod tests {
         let bundle = clients(
             DesktopRebuild::from_value(Some("1")),
             &owner,
-            policy(),
+            desktop_policy(),
             lifetimes(),
             None,
         )
@@ -502,7 +494,7 @@ mod tests {
         let bundle = clients(
             DesktopRebuild::from_value(Some("1")),
             &owner,
-            policy(),
+            desktop_policy(),
             lifetimes(),
             None,
         )

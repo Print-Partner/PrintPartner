@@ -58,17 +58,20 @@ async fn slice0_mount_launcher_in_child() {
     );
     assert_eq!(node_ready, !rust, "a Node child runs only without Rust");
     let origin = runtime.origin().to_owned();
-    let target = runtime.take_launch_target().unwrap().into_url();
-    let bootstrap = target.strip_prefix(&origin).unwrap();
-    let (status, headers, _) = request(&origin, bootstrap, "GET", None, None, None, None).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    let desktop = headers["set-cookie"]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    // Redeem the bootstrap the way the desktop window does: follow no redirect.
+    let browser = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let redeemed = browser
+        .get(runtime.take_launch_target().unwrap().into_url())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redeemed.status(), 303);
+    let desktop = redeemed.headers()["set-cookie"].to_str().unwrap();
+    let desktop = desktop.split(';').next().unwrap().to_owned();
     if rust {
         let (status, _, body) = request(
             &origin,

@@ -25,6 +25,20 @@ mod with_feature {
 
     const SLUG: &str = "slice0-kit";
 
+    fn open(directory: &Path) -> Arc<Mutex<WriterOwner>> {
+        let (owner, _) =
+            WriterOwner::open_with_job_feature_admission(directory, Limits::default()).unwrap();
+        Arc::new(Mutex::new(owner))
+    }
+
+    /// Shut storage down once no router holds it.
+    fn close(owner: Arc<Mutex<WriterOwner>>) {
+        let Ok(owner) = Arc::try_unwrap(owner) else {
+            panic!("a router still holds storage");
+        };
+        owner.into_inner().unwrap().shutdown().unwrap();
+    }
+
     /// A disposable bundle layout: only the paths the mount reads.
     fn bundle(root: &Path) -> VerifiedBundle {
         let web = root.join("web");
@@ -53,11 +67,7 @@ mod with_feature {
             std::fs::create_dir_all(&assets).unwrap();
             let data = root.join("data");
             std::fs::create_dir_all(&data).unwrap();
-            let owner = Arc::new(Mutex::new(
-                WriterOwner::open_with_job_feature_admission(&data, Limits::default())
-                    .unwrap()
-                    .0,
-            ));
+            let owner = open(&data);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let origin = format!("http://{}", listener.local_addr().unwrap());
             // The same call the Rust-only runtime makes: the bundle names the
@@ -136,12 +146,7 @@ mod with_feature {
         async fn stop(self) {
             self.gateway.drain().await;
             self.gateway.stop().await.unwrap();
-            Arc::try_unwrap(self.owner)
-                .unwrap_or_else(|_| panic!("gateway still holds storage"))
-                .into_inner()
-                .unwrap()
-                .shutdown()
-                .unwrap();
+            close(self.owner);
             std::fs::remove_dir_all(self.root).unwrap();
         }
     }
@@ -181,24 +186,35 @@ mod with_feature {
 
     fn enqueue(owner: &Mutex<WriterOwner>, token: &str) -> String {
         let jobs = owner.lock().unwrap().jobs(desktop_policy()).unwrap();
-        match jobs
-            .submit(
-                Credential::Session(Secret::new(token.into())),
-                UserOperation::Enqueue {
-                    key: "slice0".into(),
-                    payload_version: 1,
-                    payload: Payload::CheckSourceUpdates {},
-                },
-                &AtomicBool::new(false),
+        let session = Credential::Session(Secret::new(token.into()));
+        let check = UserOperation::Enqueue {
+            key: "slice0".into(),
+            payload_version: 1,
+            payload: Payload::CheckSourceUpdates {},
+        };
+        let cancel = AtomicBool::new(false);
+        let submitted = jobs.submit(session, check, &cancel, Duration::from_secs(5));
+        let Outcome::Job(job, _) = submitted.unwrap().receive().unwrap() else {
+            panic!("enqueued job expected");
+        };
+        job.job_id
+    }
+
+    /// Whether storage still accepts the Rust session `token`.
+    fn session_valid(owner: &Mutex<WriterOwner>, token: &str) -> bool {
+        let builds = owner
+            .lock()
+            .unwrap()
+            .build_graph_with_policy(desktop_policy())
+            .unwrap();
+        builds
+            .execute(
+                read_model::Credential::Session(Secret::new(token.into())),
+                BuildCommand::List,
+                Arc::new(AtomicBool::new(false)),
                 Duration::from_secs(5),
             )
-            .unwrap()
-            .receive()
-            .unwrap()
-        {
-            Outcome::Job(job, _) => job.job_id,
-            _ => panic!("enqueued job expected"),
-        }
+            .is_ok()
     }
 
     /// One Source layer with a checkout and the community slug, added to the
@@ -240,9 +256,7 @@ mod with_feature {
     #[test]
     fn slice0_mount_runtime_setting_off_mounts_nothing() {
         let root = tempfile::tempdir().unwrap();
-        let owner = Arc::new(Mutex::new(
-            WriterOwner::open(root.path(), Limits::default()).unwrap().0,
-        ));
+        let owner = open(root.path());
         for value in [None, Some(""), Some("0"), Some("false"), Some("TRUE")] {
             assert!(
                 product_router(
@@ -256,12 +270,7 @@ mod with_feature {
                 "{value:?}"
             );
         }
-        Arc::try_unwrap(owner)
-            .unwrap_or_else(|_| panic!("no router holds storage"))
-            .into_inner()
-            .unwrap()
-            .shutdown()
-            .unwrap();
+        close(owner);
     }
 
     #[tokio::test]
@@ -341,6 +350,20 @@ mod with_feature {
             assert!(present.to_string().contains("custom"), "{present}");
 
             assert_eq!(fixture.gateway.compat_forwards(), 0, "{value}");
+
+            // Logout revokes the Rust session as well as the desktop one.
+            assert!(session_valid(&fixture.owner, &token));
+            let response = fixture
+                .client
+                .post(format!("{}/auth/logout", fixture.origin))
+                .header("origin", &fixture.origin)
+                .header("cookie", &both)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            assert!(first_cookie(&response).starts_with("pp_session="));
+            assert!(!session_valid(&fixture.owner, &token), "{value}");
             fixture.stop().await;
         }
     }
@@ -351,9 +374,7 @@ mod with_feature {
     async fn slice0_mount_refuses_a_non_loopback_peer() {
         use tower::ServiceExt;
         let root = tempfile::tempdir().unwrap();
-        let owner = Arc::new(Mutex::new(
-            WriterOwner::open(root.path(), Limits::default()).unwrap().0,
-        ));
+        let owner = open(root.path());
         let product = product_router(
             DesktopRebuild::from_value(Some("1")),
             Arc::clone(&owner),
@@ -375,11 +396,6 @@ mod with_feature {
             assert_eq!(response.status(), 403, "{path}");
         }
         drop(product);
-        Arc::try_unwrap(owner)
-            .unwrap_or_else(|_| panic!("router dropped"))
-            .into_inner()
-            .unwrap()
-            .shutdown()
-            .unwrap();
+        close(owner);
     }
 }

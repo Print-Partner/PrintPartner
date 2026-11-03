@@ -1,6 +1,8 @@
+#![cfg(test)]
 //! The gateway side of mounting `pp-core`'s Rust product routes.
 use super::*;
 use crate::scratch::Scratch;
+use std::net::SocketAddr;
 
 /// Registered compatibility routes and denials of the shipped gateway. A
 /// changed digest means the route table changed; update it only on purpose.
@@ -20,21 +22,7 @@ async fn started(product: Option<axum::Router>) -> (Gateway, String, Scratch) {
         product,
     )
     .unwrap();
-    let launch = gateway.take_launch_target().unwrap().into_url();
-    let bootstrap = Request::builder()
-        .uri(launch.strip_prefix(gateway.origin()).unwrap())
-        .header("host", &gateway.state.host)
-        .body(Body::empty())
-        .unwrap();
-    let response = handle(State(gateway.state.clone()), bootstrap).await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let cookie = response.headers()["set-cookie"]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
+    let cookie = gateway.test_session().await;
     (gateway, cookie, root)
 }
 
@@ -62,12 +50,19 @@ async fn text(response: Response<Body>) -> (StatusCode, String) {
 }
 
 fn stub() -> axum::Router {
-    axum::Router::new().route(
-        "/api/v1/plans",
-        axum::routing::get(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move {
-            format!("rust {}", peer.ip())
-        }),
-    )
+    axum::Router::new()
+        .route(
+            "/api/v1/plans",
+            axum::routing::get(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move {
+                format!("rust {}", peer.ip())
+            }),
+        )
+        .route(
+            "/auth/logout",
+            axum::routing::post(|| async {
+                ([("set-cookie", "pp_session=; Max-Age=0")], "revoked")
+            }),
+        )
 }
 
 #[tokio::test]
@@ -157,14 +152,27 @@ async fn slice0_mount_product_routes_answer_without_the_proxy() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
-    // A non-loopback or unknown peer is refused before the product routes.
-    for peer in [Some("192.0.2.10:443"), None] {
-        let (status, body) =
-            text(handle(state(), get(&gateway, "/api/v1/plans", Some(&cookie), peer)).await).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{peer:?}");
-        assert!(body.contains("Loopback transport required"), "{body}");
-    }
-
     assert_eq!(gateway.compat_forwards(), 0);
+
+    // Logout reaches the Rust routes before the gateway ends the desktop session.
+    let mut logout = get(&gateway, "/auth/logout", Some(&cookie), Some("127.0.0.1:9"));
+    *logout.method_mut() = axum::http::Method::POST;
+    let response = handle(state(), logout).await;
+    assert_eq!(response.headers()["set-cookie"], "pp_session=; Max-Age=0");
+    assert_eq!(text(response).await, (StatusCode::OK, "revoked".to_owned()));
+    let (status, _) = text(
+        handle(
+            state(),
+            get(
+                &gateway,
+                "/api/v1/plans",
+                Some(&cookie),
+                Some("127.0.0.1:9"),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     gateway.stop().await.unwrap();
 }

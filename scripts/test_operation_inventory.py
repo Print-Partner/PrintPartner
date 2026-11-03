@@ -134,6 +134,15 @@ class InventoryTests(unittest.TestCase):
         self.write(INVENTORY.MANIFEST, manifest)
         self.assertIn("- Routes migrated to Rust: 2 of 4 (2 unmigrated)\n", self.report())
 
+    def test_head_routes_inherit_the_get_claim(self):
+        manifest = json.loads(json.dumps(MANIFEST))
+        manifest["operations"].append({"operation": "health.read", "owner": "rust",
+                                       "participants": ["http.GET /health"]})
+        self.write(INVENTORY.MANIFEST, manifest)
+        report = self.report()
+        self.assertIn("- Routes migrated to Rust: 2 of 4 (2 unmigrated)\n", report)
+        self.assertIn("| GET /health current | 2 | 2 | health.read |", report)
+
     def test_deferred_entry_without_family_is_kept_without_owner(self):
         self.write(INVENTORY.ROSTER, roster(exceptions=[
             {"entry": "format:covers", "class": "deferred", "ticket": "TEST-2",

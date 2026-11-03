@@ -37,7 +37,6 @@ DELETE = "delete_with_node"
 GATEWAY = "gateway_kept"
 DEFERRED = "deferred"
 UNCATEGORIZED = "uncategorized"
-CLASSES = (RUST_OWNER, DELETE, GATEWAY, DEFERRED, UNCATEGORIZED)
 CLASS_LABELS = {
     RUST_OWNER: "Rust owner + ticket",
     DELETE: "Delete with Node / stays denied",
@@ -45,6 +44,7 @@ CLASS_LABELS = {
     DEFERRED: "Deferred, owner OK",
     UNCATEGORIZED: "Uncategorized",
 }
+CLASSES = tuple(CLASS_LABELS)
 KINDS = ("route", "denied", "gateway", "operation", "participant", "format")
 EXCEPTION_CLASSES = (DEFERRED, DELETE)
 
@@ -90,16 +90,20 @@ def build_entries(operations, manifest):
     def add(kind, name, **fields):
         entries[f"{kind}:{name}"] = {"id": f"{kind}:{name}", "kind": kind, "name": name, **fields}
 
+    def operation_of(route):
+        # Fastify answers HEAD with the GET handler, so HEAD inherits the GET claim
+        # (rust/crates/pp-gateway/src/ownership/manifest.rs).
+        own = member_of.get(f"http.{route['method']} {route['path']}")
+        if own is None and route["method"] == "HEAD":
+            own = member_of.get(f"http.GET {route['path']}")
+        return own
+
     groups = {}
     for route in operations["routes"]:
         groups.setdefault(route["operation"], []).append(route)
     for name, routes in groups.items():
-        ops = sorted({member_of[f"http.{r['method']} {r['path']}"] for r in routes
-                      if f"http.{r['method']} {r['path']}" in member_of})
-        migrated = sum(
-            1 for r in routes
-            if is_rust(op_owner.get(member_of.get(f"http.{r['method']} {r['path']}"), r["owner"]))
-        )
+        ops = sorted({operation_of(r) for r in routes if operation_of(r) is not None})
+        migrated = sum(1 for r in routes if is_rust(op_owner.get(operation_of(r), r["owner"])))
         add("route", name, routes=len(routes), migrated=migrated, node_operation=", ".join(ops),
             resources=status.get(f"http:{name}", "via operation" if ops else "none"))
     for route in operations["denied"]:

@@ -37,9 +37,9 @@ fn lease_leftovers_cover_every_allowed_name_and_nothing_else() {
         ".desktop-lease",
         ".desktop-owner.json",
         "lost+found",
-        ".desktop-lease-candidate-abababababababababababababababab",
-        ".desktop-lease-release-abababababababababababababababab",
-        ".desktop-lease-retired-abababababababababababababababab",
+        ".desktop-lease-candidate-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        ".desktop-lease-release-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        ".desktop-lease-retired-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
         ".desktop-owner-release-abababababababababababababababab.json",
     ]
     .map(str::to_owned)
@@ -248,4 +248,25 @@ fn every_fixture_is_disposable_and_isolated() {
     assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     let default = Installation::create(Fixture::Empty).unwrap();
     assert!(default.path().starts_with(std::env::temp_dir()));
+}
+
+#[test]
+fn lease_leftovers_do_not_share_the_live_lease_instance() {
+    // Node's stale-lease recovery renames the dead lease to
+    // .desktop-lease-retired-<instance>; a leftover with that same name would
+    // make recovery collide instead of succeed.
+    let installation = Installation::create(Fixture::EmptyWithLeaseLeftovers).expect("fixture");
+    let owner = std::fs::read_to_string(installation.path().join(".desktop-lease/owner.json"))
+        .expect("owner record");
+    let live = owner
+        .split("\"instance\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("instance");
+    assert!(
+        !installation
+            .path()
+            .join(format!(".desktop-lease-retired-{live}"))
+            .exists()
+    );
 }

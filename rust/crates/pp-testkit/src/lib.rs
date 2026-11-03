@@ -40,6 +40,9 @@ pub const DATABASE_FILE: &str = "print-partner.db";
 
 /// Instance suffix used for the Node lease leftovers this crate writes.
 const LEFTOVER_INSTANCE: &str = "abababababababababababababababab";
+/// Earlier, unrelated lease attempts. Their leftovers must not share the live
+/// lease's instance, or Node's stale-lease recovery collides with them.
+const PRIOR_INSTANCE: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 /// A PID that no process can have (above Linux's `pid_max` ceiling), so the
 /// leftover owner records describe a dead owner.
 const DEAD_PID: u32 = 2_147_483_647;
@@ -452,12 +455,18 @@ impl Installation {
                     .write_all(marker.as_bytes())?;
             }
         }
+        let prior_owner = format!(
+            "{{\"pid\":{DEAD_PID},\"process_identity\":\"pp-testkit-dead\",\"instance\":\"{PRIOR_INSTANCE}\"}}"
+        );
         for prefix in [
             ".desktop-lease-candidate-",
             ".desktop-lease-release-",
             ".desktop-lease-retired-",
         ] {
-            write_owner_directory(&root.join(format!("{prefix}{LEFTOVER_INSTANCE}")), &owner)?;
+            write_owner_directory(
+                &root.join(format!("{prefix}{PRIOR_INSTANCE}")),
+                &prior_owner,
+            )?;
         }
         create_new(&root.join(".desktop-owner.json"))?.write_all(marker.as_bytes())?;
         create_new(&root.join(format!(".desktop-owner-release-{LEFTOVER_INSTANCE}.json")))?

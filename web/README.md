@@ -7,6 +7,7 @@ TypeScript monorepo for the browser-hosted Print Partner.
 | Package | Path | Role |
 |---------|------|------|
 | `@print-partner/web` | `apps/web` | Vite + React SPA |
+| `@print-partner/ui` | `apps/ui` | Replacement UI, Rust core only. See [its README](apps/ui/README.md) |
 | `@print-partner/server` | `apps/server` | Fastify API |
 | `@print-partner/contracts` | `packages/contracts` | Shared API types |
 | `@print-partner/domain` | `packages/domain` | Domain logic |

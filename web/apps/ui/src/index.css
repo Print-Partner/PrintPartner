@@ -1,0 +1,34 @@
+:root {
+  color-scheme: dark;
+  --surface: #16191d;
+  --text: #e6e8eb;
+  --muted: #9aa3ad;
+  --line: #2a2f36;
+  font-family: system-ui, sans-serif;
+  background: var(--surface);
+  color: var(--text);
+}
+
+body {
+  margin: 0;
+}
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.shell-name {
+  font-weight: 600;
+}
+
+.core-status {
+  color: var(--muted);
+}
+
+.shell-main {
+  padding: 16px;
+}

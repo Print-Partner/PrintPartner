@@ -1,6 +1,7 @@
 import eslint from "@eslint/js";
 import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
+import { uiBoundary } from "./eslint-rules/ui-boundary.js";
 
 export default tseslint.config(
   eslint.configs.recommended,
@@ -66,6 +67,12 @@ export default tseslint.config(
     // Generated from Rust contracts; fix names in the generator, not here.
     files: ["**/*.generated.ts"],
     rules: { "@typescript-eslint/naming-convention": "off" },
+  },
+  {
+    // The replacement UI reaches the Rust core only; see apps/ui/README.md.
+    files: ["apps/ui/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
+    plugins: { "print-partner": { rules: { "ui-boundary": uiBoundary } } },
+    rules: { "print-partner/ui-boundary": "error" },
   },
   {
     files: ["apps/web/public/sw.js"],

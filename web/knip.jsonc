@@ -37,6 +37,17 @@
         "src/db/schema.ts"
       ]
     },
+    "apps/ui": {
+      "entry": [
+        "src/**/*.test.{ts,tsx}",
+        "test/**/*.test.ts"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}",
+        "test/**/*.ts",
+        "*.ts"
+      ]
+    },
     "apps/web": {
       "entry": [
         "src/**/*.test.{ts,tsx}",

@@ -82,7 +82,9 @@ Six existing functions in `scripts/agent-guard.py`,
 are over the limit. Each carries a `# noqa: C901` on its `def` line, which
 exempts only that function. Split a function to remove its exemption; do not
 add new ones. `scripts/test_ruff_lint.py` proves an unused import, a complexity
-of 21 and a second function next to an exempt one all fail.
+of 21 and a second function next to an exempt one all fail. The job also runs
+`scripts/test_operation_inventory.py`, the fixture tests for the
+[operation inventory](operation-inventory.md) script.
 
 ```sh
 .venv/bin/python -m pip install -r requirements-dev.txt

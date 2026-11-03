@@ -1,0 +1,27 @@
+{
+  "schema": "pp-inventory-roster-v1",
+  "active_phase": "P1",
+  "owners": {
+    "route:GET /health current": {
+      "family": "Admin, legal, logs, diagnostics, health",
+      "ticket": "GRE-1087"
+    },
+    "route:GET /plans/:param/build-planning current": {
+      "family": "Workflow, readiness, Today tasks, History",
+      "ticket": "GRE-1119"
+    },
+    "route:GET /plans/:param/decisions current": {
+      "family": "Workflow, readiness, Today tasks, History",
+      "ticket": "GRE-1119"
+    },
+    "route:GET /plans/:param/workflow current": {
+      "family": "Workflow, readiness, Today tasks, History",
+      "ticket": "GRE-1123"
+    },
+    "participant:tool.get_build_workflow": {
+      "family": "Workflow, readiness, Today tasks, History",
+      "ticket": "GRE-1123"
+    }
+  },
+  "exceptions": []
+}

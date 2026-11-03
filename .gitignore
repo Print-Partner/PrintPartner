@@ -45,3 +45,6 @@ Do Not Push/
 .superpowers/
 docs/research/
 docs/superpowers/
+
+# Claude Code per-checkout settings; docs/development/agent-workflow.md has the guard hook snippet.
+.claude/settings.local.json

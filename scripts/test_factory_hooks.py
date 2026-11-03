@@ -1,9 +1,13 @@
+import importlib.util
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / ".factory/hooks/guard.py"
@@ -608,6 +612,227 @@ class FactoryAdapterTests(unittest.TestCase):
                                     input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "/repo/a.py"}}))
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("internal error", result.stderr)
+
+
+CLAUDE = ROOT / ".claude/hooks/guard.py"
+SHA = "0123456789abcdef0123456789abcdef01234567"
+MERGE_FORM = f"gh pr merge 12 --squash --match-head-commit {SHA}"
+# The command the retired lane-rules.yaml merge_gate told lanes to run.
+OLD_MERGE_GATE = f"gh pr merge 12 -R poitee/PrintPartner --squash --match-head-commit {SHA}"
+CLAUDE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
+
+
+def hook(adapter, payload, coordinator=None):
+    env = {key: value for key, value in os.environ.items() if key != "PP_COORDINATOR_WORKTREE"}
+    if coordinator is not None:
+        env["PP_COORDINATOR_WORKTREE"] = coordinator
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    return subprocess.run([sys.executable, "-B", str(adapter)], input=text, env=env,
+                          capture_output=True, text=True, check=False)
+
+
+def droid_command(command, cwd):
+    return {"hook_event_name": "PreToolUse", "tool_name": "Execute", "cwd": cwd, "tool_input": {"command": command}}
+
+
+def claude_call(tool, cwd="/", **data):
+    return {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": cwd, "tool_input": data}
+
+
+def load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def workflow_triggers(text):
+    """Return the trigger names under a workflow's top-level on: key, read without a YAML library."""
+    lines = [line.split(" #")[0].rstrip() for line in text.splitlines() if not line.lstrip().startswith("#")]
+    for i, line in enumerate(lines):
+        match = re.match(r"""^["']?on["']?:\s*(.*)$""", line)
+        if not match:
+            continue
+        if match.group(1):
+            return set(re.findall(r"[A-Za-z_]+", match.group(1)))
+        found, indent = set(), None
+        for nested in lines[i + 1:]:
+            if not nested.strip():
+                continue
+            if not nested[0].isspace():
+                break
+            depth = len(nested) - len(nested.lstrip())
+            indent = depth if indent is None else indent
+            if depth == indent:
+                found.add(nested.strip().lstrip("- ").split(":")[0])
+        return found
+    return set()
+
+
+def git_repo(path):
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return str(Path(path).resolve())
+
+
+class ClaudeAdapterTests(unittest.TestCase):
+    def assertRefused(self, result, reason="pp guard"):
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(reason, result.stderr)
+
+    def assertAllowed(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_documented_hook_config_covers_exactly_the_adapter_tools(self):
+        guide = (ROOT / "docs/development/agent-workflow.md").read_text(encoding="utf-8")
+        blocks = [json.loads(block) for block in re.findall(r"```json\n(.*?)```", guide, re.S)
+                  if ".claude/hooks/guard.py" in block]
+        self.assertEqual(len(blocks), 2)
+        adapter = load(CLAUDE, "claude_guard")
+        self.assertEqual(set(adapter.PATH_FIELDS) | {"Bash"}, CLAUDE_TOOLS)
+        for config in blocks:
+            (group,) = config["hooks"]["PreToolUse"]
+            self.assertEqual(set(group["matcher"].split("|")), CLAUDE_TOOLS)
+            self.assertIn('"$CLAUDE_PROJECT_DIR"/.claude/hooks/guard.py', group["hooks"][0]["command"])
+        self.assertIn(".claude/settings.local.json", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
+
+    def test_bash_maps_to_the_command_policy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
+            for command in filter(None, FactoryAdapterTests.COMMANDS):
+                with self.subTest(command=command):
+                    result = hook(CLAUDE, claude_call("Bash", folder, command=command, description="d"))
+                    cli = request({"operation": "command", "cwd": folder, "command": command})
+                    self.assertEqual((result.returncode, result.stderr), (cli.returncode, cli.stderr))
+
+    def test_file_tools_refuse_protected_paths(self):
+        protected = {"/repo/.env": "environment files", "/repo/.git/config": "Git metadata",
+                     "/repo/rust/bundle-manifest.json": "generated",
+                     "/repo/.claude/settings.local.json": "Claude Code settings",
+                     "/repo/.claude/settings.json": "Claude Code settings",
+                     "/repo/.claude/hooks/guard.py": "Claude Code settings"}
+        for path, reason in protected.items():
+            for tool in ("Write", "Edit", "MultiEdit"):
+                with self.subTest(tool=tool, path=path):
+                    self.assertRefused(hook(CLAUDE, claude_call(tool, file_path=path, content="x")), reason)
+            with self.subTest(tool="NotebookEdit", path=path):
+                self.assertRefused(hook(CLAUDE, claude_call("NotebookEdit", notebook_path=path, new_source="x")), reason)
+            with self.subTest(tool="Droid Edit", path=path):
+                self.assertRefused(hook(GUARD, {"tool_name": "Edit", "tool_input": {"file_path": path}}), reason)
+        for path in ("/repo/docs/guide.md", "/repo/.env.example", "/repo/.claude/agents/review.md",
+                     "/repo/.claude/worktrees/lane/docs/guide.md"):
+            with self.subTest(path=path):
+                self.assertAllowed(hook(CLAUDE, claude_call("Write", file_path=path, content="x")))
+        self.assertAllowed(hook(CLAUDE, claude_call("NotebookEdit", notebook_path="/repo/a.ipynb", new_source="x")))
+
+    def test_malformed_payloads_are_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bash = claude_call("Bash", folder, command="git status")
+            without = lambda key: json.dumps({name: value for name, value in bash.items() if name != key})
+            payloads = ["not json", "[]", "null", '"git status"', "{}", json.dumps({**bash, "tool_name": 7}),
+                        without("tool_name"), without("tool_input"), without("cwd"),
+                        json.dumps({**bash, "tool_input": ["git status"]}), json.dumps({**bash, "tool_input": {}}),
+                        json.dumps({**bash, "tool_input": {"command": ["git"]}}),
+                        json.dumps({**bash, "cwd": "relative"}), json.dumps({**bash, "cwd": folder + "/missing"}),
+                        json.dumps(claude_call("Write", content="x")), json.dumps(claude_call("Edit", file_path=" ")),
+                        json.dumps(claude_call("MultiEdit", file_path=["/repo/a.py"])),
+                        json.dumps(claude_call("NotebookEdit", file_path="/repo/a.ipynb")),
+                        json.dumps(claude_call("Read", file_path="/repo/a.py")),
+                        json.dumps(claude_call("Execute", folder, command="git status")),
+                        json.dumps(claude_call("Task", prompt="merge it"))]
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    self.assertRefused(hook(CLAUDE, payload), "refused unreadable or unsupported")
+
+    def test_adapter_refuses_when_policy_is_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            copy = Path(folder, ".claude/hooks/guard.py")
+            copy.parent.mkdir(parents=True)
+            copy.write_text(CLAUDE.read_text())
+            self.assertRefused(hook(copy, claude_call("Write", file_path="/repo/a.py", content="x")), "FileNotFoundError")
+
+
+class CoordinatorMergeTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.coordinator = git_repo(Path(folder.name, "coordinator"))
+        self.lane = git_repo(Path(folder.name, "lane"))
+        Path(self.coordinator, "sub").mkdir()
+
+    def results(self, command, cwd, coordinator):
+        return (hook(GUARD, droid_command(command, cwd), coordinator),
+                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator))
+
+    def test_lane_worktree_merges_are_refused(self):
+        # OLD_MERGE_GATE is exactly what a lane following the retired merge_gate would run.
+        for command in (MERGE_FORM, OLD_MERGE_GATE, "gh pr merge 12 --squash"):
+            for coordinator in (None, self.coordinator, "relative/path"):
+                for result in self.results(command, self.lane, coordinator):
+                    with self.subTest(command=command, coordinator=coordinator):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("Only the coordinator worktree merges", result.stderr)
+
+    def test_coordinator_merge_is_allowed_only_in_its_worktree(self):
+        for command in (MERGE_FORM, f"gh pr merge --squash --match-head-commit={SHA} 12",
+                        f"gh pr merge --match-head-commit {SHA} --squash"):
+            for cwd in (self.coordinator, str(Path(self.coordinator, "sub"))):
+                for result in self.results(command, cwd, self.coordinator):
+                    with self.subTest(command=command, cwd=cwd):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+        for result in self.results(MERGE_FORM, self.coordinator, None):
+            self.assertEqual(result.returncode, 2, result.stderr)
+        for command in (OLD_MERGE_GATE, f"{MERGE_FORM} --admin", f"{MERGE_FORM} --auto", f"{MERGE_FORM} --delete-branch",
+                        f"gh pr merge 12 --merge --match-head-commit {SHA}", "gh pr merge 12 --squash",
+                        f"gh pr merge 12 --squash --match-head-commit {SHA[:12]}",
+                        f"gh pr merge 12 --squash --match-head-commit {SHA.upper()}",
+                        f"gh pr merge 12 13 --squash --match-head-commit {SHA}",
+                        "gh pr merge 12 --squash --match-head-commit $SHA", f"GH_REPO=o/r {MERGE_FORM}",
+                        f"env {MERGE_FORM}", f"cd {self.lane} && {MERGE_FORM}", f"{MERGE_FORM}; echo done",
+                        f"({MERGE_FORM})", f"echo $({MERGE_FORM})", f"{MERGE_FORM} &",
+                        f"gh -R o/r pr merge 12 --squash --match-head-commit {SHA}",
+                        "gh api -X PUT repos/o/r/pulls/12/merge"):
+            for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_coordinator_root_inside_lane_worktrees_is_refused(self):
+        guard = load(CLI, "agent_guard_lanes")
+        args = MERGE_FORM.split()
+        with patch.dict(os.environ, {"PP_COORDINATOR_WORKTREE": self.coordinator}):
+            self.assertTrue(guard.coordinator_merge(args, self.coordinator))
+            with patch.object(guard, "LANE_WORKTREES", str(Path(self.coordinator).parent)):
+                self.assertFalse(guard.coordinator_merge(args, self.coordinator))
+                self.assertIn("Only the coordinator", guard.check_command(MERGE_FORM, self.coordinator))
+            with patch.object(guard, "LANE_WORKTREES", self.coordinator):
+                self.assertFalse(guard.coordinator_merge(args, self.coordinator))
+
+
+class RetiredFleetIntakeTests(unittest.TestCase):
+    def test_lane_rules_no_longer_drive_intake_or_merges(self):
+        text = (ROOT / "scripts/fleet/lane-rules.yaml").read_text(encoding="utf-8")
+        live = "\n".join(line.split(" #")[0] for line in text.splitlines() if not line.lstrip().startswith("#"))
+        self.assertRegex(live, r"(?m)^retired: true$")
+        for key in ("picker", "claim", "linear_access", "merge_gate", "close_out", "end_of_wake", "author_overflow",
+                    "scorer_deadline", "seat_rule", "scorer_policy", "complex_seat", "classes", "pick_rule", "wake"):
+            with self.subTest(key=key):
+                self.assertNotRegex(live, rf"(?m)^\s*{key}\s*:")
+        self.assertEqual(sorted(path.name for path in (ROOT / "scripts/fleet").iterdir()), ["lane-rules.yaml"])
+
+    def test_lane_dispatch_stays_disabled(self):
+        text = (ROOT / ".github/workflows/lane-dispatch.yml").read_text(encoding="utf-8")
+        self.assertEqual(workflow_triggers(text), {"workflow_dispatch"})
+        self.assertIn("disabled until the owner re-approves it", text)
+        self.assertRegex(text, r"(?m)^\s+exit 1$")
+        self.assertNotIn("secrets.", text)
+        # Re-enabling the push or schedule trigger, in block or inline form, must fail the first check.
+        for variant in (text.replace("on:\n", "on:\n  push:\n    branches: [main]\n"),
+                        text.replace("on:\n", 'on:\n  schedule:\n    - cron: "*/10 * * * *"\n'),
+                        text.replace("on:\n  workflow_dispatch:\n", "on: [push, workflow_dispatch]\n"),
+                        text.replace("on:\n  workflow_dispatch:\n", '"on":\n  workflow_dispatch:\n  schedule:\n'
+                                                                   '    - cron: "0 * * * *"\n')):
+            with self.subTest(variant=variant):
+                self.assertNotEqual(variant, text)
+                self.assertNotEqual(workflow_triggers(variant), {"workflow_dispatch"})
 
 
 if __name__ == "__main__":

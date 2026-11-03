@@ -44,11 +44,12 @@ just guidance      # checks this file, the repo skills, and the safety guard
 
 Follow the [definition of done](docs/development/definition-of-done.md):
 
-- One job per PR, under about 1,500 changed lines. Use `Refs GRE-xxx` for partial work and `Fixes GRE-xxx` only when the ticket is done.
+- One job per PR, under about 1,500 changed lines, or about 600 for a Mission PR. Every PR says `Fixes GRE-xxx`. Unmet acceptance items go to a child ticket that quotes them verbatim; don't use `Refs`. `linear-pr-sync.yml` sets the ticket states that follow a PR.
 - Put what you ran and saw under `## Evidence`. For changes to the web UI or desktop app, attach a screenshot or video. The rules are in [Gate evidence](docs/contributing/gate-evidence.md).
 - The required `droid-review` check runs Factory Droid review on every ready PR, and stays required until a provider-neutral review gate replaces it. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads.
+- The coordinator merges from its own worktree under the [merge gate](docs/development/definition-of-done.md#merge-gate). Lanes and other agents report readiness and never merge. A posted score is a record; the coordinator's own scorer run decides.
 - Write docs, comments, and PR text plainly: concrete facts, commands, and numbers, active voice, no filler. Before large or risky work, write the plan, list how it could fail, and get open decisions answered. In Droid, the `unslop` and `grilling` skills do this.
 
 [Agent and contributor workflow](docs/development/agent-workflow.md) is the shared procedure for any agent or person: task briefs exported from Notion, checks, the safety guard, running the app, evidence, and handoffs. The Factory skills in `.factory/skills/` link to it: [pp-verify](.factory/skills/pp-verify/SKILL.md) for screenshots and video, [pp-mission-qa](.factory/skills/pp-mission-qa/SKILL.md) for Mission user testing, and [pp-readiness](.factory/skills/pp-readiness/SKILL.md) for agent-readiness work.
 
-`scripts/agent-guard.py` refuses common maintainer-only actions. Droid's project hook runs it automatically; other runners must call it themselves. It does not replace review. For local and cloud Missions, follow [Factory setup](docs/development/factory-missions.md) and keep scrutiny and user testing enabled.
+`scripts/agent-guard.py` refuses common maintainer-only actions. Droid's project hook runs it automatically. Claude Code runs it through `.claude/hooks/guard.py` once you add the [hook settings](docs/development/agent-workflow.md#claude-code). Other runners must call it themselves. It does not replace review. For local and cloud Missions, follow [Factory setup](docs/development/factory-missions.md) and keep scrutiny and user testing enabled.

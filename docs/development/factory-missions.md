@@ -62,8 +62,9 @@ service launch, logs, driving, assertions, and shutdown.
 
 In the approved Mission plan, name the operation owner, default-off flag modes,
 SQLite/ID/recovery invariants, and the evidence each milestone must produce.
-Keep PRs near 600 changed lines for GRE-1067. Finish one PR's Droid review and CI
-before opening the next. Only the maintainer merges.
+Every Mission PR stays under about 600 changed lines. Finish one PR's Droid review
+and CI before opening the next. Mission workers never merge. The coordinator merges
+from its own worktree under the [merge gate](definition-of-done.md#merge-gate).
 
 The project hook runs [the safety guard](agent-workflow.md#safety-guard) before
 every Execute, Create, Edit, and ApplyPatch call. That section lists what it refuses

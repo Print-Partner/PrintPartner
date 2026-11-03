@@ -59,7 +59,7 @@ python3 scripts/local-ci.py --only <step-ids> --fail-on-skip
 
 `scripts/agent-guard.py` checks one shell command, file edit, or patch before it runs. It refuses actions reserved for the maintainer. Exit 0 allows the operation. Exit 2 refuses it, or rejects input it does not understand, with the reason on stderr.
 
-Droid runs it automatically through `.factory/hooks.json` and the adapter `.factory/hooks/guard.py`. No other runner does. Configure your runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
+Droid runs it automatically through `.factory/hooks.json` and the adapter `.factory/hooks/guard.py`. Claude Code runs it through `.claude/hooks/guard.py` after you add the hook settings in [Claude Code](#claude-code). No other runner does. Configure your runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
 
 ```sh
 python3 -B scripts/agent-guard.py command --cwd "$PWD" 'git push -u origin HEAD:chore/topic'
@@ -78,7 +78,7 @@ A hook adapter can send one JSON object on stdin to `python3 -B scripts/agent-gu
 
 The guard rejects other operations, missing or extra fields, a relative or missing `cwd`, an empty path, and a patch with no `*** Add File:`, `*** Update File:`, `*** Delete File:`, or `*** Move to:` line. A unified diff has none of those lines, so the guard rejects it rather than leave its paths unchecked. Map your runner's shell tool to `command`, its file writes to `file`, and its patch tool to `patch`; never pass a tool through unchecked.
 
-The guard refuses merges, force pushes, pushes to `main`, release publishing or editing, tag pushes, and hook bypasses. It also refuses edits to real `.env` files, Git metadata, and generated manifests.
+The guard refuses merges (except the [coordinator's](#coordinator-merges)), force pushes, pushes to `main`, release publishing or editing, tag pushes, and hook bypasses. It also refuses edits to real `.env` files, Git metadata, generated manifests, and the Claude Code settings and hooks that run the guard: `.claude/settings.json`, `.claude/settings.local.json`, and `.claude/hooks/`.
 
 - `git push` needs an explicit branch refspec and common options spelled in full. Write push destinations literally. The guard refuses a destination built from a shell expansion, the `:` matching refspec, and `HEAD` when the same command also switches branches.
 - When `push.followTags` is on, or a `remote.<name>.push` mapping exists, add `--no-follow-tags` or write `source:destination` refspecs. The guard treats both settings as unknown after a `git config` write or a `git remote` change in the same command.
@@ -88,7 +88,59 @@ The guard refuses merges, force pushes, pushes to `main`, release publishing or 
 - `gh variable` may only `list`, `get`, or show help. Setting or deleting a variable needs the maintainer.
 - It refuses a git or gh command it cannot classify.
 
-The guard catches mistakes. It is not a shell sandbox or a security boundary, and an agent can run commands without it. Repository rules and required GitHub checks stay authoritative. Changes to the guard need the same review as any other security control.
+The guard catches mistakes. It is not a shell sandbox or a security boundary, and an agent can run commands without it. Repository rules and required GitHub checks stay authoritative. Changes to the guard need the same review as any other security control, and the owner merges them.
+
+### Claude Code
+
+`.claude/hooks/guard.py` maps Claude Code's PreToolUse payload onto the guard. `Bash` becomes `check_command(command, cwd)`. `Write`, `Edit`, and `MultiEdit` check `file_path`, and `NotebookEdit` checks `notebook_path`. The adapter exits 2, which blocks the call, on a refusal and on any payload it cannot read: a non-object, a missing or empty field, a relative or missing `cwd`, an unknown tool, or an internal error.
+
+The repository doesn't commit Claude Code settings. Add this to `.claude/settings.local.json` in your checkout (Git ignores that file). The guard then refuses later edits to it:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {"type": "command", "command": "python3 -B \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard.py", "timeout": 10}
+        ]
+      }
+    ]
+  }
+}
+```
+
+Claude Code reads hook settings when a session starts, so restart the session after changing them. Run `/hooks` to confirm the entry.
+
+### Coordinator merges
+
+The coordinator merges from one dedicated worktree, which must lie outside the lane worktrees in `/persist/worktrees/t3`. Its hook command sets `PP_COORDINATOR_WORKTREE` to that worktree's root. Lane hook configs never set it. The variable lives in the hook command, not in the agent's shell, so a command the agent runs cannot set it for the guard.
+
+The guard allows exactly one merge form, and only when `PP_COORDINATOR_WORKTREE` equals the Git top level of the command's directory and lies outside `/persist/worktrees/t3`:
+
+```sh
+gh pr merge <number> --squash --match-head-commit <40-character sha>
+```
+
+The command must stand alone: no other options such as `--admin`, `--auto`, or `-R`; no wrapper, environment assignment, `cd`, pipeline, or substitution; and a literal lowercase SHA. Every other merge, including the same command from a lane worktree, is refused. The coordinator runs it only after the [merge gate](definition-of-done.md#merge-gate) passes. In the coordinator worktree, the Claude Code hook settings become:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {"type": "command", "command": "PP_COORDINATOR_WORKTREE=/persist/coordinator/PrintPartner python3 -B \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard.py", "timeout": 10}
+        ]
+      }
+    ]
+  }
+}
+```
+
+Replace `/persist/coordinator/PrintPartner` with the coordinator worktree's absolute path. A Droid hook command can set the same variable.
 
 ## Writing and plans
 
@@ -98,7 +150,9 @@ Before large or risky work, write the plan down and challenge it. Risky work inc
 
 ## Review and merge
 
-Every ready PR currently needs the required `droid-review` check, which runs Factory Droid review. That stays required until a separate change adds a provider-neutral review gate and the maintainer adopts it. If you work in another tool, the check still runs on your PR; ask the maintainer when it cannot. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. Only the maintainer merges.
+Every ready PR currently needs the required `droid-review` check, which runs Factory Droid review. That stays required until a separate change adds a provider-neutral review gate and the maintainer adopts it. If you work in another tool, the check still runs on your PR; ask the maintainer when it cannot. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. The coordinator merges from its own worktree once the [merge gate](definition-of-done.md#merge-gate) passes; lanes and other agents report readiness and never merge. A score that a lane posts with `post-score.sh` is a record only.
+
+Every PR says `Fixes GRE-xxx`. Put unmet acceptance items in a child ticket that quotes them verbatim; see [Fixes only](definition-of-done.md#fixes-only). `linear-pr-sync.yml` sets the ticket states that follow a PR, so don't move them yourself.
 
 A fallback for Factory outages is proposed in a separate change and is not active. It would read an expiring repository variable, `PP_REVIEW_FALLBACK_UNTIL`, that only the owner sets and clears, and accept a review from a different model while it is in force. Agents never set, extend, or delete that variable; the safety guard refuses `gh variable` and `gh api` writes to it. Until that gate merges and the owner supplies access to an independent model, the fallback stays blocked and `droid-review` is the required review.
 

@@ -3568,6 +3568,7 @@ dependencies = [
  "libc",
  "pp-contracts",
  "pp-domain",
+ "pp-testkit",
  "rand 0.9.5",
  "regress 0.11.1",
  "rusqlite",
@@ -3582,6 +3583,17 @@ dependencies = [
  "tar",
  "tempfile",
  "time",
+]
+
+[[package]]
+name = "pp-testkit"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

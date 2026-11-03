@@ -16,6 +16,7 @@ required-features = ["desktop_rebuild"]
 [dependencies]
 pp-contracts = { path = "../pp-contracts", optional = true }
 pp-domain = { path = "../pp-domain", optional = true }
+pp-os = { path = "../pp-os" }
 anyhow.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

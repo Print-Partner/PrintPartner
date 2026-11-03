@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-ALLOWED = {"pp-api": {"pp-storage", "pp-services"}, "pp-source": set(), "pp-storage": {"pp-domain", "pp-contracts"}, "pp-core": {"pp-gateway", "pp-compat", "pp-storage", "pp-source", "pp-net", "pp-api", "pp-perf"}, "pp-gateway": {"pp-compat", "pp-drivers", "pp-net"}, "pp-compat": set(), "pp-server": {"pp-core"}, "pp-contracts": {"pp-api-types"}, "pp-desktop": {"pp-core"}, "pp-domain": set(), "pp-api-types": {"pp-domain"}, "pp-net": set(), "pp-drivers": {"pp-net", "pp-api-types"}, "pp-services": set(), "pp-perf": set()}
+ALLOWED = {"pp-api": {"pp-storage", "pp-services"}, "pp-source": set(), "pp-storage": {"pp-domain", "pp-contracts", "pp-os"}, "pp-core": {"pp-gateway", "pp-compat", "pp-storage", "pp-source", "pp-net", "pp-api", "pp-perf"}, "pp-gateway": {"pp-compat", "pp-drivers", "pp-net"}, "pp-compat": set(), "pp-server": {"pp-core"}, "pp-contracts": {"pp-api-types"}, "pp-desktop": {"pp-core"}, "pp-domain": set(), "pp-api-types": {"pp-domain"}, "pp-net": set(), "pp-drivers": {"pp-net", "pp-api-types"}, "pp-services": set(), "pp-perf": set(), "pp-os": set()}
 GATED = {"pp-core": {"pp-source", "pp-net", "pp-api"}, "pp-storage": {"pp-domain", "pp-contracts"}, "pp-api": {"pp-services"}}
 assert all(GATED[package] <= ALLOWED[package] for package in GATED), GATED
 

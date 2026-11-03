@@ -41,5 +41,6 @@ ryu-js = "=1.0.2"
 saphyr-parser = { version = "=0.1.0", default-features = false, optional = true }
 
 [dev-dependencies]
+pp-testkit = { path = "../pp-testkit" }
 rusqlite = { workspace = true, features = ["hooks"] }
 tempfile = "=3.27.0"

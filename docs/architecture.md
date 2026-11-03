@@ -107,6 +107,7 @@ An allowed edge does not mean every operation is implemented.
 | `pp-desktop` | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
 | `pp-server` | Docker launcher, signals, headless lifecycle | `pp-core` |
 | `pp-perf` | Measurement records and regression comparison, not product telemetry | none |
+| `pp-testkit` | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented baseline graph, not a manifest for the amendment.
 The proposed `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies.

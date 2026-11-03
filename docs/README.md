@@ -56,6 +56,7 @@ will autosave into a draft and require an explicit Accept.
 - [Change a CI workflow](development/ci-controls.md)
 - [Run the stress-runner self-tests](development/stress-runner-self-tests.md)
 - [Definition of done](development/definition-of-done.md)
+- [Operation inventory](development/operation-inventory.md): what still runs in Node, what has a Rust owner, and [the generated report](parity/operation-inventory.md)
 - [Agent instructions](../AGENTS.md)
 - [Gate evidence](contributing/gate-evidence.md)
 

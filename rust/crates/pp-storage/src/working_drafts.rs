@@ -69,15 +69,22 @@ pub struct EditRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum PartDecision {
     SetIncluded {
+        #[cfg_attr(feature = "codegen", schemars(length(min = 1)))]
         draft_part_ids: Vec<PositiveId>,
         value: bool,
     },
     SetQuantityOverride {
+        #[cfg_attr(feature = "codegen", schemars(length(min = 1)))]
         draft_part_ids: Vec<PositiveId>,
         #[serde(deserialize_with = "Option::deserialize")]
+        #[cfg_attr(
+            feature = "codegen",
+            schemars(with = "pp_contracts::RequiredNullable<Quantity>")
+        )]
         value: Option<Quantity>,
     },
 }
@@ -103,21 +110,25 @@ impl PartDecision {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum EditWire {
     One(OneEdit),
     Batch(BatchEdit),
 }
 #[derive(Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct OneEdit {
     expected_snapshot_digest: Digest,
     decision: PartDecision,
 }
 #[derive(Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct BatchEdit {
     expected_snapshot_digest: Digest,
+    #[cfg_attr(feature = "codegen", schemars(length(min = 1, max = 10000)))]
     decisions: Vec<PartDecision>,
 }
 impl TryFrom<EditWire> for EditRequest {
@@ -149,8 +160,21 @@ impl TryFrom<EditWire> for EditRequest {
     }
 }
 
+/// The wire schema is [`EditWire`]'s. JSON Schema cannot express the
+/// one-edit-per-Part-field rule; the server refuses it.
+#[cfg(feature = "codegen")]
+impl schemars::JsonSchema for EditRequest {
+    fn schema_name() -> String {
+        "EditRequest".into()
+    }
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        <EditWire as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
 /// The JSON body of Node's draft abandon route.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AbandonRequest {
     expected_lifecycle_version: Version,
@@ -297,7 +321,8 @@ impl DraftIdentity {
     pub fn base_plan_version(&self) -> Version {
         self.base_plan_version
     }
-    fn workspace_identity(&self) -> Result<required_units::DraftIdentity> {
+    /// The identity as the draft list and workspace bodies serialize it.
+    pub fn workspace_identity(&self) -> Result<required_units::DraftIdentity> {
         Ok(required_units::DraftIdentity {
             draft_id: i64::try_from(self.draft_id.get())?,
             state: self.state.as_str().into(),

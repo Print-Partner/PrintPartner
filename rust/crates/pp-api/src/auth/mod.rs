@@ -5,6 +5,8 @@ mod wire;
 pub use http::{AuthBackend, AuthHttpConfig, CookieTransport, auth_router};
 pub use mail::{Delivery, ResetMailer, SmtpConfig, SmtpSecurity};
 pub use provider::{OAuthCredentials, ProviderClient};
+#[cfg(feature = "codegen")]
+pub(crate) use wire::Health;
 
 /// The provider and mail suites run on the pooled client by default and on
 /// the rebuild client with `desktop_rebuild`, so each CI configuration covers one.

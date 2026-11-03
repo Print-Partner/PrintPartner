@@ -45,6 +45,7 @@ try {
   run("rust-fmt", cargo, ["fmt", "--manifest-path", manifest, "-p", "pp-api-types", "-p", "pp-contracts", "--check"], repo);
   run("rust-clippy", cargo, ["clippy", "--manifest-path", manifest, "--locked", "-p", "pp-api-types", "-p", "pp-contracts", "--features", "pp-api-types/codegen", "--all-targets", "--", "-D", "warnings"], repo);
   run("reverse-rust-contracts", process.execPath, ["scripts/rust-contracts/run.mjs", "--check", join(output, "reverse")], web);
+  run("rust-client", process.execPath, ["scripts/rust-contracts/client.mjs", "--check"], web);
   run("negative-controls", process.execPath, ["--test", "scripts/desktop-contracts/controls.test.mjs"], web);
   const report = JSON.parse(readFileSync(join(output, "rust-cases.json"), "utf8"));
   assert.equal(report.mismatches.length, 0);

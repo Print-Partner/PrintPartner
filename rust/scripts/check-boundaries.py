@@ -3,9 +3,13 @@ from pathlib import Path
 import shutil
 import subprocess
 
-ALLOWED = {"pp-api": {"pp-storage", "pp-services"}, "pp-source": set(), "pp-storage": {"pp-domain", "pp-contracts", "pp-os"}, "pp-core": {"pp-gateway", "pp-compat", "pp-storage", "pp-source", "pp-net", "pp-api", "pp-perf"}, "pp-gateway": {"pp-compat", "pp-drivers", "pp-net"}, "pp-compat": set(), "pp-server": {"pp-core"}, "pp-contracts": {"pp-api-types"}, "pp-desktop": {"pp-core"}, "pp-domain": set(), "pp-api-types": {"pp-domain"}, "pp-net": set(), "pp-drivers": {"pp-net", "pp-api-types"}, "pp-services": set(), "pp-perf": set(), "pp-os": set()}
+ALLOWED = {"pp-api": {"pp-storage", "pp-services"}, "pp-source": set(), "pp-storage": {"pp-domain", "pp-contracts", "pp-os"}, "pp-core": {"pp-gateway", "pp-compat", "pp-storage", "pp-source", "pp-net", "pp-api", "pp-perf"}, "pp-gateway": {"pp-compat", "pp-drivers", "pp-net"}, "pp-compat": set(), "pp-server": {"pp-core"}, "pp-contracts": {"pp-api-types"}, "pp-desktop": {"pp-core"}, "pp-domain": set(), "pp-api-types": {"pp-domain"}, "pp-net": set(), "pp-drivers": {"pp-net", "pp-api-types"}, "pp-services": set(), "pp-perf": set(), "pp-testkit": set(), "pp-os": set()}
 GATED = {"pp-core": {"pp-source", "pp-net", "pp-api"}, "pp-storage": {"pp-domain", "pp-contracts"}, "pp-api": {"pp-services"}}
 assert all(GATED[package] <= ALLOWED[package] for package in GATED), GATED
+# Test-support crates. Any package may use them, but only under [dev-dependencies],
+# so they never reach a release binary. ALLOWED never lists them as a normal edge.
+DEV_ONLY = {"pp-testkit"}
+assert not any(DEV_ONLY & edges for edges in ALLOWED.values()), DEV_ONLY
 
 
 def rebuild_edge_is_gated(package, dependency):
@@ -33,9 +37,11 @@ def violations(packages):
     return [(package["name"], dependency["name"]) for package in packages
             for dependency in package["dependencies"]
             if dependency["name"].startswith("pp-") and (
-                dependency["name"] not in ALLOWED[package["name"]]
-                or (dependency["name"] in GATED.get(package["name"], set())
-                    and not rebuild_edge_is_gated(package, dependency))
+                dependency.get("kind") != "dev" if dependency["name"] in DEV_ONLY else (
+                    dependency["name"] not in ALLOWED[package["name"]]
+                    or (dependency["name"] in GATED.get(package["name"], set())
+                        and not rebuild_edge_is_gated(package, dependency))
+                )
             )]
 
 
@@ -58,6 +64,10 @@ def planted_edges_rejected():
         ([{"name": "pp-compat", "dependencies": [{"name": "pp-gateway"}]}], [("pp-compat", "pp-gateway")]),
         ([{"name": "pp-contracts", "dependencies": [{"name": "pp-gateway"}]}], [("pp-contracts", "pp-gateway")]),
         ([{"name": "pp-domain", "dependencies": [{"name": "pp-net"}]}], [("pp-domain", "pp-net")]),
+        ([{"name": "pp-storage", "dependencies": [{"name": "pp-testkit", "kind": "dev"}]}], []),
+        ([{"name": "pp-storage", "dependencies": [{"name": "pp-testkit", "kind": None}]}], [("pp-storage", "pp-testkit")]),
+        ([{"name": "pp-server", "dependencies": [{"name": "pp-testkit", "kind": "build"}]}], [("pp-server", "pp-testkit")]),
+        ([{"name": "pp-testkit", "dependencies": [{"name": "pp-storage", "kind": None}]}], [("pp-testkit", "pp-storage")]),
     )
     for package, dependencies in GATED.items():
         for dependency in sorted(dependencies):

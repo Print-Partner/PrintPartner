@@ -411,7 +411,9 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 #[cfg(feature = "codegen")]
-pub(crate) struct RequiredNullable<T>(std::marker::PhantomData<T>);
+/// Schema-only marker for a required field that accepts null. A plain
+/// `Option<T>` field would let the schema accept an omitted key.
+pub struct RequiredNullable<T>(std::marker::PhantomData<T>);
 #[cfg(feature = "codegen")]
 impl<T: schemars::JsonSchema> schemars::JsonSchema for RequiredNullable<T> {
     fn schema_name() -> String {

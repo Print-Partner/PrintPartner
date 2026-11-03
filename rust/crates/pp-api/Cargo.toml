@@ -15,6 +15,11 @@ desktop_rebuild = [
     "dep:pp-services",
     "dep:rmcp",
 ]
+codegen = ["desktop_rebuild", "dep:schemars", "pp-storage/codegen"]
+
+[[bin]]
+name = "export-rust-client"
+required-features = ["codegen"]
 
 [dependencies]
 pp-storage = { path = "../pp-storage" }
@@ -35,6 +40,7 @@ time = { version = "=0.3.55", features = ["std", "parsing"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json", "form", "stream"] }
 ryu-js = { version = "=1.0.2", optional = true }
 rusqlite = { workspace = true, optional = true }
+schemars = { version = "=0.8.22", optional = true }
 rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 lettre = { version = "=0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "aws-lc-rs", "webpki-roots"] }
 

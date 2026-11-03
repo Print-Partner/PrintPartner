@@ -109,6 +109,7 @@ An allowed edge does not mean every operation is implemented.
 | `pp-server` | Docker launcher, signals, headless lifecycle | `pp-core` |
 | `pp-perf` | Measurement records and regression comparison, not product telemetry | none |
 | `pp-os` | Directory handles, no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
+| `pp-testkit` | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented graph, not a manifest for the amendment.
 `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies. `pp-storage`
@@ -237,7 +238,11 @@ hand-maintained contracts mirror. Retire TS-first typify inputs per family, not
 by hand-authoring the generated Rust file.
 
 Add method/path/auth/request/response metadata tied to actual Rust registration,
-including the existing `/api/v2` draft routes. REST shape may change for the new
+including the existing `/api/v2` draft routes. `web/packages/rust-client` is
+that package for Builds list and detail, layers, `/api/v2` drafts and health. Its
+route table is `pp_api::client_contract::CLIENT_ROUTES`, which a `pp-core` test
+checks against the composed routers. Its
+[README](../web/packages/rust-client/README.md) lists the coverage and wire rules. REST shape may change for the new
 UI; do not invent `/api/v3` or promise old aliases for screen parity. Preserve
 external MCP paths/tool names and verify the actual inventory before retirement.
 

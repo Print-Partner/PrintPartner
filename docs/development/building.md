@@ -42,4 +42,6 @@ The workspace also has these checks:
 
 ## Desktop app
 
-[pp-desktop/README.md](../../rust/crates/pp-desktop/README.md) describes how to run the native development app. [Desktop app](../desktop.md) describes the app itself.
+[pp-desktop/README.md](../../rust/crates/pp-desktop/README.md) describes how to run the native development app.
+
+`rust/scripts/stage-desktop.py` builds the unsigned desktop stage that [pp-desktop/README.md](../../rust/crates/pp-desktop/README.md#create-an-unsigned-target-native-stage) describes. It copies the server, web, contracts and domain builds, then every production package in `web/package-lock.json`. An npm workspace link, such as `node_modules/@print-partner/ui -> apps/ui`, is copied only when its target workspace is part of the stage; otherwise the stager skips it and lists it under `skipped_workspace_links`. A new workspace that the desktop runtime needs must be added to the stager's artifact and metadata lists. `python3 rust/scripts/stage-desktop.py --self-test` runs the stager tests. [Desktop app](../desktop.md) describes the app itself.

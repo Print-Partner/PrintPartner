@@ -34,6 +34,34 @@ The shutdown receipt's legacy `marker_removed` field now reports removal of the 
 
 The compatibility backend serves only on that private socket. `rust/tests/built_backend_listeners.py` runs the built backend in desktop mode on Linux and macOS CI. It checks that the socket has mode `0600` inside a `0700` directory. It reads the kernel's system-wide table of listening TCP and bound, unconnected UDP endpoints before launch. It then compares the table about every 100 ms from launch through a 4-second window after readiness and through shutdown. Ownership also comes from the kernel, so a process whose file descriptors cannot be inspected still counts. On Linux, `/proc/net/{tcp,tcp6,udp,udp6}` gives each socket's uid, and the inode is matched in `/proc/<pid>/fd` to name the process. On macOS, `netstat -anv -p tcp` and `-p udp` give the owning pid and epid, and `ps` gives their uid. A new endpoint fails the proof when its owner is the current user or cannot be determined, whichever process opened it. The failure prints each owner's full command line and whether it is in the backend's process group, or `unattributed`. New endpoints owned by other users, such as root system daemons, are logged in the receipt as `ignored_other_users` and do not fail the proof. A missing or unparseable table, including a macOS `netstat` header without a pid column, also fails the proof. Before the run, a self-test checks both parsers against fixed samples. The backend must stay alive through the window and then stop on stdin EOF. Four negative controls must fail the same check: a child listener, a detached grandchild listener, a backend listener opened 1 second after readiness and, on Linux only, a detached listener that disables its dumpability so its fds cannot be read. Every process that inherited the run's environment token is killed after shutdown.
 
+## Test installations
+
+`rust/crates/pp-testkit` creates disposable data directories for tests, so tests never open a real one. It is a dev-dependency only: `rust/scripts/check-boundaries.py` refuses it as a normal or build dependency of any crate, so no release binary contains it. Each `Installation` is a new temporary directory, deleted on drop. `Installation::create_in(parent, ..)` places it under a chosen parent instead.
+
+| `Fixture` | Contents |
+| --- | --- |
+| `Empty` | Nothing. |
+| `EmptyWithLeaseLeftovers` | Every lease leftover that still counts as empty, with a Node `.desktop-lease` directory. |
+| `NodeSchema34` | `print-partner.db` at Node schema 34 and nothing else. No marker. |
+| `RustMarked` | A valid ownership marker only. |
+| `MarkedCorrupt` | A truncated ownership marker only. |
+
+A `Spec` combines the same parts: `lease_leftovers` (`RustFile` or `NodeDirectory` for `.desktop-lease`), `node_database`, and `marker` (`Absent`, `Valid`, or one of the `Corruption` cases: `Empty`, `Truncated`, `NotJson`, `WrongOwner`, `UnsupportedVersion`, `MissingField`, `Directory`). `write_marker`, `write_corrupt_marker` and `remove_marker` change the marker of an installation the kit created. The kit has no function that writes a marker into any other path.
+
+"Empty" allows only these top-level entries: `printpartner.lock`, `.desktop-lease` (a Rust regular file, or a Node directory holding only `owner.json` and `previous-marker.json`), `.desktop-lease-candidate-*`, `.desktop-lease-release-*`, `.desktop-lease-retired-*`, `.desktop-owner.json`, `.desktop-owner-release-*.json`, and `lost+found`. `allowed_in_empty` and `allowed_in_node_lease` encode that rule for tests. The leftover owner records name PID 2147483647, which no process can hold, so they describe a dead owner.
+
+The schema 34 database replays `schemaMigrations` from the pinned Node source in `rust/crates/pp-storage/data/historical/schema-34.ts` (commit `71e25e77`, SHA-256 checked), opens it in WAL mode with foreign keys on, and stamps `app_settings.schema_version = 34`. It skips Node's post-migration repairs and starter seeds and holds no user rows. The `ticket_t_7_migrations_historical_order` test uses the same parser.
+
+### Ownership marker format
+
+The durable ownership marker is `<data-dir>/.pp-rust-owned.json`. The fixtures write it with mode `0600` as one compact JSON object with exactly these keys, in this order, followed by a newline:
+
+```json
+{"version":1,"owner":"rust","created_at":"2026-11-03T00:00:00Z"}
+```
+
+`version` is the integer 1. `owner` is the string `rust`. `created_at` is UTC in the form `YYYY-MM-DDTHH:MM:SSZ`. A reader refuses any other key, version, owner, or timestamp shape. `Marker::parse` in the kit is the test oracle for these rules. The product writer and reader do not exist yet; when they land, they use this format and their tests compare bytes with the kit.
+
 ## Ownership today
 
 - `pp-storage` owns the SQLite connection, migrations, the bounded settings writer, the read-only pool, the storage lease and safe backups.

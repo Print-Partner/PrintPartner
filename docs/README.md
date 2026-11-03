@@ -20,7 +20,7 @@ Print Partner is moving its backend from Node to one Rust core. The core runs as
 | Library | `/library` | Register and sync shared source repositories. |
 | Builds | `/builds` | Create, open, copy, archive, or restore a build. |
 | Sources | `/sources?profile=<id>` | Attach sources and select STL files for the active build. |
-| Plan | `/plan?profile=<id>` | Choose parts, quantities, and colors. Changes save automatically. |
+| Plan | `/plan?profile=<id>` | Choose parts, quantities, and colors. Changes save to a draft and take effect when accepted at the Accept gate. |
 | Checkoff | `/progress?profile=<id>` | Track required units through printing and assembly. |
 | Production | `/export?profile=<id>` | Arrange plates, export files, and send sliced jobs. |
 | Production overview | `/production` | Review remaining work across builds. |
@@ -38,7 +38,8 @@ Print Partner is moving its backend from Node to one Rust core. The core runs as
 | [Docker image](docker.md) | The single-user headless image. |
 | [Release](release.md) | How releases are built, signed, and published. |
 | [Domain](domain/README.md) | The core model and one page per product area. |
-| [Desktop rebuild flag and slice plan](desktop-rebuild.md) | The `desktop_rebuild` feature and the GRE-595 slices. |
+| [UI and UX target](product/ui-ux-target.md) | The new UI's information architecture, flows, states, design system and build order. |
+| [Desktop rebuild flag and slice plan](desktop-rebuild.md) | The `desktop_rebuild` feature and the GRE-595 slices. Historical for the slice plan; [Architecture](architecture.md) supersedes its target. |
 
 ## Development
 
@@ -79,6 +80,13 @@ Print Partner is moving its backend from Node to one Rust core. The core runs as
 - [ADR 0005: Keep one desktop product identity](adr/0005-desktop-product-identity.md)
 - [ADR 0006: Autosave text contains Unicode scalar values](adr/0006-autosave-text-contract.md)
 - [ADR 0007: Record the Rust crate layout and dependency edges](adr/0007-rust-crate-layout.md)
+- [ADR 0008: Replace the old screens instead of porting them](adr/0008-replace-the-old-screens.md)
+- [ADR 0009: Consolidate to a small set of deep crates](adr/0009-consolidate-to-deep-crates.md)
+- [ADR 0010: Put the Accept gate and the single writer on one path](adr/0010-engine-owns-the-write-path.md)
+- [ADR 0011: Retire the rebuild flag together with Node](adr/0011-retire-the-rebuild-flag-with-node.md)
+- [ADR 0012: Keep platform differences in one crate](adr/0012-platform-code-in-one-crate.md)
+- [ADR 0013: Rust owns the wire contracts](adr/0013-rust-owns-wire-contracts.md)
+- [ADR 0014: One authenticated event stream with topics](adr/0014-one-event-stream-with-topics.md)
 
 ## Node server
 

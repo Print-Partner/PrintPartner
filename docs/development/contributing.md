@@ -35,8 +35,8 @@ The web ESLint config limits `complexity` to 20, nesting depth to 5 and paramete
 1. Meet the [definition of done](definition-of-done.md).
 2. Run `just ci` and fix every failure before you push. [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) describes the command.
 3. Fill in every section of the [pull request template](../../.github/pull_request_template.md). Put verification output under `## Evidence`.
-4. Start the PR description with `Refs GRE-xxx` for a partial slice or `Fixes GRE-xxx` for the PR that completes the ticket.
-5. Move the ticket to In Review only when the PR is ready for review. If the PR is blocked or escalated, keep the ticket In Progress and add a comment.
+4. Start the PR description with `Fixes GRE-xxx`. Split unmet acceptance items into a child ticket that quotes them verbatim, as [Fixes only](definition-of-done.md#fixes-only) describes.
+5. Don't move the ticket yourself. `linear-pr-sync.yml` sets In Review, Done, and In Progress from PR events. If the PR is blocked or escalated, add a comment to the ticket.
 
 ## After the merge
 

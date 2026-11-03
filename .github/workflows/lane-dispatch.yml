@@ -1,58 +1,17 @@
 # .github/workflows/lane-dispatch.yml
-# Starts the next ready Linear ticket on an idle VM after a merge to main.
-# Public repo: no pull_request / pull_request_target triggers, so fork PRs never reach the self-hosted runner.
+# Disabled until the owner re-approves it. It started the next Linear ticket on an idle VM through the
+# self-driving fleet intake, which is retired (see scripts/fleet/lane-rules.yaml). The coordinator now
+# starts work. scripts/test_factory_hooks.py fails if a push, schedule, or any other trigger comes back.
 name: lane-dispatch
-# Manual only for now. Chad turns on automatic runs by uncommenting ONE of these:
-#  push:
-#    branches: [main]          # a squash merge lands as a push to main
-#  schedule:
-#    - cron: "*/10 * * * *"
 on:
   workflow_dispatch:
-    inputs:
-      vm: {description: "force a VM (133-136), blank = first idle", required: false, default: ""}
-      dry_run: {description: "pick only, start nothing", type: boolean, default: true}
-permissions:
-  contents: read
-concurrency:
-  group: lane-dispatch      # one dispatcher at a time; never two picks racing
-  cancel-in-progress: false
+permissions: {}
 jobs:
   dispatch:
-    runs-on: [pp-intake]   # runner has only this label (no self-hosted)
-    environment: fleet-wake   # secrets T3_TOKEN_133..136; Environment limited to main
-    timeout-minutes: 10
-    env:
-      RULES: scripts/fleet/lane-rules.yaml           # vendored copy of the fleet lane rules
-      LINEAR_KEY_FILE: /home/runner/secrets/linear-readonly.key
-      # one bearer per VM: T3 sessions live in each VM's own data dir
-      T3_TOKEN_133: ${{ secrets.T3_TOKEN_133 }}
-      T3_TOKEN_134: ${{ secrets.T3_TOKEN_134 }}
-      T3_TOKEN_135: ${{ secrets.T3_TOKEN_135 }}
-      T3_TOKEN_136: ${{ secrets.T3_TOKEN_136 }}
-      T3_TRANSPORT: ${{ vars.T3_TRANSPORT || 'https' }}    # https (tailnet Serve) | ssh
-      # per-VM base URLs; defaults are each VM's tailnet Serve URL. Override with repo variables T3_URL_133..136.
-      T3_URL_133: ${{ vars.T3_URL_133 || 'https://agent-fleet-1.taild6d5d6.ts.net' }}
-      T3_URL_134: ${{ vars.T3_URL_134 || 'https://agent-fleet-2.taild6d5d6.ts.net' }}
-      T3_URL_135: ${{ vars.T3_URL_135 || 'https://agent-fleet-3.taild6d5d6.ts.net' }}
-      T3_URL_136: ${{ vars.T3_URL_136 || 'https://agent-fleet-4.taild6d5d6.ts.net' }}
-      LOG_DIR: /home/runner/intake-logs
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {sparse-checkout: scripts/fleet, persist-credentials: false}
-      - name: Merged ticket from the push
-        id: merged
+      - name: Refuse to run
         run: |
-          # "Fixes GRE-n" / "Refs GRE-n" in the squash commit message; empty on workflow_dispatch
-          t=$(git log -1 --format=%B "${{ github.sha }}" | grep -oE 'GRE-[0-9]+' | head -1 || true)
-          echo "ticket=$t" >> "$GITHUB_OUTPUT"
-      - name: Pick and start
-        env:
-          FORCE_VM: ${{ inputs.vm }}
-          DRY_RUN: ${{ inputs.dry_run == false && 'false' || 'true' }}   # dry unless a dispatch explicitly unticks it
-          FINISHED: ${{ steps.merged.outputs.ticket }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$LOG_DIR"
-          # keys are read inside python from files; nothing here echoes them
-          python3 scripts/fleet/lane-dispatch.py 2>&1 | tee -a "$LOG_DIR/dispatch-$(date +%Y%m%d).log"
+          echo "::error::lane-dispatch is disabled until the owner re-approves it. The coordinator-run plan replaces the fleet intake."
+          exit 1

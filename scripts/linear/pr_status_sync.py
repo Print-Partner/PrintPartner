@@ -17,7 +17,8 @@ Rules (team GRE):
   * Cron: In Progress/In Review with no PR activity for STALE_HOURS (48) and no
     open PR -> Backlog.
 Writes ticket state, plus the fleet-promote comment. GitHub holds PR state.
-Never touches Done/Canceled/Duplicate issues. Never prints secrets.
+Never touches Done/Canceled/Duplicate issues, or the owner-signed PROTECTED
+tickets, whose skipped writes are logged. Never prints secrets.
 Fork PRs are excluded from both event handling and reconciliation.
 
 Usage:
@@ -38,6 +39,10 @@ ID_RE = re.compile(r"GRE-(\d+)", re.I)
 BRANCH_RE = re.compile(r"^gre-(\d+)\b", re.I)
 TERMINAL = {"completed", "canceled", "duplicate"}
 PROMOTE_SKIP = {"needs-chad-action", "umbrella", "post-parity", "pp:later"}
+# Owner-signed list: the sync never writes these tickets' state or comments; the owner moves them.
+PROTECTED = frozenset(f"GRE-{n}" for n in (
+    451, 621, 1007, 1008, 1009, 1010, 1011, 1012, 1013, *range(1019, 1029), 1030,
+    1056, 1060, 1061, 1062, 1063, 1064, 1065, 1066))
 _END = "id identifier team{key} state{name type} labels(first:50){nodes{name}}"
 LINKED_QUERY = ("query($id:String!){issue(id:$id){%s relations(first:100){nodes{type issue{%s} relatedIssue{%s}}} "
                 "inverseRelations(first:100){nodes{type issue{%s} relatedIssue{%s}}}}}" % ((_END,) * 5))
@@ -132,6 +137,16 @@ def ts(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def protected(ident):
+    """Whether ident is owner-protected. Logs the skipped write."""
+    # issue() reads GRE-01008 as GRE-1008, so compare the same canonical number.
+    team, _, number = ident.upper().rpartition("-")
+    if number.isdigit() and f"{team}-{int(number)}" in PROTECTED:
+        print(f"{ident}: skipped, owner-protected ticket; the sync does not write it", file=sys.stderr)
+        return True
+    return False
+
+
 def settle(ident, decide, basis=None):
     """Write decide(issue) for ident, then correct the write if it raced another run.
 
@@ -143,6 +158,8 @@ def settle(ident, decide, basis=None):
     not rely on Linear history, which can merge rows from the shared API key.
     A run that writes after this one owns the state and runs the same check.
     """
+    if protected(ident):
+        return False
     basis = basis or issue(ident)
     version = basis and (basis["state"]["name"], basis["updatedAt"])
     for _ in range(4):
@@ -202,6 +219,12 @@ def blocking(ident):
 
 def close_out(ident):
     """After a Fixes merge: confirm ident is Done (one retried write), then promote what it unblocked."""
+    if protected(ident):
+        # The owner moves protected tickets; once one is Done, its unprotected dependents still get promoted.
+        current = issue(ident)
+        if current and current["state"]["name"] == "Done":
+            promote(ident)
+        return
     current = issue(ident)
     if not current or current["state"]["type"] in TERMINAL - {"completed"}:
         return
@@ -219,7 +242,7 @@ def promote(done):
     """Backlog -> Todo for issues done blocked, once every non-umbrella blocker is Done. Never demotes."""
     _, unblocked, _ = blocking(done)
     for blocked in unblocked:
-        if blocked["team"]["key"] != TEAM:
+        if blocked["team"]["key"] != TEAM or protected(blocked["identifier"]):
             continue
         node, _, blockers = blocking(blocked["identifier"])
         if not node or node["state"]["name"] != "Backlog" or labels(node) & PROMOTE_SKIP:

@@ -76,7 +76,7 @@ STEPS = [
          ("actionlint.yml#Check tracked file sizes",), requires=(("python3", None), ("git", None))),
     Step("python-lint", "Ruff unused-import and complexity lint",
          ("python3 -B -m unittest discover -s scripts -p test_ruff_lint.py -v",
-          "ruff check scripts rust/scripts web/scripts slicer-sidecar .factory/hooks"),
+          "ruff check scripts rust/scripts web/scripts slicer-sidecar .factory/hooks .claude/hooks"),
          ("actionlint.yml#Lint Python with Ruff",),
          requires=(("python3", None), ("ruff", RUFF_VERSION))),
     Step("zizmor", "zizmor (required check)",

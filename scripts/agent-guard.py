@@ -3,7 +3,8 @@
 
 Any agent runner, or a person, can call this before running a shell command,
 editing a file, or applying a patch. Factory Droid calls it through the
-adapter in .factory/hooks/guard.py; other runners must call it themselves. It
+adapter in .factory/hooks/guard.py and Claude Code through .claude/hooks/guard.py;
+other runners must call it themselves. It
 is a guard rail, not a security boundary: it reads the operation it is given
 and refuses known-dangerous shapes. When it cannot classify a git or gh
 invocation, it refuses rather than guessing.
@@ -19,12 +20,14 @@ import itertools
 import json
 import os
 from pathlib import Path, PurePosixPath
+import posixpath
 import re
 import subprocess
 import sys
 from urllib.parse import urlsplit
 
-MERGE = "Merging is the maintainer's job. Report readiness instead."
+MERGE = ("Only the coordinator worktree merges, with `gh pr merge <number> --squash --match-head-commit <sha>`; "
+         "other merges need the maintainer. Report readiness instead.")
 FORCE = "Never force-push. Add a commit instead."
 MAIN = "Push a branch and open a PR; main only changes by merge."
 RELEASE = "Releases and tags need separate authorization."
@@ -104,6 +107,12 @@ CONFIG_WRITE_OPTIONS = {"--add", "--edit", "-e", "--remove-section", "--rename-s
 # Environment assignments that point git at another repository.
 GIT_LOCATION = re.compile(r"^(?:GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)=")
 GENERATED = {"rust/bundle-manifest.json"}
+# Claude Code settings and hooks; an edit there could switch the guard off.
+CLAUDE_HOOK_CONFIG = {"settings.json", "settings.local.json", "hooks"}
+# The coordinator's hook config names its worktree root here. Lane worktrees live under LANE_WORKTREES.
+COORDINATOR_ENV = "PP_COORDINATOR_WORKTREE"
+LANE_WORKTREES = "/persist/worktrees/t3"
+FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
 
 
@@ -112,7 +121,8 @@ class Unclear(Exception):
 
 
 def protected_path(raw):
-    path = PurePosixPath(raw.replace("\\", "/"))
+    # Collapse "dir/../" so an alias such as .claude/agents/../settings.json is checked as its target.
+    path = PurePosixPath(posixpath.normpath(raw.replace("\\", "/")) if raw else raw)
     name = path.name
     if ".git" in path.parts:
         return "Do not edit Git metadata."
@@ -120,6 +130,8 @@ def protected_path(raw):
         return "Keep real environment files out of agent edits; use the .example template."
     if any(path.as_posix().endswith(entry) for entry in GENERATED):
         return "This file is generated. Run its generator instead of editing it."
+    if any(a == ".claude" and b in CLAUDE_HOOK_CONFIG for a, b in zip(path.parts, path.parts[1:])):
+        return "Claude Code settings and hooks run the safety guard; ask the maintainer to change them."
     return None
 
 
@@ -858,10 +870,49 @@ def gh_reason(args, cwd, alone=True):  # noqa: C901
     return API_WRITE
 
 
+def coordinator_merge(args, cwd):
+    """Whether args is the one merge the coordinator may run.
+
+    The form is gh pr merge [<number>] --squash --match-head-commit <full sha>, with no other
+    option. cwd must sit inside the worktree that PP_COORDINATOR_WORKTREE names: that root is
+    the Git top level of cwd and lies outside the lane worktrees. Lane hook configs never set it.
+    """
+    if args[:3] != ["gh", "pr", "merge"] or cwd is None:
+        return False
+    number, squash, sha, rest = None, False, None, args[3:]
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--squash" and not squash:
+            squash = True
+        elif arg == "--match-head-commit" and sha is None and rest:
+            sha = rest.pop(0)
+        elif arg.startswith("--match-head-commit=") and sha is None:
+            sha = arg.split("=", 1)[1]
+        elif re.fullmatch(r"[1-9][0-9]*", arg) and number is None:
+            number = arg
+        else:
+            return False
+    if not (squash and sha and FULL_SHA.match(sha)):
+        return False
+    root = os.environ.get(COORDINATOR_ENV, "")
+    if not os.path.isabs(root):
+        return False
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
+                             text=True, timeout=5, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    root, lanes = os.path.realpath(root), os.path.realpath(LANE_WORKTREES)
+    return bool(top) and os.path.realpath(top) == root and os.path.commonpath([root, lanes]) != lanes
+
+
 def check_command(command, cwd):
     """Return why a shell command run in cwd is refused, or None to allow it."""
     try:
         parsed = shell_commands(command)
+        # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
+        if len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
+            return None
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.

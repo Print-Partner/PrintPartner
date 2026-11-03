@@ -613,6 +613,57 @@ class SyncTest(unittest.TestCase):
         self.assertTrue(self.calls("issueUpdate("))
         self.assertEqual(self.calls("inverseRelations("), [])
 
+    def test_owner_protected_tickets_are_never_written(self):
+        self.assertEqual(len(sync.PROTECTED), 28)
+        for number in (451, 621, 1007, 1008, 1013, 1019, 1028, 1030, 1056, 1060, 1066):
+            ident = f"GRE-{number}"
+            with self.subTest(ident=ident):
+                self.issues = {ident: ticket(number, "In Progress")}
+                self.api.reset_mock()
+                print.reset_mock()
+                sync._prs = []
+                sync.apply_pr(pr(body=f"Fixes {ident}"))
+                sync.apply_pr(pr(state="MERGED", body=f"Fixes {ident}"))
+                sync.reconcile(3)
+                self.assertEqual(self.issues[ident]["state"]["name"], "In Progress")
+                self.assertEqual((self.calls("issueUpdate("), self.comments), ([], []))
+                self.assertIn(((f"{ident}: skipped, owner-protected ticket; the sync does not write it",),
+                               {"file": sync.sys.stderr}), [(c.args, c.kwargs) for c in print.call_args_list])
+        for number in (1014, 1018, 1029, 1031):
+            with self.subTest(unprotected=number):
+                self.issues = {f"GRE-{number}": ticket(number, "In Progress")}
+                sync.apply_pr(pr(body=f"Fixes GRE-{number}"))
+                self.assertEqual(self.issues[f"GRE-{number}"]["state"]["name"], "In Review")
+
+    def test_zero_padded_reference_to_protected_ticket_is_skipped(self):
+        self.issues = {"GRE-1008": ticket(1008, "In Progress")}
+        sync.apply_pr(pr(body="Refs GRE-01008"))
+        sync.apply_pr(pr(state="MERGED", body="Fixes GRE-001008"))
+        self.assertEqual(self.issues["GRE-1008"]["state"]["name"], "In Progress")
+        self.assertEqual(self.calls("issueUpdate("), [])
+
+    def test_done_protected_ticket_still_promotes_unprotected_dependents(self):
+        self.issues = {"GRE-1010": ticket(1010, "Done"), "GRE-2": ticket(2, "Backlog")}
+        self.blocks = [("GRE-1010", "GRE-2")]
+        sync.apply_pr(pr(state="MERGED", body="Fixes GRE-1010"))
+        self.assertEqual(self.issues["GRE-2"]["state"]["name"], "Todo")
+        self.assertEqual([v["id"] for v in self.calls("issueUpdate(")], ["2"])
+        self.assertEqual(self.comments, [{"issueId": "2", "body": "fleet-promote: blockers done GRE-1010"}])
+        self.issues["GRE-1010"] = ticket(1010, "In Review")
+        self.issues["GRE-2"] = ticket(2, "Backlog")
+        self.comments = []
+        sync.apply_pr(pr(state="MERGED", body="Fixes GRE-1010"))
+        self.assertEqual((self.issues["GRE-2"]["state"]["name"], self.comments), ("Backlog", []))
+
+    def test_owner_protected_ticket_is_not_promoted(self):
+        self.blocked_world()
+        self.issues["GRE-1010"] = ticket(1010, "Backlog")
+        self.blocks.append(("GRE-1", "GRE-1010"))
+        self.merge_fixes()
+        self.assertEqual(self.issues["GRE-2"]["state"]["name"], "Todo")
+        self.assertEqual(self.issues["GRE-1010"]["state"]["name"], "Backlog")
+        self.assertEqual([c["issueId"] for c in self.comments], ["2"])
+
     def test_done_write_is_verified_and_retried_once(self):
         self.blocked_world()
         self.drop_done = 1

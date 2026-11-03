@@ -1,4 +1,4 @@
-Fixes GRE-xxx <!-- Use "Refs GRE-xxx" for a partial slice. Use "Fixes" only in the PR that completes the ticket. -->
+Fixes GRE-xxx <!-- Every PR completes its ticket. Put unmet acceptance items in a child ticket that quotes them verbatim. -->
 
 ## Summary
 

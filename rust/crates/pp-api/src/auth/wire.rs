@@ -95,6 +95,27 @@ pub(super) fn set_cookie(
         },
     );
 }
+/// `GET /health` body.
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct Health {
+    pub ok: bool,
+    pub authentication_required: bool,
+    pub authenticated: bool,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
+    )]
+    pub degraded_detail: Option<&'static str>,
+    pub capabilities: Vec<&'static str>,
+    pub multi_user: bool,
+    pub single_user_auth: bool,
+    pub single_user_setup_required: bool,
+    pub registration_open: bool,
+    pub owner_mapping_required: bool,
+    pub github_oauth_configured: bool,
+    pub discord_oauth_configured: bool,
+}
 pub(super) fn json_response(value: Value) -> Response {
     Json(value).into_response()
 }

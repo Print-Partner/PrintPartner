@@ -14,7 +14,7 @@ use axum::{
 };
 use pp_storage::{
     auth::{self, AuthFailure, Secret, rebuild::RebuildAuthClient},
-    required_units::{AdmissionFailure, Outcome as WorkspaceOutcome},
+    required_units::{AdmissionFailure, DraftListResponse, Outcome as WorkspaceOutcome},
     working_drafts::{
         AbandonOutcome, AbandonRequest, DraftIdentity, DraftList, EditRequest, Failure, Outcome,
         PositiveId, Request, WorkingDraftClient,
@@ -429,7 +429,10 @@ fn path_id(value: &str) -> Option<PositiveId> {
 
 async fn list(Extension(read): Extension<Authorized>) -> Response {
     match read.outcome.as_ref() {
-        Outcome::Listed { drafts } => json_response(StatusCode::OK, listed(read.profile, drafts)),
+        Outcome::Listed { drafts } => match listed(read.profile, drafts) {
+            Ok(body) => json_response(StatusCode::OK, body),
+            Err(_) => internal_error(),
+        },
         Outcome::ProfileNotFound => profile_missing(),
         _ => internal_error(),
     }
@@ -688,23 +691,13 @@ fn conflict(code: &str, workspace: Option<Value>) -> Response {
     json_response(StatusCode::CONFLICT, body)
 }
 
-fn listed(profile: PositiveId, drafts: &DraftList) -> Value {
-    json!({
-        "profile_id": profile,
-        "drafts": drafts.iter().map(identity).collect::<Vec<_>>()
-    })
-}
-
-fn identity(draft: &DraftIdentity) -> Value {
-    json!({
-        "draft_id": draft.draft_id(),
-        "state": draft.state().as_str(),
-        "lifecycle_version": draft.lifecycle_version(),
-        "snapshot_digest": draft.snapshot_digest(),
-        "base": {
-            "revision_id": draft.base_revision_id(),
-            "plan_version": draft.base_plan_version(),
-        }
+fn listed(profile: PositiveId, drafts: &DraftList) -> Result<DraftListResponse> {
+    Ok(DraftListResponse {
+        profile_id: i64::try_from(profile.get())?,
+        drafts: drafts
+            .iter()
+            .map(DraftIdentity::workspace_identity)
+            .collect::<Result<_>>()?,
     })
 }
 

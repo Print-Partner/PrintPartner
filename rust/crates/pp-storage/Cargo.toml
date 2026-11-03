@@ -8,6 +8,8 @@ license.workspace = true
 [features]
 default = []
 desktop_rebuild = ["serde_json/raw_value", "dep:pp-domain", "pp-domain/desktop_rebuild", "dep:saphyr-parser", "dep:pp-contracts", "pp-contracts/desktop_rebuild"]
+# Weak features: codegen adds schemas without activating the gated edges.
+codegen = ["dep:schemars", "pp-contracts?/codegen", "pp-domain?/codegen"]
 
 [[bin]]
 name = "required-unit-fixture"
@@ -39,6 +41,7 @@ icu_collator = "=2.3.1"
 regress = "=0.11.1"
 ryu-js = "=1.0.2"
 saphyr-parser = { version = "=0.1.0", default-features = false, optional = true }
+schemars = { version = "=0.8.22", optional = true }
 
 [dev-dependencies]
 rusqlite = { workspace = true, features = ["hooks"] }

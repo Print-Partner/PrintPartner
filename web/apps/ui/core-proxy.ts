@@ -37,7 +37,7 @@ export function coreProxy(env: Record<string, string | undefined>): Record<strin
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /** Whether origin is the dev server's own kind of origin: http(s) on loopback. */
-export function isLoopbackOrigin(origin: string): boolean {
+function isLoopbackOrigin(origin: string): boolean {
   try {
     const parsed = new URL(origin);
     return (

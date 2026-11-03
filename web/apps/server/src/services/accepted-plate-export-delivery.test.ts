@@ -15,10 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  runWithTenantDiskQuota,
-  TenantDiskQuotaError,
-} from "../lib/tenant-disk-quota.js";
+import { runWithTenantDiskQuota, TenantDiskQuotaError } from "../lib/tenant-disk-quota.js";
 import type { AcceptedPlateExportInput } from "../db/accepted-plates.js";
 import type { AcceptedOperationalArtifact } from "../db/accepted-plan-operational.js";
 import { parseRequiredUnitToken } from "./required-units.js";
@@ -30,14 +27,16 @@ import {
 
 const roots: string[] = [];
 
-async function runMaterializerProcess(payload: Readonly<{
-  input: AcceptedPlateExportInput;
-  reposDir: string;
-  tenantExportsDir: string;
-  limits: MaterializeAcceptedPlateExportDependencies["limits"];
-  command: { profileId: number; expectedPlateRevisionId: number };
-  barrierDirectory: string;
-}>): Promise<string> {
+async function runMaterializerProcess(
+  payload: Readonly<{
+    input: AcceptedPlateExportInput;
+    reposDir: string;
+    tenantExportsDir: string;
+    limits: MaterializeAcceptedPlateExportDependencies["limits"];
+    command: { profileId: number; expectedPlateRevisionId: number };
+    barrierDirectory: string;
+  }>,
+): Promise<string> {
   const moduleUrl = new URL("./accepted-plate-export-delivery.ts", import.meta.url).href;
   const source = `
     import { writeFile, readdir } from "node:fs/promises";
@@ -55,15 +54,23 @@ async function runMaterializerProcess(payload: Readonly<{
     process.stdout.write(JSON.stringify(result));
   `;
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
-      cwd: new URL("../../..", import.meta.url),
-      env: { ...process.env, PP_MATERIALIZER_PAYLOAD: JSON.stringify(payload) },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", source],
+      {
+        cwd: new URL("../../..", import.meta.url),
+        env: { ...process.env, PP_MATERIALIZER_PAYLOAD: JSON.stringify(payload) },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve(stdout);
@@ -115,27 +122,31 @@ endsolid accepted`);
     plateRevisionId: 19,
     plateRevisionNumber: 2,
     layoutDigest: "c".repeat(64),
-    plates: [{
-      plateId: "plate-one",
-      ordinal: 1,
-      printerId: "printer-one",
-      printerName: "Printer One",
-      printerModel: "Model One",
-      bedWidthUm: 250_000,
-      bedDepthUm: 250_000,
-      bedHeightUm: 250_000,
-      marginUm: 0,
-      units: [{
-        token: parseRequiredUnitToken("ppu_00000000000000000000000000000001"),
-        objectName: "Part__ppu_00000000000000000000000000000001",
-        xUm: 1_000,
-        yUm: 2_000,
-        widthUm: 3_000,
-        depthUm: 5_000,
-        heightUm: 10_000,
-        artifact,
-      }],
-    }],
+    plates: [
+      {
+        plateId: "plate-one",
+        ordinal: 1,
+        printerId: "printer-one",
+        printerName: "Printer One",
+        printerModel: "Model One",
+        bedWidthUm: 250_000,
+        bedDepthUm: 250_000,
+        bedHeightUm: 250_000,
+        marginUm: 0,
+        units: [
+          {
+            token: parseRequiredUnitToken("ppu_00000000000000000000000000000001"),
+            objectName: "Part__ppu_00000000000000000000000000000001",
+            xUm: 1_000,
+            yUm: 2_000,
+            widthUm: 3_000,
+            depthUm: 5_000,
+            heightUm: 10_000,
+            artifact,
+          },
+        ],
+      },
+    ],
   };
   return {
     dependencies: {
@@ -160,21 +171,24 @@ describe("materializeAcceptedPlateExport", () => {
     const { dependencies, command } = fixture();
     const dataDir = dirname(dirname(dependencies.tenantExportsDir));
 
-    await expect(runWithTenantDiskQuota({
-      dataDir,
-      reposDir: dependencies.reposDir,
-      tenantId: "default",
-      sourceIds: () => [],
-      quotaBytes: 1,
-    }, async () => materializeAcceptedPlateExport(dependencies, command)))
-      .rejects.toBeInstanceOf(TenantDiskQuotaError);
+    await expect(
+      runWithTenantDiskQuota(
+        {
+          dataDir,
+          reposDir: dependencies.reposDir,
+          tenantId: "default",
+          sourceIds: () => [],
+          quotaBytes: 1,
+        },
+        async () => materializeAcceptedPlateExport(dependencies, command),
+      ),
+    ).rejects.toBeInstanceOf(TenantDiskQuotaError);
 
-    expect(existsSync(join(
-      dependencies.tenantExportsDir,
-      "accepted-plates",
-      "profile-7",
-      "revision-19",
-    ))).toBe(false);
+    expect(
+      existsSync(
+        join(dependencies.tenantExportsDir, "accepted-plates", "profile-7", "revision-19"),
+      ),
+    ).toBe(false);
   });
 
   it("publishes the fixed immutable tree with verified metadata", async () => {
@@ -188,10 +202,16 @@ describe("materializeAcceptedPlateExport", () => {
       filename: "0001.3mf",
       relativePath: "accepted-plates/profile-7/revision-19/plates/0001.3mf",
     });
-    expect(result.manifest.relativePath).toBe("accepted-plates/profile-7/revision-19/manifest.json");
-    expect(result.bundle.relativePath).toBe("accepted-plates/profile-7/revision-19/accepted-plates.zip");
+    expect(result.manifest.relativePath).toBe(
+      "accepted-plates/profile-7/revision-19/manifest.json",
+    );
+    expect(result.bundle.relativePath).toBe(
+      "accepted-plates/profile-7/revision-19/accepted-plates.zip",
+    );
     for (const file of [result.manifest, result.bundle, ...result.plates]) {
-      expect(relative(realpathSync(dependencies.tenantExportsDir), file.absolutePath)).not.toMatch(/^\.\./);
+      expect(relative(realpathSync(dependencies.tenantExportsDir), file.absolutePath)).not.toMatch(
+        /^\.\./,
+      );
       const published = readFileSync(file.absolutePath);
       expect(published).toHaveLength(file.byteLength);
       expect(createHash("sha256").update(published).digest("hex")).toBe(file.sha256);
@@ -260,14 +280,20 @@ describe("materializeAcceptedPlateExport", () => {
   it.each([
     ["altered", (path: string) => writeFileSync(path, "altered")],
     ["missing", (path: string) => rmSync(path)],
-    ["symlinked", (path: string) => {
-      rmSync(path);
-      symlinkSync("../manifest.json", path);
-    }],
-    ["non-regular", (path: string) => {
-      rmSync(path);
-      mkdirSync(path);
-    }],
+    [
+      "symlinked",
+      (path: string) => {
+        rmSync(path);
+        symlinkSync("../manifest.json", path);
+      },
+    ],
+    [
+      "non-regular",
+      (path: string) => {
+        rmSync(path);
+        mkdirSync(path);
+      },
+    ],
   ])("rejects %s published Plate content without repairing it", async (_case, mutate) => {
     const { dependencies, command } = fixture();
     const first = await materializeAcceptedPlateExport(dependencies, command);
@@ -311,18 +337,20 @@ describe("materializeAcceptedPlateExport", () => {
 
   it("leaves no final revision when generation fails", async () => {
     const { dependencies, command } = fixture();
-    const result = await materializeAcceptedPlateExport({
-      ...dependencies,
-      repository: { readAcceptedPlateExportInput: () => ({ kind: "empty_plan" }) },
-    }, command);
+    const result = await materializeAcceptedPlateExport(
+      {
+        ...dependencies,
+        repository: { readAcceptedPlateExportInput: () => ({ kind: "empty_plan" }) },
+      },
+      command,
+    );
 
     expect(result).toEqual({ kind: "empty_plan" });
-    expect(existsSync(join(
-      dependencies.tenantExportsDir,
-      "accepted-plates",
-      "profile-7",
-      "revision-19",
-    ))).toBe(false);
+    expect(
+      existsSync(
+        join(dependencies.tenantExportsDir, "accepted-plates", "profile-7", "revision-19"),
+      ),
+    ).toBe(false);
   });
 
   it("leaves no final revision when the publication parent is unwritable", async () => {
@@ -351,10 +379,15 @@ describe("materializeAcceptedPlateExport", () => {
     const { dependencies } = fixture();
     const unusedRoot = join(dependencies.tenantExportsDir, "unused");
 
-    await expect(materializeAcceptedPlateExport({
-      ...dependencies,
-      tenantExportsDir: unusedRoot,
-    }, command)).rejects.toThrow(RangeError);
+    await expect(
+      materializeAcceptedPlateExport(
+        {
+          ...dependencies,
+          tenantExportsDir: unusedRoot,
+        },
+        command,
+      ),
+    ).rejects.toThrow(RangeError);
     expect(existsSync(unusedRoot)).toBe(false);
   });
 });
@@ -380,11 +413,13 @@ describe("stageAcceptedPlateExport", () => {
     expect(readFileSync(join(staged.absoluteDirectory, "0001.3mf"))).toEqual(
       readFileSync(materialized.plates[0]!.absolutePath),
     );
-    await expect(stageAcceptedPlateExport({
-      materialized,
-      exchangeRoot,
-      instanceId: "orca/main",
-    })).resolves.toEqual(staged);
+    await expect(
+      stageAcceptedPlateExport({
+        materialized,
+        exchangeRoot,
+        instanceId: "orca/main",
+      }),
+    ).resolves.toEqual(staged);
   });
 
   it("rejects a differing inbox without overwriting it", async () => {
@@ -393,13 +428,18 @@ describe("stageAcceptedPlateExport", () => {
     if (materialized.kind !== "materialized") throw new Error("materialization failed");
     const exchangeRoot = join(dependencies.tenantExportsDir, "..", "exchange");
     mkdirSync(exchangeRoot);
-    const first = await stageAcceptedPlateExport({ materialized, exchangeRoot, instanceId: "orca" });
+    const first = await stageAcceptedPlateExport({
+      materialized,
+      exchangeRoot,
+      instanceId: "orca",
+    });
     if (first.kind !== "staged") throw new Error("staging failed");
     const stagedFile = join(first.absoluteDirectory, "0001.3mf");
     writeFileSync(stagedFile, "tampered");
 
-    await expect(stageAcceptedPlateExport({ materialized, exchangeRoot, instanceId: "orca" }))
-      .resolves.toEqual({ kind: "output_conflict" });
+    await expect(
+      stageAcceptedPlateExport({ materialized, exchangeRoot, instanceId: "orca" }),
+    ).resolves.toEqual({ kind: "output_conflict" });
     expect(readFileSync(stagedFile, "utf8")).toBe("tampered");
   });
 });

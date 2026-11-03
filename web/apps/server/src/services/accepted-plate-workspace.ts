@@ -25,10 +25,7 @@ import type {
   ReadAcceptedPlateWorkspaceInputResult,
 } from "../db/accepted-plates.js";
 import type { AcceptedPlanBasis } from "../db/accepted-plan-progress.js";
-import {
-  parseRequiredUnitToken,
-  type RequiredUnitToken,
-} from "./required-units.js";
+import { parseRequiredUnitToken, type RequiredUnitToken } from "./required-units.js";
 import {
   loadAcceptedArtifactGeometry,
   type AcceptedArtifactGeometryLimits,
@@ -49,12 +46,8 @@ import {
 export { acceptedPrinter } from "./accepted-plate-workspace-model.js";
 
 type WorkspaceRepository = Readonly<{
-  readAcceptedPlateWorkspaceInput(
-    profileId: number,
-  ): ReadAcceptedPlateWorkspaceInputResult;
-  publishAcceptedPlates(
-    command: PublishAcceptedPlatesCommand,
-  ): PublishAcceptedPlatesResult;
+  readAcceptedPlateWorkspaceInput(profileId: number): ReadAcceptedPlateWorkspaceInputResult;
+  publishAcceptedPlates(command: PublishAcceptedPlatesCommand): PublishAcceptedPlatesResult;
   getSetting?(key: string): string | null;
 }>;
 
@@ -123,16 +116,11 @@ export type InitializeAcceptedPlatesResult =
       readonly printerId: string;
     }
   | Exclude<LoadAcceptedArtifactGeometryResult, { readonly kind: "ready" }>
-  | Exclude<
-      PublishAcceptedPlatesResult,
-      { readonly kind: "published" | "unchanged" }
-    >
+  | Exclude<PublishAcceptedPlatesResult, { readonly kind: "published" | "unchanged" }>
   | { readonly kind: "profile_not_found" }
   | { readonly kind: "empty_plan" };
 
-function currentPrinters(
-  dependencies: AcceptedPlateWorkspaceDependencies,
-): AcceptedPlatePrinter[] {
+function currentPrinters(dependencies: AcceptedPlateWorkspaceDependencies): AcceptedPlatePrinter[] {
   return dependencies
     .loadPrinters()
     .map(acceptedPrinter)
@@ -140,9 +128,7 @@ function currentPrinters(
     .sort((left, right) => compareUtf8(left.id, right.id));
 }
 
-function setupUnit(
-  unit: AcceptedPlateSetupUnit,
-): AcceptedPlateSetupUnitContract {
+function setupUnit(unit: AcceptedPlateSetupUnit): AcceptedPlateSetupUnitContract {
   return {
     token: parseRequiredUnitTokenContract(unit.token),
     part_id: unit.partId,
@@ -153,9 +139,7 @@ function setupUnit(
     source_layer: unit.sourceLayer,
     role: unit.role,
     filament_color_id: unit.filamentColorId,
-    ...(unit.filamentCustomHex == null
-      ? {}
-      : { filament_custom_hex: unit.filamentCustomHex }),
+    ...(unit.filamentCustomHex == null ? {} : { filament_custom_hex: unit.filamentCustomHex }),
     ...(unit.filamentHex == null ? {} : { filament_hex: unit.filamentHex }),
     completed: unit.completed ?? false,
   };
@@ -256,8 +240,7 @@ function publishedWorkspace(
           ordinal: index + 1,
           units: plate.units.map((unit) => {
             const setup = setupByToken.get(unit.token);
-            if (!setup)
-              throw new Error("Accepted Plate setup metadata is missing");
+            if (!setup) throw new Error("Accepted Plate setup metadata is missing");
             return { ...unit, objectName: setup.objectName };
           }),
         },
@@ -270,25 +253,19 @@ function publishedWorkspace(
         ordinal: index + 1,
         units: plate.units.map((unit) => {
           const setup = setupByToken.get(unit.token);
-          if (!setup)
-            throw new Error("Accepted Plate setup metadata is missing");
+          if (!setup) throw new Error("Accepted Plate setup metadata is missing");
           return { ...unit, objectName: setup.objectName };
         }),
       })),
       setupByToken,
     ),
-    unassigned: input.units
-      .filter((unit) => !placedTokens.has(unit.token))
-      .map(setupUnit),
+    unassigned: input.units.filter((unit) => !placedTokens.has(unit.token)).map(setupUnit),
   };
 }
 
 function presentWorkspace(
   dependencies: AcceptedPlateWorkspaceDependencies,
-  input: Extract<
-    ReadAcceptedPlateWorkspaceInputResult,
-    { kind: "setup" | "ready" }
-  >,
+  input: Extract<ReadAcceptedPlateWorkspaceInputResult, { kind: "setup" | "ready" }>,
 ): AcceptedPlateWorkspace {
   if (input.units.length === 0) return { kind: "empty_plan" };
   const printers = currentPrinters(dependencies);
@@ -314,9 +291,7 @@ function presentWorkspace(
     printers,
     plates: input.plates.map((plate) => plateView(plate, setupByToken)),
     unplaced: unplacedWorkspaceUnits(input.plates, setupByToken),
-    unassigned: input.units
-      .filter((unit) => !placedTokens.has(unit.token))
-      .map(setupUnit),
+    unassigned: input.units.filter((unit) => !placedTokens.has(unit.token)).map(setupUnit),
   };
 }
 
@@ -324,8 +299,7 @@ export function readAcceptedPlateWorkspace(
   dependencies: AcceptedPlateWorkspaceDependencies,
   profileId: number,
 ): AcceptedPlateWorkspaceReadResult {
-  const input =
-    dependencies.repository.readAcceptedPlateWorkspaceInput(profileId);
+  const input = dependencies.repository.readAcceptedPlateWorkspaceInput(profileId);
   if (input.kind === "empty_plan") {
     return { kind: "workspace", workspace: { kind: "empty_plan" } };
   }
@@ -349,10 +323,8 @@ function assignmentFailure(
     if (seen.has(assignment.token)) duplicates.add(assignment.token);
     seen.add(assignment.token);
   }
-  const byToken = (left: RequiredUnitToken, right: RequiredUnitToken) =>
-    compareUtf8(left, right);
-  if (unknown.size > 0)
-    return { kind: "unknown_unit_token", tokens: [...unknown].sort(byToken) };
+  const byToken = (left: RequiredUnitToken, right: RequiredUnitToken) => compareUtf8(left, right);
+  if (unknown.size > 0) return { kind: "unknown_unit_token", tokens: [...unknown].sort(byToken) };
   if (duplicates.size > 0)
     return {
       kind: "duplicate_assignment",
@@ -365,16 +337,10 @@ function assignmentFailure(
     .filter((assignment) => assignment.printerId === null)
     .map((assignment) => assignment.token)
     .sort(byToken);
-  return unassigned.length > 0
-    ? { kind: "unassigned_units", tokens: unassigned }
-    : null;
+  return unassigned.length > 0 ? { kind: "unassigned_units", tokens: unassigned } : null;
 }
 
-function plateId(
-  basis: AcceptedPlanBasis,
-  printerId: string,
-  tokens: readonly string[],
-): string {
+function plateId(basis: AcceptedPlanBasis, printerId: string, tokens: readonly string[]): string {
   const digest = createHash("sha256")
     .update(
       JSON.stringify([
@@ -412,10 +378,7 @@ function packAssignedPlates(
       readonly printerId: string;
     } {
   const assignmentByToken = new Map(
-    input.assignments.map((assignment) => [
-      assignment.token,
-      assignment.printerId,
-    ]),
+    input.assignments.map((assignment) => [assignment.token, assignment.printerId]),
   );
   const assignedIds = [...input.printers.keys()].sort(compareUtf8);
   const plates: AcceptedPlateInput[] = [];
@@ -426,8 +389,7 @@ function packAssignedPlates(
       .filter((unit) => assignmentByToken.get(unit.token) === printerId)
       .map((unit) => {
         const dimensions = input.dimensions.get(unit.token);
-        if (!dimensions)
-          throw new Error("Accepted artifact geometry is missing");
+        if (!dimensions) throw new Error("Accepted artifact geometry is missing");
         return { token: unit.token, ...dimensions };
       });
     const setupByToken = new Map(input.units.map((unit) => [unit.token, unit]));
@@ -474,9 +436,7 @@ function packAssignedPlates(
   return plates;
 }
 
-function currentPlateInputs(
-  plates: readonly AcceptedPlate[],
-): AcceptedPlateInput[] {
+function currentPlateInputs(plates: readonly AcceptedPlate[]): AcceptedPlateInput[] {
   return plates.map((plate) => ({
     plateId: plate.plateId,
     printerId: plate.printerId,
@@ -506,8 +466,7 @@ function samePlateInputs(
   if (left.length !== right.length) return false;
   return left.every((plate, plateIndex) => {
     const candidate = right[plateIndex];
-    if (!candidate || plate.units.length !== candidate.units.length)
-      return false;
+    if (!candidate || plate.units.length !== candidate.units.length) return false;
     if (
       plate.plateId !== candidate.plateId ||
       plate.printerId !== candidate.printerId ||
@@ -523,14 +482,14 @@ function samePlateInputs(
       const other = candidate.units[unitIndex];
       return Boolean(
         other &&
-          unit.token === other.token &&
-          unit.xUm === other.xUm &&
-          unit.yUm === other.yUm &&
-          unit.widthUm === other.widthUm &&
-          unit.depthUm === other.depthUm &&
-          unit.heightUm === other.heightUm &&
-          (unit.placement ?? "auto") === (other.placement ?? "auto") &&
-          (unit.pinned ?? false) === (other.pinned ?? false),
+        unit.token === other.token &&
+        unit.xUm === other.xUm &&
+        unit.yUm === other.yUm &&
+        unit.widthUm === other.widthUm &&
+        unit.depthUm === other.depthUm &&
+        unit.heightUm === other.heightUm &&
+        (unit.placement ?? "auto") === (other.placement ?? "auto") &&
+        (unit.pinned ?? false) === (other.pinned ?? false),
       );
     });
   });
@@ -546,9 +505,7 @@ export async function initializeAcceptedPlates(
   dependencies: AcceptedPlateWorkspaceDependencies,
   command: InitializeAcceptedPlatesCommand,
 ): Promise<InitializeAcceptedPlatesResult> {
-  const input = dependencies.repository.readAcceptedPlateWorkspaceInput(
-    command.profileId,
-  );
+  const input = dependencies.repository.readAcceptedPlateWorkspaceInput(command.profileId);
   if (
     input.kind === "empty_plan" ||
     input.kind === "profile_not_found" ||
@@ -564,20 +521,14 @@ export async function initializeAcceptedPlates(
     return { kind: "stale_accepted_plan" };
   }
   const packingRules = loadProductionPackingRules(
-    dependencies.repository.getSetting?.(
-      productionSetupSettingKey(command.profileId),
-    ),
+    dependencies.repository.getSetting?.(productionSetupSettingKey(command.profileId)),
     command.profileId,
   );
-  const revisionMatches =
-    input.expectedPlateRevisionId === command.expectedPlateRevisionId;
-  if (!revisionMatches && input.kind !== "ready")
-    return { kind: "plate_revision_changed" };
+  const revisionMatches = input.expectedPlateRevisionId === command.expectedPlateRevisionId;
+  if (!revisionMatches && input.kind !== "ready") return { kind: "plate_revision_changed" };
   const assignmentError = assignmentFailure(input.units, command.assignments);
   if (assignmentError) {
-    return revisionMatches
-      ? assignmentError
-      : { kind: "plate_revision_changed" };
+    return revisionMatches ? assignmentError : { kind: "plate_revision_changed" };
   }
 
   const fleet = dependencies.loadPrinters();
@@ -586,14 +537,10 @@ export async function initializeAcceptedPlates(
     .map(acceptedPrinter)
     .filter((printer): printer is AcceptedPlatePrinter => printer !== null)
     .sort((left, right) => compareUtf8(left.id, right.id));
-  const assignedIds = [
-    ...new Set(command.assignments.map((assignment) => assignment.printerId)),
-  ]
+  const assignedIds = [...new Set(command.assignments.map((assignment) => assignment.printerId))]
     .filter((printerId): printerId is string => printerId !== null)
     .sort(compareUtf8);
-  const unknownPrinters = assignedIds.filter(
-    (printerId) => !fleetById.has(printerId),
-  );
+  const unknownPrinters = assignedIds.filter((printerId) => !fleetById.has(printerId));
   if (unknownPrinters.length > 0) {
     return revisionMatches
       ? { kind: "printer_not_found", printerIds: unknownPrinters }
@@ -632,24 +579,16 @@ export async function initializeAcceptedPlates(
       dimensions,
       rules: packingRules,
     });
-    if (
-      isPackedPlateInputs(replay) &&
-      samePlateInputs(replay, currentPlateInputs(input.plates))
-    ) {
+    if (isPackedPlateInputs(replay) && samePlateInputs(replay, currentPlateInputs(input.plates))) {
       const workspace = presentWorkspace(dependencies, input);
-      if (workspace.kind !== "ready")
-        throw new Error("Accepted Plate replay workspace is empty");
+      if (workspace.kind !== "ready") throw new Error("Accepted Plate replay workspace is empty");
       return { kind: "workspace", workspace };
     }
     return { kind: "plate_revision_changed" };
   }
 
-  const assignedTokens = new Set(
-    command.assignments.map((assignment) => assignment.token),
-  );
-  const loaded = await (
-    dependencies.loadGeometry ?? loadAcceptedArtifactGeometry
-  )({
+  const assignedTokens = new Set(command.assignments.map((assignment) => assignment.token));
+  const loaded = await (dependencies.loadGeometry ?? loadAcceptedArtifactGeometry)({
     reposDir: dependencies.reposDir,
     units: input.units.filter((unit) => assignedTokens.has(unit.token)),
     limits: dependencies.limits,
@@ -657,10 +596,7 @@ export async function initializeAcceptedPlates(
   if (loaded.kind !== "ready") return loaded;
 
   const dimensions = new Map(
-    [...loaded.geometryByToken].map(([unitToken, value]) => [
-      unitToken,
-      value.dimensions,
-    ]),
+    [...loaded.geometryByToken].map(([unitToken, value]) => [unitToken, value.dimensions]),
   );
   const packed = packAssignedPlates({
     basis: command.expected,
@@ -679,8 +615,7 @@ export async function initializeAcceptedPlates(
     expectedPlateRevisionId: command.expectedPlateRevisionId,
     plates,
   });
-  if (published.kind !== "published" && published.kind !== "unchanged")
-    return published;
+  if (published.kind !== "published" && published.kind !== "unchanged") return published;
   return {
     kind: "workspace",
     workspace: publishedWorkspace({
@@ -734,9 +669,7 @@ function arrangedPlates(
         xUm: unit.xUm,
         yUm: unit.yUm,
         placement:
-          unit.placement === "manual" || unit.placement === "unplaced"
-            ? unit.placement
-            : "auto",
+          unit.placement === "manual" || unit.placement === "unplaced" ? unit.placement : "auto",
         pinned: unit.pinned === true,
       }));
       const packed = arrangeAcceptedUnits({
@@ -765,14 +698,11 @@ function arrangedPlates(
                 ),
           units: packedPlate.units.map((unit) => {
             const original = originalByToken.get(unit.token);
-            const fixed =
-              original?.placement === "manual" || original?.pinned === true;
+            const fixed = original?.placement === "manual" || original?.pinned === true;
             return {
               ...unit,
               placement:
-                fixed && original?.placement === "manual"
-                  ? ("manual" as const)
-                  : ("auto" as const),
+                fixed && original?.placement === "manual" ? ("manual" as const) : ("auto" as const),
               pinned: fixed ? original?.pinned === true : false,
             };
           }),
@@ -859,9 +789,7 @@ export function arrangeAcceptedPlates(
   dependencies: AcceptedPlateWorkspaceDependencies,
   command: ArrangeAcceptedPlatesServiceCommand,
 ): InitializeAcceptedPlatesResult {
-  const input = dependencies.repository.readAcceptedPlateWorkspaceInput(
-    command.profileId,
-  );
+  const input = dependencies.repository.readAcceptedPlateWorkspaceInput(command.profileId);
   if (
     input.kind === "empty_plan" ||
     input.kind === "profile_not_found" ||
@@ -881,9 +809,7 @@ export function arrangeAcceptedPlates(
     return { kind: "plate_revision_changed" };
   }
   const packingRules = loadProductionPackingRules(
-    dependencies.repository.getSetting?.(
-      productionSetupSettingKey(command.profileId),
-    ),
+    dependencies.repository.getSetting?.(productionSetupSettingKey(command.profileId)),
     command.profileId,
   );
   const packed = arrangedPlates(
@@ -901,8 +827,7 @@ export function arrangeAcceptedPlates(
     plates: packed,
     undoFromRevisionId: command.mode === "all" ? input.plateRevisionId : null,
   });
-  if (published.kind !== "published" && published.kind !== "unchanged")
-    return published;
+  if (published.kind !== "published" && published.kind !== "unchanged") return published;
   return {
     kind: "workspace",
     workspace: publishedWorkspace({

@@ -19,6 +19,9 @@ const RESPAWN_READY_FUSE: Duration = Duration::from_secs(50);
 #[path = "runtime_m0/drain.rs"]
 mod drain;
 
+#[path = "runtime_m0/slice0_mount.rs"]
+mod slice0_mount;
+
 #[cfg(target_os = "linux")]
 #[path = "runtime_m0/ticket_t_68_desktop_account_mapping.rs"]
 mod ticket_t_68_desktop_account_mapping;

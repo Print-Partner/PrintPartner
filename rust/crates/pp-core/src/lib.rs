@@ -142,6 +142,7 @@ impl CoreHandle {
 
 pub struct CoreRuntime {
     desktop_rebuild: DesktopRebuild,
+    rust_only: bool,
     stop: Option<tokio::sync::oneshot::Sender<Option<CutoverPlan>>>,
     completion: Option<tokio::sync::oneshot::Receiver<(ShutdownReceipt, Option<CutoverReceipt>)>>,
     ownership: Option<Arc<OwnershipIndex>>,
@@ -160,9 +161,45 @@ struct Resources {
     owners: OperationOwners,
     origin_change: Option<OriginChange>,
     gateway: Gateway,
-    supervisor: Supervisor,
-    owner: StorageLease,
+    compat: CompatHandle,
+    backend: Backend,
     gate: ShutdownGate,
+}
+
+/// Who owns the data directory's operations for this run.
+enum Backend {
+    /// The supervised Node child, with the lease pp-core holds for it.
+    Node {
+        supervisor: Supervisor,
+        owner: StorageLease,
+    },
+    /// Rust only: no Node child. The writer holds the lease.
+    #[cfg(feature = "desktop_rebuild")]
+    Rust(Arc<std::sync::Mutex<pp_storage::WriterOwner>>),
+}
+
+impl Resources {
+    fn with_lease<R>(&self, use_lease: impl FnOnce(&StorageLease) -> R) -> R {
+        match &self.backend {
+            Backend::Node { owner, .. } => use_lease(owner),
+            #[cfg(feature = "desktop_rebuild")]
+            Backend::Rust(writer) => use_lease(
+                writer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lease(),
+            ),
+        }
+    }
+}
+
+/// Which runtimes a start may choose between.
+#[derive(Clone, Copy)]
+enum Selection {
+    /// Always the Node-backed runtime.
+    Node,
+    /// The shipped launchers: Rust only when both rebuild gates are on.
+    Launcher,
 }
 
 #[derive(Serialize, Debug)]
@@ -300,7 +337,8 @@ async fn start_resources(
         }
         return Err(error);
     }
-    let gateway = match Gateway::start(listener, assets, supervisor.handle.clone(), &owners) {
+    let compat = supervisor.handle.clone();
+    let gateway = match Gateway::start(listener, assets, compat.clone(), &owners) {
         Ok(gateway) => gateway,
         Err(error) => {
             if supervisor.shutdown().await.is_ok() {
@@ -315,15 +353,84 @@ async fn start_resources(
         owners,
         origin_change,
         gateway,
-        supervisor,
-        owner,
+        compat,
+        backend: Backend::Node { supervisor, owner },
+        gate: ShutdownGate::new(),
+    })
+}
+
+/// Start without a Node child: the Rust writer owns the data directory and the
+/// gateway answers admitted requests from the `pp-api` routers. Use disposable
+/// directories only; refusing real ones is separate work.
+#[cfg(feature = "desktop_rebuild")]
+async fn start_rust_resources(
+    input: DesktopLaunch,
+    desktop_rebuild: DesktopRebuild,
+) -> Result<Resources> {
+    let assets = input
+        .assets
+        .canonicalize()
+        .context("React assets unavailable")?;
+    let community_manifests = input.bundle.community_manifests_dir();
+    let verified_assets = assets.clone();
+    tokio::task::spawn_blocking(move || pp_compat::verify_bundle(input.bundle, &verified_assets))
+        .await
+        .context("Release verification task failed")??;
+    let data_dir = pp_storage::lease::prepare_directory(&input.data_dir)?;
+    if let Some(released) = StorageLease::retry_failed_release_if_present(&data_dir)? {
+        anyhow::ensure!(
+            released.marker_removed
+                && released.runtime_removed
+                && released.lock_released
+                && !released.ownership_retained,
+            "Storage cleanup still incomplete; ownership retained"
+        );
+    }
+    let writer = tokio::task::spawn_blocking(move || {
+        pp_storage::WriterOwner::open_with_job_feature_admission(
+            &data_dir,
+            pp_storage::Limits::default(),
+        )
+    })
+    .await
+    .context("Storage open task failed")??
+    .0;
+    let (listener, origin_change) = bind_origin(writer.lease()).await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let writer = Arc::new(std::sync::Mutex::new(writer));
+    let product = rebuild_api::product_router(
+        desktop_rebuild,
+        Arc::clone(&writer),
+        &origin,
+        community_manifests.as_deref(),
+    )?
+    .context("Rust product routes need the rebuild setting")?;
+    let owners = OperationOwners::node_only();
+    let compat = CompatHandle::unpublished();
+    let gateway =
+        Gateway::start_with_product(listener, assets, compat.clone(), &owners, Some(product))?;
+    Ok(Resources {
+        owners,
+        origin_change,
+        gateway,
+        compat,
+        backend: Backend::Rust(writer),
         gate: ShutdownGate::new(),
     })
 }
 
 impl CoreRuntime {
+    /// Start the Node-backed runtime, whatever the rebuild setting.
     pub async fn start(input: DesktopLaunch) -> Result<Self> {
         Self::start_with_compat_config(input, SupervisorConfig::default()).await
+    }
+
+    /// The start `pp-server` and `pp-desktop` use. With the `desktop_rebuild`
+    /// feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or `true`, no
+    /// Node child starts: the Rust writer owns the data directory and the
+    /// gateway serves the `pp-api` routers. Otherwise this is [`Self::start`].
+    pub async fn start_for_launcher(input: DesktopLaunch) -> Result<Self> {
+        Self::start_selected(input, SupervisorConfig::default(), Selection::Launcher).await
     }
 
     /// Start with a per-instance compatibility timing policy.
@@ -331,9 +438,17 @@ impl CoreRuntime {
         input: DesktopLaunch,
         compat_config: SupervisorConfig,
     ) -> Result<Self> {
+        Self::start_selected(input, compat_config, Selection::Node).await
+    }
+
+    async fn start_selected(
+        input: DesktopLaunch,
+        compat_config: SupervisorConfig,
+        selection: Selection,
+    ) -> Result<Self> {
         let desktop_rebuild = DesktopRebuild::from_env();
-        let ownership = desktop_rebuild
-            .enabled()
+        let rust_only = matches!(selection, Selection::Launcher) && desktop_rebuild.enabled();
+        let ownership = (desktop_rebuild.enabled() && !rust_only)
             .then(admit_bundled_manifest)
             .transpose()
             .map_err(|error| anyhow::anyhow!("Operation ownership admission failed: {error}"))?
@@ -356,7 +471,15 @@ impl CoreRuntime {
                     }
                 };
                 runtime.block_on(async move {
-                    let mut resources = match start_resources(input, compat_config, worker_ownership.as_deref(), desktop_rebuild).await {
+                    let resources = if rust_only {
+                        #[cfg(feature = "desktop_rebuild")]
+                        { start_rust_resources(input, desktop_rebuild).await }
+                        #[cfg(not(feature = "desktop_rebuild"))]
+                        { unreachable!("Rust-only runtime requires desktop_rebuild") }
+                    } else {
+                        start_resources(input, compat_config, worker_ownership.as_deref(), desktop_rebuild).await
+                    };
+                    let mut resources = match resources {
                         Ok(resources) => resources,
                         Err(error) => {
                             let _ = started.send(Err(error));
@@ -370,7 +493,7 @@ impl CoreRuntime {
                         (
                             resources.gateway.origin().to_owned(),
                             CoreHandle {
-                                compat: resources.supervisor.handle.clone(),
+                                compat: resources.compat.clone(),
                                 monitoring: resources.gateway.monitoring_control(),
                                 bootstrap: resources.gateway.bootstrap_minter(),
                                 gate: resources.gate.clone(),
@@ -380,8 +503,8 @@ impl CoreRuntime {
                             requested_by_adapter,
                             resources.origin_change.clone(),
                             resources.owners.clone(),
-                            resources.owner.data_dir().to_owned(),
-                            resources.owner.runtime_dir().to_owned(),
+                            resources.with_lease(|lease| lease.data_dir().to_owned()),
+                            resources.with_lease(|lease| lease.runtime_dir().to_owned()),
                         )
                     });
                     let mut plan = None;
@@ -398,13 +521,16 @@ impl CoreRuntime {
                                     break;
                                 },
                                 command = commands.recv() => match command {
-                                    Some(command) => command.execute(&resources.owner),
+                                    Some(command) => resources.with_lease(|lease| command.execute(lease)),
                                     None => break,
                                 }
                             }
                         }
                     }
-                    preferences::settle(&mut commands, &resources.owner).await;
+                    preferences::settle(&mut commands, |command| {
+                        resources.with_lease(|lease| command.execute(lease));
+                    })
+                    .await;
                     let receipt = stop_resources(resources, plan).await;
                     let _ = completed.send(receipt);
                 });
@@ -422,6 +548,7 @@ impl CoreRuntime {
         ) = startup.await.context("Core owner startup failed")??;
         Ok(Self {
             desktop_rebuild,
+            rust_only,
             ownership,
             owners,
             data_dir,
@@ -439,6 +566,11 @@ impl CoreRuntime {
     }
     pub fn desktop_rebuild(&self) -> DesktopRebuild {
         self.desktop_rebuild
+    }
+
+    /// True when no Node child runs and Rust owns the data directory.
+    pub fn rust_only(&self) -> bool {
+        self.rust_only
     }
 
     pub fn origin_change(&self) -> Option<&OriginChange> {
@@ -540,18 +672,105 @@ async fn stop_resources(
     resources: Resources,
     plan: Option<CutoverPlan>,
 ) -> (ShutdownReceipt, Option<CutoverReceipt>) {
+    let Resources {
+        gateway,
+        gate,
+        backend,
+        ..
+    } = resources;
+    match backend {
+        Backend::Node { supervisor, owner } => {
+            stop_node(gateway, gate, supervisor, owner, plan).await
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Backend::Rust(writer) => (stop_rust(gateway, gate, writer).await, None),
+    }
+}
+
+/// No child to reap, so `compat_reaped` holds trivially. Storage is released
+/// by shutting the writer down once the gateway has dropped its routes.
+#[cfg(feature = "desktop_rebuild")]
+async fn stop_rust(
+    gateway: Gateway,
+    gate: ShutdownGate,
+    writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
+) -> ShutdownReceipt {
     let (tracked_idle, gateway_idle) = drain::reject_and_wait(
         MUTATION_DRAIN,
-        &resources.gate,
-        || resources.gateway.begin_drain(),
-        |bound| resources.gateway.wait_idle(bound),
-        || resources.supervisor.disarm_restarts(),
+        &gate,
+        || gateway.begin_drain(),
+        |bound| gateway.wait_idle(bound),
+        || {},
     )
     .await;
-    resources.gateway.finish_drain();
-    let compat = resources.supervisor.shutdown().await.ok();
+    gateway.finish_drain();
+    let gateway_stopped = gateway.stop().await.is_ok();
+    let mut receipt = ShutdownReceipt {
+        proof_class: "headless_unsigned",
+        tracked_idle,
+        gateway_idle,
+        compat_exit: None,
+        compat_reaped: true,
+        gateway_stopped,
+        storage_released: false,
+        marker_removed: false,
+        runtime_removed: false,
+        errors: Vec::new(),
+    };
+    if !tracked_idle {
+        receipt.errors.push("tracked_drain_timed_out");
+    }
+    if !gateway_idle {
+        receipt.errors.push("gateway_drain_timed_out");
+    }
+    if !gateway_stopped {
+        receipt.errors.push("gateway_join_failed");
+    }
+    let released = match Arc::try_unwrap(writer) {
+        Ok(writer) => tokio::task::spawn_blocking(move || {
+            writer
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .shutdown()
+                .is_ok()
+        })
+        .await
+        .unwrap_or(false),
+        Err(_) => {
+            receipt.errors.push("storage_owner_shared");
+            false
+        }
+    };
+    if !released {
+        receipt.errors.push("storage_ownership_retained");
+    }
+    // `WriterOwner::shutdown` succeeds only after the lease removed its
+    // marker and runtime directory and unlocked.
+    receipt.storage_released = released;
+    receipt.marker_removed = released;
+    receipt.runtime_removed = released;
+    receipt
+}
+
+async fn stop_node(
+    gateway: Gateway,
+    gate: ShutdownGate,
+    supervisor: Supervisor,
+    owner: StorageLease,
+    plan: Option<CutoverPlan>,
+) -> (ShutdownReceipt, Option<CutoverReceipt>) {
+    let (tracked_idle, gateway_idle) = drain::reject_and_wait(
+        MUTATION_DRAIN,
+        &gate,
+        || gateway.begin_drain(),
+        |bound| gateway.wait_idle(bound),
+        || supervisor.disarm_restarts(),
+    )
+    .await;
+    gateway.finish_drain();
+    let compat = supervisor.shutdown().await.ok();
     let compat_reaped = compat.is_some();
-    let gateway_stopped = resources.gateway.stop().await.is_ok();
+    let gateway_stopped = gateway.stop().await.is_ok();
     let mut receipt = ShutdownReceipt {
         proof_class: "headless_unsigned",
         tracked_idle,
@@ -572,7 +791,7 @@ async fn stop_resources(
     }
     let cutover = plan.map(|plan| {
         plan.commit(
-            resources.owner.data_dir(),
+            owner.data_dir(),
             DrainEvidence {
                 tracked_idle,
                 gateway_idle,
@@ -581,8 +800,7 @@ async fn stop_resources(
         )
     });
     if let Some(cutover) = &cutover
-        && cutover::append_evidence(resources.owner.data_dir(), &Evidence::Cutover(cutover))
-            .is_err()
+        && cutover::append_evidence(owner.data_dir(), &Evidence::Cutover(cutover)).is_err()
     {
         receipt.errors.push("cutover_evidence_unsaved");
     }
@@ -593,11 +811,11 @@ async fn stop_resources(
         receipt.errors.push("compat_cleanup_unproved");
     }
     if !tracked_idle || !compat_reaped {
-        resources.owner.retain_until_process_exit();
+        owner.retain_until_process_exit();
         receipt.errors.push("storage_ownership_retained");
         return (receipt, cutover);
     }
-    let released = resources.owner.release();
+    let released = owner.release();
     receipt.marker_removed = released.marker_removed;
     receipt.runtime_removed = released.runtime_removed;
     if !released.marker_removed {

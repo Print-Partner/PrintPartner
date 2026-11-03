@@ -3400,6 +3400,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 
@@ -3470,6 +3471,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower",
 ]
 
 [[package]]

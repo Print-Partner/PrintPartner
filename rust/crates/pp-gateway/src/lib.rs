@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderValue, Request, Response, StatusCode},
     response::IntoResponse,
     serve::Listener,
@@ -14,6 +14,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
+    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -181,6 +182,12 @@ struct GatewayState {
     relays: TaskTracker,
     cancelled: CancellationToken,
     shutdown_requested: CancellationToken,
+    /// Routes `pp-core` composed for a Rust-only runtime. When present, every
+    /// admitted request that is not a gateway or asset path goes here, and
+    /// none reaches the compatibility proxy.
+    product: Mutex<Option<axum::Router>>,
+    /// Requests that reached the compatibility proxy.
+    compat_forwards: AtomicU64,
 }
 
 /// Native power adapters call suspend before sleep and resume after wake.
@@ -211,6 +218,20 @@ impl Gateway {
         assets: PathBuf,
         compat: CompatHandle,
         owners: &OperationOwners,
+    ) -> Result<Self> {
+        Self::start_with_product(listener, assets, compat, owners, None)
+    }
+
+    /// Start with routes `pp-core` composed from `pp-api`, kept as a sibling
+    /// router so the gateway never depends on `pp-api`. With `product` set,
+    /// admitted requests other than gateway and asset paths are answered by it
+    /// and never forwarded to the compatibility backend.
+    pub fn start_with_product(
+        listener: TcpListener,
+        assets: PathBuf,
+        compat: CompatHandle,
+        owners: &OperationOwners,
+        product: Option<axum::Router>,
     ) -> Result<Self> {
         let address = listener.local_addr()?;
         anyhow::ensure!(
@@ -278,6 +299,8 @@ impl Gateway {
             relays: TaskTracker::new(),
             cancelled: CancellationToken::new(),
             shutdown_requested: CancellationToken::new(),
+            product: Mutex::new(product),
+            compat_forwards: AtomicU64::new(0),
         });
         let monitoring = state.clone();
         state.watcher_tasks.spawn(async move {
@@ -311,7 +334,7 @@ impl Gateway {
         let task = tokio::spawn(async move {
             let mut listener = listener;
             loop {
-                let (stream, _) = tokio::select! {
+                let (stream, peer) = tokio::select! {
                     biased;
                     _ = stopping.cancelled() => break,
                     next = Listener::accept(&mut listener) => next,
@@ -321,10 +344,10 @@ impl Gateway {
                 accepted.spawn(async move {
                     let service = hyper::service::service_fn(move |request| {
                         let state = state.clone();
+                        let mut request = request.map(Body::new);
+                        request.extensions_mut().insert(ConnectInfo(peer));
                         async move {
-                            Ok::<_, std::convert::Infallible>(
-                                handle(State(state), request.map(Body::new)).await,
-                            )
+                            Ok::<_, std::convert::Infallible>(handle(State(state), request).await)
                         }
                     });
                     let mut http = hyper::server::conn::http1::Builder::new();
@@ -370,6 +393,10 @@ impl Gateway {
         ShutdownRequested {
             token: self.state.shutdown_requested.clone(),
         }
+    }
+    /// How many requests reached the compatibility proxy since start.
+    pub fn compat_forwards(&self) -> u64 {
+        self.state.compat_forwards.load(Ordering::SeqCst)
     }
     pub async fn drain(&self) {
         self.drain_for(MUTATION_DRAIN).await;
@@ -447,6 +474,12 @@ impl Gateway {
         tokio::time::timeout(Duration::from_secs(1), self.state.relays.wait())
             .await
             .context("Upgrade relay join timed out")?;
+        // Release the product routes' storage handles once no connection can use them.
+        self.state
+            .product
+            .lock()
+            .expect("Product router mutex poisoned")
+            .take();
         anyhow::ensure!(
             self.state
                 .access
@@ -784,6 +817,14 @@ async fn handle(
         });
     }
 
+    let product = state
+        .product
+        .lock()
+        .expect("Product router mutex poisoned")
+        .clone();
+    if let Some(product) = product {
+        return product_response(&state, product, request, admission).await;
+    }
     if let Some(denied) = state
         .denied
         .iter()
@@ -943,6 +984,7 @@ async fn handle(
             || path
                 .strip_prefix("/api/v1/integrations/")
                 .is_some_and(|tail| !tail.contains('/')));
+    state.compat_forwards.fetch_add(1, Ordering::SeqCst);
     let Some(endpoint) = state.compat.endpoint() else {
         return node_unavailable();
     };
@@ -1688,6 +1730,31 @@ mod snapshot_membership_tests {
     }
 }
 
+/// Answer from the Rust product routes. A non-loopback peer is refused here
+/// as well as by `pp-api`; LAN admission is separate work.
+async fn product_response(
+    state: &GatewayState,
+    product: axum::Router,
+    request: Request<Body>,
+    admission: Admission,
+) -> Response<Body> {
+    let loopback = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|ConnectInfo(peer)| peer.ip().is_loopback());
+    if !loopback {
+        return error(StatusCode::FORBIDDEN, "Loopback transport required");
+    }
+    let Ok(response) = tower::ServiceExt::oneshot(product, request).await;
+    response.map(|body| {
+        Body::new(TrackedBody {
+            body,
+            _admission: admission,
+            cancelled: Box::pin(state.cancelled.clone().cancelled_owned()),
+        })
+    })
+}
+
 struct TrackedBody {
     body: Body,
     _admission: Admission,
@@ -1715,6 +1782,9 @@ impl http_body::Body for TrackedBody {
         self.body.size_hint()
     }
 }
+
+#[cfg(test)]
+mod slice0_mount;
 
 #[cfg(test)]
 mod ticket_t_2;

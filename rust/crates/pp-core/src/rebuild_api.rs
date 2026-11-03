@@ -16,7 +16,10 @@ use pp_api::{
 pub use pp_api::auth::{AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer};
 use pp_storage::{
     WriterOwner,
-    auth::{AuthPolicy, rebuild::AuthLifetimes, rebuild::RebuildAuthClient},
+    auth::{
+        AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy,
+        rebuild::AuthLifetimes, rebuild::RebuildAuthClient,
+    },
     build_graph::BuildGraphClient,
     working_drafts::{
         WorkingDraftClient,
@@ -288,15 +291,76 @@ pub fn job_router(
     )))
 }
 
+/// The single-user auth policy the Rust-only runtime serves.
+pub fn desktop_policy() -> AuthPolicy {
+    AuthPolicy {
+        registration: RegistrationPolicy::FirstAccountOnly,
+        first_user: FirstUserTenant::NewUser,
+        session_tenant: SessionTenantPolicy::SingleAccountDefault,
+    }
+}
+
+/// The product routes a Rust-only runtime mounts in the gateway: the read
+/// routers, the draft routers and the jobs router, all from one owner.
+/// `community_manifests` is the bundle's
+/// `pp_compat::Bundle::community_manifests_dir`. Returns `None` before
+/// creating any client unless the stored setting is on.
+pub fn product_router(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    community_manifests: Option<&Path>,
+) -> Result<Option<Router>> {
+    if !rebuild.enabled() {
+        return Ok(None);
+    }
+    let policy = desktop_policy();
+    let lifetimes = AuthLifetimes::default();
+    let auth = AuthRoutes {
+        http: AuthHttpConfig::new(origin, CookieTransport::LoopbackHttp, false, None, false)?,
+        policy,
+        lifetimes,
+        providers: ProviderClient::new(None, None)?,
+        mail: ResetMailer::disabled(),
+    };
+    let (drafts, jobs) = {
+        let guard = owner
+            .lock()
+            .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
+        (
+            draft_router(
+                rebuild,
+                &guard,
+                policy,
+                lifetimes,
+                origin,
+                DESKTOP_TENANT,
+                community_manifests,
+            )?,
+            job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
+        )
+    };
+    let reads = read_router(
+        rebuild,
+        owner,
+        auth,
+        origin,
+        DESKTOP_TENANT,
+        community_manifests,
+    )?;
+    Ok(reads
+        .zip(drafts)
+        .zip(jobs)
+        .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs)))
+}
+
+/// API keys route to the default tenant under the single-account policy.
+const DESKTOP_TENANT: &str = "default";
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pp_storage::{
-        Limits,
-        auth::{FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
-        build_graph::BuildCommand,
-        read_model::Credential,
-    };
+    use pp_storage::{Limits, auth::Secret, build_graph::BuildCommand, read_model::Credential};
     use serde_json::{Value, json};
     use std::{
         sync::{Arc, atomic::AtomicBool},

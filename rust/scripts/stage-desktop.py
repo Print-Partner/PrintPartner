@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 
+from stage_dependencies import stage_locked_dependencies
+
 NATIVE_NODE_HEADERS = frozenset({
     b'\x7fELF',
     b'\xfe\xed\xfa\xcf',
@@ -79,19 +81,7 @@ for path in ['package.json', 'package-lock.json', 'apps/server/package.json',
     target = web / path
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source / path, target)
-lock = json.loads((source / 'package-lock.json').read_text())
-for name, package in lock['packages'].items():
-    if 'node_modules/' not in name or package.get('dev'):
-        continue
-    original = source / name
-    target = web / name
-    if original.is_symlink():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.symlink_to(os.readlink(original))
-    elif original.is_dir() and not target.exists():
-        shutil.copytree(original, target, symlinks=True, ignore=shutil.ignore_patterns('node_modules'))
-    elif not original.exists() and not package.get('optional'):
-        raise ValueError('Locked runtime dependency missing: '+name)
+skipped_links = stage_locked_dependencies(source, web, json.loads((source / 'package-lock.json').read_text()))
 for name, relative in [('contracts', 'packages/contracts'), ('domain', 'packages/domain')]:
     alias = web / 'node_modules/@print-partner' / name
     if not alias.exists():
@@ -143,4 +133,5 @@ subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name('build-desk
     '--web', str(web), '--node', str(node), '--package-root', str(stage), '--output', str(manifest),
     '--commit', args.commit], check=True)
 print(json.dumps({'stage': str(stage), 'release': release, 'sqlite_answer': 42,
-                  'signed': False, 'manifest': str(manifest)}))
+                  'signed': False, 'manifest': str(manifest),
+                  'skipped_workspace_links': skipped_links}))

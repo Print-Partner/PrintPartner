@@ -128,6 +128,22 @@ def hash_map(value):
         require(isinstance(checksum, str) and re.fullmatch('[0-9a-f]{64}', checksum), 'Invalid SHA-256')
 
 
+def verify_locked_closure(root, web, lock):
+    require(isinstance(lock.get('packages'), dict), 'Missing locked production closure')
+    for name, package in lock['packages'].items():
+        if 'node_modules/' in name and not package.get('dev') and not package.get('devOptional'):
+            relative_path(name)
+            if package.get('link') and not (web / relative_path(package.get('resolved', ''))).is_dir():
+                # stage_dependencies.py skips a workspace link whose target the bundle does not ship.
+                require(not (web / name).exists() and not (web / name).is_symlink(),
+                        'Workspace link to an unshipped target: '+name)
+                continue
+            if not package.get('optional'):
+                require((web / name).is_dir(), 'Locked production package omitted: '+name)
+            if (web / name).exists():
+                contained(root, web / name)
+
+
 def verify_resources(root, manifest, arch):
     require(manifest.get('schema') == 1, 'Unsupported manifest schema')
     require(re.fullmatch('[0-9a-f]{40}', manifest.get('commit', '')), 'Invalid manifest commit')
@@ -162,15 +178,7 @@ def verify_resources(root, manifest, arch):
         alias = web / 'node_modules/@print-partner' / name
         require(alias.is_symlink() and contained(root, alias) == web / 'packages' / name,
                 'Missing or incorrect workspace alias: '+name)
-    lock = json.loads((web / 'package-lock.json').read_text())
-    require(isinstance(lock.get('packages'), dict), 'Missing locked production closure')
-    for name, package in lock['packages'].items():
-        if 'node_modules/' in name and not package.get('dev') and not package.get('devOptional'):
-            relative_path(name)
-            if not package.get('optional'):
-                require((web / name).is_dir(), 'Locked production package omitted: '+name)
-            if (web / name).exists():
-                contained(root, web / name)
+    verify_locked_closure(root, web, json.loads((web / 'package-lock.json').read_text()))
     release = json.loads((root / 'Resources/desktop-runtime/release.json').read_text())
     expected = {'runtime_version': manifest['runtime_version'], 'commit': manifest['commit'],
                 'node': 'MacOS/printpartner-node', 'web': WEB, 'os': 'macos',
@@ -545,6 +553,34 @@ def verify(app, manifest_path, arch, receipt):
 
 
 class ParserTests(unittest.TestCase):
+    def locked_closure(self, link_ui):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = pathlib.Path(temporary.name).resolve()
+        web = root / WEB
+        (web / 'packages/contracts').mkdir(parents=True)
+        scope = web / 'node_modules/@print-partner'
+        scope.mkdir(parents=True)
+        (scope / 'contracts').symlink_to('../../packages/contracts')
+        if link_ui:
+            (scope / 'ui').symlink_to('../../apps/ui')
+        lock = {'packages': {
+            'node_modules/@print-partner/contracts': {'resolved': 'packages/contracts', 'link': True},
+            'node_modules/@print-partner/ui': {'resolved': 'apps/ui', 'link': True}}}
+        return root, web, lock
+
+    def test_locked_closure_accepts_skipped_workspace_link(self):
+        verify_locked_closure(*self.locked_closure(link_ui=False))
+
+    def test_locked_closure_rejects_link_to_unshipped_workspace(self):
+        with self.assertRaisesRegex(ValueError, 'Workspace link to an unshipped target: node_modules/@print-partner/ui'):
+            verify_locked_closure(*self.locked_closure(link_ui=True))
+
+    def test_locked_closure_requires_shipped_workspace_link(self):
+        root, web, lock = self.locked_closure(link_ui=False)
+        (web / 'node_modules/@print-partner/contracts').unlink()
+        with self.assertRaisesRegex(ValueError, 'Locked production package omitted: node_modules/@print-partner/contracts'):
+            verify_locked_closure(root, web, lock)
     def test_bundle_probe_signals_exited_leader_group_promptly(self):
         with tempfile.TemporaryDirectory() as temporary:
             heartbeat = pathlib.Path(temporary) / 'heartbeat'

@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import subprocess
@@ -5,7 +6,10 @@ import sys
 import tempfile
 import unittest
 
+from stage_dependencies import stage_locked_dependencies
+
 SCRIPT = pathlib.Path(__file__).with_name("stage-desktop.py")
+MANIFEST = pathlib.Path(__file__).with_name("build-desktop-manifest.py")
 COMMIT = "a" * 40
 REJECTED = (
     "supply the native pinned Node 24.21.0 ABI 137 runtime "
@@ -96,6 +100,87 @@ class StageNodeTests(unittest.TestCase):
         result = run_stage(FLEET_DISPATCHER, self.output, self.web, self.env)
         self.assert_refused(result)
         self.assertIn(str(FLEET_DISPATCHER), result.stderr)
+
+
+def write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def dangling_links(root):
+    return [os.path.join(directory, name)
+            for directory, dirs, files in os.walk(root)
+            for name in dirs + files
+            if os.path.islink(os.path.join(directory, name))
+            and not os.path.exists(os.path.join(directory, name))]
+
+
+class StageWorkspaceLinkTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temporary.name)
+        self.source = self.root / "source"
+        self.stage = self.root / "stage"
+        self.web = self.stage / "web"
+        self.lock = {"packages": {
+            "": {"version": "3.3.0"},
+            "node_modules/@print-partner/contracts": {"resolved": "packages/contracts", "link": True},
+            "node_modules/@print-partner/ui": {"resolved": "apps/ui", "link": True},
+            "node_modules/left-pad": {"version": "1.3.0"},
+        }}
+        write(self.source / "packages/contracts/package.json", "{}")
+        write(self.source / "apps/ui/package.json", "{}")
+        write(self.source / "node_modules/left-pad/index.js", "module.exports = 1\n")
+        links = self.source / "node_modules/@print-partner"
+        links.mkdir(parents=True)
+        (links / "contracts").symlink_to("../../packages/contracts")
+        (links / "ui").symlink_to("../../apps/ui")
+        self.stage_artifacts()
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def stage_artifacts(self):
+        version = json.dumps({"version": "3.3.0"})
+        for name in ["package.json", "apps/server/package.json",
+                     "packages/contracts/package.json", "packages/domain/package.json"]:
+            write(self.web / name, version)
+        write(self.web / "package-lock.json", json.dumps(self.lock))
+        write(self.web / "apps/web/dist/index.html", "<!doctype html>")
+        write(self.web / "apps/web/dist/desktop-build.json",
+              json.dumps({"mode": "desktop", "version": "3.3.0", "service_worker": False}))
+        write(self.web / "apps/server/dist/current/desktop-resolution.js", "")
+        write(self.web / "packages/contracts/dist/current/index.js", "")
+        write(self.web / "packages/domain/dist/current/index.js", "")
+        self.node = self.stage / "bin/node"
+        write(self.node, "#!/bin/sh\necho v24.21.0\n")
+        self.node.chmod(0o755)
+
+    def build_manifest(self):
+        return subprocess.run(
+            [sys.executable, str(MANIFEST), "--web", str(self.web), "--node", str(self.node),
+             "--package-root", str(self.stage), "--output", str(self.root / "manifest.json"),
+             "--commit", COMMIT],
+            capture_output=True, text=True)
+
+    def test_unstaged_workspace_link_is_skipped_and_manifest_builds(self):
+        skipped = stage_locked_dependencies(self.source, self.web, self.lock)
+        self.assertEqual(skipped, ["node_modules/@print-partner/ui"])
+        self.assertFalse(os.path.lexists(self.web / "node_modules/@print-partner/ui"))
+        self.assertTrue((self.web / "node_modules/@print-partner/contracts/package.json").is_file())
+        self.assertTrue((self.web / "node_modules/left-pad/index.js").is_file())
+        self.assertEqual(dangling_links(self.stage), [])
+        result = self.build_manifest()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        links = json.loads((self.root / "manifest.json").read_text())["dependencies"]["links"]
+        self.assertEqual(links, {"web/node_modules/@print-partner/contracts": "../../packages/contracts"})
+
+    def test_dangling_workspace_link_fails_the_manifest(self):
+        stage_locked_dependencies(self.source, self.web, self.lock)
+        (self.web / "node_modules/@print-partner/ui").symlink_to("../../apps/ui")
+        result = self.build_manifest()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FileNotFoundError", result.stderr)
 
 
 if __name__ == "__main__":

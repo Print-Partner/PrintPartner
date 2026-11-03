@@ -294,6 +294,7 @@ It runs the steps below in the order that `just ci --list` prints, and continues
 | `fmt` | Step 4 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
 | `rust-deps` | Scanner negative controls and `cargo machete rust`, pinned to 0.9.2 | `cargo-machete` in `rust-deps-weekly.yml` |
 | `web-assets` | Desktop web build and `rust/bundle-manifest.json` | `rust (linux)` (required) |
+| `ui-package` | `typecheck`, `lint`, `test` and `build` for the replacement UI workspace `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. | None yet. These are local-only lines; see [Replacement UI package](#replacement-ui-package). |
 | `workaround-ratchet` | `scripts/workaround-ratchet.mjs` and its tests, which cap `TODO`, `eslint-disable` and Rust `#[allow]` markers, on Node 22.23.3. It runs after `web-assets`, which installs its parser. | `web` job of `web-ci.yml` |
 | `duplication` | jscpd negative controls and the five-area duplicated-token baseline, on Node 22.23.3 | `duplication.yml` |
 | `clippy-off`, `clippy-on`, `nextest-off`, `nextest-on`, `doc-off`, `doc-on` | Steps 5 to 10 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
@@ -315,6 +316,24 @@ The command does not cover these checks:
 - `Lint Evidence block`. It reads the pull request body. The command reports it as `SKIP`.
 - `cargo deny check` (`desktop-deny.yml`). It runs on changes to `rust/**`. To run it locally, use `cargo deny --manifest-path rust/Cargo.toml --all-features check`. CI also runs `cargo deny --manifest-path rust/fuzz/Cargo.toml --all-features --locked check`.
 - The Linux rebuild partitions, the Desktop runtime, Native macOS bundle and Docker workflows, the `web-ci.yml` steps other than the workaround ratchet, and the `contracts:verify` and `test:desktop-parity` steps of `desktop-contracts.yml`.
+
+## Replacement UI package
+
+`web/apps/ui` (`@print-partner/ui`) is checked by the local `ui-package` step:
+
+```sh
+npm --prefix web run typecheck --workspace @print-partner/ui
+npm --prefix web run lint --workspace @print-partner/ui
+npm --prefix web run test --workspace @print-partner/ui
+npm --prefix web run build --workspace @print-partner/ui
+```
+
+Hosted Web CI covers part of it already. Its `npm run lint` runs `eslint .` over
+all of `web/`, which includes the package and its import-boundary rule, and
+`npm run lint:dead` runs knip over every workspace. The root `typecheck`, `test`
+and `build` scripts list workspaces by name, so they do not run this package.
+Running its typecheck, tests and build in hosted CI needs a `web-ci.yml` change
+by the workflow owner.
 
 ## Run a job locally
 

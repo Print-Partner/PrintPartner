@@ -153,8 +153,8 @@ fn marker_only(fixture: Fixture) -> (Installation, Vec<u8>) {
 
 #[test]
 fn rust_marked_holds_only_the_documented_marker() {
-    #[cfg_attr(not(unix), allow(unused_variables))]
     let (installation, bytes) = marker_only(Fixture::RustMarked);
+    assert!(installation.marker_path().is_file());
     assert_eq!(
         bytes,
         b"{\"version\":1,\"owner\":\"rust\",\"created_at\":\"2026-11-03T00:00:00Z\"}\n"

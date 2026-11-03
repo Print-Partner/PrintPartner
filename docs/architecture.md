@@ -300,6 +300,19 @@ delete the replacement. Final package names and router follow the first bounded
 integration slice. Enforce an import graph without old pages, Node server,
 hand-maintained contracts or legacy domain rules.
 
+The package exists: `@print-partner/ui` at `web/apps/ui` (see its
+[README](../web/apps/ui/README.md)). The ESLint rule
+`print-partner/ui-boundary` (`web/eslint-rules/ui-boundary.js`) fails any import
+that leaves `web/apps/ui` by relative path, and any `@print-partner/*` package
+not on its allowlist. The allowlist is empty; the generated client joins it
+when it lands. The dev server forwards `/api`, `/ws` and `/health` only to
+`PP_UI_CORE_URL` and has no default target.
+
+Starting choices, kept until the Builds comparison says otherwise: React Router 7
+(`react-router`, the library the old app already uses) and TanStack Query 5 as
+the one server-state cache. Both are already in the lockfile, so the package
+adds no new runtime library. TanStack Router is compared in the Builds slice.
+
 Use one server-state cache, validated Build URLs, and feature-local presentation
 state. Compare TanStack Router with the existing React Router in one Builds
 slice; retain Radix/cmdk unless an accessibility test shows a reason to switch.

@@ -53,13 +53,21 @@ class EnvironmentSetupTests(unittest.TestCase):
         self.assertIn('export PP_SIDECAR_PYTHON="$PREFIX/sidecar-venv/bin/python"', setup)
         self.assertIn('"${PP_SIDECAR_PYTHON:-/opt/sidecar-venv/bin/python}" -B -m unittest', smoke)
 
-    def test_qa_launch_defers_to_existing_verification_skill(self):
-        skill = (ROOT / ".factory/skills/pp-mission-qa/SKILL.md").read_text()
-        self.assertIn("../pp-verify/SKILL.md#web-ui", skill)
-        self.assertIn("../pp-verify/SKILL.md#rust-gateway", skill)
-        self.assertNotIn("control-print-partner.mjs", skill)
-        self.assertNotIn("verify.py launch", skill)
-        self.assertNotIn("$QA_ROOT", skill)
+    def test_qa_skills_defer_to_the_shared_workflow(self):
+        workflow = (ROOT / "docs/development/agent-workflow.md").read_text()
+        self.assertIn("control-print-partner.mjs launch", workflow)
+        self.assertIn("verify.py launch", workflow)
+        shared = "../../../docs/development/agent-workflow.md#"
+        for name, sections in (("pp-mission-qa", ("choose-the-runtime", "web-ui", "rust-gateway", "report-and-clean-up")),
+                               ("pp-verify", ("web-ui", "dialogs-and-other-client-only-state", "rust-gateway",
+                                              "desktop-app", "check-and-attach-evidence"))):
+            skill = (ROOT / f".factory/skills/{name}/SKILL.md").read_text()
+            for section in sections:
+                self.assertIn(shared + section, skill)
+            # A second copy of the launch recipe would drift from the shared one.
+            self.assertNotIn("control-print-partner.mjs", skill)
+            self.assertNotIn("verify.py launch", skill)
+            self.assertNotIn("$QA_ROOT", skill)
 
     def test_native_packages_come_from_devcontainer(self):
         setup = SETUP.read_text()

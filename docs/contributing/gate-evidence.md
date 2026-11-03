@@ -82,6 +82,11 @@ lists each step, its CI source and what the command does not cover.
 
 For changes to the desktop app, including Tauri tray menus, windows, and native
 UI, attach visual evidence from the real app built at the head SHA of the PR.
+The steps below use the Homelab `evidence` CLI on Linux. Any native recorder
+can take its place, such as macOS Screenshot or Windows Snipping Tool; the
+lifecycle checks, D-Bus disclosure, and privacy checks stay the same. A browser
+screenshot is not desktop evidence, and a missing native display is reported as
+BLOCKED. See [Desktop app](../development/agent-workflow.md#desktop-app).
 On an evidence-enabled Linux development environment:
 
 1. Run `evidence status` to check the virtual display, tray, and status notifier

@@ -15,8 +15,27 @@ DOCUMENTS = (
     ".factory/skills/pp-verify/SKILL.md",
     ".factory/skills/pp-mission-qa/SKILL.md",
     "docs/development/factory-missions.md",
+    "docs/development/agent-workflow.md",
 )
 LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
+HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$")
+FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def anchors(markdown):
+    """Return the heading anchors GitHub generates for a Markdown document."""
+    found, seen, fenced = set(), {}, False
+    for line in markdown.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        heading = None if fenced else HEADING.match(line)
+        if heading:
+            slug = re.sub(r"[^\w\- ]", "", heading.group(1).lower()).replace(" ", "-")
+            count = seen.get(slug, 0)
+            seen[slug] = count + 1
+            found.add(f"{slug}-{count}" if count else slug)
+    return found
 
 
 def check_document(root, relative):
@@ -29,11 +48,14 @@ def check_document(root, relative):
         errors.append(f"{relative}: missing title")
     for target in LINK.findall(body):
         url = urlsplit(target)
-        if url.scheme or url.netloc or not url.path:
+        if url.scheme or url.netloc:
             continue
-        destination = (path.parent / unquote(url.path)).resolve()
+        destination = (path.parent / unquote(url.path)).resolve() if url.path else path.resolve()
         if not destination.is_relative_to(root.resolve()) or not destination.exists():
             errors.append(f"{relative}: missing or outside-checkout link {target}")
+        elif url.fragment and destination.suffix == ".md" and destination.is_file() \
+                and unquote(url.fragment) not in anchors(destination.read_text(encoding="utf-8")):
+            errors.append(f"{relative}: missing heading for link {target}")
     if path.name == "SKILL.md":
         parts = body.split("---\n", 2)
         if len(parts) != 3 or parts[0]:
@@ -66,7 +88,7 @@ def main():
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print(f"Agent guidance: {len(DOCUMENTS)} documents, local links, skill metadata, "
+    print(f"Agent guidance: {len(DOCUMENTS)} documents, local links, heading anchors, skill metadata, "
           "and Git trackability passed.")
     return 0
 

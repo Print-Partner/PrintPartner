@@ -440,5 +440,150 @@ class GuardHookTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, payload)
 
 
+CLI = ROOT / "scripts/agent-guard.py"
+
+
+def neutral(*args, stdin=""):
+    return subprocess.run([sys.executable, "-B", str(CLI), *args], input=stdin,
+                          capture_output=True, text=True, check=False)
+
+
+def request(body):
+    return neutral("json", stdin=json.dumps(body))
+
+
+class NeutralGuardCliTests(unittest.TestCase):
+    def assertRefused(self, result, reason):
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(reason, result.stderr)
+
+    def assertPasses(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
+    def test_json_operations_allow_and_refuse(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertPasses(request({"operation": "command", "cwd": folder,
+                                       "command": "git push -u origin HEAD:chore/topic"}))
+            self.assertRefused(request({"operation": "command", "cwd": folder,
+                                        "command": "git push origin HEAD:main"}), "main only")
+            self.assertRefused(request({"operation": "command", "cwd": folder,
+                                        "command": "gh pr merge 12 --squash"}), "maintainer")
+        self.assertPasses(request({"operation": "file", "path": "/repo/docs/guide.md"}))
+        self.assertRefused(request({"operation": "file", "path": "/repo/.env"}), "environment files")
+        self.assertPasses(request({"operation": "patch", "patch": "*** Update File: /repo/a.py\n"}))
+        self.assertRefused(request({"operation": "patch",
+                                    "patch": "*** Update File: /repo/a.py\n*** Move to: /repo/.git/config\n"}),
+                           "Git metadata")
+
+    def test_argument_operations_allow_and_refuse(self):
+        self.assertPasses(neutral("command", "--cwd", str(ROOT), "git log --oneline -1"))
+        self.assertRefused(neutral("command", "--cwd", str(ROOT), "--", "git push --force origin topic"), "force-push")
+        script = "python3 - <<'PY'\nprint('git push --force')\nPY\ngit push origin main\n"
+        self.assertRefused(neutral("command", "-", stdin=script), "main only")
+        self.assertPasses(neutral("command", "-", stdin=script.rsplit("git push", 1)[0]))
+        self.assertPasses(neutral("file", "/repo/a.py", "/repo/.env.example"))
+        self.assertRefused(neutral("file", "/repo/a.py", "/repo/rust/bundle-manifest.json"), "generated")
+        self.assertRefused(neutral("patch", "-", stdin="*** Delete File: /repo/web/.env.local\n"), "environment files")
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "ok.patch").write_text("*** Add File: /repo/src/lib.rs\n")
+            self.assertPasses(neutral("patch", str(Path(folder, "ok.patch"))))
+
+    def test_cwd_with_spaces_resolves_request_files(self):
+        with tempfile.TemporaryDirectory() as parent:
+            folder = Path(parent, "repo with spaces")
+            folder.mkdir()
+            (folder / "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
+            (folder / "reply.graphql").write_text("mutation { addPullRequestReviewThreadReply(input: {}) { comment { url } } }")
+            self.assertRefused(neutral("command", "--cwd", str(folder), "gh api graphql -F query=@merge.graphql"),
+                               "maintainer")
+            self.assertPasses(neutral("command", "--cwd", str(folder), "gh api graphql -F query=@reply.graphql"))
+            self.assertRefused(request({"operation": "command", "cwd": str(folder),
+                                        "command": "gh api graphql -F query=@merge.graphql"}), "maintainer")
+            self.assertRefused(request({"operation": "command", "cwd": parent,
+                                        "command": 'git -C "repo with spaces" push origin HEAD:main'}), "main only")
+
+    def test_malformed_and_unsupported_input_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "file").write_text("")
+            for stdin in ("not json", "[]", "null", '"git status"',
+                          json.dumps({"tool_name": "Execute", "tool_input": {"command": "git status"}}),
+                          json.dumps({"operation": "Bash", "command": "git push origin main", "cwd": folder}),
+                          json.dumps({"operation": "execute", "command": "git status", "cwd": folder}),
+                          json.dumps({"operation": "command", "command": "git status"}),
+                          json.dumps({"operation": "command", "command": "git status", "cwd": folder, "shell": "zsh"}),
+                          json.dumps({"operation": "command", "command": ["git", "status"], "cwd": folder}),
+                          json.dumps({"operation": "command", "command": "git status", "cwd": "relative/dir"}),
+                          json.dumps({"operation": "command", "command": "git status", "cwd": folder + "/missing"}),
+                          json.dumps({"operation": "command", "command": "git status", "cwd": folder + "/file"}),
+                          json.dumps({"operation": "file", "path": " "}),
+                          json.dumps({"operation": "file", "paths": ["/repo/a.py"]}),
+                          json.dumps({"operation": "patch", "patch": "--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-A=1\n+A=2\n"})):
+                with self.subTest(stdin=stdin):
+                    self.assertRefused(neutral("json", stdin=stdin), "pp guard: invalid input")
+            for args in ((), ("bash", "git status"), ("command",), ("command", "git", "status"),
+                         ("command", "--cwd", folder + "/missing", "git status"), ("file",), ("file", ""),
+                         ("patch", folder + "/missing.patch")):
+                with self.subTest(args=args):
+                    result = neutral(*args)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_unclassifiable_commands_are_refused(self):
+        for command, reason in (("git push origin 'main", "Cannot parse"),
+                                ("env -S 'git push origin main'", "Cannot classify"),
+                                ("git push origin HEAD:$BRANCH", "destination branch")):
+            self.assertRefused(neutral("command", command), reason)
+
+
+class FactoryAdapterTests(unittest.TestCase):
+    """The Factory hook must decide exactly as the neutral CLI does for the same operation."""
+
+    COMMANDS = ("git push -u origin HEAD:chore/topic", "git push origin HEAD:main", "git push --force origin topic",
+                "git push --tags", "git commit --no-verify -m x", "gh pr merge 12", "gh release create v1",
+                "gh api repos/o/r/pulls/12/reviews -f event=APPROVE", "gh api repos/o/r/pulls/12/comments/34/replies -f body=ok",
+                "git config core.hooksPath /tmp/x", "GIT_CONFIG_COUNT=1 git commit -m x", "git push origin topic",
+                "cd sub && gh api graphql -F query=@merge.graphql", "printf '%s' 'git push --force'",
+                "python3 - <<'PY'\nprint(1)\nPY\ngit push origin main", "git push origin 'main", "env -S 'git push'",
+                "npm --prefix web ci", "")
+    PATHS = ("/repo/.env", "/repo/.env.example", "/repo/.git/config", "/repo/rust/bundle-manifest.json", "/repo/a.py")
+    PATCHES = ("*** Update File: /repo/a.py\n*** Move to: /repo/.env\n", "*** Add File: /repo/src/lib.rs\n",
+               "*** Delete File: /repo/rust//bundle-manifest.json\n")
+
+    def assertSame(self, hook, cli):
+        self.assertEqual((hook.returncode, hook.stderr), (cli.returncode, cli.stderr))
+
+    def test_commands_match(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "sub").mkdir()
+            Path(folder, "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
+            for command in self.COMMANDS:
+                with self.subTest(command=command):
+                    hook = subprocess.run([sys.executable, "-B", str(GUARD)], capture_output=True, text=True, check=False,
+                                          input=json.dumps({"tool_name": "Execute", "cwd": folder,
+                                                            "tool_input": {"command": command}}))
+                    self.assertSame(hook, request({"operation": "command", "cwd": folder, "command": command}))
+                    self.assertSame(hook, neutral("command", "--cwd", folder, "-", stdin=command))
+
+    def test_files_and_patches_match(self):
+        for path in self.PATHS:
+            for tool in ("Create", "Edit"):
+                with self.subTest(tool=tool, path=path):
+                    self.assertSame(run(tool, {"file_path": path}), request({"operation": "file", "path": path}))
+        for patch in self.PATCHES:
+            with self.subTest(patch=patch):
+                self.assertSame(run("ApplyPatch", {"input": patch}), request({"operation": "patch", "patch": patch}))
+                self.assertSame(run("ApplyPatch", patch), neutral("patch", "-", stdin=patch))
+
+    def test_adapter_refuses_when_policy_is_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            copy = Path(folder, ".factory/hooks/guard.py")
+            copy.parent.mkdir(parents=True)
+            copy.write_text(GUARD.read_text())
+            result = subprocess.run([sys.executable, "-B", str(copy)], capture_output=True, text=True, check=False,
+                                    input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "/repo/a.py"}}))
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("internal error", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

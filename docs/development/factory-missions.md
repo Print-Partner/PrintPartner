@@ -54,7 +54,8 @@ works in the Environment before relying on it for evidence.
 
 ## Plan and validate a migration slice
 
-Start Mission planning from the current Linear slice and linked Notion plan.
+Start Mission planning from the current Linear slice and linked Notion plan, or
+from an exported [task brief](agent-workflow.md#start-from-a-task-brief).
 Use [pp-readiness](../../.factory/skills/pp-readiness/SKILL.md) for applicable
 checks and [pp-mission-qa](../../.factory/skills/pp-mission-qa/SKILL.md) for
 service launch, logs, driving, assertions, and shutdown.
@@ -64,26 +65,10 @@ SQLite/ID/recovery invariants, and the evidence each milestone must produce.
 Keep PRs near 600 changed lines for GRE-1067. Finish one PR's Droid review and CI
 before opening the next. Only the maintainer merges.
 
-The project guard hook refuses common merge, force-push, direct-main push,
-release publish or edit, hook-bypass, secret-file edit, and generated-manifest edit commands.
-`git push` needs an explicit branch refspec and common options spelled in full.
-Write push destinations literally. The guard refuses a destination built from a
-shell expansion, the `:` matching refspec, and `HEAD` when the same command
-also switches branches. When `push.followTags` is on, or a `remote.<name>.push`
-mapping exists, add `--no-follow-tags` or write `source:destination` refspecs.
-The guard treats both settings as unknown after a `git config` write or a
-`git remote` change in the same command. It refuses commits and pushes that run
-with `GIT_CONFIG_*` environment variables. Git and gh subcommands and option
-names must be literal. Run a `gh api` write that reads a request file
-(`-F key=@file` or `--input`) as its own command, after writing the file.
-`cd -P` and directory changes inside conditionals or groups leave the directory
-unknown.
-After a `cd` in a subshell or pipeline, or under `env -C`, the guard treats the
-directory as unknown and refuses relative `gh api` input files.
-Through `gh api`, agents may read, write PR or issue comments, submit
-comment-only or pending PR reviews, and reply to or resolve review threads. Other API writes need the maintainer.
-It refuses a git or gh command it cannot classify. It is a mistake guard, not
-a shell sandbox or a complete security boundary.
+The project hook runs [the safety guard](agent-workflow.md#safety-guard) before
+every Execute, Create, Edit, and ApplyPatch call. That section lists what it refuses
+and how to write commands it can classify. It is a mistake guard, not a shell
+sandbox or a complete security boundary.
 Repository rules and required GitHub checks remain authoritative. Review the
 project entry in `/hooks` after checkout; Droid snapshots hooks at startup.
 Do not disable the hook to finish a task.

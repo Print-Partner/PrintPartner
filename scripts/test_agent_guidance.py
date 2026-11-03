@@ -31,10 +31,21 @@ class AgentGuidanceTests(unittest.TestCase):
         self.assertIn("missing title", GUIDANCE.check_document(self.root, "AGENTS.md")[0])
 
     def test_existing_relative_links_and_external_links_pass_without_network(self):
-        self.write("docs/guide.md", "# Guide\n")
+        self.write("docs/guide.md", "# Guide\n\n## Section\n")
         self.write("AGENTS.md", "# Guide\n[local](docs/guide.md#section)\n"
-                   "[web](https://example.com/missing)\n[anchor](#section)\n")
+                   "[web](https://example.com/missing)\n[anchor](#rules)\n\n## Rules\n")
         self.assertEqual(GUIDANCE.check_document(self.root, "AGENTS.md"), [])
+
+    def test_link_to_missing_heading_fails(self):
+        self.write("docs/guide.md", "# Guide\n\n```sh\n# Section\n```\n")
+        self.write("AGENTS.md", "# Guide\n[local](docs/guide.md#section)\n[here](#missing)\n")
+        errors = GUIDANCE.check_document(self.root, "AGENTS.md")
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("missing heading" in error for error in errors))
+
+    def test_heading_anchors_follow_github_rules(self):
+        self.assertEqual(GUIDANCE.anchors("# Run `just ci`, then push!\n## Notes\n## Notes\n### Rust gateway ##\n"),
+                         {"run-just-ci-then-push", "notes", "notes-1", "rust-gateway"})
 
     def test_missing_link_fails(self):
         self.write("AGENTS.md", "# Guide\n[missing](docs/missing.md)\n")

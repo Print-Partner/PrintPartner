@@ -45,6 +45,7 @@ Print Partner is moving its backend from Node to one Rust core. The core runs as
 - [Building](development/building.md)
 - [Rust and React development container](development/devcontainer.md)
 - [Contributing](development/contributing.md)
+- [Agent and contributor workflow](development/agent-workflow.md): task briefs, checks, safety guard, app verification, and evidence
 - [Continuous integration](development/ci.md)
 - [Change a CI workflow](development/ci-controls.md)
 - [Run the stress-runner self-tests](development/stress-runner-self-tests.md)

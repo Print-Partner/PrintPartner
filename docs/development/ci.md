@@ -17,6 +17,33 @@ Pushes to `main`, merge groups, nightly and manual runs execute all three jobs r
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
+## Wiki refresh
+
+`Droid Wiki Refresh` (`.github/workflows/droid-wiki-refresh.yml`) runs on pushes
+to `main`. One repository-wide concurrency group queues refreshes without
+cancelling the active run. A full-history checkout restores `droid-wiki/` from
+`factory/droid-wiki` before running `/wiki`, so later runs can update changed
+pages instead of generating the whole wiki again.
+
+The generation job has read-only repository access. A separate `wiki-publish`
+job commits the pages and `.wiki-meta.json` to `factory/droid-wiki` and opens or
+updates its rolling pull request against the default branch. Generated videos
+and screenshots stay out of the artifact and Git.
+
+Add these repository Actions secrets:
+
+- `FACTORY_API_KEY` authenticates wiki generation.
+- `FACTORY_WIKI_PR_TOKEN` is a fine-grained personal access token with
+  `contents: write` and `pull-requests: write` on this repository. Only
+  `wiki-publish` receives it. Its pull requests trigger the required checks.
+
+Without `FACTORY_WIKI_PR_TOKEN`, publishing uses `GITHUB_TOKEN`. That fallback
+requires **Allow GitHub Actions to create and approve pull requests** in the
+repository's Actions settings, and its pull requests do not start other
+workflows. Close and reopen the wiki pull request to start its checks.
+If publishing fails, the workflow emits a warning; generation still succeeds,
+but the next run may have no saved wiki to restore.
+
 ## Agent guidance check
 
 The `agent-guidance` job in `actionlint.yml` checks the root `AGENTS.md` and the

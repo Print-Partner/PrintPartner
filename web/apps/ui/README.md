@@ -5,8 +5,8 @@ builds toward is [UI and UX target](../../../docs/product/ui-ux-target.md);
 [ADR 0008](../../../docs/adr/0008-replace-the-old-screens.md) says why it is a new
 package instead of a port of `apps/web`.
 
-Today it is a placeholder shell: an app frame, a core reachability line, and a
-Not found route. Product screens arrive in their own slices.
+Today it is a placeholder shell: an app frame, a core reachability line, a type
+specimen at `/type`, and a Not found route. Product screens arrive in their own slices.
 
 ## Commands
 
@@ -20,7 +20,8 @@ npm --prefix web run lint --workspace @print-partner/ui
 npm --prefix web run test --workspace @print-partner/ui
 ```
 
-`just ci --only ui-package` runs typecheck, lint, test and build. The legacy root
+`just ci --only ui-package` runs typecheck, lint, test, build and the
+`test:browser` font request check. The legacy root
 `build`, `typecheck` and `test` scripts do not include this package.
 
 ## Talking to the Rust core
@@ -34,6 +35,30 @@ npm --prefix web run test --workspace @print-partner/ui
 - UI code calls the core through `fetchCore` in `src/core/client.ts`. It accepts
   same-origin paths only and sends same-origin credentials. In the desktop app
   and Docker the Rust core serves this UI, so the paths reach it directly.
+
+## Fonts and type
+
+The UI bundles IBM Plex Sans 400/500/600 and IBM Plex Mono 400/500 as WOFF2 files
+in `src/fonts/`, latin and latin-ext subsets, and makes no font request to any
+other origin. The files are unmodified copies from `@fontsource/ibm-plex-sans`
+and `@fontsource/ibm-plex-mono` 5.3.0 (OFL-1.1). `src/fonts/OFL.txt` and the
+IBM Plex section of `THIRD_PARTY_NOTICES.md` carry the licence. To change a
+file, copy it from a newer Fontsource release, update `fonts.css`, the version
+here and the notices section, then run `npm run docs:licenses` from `web` so the
+server's copy of the notices matches.
+
+- `src/fonts/fonts.css` declares the faces. Sources are relative WOFF2 URLs only,
+  with no `local()` and no remote URL; `test/fonts.test.ts` enforces that.
+- `src/typography.css` defines `--font-sans` and `--font-mono` and the `.num`
+  class: Plex Mono with `font-variant-numeric: tabular-nums`. Use `.num` for
+  counts, ETAs, grams, IDs and order numbers.
+- `/type` renders every face and figure role, for screenshot checks.
+- `npm run test:browser` (after `build`) checks for zero requests to another
+  origin in Chromium and WebKitGTK; see the
+  [CI guide](../../../docs/development/ci.md#replacement-ui-package).
+
+The build emits 10 font files, 176,284 bytes in total. A page in latin text
+loads only the latin files it uses, at most 5 files and 100,620 bytes.
 
 ## Import boundary
 

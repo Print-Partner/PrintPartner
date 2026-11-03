@@ -4,7 +4,6 @@
   --text: #e6e8eb;
   --muted: #9aa3ad;
   --line: #2a2f36;
-  font-family: system-ui, sans-serif;
   background: var(--surface);
   color: var(--text);
 }

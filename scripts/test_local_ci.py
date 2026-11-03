@@ -217,6 +217,8 @@ class LocalCiTests(unittest.TestCase):
             self.assertIn(f"npm --prefix web run {script} --workspace @print-partner/ui", step.setup)
         self.assertNotIn("npm --prefix web run typecheck --workspace @print-partner/ui", step.setup)
         build = step.setup.index("npm --prefix web run build --workspace @print-partner/ui")
+        browser = step.setup.index("npm --prefix web run test:browser --workspace @print-partner/ui")
+        self.assertLess(build, browser)
         manifest = next(i for i, line in enumerate(step.setup) if "build-desktop-manifest.py" in line)
         self.assertLess(build, manifest)
 

@@ -119,7 +119,7 @@ STEPS = [
     # The replacement UI package. No hosted job runs these yet, so they are local-only
     # lines. After web-assets, which installs web/node_modules on Node 24. Vitest
     # exits nonzero when it finds no tests.
-    Step("ui-package", "replacement UI package typecheck, lint, tests and build",
+    Step("ui-package", "replacement UI package typecheck, lint, tests, build and font requests",
          # The package's build script runs its typecheck first, so there is no separate
          # typecheck line.
          # The build adds apps/ui/dist, which the manifest's dependency inventory follows
@@ -128,6 +128,8 @@ STEPS = [
          setup=("npm --prefix web run lint --workspace @print-partner/ui",
                 "npm --prefix web run test --workspace @print-partner/ui",
                 "npm --prefix web run build --workspace @print-partner/ui",
+                # Needs the build: serves dist and fails on any request to another origin.
+                "npm --prefix web run test:browser --workspace @print-partner/ui",
                 # Only when web-assets has built the desktop app; otherwise there is no
                 # measured manifest to keep in step with.
                 "if [ -f web/apps/web/dist/desktop-build.json ]; then",

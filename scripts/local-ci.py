@@ -128,15 +128,16 @@ STEPS = [
          setup=("npm --prefix web run lint --workspace @print-partner/ui",
                 "npm --prefix web run test --workspace @print-partner/ui",
                 "npm --prefix web run build --workspace @print-partner/ui",
-                # Needs the build: serves dist and fails on any request to another origin.
-                "npm --prefix web run test:browser --workspace @print-partner/ui",
                 # Only when web-assets has built the desktop app; otherwise there is no
                 # measured manifest to keep in step with.
                 "if [ -f web/apps/web/dist/desktop-build.json ]; then",
                 "  node_path=$(node -p process.execPath)",
                 '  "$MANIFEST_PYTHON" rust/scripts/build-desktop-manifest.py --web web --node "$node_path" '
                 '--output rust/bundle-manifest.json --commit "$GITHUB_SHA"',
-                "fi"),
+                "fi",
+                # Serves the build and fails on any request to another origin. Last, so a
+                # failure here still leaves the manifest regenerated.
+                "npm --prefix web run test:browser --workspace @print-partner/ui"),
          requires=(("node", "v24.21.0"), ("npm", None), ("python3", None)),
          env={"MANIFEST_PYTHON": "python3"}),
     # After web-assets, which installs the parser it loads from web/node_modules, and

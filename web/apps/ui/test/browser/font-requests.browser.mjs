@@ -31,15 +31,20 @@ const MIME = {
 };
 
 const PROBE_BODY = `
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + 15000;
   while (!document.querySelector(".specimen-figures .num")) {
     if (Date.now() > deadline) throw new Error("the type specimen did not render");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  await document.fonts.ready;
+  // Layout starts each face's load, so fonts.ready can settle before every face has
+  // been requested. Poll until the expected faces load or the deadline passes.
   const loaded = new Set();
-  for (const face of document.fonts) {
-    if (face.status === "loaded") loaded.add(face.family.replaceAll('"', "") + " " + face.weight);
+  while (loaded.size < ${EXPECTED_FACES.length} && Date.now() < deadline) {
+    await document.fonts.ready;
+    for (const face of document.fonts) {
+      if (face.status === "loaded") loaded.add(face.family.replaceAll('"', "") + " " + face.weight);
+    }
+    if (loaded.size < ${EXPECTED_FACES.length}) await new Promise((resolve) => setTimeout(resolve, 100));
   }
   const cell = getComputedStyle(document.querySelector(".specimen-figures .num"));
   return JSON.stringify({

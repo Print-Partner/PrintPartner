@@ -221,6 +221,7 @@ class LocalCiTests(unittest.TestCase):
         self.assertLess(build, browser)
         manifest = next(i for i, line in enumerate(step.setup) if "build-desktop-manifest.py" in line)
         self.assertLess(build, manifest)
+        self.assertLess(manifest, browser)
 
     def test_ui_package_skips_without_node_24(self):
         ci = LocalCi(self, tools={**TOOLS, "node": "v22.23.3"})

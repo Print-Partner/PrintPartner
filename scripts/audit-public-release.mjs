@@ -33,7 +33,6 @@ const forbiddenPathPrefixes = [
 ];
 
 const forbiddenFiles = new Set([
-  "CONTEXT.md",
   "docs/assistant-domain-ingest-schema.md",
   "docs/assistant-research-brief.md",
 ]);

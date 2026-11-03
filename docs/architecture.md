@@ -304,8 +304,7 @@ The package exists: `@print-partner/ui` at `web/apps/ui` (see its
 [README](../web/apps/ui/README.md)). The ESLint rule
 `print-partner/ui-boundary` (`web/eslint-rules/ui-boundary.js`) fails any import
 that leaves `web/apps/ui` by relative path, and any `@print-partner/*` package
-not on its allowlist. The allowlist is empty; the generated client joins it
-when it lands. The dev server forwards `/api`, `/ws` and `/health` only to
+not on its allowlist. The allowlist holds only `@print-partner/rust-client`. The dev server forwards `/api`, `/ws` and `/health` only to
 `PP_UI_CORE_URL` and has no default target.
 
 Starting choices, kept until the Builds comparison says otherwise: React Router 7
@@ -317,7 +316,11 @@ Use one server-state cache, validated Build URLs, and feature-local presentation
 state. Compare TanStack Router with the existing React Router in one Builds
 slice; retain Radix/cmdk unless an accessibility test shows a reason to switch.
 Bundle IBM Plex, generate exhaustive status descriptors from Rust, and preserve
-execution state separately from bed-clear state. Deliver loading, empty, error,
+execution state separately from bed-clear state. `pp_domain::printer_display_state`
+defines the printer display enum, its label, icon and colour token in one
+wildcard-free match, and `PrinterStateView`, which keeps `execution` and
+`bed_clear` as separate fields next to the derived `display` word. The client
+generator emits the descriptors as `printerDisplayDescriptors`. Deliver loading, empty, error,
 Module-off and offline states. Ship accessible 2D plate views first; lazy 3D
 cannot become a requirement for Checkoff, Accept or Production.
 

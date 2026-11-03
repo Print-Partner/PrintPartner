@@ -6,9 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const UI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../apps/ui");
 const WORKSPACE_SCOPE = "@print-partner/";
-// Workspace packages apps/ui may import. The generated Rust client package is the
-// only planned entry; add it here when it lands.
-const ALLOWED_WORKSPACE_PACKAGES = new Set();
+// Workspace packages apps/ui may import: only the client generated from Rust.
+const ALLOWED_WORKSPACE_PACKAGES = new Set(["@print-partner/rust-client"]);
 
 function violation(specifier, filename) {
   if (specifier.startsWith(WORKSPACE_SCOPE)) {

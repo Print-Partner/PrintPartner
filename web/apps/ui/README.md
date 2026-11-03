@@ -5,8 +5,8 @@ builds toward is [UI and UX target](../../../docs/product/ui-ux-target.md);
 [ADR 0008](../../../docs/adr/0008-replace-the-old-screens.md) says why it is a new
 package instead of a port of `apps/web`.
 
-Today it is a placeholder shell: an app frame, a core reachability line, and a
-Not found route. Product screens arrive in their own slices.
+Today it is a placeholder shell: an app frame, a core reachability line, a list
+of the printer states, and a Not found route. Product screens arrive in their own slices.
 
 ## Commands
 
@@ -60,10 +60,23 @@ fail it. Do not add `paths` or Vite aliases that point outside this package.
 
 ## Generated Rust client
 
-The generated client package does not exist yet. When it lands:
+`@print-partner/rust-client` is the one workspace package on the boundary
+allowlist. Build typed calls on it instead of on `fetchCore`, and keep
+`fetchCore`'s same-origin rule or move it into the client's transport.
 
-1. Add its package name to `ALLOWED_WORKSPACE_PACKAGES` in
-   `web/eslint-rules/ui-boundary.js` and to this package's dependencies.
-2. Build typed calls on the generated client instead of on `fetchCore`. Keep
-   `fetchCore`'s same-origin rule, or move it into the generated client's
-   transport.
+## Printer status
+
+`src/status/PrinterStatus.tsx` renders a printer state as an icon plus a word.
+The states, labels, Lucide icon names and colour tokens come from
+`printerDisplayDescriptors` in the generated client, which Rust's
+`pp_domain::printer_display_state` produces. Do not add a state, label or
+colour here; change the Rust enum and regenerate.
+
+- The icon map is keyed by the generated icon names, so a new Rust icon fails
+  `typecheck` until it has a component.
+- `printerStatusPresentation` throws on an empty label instead of rendering an
+  icon-only or blank status.
+- Each descriptor names a `--status-*` token defined in `src/index.css`.
+  `--interaction` is cyan and is for focus, selection and the primary button
+  only; `PrinterStatus.test.tsx` fails if a status token uses it or any other
+  cyan.

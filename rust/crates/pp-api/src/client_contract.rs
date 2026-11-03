@@ -4,6 +4,9 @@
 //! [`crate::drafts`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
+//!
+//! [`DESCRIPTOR_TABLES`] names constant tables that the generator writes out as
+//! data, such as the printer display descriptors.
 
 /// What a request must present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,12 +111,34 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
     },
 ];
 
+/// A constant table the generator emits as a TypeScript record keyed by one
+/// field of its DTO.
+#[derive(Debug, Clone, Copy)]
+pub struct DescriptorTable {
+    /// The generated TypeScript constant name.
+    pub name: &'static str,
+    /// DTO name of each row.
+    pub dto: &'static str,
+    /// The row field that keys the record.
+    pub key: &'static str,
+}
+
+pub const DESCRIPTOR_TABLES: &[DescriptorTable] = &[DescriptorTable {
+    name: "printerDisplayDescriptors",
+    dto: "PrinterDisplayDescriptor",
+    key: "state",
+}];
+
 #[cfg(feature = "codegen")]
 pub use codegen::{document, document_bytes};
 
 #[cfg(feature = "codegen")]
 mod codegen {
-    use super::CLIENT_ROUTES;
+    use super::{CLIENT_ROUTES, DESCRIPTOR_TABLES};
+    use pp_storage::printer_display_state::{
+        BedClearState, PrinterDisplayDescriptor, PrinterDisplayState, PrinterExecutionState,
+        PrinterStateView,
+    };
     use pp_storage::{
         build_graph::wire::{
             AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
@@ -151,6 +176,11 @@ mod codegen {
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
+        schema(
+            "PrinterDisplayDescriptor",
+            schemars::schema_for!(PrinterDisplayDescriptor),
+        )?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -158,14 +188,60 @@ mod codegen {
                     "auth": route.auth.as_str(), "request": route.request, "response": route.response})
             })
             .collect();
+        let descriptors = DESCRIPTOR_TABLES
+            .iter()
+            .map(|table| {
+                Ok(
+                    json!({"name": table.name, "dto": table.dto, "key": table.key,
+                    "values": descriptor_rows(table.dto)?}),
+                )
+            })
+            .collect::<Result<Vec<Value>, serde_json::Error>>()?;
         Ok(json!({
             "generator": "rust-client-zod/1",
             "schemars": "0.8.22",
             "dialect": "http://json-schema.org/draft-07/schema#",
             "dtos": dtos,
             "routes": routes,
+            "descriptors": descriptors,
             "fixtures": fixtures()?,
         }))
+    }
+
+    /// Rows of a [`super::DescriptorTable`], in Rust declaration order.
+    fn descriptor_rows(dto: &str) -> Result<Value, serde_json::Error> {
+        match dto {
+            "PrinterDisplayDescriptor" => serde_json::to_value(
+                PrinterDisplayState::ALL
+                    .iter()
+                    .map(|state| state.descriptor())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => Err(serde::ser::Error::custom(format!(
+                "no descriptor rows for {dto}"
+            ))),
+        }
+    }
+
+    /// One printer state per display summary.
+    fn printer_states() -> Vec<PrinterStateView> {
+        use BedClearState as Bed;
+        use PrinterExecutionState as Execution;
+        [
+            (Execution::Printing, Bed::NeedsClearing),
+            (Execution::Idle, Bed::NeedsClearing),
+            (Execution::Idle, Bed::Clear),
+            (Execution::Idle, Bed::Unknown),
+            (Execution::Paused, Bed::Unknown),
+            (Execution::Failed, Bed::NeedsClearing),
+            (Execution::Unreachable, Bed::Unknown),
+            (Execution::NotSetUp, Bed::Unknown),
+            (Execution::Manual, Bed::Clear),
+            (Execution::Unknown, Bed::Unknown),
+        ]
+        .into_iter()
+        .map(|(execution, bed_clear)| PrinterStateView::new(execution, bed_clear))
+        .collect()
     }
 
     /// Sorted, pretty JSON with a trailing newline.
@@ -442,6 +518,17 @@ mod codegen {
                 health(Some("Authentication required")),
             )?,
         ];
+        for value in printer_states() {
+            let name = format!("{:?}-{:?}", value.execution(), value.bed_clear());
+            cases.push(served("PrinterState", &name, value)?);
+        }
+        for state in PrinterDisplayState::ALL {
+            cases.push(served(
+                "PrinterDisplayDescriptor",
+                &format!("{state:?}"),
+                state.descriptor(),
+            )?);
+        }
         for (index, value) in summaries.into_iter().enumerate() {
             cases.push(served(
                 "ProfileSummary",

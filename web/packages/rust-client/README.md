@@ -7,6 +7,7 @@ Typed requests, responses and Zod runtime schemas for the Rust core's HTTP route
 | File | Contents |
 | --- | --- |
 | `src/schemas.generated.ts` | One Zod schema and output type per DTO, plus `dtoSchemas` keyed by Rust contract name |
+| `src/descriptors.generated.ts` | Constant tables from `DESCRIPTOR_TABLES`, such as `printerDisplayDescriptors`: one row per printer display state with its label, Lucide icon name and `--status-*` colour token |
 | `src/routes.generated.ts` | `routes` (method, path, path params, auth, request and response schema), `RouteRequest`, `RouteResponse`, `routePath` |
 | `src/index.ts` | Re-exports both files |
 
@@ -38,6 +39,8 @@ npm --prefix web run typecheck --workspace @print-partner/rust-client
 | `POST /api/v2/plans/{id}/drafts/{draft_id}/abandon` | `AbandonDraftRequest` | `DraftIdentity` |
 | `GET /health` | | `Health` |
 
+`PrinterState` (execution, bed-clear and display state as separate fields) and `PrinterDisplayDescriptor` are DTOs without a route yet.
+
 Every route except `/health` needs a session cookie or API key. Only 200 bodies are typed; error bodies are not yet. The `/api/v1` mounts answer with the legacy Plan summary and are not covered.
 
 `pp-core`'s `client_routes_match_registrations` test sends each route to the composed routers. It checks that the route is registered, refuses anonymous requests when it needs a credential, and reaches its handler.
@@ -57,3 +60,8 @@ The emitter (`web/scripts/rust-contracts/client.mjs`, `rust-client-zod/1`) refus
 1. Make sure the request and response types derive `schemars::JsonSchema` under the `codegen` feature, and that the handler serializes that type rather than a `json!` literal.
 2. Add the route to `CLIENT_ROUTES` and its schema and fixtures to `document()` in `rust/crates/pp-api/src/client_contract.rs`.
 3. Run `generate`, then `check`.
+
+## Add a descriptor table
+
+1. Add a `DescriptorTable` to `DESCRIPTOR_TABLES` and its rows to `descriptor_rows` in `client_contract.rs`. The key field must be a Rust string enum.
+2. Run `generate`. The generator refuses rows that do not list every key value once, in Rust order, and the output's `satisfies Record<...>` makes TypeScript refuse a missing key.

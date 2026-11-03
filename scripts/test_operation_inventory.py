@@ -190,6 +190,17 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertIn("invalid input", stderr)
 
+    def test_duplicate_owner_ids_are_refused(self):
+        path = self.root / INVENTORY.ROSTER
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = '{"family": "Admin, legal, logs, diagnostics, health", "ticket": "TEST-1"}'
+        path.write_text('{"schema": "pp-inventory-roster-v1", "active_phase": "P1", "owners": {'
+                        f'"route:GET /health current": {entry}, "route:GET /health current": {entry}'
+                        '}, "exceptions": []}')
+        code, stderr = self.run_main()
+        self.assertEqual(code, 2)
+        self.assertIn("repeats the key", stderr)
+
     def test_check_fails_only_when_the_report_is_stale(self):
         self.assertEqual(self.run_main("--check")[0], 1)
         first = self.report()

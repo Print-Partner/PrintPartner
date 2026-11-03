@@ -297,10 +297,20 @@ def render(entries, stale, roster, digests):
     return "\n".join(out)
 
 
+def unique_keys(pairs):
+    """object_pairs_hook that refuses duplicate keys instead of keeping the last one."""
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise RosterError(f"roster repeats the key {key!r}")
+        seen[key] = value
+    return seen
+
+
 def generate(root):
     texts = {path: (root / path).read_text() for path in (OPERATIONS, MANIFEST, ARCHITECTURE, ROSTER)}
     families = architecture_families(texts[ARCHITECTURE])
-    roster = json.loads(texts[ROSTER])
+    roster = json.loads(texts[ROSTER], object_pairs_hook=unique_keys)
     entries = build_entries(json.loads(texts[OPERATIONS]), json.loads(texts[MANIFEST]))
     stale = classify(entries, validate_roster(roster, families))
     digests = {path: digest(text) for path, text in texts.items() if path != ARCHITECTURE}

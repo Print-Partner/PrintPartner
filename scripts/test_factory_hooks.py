@@ -404,6 +404,30 @@ class GuardHookTests(unittest.TestCase):
                         "gh api graphql -f 'query=mutation($id: ID!) { r: resolveReviewThread(input: {threadId: $id}) "
                         "{ thread { isResolved } } }' -F id=X"):
             self.assertAllowed("Execute", {"command": command})
+    def test_actions_variable_writes_are_blocked(self):
+        name = "PP_REVIEW_FALLBACK_UNTIL"
+        for command in (f"gh variable set {name} --body 2026-12-01T00:00:00Z",
+                        f"gh variable set {name} < value.txt", f"gh variable delete {name}",
+                        f"gh variable remove {name}", f"gh -R o/r variable set {name} -b x",
+                        f"gh variable -R o/r set {name} -b x", f"gh variable set -R o/r {name} -b x",
+                        f"gh --repo=o/r variable delete {name}", f"gh variable --env prod set {name} -b x",
+                        f"'gh' \"variable\" 'set' {name} -b x", f"/usr/bin/gh variable set {name} -b x",
+                        f"env GH_REPO=o/r gh variable set {name} -b x", f"echo $(gh variable delete {name})",
+                        f"gh variable list && gh variable set {name} -b x", f"gh variable --help set {name}",
+                        f"gh variable set --org o {name} -b x"):
+            self.assertBlocked("Execute", {"command": command}, "owner-maintained")
+        for command in (f"gh api -X PATCH repos/o/r/actions/variables/{name} -f value=x",
+                        f"gh api repos/o/r/actions/variables -f name={name} -f value=x",
+                        f"gh api --method DELETE repos/o/r/actions/variables/{name}",
+                        f"gh api -XDELETE orgs/o/actions/variables/{name}",
+                        f"gh api -X POST repos/o/r/environments/prod/variables -f name={name} -f value=x"):
+            self.assertBlocked("Execute", {"command": command}, "need the maintainer")
+        self.assertBlocked("Execute", {"command": f"gh variable $ACTION {name}"}, "Cannot classify")
+        for command in ("gh variable list", f"gh variable get {name}", "gh variable", "gh variable --help",
+                        "gh variable -h", "gh -R o/r variable list --json name,value", "gh help variable",
+                        f"gh api repos/o/r/actions/variables/{name}", "gh api repos/o/r/actions/variables",
+                        f"gh api -X GET orgs/o/actions/variables/{name}"):
+            self.assertAllowed("Execute", {"command": command})
     def test_generated_paths_are_normalized(self):
         for path in ("/repo/rust/./bundle-manifest.json", "/repo/rust//bundle-manifest.json"):
             self.assertBlocked("Edit", {"file_path": path}, "generated")
@@ -544,7 +568,8 @@ class FactoryAdapterTests(unittest.TestCase):
                 "git config core.hooksPath /tmp/x", "GIT_CONFIG_COUNT=1 git commit -m x", "git push origin topic",
                 "cd sub && gh api graphql -F query=@merge.graphql", "printf '%s' 'git push --force'",
                 "python3 - <<'PY'\nprint(1)\nPY\ngit push origin main", "git push origin 'main", "env -S 'git push'",
-                "npm --prefix web ci", "")
+                "npm --prefix web ci", "gh variable set PP_REVIEW_FALLBACK_UNTIL -b x",
+                "gh variable get PP_REVIEW_FALLBACK_UNTIL", "")
     PATHS = ("/repo/.env", "/repo/.env.example", "/repo/.git/config", "/repo/rust/bundle-manifest.json", "/repo/a.py")
     PATCHES = ("*** Update File: /repo/a.py\n*** Move to: /repo/.env\n", "*** Add File: /repo/src/lib.rs\n",
                "*** Delete File: /repo/rust//bundle-manifest.json\n")

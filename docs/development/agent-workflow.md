@@ -38,11 +38,19 @@ When you hand work off, put the current status, open decisions, and next action 
 
 AGENTS.md lists the setup and check commands. `just` is a convenience; `python3 scripts/local-ci.py` takes the same arguments as `just ci`. On Linux, the [development container](devcontainer.md) provides the pinned toolchains and native libraries. Don't install system packages on your own machine just to run a check.
 
+Python checks need the pinned packages in `requirements-dev.txt`: Ruff, and PyYAML for the tests that read workflow and fleet YAML. Install them in a disposable virtual environment outside the checkout, never with `sudo` or into the system Python:
+
+```sh
+python3 -m venv "${TMPDIR:-/tmp}/pp-dev-venv"
+"${TMPDIR:-/tmp}/pp-dev-venv/bin/pip" install -r requirements-dev.txt
+PATH="${TMPDIR:-/tmp}/pp-dev-venv/bin:$PATH" python3 scripts/local-ci.py --only local-ci-self-test,python-lint --fail-on-skip
+```
+
 A full local CI run exits 0 even when steps print SKIP, because a tool or platform is missing. A SKIP is not a pass. List each one under Evidence. For steps that must run on your machine, add `--fail-on-skip`:
 
 ```sh
 python3 scripts/local-ci.py --list
-python3 scripts/local-ci.py --only python-lint,local-ci-self-test --fail-on-skip
+python3 scripts/local-ci.py --only <step-ids> --fail-on-skip
 ```
 
 `just guidance` checks links, heading anchors, skill metadata, and Git trackability in AGENTS.md, this page, and the repo skills, and runs the safety guard tests. The [CI guide](ci.md) maps each hosted check to a local command.
@@ -76,7 +84,8 @@ The guard refuses merges, force pushes, pushes to `main`, release publishing or 
 - When `push.followTags` is on, or a `remote.<name>.push` mapping exists, add `--no-follow-tags` or write `source:destination` refspecs. The guard treats both settings as unknown after a `git config` write or a `git remote` change in the same command.
 - It refuses commits and pushes that run with `GIT_CONFIG_*` environment variables. Git and gh subcommands and option names must be literal.
 - Run a `gh api` write that reads a request file (`-F key=@file` or `--input`) as its own command, after writing the file. `cd -P`, directory changes inside conditionals or groups, and a `cd` in a subshell, a pipeline, or under `env -C` leave the directory unknown, so relative `gh api` input files are refused.
-- Through `gh api`, agents may read, write PR or issue comments, submit comment-only or pending PR reviews, and reply to or resolve review threads. Other API writes need the maintainer.
+- Through `gh api`, agents may read, write PR or issue comments, submit comment-only or pending PR reviews, and reply to or resolve review threads. Other API writes need the maintainer, including writes to Actions variables.
+- `gh variable` may only `list`, `get`, or show help. Setting or deleting a variable needs the maintainer.
 - It refuses a git or gh command it cannot classify.
 
 The guard catches mistakes. It is not a shell sandbox or a security boundary, and an agent can run commands without it. Repository rules and required GitHub checks stay authoritative. Changes to the guard need the same review as any other security control.
@@ -90,6 +99,8 @@ Before large or risky work, write the plan down and challenge it. Risky work inc
 ## Review and merge
 
 Every ready PR currently needs the required `droid-review` check, which runs Factory Droid review. That stays required until a separate change adds a provider-neutral review gate and the maintainer adopts it. If you work in another tool, the check still runs on your PR; ask the maintainer when it cannot. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. Only the maintainer merges.
+
+A fallback for Factory outages is proposed in a separate change and is not active. It would read an expiring repository variable, `PP_REVIEW_FALLBACK_UNTIL`, that only the owner sets and clears, and accept a review from a different model while it is in force. Agents never set, extend, or delete that variable; the safety guard refuses `gh variable` and `gh api` writes to it. Until that gate merges and the owner supplies access to an independent model, the fallback stays blocked and `droid-review` is the required review.
 
 ## Verify in a running app
 
@@ -131,15 +142,19 @@ Screenshot each screen the change affects, in both themes (`--theme dark`) if st
 The helper opens a fresh browser for each command, so chaining its `click` and `screenshot` commands loses an open dialog, menu, or dropdown. Interact and capture in one Playwright program instead. Save it outside the checkout, then run it inside the launch block above, after the `doctor` line, as `ROOT="$ROOT" UI_PORT="$UI_PORT" node /path/to/capture.mjs`. It loads Playwright from `web/node_modules`, so run it from the repository root after `npm --prefix web ci`:
 
 ```js
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
 const { chromium } = createRequire(resolve("web/package.json"))("playwright-core");
-const browser = await chromium.launch({
-  headless: true,
-  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
-});
-try {
+const executablePath = [
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+].find((path) => path && existsSync(path));
+const browser = await chromium.launch({ headless: true, executablePath });try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`http://127.0.0.1:${process.env.UI_PORT}/library`);
   // Replace these two steps with the interaction your change needs.
@@ -151,62 +166,82 @@ try {
 }
 ```
 
-`PLAYWRIGHT_CHROMIUM_EXECUTABLE` names a Chrome or Chromium binary; the development container and the Factory cloud setup set it. Don't reload between the interaction and the capture. In Droid, the `agent-browser` skill works too if one session covers the interaction and the capture.
+`playwright-core` does not download a browser. Both programs use `PLAYWRIGHT_CHROMIUM_EXECUTABLE` when it is set, then the same Chrome and Chromium paths the screenshot helper checks. The development container and the Factory cloud setup set the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows. If no browser is found, Playwright falls back to its own download, which needs `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture. In Droid, the `agent-browser` skill works too if one session covers the interaction and the capture.
 
 ### Rust gateway
 
-The Rust gateway requires a desktop session. A bare request returns `401 Desktop session required`. Use the existing launcher and its one-use bootstrap credential:
+The Rust gateway requires a desktop session. A bare request returns `401 Desktop session required`. Use the existing launcher and its one-use bootstrap credential. The credential lives in one private directory, which is always removed. The launcher log lives in another, which stays for diagnosis after the block ends:
 
 ```sh
 (
   set -eu
   : "${CAPTURE:?path to capture-rust.mjs, saved outside the checkout}"
   PRIVATE_DIR="$(mktemp -d)"
+  LOG_DIR="$(mktemp -d)"
   EVIDENCE_DIR="$(mktemp -d)"
+  LOG="$LOG_DIR/launcher.log"
   LAUNCHER=""
   trap '[ -z "$LAUNCHER" ] || { kill -TERM "$LAUNCHER" 2>/dev/null || true; wait "$LAUNCHER" || true; }; rm -rf "$PRIVATE_DIR"' 0
+  echo "launcher log: $LOG"
+  echo "evidence: $EVIDENCE_DIR"
   python3 scripts/verify-rust-gateway/verify.py launch \
-    --credential-file "$PRIVATE_DIR/credential.json" >"$PRIVATE_DIR/launcher.log" 2>&1 &
+    --credential-file "$PRIVATE_DIR/credential.json" >"$LOG" 2>&1 &
   LAUNCHER=$!
-  until grep -q '^PP_SERVER_URL=' "$PRIVATE_DIR/launcher.log"; do
+  until grep -q '^PP_SERVER_URL=' "$LOG"; do
     kill -0 "$LAUNCHER" 2>/dev/null || { echo "launcher exited before readiness" >&2; exit 1; }
     sleep 2
   done
   CREDENTIAL_FILE="$PRIVATE_DIR/credential.json" EVIDENCE_DIR="$EVIDENCE_DIR" node "$CAPTURE"
-  echo "evidence: $EVIDENCE_DIR"
+  kill -TERM "$LAUNCHER"
+  STATUS=0
+  wait "$LAUNCHER" || STATUS=$?
+  LAUNCHER=""
+  grep -q '^STOP: exit=0' "$LOG" || { echo "launcher status $STATUS without STOP: exit=0; see $LOG" >&2; exit 1; }
+  echo "launcher stopped cleanly"
 )
 ```
 
-`mktemp -d` creates a directory only you can read. The credential path must not exist before launch. The first run builds `pp-server`, so readiness can take minutes. The log holds server stderr; read only the lines you need and never paste it whole.
+`mktemp -d` creates a directory only you can read. The credential path must not exist before launch. The first run builds `pp-server`, so readiness can take minutes. The block stops the launcher itself and fails unless the log shows `STOP: exit=0`, which means `pp-server` shut down and its cleanup checks passed. On any earlier failure, the trap stops the launcher and removes the credential directory. The log holds server stderr but not the bootstrap URL. Read only the lines you need, never paste it whole, and remove `LOG_DIR` and `EVIDENCE_DIR` when you are done.
 
-The capture program, `capture-rust.mjs`, reads the bootstrap URL from the file, opens it so the redirect sets the session cookie, and then works in that same browser context:
+The capture program, `capture-rust.mjs`, reads the bootstrap URL from the file and removes the file. It opens the URL so the redirect sets the session cookie, then works in that same browser context. It waits for the Builds heading before it interacts, because the page first shows "Loading...":
 
 ```js
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
 const { chromium } = createRequire(resolve("web/package.json"))("playwright-core");
+const executablePath = [
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+].find((path) => path && existsSync(path));
 const { bootstrap_url: bootstrapUrl } = JSON.parse(readFileSync(process.env.CREDENTIAL_FILE, "utf8"));
 rmSync(process.env.CREDENTIAL_FILE);
 const origin = new URL(bootstrapUrl).origin;
-const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
+const browser = await chromium.launch({ headless: true, executablePath });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(bootstrapUrl);
   if (new URL(page.url()).pathname === "/__desktop/bootstrap") throw new Error("bootstrap did not redirect");
   await page.goto(`${origin}/builds`);
-  // Interact here, then capture without reloading.
-  await page.screenshot({ path: `${process.env.EVIDENCE_DIR}/rust-builds.png` });
+  await page.getByRole("heading", { name: "Builds", exact: true }).waitFor();
+  // Replace these steps with the interaction your change needs. Opening the dialog saves nothing.
+  await page.getByRole("button", { name: "New Build" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Create" }).waitFor();
+  await page.screenshot({ path: `${process.env.EVIDENCE_DIR}/rust-new-build-dialog.png` });
+  console.log(`captured ${new URL(page.url()).pathname}`);
 } finally {
   await browser.close();
 }
 ```
 
-Keep the credential and its URL out of command lines, logs, traces, screenshots, and PR text. Capture only after the redirect has left the bootstrap page. The gateway rejects a request whose `Origin` header differs from its own origin and requires `Origin` on writes. The browser sets it for you; a script that calls the gateway with another HTTP client must send `Origin` equal to `PP_SERVER_URL` and the session cookie. A bare `401` does not prove an operation works.
+Open the screenshot and confirm it shows the Builds page and the dialog, not a loading screen. Keep the credential and its URL out of command lines, logs, traces, screenshots, and PR text; the program prints only the path it captured. Capture only after the redirect has left the bootstrap page. The gateway rejects a request whose `Origin` header differs from its own origin and requires `Origin` on writes. The browser sets it for you; a script that calls the gateway with another HTTP client must send `Origin` equal to `PP_SERVER_URL` and the session cookie. A bare `401` does not prove an operation works.
 
-Stopping the launcher with SIGTERM shuts `pp-server` down and checks cleanup. The log should end with `STOP: exit=0`. [The launch test](../../scripts/verify-rust-gateway/test_launch.py) holds the bootstrap and shutdown contract.
-
+[The launch test](../../scripts/verify-rust-gateway/test_launch.py) holds the bootstrap and shutdown contract.
 ### Desktop app
 
 Desktop evidence comes from the native app built at the PR head, on a real display. Follow [Desktop and tray capture](../contributing/gate-evidence.md#desktop-and-tray-capture) for the lifecycle checks: close to tray, restore the same window, and quit with cleanup. Any native recorder works, such as macOS Screenshot (Shift-Command-5) or `screencapture`, Windows Snipping Tool, OBS, or the Homelab `evidence` CLI on Linux. The recorder changes nothing else: on Linux, disclose D-Bus tray activations as that section says.

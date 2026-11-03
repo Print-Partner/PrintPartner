@@ -56,6 +56,9 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
                      "--reuse-message", "--template", "--trailer"}
 GH_SHORT_BOOLEAN = set("ih")
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
+VARIABLE_READS = {"get", "help", "list"}
+VARIABLE = ("GitHub Actions variables, including the PP_REVIEW_FALLBACK_UNTIL outage switch, "
+            "are owner-maintained; ask the maintainer to change them.")
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -787,6 +790,11 @@ def gh_reason(args, cwd, alone=True):  # noqa: C901
         if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]):
             return None
         return MERGE if args[0] == "pr" else RELEASE
+    if args[:1] == ["variable"]:
+        # Only reads and help are allowed; any other form, including options before the subcommand, may write.
+        if not args[1:] or args[1] in VARIABLE_READS or all(arg in ("--help", "-h") for arg in args[1:]):
+            return None
+        return VARIABLE
     if args[:1] != ["api"]:
         return None
     method, endpoint, fields, body, i = None, None, [], None, 1

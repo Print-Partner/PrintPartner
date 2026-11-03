@@ -3312,6 +3312,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "ryu-js",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",
@@ -3366,6 +3367,7 @@ name = "pp-contracts"
 version = "0.1.0"
 dependencies = [
  "pp-api-types",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
 ]
@@ -3571,6 +3573,7 @@ dependencies = [
  "rusqlite",
  "ryu-js",
  "saphyr-parser",
+ "schemars 0.8.22",
  "scrypt",
  "serde",
  "serde_json",

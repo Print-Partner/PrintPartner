@@ -16,7 +16,7 @@ use pp_storage::{
     auth::AuthFailure,
     build_graph::{
         BuildCommand, BuildGraphClient, BuildOutcome, Failure as BuildFailure, PositiveId,
-        wire::{CreateBuildRequest, layer, profile_summary},
+        wire::{CreateBuildRequest, ProfileLayers, ProfileList, layer, profile_summary},
     },
 };
 use serde_json::{Value, json};
@@ -531,7 +531,7 @@ fn present(
                 );
             }
             let profiles: Vec<_> = profiles.into_iter().filter_map(Result::ok).collect();
-            json_response(StatusCode::OK, &json!({"profiles": profiles}), head)
+            json_response(StatusCode::OK, &json!(ProfileList { profiles }), head)
         }
         BuildOutcome::Read { profile: value } | BuildOutcome::Touched { profile: value } => {
             match summary(*value) {
@@ -552,9 +552,9 @@ fn present(
         }
         BuildOutcome::Layers { profile_id, layers } => json_response(
             StatusCode::OK,
-            &json!({
-                "profile_id": profile_id,
-                "layers": layers.into_iter().map(layer).collect::<Vec<_>>(),
+            &json!(ProfileLayers {
+                profile_id,
+                layers: layers.into_iter().map(layer).collect(),
             }),
             head,
         ),

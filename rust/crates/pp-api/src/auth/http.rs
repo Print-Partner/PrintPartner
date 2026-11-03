@@ -579,9 +579,20 @@ async fn health(State(app): State<App>, headers: HeaderMap) -> Result<Response, 
     if app.providers.configured(Provider::Discord) {
         capabilities.push("discord_oauth");
     }
-    Ok(wire::json_response(
-        json!({"ok":true,"authentication_required":true,"authenticated":authenticated,"degraded_detail":degraded_detail,"capabilities":capabilities,"multi_user":app.config.multi_user,"single_user_auth":status.single_user_auth,"single_user_setup_required":status.single_user_setup_required,"registration_open":status.registration_open,"owner_mapping_required":status.owner_mapping_required,"github_oauth_configured":app.providers.configured(Provider::Github),"discord_oauth_configured":app.providers.configured(Provider::Discord)}),
-    ))
+    Ok(wire::json_response(json!(wire::Health {
+        ok: true,
+        authentication_required: true,
+        authenticated,
+        degraded_detail,
+        capabilities,
+        multi_user: app.config.multi_user,
+        single_user_auth: status.single_user_auth,
+        single_user_setup_required: status.single_user_setup_required,
+        registration_open: status.registration_open,
+        owner_mapping_required: status.owner_mapping_required,
+        github_oauth_configured: app.providers.configured(Provider::Github),
+        discord_oauth_configured: app.providers.configured(Provider::Discord),
+    })))
 }
 async fn keys(State(app): State<App>, headers: HeaderMap) -> Result<Response, Failure> {
     let Outcome::Keys { keys, .. } = invoke(

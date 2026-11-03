@@ -4,10 +4,12 @@
 //! build reads can serialize the Node-compatible ProfileSummary without a
 //! direct `pp-contracts` edge.
 
+#[cfg(feature = "codegen")]
+pub use pp_contracts::RequiredNullable;
 pub use pp_contracts::build_identity::{
     AcceptedProgressSummary, AcceptedProgressUnavailableReason, CreateBuildRequest,
     FreshnessReasons, PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer,
-    ProfileSummary, SourceAttachmentRequest,
+    ProfileLayers, ProfileList, ProfileSummary, SourceAttachmentRequest,
 };
 
 use super::{

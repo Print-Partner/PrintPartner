@@ -414,7 +414,7 @@ class GuardHookTests(unittest.TestCase):
                         f"gh variable set {name} < value.txt", f"gh variable delete {name}",
                         f"gh variable remove {name}", f"gh -R o/r variable set {name} -b x",
                         f"gh variable -R o/r set {name} -b x", f"gh variable set -R o/r {name} -b x",
-                        f"gh --repo=o/r variable delete {name}", f"gh variable --env prod set {name} -b x",
+                        f"gh --repo=o/r variable delete {name}",
                         f"'gh' \"variable\" 'set' {name} -b x", f"/usr/bin/gh variable set {name} -b x",
                         f"env GH_REPO=o/r gh variable set {name} -b x", f"echo $(gh variable delete {name})",
                         f"gh variable list && gh variable set {name} -b x", f"gh variable --help set {name}",
@@ -432,6 +432,36 @@ class GuardHookTests(unittest.TestCase):
                         f"gh api repos/o/r/actions/variables/{name}", "gh api repos/o/r/actions/variables",
                         f"gh api -X GET orgs/o/actions/variables/{name}"):
             self.assertAllowed("Execute", {"command": command})
+
+    def test_gh_options_before_the_subcommand(self):
+        name = "PP_REVIEW_FALLBACK_UNTIL"
+        self.assertBlocked("Execute", {"command": f"gh --help=false variable set {name} -b 2026-12-01T00:00:00Z"},
+                           "owner-maintained")
+        for command, reason in ((f"gh -h=false variable delete {name}", "owner-maintained"),
+                                (f"gh variable --help=false set {name} -b x", "owner-maintained"),
+                                ("gh -R owner/repo pr merge 12", "maintainer"),
+                                ("gh --help=false pr merge 12", "maintainer"),
+                                ("gh pr --help=false merge 12", "maintainer"),
+                                ("gh pr -R o/r --help=false merge 12", "maintainer"),
+                                ("gh --version=false release create v1", "authorization"),
+                                ("gh release --help=false create v1", "authorization"),
+                                ("gh --repo o/r api -X PUT repos/o/r/pulls/12/merge", "maintainer"),
+                                ("gh --help=false api -X PUT repos/o/r/pulls/12/merge", "maintainer"),
+                                ("gh --repo=o/r api repos/o/r/actions/variables -f name=x -f value=y",
+                                 "need the maintainer"),
+                                (f"gh --foo variable set {name} -b x", "after the subcommand"),
+                                (f"gh variable --env prod set {name} -b x", "after the subcommand"),
+                                ("gh pr --foo merge 12", "after the subcommand"),
+                                ("gh -- pr merge 12", "after the subcommand"),
+                                ("gh --$flag pr merge 12", "shell expansion"),
+                                ("gh --help=false pr checkout 3 && git push origin HEAD", "destination branch")):
+            with self.subTest(command=command):
+                self.assertBlocked("Execute", {"command": command}, reason)
+        for command in ("gh --version", "gh --help", "gh -h", "gh pr --help", "gh -R o/r pr view 12",
+                        "gh --help=false pr view 12", "gh --repo o/r issue list", f"gh -R o/r variable --help=false list"):
+            with self.subTest(command=command):
+                self.assertAllowed("Execute", {"command": command})
+
     def test_generated_paths_are_normalized(self):
         for path in ("/repo/rust/./bundle-manifest.json", "/repo/rust//bundle-manifest.json"):
             self.assertBlocked("Edit", {"file_path": path}, "generated")
@@ -530,6 +560,25 @@ class NeutralGuardCliTests(unittest.TestCase):
                                         "command": "gh api graphql -F query=@merge.graphql"}), "maintainer")
             self.assertRefused(request({"operation": "command", "cwd": parent,
                                         "command": 'git -C "repo with spaces" push origin HEAD:main'}), "main only")
+
+    def test_cwd_resolves_parent_after_symlink_like_the_kernel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp).resolve()
+            Path(folder, "a/b").mkdir(parents=True)
+            Path(folder, "link").symlink_to("a/b")
+            # link/../repo is a/repo on disk; a lexical collapse would pick the repo on main instead.
+            subprocess.run(["git", "init", "-q", "-b", "topic", str(folder / "a/repo")], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(folder / "repo")], check=True)
+            cwd, push = str(folder / "link/../repo"), "git push origin HEAD"
+            self.assertPasses(neutral("command", "--cwd", cwd, push))
+            self.assertPasses(subprocess.run([sys.executable, "-B", str(CLI), "command", "--cwd", "link/../repo", push],
+                                             cwd=folder, capture_output=True, text=True, check=False))
+            self.assertPasses(request({"operation": "command", "cwd": cwd, "command": push}))
+            self.assertPasses(hook(GUARD, droid_command(push, cwd)))
+            self.assertPasses(hook(CLAUDE, claude_call("Bash", cwd, command=push)))
+            self.assertRefused(neutral("command", "--cwd", cwd, "cd ../../repo && " + push), "main only")
+            # Without "..", a bare cd stays lexical, as the shell's logical cd does.
+            self.assertRefused(neutral("command", "--cwd", str(folder / "link"), "cd ../repo && " + push), "main only")
 
     def test_malformed_and_unsupported_input_is_refused(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -151,7 +151,7 @@ def validate_roster(roster, families):
         if exception.get("class") not in EXCEPTION_CLASSES:
             raise RosterError(f"{where}: class must be one of {EXCEPTION_CLASSES}")
         check_ticket(exception.get("ticket"), where)
-        check_date(exception.get("expires"), where)
+        expires = check_date(exception.get("expires"), where).isoformat()
         if not exception.get("reason"):
             raise RosterError(f"{where}: reason is required")
         if exception["class"] == DEFERRED and not exception.get("owner_ok"):
@@ -162,7 +162,7 @@ def validate_roster(roster, families):
         if entry_id in assignments:
             raise RosterError(f"{where}: entry already has a class; each entry gets exactly one")
         assignments[entry_id] = {"class": exception["class"], "family": family,
-                                 "ticket": exception["ticket"], "expires": exception["expires"],
+                                 "ticket": exception["ticket"], "expires": expires,
                                  "owner_ok": exception.get("owner_ok", ""),
                                  "reason": exception["reason"]}
     for entry_id in assignments:
@@ -314,7 +314,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         report, expired = generate(args.root)
-    except (RosterError, KeyError, json.JSONDecodeError) as error:
+    except (RosterError, KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
         print(f"operation-inventory: invalid input: {error}", file=sys.stderr)
         return 2
     for entry_id in expired:

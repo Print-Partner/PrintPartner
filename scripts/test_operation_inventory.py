@@ -137,7 +137,7 @@ class InventoryTests(unittest.TestCase):
     def test_deferred_entry_without_family_is_kept_without_owner(self):
         self.write(INVENTORY.ROSTER, roster(exceptions=[
             {"entry": "format:covers", "class": "deferred", "ticket": "TEST-2",
-             "expires": "2000-01-01", "owner_ok": "owner, 2026-11-03", "reason": "later"}]))
+             "expires": "20000101", "owner_ok": "owner, 2026-11-03", "reason": "later"}]))
         code, stderr = self.run_main()
         self.assertEqual(code, 0)
         self.assertIn("exception for format:covers has expired", stderr)
@@ -172,6 +172,7 @@ class InventoryTests(unittest.TestCase):
             "fixed class": roster(owners={"denied:OPTIONS *": {
                 "family": family, "ticket": "TEST-1"}}),
             "no phase": roster(active_phase=""),
+            "owner is not an object": roster(owners={"route:GET /health current": "TEST-1"}),
         }
         for name, document in cases.items():
             with self.subTest(name):

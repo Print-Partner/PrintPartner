@@ -22,6 +22,9 @@ describe("fetchCore", () => {
     "http://127.0.0.1:18765/health",
     "//evil.example/health",
     "/\\evil.example/health",
+    "/\n/evil.example/health",
+    "/\t\\evil.example/health",
+    "/health\r",
     "health",
     "",
   ])("rejects %j before any request", async (path) => {
@@ -32,13 +35,13 @@ describe("fetchCore", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("turns a non-2xx answer into a CoreError with the status", async () => {
+  it("turns a non-2xx answer into a CoreError naming the status", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 })));
 
     const error = await fetchCore("/health").catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(CoreError);
-    expect((error as CoreError).status).toBe(503);
+    expect((error as CoreError).message).toContain("503");
   });
 });
 

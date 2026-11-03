@@ -25,10 +25,52 @@ export function coreProxy(env: Record<string, string | undefined>): Record<strin
   if ((url.protocol !== "http:" && url.protocol !== "https:") || !originOnly) {
     throw new Error(`${CORE_URL_ENV} must be an http(s) origin, got ${JSON.stringify(raw)}`);
   }
+  const configure = originBridge(url.origin);
   return Object.fromEntries(
     CORE_PATHS.map((prefix) => [
       prefix,
-      { target: url.origin, changeOrigin: true, ws: prefix === "/ws" },
+      { target: url.origin, changeOrigin: true, ws: prefix === "/ws", configure },
     ]),
   );
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/** Whether origin is the dev server's own kind of origin: http(s) on loopback. */
+export function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      LOOPBACK_HOSTS.has(parsed.hostname) &&
+      parsed.origin === origin
+    );
+  } catch {
+    return false;
+  }
+}
+
+type ProxyRequest = { setHeader(name: string, value: string): void };
+type IncomingRequest = { headers: Record<string, string | string[] | undefined> };
+type ProxyEvents = {
+  on(event: "proxyReq" | "proxyReqWs", listener: (proxyReq: ProxyRequest, req: IncomingRequest) => void): void;
+};
+
+/**
+ * The Rust core admits only its own Origin (pp-api loopback checks), and
+ * changeOrigin rewrites Host but not Origin. For a browser on a loopback dev
+ * server, present the core's origin upstream. Any other Origin is forwarded
+ * unchanged, so the core still rejects it.
+ */
+export function originBridge(coreOrigin: string) {
+  return (proxy: ProxyEvents) => {
+    const adapt = (proxyReq: ProxyRequest, req: IncomingRequest) => {
+      const origin = req.headers.origin;
+      if (typeof origin === "string" && isLoopbackOrigin(origin)) {
+        proxyReq.setHeader("origin", coreOrigin);
+      }
+    };
+    proxy.on("proxyReq", adapt);
+    proxy.on("proxyReqWs", adapt);
+  };
 }

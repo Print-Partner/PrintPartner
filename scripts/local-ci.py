@@ -120,8 +120,9 @@ STEPS = [
     # lines. After web-assets, which installs web/node_modules on Node 24. Vitest
     # exits nonzero when it finds no tests.
     Step("ui-package", "replacement UI package typecheck, lint, tests and build",
-         setup=("npm --prefix web run typecheck --workspace @print-partner/ui",
-                "npm --prefix web run lint --workspace @print-partner/ui",
+         # The package's build script runs its typecheck first, so there is no separate
+         # typecheck line.
+         setup=("npm --prefix web run lint --workspace @print-partner/ui",
                 "npm --prefix web run test --workspace @print-partner/ui",
                 "npm --prefix web run build --workspace @print-partner/ui"),
          requires=(("node", "v24.21.0"), ("npm", None))),

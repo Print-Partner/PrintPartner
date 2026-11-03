@@ -213,8 +213,9 @@ class LocalCiTests(unittest.TestCase):
         self.assertLess(ci.ran.index("web-assets"), ci.ran.index("ui-package"))
         self.assertLess(ci.ran.index("ui-package"), ci.ran.index("node-fixtures"))
         step = next(step for step in local_ci.STEPS if step.id == "ui-package")
-        for script in ("typecheck", "lint", "test", "build"):
+        for script in ("lint", "test", "build"):
             self.assertIn(f"npm --prefix web run {script} --workspace @print-partner/ui", step.setup)
+        self.assertNotIn("npm --prefix web run typecheck --workspace @print-partner/ui", step.setup)
 
     def test_ui_package_skips_without_node_24(self):
         ci = LocalCi(self, tools={**TOOLS, "node": "v22.23.3"})

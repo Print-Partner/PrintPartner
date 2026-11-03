@@ -7,17 +7,16 @@
  * this function. Do not add typed endpoint wrappers here before it lands.
  */
 export class CoreError extends Error {
-  readonly status: number;
-
   constructor(status: number, path: string) {
     super(`Rust core answered ${status} for ${path}`);
     this.name = "CoreError";
-    this.status = status;
   }
 }
 
-// One leading slash only: "//host" and "/\host" are cross-origin in browsers.
-const SAME_ORIGIN_PATH = /^\/(?![/\\])/;
+// One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
+// newlines are refused too, because URL parsing strips them and can turn "/\n/host"
+// into "//host".
+const SAME_ORIGIN_PATH = /^\/(?![/\\])(?![\s\S]*[\t\r\n])/;
 
 export async function fetchCore(path: string, init?: RequestInit): Promise<Response> {
   if (!SAME_ORIGIN_PATH.test(path)) {

@@ -43,6 +43,9 @@ export const uiBoundary = {
       ExportAllDeclaration: (node) => check(node.source),
       ImportExpression: (node) => check(node.source),
       TSExternalModuleReference: (node) => check(node.expression),
+      // typeof import("x") / import("x").T: the specifier sits in a literal type
+      // (typescript-eslint 8) or directly on the node (newer parsers).
+      TSImportType: (node) => check(node.source ?? node.argument?.literal ?? node.argument),
     };
   },
 };

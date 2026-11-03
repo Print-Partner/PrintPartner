@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parseAcceptedStlMesh, stlMeshDimensionsUm } from "@print-partner/domain";
 import { getDb, SqliteDatabase } from "../../apps/server/src/db/client.js";
 import { AppRepository } from "../../apps/server/src/db/repository.js";
 import { listOpenUnattributedPrints } from "../../apps/server/src/services/unattributed-print-store.js";
@@ -179,4 +180,21 @@ test("the generator refuses a non-empty output directory", async () => {
   writeFileSync(join(occupied, "keep.txt"), "not generator output\n");
   await assert.rejects(generate(9, occupied), /refusing to write into non-empty directory/);
   assert.equal(readFileSync(join(occupied, "keep.txt"), "utf8"), "not generator output\n");
+});
+
+test("every generated part parses as a 20 x 20 x 10 mm accepted mesh", () => {
+  const parts = (readdirSync(outputs.a, { recursive: true }) as string[]).filter((path) =>
+    path.endsWith(".stl"),
+  );
+  assert.ok(parts.length > 0);
+  for (const part of parts) {
+    const mesh = parseAcceptedStlMesh(readFileSync(join(outputs.a, part)));
+    assert.ok(mesh, part);
+    assert.equal(mesh.faces.length, 12, part);
+    assert.deepEqual(
+      stlMeshDimensionsUm(mesh),
+      { widthUm: 20_000, depthUm: 20_000, heightUm: 10_000 },
+      part,
+    );
+  }
 });

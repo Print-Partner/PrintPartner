@@ -99,8 +99,30 @@ function prng(seed: number) {
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
-const stl = (name: string) =>
-  `solid ${name}\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid ${name}\n`;
+// A closed box with the stored UNIT size in millimetres, so the accepted
+// geometry loader and the exporters' stored-dimension checks accept every part.
+const stl = (name: string) => {
+  const [x, y, z] = [UNIT.widthUm, UNIT.depthUm, UNIT.heightUm].map((um) => um / 1_000);
+  const corner = (i: number) => `${i & 1 ? x : 0} ${i & 2 ? y : 0} ${i & 4 ? z : 0}`;
+  const quads: Array<[string, [number, number, number, number]]> = [
+    ["0 0 -1", [0, 2, 3, 1]],
+    ["0 0 1", [4, 5, 7, 6]],
+    ["0 -1 0", [0, 1, 5, 4]],
+    ["0 1 0", [2, 6, 7, 3]],
+    ["-1 0 0", [0, 4, 6, 2]],
+    ["1 0 0", [1, 3, 7, 5]],
+  ];
+  const facets = quads.flatMap(([normal, [a, b, c, d]]) =>
+    [
+      [a, b, c],
+      [a, c, d],
+    ].map(
+      (tri) =>
+        `facet normal ${normal}\nouter loop\n${tri.map((i) => `vertex ${corner(i)}`).join("\n")}\nendloop\nendfacet\n`,
+    ),
+  );
+  return `solid ${name}\n${facets.join("")}endsolid ${name}\n`;
+};
 
 function chunk<T>(items: readonly T[], count: number): T[][] {
   return Array.from({ length: count }, (_, index) =>
@@ -395,7 +417,6 @@ function generate(seed: number, output: string) {
       ...measured,
       deletedBuildIds,
       buildIdDensity: Number((measured.buildIds.length / maxId).toFixed(4)),
-      anchors: ANCHORS.map(({ name, units, plates }) => ({ name, units, plates })),
     },
   };
   writeFileSync(join(output, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);

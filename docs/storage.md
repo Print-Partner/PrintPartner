@@ -69,7 +69,7 @@ It produces only these shapes:
 | Accepted history | Builds with Plates and 3 or more Plan revisions keep a Plate revision on an earlier Plan revision. Each anchor has two Plate revisions on its current Plan. |
 | Unmatched prints | 18 open entries in the `printer.unattributed_prints` setting |
 
-Names are `Synthetic Source NN`, `Synthetic Build NN` and `synthetic-sNN-part-NN.stl`. URLs and printer hosts use `.invalid`. Nothing is copied from a real data directory.
+Names are `Synthetic Source NN`, `Synthetic Build NN` and `synthetic-sNN-part-NN.stl`. Every part is a closed 20 × 20 × 10 mm ASCII STL box that matches the stored unit size, so Plate initialization and 3MF export accept it. URLs and printer hosts use `.invalid`. Nothing is copied from a real data directory.
 
 ### Manifest and digest
 

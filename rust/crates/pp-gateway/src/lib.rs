@@ -1748,7 +1748,12 @@ async fn product_response(
     request: Request<Body>,
     admission: Admission,
 ) -> Response<Body> {
-    let Ok(response) = tower::ServiceExt::oneshot(product, request).await;
+    let Ok(mut response) = tower::ServiceExt::oneshot(product, request).await;
+    // Same dynamic-response policy as the compatibility branch: account and
+    // Plan JSON must not be cached and reused without rechecking the session.
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
     response.map(|body| {
         Body::new(TrackedBody {
             body,

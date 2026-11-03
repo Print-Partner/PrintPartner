@@ -115,19 +115,18 @@ async fn slice0_mount_product_routes_answer_without_the_proxy() {
     let (gateway, cookie, _root) = started(Some(stub())).await;
     let state = || State(gateway.state.clone());
 
-    let (status, body) = text(
-        handle(
-            state(),
-            get(
-                &gateway,
-                "/api/v1/plans",
-                Some(&cookie),
-                Some("127.0.0.1:9"),
-            ),
-        )
-        .await,
+    let response = handle(
+        state(),
+        get(
+            &gateway,
+            "/api/v1/plans",
+            Some(&cookie),
+            Some("127.0.0.1:9"),
+        ),
     )
     .await;
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let (status, body) = text(response).await;
     assert_eq!((status, body.as_str()), (StatusCode::OK, "rust 127.0.0.1"));
 
     // Paths the product routes do not know get their 404, not the proxy.

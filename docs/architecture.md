@@ -17,20 +17,23 @@ not launchd, systemd, or Windows Service.
 pp-desktop / pp-server
           |
        pp-core                 composition, startup, workers, shutdown
-          |
-       pp-gateway              listener, admission, static assets
-          |
-       pp-api                  HTTP, MCP, live-event adapters
-          |
-  typed operation-family interfaces
-    | pp-storage               transactions, durable state, jobs, backups
-    | pp-services              policy and native slicer operations
-    | pp-source                immutable filesystem snapshots
-    ` pp-drivers -> pp-net     checked external effects
+       /       \
+      /         \
+pp-gateway     pp-api           composed sibling routers
+listener,      HTTP, MCP,
+admission,     event adapters
+assets            |
+                  v
+       typed operation-family interfaces
+          | pp-storage          transactions, jobs, backups
+          | pp-services         policy and native slicer operations
+          | pp-source           immutable filesystem snapshots
+          ` pp-drivers -> pp-net checked external effects
 ```
 
-This is a call/ownership sketch, not a Cargo dependency graph. `pp-core` injects
-adapters where crates cannot depend on one another.
+`pp-core` composes the sibling gateway and API routers; `pp-gateway` does not
+depend on `pp-api`. This is a call/ownership sketch, not a full Cargo graph.
+`pp-core` injects adapters where crates cannot depend on one another.
 
 The [accepted UI target](product/ui-ux-target.md) owns Today, Build-local tabs,
 History/Accept, and burst Checkoff. New order fields, transactional duplicate-order

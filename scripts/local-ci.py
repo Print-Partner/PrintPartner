@@ -116,6 +116,27 @@ STEPS = [
          (CROSS_OS + "Build desktop assets and generate measured manifest",),
          requires=(("node", "v24.21.0"), ("npm", None), ("python3", None)),
          env={"VITE_PRINT_PARTNER_DESKTOP": "1", "MANIFEST_PYTHON": "python3"}),
+    # The replacement UI package. No hosted job runs these yet, so they are local-only
+    # lines. After web-assets, which installs web/node_modules on Node 24. Vitest
+    # exits nonzero when it finds no tests.
+    Step("ui-package", "replacement UI package typecheck, lint, tests and build",
+         # The package's build script runs its typecheck first, so there is no separate
+         # typecheck line.
+         # The build adds apps/ui/dist, which the manifest's dependency inventory follows
+         # through node_modules, so regenerate the manifest afterwards, before any Rust
+         # test verifies it.
+         setup=("npm --prefix web run lint --workspace @print-partner/ui",
+                "npm --prefix web run test --workspace @print-partner/ui",
+                "npm --prefix web run build --workspace @print-partner/ui",
+                # Only when web-assets has built the desktop app; otherwise there is no
+                # measured manifest to keep in step with.
+                "if [ -f web/apps/web/dist/desktop-build.json ]; then",
+                "  node_path=$(node -p process.execPath)",
+                '  "$MANIFEST_PYTHON" rust/scripts/build-desktop-manifest.py --web web --node "$node_path" '
+                '--output rust/bundle-manifest.json --commit "$GITHUB_SHA"',
+                "fi"),
+         requires=(("node", "v24.21.0"), ("npm", None), ("python3", None)),
+         env={"MANIFEST_PYTHON": "python3"}),
     # After web-assets, which installs the parser it loads from web/node_modules, and
     # before node-fixtures reinstalls them. Web CI runs it on Node 22.
     Step("workaround-ratchet", "TODO, eslint-disable and Rust #[allow] ratchet (Node 22)",

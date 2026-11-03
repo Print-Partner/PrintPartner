@@ -71,8 +71,13 @@ class EnvironmentSetupTests(unittest.TestCase):
         packages = result.stdout.split()
         self.assertIn("libwebkit2gtk-4.1-dev", packages)
         self.assertIn("python3-venv", packages)
-        self.assertNotIn("chromium", packages)
+        self.assertIn("chromium", packages)
         self.assertNotIn("\\", packages)
+
+    def test_browser_is_configured_for_ui_evidence(self):
+        setup = SETUP.read_text()
+        self.assertIn('export PLAYWRIGHT_CHROMIUM_EXECUTABLE="/usr/bin/chromium"', setup)
+        self.assertNotIn("grep -vx chromium", setup)
 
     def test_python_is_installed_before_version_extraction(self):
         setup = SETUP.read_text()

@@ -67,7 +67,7 @@ class LocalCiTests(unittest.TestCase):
         self.assertEqual(ci(), 0)
         for step in ["fmt", "clippy-off", "clippy-on", "nextest-off", "nextest-on", "doc-off", "doc-on",
                      "web-assets", "workaround-ratchet", "ast-grep", "boundaries", "selector-tests",
-                     "node-fixtures", "actionlint", "zizmor", "rust-deps", "duplication"]:
+                     "node-fixtures", "actionlint", "zizmor", "rust-deps", "duplication", "ui-package"]:
             self.assertEqual(ci.summary[step], "PASS", step)
         for step in ["rust-windows", "rust-macos", "pr-evidence"]:
             self.assertEqual(ci.summary[step], "SKIP", step)
@@ -206,6 +206,25 @@ class LocalCiTests(unittest.TestCase):
         self.assertLess(ci.ran.index("workaround-ratchet"), ci.ran.index("node-fixtures"))
         self.assertLess(ci.ran.index("web-assets"), ci.ran.index("duplication"))
         self.assertLess(ci.ran.index("duplication"), ci.ran.index("node-fixtures"))
+
+    def test_ui_package_runs_its_checks_after_web_assets_installs_node_modules(self):
+        ci = LocalCi(self)
+        self.assertEqual(ci(), 0)
+        self.assertLess(ci.ran.index("web-assets"), ci.ran.index("ui-package"))
+        self.assertLess(ci.ran.index("ui-package"), ci.ran.index("node-fixtures"))
+        step = next(step for step in local_ci.STEPS if step.id == "ui-package")
+        for script in ("lint", "test", "build"):
+            self.assertIn(f"npm --prefix web run {script} --workspace @print-partner/ui", step.setup)
+        self.assertNotIn("npm --prefix web run typecheck --workspace @print-partner/ui", step.setup)
+        build = step.setup.index("npm --prefix web run build --workspace @print-partner/ui")
+        manifest = next(i for i, line in enumerate(step.setup) if "build-desktop-manifest.py" in line)
+        self.assertLess(build, manifest)
+
+    def test_ui_package_skips_without_node_24(self):
+        ci = LocalCi(self, tools={**TOOLS, "node": "v22.23.3"})
+        self.assertEqual(ci("--only", "ui-package"), 0)
+        self.assertEqual(ci.summary["ui-package"], "SKIP")
+        self.assertIn("needs node v24.21.0", ci.output)
 
     def test_duplication_failure_fails_the_run_without_stopping_later_steps(self):
         ci = LocalCi(self, fail={"duplication"})

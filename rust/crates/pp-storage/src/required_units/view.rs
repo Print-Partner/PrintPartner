@@ -45,6 +45,7 @@ pub enum DomainCode {
     RequiredUnitSetUnavailable,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Workspace {
     pub profile_id: i64,
@@ -54,6 +55,7 @@ pub struct Workspace {
     pub reconciliation: ReconciliationView,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DraftIdentity {
     pub draft_id: i64,
@@ -63,15 +65,33 @@ pub struct DraftIdentity {
     pub base: DraftBase,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DraftBase {
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub revision_id: Option<i64>,
     pub plan_version: i64,
 }
 
+/// `GET /plans/{id}/drafts` body.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct DraftListResponse {
+    pub profile_id: i64,
+    pub drafts: Vec<DraftIdentity>,
+}
+
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PartView {
     pub draft_part_id: i64,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub base_revision_part_id: Option<i64>,
     pub part_key: String,
     pub filename: String,
@@ -79,11 +99,16 @@ pub struct PartView {
     pub source_layer: String,
     pub role: String,
     pub quantity_inferred: i64,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub quantity_override: Option<i64>,
     pub quantity_effective: i64,
     pub included: bool,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AcceptedReference {
     pub revision_part_id: i64,
@@ -92,6 +117,7 @@ pub struct AcceptedReference {
     pub source_layer: String,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Change {
     pub before: AcceptedReference,
@@ -99,6 +125,7 @@ pub struct Change {
     pub fields: Vec<&'static str>,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Diff {
     pub base_is_current: bool,
@@ -107,6 +134,7 @@ pub struct Diff {
     pub changed: Vec<Change>,
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReconciliationView {
@@ -120,6 +148,7 @@ pub enum ReconciliationView {
     },
 }
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConflictView {

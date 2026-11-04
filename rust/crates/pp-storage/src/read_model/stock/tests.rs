@@ -191,6 +191,40 @@ fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
 }
 
 #[test]
+fn unknown_need_says_whether_any_grams_were_recorded() {
+    let snapshot = plan(&[(10, "spoolman:local:filament:2"), (11, "")]);
+    let accepted = AcceptedRead::Ready { snapshot };
+    let need = |measured: HashMap<i64, Measured>| {
+        let inputs = StockInputs::On {
+            integrations: vec![],
+            measured,
+        };
+        let Some(FilamentShortfalls::Ready { filaments, .. }) =
+            shortfalls(1, &accepted, &inputs, &HashMap::new())
+        else {
+            panic!("ready")
+        };
+        filaments
+            .into_iter()
+            .map(|f| f.grams_needed)
+            .collect::<Vec<_>>()
+    };
+    let unknown = |reason| GramsNeeded::Unknown { reason };
+    let none = unknown(NeedUnknown::GramsNotRecorded);
+    assert_eq!(need(HashMap::new()), [none.clone(), none]);
+    let part_10 = Measured {
+        grams_per_unit: 3.0,
+        job_ids: vec!["job".into()],
+    };
+    let measured = GramsNeeded::Measured {
+        grams: 3,
+        job_count: 1,
+    };
+    let unprinted = unknown(NeedUnknown::PartNotPrinted);
+    assert_eq!(need(HashMap::from([(10, part_10)])), [unprinted, measured]);
+}
+
+#[test]
 fn inputs_read_module_state_integrations_and_measured_grams() {
     let store = Store::new();
     let inputs = || read_inputs(&store.1, "default", 1).unwrap();

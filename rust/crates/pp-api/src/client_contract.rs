@@ -157,7 +157,7 @@ mod codegen {
         features::modules::{Module, ModuleOffReason},
         read_model::stock::{
             FilamentNeed, FilamentShortfalls, GramsAvailable, GramsNeeded, InventoryUnknown,
-            PartNeed, Sufficiency,
+            NeedUnknown, PartNeed, Sufficiency,
         },
     };
     use serde::{Serialize, de::DeserializeOwned};
@@ -662,8 +662,11 @@ mod codegen {
         let mut filaments = vec![
             need(measured(40), stock(752), Sufficiency::Sufficient),
             need(measured(MAX_SAFE as u64), stock(0), short),
-            need(GramsNeeded::Unknown, stock(1), Sufficiency::Unknown),
         ];
+        for reason in [NeedUnknown::GramsNotRecorded, NeedUnknown::PartNotPrinted] {
+            let unknown = GramsNeeded::Unknown { reason };
+            filaments.push(need(unknown, stock(1), Sufficiency::Unknown));
+        }
         for reason in [
             InventoryUnknown::NotSpoolman,
             InventoryUnknown::IntegrationMissing,

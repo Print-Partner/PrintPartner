@@ -12,6 +12,7 @@ responses, trimmed to the fields Print Partner reads.
 | `filaments.json` | `/api/v1/filament` | Filament 2 (Prusament PLA, Galaxy Black) and filament 3 (Generic PETG, Orange) |
 | `spools-sufficient.json` | `/api/v1/spool` | Filament 2 has spools 7 (512.4 g) and 8 (240 g), so 752 g. Archived spool 9 does not count |
 | `spools-short.json` | `/api/v1/spool` | Filament 2 has only spool 7 (18.9 g), so 18 g. Archived spool 9 does not count |
+| `print-outcomes-node.sql` | SQL run on the test database | One printer checkoff of Part 2 (two units) exactly as Node's `appendPrintOutcomes` writes it: a `sent` job with no measured grams. The test also marks it completed with 84 g to show the measured path reading the same rows |
 
 The unknown case (Spoolman answers 500 or is not listening) and the Module-off
 case need no file.

@@ -23,6 +23,9 @@ const FILAMENTS: &str = include_str!("../../../../fixtures/integrations/spoolman
 const SUFFICIENT: &str =
     include_str!("../../../../fixtures/integrations/spoolman/spools-sufficient.json");
 const SHORT: &str = include_str!("../../../../fixtures/integrations/spoolman/spools-short.json");
+/// A checkoff as Node records it today: a `sent` job with no measured grams.
+const NODE_OUTCOMES: &str =
+    include_str!("../../../../fixtures/integrations/spoolman/print-outcomes-node.sql");
 /// The included Part (ID 2, one remaining unit) prints filament 2 of
 /// integration `local`; one completed job measured 42 g for it.
 const SETUP: &str = "
@@ -186,6 +189,10 @@ fn measured() -> Value {
     json!({"kind": "measured", "grams": 42, "job_count": 1})
 }
 
+fn not_recorded() -> Value {
+    json!({"kind": "unknown", "reason": "grams_not_recorded"})
+}
+
 #[tokio::test]
 async fn sufficient_and_short_report_exact_filament_and_grams() {
     let sufficient = Harness::new(SUFFICIENT, "").await;
@@ -227,10 +234,36 @@ async fn unavailable_inventory_and_unprinted_parts_stay_unknown() {
     ready(
         &unprinted.shortfalls().await,
         stock,
-        unknown.clone(),
         unknown,
+        not_recorded(),
     );
     unprinted.stop();
+}
+
+/// No code in Node or Rust records measured grams yet, so a real library
+/// reads `grams_not_recorded`. The same Node-shaped rows, once completed
+/// with grams, take the measured path.
+#[tokio::test]
+async fn node_shaped_outcomes_report_grams_not_recorded() {
+    let stock = json!({"kind": "spoolman", "grams": 752, "spool_ids": [7, 8]});
+    let clear = "DELETE FROM print_job_parts; DELETE FROM print_jobs;";
+    let today = Harness::new(SUFFICIENT, &format!("{clear}{NODE_OUTCOMES}")).await;
+    let unknown = json!({"kind": "unknown"});
+    ready(
+        &today.shortfalls().await,
+        stock.clone(),
+        unknown,
+        not_recorded(),
+    );
+    today.stop();
+
+    let complete = "UPDATE print_jobs SET status='completed', filament_consumed_g=84,
+        completed_at='2026-10-03T01:00:00.000Z';";
+    let sql = format!("{clear}{NODE_OUTCOMES}{complete}");
+    let recorded = Harness::new(SUFFICIENT, &sql).await;
+    let sufficient = json!({"kind": "sufficient"});
+    ready(&recorded.shortfalls().await, stock, sufficient, measured());
+    recorded.stop();
 }
 
 #[tokio::test]

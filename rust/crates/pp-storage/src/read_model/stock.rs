@@ -3,7 +3,10 @@
 //! Grams needed come from past prints: each completed print job's
 //! `filament_consumed_g` divided by the units that job printed, averaged over
 //! the Part's most recent [`MEASURED_JOBS`] jobs and multiplied by the Part's
-//! remaining units. A Part never printed has unknown need. Grams available
+//! remaining units. A Part never printed has unknown need. Nothing in Node or
+//! Rust records `filament_consumed_g` yet (Node's `appendPrintOutcomes`
+//! writes `sent` jobs with no grams), so on real data every need is unknown
+//! with [`NeedUnknown::GramsNotRecorded`] until a writer exists. Grams available
 //! come from Spoolman, which alone owns stock counts. Unreadable inventory is
 //! unknown, never zero, and an unknown on either side never yields a shortfall.
 //!
@@ -132,7 +135,18 @@ pub enum GramsNeeded {
     /// From past prints, rounded up. `job_count` is the distinct jobs used.
     Measured { grams: u64, job_count: u64 },
     /// At least one Part has no completed print with measured grams.
-    Unknown,
+    Unknown { reason: NeedUnknown },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum NeedUnknown {
+    /// No print job of this Build has measured grams. Print Partner does not
+    /// record grams per print yet, so every real library reads this today.
+    GramsNotRecorded,
+    /// Other Parts of this Build have measured prints; this Part has none.
+    PartNotPrinted,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -339,6 +353,12 @@ pub fn shortfalls(
             measured,
         } => (integrations, measured),
     };
+    let missing = GramsNeeded::Unknown {
+        reason: match measured.is_empty() {
+            true => NeedUnknown::GramsNotRecorded,
+            false => NeedUnknown::PartNotPrinted,
+        },
+    };
     let filaments = remaining_work(snapshot)
         .into_iter()
         .map(|(id, parts)| {
@@ -350,11 +370,9 @@ pub fn shortfalls(
                         part_id: part.projection_part_id,
                         filename: part.filename.clone(),
                         remaining_units: remaining,
-                        grams_needed: measured.map_or(GramsNeeded::Unknown, |m| {
-                            GramsNeeded::Measured {
-                                grams: (m.grams_per_unit * remaining as f64).ceil() as u64,
-                                job_count: m.job_ids.len() as u64,
-                            }
+                        grams_needed: measured.map_or(missing.clone(), |m| GramsNeeded::Measured {
+                            grams: (m.grams_per_unit * remaining as f64).ceil() as u64,
+                            job_count: m.job_ids.len() as u64,
                         }),
                     };
                     let jobs =
@@ -408,7 +426,7 @@ fn group_need(parts: &[(PartNeed, Vec<&str>)]) -> GramsNeeded {
     let mut jobs = BTreeSet::new();
     for (part, part_jobs) in parts {
         let GramsNeeded::Measured { grams: g, .. } = part.grams_needed else {
-            return GramsNeeded::Unknown;
+            return part.grams_needed.clone();
         };
         grams = grams.saturating_add(g);
         jobs.extend(part_jobs.iter().copied());

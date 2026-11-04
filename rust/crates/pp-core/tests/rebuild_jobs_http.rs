@@ -10,15 +10,18 @@ mod without_feature {
 }
 
 #[cfg(feature = "desktop_rebuild")]
+#[path = "support/jobs.rs"]
+mod support_jobs;
+
+#[cfg(feature = "desktop_rebuild")]
 mod with_feature {
     use pp_core::DesktopRebuild;
     use pp_core::rebuild_api::{job_router, router};
     use pp_storage::{
         Limits, WriterOwner,
-        auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
-        jobs::{Credential, Outcome, Payload, UserOperation},
+        auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy},
     };
-    use std::{path::Path, sync::atomic::AtomicBool, time::Duration};
+    use std::{path::Path, time::Duration};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn policy() -> AuthPolicy {
@@ -55,26 +58,7 @@ mod with_feature {
     }
 
     fn enqueue(owner: &WriterOwner, token: &str) -> String {
-        match owner
-            .jobs(policy())
-            .unwrap()
-            .submit(
-                Credential::Session(Secret::new(token.to_owned())),
-                UserOperation::Enqueue {
-                    key: "stream".into(),
-                    payload_version: 1,
-                    payload: Payload::CheckSourceUpdates {},
-                },
-                &AtomicBool::new(false),
-                Duration::from_secs(5),
-            )
-            .unwrap()
-            .receive()
-            .unwrap()
-        {
-            Outcome::Job(job, _) => job.job_id,
-            _ => panic!("enqueued job expected"),
-        }
+        super::support_jobs::enqueue_check(&owner.jobs(policy()).unwrap(), token, "stream")
     }
 
     struct Server {

@@ -2,6 +2,9 @@
 //! listener, with no compatibility child.
 #![cfg(feature = "desktop_rebuild")]
 
+#[path = "support/jobs.rs"]
+mod support_jobs;
+
 mod with_feature {
     use pp_core::{
         DesktopRebuild, VerifiedBundle,
@@ -11,7 +14,6 @@ mod with_feature {
         Limits, WriterOwner,
         auth::Secret,
         build_graph::{BuildCommand, BuildName, BuildOutcome},
-        jobs::{Credential, Outcome, Payload, UserOperation},
         read_model,
     };
     use serde_json::{Value, json};
@@ -186,18 +188,7 @@ mod with_feature {
 
     fn enqueue(owner: &Mutex<WriterOwner>, token: &str) -> String {
         let jobs = owner.lock().unwrap().jobs(desktop_policy()).unwrap();
-        let session = Credential::Session(Secret::new(token.into()));
-        let check = UserOperation::Enqueue {
-            key: "slice0".into(),
-            payload_version: 1,
-            payload: Payload::CheckSourceUpdates {},
-        };
-        let cancel = AtomicBool::new(false);
-        let submitted = jobs.submit(session, check, &cancel, Duration::from_secs(5));
-        let Outcome::Job(job, _) = submitted.unwrap().receive().unwrap() else {
-            panic!("enqueued job expected");
-        };
-        job.job_id
+        super::support_jobs::enqueue_check(&jobs, token, "slice0")
     }
 
     /// Whether storage still accepts the Rust session `token`.

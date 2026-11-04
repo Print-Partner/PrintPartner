@@ -394,6 +394,32 @@ mod tests {
         )
     }
 
+    /// The flag-on client bundle over `owner` with the desktop policy.
+    fn enabled_clients(owner: &WriterOwner) -> RebuildHttpClients {
+        clients(
+            DesktopRebuild::from_value(Some("1")),
+            owner,
+            desktop_policy(),
+            lifetimes(),
+            None,
+        )
+        .unwrap()
+        .expect("flag on constructs clients")
+    }
+
+    /// A fresh writer plus a loopback listener and its origin.
+    async fn bound() -> (
+        WriterOwner,
+        std::path::PathBuf,
+        tokio::net::TcpListener,
+        String,
+    ) {
+        let (owner, directory) = owner();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        (owner, directory, listener, origin)
+    }
+
     #[test]
     fn runtime_setting_off_registers_no_routes() {
         let (owner, directory) = owner();
@@ -460,15 +486,7 @@ mod tests {
     #[test]
     fn ticket_t_10_draftreads_production_clients_read_sources() {
         let (owner, directory) = owner();
-        let bundle = clients(
-            DesktopRebuild::from_value(Some("1")),
-            &owner,
-            desktop_policy(),
-            lifetimes(),
-            None,
-        )
-        .unwrap()
-        .expect("flag on constructs clients");
+        let bundle = enabled_clients(&owner);
         let refused = bundle
             .drafts
             .recompute(
@@ -492,15 +510,7 @@ mod tests {
     #[test]
     fn application_host_closes_owned_clients() {
         let (owner, directory) = owner();
-        let bundle = clients(
-            DesktopRebuild::from_value(Some("1")),
-            &owner,
-            desktop_policy(),
-            lifetimes(),
-            None,
-        )
-        .unwrap()
-        .expect("flag on constructs clients");
+        let bundle = enabled_clients(&owner);
         // Policy-backed Build client refuses a missing session (not LocalOwner).
         let refused = bundle
             .builds
@@ -574,9 +584,7 @@ mod tests {
     #[tokio::test]
     async fn client_routes_match_registrations() {
         use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
-        let (owner, directory) = owner();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (owner, directory, listener, origin) = bound().await;
         let rebuild = DesktopRebuild::from_value(Some("1"));
         let (policy, lifetimes) = (desktop_policy(), lifetimes());
         let drafts = draft_router(rebuild, &owner, policy, lifetimes, &origin, "default", None);
@@ -666,9 +674,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_setting_on_serves_auth_through_the_rebuild_client() {
-        let (owner, directory) = owner();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (owner, directory, listener, origin) = bound().await;
         let router = router(
             DesktopRebuild::from_value(Some("1")),
             &owner,

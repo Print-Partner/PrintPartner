@@ -5,7 +5,6 @@ use pp_storage::{
     native_secrets::{MigrationPreparation, StorageFailure},
 };
 use rusqlite::Connection;
-use std::os::unix::fs::DirBuilderExt;
 use std::{
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
@@ -17,11 +16,7 @@ fn directory(name: &str) -> PathBuf {
         "pp-storage-native-secret-{name}-{}",
         hex::encode(rand::random::<[u8; 8]>())
     ));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&path)
-        .unwrap();
+    pp_os::create_private_dir_all(&path).unwrap();
     path
 }
 

@@ -18,6 +18,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - HTTP, MCP, and event adapters: `pp-api`. Listeners and session admission: `pp-gateway`.
 - Running workers, startup order, and shutdown: `pp-core`.
 - Immutable Source revision bytes and extraction: `pp-source`.
+- Platform file mechanics: `pp-os` supplies no-follow opens and file status, private directory creation, advisory locks (`try_lock`, `unlock`), and durable rename and sync. Storage decides the paths and policy.
 - Sync policy and slicer operations: `pp-services`.
 - Printer and provider protocols: `pp-drivers`. Storage records queue and effect state; it never sends to a printer.
 - Archive restore and activation. The crate writes and validates archives (`archive::validate`) but does not restore them yet.

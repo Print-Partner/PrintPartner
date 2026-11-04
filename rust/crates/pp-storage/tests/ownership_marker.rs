@@ -70,8 +70,9 @@ fn present_but_invalid_markers_are_refused_like_the_testkit_oracle() {
     assert_eq!(ownership_marker::inspect(empty.path()), MarkerState::Absent);
 }
 
+#[cfg(unix)]
 #[test]
-fn symlinked_and_oversized_markers_are_refused() {
+fn symlinked_marker_is_refused() {
     let installation = Installation::create(Fixture::RustMarked).unwrap();
     let target = installation.path().join("real-marker");
     std::fs::rename(installation.marker_path(), &target).unwrap();
@@ -80,7 +81,11 @@ fn symlinked_and_oversized_markers_are_refused() {
         ownership_marker::inspect(installation.path()),
         MarkerState::Refused(MarkerRefusal::NotRegularFile)
     );
-    std::fs::remove_file(installation.marker_path()).unwrap();
+}
+
+#[test]
+fn oversized_marker_is_refused() {
+    let installation = Installation::create(Fixture::RustMarked).unwrap();
     std::fs::write(installation.marker_path(), vec![b' '; 4096]).unwrap();
     assert_eq!(
         ownership_marker::inspect(installation.path()),

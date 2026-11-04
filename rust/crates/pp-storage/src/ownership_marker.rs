@@ -31,6 +31,16 @@ use std::{
     path::Path,
 };
 
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as platform;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;
+
 /// File name of the durable ownership marker.
 pub const MARKER_FILE: &str = ".pp-rust-owned.json";
 /// Prefix of the marker writer's temporary file. A crash between create and
@@ -238,9 +248,10 @@ impl fmt::Display for OwnershipRefusal {
 impl std::error::Error for OwnershipRefusal {}
 
 /// Top-level names allowed in a directory that still counts as empty. `*`
-/// stands for one or more characters. All but the last two are lease names
-/// from the Rust and Node lease code; `lost+found` is the filesystem's, and the
-/// last is the marker writer's own crash leftover.
+/// stands for one or more characters. All but `lost+found`, the filesystem's,
+/// are lease names from the Rust and Node lease code. [`allowed_in_empty`]
+/// also admits the marker writer's own crash leftover, [`MARKER_TEMP_PREFIX`]
+/// followed by one or more characters.
 pub const EMPTY_ALLOWLIST: &[&str] = &[
     "printpartner.lock",
     ".desktop-lease",
@@ -250,7 +261,6 @@ pub const EMPTY_ALLOWLIST: &[&str] = &[
     OWNER_RECORD,
     ".desktop-owner-release-*.json",
     "lost+found",
-    ".pp-rust-owned.json.tmp-*",
 ];
 
 /// Whether a top-level entry name is in [`EMPTY_ALLOWLIST`]. Inside a
@@ -258,15 +268,18 @@ pub const EMPTY_ALLOWLIST: &[&str] = &[
 /// and `.desktop-owner.json` must not name a live process
 /// (`first_non_empty_entry_in` checks both).
 pub fn allowed_in_empty(name: &str) -> bool {
-    EMPTY_ALLOWLIST
-        .iter()
-        .any(|pattern| match pattern.split_once('*') {
-            None => name == *pattern,
-            Some((prefix, suffix)) => name
-                .strip_prefix(prefix)
-                .and_then(|rest| rest.strip_suffix(suffix))
-                .is_some_and(|middle| !middle.is_empty()),
-        })
+    let matches = |prefix: &str, suffix: &str| {
+        name.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .is_some_and(|middle| !middle.is_empty())
+    };
+    matches(MARKER_TEMP_PREFIX, "")
+        || EMPTY_ALLOWLIST
+            .iter()
+            .any(|pattern| match pattern.split_once('*') {
+                None => name == *pattern,
+                Some((prefix, suffix)) => matches(prefix, suffix),
+            })
 }
 
 /// Entries a Node `.desktop-lease` directory may hold in an empty directory.
@@ -324,31 +337,18 @@ fn owner_record_is_live(dir: &Dir) -> bool {
     else {
         return true;
     };
-    let pid = pid as i32;
-    if unsafe { libc::kill(pid, 0) } < 0
-        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-    {
+    let pid = pid as u32;
+    if !platform::process_running(pid) {
         return false;
     }
+    // The identity check guards against a reused pid. Where the identity
+    // cannot be looked up, the record still counts as live.
     match record.get("process_identity").and_then(|v| v.as_str()) {
         Some(identity) if !identity.is_empty() => {
-            process_identity(pid).is_none_or(|actual| actual == identity)
+            platform::process_identity(pid).is_none_or(|actual| actual == identity)
         }
         _ => true,
     }
-}
-
-/// Node's process identity: `<boot id>:<start time>` from `/proc`. `None`
-/// where `/proc` is unavailable.
-fn process_identity(pid: i32) -> Option<String> {
-    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let start = stat
-        .get(stat.rfind(')')? + 2..)?
-        .split_whitespace()
-        .nth(19)?;
-    (!boot.trim().is_empty() && start.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| format!("{}:{start}", boot.trim()))
 }
 
 /// Writes `marker` atomically: a temporary file in the same directory, fsync,

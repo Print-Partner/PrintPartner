@@ -48,6 +48,9 @@ ryu-js = "=1.0.2"
 saphyr-parser = { version = "=0.1.0", default-features = false, optional = true }
 schemars = { version = "=0.8.22", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
 pp-storage = { path = ".", features = ["test-unmarked-writer"] }
 pp-testkit = { path = "../pp-testkit" }

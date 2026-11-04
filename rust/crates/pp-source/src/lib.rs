@@ -175,12 +175,12 @@ impl SourcePath {
         &self.0
     }
 
-    /// Refuses segments that Windows absolute-path readers reinterpret (see
-    /// [`pp_os::is_windows_alias`]). New publications are checked on every OS,
-    /// so a snapshot made anywhere opens on Windows. Persisted paths are not
-    /// re-checked, so earlier Unix revisions stay readable.
+    /// On Windows, refuses segments that absolute-path readers reinterpret
+    /// ([`pp_os::is_windows_alias`]): renaming a user's path would change its
+    /// identity. Unix accepts every name it accepted before. Only new names
+    /// are checked.
     pub(crate) fn require_portable(&self) -> Result<()> {
-        if self.0.split('/').any(pp_os::is_windows_alias) {
+        if self.0.split('/').any(pp_os::reinterpreted_here) {
             return Err(Error::UnsafePath);
         }
         Ok(())
@@ -507,6 +507,7 @@ fn validate_revision(key: &str) -> Result<()> {
         || !key
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || pp_os::reinterpreted_here(key)
     {
         return Err(Error::InvalidIdentity);
     }
@@ -543,8 +544,15 @@ fn legacy_only_collision(files: &[SelectedFile]) -> bool {
         true
     })
 }
+/// New requests only: their names are about to be published, so they must
+/// also be [portable](SourcePath::require_portable). Persisted manifests,
+/// legacy ambiguity checks included, keep main's classification.
 fn validate_request(request: &mut SnapshotRequest) -> Result<()> {
-    validate_request_policy(request, true, false)
+    validate_request_policy(request, true, false)?;
+    request
+        .files
+        .iter()
+        .try_for_each(|file| file.path.require_portable())
 }
 fn validate_request_with(request: &mut SnapshotRequest, selected_collisions: bool) -> Result<()> {
     validate_request_policy(request, selected_collisions, false)
@@ -574,9 +582,6 @@ fn validate_request_policy(
     for file in &request.files {
         if file.size_hint_bytes.is_some_and(|n| n > MAX_SAFE_INTEGER) {
             return Err(Error::Limit);
-        }
-        if !persisted_unicode16 {
-            file.path.require_portable()?;
         }
         if selected_collisions {
             paths.insert(&file.path, false)?;

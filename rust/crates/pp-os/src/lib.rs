@@ -489,6 +489,13 @@ pub fn is_windows_alias(name: &str) -> bool {
         .any(|prefix| stem.strip_prefix(prefix).is_some_and(digit))
 }
 
+/// True when this platform's absolute-path readers would reinterpret `name`:
+/// [`is_windows_alias`] on Windows, never on Unix, where such names are
+/// ordinary.
+pub fn reinterpreted_here(name: &str) -> bool {
+    platform::refuses_alias(name)
+}
+
 /// Refuse anything but one normal path component, so an entry operation
 /// cannot leave its directory. Windows also refuses
 /// [aliases](is_windows_alias), which Unix stores as ordinary names.

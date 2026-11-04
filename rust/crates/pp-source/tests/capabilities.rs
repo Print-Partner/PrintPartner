@@ -782,27 +782,55 @@ fn write_legacy_revision_with_omissions(
     revision
 }
 
+/// Device names and trailing dots or spaces are refused only on Windows,
+/// where absolute-path readers would reinterpret them. Unix publishes them
+/// exactly as before.
 #[test]
-fn new_publications_refuse_names_windows_readers_reinterpret_on_every_os() {
+fn device_names_are_refused_only_on_windows() {
     let fixture = Fixture::new();
     let repos = fixture.repos();
-    for path in [
+    let materialize = |req: SnapshotRequest| {
+        let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
+        repos
+            .source(42)
+            .and_then(|mut source| source.materialize(req, &input, budget()))
+    };
+    let cases = [
         "NUL.stl",
         "parts/con/part.stl",
         "COM1.stl",
         "part.stl.",
         "parts /a.stl",
-    ] {
+    ];
+    for (index, path) in cases.iter().enumerate() {
+        #[cfg(unix)]
+        {
+            let stored = fixture.0.join("input").join(path);
+            fs::create_dir_all(stored.parent().unwrap()).unwrap();
+            fs::write(stored, b"solid bytes").unwrap();
+        }
         let mut req = request();
-        req.files[0].path = SourcePath::try_from(path.to_owned()).unwrap();
-        let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
-        let error = repos
-            .source(42)
-            .and_then(|mut source| source.materialize(req, &input, budget()))
-            .unwrap_err();
-        assert_eq!(error.category(), "unsafe-path", "{path:?}");
+        req.upstream_revision_key = format!("device-{index}");
+        req.files[0].path = SourcePath::try_from((*path).to_owned()).unwrap();
+        let result = materialize(req);
+        if cfg!(windows) {
+            assert_eq!(result.unwrap_err().category(), "unsafe-path", "{path:?}");
+        } else {
+            assert_eq!(
+                result.unwrap().publication,
+                Publication::Created,
+                "{path:?}"
+            );
+        }
     }
-    assert!(revisions_empty(&fixture));
+    let mut req = request();
+    req.upstream_revision_key = "CON".into();
+    let result = materialize(req);
+    if cfg!(windows) {
+        assert_eq!(result.unwrap_err().category(), "invalid-identity");
+    } else {
+        assert_eq!(result.unwrap().publication, Publication::Created);
+    }
 }
 
 #[test]
@@ -810,11 +838,18 @@ fn legacy_ambiguous_revision_reports_permanent_migration_error_and_is_retained()
     let fixture = Fixture::new();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
     let mut source = fixture.repos().source(42).unwrap();
+    // Device names are refused only for new Windows names, so an intact Unix
+    // legacy revision holding one keeps this classification. Windows cannot
+    // store it: `NUL.stl` names the device there.
+    let device = cfg!(unix).then_some(&["NUL.stl", "Straße.stl", "STRASSE.stl"][..]);
     for names in [
         &["Straße.stl", "STRASSE.stl"][..],
         &["Straße/a.stl", "STRASSE/b.stl"][..],
         &["Σ.stl", "ς.stl"][..],
-    ] {
+    ]
+    .into_iter()
+    .chain(device)
+    {
         let revision = write_legacy_revision(&fixture, "legacy-ambiguous", names);
         let inventory = || {
             let mut entries: Vec<_> = names

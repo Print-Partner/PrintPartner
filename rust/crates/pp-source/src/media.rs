@@ -481,6 +481,17 @@ fn attributes(tag: &str) -> Result<BTreeMap<String, String>> {
     }
     Ok(result)
 }
+/// Generated names are pp-source's own, so on Windows a stem that names a
+/// device (`con`, `com1`) gets a `_` instead of failing the import. Unix keeps
+/// every stem unchanged.
+fn portable_stem(stem: String) -> String {
+    if pp_os::reinterpreted_here(&format!("{stem}.stl")) {
+        format!("{stem}_")
+    } else {
+        stem
+    }
+}
+
 fn slug(value: &str, fallback: &str) -> String {
     let lowered = value
         .chars()
@@ -614,7 +625,10 @@ fn convert(
         _ => return Err(MediaError::Invalid("3MF uses unsupported unit")),
     };
     let basename = source_name.rsplit('/').next().unwrap_or(source_name);
-    let project = slug(basename.strip_suffix(".3mf").unwrap_or(basename), "project");
+    let project = portable_stem(slug(
+        basename.strip_suffix(".3mf").unwrap_or(basename),
+        "project",
+    ));
     let mut objects = 0;
     let mut vertices = 0;
     let mut triangles = 0;
@@ -688,7 +702,8 @@ fn convert(
         if object.vertices.is_empty() || object.faces.is_empty() {
             continue;
         }
-        let base = slug(&object.name, &format!("object-{}", object.id));
+        let solid = slug(&object.name, &format!("object-{}", object.id));
+        let base = portable_stem(solid.clone());
         let count = names.entry(base.clone()).or_default();
         *count += 1;
         let suffix = if *count > 1 {
@@ -701,7 +716,7 @@ fn convert(
         let mut output = directory.file(relative_path.as_str(), true)?;
         let byte_size = write_stl(
             &mut output,
-            &base,
+            &solid,
             &object,
             limits.max_output_bytes - output_bytes,
             cancelled,

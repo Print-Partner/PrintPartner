@@ -141,6 +141,21 @@ struct BatchEdit {
     #[cfg_attr(feature = "codegen", schemars(length(min = 1, max = 10000)))]
     decisions: Vec<PartDecision>,
 }
+/// Where a rejected [`EditRequest`] body failed. The untagged wire reports
+/// every member failure at the root, so the body's keys pick the shape first.
+/// `None` when the body is not a JSON object or only a batch rule failed.
+#[cfg(feature = "desktop_rebuild")]
+pub fn edit_rejection(body: &[u8]) -> Option<serde_path_to_error::Error<serde_json::Error>> {
+    let value = serde_json::from_slice::<Value>(body)
+        .ok()
+        .filter(Value::is_object)?;
+    if value.get("decisions").is_some() && value.get("decision").is_none() {
+        serde_path_to_error::deserialize::<_, BatchEdit>(&value).err()
+    } else {
+        serde_path_to_error::deserialize::<_, OneEdit>(&value).err()
+    }
+}
+
 impl TryFrom<EditWire> for EditRequest {
     type Error = &'static str;
     fn try_from(wire: EditWire) -> Result<Self, Self::Error> {

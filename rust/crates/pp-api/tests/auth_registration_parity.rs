@@ -433,7 +433,7 @@ async fn replay(fixture: &Fixture) -> (Vec<Observation>, RawObservation, Registr
             .iter()
             .map(|h| h.to_str().unwrap().to_owned())
             .collect::<Vec<_>>();
-        let mut body: Value = response.json().await.unwrap();
+        let mut body: Value = pp_api::problem::without_envelope(response.json().await.unwrap());
         let end = now_ms();
         let rows = read_raw(&db);
         if step.id == StepId::Register {
@@ -493,7 +493,7 @@ async fn replay(fixture: &Fixture) -> (Vec<Observation>, RawObservation, Registr
         "registered password authenticates"
     );
     assert_eq!(
-        login.json::<Value>().await.unwrap(),
+        pp_api::problem::without_envelope(login.json::<Value>().await.unwrap()),
         registered.as_ref().unwrap().body
     );
     shutdown.send(()).unwrap();

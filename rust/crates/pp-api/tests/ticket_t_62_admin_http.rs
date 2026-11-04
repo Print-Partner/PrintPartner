@@ -161,8 +161,8 @@ async fn ticket_t_62_admin_routes_match_the_node_oracle() {
             replies.insert(key.into(), reply);
         }
         replies.insert("head".into(), fixture.head("/filaments/custom").await);
+        let expected = &rust_expected(&oracle["custom_filaments"][name]);
         let actual = Value::Object(replies);
-        let expected = &oracle["custom_filaments"][name];
         if name == DEEPER_THAN_SERDE {
             assert_ne!(
                 &actual, expected,
@@ -194,7 +194,10 @@ async fn ticket_t_62_admin_routes_require_a_valid_credential() {
         ] {
             let (reply, body) = fixture.send(Method::GET, path, headers).await;
             assert_eq!(reply["status"], 401, "{path} {headers:?}");
-            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), refused);
+            assert_eq!(
+                pp_api::problem::without_envelope(serde_json::from_slice::<Value>(&body).unwrap()),
+                refused
+            );
         }
     }
     // Node registers core routes at `/` and `/api/v1` only.
@@ -213,4 +216,28 @@ async fn ticket_t_62_admin_routes_mount_only_with_the_rebuild_flag() {
         }
         fixture.stop().await;
     }
+}
+
+/// The one place Rust intentionally differs from the Node oracle: Node's
+/// 4xx/5xx custom-filament replies carry Fastify's `TypeError` text, while Rust
+/// answers this problem document. Everything else must match exactly.
+const INTERNAL_PROBLEM: &str = r#"{"type":"urn:print-partner:problem:internal","title":"Internal Error","status":500,"detail":"Internal Server Error"}"#;
+
+/// The Node oracle's replies with only the declared difference applied.
+fn rust_expected(node: &Value) -> Value {
+    let mut expected = node.clone();
+    for reply in expected
+        .as_object_mut()
+        .into_iter()
+        .flat_map(|replies| replies.values_mut())
+    {
+        if reply["status"].as_u64().is_some_and(|status| status >= 400) {
+            reply["content_type"] = json!("application/problem+json");
+            reply["content_length"] = json!(INTERNAL_PROBLEM.len().to_string());
+            if reply.get("body").is_some() {
+                reply["body"] = json!(INTERNAL_PROBLEM);
+            }
+        }
+    }
+    expected
 }

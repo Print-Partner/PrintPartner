@@ -205,7 +205,7 @@ async fn compare(name: &str) {
     let response = request.send().await.unwrap();
     let actual = Response {
         status: response.status().as_u16(),
-        body: response.json().await.unwrap(),
+        body: pp_api::problem::without_envelope(response.json().await.unwrap()),
     };
     shutdown.send(()).unwrap();
     task.await.unwrap();

@@ -52,7 +52,9 @@ impl Drop for Sandbox {
 }
 
 /// The public part of one HTTP response: status, complete JSON body and every
-/// literal `Set-Cookie` header. An empty body is `null`.
+/// literal `Set-Cookie` header. An empty body is `null`. A Rust problem body is
+/// compared without its RFC 9457 envelope (`type`, `title`, `status`), which
+/// Node never sends; `crate::problem` tests check the envelope.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Exchange {
@@ -74,7 +76,7 @@ impl Exchange {
         let body = if bytes.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&bytes)?
+            crate::problem::without_envelope(serde_json::from_slice(&bytes)?)
         };
         Ok(Self {
             status,

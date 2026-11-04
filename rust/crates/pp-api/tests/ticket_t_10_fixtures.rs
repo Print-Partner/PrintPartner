@@ -1402,12 +1402,35 @@ mod ticket_t_10_fixtures {
         })
         .await
         .unwrap();
-        let report = replay_seeded(&served, &sandbox, FIXTURE_COOKIE, &fixture.cases, vec![]).await;
+        // Rust problems name the missing field; Node sends no field errors.
+        let field = |case, pointer| Correction {
+            case,
+            kind: CorrectionKind::Validation,
+            reason: "problem field errors",
+            rust: Exchange {
+                status: 400,
+                body: json!({"detail": "Request is invalid", "code": "invalid_request",
+                    "errors": [{"pointer": pointer, "detail": "is required"}]}),
+                set_cookie: vec![],
+            },
+        };
+        let corrections = vec![
+            field("edit_invalid_body_flat", "/expected_snapshot_digest"),
+            field("abandon_invalid_body_v2", "/expected_lifecycle_version"),
+        ];
+        let report = replay_seeded(
+            &served,
+            &sandbox,
+            FIXTURE_COOKIE,
+            &fixture.cases,
+            corrections,
+        )
+        .await;
         served.stop().await.unwrap();
         owner.shutdown().unwrap();
         print_report("drafts-http", &report);
-        assert_eq!(report.matched, 30);
-        assert_eq!(report.corrected.len(), 0);
+        assert_eq!(report.matched, 28);
+        assert_eq!(report.corrected.len(), 2);
     }
 
     #[tokio::test]

@@ -20,12 +20,42 @@
 pub mod node_schema;
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
 };
+
+/// A recursive listing of a directory tree: every regular file with its bytes,
+/// every directory as `None`, keyed by path relative to the root.
+pub type Snapshot = BTreeMap<PathBuf, Option<Vec<u8>>>;
+
+/// Lists `root` recursively. Compare two snapshots to prove that an operation
+/// left a directory byte-for-byte unchanged. Only real directories are
+/// descended into (`symlink_metadata`); every other entry is read with
+/// `fs::read`, which follows symlinks, so a file symlink records its target's
+/// bytes and a directory symlink fails the snapshot.
+pub fn snapshot(root: &Path) -> io::Result<Snapshot> {
+    let mut entries = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let path = entry?.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| io::Error::other("entry outside the snapshot root"))?
+                .to_path_buf();
+            if fs::symlink_metadata(&path)?.is_dir() {
+                entries.insert(relative, None);
+                pending.push(path);
+            } else {
+                entries.insert(relative, Some(fs::read(&path)?));
+            }
+        }
+    }
+    Ok(entries)
+}
 
 /// File name of the durable Rust ownership marker in a data directory.
 pub const MARKER_FILE: &str = ".pp-rust-owned.json";

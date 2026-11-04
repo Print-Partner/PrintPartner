@@ -93,7 +93,9 @@ impl Fixture {
         let (status, bytes) = self.send(Method::GET, path, headers).await;
         (
             status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            pp_api::problem::without_envelope(
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            ),
         )
     }
 

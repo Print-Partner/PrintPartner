@@ -124,6 +124,7 @@ pub use codegen::{document, document_bytes};
 #[cfg(feature = "codegen")]
 mod codegen {
     use super::CLIENT_ROUTES;
+    use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
     use pp_storage::printer_display_state::{
         BedClearState, PrinterDisplayDescriptor, PrinterDisplayState, PrinterExecutionState,
         PrinterStateView,
@@ -176,6 +177,8 @@ mod codegen {
             "PrinterDisplayDescriptor",
             schemars::schema_for!(PrinterDisplayDescriptor),
         )?;
+        schema("Problem", schemars::schema_for!(Problem))?;
+        schema("ProblemType", schemars::schema_for!(ProblemType))?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -647,6 +650,22 @@ mod codegen {
                 state.descriptor(),
             )?);
         }
+        for &kind in ProblemType::ALL {
+            let name = format!("{kind:?}");
+            cases.push(served("Problem", &name, Problem::new(kind, 400, UNICODE))?);
+            cases.push(served("ProblemType", &name, kind)?);
+        }
+        let bare = Problem::new(ProblemType::Conflict, 409, "").without_detail();
+        cases.push(served("Problem", "no-detail", bare.with_code("not_open"))?);
+        let errors = (0..MAX_FIELD_ERRORS)
+            .map(|index| FieldError::new(&format!("/decisions/{index}"), "is invalid"));
+        cases.push(served(
+            "Problem",
+            "coded-with-errors",
+            Problem::new(ProblemType::Validation, 400, "Request is invalid")
+                .with_code("invalid_request")
+                .with_errors(errors),
+        )?);
         for (index, value) in summaries.into_iter().enumerate() {
             cases.push(served(
                 "ProfileSummary",

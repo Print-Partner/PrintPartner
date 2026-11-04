@@ -66,9 +66,24 @@ Core tests isolate environment changes in child processes. They cover absent, di
 With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 `true`, that start runs Rust only:
 
-- No Node child starts. The release is still verified, then
-  `WriterOwner::open_with_job_feature_admission` takes the data directory lease
-  and the gateway binds its usual loopback origin.
+- No Node child starts. First `prepare_data_dir` creates the data directory
+  if it is missing and finishes a lease release this process failed earlier;
+  it creates no schema or marker. Then startup runs in this order
+  (`pp_core::rust_startup`):
+  1. `WriterOwner::open_with_job_feature_admission` takes the data directory
+     lease and makes the [ownership marker decision](storage.md#ownership-marker-decision),
+     then opens the schema. A refused directory stops startup here, before
+     release verification, recovery or admission, and stays byte-for-byte
+     unchanged.
+  2. `pp_compat::verify_bundle` verifies the release.
+  3. `cutover::recover` runs without an ownership index: it removes stray
+     cutover temporaries, and a cutover record refuses startup.
+  4. Source-sync admission writes or reuses `source-sync-admission.json`.
+
+  If step 2, 3 or 4 fails, the writer shuts down and releases the lease. The
+  marker, and the schema it opened, stay: Rust owns the directory from step 1.
+  The gateway then binds its usual loopback origin. The Node-backed start keeps
+  its order: release verification, the lease, recovery, admission, the child.
 - `rebuild_api::product_router` composes the read routers, the draft routers
   and the jobs router (including `/ws/jobs/{id}`) from that one owner, with the
   single-account auth policy. It passes the bundle's
@@ -2656,9 +2671,11 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   expected_lifecycle_version, expected_base }`, the fields Accept's request
   expects. Accept refuses a stale one with `draft_changed` or `base_changed`.
 - `snapshot` is `{ saved_before_accept: true, detail }`.
-- A refusal is the one Accept would return: 404 `draft_not_found` for a missing
-  draft, otherwise 409 with Accept's outcome kind as `code` and its fields, for
-  example `{ code: "not_open", state: "consumed" }`, `base_changed`,
+- A refusal is the one Accept would return, as an RFC 9457 problem
+  ([Problem responses](problem-responses.md)): 404 `draft_not_found` for a
+  missing draft, otherwise 409 with no `detail`, Accept's outcome kind as
+  `code`, and its fields as extension members, for example
+  `{ code: "not_open", state: "consumed" }`, `base_changed`,
   `inputs_changed`, `build_archived`, or `{ code: "reconciliation_required",
   reason }`.
 

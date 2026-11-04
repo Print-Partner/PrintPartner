@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
@@ -25,14 +25,22 @@ function usePrefersReducedMotion(): boolean {
  * motion the subject animates in and `message` is read to assistive technology.
  * With reduced motion nothing animates and `message` is shown as visible text, so
  * the user learns where the thing went either way.
+ *
+ * Screen readers announce changes to a live region, not what it holds when it
+ * mounts, so the region mounts empty and receives `message` on the next tick.
  */
 export function MotionCue({ message, children }: { message: string; children: ReactNode }) {
   const reduced = usePrefersReducedMotion();
+  const [announced, setAnnounced] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setAnnounced(message), 0);
+    return () => clearTimeout(timer);
+  }, [message]);
   return (
     <div className="pp-motion-cue" data-motion={reduced ? "reduced" : "full"}>
       <div className="pp-motion-subject">{children}</div>
       <p role="status" className={reduced ? "pp-motion-text" : "pp-visually-hidden"}>
-        {message}
+        {announced}
       </p>
     </div>
   );

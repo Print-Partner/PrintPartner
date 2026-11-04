@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MotionCue } from "./MotionCue";
 
@@ -30,20 +30,32 @@ afterEach(() => {
 });
 
 describe("TOK-04 reduced motion keeps the information as text", () => {
-  it("shows where the thing went as visible text under reduced motion", () => {
+  it.each([true, false])(
+    "mounts the live region empty and fills it afterwards (reduced motion %s)",
+    async (reduce) => {
+      stubReducedMotion(reduce);
+      const { status } = renderCue();
+      // Screen readers skip what a live region holds at mount, so it starts empty.
+      expect(status.textContent).toBe("");
+      await waitFor(() => expect(status.textContent).toBe("Moved Left arm to Plate 3"));
+      expect(screen.getByRole("status")).toBe(status);
+    },
+  );
+
+  it("shows where the thing went as visible text under reduced motion", async () => {
     stubReducedMotion(true);
     const { status, cue } = renderCue();
     expect(cue.dataset.motion).toBe("reduced");
-    expect(status.textContent).toBe("Moved Left arm to Plate 3");
+    await waitFor(() => expect(status.textContent).toBe("Moved Left arm to Plate 3"));
     expect(status.className).toBe("pp-motion-text");
     expect(screen.getByText("Left arm")).toBeTruthy();
   });
 
-  it("gives the same text to assistive technology when motion is on", () => {
+  it("gives the same text to assistive technology when motion is on", async () => {
     stubReducedMotion(false);
     const { status, cue } = renderCue();
     expect(cue.dataset.motion).toBe("full");
-    expect(status.textContent).toBe("Moved Left arm to Plate 3");
+    await waitFor(() => expect(status.textContent).toBe("Moved Left arm to Plate 3"));
     expect(status.className).toBe("pp-visually-hidden");
   });
 });

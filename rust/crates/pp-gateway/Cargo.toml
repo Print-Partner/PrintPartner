@@ -22,6 +22,7 @@ pp-compat = { path = "../pp-compat" }
 pp-net = { path = "../pp-net" }
 http-body-util.workspace = true
 pp-drivers = { path = "../pp-drivers" }
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

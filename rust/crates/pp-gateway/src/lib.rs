@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderValue, Request, Response, StatusCode},
     response::IntoResponse,
     serve::Listener,
@@ -181,6 +181,12 @@ struct GatewayState {
     relays: TaskTracker,
     cancelled: CancellationToken,
     shutdown_requested: CancellationToken,
+    /// Routes `pp-core` composed for a Rust-only runtime. When present, every
+    /// admitted request that is not a gateway or asset path goes here, and
+    /// none reaches the compatibility proxy. Logout goes here first too.
+    product: Mutex<Option<axum::Router>>,
+    /// Requests that reached the compatibility proxy.
+    compat_forwards: AtomicU64,
 }
 
 /// Native power adapters call suspend before sleep and resume after wake.
@@ -211,6 +217,20 @@ impl Gateway {
         assets: PathBuf,
         compat: CompatHandle,
         owners: &OperationOwners,
+    ) -> Result<Self> {
+        Self::start_with_product(listener, assets, compat, owners, None)
+    }
+
+    /// Start with routes `pp-core` composed from `pp-api`, kept as a sibling
+    /// router so the gateway never depends on `pp-api`. With `product` set,
+    /// admitted requests other than gateway and asset paths are answered by it
+    /// and never forwarded to the compatibility backend.
+    pub fn start_with_product(
+        listener: TcpListener,
+        assets: PathBuf,
+        compat: CompatHandle,
+        owners: &OperationOwners,
+        product: Option<axum::Router>,
     ) -> Result<Self> {
         let address = listener.local_addr()?;
         anyhow::ensure!(
@@ -278,6 +298,8 @@ impl Gateway {
             relays: TaskTracker::new(),
             cancelled: CancellationToken::new(),
             shutdown_requested: CancellationToken::new(),
+            product: Mutex::new(product),
+            compat_forwards: AtomicU64::new(0),
         });
         let monitoring = state.clone();
         state.watcher_tasks.spawn(async move {
@@ -311,7 +333,7 @@ impl Gateway {
         let task = tokio::spawn(async move {
             let mut listener = listener;
             loop {
-                let (stream, _) = tokio::select! {
+                let (stream, peer) = tokio::select! {
                     biased;
                     _ = stopping.cancelled() => break,
                     next = Listener::accept(&mut listener) => next,
@@ -321,10 +343,10 @@ impl Gateway {
                 accepted.spawn(async move {
                     let service = hyper::service::service_fn(move |request| {
                         let state = state.clone();
+                        let mut request = request.map(Body::new);
+                        request.extensions_mut().insert(ConnectInfo(peer));
                         async move {
-                            Ok::<_, std::convert::Infallible>(
-                                handle(State(state), request.map(Body::new)).await,
-                            )
+                            Ok::<_, std::convert::Infallible>(handle(State(state), request).await)
                         }
                     });
                     let mut http = hyper::server::conn::http1::Builder::new();
@@ -370,6 +392,10 @@ impl Gateway {
         ShutdownRequested {
             token: self.state.shutdown_requested.clone(),
         }
+    }
+    /// How many requests reached the compatibility proxy since start.
+    pub fn compat_forwards(&self) -> u64 {
+        self.state.compat_forwards.load(Ordering::Relaxed)
     }
     pub async fn drain(&self) {
         self.drain_for(MUTATION_DRAIN).await;
@@ -447,6 +473,12 @@ impl Gateway {
         tokio::time::timeout(Duration::from_secs(1), self.state.relays.wait())
             .await
             .context("Upgrade relay join timed out")?;
+        // Release the product routes' storage handles once no connection can use them.
+        self.state
+            .product
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         anyhow::ensure!(
             self.state
                 .access
@@ -739,6 +771,13 @@ async fn handle(
         return axum::Json(serde_json::json!({"proof_class":"headless_unsigned","compat":*state.compat.status.borrow(),"gateway":{"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len()}})).into_response();
     }
     if path == "/auth/logout" && request.method() == "POST" {
+        // Rust revokes its own session before the gateway ends the desktop one.
+        let revoked = match product_router(&state) {
+            Some(product) => {
+                Some(buffered(product_response(&state, product, request, admission).await).await)
+            }
+            None => None,
+        };
         state
             .access
             .lock()
@@ -748,7 +787,8 @@ async fn handle(
         state.watcher_cancelled.cancel();
         state.cancelled.cancel();
         state.shutdown_requested.cancel();
-        return axum::Json(serde_json::json!({"ok":true})).into_response();
+        return revoked
+            .unwrap_or_else(|| axum::Json(serde_json::json!({"ok":true})).into_response());
     }
     if path == "/mcp" || path == "/api/v1/mcp" {
         return error(
@@ -784,6 +824,9 @@ async fn handle(
         });
     }
 
+    if let Some(product) = product_router(&state) {
+        return product_response(&state, product, request, admission).await;
+    }
     if let Some(denied) = state
         .denied
         .iter()
@@ -943,6 +986,7 @@ async fn handle(
             || path
                 .strip_prefix("/api/v1/integrations/")
                 .is_some_and(|tail| !tail.contains('/')));
+    state.compat_forwards.fetch_add(1, Ordering::Relaxed);
     let Some(endpoint) = state.compat.endpoint() else {
         return node_unavailable();
     };
@@ -1688,6 +1732,46 @@ mod snapshot_membership_tests {
     }
 }
 
+fn product_router(state: &GatewayState) -> Option<axum::Router> {
+    state
+        .product
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// Answer from the Rust product routes. They see the peer as `ConnectInfo`
+/// and refuse a non-loopback one themselves.
+async fn product_response(
+    state: &GatewayState,
+    product: axum::Router,
+    request: Request<Body>,
+    admission: Admission,
+) -> Response<Body> {
+    let Ok(mut response) = tower::ServiceExt::oneshot(product, request).await;
+    // Same dynamic-response policy as the compatibility branch: account and
+    // Plan JSON must not be cached and reused without rechecking the session.
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    response.map(|body| {
+        Body::new(TrackedBody {
+            body,
+            _admission: admission,
+            cancelled: Box::pin(state.cancelled.clone().cancelled_owned()),
+        })
+    })
+}
+
+/// The whole body read up front, so cancelling the runtime cannot cut it off.
+async fn buffered(response: Response<Body>) -> Response<Body> {
+    let (parts, body) = response.into_parts();
+    match body.collect().await {
+        Ok(bytes) => Response::from_parts(parts, Body::from(bytes.to_bytes())),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Logout response failed"),
+    }
+}
+
 struct TrackedBody {
     body: Body,
     _admission: Admission,
@@ -1715,6 +1799,9 @@ impl http_body::Body for TrackedBody {
         self.body.size_hint()
     }
 }
+
+#[cfg(test)]
+mod slice0_mount;
 
 #[cfg(test)]
 mod ticket_t_2;
@@ -2137,6 +2224,28 @@ mod ticket_t_11;
 #[cfg(test)]
 #[path = "../../pp-storage/tests/common/cleanup.rs"]
 mod cleanup;
+#[cfg(test)]
+impl Gateway {
+    /// Redeem the launch bootstrap in-process; returns the desktop session cookie.
+    async fn test_session(&mut self) -> String {
+        let launch = self.take_launch_target().unwrap().into_url();
+        let bootstrap = Request::builder()
+            .uri(launch.strip_prefix(self.origin()).unwrap())
+            .header("host", &self.state.host)
+            .body(Body::empty())
+            .unwrap();
+        let response = handle(State(self.state.clone()), bootstrap).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+}
+
 /// Auto-removing test scratch, shared with pp-storage's tests.
 #[cfg(test)]
 #[path = "../../pp-storage/tests/common/scratch.rs"]

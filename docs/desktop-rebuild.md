@@ -78,8 +78,10 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   desktop session cookie are checked first. Every other admitted request that
   is not a gateway or asset path goes to the Rust routes, which do their own
   session or API-key authentication. Unknown paths get a Rust 404. Nothing is
-  forwarded to Node, and `Gateway::compat_forwards()` counts any request that
-  reaches the compatibility proxy.
+  forwarded to Node. `Gateway::compat_forwards()` counts proxy attempts at the
+  gateway's route-miss path: each request that no gateway, asset or Rust
+  product route answered and that entered the compatibility branch. It stays
+  at 0 in this mode.
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
   session, then the gateway ends the desktop session and stops the runtime as
   it does today.
@@ -99,10 +101,27 @@ not yet refuse a directory Node has used, and it writes Rust schema into the
 directory it opens. The desktop tray reports the compatibility status, which
 stays at starting in this mode.
 
+The `slice0_mount` tests check, for `PP_DESKTOP_REBUILD=1` and `true`:
+
+- the process table, read from `/proc` on Linux and `ps` on macOS, shows no
+  descendant of the launcher or `pp-server` process, at start and after the
+  journey. With Node running, the same check finds the Node child, so it
+  cannot pass on an empty table;
+- a foreign `Host` gets `400 Invalid Host`, and a foreign `Origin`, or no
+  `Origin` on a write, gets `403 Invalid Origin` from the gateway before the
+  Rust routes see the request. The refused registrations write no account;
+- the proxy-attempt count is 0 after the journey, including requests to paths
+  no Rust route serves.
+
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(slice0_mount)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(slice0_mount)'
 ```
+
+With `PP_JOURNEY_REPORT=1`, the feature-on pp-core gateway journey also writes
+its count to `docs/parity/journey-route-misses.json`, which
+`scripts/operation-inventory.py` quotes in its rollup. See
+[Operation inventory](development/operation-inventory.md#journey-route-misses).
 
 The launcher and `pp-server` tests need the built web assets and
 `rust/bundle-manifest.json`, like the other runtime tests.

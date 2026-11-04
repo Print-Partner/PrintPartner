@@ -118,12 +118,42 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("- Uncategorized entries: 7\n", report)
         self.assertIn("- Kept entries without a Rust owner: 0\n", report)
         self.assertIn("- Routes migrated to Rust: 0 of 4 (4 unmigrated)\n", report)
-        self.assertIn("- Journey route misses: not measured", report)
+        self.assertIn("- Journey route misses: not measured (no "
+                      "docs/parity/journey-route-misses.json)\n", report)
         self.assertIn("Active phase: **P1**", report)
         self.assertIn("| sqlite-schema | 34 | 35 | Rust writes a newer version", report)
         self.assertIn("| covers | 1 | none | Node only", report)
         self.assertIn("| POST /printer-send-queue current | 1 | 0 | printer.send-queue | "
                       "via operation |", report)
+
+    def test_rollup_quotes_the_journey_report(self):
+        runs = [{"PP_DESKTOP_REBUILD": "1", "proxy_attempts": 0},
+                {"PP_DESKTOP_REBUILD": "true", "proxy_attempts": 0}]
+        self.write(INVENTORY.JOURNEY, {"generated_by": "test", "runs": runs})
+        report = self.report()
+        self.assertIn("- Journey route misses: 0 proxy attempts in the Rust-only gateway journey "
+                      "with PP_DESKTOP_REBUILD=`1`, `true` (from "
+                      "`docs/parity/journey-route-misses.json`)\n", report)
+        self.assertIn("| docs/parity/journey-route-misses.json |", report)
+        runs[1]["proxy_attempts"] = 2
+        self.write(INVENTORY.JOURNEY, {"runs": runs})
+        self.assertIn("- Journey route misses: 2 proxy attempts", self.report())
+
+    def test_invalid_journey_reports_are_refused(self):
+        cases = {
+            "no runs": {"runs": []},
+            "not a list": {"runs": {"PP_DESKTOP_REBUILD": "1"}},
+            "negative": {"runs": [{"PP_DESKTOP_REBUILD": "1", "proxy_attempts": -1}]},
+            "boolean": {"runs": [{"PP_DESKTOP_REBUILD": "1", "proxy_attempts": False}]},
+            "no value": {"runs": [{"proxy_attempts": 0}]},
+            "run is not an object": {"runs": [0]},
+        }
+        for name, document in cases.items():
+            with self.subTest(name):
+                self.write(INVENTORY.JOURNEY, document)
+                code, stderr = self.run_main()
+                self.assertEqual(code, 2)
+                self.assertIn("invalid input", stderr)
 
     def test_only_a_rust_owner_in_the_inputs_counts_as_migrated(self):
         operations = json.loads(json.dumps(OPERATIONS))

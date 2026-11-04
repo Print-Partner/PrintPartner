@@ -1,6 +1,6 @@
 //! The launcher start that `pp-server` and `pp-desktop` share, with each
 //! runtime value in a child process so the environment stays isolated.
-use super::{launch, request, temporary};
+use super::{launch, process_tree::descendants, request, temporary};
 use axum::http::StatusCode;
 use pp_core::{CoreRuntime, CoreStatus};
 use serde_json::{Value, json};
@@ -52,11 +52,24 @@ async fn slice0_mount_launcher_in_child() {
     let rust = std::env::var("PP_SLICE0_RUST").unwrap() == "true";
     let mut runtime = CoreRuntime::start_for_launcher(launch(data)).await.unwrap();
     assert_eq!(runtime.rust_only(), rust);
-    let node_ready = matches!(
-        *runtime.handle().subscribe().borrow(),
-        CoreStatus::Ready { .. }
-    );
-    assert_eq!(node_ready, !rust, "a Node child runs only without Rust");
+    let node = match *runtime.handle().subscribe().borrow() {
+        CoreStatus::Ready { pid, .. } => Some(pid),
+        _ => None,
+    };
+    assert_eq!(node.is_some(), !rust, "a Node child runs only without Rust");
+    // The process table, not the runtime's own report: Rust-only mode starts
+    // no child process at all, and the Node-backed mode shows its Node child.
+    let check_children = || {
+        let children = descendants(std::process::id());
+        match node {
+            None => assert_eq!(children, [], "Rust-only mode started a process"),
+            Some(pid) => assert!(
+                children.iter().any(|(child, _)| *child == pid),
+                "Node child {pid} missing from {children:?}"
+            ),
+        }
+    };
+    check_children();
     let origin = runtime.origin().to_owned();
     // Redeem the bootstrap the way the desktop window does: follow no redirect.
     let browser = reqwest::Client::builder()
@@ -119,6 +132,8 @@ async fn slice0_mount_launcher_in_child() {
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["profiles"], json!([]), "{body}");
     }
+    // Serving requests did not start one later either.
+    check_children();
     let receipt = runtime.shutdown().await;
     assert!(receipt.complete(), "{receipt:?}");
 }

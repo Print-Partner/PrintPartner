@@ -1,4 +1,5 @@
 mod model;
+pub mod preview;
 #[cfg(test)]
 mod tests;
 
@@ -221,6 +222,26 @@ fn projection(p: &DraftPart) -> Result<DraftPart> {
     row["role"] = json!(ru::model::role(p));
     Ok(row)
 }
+/// Filament fields an accepted Part may change without a new revision. Accept
+/// publishes the live accepted Part's values for them, not the draft's.
+const LIVE_FILAMENT_FIELDS: [&str; 3] = ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"];
+
+/// Gives each draft Part that has a base its accepted Part's live filament, as
+/// Accept publishes it. `predecessors` come from [`validate_projection`]. A new
+/// Part keeps its own values.
+fn inherit_live_filament(parts: &mut [DraftPart], predecessors: &[DraftPart]) {
+    for part in parts {
+        if let Some(old) = predecessors
+            .iter()
+            .find(|row| row["id"] == part["baseRevisionPartId"])
+        {
+            for key in LIVE_FILAMENT_FIELDS {
+                part[key] = old[key].clone();
+            }
+        }
+    }
+}
+
 fn validate_projection(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -263,8 +284,7 @@ fn validate_projection(
             .as_object()
             .ok_or_else(|| anyhow!("Invalid Part"))?
         {
-            if !["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"].contains(&key.as_str())
-            {
+            if !LIVE_FILAMENT_FIELDS.contains(&key.as_str()) {
                 ensure!(actual[key] == *value, "Accepted projection mismatch {key}");
             }
         }
@@ -290,7 +310,7 @@ fn validate_projection(
                 "Invalid accepted progress"
             );
         }
-        for field in ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"] {
+        for field in LIVE_FILAMENT_FIELDS {
             part[field] = actual[field].clone();
         }
     }
@@ -980,54 +1000,110 @@ fn publish_inputs(
     Ok(id)
 }
 
-/// Mirrors Node AppRepository.applyPlanChanges inside the caller-owned transaction.
-pub(crate) fn publish_in_transaction(
-    tx: &Transaction<'_>,
-    context: &AuthenticatedPublicationContext,
-    profile: PositiveId,
-    draft_id: PositiveId,
-    requests: PublicationRequests<'_>,
-    key: &str,
-    tokens: &mut dyn RequiredUnitTokenAllocator,
-) -> Result<Outcome> {
-    let tenant = context.tenant.as_str();
-    let actor = context.actor.as_str();
-    let profile = profile.get() as i64;
-    let draft_id = draft_id.get() as i64;
-    let admitted_hash = request_digest(profile, draft_id, requests.admitted);
-    let request_hash = request_digest(profile, draft_id, requests.execution);
-    if let Some(row) = one(
-        tx,
-        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND actor_id=? AND profile_id=? AND idempotency_key=?",
-        &[&tenant, &actor, &profile, &key],
-    )? {
-        return Ok(if admission_matches(tx, &row, requests.admitted)? {
-            Outcome::Existing {
-                receipt: receipt(tx, tenant, &row)?,
+/// The draft half of Accept's gate. Accept and its preview both run it, then
+/// [`check_selection`]; neither writes.
+struct DraftGate {
+    profile_row: Value,
+    draft: ru::storage::Draft,
+    previous: Option<i64>,
+    version: i64,
+    predecessors: Vec<DraftPart>,
+}
+
+/// Old checkoff coordinate (Part, unit index) to its new one.
+type CheckoffRemap = HashMap<(i64, i64), (i64, i64)>;
+
+/// What Accept would publish, after every read-only check passed.
+struct Checked {
+    profile_row: Value,
+    inputs: Vec<Value>,
+    previous: Option<i64>,
+    version: i64,
+    predecessors: Vec<DraftPart>,
+    /// The selected reconciliation's header.
+    selected: Value,
+    base_parts: Vec<ru::model::BasePart>,
+    /// Base Required units by token: stored row, completed, assembled.
+    base: HashMap<String, (Value, bool, bool)>,
+    old_tokens: HashMap<(i64, i64), String>,
+    prepared: Prepared,
+    production: Production,
+}
+
+impl Checked {
+    /// Accept's last refusals, after [`check_selection`]: active production
+    /// without the remap opt-in or with an unsafe remap, then running
+    /// operations. Returns the checkoff remap Accept writes.
+    fn refusals(
+        &self,
+        tx: &Transaction<'_>,
+        tenant: &str,
+        profile: i64,
+        remap_checkoff_links: bool,
+    ) -> Result<std::result::Result<CheckoffRemap, Outcome>> {
+        let production = &self.production;
+        let remapping = if production.link_count > 0 || production.queue_count > 0 {
+            if !remap_checkoff_links {
+                return Ok(Err(Outcome::ProductionActive {
+                    checkoff_link_count: production.link_count,
+                    send_queue_item_count: production.queue_count,
+                }));
+            }
+            match remap(production, profile, &self.old_tokens, &self.prepared)? {
+                Remap::Mapped(mapped) => mapped,
+                Remap::Unmappable(unmappable) => {
+                    return Ok(Err(Outcome::CheckoffRemapUnsafe { unmappable }));
+                }
             }
         } else {
-            Outcome::IdempotencyConflict
-        });
+            HashMap::new()
+        };
+        let conflicts = crate::jobs::publication_conflicts(tx, tenant, profile)?;
+        if !conflicts.is_empty() {
+            return Ok(Err(Outcome::ExecutionConflict {
+                operations: conflicts,
+            }));
+        }
+        Ok(Ok(remapping))
     }
-    if let Some(row) = one(
-        tx,
-        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND profile_id=? AND draft_id=?",
-        &[&tenant, &profile, &draft_id],
-    )? {
-        return Ok(Outcome::AlreadyApplied {
-            receipt: receipt(tx, tenant, &row)?,
-        });
+
+    /// Checkoff links and queued sends that Accept would have to remap, and
+    /// whether the remap is safe.
+    fn production(&self, profile: i64) -> Result<Option<(usize, usize, Vec<UnmappableLink>)>> {
+        let production = &self.production;
+        if production.link_count == 0 && production.queue_count == 0 {
+            return Ok(None);
+        }
+        let unmappable = match remap(production, profile, &self.old_tokens, &self.prepared)? {
+            Remap::Mapped(_) => Vec::new(),
+            Remap::Unmappable(unmappable) => unmappable,
+        };
+        Ok(Some((
+            production.link_count,
+            production.queue_count,
+            unmappable,
+        )))
     }
+}
+
+/// The Plan and draft rows, after Accept's first draft checks in its order:
+/// the Plan exists and is not archived, then the draft exists and is open.
+fn open_draft(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+) -> Result<std::result::Result<(Value, Value), Outcome>> {
     let Some(profile_row) = one(
         tx,
         "SELECT * FROM build_profiles WHERE tenant_id=? AND id=?",
         &[&tenant, &profile],
     )?
     else {
-        return Ok(Outcome::NotFound);
+        return Ok(Err(Outcome::NotFound));
     };
     if !profile_row["archivedAt"].is_null() {
-        return Ok(Outcome::BuildArchived);
+        return Ok(Err(Outcome::BuildArchived));
     }
     model::validate_named_text(
         &profile_row,
@@ -1046,20 +1122,35 @@ pub(crate) fn publish_in_transaction(
         &[&tenant, &profile, &draft_id],
     )?
     else {
-        return Ok(Outcome::NotFound);
+        return Ok(Err(Outcome::NotFound));
     };
     if h["state"] != "open" {
-        return Ok(Outcome::NotOpen {
+        return Ok(Err(Outcome::NotOpen {
             state: serde_json::from_value(h["state"].clone())?,
-        });
+        }));
     }
-    if h["lifecycleVersion"].as_u64() != Some(requests.execution.expected_lifecycle_version.get())
-        || h["snapshotDigest"] != requests.execution.expected_snapshot_digest.as_str()
+    Ok(Ok((profile_row, h)))
+}
+
+/// Checks the Plan, the draft's lifecycle and base, and its inputs against
+/// `request`, in Accept's order.
+fn check_draft(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+    request: &ApplyRequest,
+) -> Result<std::result::Result<DraftGate, Outcome>> {
+    let (profile_row, h) = match open_draft(tx, tenant, profile, draft_id)? {
+        Ok(rows) => rows,
+        Err(refused) => return Ok(Err(refused)),
+    };
+    if h["lifecycleVersion"].as_u64() != Some(request.expected_lifecycle_version.get())
+        || h["snapshotDigest"] != request.expected_snapshot_digest.as_str()
         || !["plan-draft-v1", "plan-draft-v2"].contains(&text(&h, "digestFormat")?)
     {
-        return Ok(Outcome::DraftChanged);
+        return Ok(Err(Outcome::DraftChanged));
     }
-    let request = requests.execution;
     let previous = request
         .expected_base
         .revision_id()
@@ -1078,16 +1169,16 @@ pub(crate) fn publish_in_transaction(
         accepted_version <= 0
     };
     if needs_baseline {
-        return Ok(Outcome::AcceptedBaselineRequired);
+        return Ok(Err(Outcome::AcceptedBaselineRequired));
     }
     if profile_row["acceptedPlanRevisionId"] != json!(previous)
         || profile_row["acceptedPlanVersion"] != version
         || h["baseRevisionId"] != json!(previous)
         || h["basePlanVersion"] != version
     {
-        return Ok(Outcome::BaseChanged);
+        return Ok(Err(Outcome::BaseChanged));
     }
-    let mut d = ru::storage::draft(tx, tenant, profile, draft_id)?
+    let d = ru::storage::draft(tx, tenant, profile, draft_id)?
         .ok_or_else(|| anyhow!("Missing draft"))?;
     let attached = rows(
         tx,
@@ -1100,22 +1191,74 @@ pub(crate) fn publish_in_transaction(
         .map(|r| ru::model::project(r, &["sourceId", "sourceLayer", "layerOrder"]))
         .collect();
     if attached != identities {
-        return Ok(Outcome::InputsChanged);
+        return Ok(Err(Outcome::InputsChanged));
     }
     validate_inputs(tx, tenant, &d.inputs)?;
     let predecessors = previous
         .map(|id| validate_projection(tx, tenant, profile, id))
         .transpose()?
         .unwrap_or_default();
+    Ok(Ok(DraftGate {
+        profile_row,
+        draft: d,
+        previous,
+        version,
+        predecessors,
+    }))
+}
+
+/// Whether the selection's basis still matches the base units' current
+/// progress. A changed unit identity is corruption, not staleness.
+fn basis_is_current(
+    selected: &Value,
+    mapping: &Value,
+    base_identity: &HashMap<String, (i64, &ru::model::Unit)>,
+) -> Result<bool> {
+    let mut live_basis: Value = serde_json::from_str(text(selected, "selectionBasisJson")?)?;
+    for row in live_basis
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("Invalid basis"))?
+    {
+        let (id, u) = base_identity
+            .get(text(row, "token")?)
+            .ok_or_else(|| anyhow!("Missing basis token"))?;
+        ensure!(
+            row["revisionPartId"] == *id
+                && row["priorIndex"] == u.prior_index
+                && row["createdAt"] == u.created_at,
+            "Changed basis identity"
+        );
+        row["completed"] = json!(u.completed);
+        row["assembled"] = json!(u.assembled);
+    }
+    Ok(ru::storage::selection_basis_digest(mapping, &live_basis)
+        == selected["selectionBasisDigest"])
+}
+
+/// Checks the selected Required-unit reconciliation against the accepted base
+/// and prepares the Parts and units Accept would publish.
+fn check_selection(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    gate: DraftGate,
+) -> Result<std::result::Result<Checked, Outcome>> {
+    let DraftGate {
+        profile_row,
+        draft: mut d,
+        previous,
+        version,
+        predecessors,
+    } = gate;
     let Some(selected) = &d.selected else {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Missing,
-        });
+        }));
     };
     if selected.header["resultKind"] != "ready" {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Unresolved,
-        });
+        }));
     }
     ensure!(
         selected.header["planningDigest"] == d.planning
@@ -1123,14 +1266,14 @@ pub(crate) fn publish_in_transaction(
         "Invalid selected reconciliation"
     );
     let Some((mapping, base_parts)) = ru::storage::base(tx, tenant, profile, previous)? else {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Stale,
-        });
+        }));
     };
     if mapping != selected.header["baseMappingDigest"] {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Stale,
-        });
+        }));
     }
     let mut base = HashMap::new();
     let mut base_identity = HashMap::new();
@@ -1164,66 +1307,107 @@ pub(crate) fn publish_in_transaction(
             );
         }
     }
-    let mut live_basis: Value =
-        serde_json::from_str(text(&selected.header, "selectionBasisJson")?)?;
-    for row in live_basis
-        .as_array_mut()
-        .ok_or_else(|| anyhow!("Invalid basis"))?
-    {
-        let (id, u) = base_identity
-            .get(text(row, "token")?)
-            .ok_or_else(|| anyhow!("Missing basis token"))?;
-        ensure!(
-            row["revisionPartId"] == *id
-                && row["priorIndex"] == u.prior_index
-                && row["createdAt"] == u.created_at,
-            "Changed basis identity"
-        );
-        row["completed"] = json!(u.completed);
-        row["assembled"] = json!(u.assembled);
-    }
-    if ru::storage::selection_basis_digest(&mapping, &live_basis)
-        != selected.header["selectionBasisDigest"]
-    {
-        return Ok(Outcome::ReconciliationRequired {
+    if !basis_is_current(&selected.header, &mapping, &base_identity)? {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Stale,
-        });
+        }));
     }
-    for p in &mut d.parts {
-        if let Some(old) = predecessors
-            .iter()
-            .find(|r| r["id"] == p["baseRevisionPartId"])
-        {
-            for key in ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"] {
-                p[key] = old[key].clone();
-            }
-        }
-    }
+    inherit_live_filament(&mut d.parts, &predecessors);
     let production = production(tx, tenant, profile)?;
     let selected_result: Value = serde_json::from_str(text(&selected.header, "resultJson")?)?;
     let prepared = model::prepare(d.parts, &selected_result["assignments"], &base)?;
-    let remapping = if production.link_count > 0 || production.queue_count > 0 {
-        if !request.remap_checkoff_links {
-            return Ok(Outcome::ProductionActive {
-                checkoff_link_count: production.link_count,
-                send_queue_item_count: production.queue_count,
-            });
-        }
-        match remap(&production, profile, &old_tokens, &prepared)? {
-            Remap::Mapped(m) => m,
-            Remap::Unmappable(unmappable) => {
-                return Ok(Outcome::CheckoffRemapUnsafe { unmappable });
+    Ok(Ok(Checked {
+        profile_row,
+        inputs: d.inputs,
+        previous,
+        version,
+        predecessors,
+        selected: selected.header.clone(),
+        base_parts,
+        base,
+        old_tokens,
+        prepared,
+        production,
+    }))
+}
+
+/// `AlreadyApplied` with its receipt when Accept already consumed the draft.
+/// Accept checks it after its idempotency-key lookup and before
+/// [`check_draft`]; the preview has no key, so it checks this first.
+fn already_applied(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+) -> Result<Option<Outcome>> {
+    one(
+        tx,
+        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND profile_id=? AND draft_id=?",
+        &[&tenant, &profile, &draft_id],
+    )?
+    .map(|row| {
+        Ok(Outcome::AlreadyApplied {
+            receipt: receipt(tx, tenant, &row)?,
+        })
+    })
+    .transpose()
+}
+
+/// Mirrors Node AppRepository.applyPlanChanges inside the caller-owned transaction.
+pub(crate) fn publish_in_transaction(
+    tx: &Transaction<'_>,
+    context: &AuthenticatedPublicationContext,
+    profile: PositiveId,
+    draft_id: PositiveId,
+    requests: PublicationRequests<'_>,
+    key: &str,
+    tokens: &mut dyn RequiredUnitTokenAllocator,
+) -> Result<Outcome> {
+    let tenant = context.tenant.as_str();
+    let actor = context.actor.as_str();
+    let profile = profile.get() as i64;
+    let draft_id = draft_id.get() as i64;
+    let admitted_hash = request_digest(profile, draft_id, requests.admitted);
+    let request_hash = request_digest(profile, draft_id, requests.execution);
+    if let Some(row) = one(
+        tx,
+        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND actor_id=? AND profile_id=? AND idempotency_key=?",
+        &[&tenant, &actor, &profile, &key],
+    )? {
+        return Ok(if admission_matches(tx, &row, requests.admitted)? {
+            Outcome::Existing {
+                receipt: receipt(tx, tenant, &row)?,
             }
-        }
-    } else {
-        HashMap::new()
-    };
-    let conflicts = crate::jobs::publication_conflicts(tx, tenant, profile)?;
-    if !conflicts.is_empty() {
-        return Ok(Outcome::ExecutionConflict {
-            operations: conflicts,
+        } else {
+            Outcome::IdempotencyConflict
         });
     }
+    if let Some(applied) = already_applied(tx, tenant, profile, draft_id)? {
+        return Ok(applied);
+    }
+    let request = requests.execution;
+    let gate = match check_draft(tx, tenant, profile, draft_id, request)? {
+        Ok(gate) => gate,
+        Err(refused) => return Ok(refused),
+    };
+    let checked = match check_selection(tx, tenant, profile, gate)? {
+        Ok(checked) => checked,
+        Err(refused) => return Ok(refused),
+    };
+    let remapping = match checked.refusals(tx, tenant, profile, request.remap_checkoff_links)? {
+        Ok(remapping) => remapping,
+        Err(refused) => return Ok(refused),
+    };
+    let Checked {
+        inputs,
+        previous,
+        version,
+        selected,
+        base,
+        prepared,
+        production,
+        ..
+    } = checked;
     let existing = rows(tx, "SELECT token,object_name FROM required_units", &[])?;
     let mut existing_tokens: HashSet<String> = existing
         .iter()
@@ -1276,7 +1460,7 @@ pub(crate) fn publish_in_transaction(
         params![tenant, profile],
     )?;
     ensure!(tx.execute("UPDATE build_profiles SET accepted_plan_revision_id=NULL WHERE tenant_id=? AND id=? AND accepted_plan_revision_id IS ? AND accepted_plan_version=?",params![tenant,profile,previous,version])?==1,"Accepted pointer detach failed");
-    let input_set = publish_inputs(tx, tenant, profile, &d.inputs, &at)?;
+    let input_set = publish_inputs(tx, tenant, profile, &inputs, &at)?;
     let number:i64=tx.query_row("SELECT COALESCE(MAX(revision_number),0)+1 FROM plan_revisions WHERE tenant_id=? AND profile_id=?",params![tenant,profile],|r|r.get(0))?;
     let revision = insert(
         tx,
@@ -1376,9 +1560,9 @@ pub(crate) fn publish_in_transaction(
     tx.execute("INSERT INTO plan_accepted_input_sets(tenant_id,profile_id,input_set_id,accepted_at) VALUES(?,?,?,?) ON CONFLICT(profile_id) DO UPDATE SET input_set_id=excluded.input_set_id,accepted_at=excluded.accepted_at",params![tenant,profile,input_set,at])?;
     ensure!(tx.execute("UPDATE build_profiles SET accepted_plan_revision_id=?,accepted_plan_version=?,last_recomputed_at=? WHERE tenant_id=? AND id=? AND accepted_plan_revision_id IS NULL AND accepted_plan_version=?",params![revision,version+1,at,tenant,profile,version])?==1,"Accepted pointer publication failed");
     let life = request.expected_lifecycle_version.get() as i64;
-    let reconciliation = num(&selected.header, "id")?;
+    let reconciliation = num(&selected, "id")?;
     ensure!(tx.execute("UPDATE plan_drafts SET state='consumed',lifecycle_version=?,consumed_revision_id=?,consumed_at=? WHERE tenant_id=? AND profile_id=? AND id=? AND state='open' AND lifecycle_version=? AND snapshot_digest=? AND current_required_unit_reconciliation_id=?",params![life+1,revision,at,tenant,profile,draft_id,life,request.expected_snapshot_digest.as_str(),reconciliation])?==1,"Draft consumption failed");
-    let receipt_row = json!({"tenantId":tenant,"profileId":profile,"draftId":draft_id,"actorId":actor,"idempotencyKey":key,"requestFormat":model::REQUEST_FORMAT,"requestDigest":request_hash,"expectedSnapshotDigest":request.expected_snapshot_digest,"expectedLifecycleVersion":life,"expectedBaseRevisionId":previous,"expectedBasePlanVersion":version,"reconciliationId":reconciliation,"reconciliationDigest":selected.header["reconciliationDigest"],"revisionId":revision,"planVersion":version+1,"revisionDigest":prepared.digest,"requiredUnitMappingDigest":mapping_digest,"draftLifecycleVersion":life+1,"appliedAt":at});
+    let receipt_row = json!({"tenantId":tenant,"profileId":profile,"draftId":draft_id,"actorId":actor,"idempotencyKey":key,"requestFormat":model::REQUEST_FORMAT,"requestDigest":request_hash,"expectedSnapshotDigest":request.expected_snapshot_digest,"expectedLifecycleVersion":life,"expectedBaseRevisionId":previous,"expectedBasePlanVersion":version,"reconciliationId":reconciliation,"reconciliationDigest":selected["reconciliationDigest"],"revisionId":revision,"planVersion":version+1,"revisionDigest":prepared.digest,"requiredUnitMappingDigest":mapping_digest,"draftLifecycleVersion":life+1,"appliedAt":at});
     let apply_request_id = insert(tx, "plan_apply_requests", &receipt_row, false)?;
     insert(
         tx,

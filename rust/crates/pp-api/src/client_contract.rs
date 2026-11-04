@@ -88,6 +88,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "DraftWorkspace",
     ),
     route(
+        "previewDraftAccept",
+        "GET",
+        "/api/v2/plans/{id}/drafts/{draft_id}/accept-preview",
+        None,
+        "DraftAcceptPreview",
+    ),
+    route(
         "editDraftParts",
         "PATCH",
         "/api/v2/plans/{id}/drafts/{draft_id}/parts",
@@ -128,6 +135,11 @@ mod codegen {
             PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
             ProfileList, ProfileSummary,
         },
+        plan_publication::preview::{
+            AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue, InputChange,
+            PartRef, PlateChanges, PlateRef, PreviewChanges, PreviewRevision, ProductionCheck,
+            SnapshotNote, SpoolImpact, StockImpact, UnitChanges, UnitRef, Unmappable,
+        },
         required_units::{
             AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
             DraftListResponse, PartView, ReconciliationView, Workspace,
@@ -156,6 +168,7 @@ mod codegen {
         schema("DraftList", schemars::schema_for!(DraftListResponse))?;
         schema("DraftWorkspace", schemars::schema_for!(Workspace))?;
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
+        schema("DraftAcceptPreview", schemars::schema_for!(AcceptPreview))?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
@@ -421,6 +434,142 @@ mod codegen {
         vec![ready, unresolved]
     }
 
+    /// An unchanged draft, and a changed one with every check filled.
+    fn previews() -> Vec<(&'static str, AcceptPreview)> {
+        let revision = |revision_id: Option<i64>| PreviewRevision {
+            draft_id: MAX_SAFE,
+            expected_snapshot_digest: "e".repeat(64),
+            expected_lifecycle_version: 2_147_483_646,
+            expected_base: DraftBase {
+                revision_id,
+                plan_version: if revision_id.is_some() { MAX_SAFE } else { 0 },
+            },
+        };
+        let snapshot = SnapshotNote {
+            saved_before_accept: true,
+            detail: UNICODE.into(),
+        };
+        let unit = |token: Option<&str>, printed: bool| UnitRef {
+            token: token.map(Into::into),
+            filename: format!("{UNICODE}.stl"),
+            unit_index: 0,
+            printed,
+            assembled: printed,
+        };
+        let part = PartRef {
+            part_id: MAX_SAFE,
+            filename: UNICODE.into(),
+            quantity_effective: 10_000,
+            included: false,
+        };
+        let changes = PreviewChanges {
+            fields: vec![
+                FieldChange {
+                    draft_part_id: 1,
+                    filename: UNICODE.into(),
+                    field: "quantity_override".into(),
+                    old: Some(FieldValue::Integer(3)),
+                    new: None,
+                },
+                FieldChange {
+                    draft_part_id: 1,
+                    filename: UNICODE.into(),
+                    field: "included".into(),
+                    old: Some(FieldValue::Flag(false)),
+                    new: Some(FieldValue::Flag(true)),
+                },
+            ],
+            parts_added: vec![part.clone()],
+            parts_removed: vec![part],
+            inputs: vec![InputChange {
+                source_id: MAX_SAFE,
+                field: "source_layer".into(),
+                old: None,
+                new: Some(FieldValue::Text(UNICODE.into())),
+            }],
+            required_units: UnitChanges {
+                added: vec![unit(None, false)],
+                removed: vec![unit(Some("ppu_1"), true)],
+                printed_affected: vec![unit(Some("ppu_1"), true)],
+            },
+            plates: PlateChanges {
+                cleared: vec![PlateRef {
+                    plate_id: UNICODE.into(),
+                    ordinal: 1,
+                    printer_name: UNICODE.into(),
+                    unit_count: MAX_SAFE,
+                }],
+            },
+            stock: StockImpact::On {
+                spools: vec![SpoolImpact {
+                    spool_id: "7".into(),
+                    unprinted_before: 2,
+                    unprinted_after: 0,
+                }],
+            },
+            duplicate_orders: vec![DuplicateOrder {
+                profile_id: MAX_SAFE,
+                name: UNICODE.into(),
+                order_number: "#1001".into(),
+            }],
+            production: Some(ProductionCheck {
+                checkoff_link_count: 1,
+                send_queue_item_count: 0,
+                unmappable: vec![Unmappable {
+                    link_id: "link-1".into(),
+                    filename: UNICODE.into(),
+                    reason: UNICODE.into(),
+                }],
+            }),
+            blocked_by: vec![BlockingOperation {
+                operation_id: "op-1".into(),
+                kind: "printer_upload".into(),
+                state: "running".into(),
+            }],
+        };
+        let quiet = PreviewChanges {
+            fields: vec![],
+            parts_added: vec![],
+            parts_removed: vec![],
+            inputs: vec![],
+            required_units: UnitChanges {
+                added: vec![],
+                removed: vec![],
+                printed_affected: vec![],
+            },
+            plates: PlateChanges { cleared: vec![] },
+            stock: StockImpact::Off,
+            duplicate_orders: vec![],
+            production: None,
+            blocked_by: vec![],
+        };
+        vec![
+            (
+                "no-change",
+                AcceptPreview::NoChange {
+                    revision: revision(None),
+                    snapshot: snapshot.clone(),
+                },
+            ),
+            (
+                "changed",
+                AcceptPreview::Changed {
+                    revision: revision(Some(MAX_SAFE)),
+                    changes: Box::new(changes),
+                    snapshot: snapshot.clone(),
+                },
+            ),
+            (
+                "changed-quiet",
+                AcceptPreview::Changed {
+                    revision: revision(Some(1)),
+                    changes: Box::new(quiet),
+                    snapshot,
+                },
+            ),
+        ]
+    }
+
     fn health(degraded_detail: Option<&'static str>) -> crate::auth::Health {
         let filled = degraded_detail.is_some();
         crate::auth::Health {
@@ -546,6 +695,9 @@ mod codegen {
                 &format!("variant-{index}"),
                 value,
             )?);
+        }
+        for (name, value) in previews() {
+            cases.push(served("DraftAcceptPreview", name, value)?);
         }
         for (index, value) in workspaces.into_iter().enumerate() {
             cases.push(served(

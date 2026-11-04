@@ -681,8 +681,14 @@ async fn fetch_json(
 }
 
 fn rows(value: &Value) -> &[Value] {
+    list(value).unwrap_or(&[])
+}
+
+/// The rows of a Spoolman list response: a bare array, or an array under
+/// `items`, `results` or `data`. `None` for any other shape.
+pub(crate) fn list(value: &Value) -> Option<&[Value]> {
     if let Some(rows) = value.as_array() {
-        return rows;
+        return Some(rows);
     }
     value
         .as_object()
@@ -692,7 +698,6 @@ fn rows(value: &Value) -> &[Value] {
                 .find_map(|key| object.get(*key)?.as_array())
         })
         .map(Vec::as_slice)
-        .unwrap_or(&[])
 }
 
 /// Spoolman's filament and spool lists, shared with the shortfall reader.

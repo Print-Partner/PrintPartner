@@ -226,8 +226,16 @@ async fn unavailable_inventory_and_unprinted_parts_stay_unknown() {
     )
     .await;
     let body = down.shortfalls().await;
-    ready(&body, unreachable, unknown.clone(), measured());
+    ready(&body, unreachable.clone(), unknown.clone(), measured());
     down.stop();
+
+    // A 200 whose body is not a list is unreadable, not zero stock.
+    for body in ["{}", "null"] {
+        let malformed = Harness::new(body, "").await;
+        let body = malformed.shortfalls().await;
+        ready(&body, unreachable.clone(), unknown.clone(), measured());
+        malformed.stop();
+    }
 
     let unprinted = Harness::new(SUFFICIENT, "DELETE FROM print_jobs;").await;
     let stock = json!({"kind": "spoolman", "grams": 752, "spool_ids": [7, 8]});

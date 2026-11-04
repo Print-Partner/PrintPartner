@@ -42,6 +42,13 @@ impl SpoolmanInventory {
         )?;
         let filaments = self.get(&config, "filament").await?;
         let spools = self.get(&config, "spool").await?;
+        // A body that is not a list is unreadable, not an empty inventory.
+        ensure!(
+            [&filaments, &spools]
+                .iter()
+                .all(|body| crate::review_observations::list(body).is_some()),
+            "Spoolman returned no list"
+        );
         Ok(crate::review_observations::parse_inventory(
             &filaments, &spools,
         ))

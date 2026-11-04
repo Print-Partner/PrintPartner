@@ -1,6 +1,8 @@
 mod context;
 pub(crate) mod graph;
 #[cfg(feature = "desktop_rebuild")]
+pub mod history;
+#[cfg(feature = "desktop_rebuild")]
 mod json_body;
 pub use context::{CapturedContext, PlateRef, RevisionRef, UnitHistory};
 #[cfg(feature = "desktop_rebuild")]
@@ -184,31 +186,7 @@ impl ReadClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Batch> {
-        let deadline = Instant::now() + wait;
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
-        loop {
-            ensure!(!queue.closed, "Storage stopped");
-            ensure!(
-                !cancelled.load(Ordering::Acquire),
-                "Cancelled before admission"
-            );
-            if queue.pending.len() < self.shared.capacity {
-                break;
-            }
-            ensure!(Instant::now() < deadline, "Writer queue full");
-            queue = self
-                .shared
-                .changed
-                .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
-                .0;
-        }
-        let (reply, receiver) = mpsc::channel();
-        queue.pending.push_back(Envelope::Read {
+        submit_read(&self.shared, cancelled, wait, |reply| Envelope::Read {
             command: Command {
                 credential,
                 target,
@@ -216,13 +194,47 @@ impl ReadClient {
                 policy: self.policy,
             },
             reply,
-        });
-        self.shared.changed.notify_all();
-        drop(queue);
-        receiver
-            .recv()
-            .map_err(|_| anyhow!("Storage stopped without read result"))?
+        })
     }
+}
+
+/// Queues the envelope `envelope` builds once the writer queue has room,
+/// refusing after `wait`, on cancellation or after shutdown, then waits for the
+/// reply. Shared by `ReadClient` and `history::HistoryClient`.
+pub(crate) fn submit_read<T>(
+    shared: &Shared,
+    cancelled: &AtomicBool,
+    wait: Duration,
+    envelope: impl FnOnce(mpsc::Sender<Result<T>>) -> Envelope,
+) -> Result<T> {
+    let deadline = Instant::now() + wait;
+    let mut queue = shared
+        .queue
+        .lock()
+        .map_err(|_| anyhow!("Writer admission poisoned"))?;
+    loop {
+        ensure!(!queue.closed, "Storage stopped");
+        ensure!(
+            !cancelled.load(Ordering::Acquire),
+            "Cancelled before admission"
+        );
+        if queue.pending.len() < shared.capacity {
+            break;
+        }
+        ensure!(Instant::now() < deadline, "Writer queue full");
+        queue = shared
+            .changed
+            .wait_timeout(queue, Duration::from_millis(5))
+            .map_err(|_| anyhow!("Writer admission poisoned"))?
+            .0;
+    }
+    let (reply, receiver) = mpsc::channel();
+    queue.pending.push_back(envelope(reply));
+    shared.changed.notify_all();
+    drop(queue);
+    receiver
+        .recv()
+        .map_err(|_| anyhow!("Storage stopped without read result"))?
 }
 pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<Batch> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;

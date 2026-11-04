@@ -79,11 +79,81 @@ impl AcceptedHttpConfig {
     }
 }
 
+/// Admission the read routers in this module and `history` share: the
+/// rebuild flag, a 64-request bound, loopback Host/Origin checks and a
+/// credential.
+#[derive(Clone)]
+pub(crate) struct Gate {
+    config: AcceptedHttpConfig,
+    admission: Arc<tokio::sync::Semaphore>,
+}
+
+impl Gate {
+    /// `None` unless `PP_DESKTOP_REBUILD` was exactly `1` or `true`.
+    pub(crate) fn open(config: AcceptedHttpConfig) -> Option<Self> {
+        config.enabled.then(|| Self {
+            config,
+            admission: Arc::new(tokio::sync::Semaphore::new(64)),
+        })
+    }
+
+    /// Runs `read` on the blocking pool with the storage wait. Its flag is
+    /// set when the request future is dropped, so a queued storage read is
+    /// skipped.
+    pub(crate) async fn blocking<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(Arc<AtomicBool>, Duration) -> T + Send + 'static,
+    ) -> Result<T, tokio::task::JoinError> {
+        let flag = Cancellation(Arc::new(AtomicBool::new(false)));
+        let (cancelled, wait) = (flag.0.clone(), self.config.wait);
+        tokio::task::spawn_blocking(move || read(cancelled, wait)).await
+    }
+
+    /// Runs `guard` in front of every route in `routes`, and serves every
+    /// error, the guard's included, as an RFC 9457 problem.
+    pub(crate) fn guard<S: Clone + Send + Sync + 'static>(&self, routes: Router<S>) -> Router<S> {
+        routes
+            .layer(middleware::from_fn_with_state(self.clone(), guard))
+            .route_layer(middleware::map_response(crate::problem::layer))
+    }
+}
+
 #[derive(Clone)]
 struct App {
-    config: AcceptedHttpConfig,
+    gate: Gate,
     client: ReadClient,
-    admission: Arc<tokio::sync::Semaphore>,
+}
+
+impl App {
+    /// Runs `read` with the request's credential, and returns its result
+    /// with whether the request is HEAD. Refusals and storage errors are the
+    /// error response.
+    async fn read<T: Send + 'static>(
+        &self,
+        request: axum::extract::Request,
+        read: impl FnOnce(&ReadClient, Credential, &AtomicBool, Duration) -> Result<T> + Send + 'static,
+    ) -> Result<(T, bool), Box<Response>> {
+        let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
+            return Err(Box::new(failure(
+                StatusCode::UNAUTHORIZED,
+                "Authentication required",
+            )));
+        };
+        let head = *request.method() == Method::HEAD;
+        let client = self.client.clone();
+        let read = self
+            .gate
+            .blocking(move |cancelled, wait| {
+                read(&client, presented.into_credential(), &cancelled, wait)
+            })
+            .await;
+        let refused = match read {
+            Ok(Ok(value)) => return Ok((value, head)),
+            Ok(Err(error)) => read_error(&error),
+            Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        };
+        Err(Box::new(refused))
+    }
 }
 
 /// Mounts Accepted Plan Checkoff GET+HEAD at `/`, `/api/v1`, and `/api/v2`,
@@ -94,56 +164,53 @@ struct App {
 /// With [`AcceptedHttpConfig::with_stock`], Plans also serve
 /// `/plans/{id}/filament-shortfalls` at the same three prefixes.
 pub fn accepted_router(config: AcceptedHttpConfig, client: ReadClient) -> Router {
-    if !config.enabled {
+    let Some(gate) = Gate::open(config) else {
         return Router::new();
-    }
-    let stock = config.stock.is_some();
-    let app = App {
-        config,
-        client,
-        admission: Arc::new(tokio::sync::Semaphore::new(64)),
     };
+    let stock = gate.config.stock.is_some();
     let mut plans = Router::new().route("/plans/{id}/checkoff", get(checkoff));
     if stock {
         plans = plans.route("/plans/{id}/filament-shortfalls", get(filament_shortfalls));
     }
     // Node registers Part routes at `/` and `/api/v1` only.
     let parts = plans.clone().route("/parts/{id}/assembled", get(assembled));
-    Router::new()
-        .merge(parts.clone())
-        .nest("/api/v1", parts)
-        .nest("/api/v2", plans)
-        .layer(middleware::from_fn_with_state(app.clone(), guard))
-        .route_layer(middleware::map_response(crate::problem::layer))
-        .with_state(app)
+    gate.guard(
+        Router::new()
+            .merge(parts.clone())
+            .nest("/api/v1", parts)
+            .nest("/api/v2", plans),
+    )
+    .with_state(App { gate, client })
 }
 
 async fn guard(
-    State(app): State<App>,
+    State(gate): State<Gate>,
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let Ok(_permit) = app.admission.try_acquire() else {
+    let Ok(_permit) = gate.admission.try_acquire() else {
         return crate::problem::overloaded("Service temporarily unavailable");
     };
     if request.uri().to_string().len() > 16_384 {
         return failure(StatusCode::URI_TOO_LONG, "Request target too long");
     }
     if let Err((status, detail)) = admit(
-        &app.config.origin,
-        &app.config.host,
-        &app.config.api_key_tenant,
+        &gate.config.origin,
+        &gate.config.host,
+        &gate.config.api_key_tenant,
         &request,
     ) {
         return failure(status, detail);
     }
-    let Some(presented) = principal(request.headers(), &app.config.api_key_tenant) else {
+    let Some(presented) = principal(request.headers(), &gate.config.api_key_tenant) else {
         return failure(StatusCode::UNAUTHORIZED, "Authentication required");
     };
     request.extensions_mut().insert(presented);
     next.run(request).await
 }
 
+/// Sets the flag when the request future is dropped, so a queued storage read
+/// is skipped.
 struct Cancellation(Arc<AtomicBool>);
 impl Drop for Cancellation {
     fn drop(&mut self) {
@@ -183,35 +250,12 @@ async fn assembled(
     project(app, &id, request, View::Assembled).await
 }
 
-/// Runs a storage read on the blocking pool with the request's credential.
-/// Dropping the request flags the read cancelled.
-async fn blocking_read<T: Send + 'static>(
-    app: &App,
-    presented: PresentedCredential,
-    read: impl FnOnce(ReadClient, Credential, &AtomicBool, Duration) -> Result<T> + Send + 'static,
-) -> Result<Result<T>, tokio::task::JoinError> {
-    let (client, wait) = (app.client.clone(), app.config.wait);
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let flag = Cancellation(cancelled.clone());
-    let credential = presented.into_credential();
-    let result =
-        tokio::task::spawn_blocking(move || read(client, credential, &cancelled, wait)).await;
-    drop(flag);
-    result
-}
-
 async fn project(app: App, id: &str, request: axum::extract::Request, view: View) -> Response {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
-    };
-    let head = *request.method() == Method::HEAD;
     // An id that cannot name a row is "not found" once the credential is
     // proven (an empty batch).
     let target = node_id(id);
-    let read = blocking_read(
-        &app,
-        presented,
-        move |client, credential, cancelled, wait| {
+    let read = app
+        .read(request, move |client, credential, cancelled, wait| {
             let batch = match (view, target) {
                 (View::Assembled, Some(part)) => {
                     client.read_part(credential, part, cancelled, wait)?
@@ -221,7 +265,7 @@ async fn project(app: App, id: &str, request: axum::extract::Request, view: View
             let Some(build) = batch.builds.first() else {
                 return Ok(None);
             };
-            Ok::<_, anyhow::Error>(Some(match (view, target) {
+            Ok(Some(match (view, target) {
                 (View::Checkoff, _) if needs_filament_lookup(&build.accepted) => {
                     json!({"kind":"filament_lookup_unavailable"})
                 }
@@ -232,14 +276,12 @@ async fn project(app: App, id: &str, request: axum::extract::Request, view: View
                     views::assembled(part.unwrap_or_default(), &build.accepted)
                 }
             }))
-        },
-    )
-    .await;
+        })
+        .await;
     match read {
-        Ok(Ok(Some(body))) => present(body, head, view.missing()),
-        Ok(Ok(None)) => failure(StatusCode::NOT_FOUND, view.missing()),
-        Ok(Err(error)) => read_error(&error),
-        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        Ok((Some(body), head)) => present(body, head, view.missing()),
+        Ok((None, _)) => failure(StatusCode::NOT_FOUND, view.missing()),
+        Err(response) => *response,
     }
 }
 
@@ -252,30 +294,22 @@ async fn filament_shortfalls(
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
-    };
-    let Some(inventory) = app.config.stock.clone() else {
+    let Some(inventory) = app.gate.config.stock.clone() else {
         return failure(StatusCode::NOT_FOUND, "Not Found");
     };
-    let head = *request.method() == Method::HEAD;
     let target = node_id(&id);
-    let read = blocking_read(
-        &app,
-        presented,
-        move |client, credential, cancelled, wait| {
+    let read = app
+        .read(request, move |client, credential, cancelled, wait| {
             match target {
                 Some(id) => client.read_stock(credential, id, cancelled, wait),
                 // An unusable id still proves the credential (an empty batch).
                 None => client.read(credential, &[], cancelled, wait),
             }
-        },
-    )
-    .await;
-    let mut batch = match read {
-        Ok(Ok(batch)) => batch,
-        Ok(Err(error)) => return read_error(&error),
-        Err(_) => return failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        })
+        .await;
+    let (mut batch, head) = match read {
+        Ok(read) => read,
+        Err(response) => return *response,
     };
     let (Some(profile_id), Some(build), Some(inputs)) =
         (target, batch.builds.pop(), batch.stock.take())
@@ -409,7 +443,7 @@ pub(crate) fn read_error(error: &anyhow::Error) -> Response {
     }
 }
 
-fn json_response(status: StatusCode, value: &Value, head: bool) -> Response {
+pub(crate) fn json_response(status: StatusCode, value: &Value, head: bool) -> Response {
     let body = serde_json::to_vec(value).unwrap_or_else(|_| b"null".to_vec());
     Response::builder()
         .status(status)

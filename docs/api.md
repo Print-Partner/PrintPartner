@@ -143,6 +143,17 @@ Served only by the Rust core with both rebuild gates on, behind a session or API
 
 `grams_needed` is `measured` (with `grams` and the `job_count` used) or `unknown`. It comes from past prints: each completed job's `filament_consumed_g` divided by the units that job printed, averaged over the Part's five most recent such jobs, times the remaining units, rounded up. A Part never printed with measured grams is `unknown`. `grams_available` is `spoolman` (whole grams over unarchived spools, rounded down) or `unknown` with a reason (`not_spoolman`, `integration_missing`, `unreachable`, `filament_missing`, `spool_weight_missing`). Unknown never reads as zero, and an unknown on either side gives `status: unknown`, never `short`. The read never reserves or deducts stock. Errors are [problem responses](problem-responses.md).
 
+### History
+
+```text
+GET   /plans/:id/history?limit=50&cursor=...
+```
+
+The Rust API serves this read only with `desktop_rebuild` on. It returns a
+Build's accepted revisions, snapshots, checkoff bursts, sends and assistant
+decisions, newest first, one page at a time. [Build history](build-history.md)
+describes the entries and paging.
+
 ### Plates and exports
 
 ```text

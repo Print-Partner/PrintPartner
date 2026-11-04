@@ -295,6 +295,102 @@ mod with_feature {
                 "{path}"
             );
         }
+        // Build history reads the same owner on `/` and `/api/v2`, one page at
+        // a time, newest first.
+        rusqlite::Connection::open(directory.join("print-partner.db"))
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO plan_decisions (tenant_id,profile_id,created_at,actor,kind,summary) VALUES
+                 ('default',{id},'2026-10-01T09:00:00.000Z','assistant','choice','Older'),
+                 ('default',{id},'2026-10-02T09:00:00.000Z','user','user_note','Newer');"
+            ))
+            .unwrap();
+        let (status, first) = server
+            .json(
+                Method::GET,
+                &format!("/plans/{id}/history?limit=1"),
+                &headers,
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{first}");
+        assert_eq!(first["plan_id"], id);
+        assert_eq!(first["entries"][0]["summary"], "Newer");
+        assert_eq!(first["entries"][0]["actor"], "user");
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let (status, second) = server
+            .json(
+                Method::GET,
+                &format!("/api/v2/plans/{id}/history?limit=1&cursor={cursor}"),
+                &headers,
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{second}");
+        assert_eq!(second["entries"][0]["summary"], "Older");
+        assert_eq!(second["entries"][0]["type"], "decision");
+        assert_eq!(second["next_cursor"], Value::Null);
+        for (path, credential, status, detail) in [
+            (
+                format!("/plans/{id}/history"),
+                false,
+                401,
+                "Authentication required",
+            ),
+            (
+                "/plans/999999/history".into(),
+                true,
+                404,
+                "Profile not found",
+            ),
+            ("/plans/0x1/history".into(), true, 404, "Profile not found"),
+            (
+                format!("/plans/{id}/history?limit=0"),
+                true,
+                400,
+                "Invalid history limit",
+            ),
+            (
+                format!("/plans/{id}/history?limit=201"),
+                true,
+                400,
+                "Invalid history limit",
+            ),
+            (
+                format!("/plans/{id}/history?limit=1&limit=2"),
+                true,
+                400,
+                "Invalid history limit",
+            ),
+            (
+                format!("/plans/{id}/history?cursor=bogus"),
+                true,
+                400,
+                "Invalid history cursor",
+            ),
+        ] {
+            let sent: &[(&str, &str)] = if credential { &headers } else { &[] };
+            assert_eq!(
+                server.json(Method::GET, &path, sent, None).await,
+                (status, json!({"detail": detail})),
+                "{path}"
+            );
+        }
+        // An id that cannot name a Build still checks the credential first.
+        for path in ["/plans/0/history", "/plans/0x1/history"] {
+            assert_eq!(
+                server
+                    .json(
+                        Method::GET,
+                        path,
+                        &[("Cookie", "pp_session=not-a-session")],
+                        None
+                    )
+                    .await,
+                (401, json!({"detail": "Authentication required"})),
+                "{path}"
+            );
+        }
         // The same router answers Part assembled reads, which an empty Plan
         // has none of.
         for path in ["/parts/1/assembled", "/api/v1/parts/1/assembled"] {

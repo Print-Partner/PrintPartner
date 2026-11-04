@@ -6,10 +6,10 @@ builds toward is [UI and UX target](../../../docs/product/ui-ux-target.md);
 package instead of a port of `apps/web`.
 
 Today it has the app frame (rail, pulse line slot, command palette, shortcut
-list), the shared five-state screen template, an empty screen for each of the
-five destinations, a type specimen at `/type`, the screen states on sample data
-at `/states/:kind`, and a Not found route. Product data screens arrive in their
-own slices.
+list), the shared five-state screen template, the read-only Builds list and Build
+Overview, an empty screen for each other destination, a type specimen at
+`/type`, the screen states on sample data at `/states/:kind`, and a Not found
+route. Other product data screens arrive in their own slices.
 
 ## Commands
 
@@ -77,6 +77,46 @@ the loopback server and WebKitGTK launcher that both browser checks use.
   same-origin paths only and sends same-origin credentials. In the desktop app
   and Docker the Rust core serves this UI, so the paths reach it directly.
 
+## Builds
+
+`/builds` lists every Build `GET /api/v2/plans` returns, in the core's order,
+with its name, order number, accepted progress and open tasks
+(`src/builds/BuildsList.tsx`). `/builds/:id` opens the Build workspace: the tab
+bar Overview, Sources, Plan, Production, Checkoff and History (the Machine tab is
+parked), with Overview at the index route (`src/builds/BuildWorkspace.tsx`).
+Overview reads `GET /api/v2/plans/{id}` and `/layers` and shows progress, part
+count, the Plan's freshness with its reasons in words, the order number and
+customer request, last use, and the layers in layer order. The other tabs say
+which slice brings them. Nothing here changes data.
+
+- **Order fields follow the Orders Module.** `useModule` (`src/core/modules.ts`)
+  reads the Module list from `GET /health`. Orders on shows the Order column and
+  the Overview's order fields; Orders off hides them and says so with a link to
+  Settings. While the core has not said, neither shows. The Builds screens have
+  no Module of their own, so the whole-screen Module-off state does not apply.
+- **No customer name or due date.** No Rust route or table holds them yet, so
+  the list has no columns for them.
+- **Open tasks and next action** come from the shared workflow projection
+  (GRE-1123). `readBuildWorkflows` in `src/core/workflow.ts` is the typed seam:
+  it makes no request and resolves `pending` until that route is in the
+  generated client, and the screens say the values are not available yet. The UI
+  never ranks work itself.
+- **States.** Both screens map their query through `queryScreenState`
+  (`src/screen/queryState.ts`): loading, empty, error with the last-known data,
+  its time and Retry, and offline with what was loaded. A Build ID that is not a
+  positive safe integer, or that the core answers 404 for, is Not found.
+- **Keyboard.** Up, Down, Home and End move focus between the Build links. Rows
+  are keyed by Build ID, so a refetch keeps focus where it was.
+- **Large lists.** Every row renders; rows off screen use
+  `content-visibility: auto` so they skip layout and paint. This was chosen from
+  `test/browser/builds.browser.mjs` on 10,000 Builds on a 4-CPU cloud host:
+  WebKitGTK showed the first row 2.0 to 3.3 s after navigation (fetch, schema
+  check and render of all rows) and moved focus to the next row by the next
+  frame in a median of 17 to 22 ms (max 33 ms); headless Chromium took 1.2 to
+  1.4 s and 67 ms. There is no approved latency budget, so the check records the
+  numbers and fails only on a missing row or misplaced focus. Revisit
+  virtualization if a measurement says otherwise.
+
 ## Fonts and type
 
 The UI bundles IBM Plex Sans 400/500/600 and IBM Plex Mono 400/500 as WOFF2 files
@@ -119,7 +159,10 @@ fail it. Do not add `paths` or Vite aliases that point outside this package.
 ## Choices
 
 - **Router:** React Router 7 (`react-router`), the library `apps/web` already
-  uses. TanStack Router is compared against it in the Builds slice.
+  uses. The Builds slice compared it with TanStack Router on paper and kept it:
+  nested routes cover the Build tabs, the read-only screens have no search
+  parameters that need typing, and TanStack Router is not in the lockfile, so
+  it would add a runtime dependency for no current need.
 - **Server state:** TanStack Query 5 is the one cache. Routes and core calls
   must not keep a second copy.
 - Both were already in `web/package-lock.json`, so this package added no new
@@ -128,8 +171,11 @@ fail it. Do not add `paths` or Vite aliases that point outside this package.
 ## Generated Rust client
 
 `@print-partner/rust-client` is the one workspace package on the boundary
-allowlist. Build typed calls on it instead of on `fetchCore`, and keep
-`fetchCore`'s same-origin rule or move it into the client's transport.
+allowlist. `readCore(name, params)` in `src/core/rust.ts` is the typed read: it
+fills the generated route's path through `fetchCore`, so the same-origin rule
+holds, and parses the body with the route's generated schema. A body that fails
+the schema is a `ContractError`, shown as an error, never a partly typed value.
+`CoreError.status` keeps the HTTP status.
 
 ## Printer status
 

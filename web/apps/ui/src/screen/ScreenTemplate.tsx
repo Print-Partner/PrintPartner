@@ -83,13 +83,42 @@ export function MutationButton({
   );
 }
 
+/**
+ * Says which Module is off, what would appear, and links to Settings. The module-off
+ * screen state uses it, and so does a screen that shows one Module's part inline.
+ */
+export function ModuleOff({
+  module,
+  wouldShow,
+  where = "this screen",
+}: {
+  module: string;
+  wouldShow: string;
+  where?: string;
+}) {
+  return (
+    <div className="pp-module-off">
+      <p>The {module} module is off.</p>
+      <p>
+        When it is on, {where} shows {wouldShow}.
+      </p>
+      <Link to="/settings" className="pp-link">
+        Turn it on in Settings
+      </Link>
+    </div>
+  );
+}
+
 export function ScreenTemplate<T>({
   title,
   state,
   renderData,
   empty,
+  subnav,
 }: {
   title: string;
+  /** Navigation that belongs under the heading in every state, such as a tab bar. */
+  subnav?: ReactNode;
   state: ScreenState<T>;
   renderData: (data: T) => ReactNode;
   /** The empty state's message and its next useful action. */
@@ -135,15 +164,7 @@ export function ScreenTemplate<T>({
       );
       break;
     case "module-off":
-      body = (
-        <>
-          <p>The {state.module} module is off.</p>
-          <p>When it is on, this screen shows {state.wouldShow}.</p>
-          <Link to="/settings" className="pp-link">
-            Turn it on in Settings
-          </Link>
-        </>
-      );
+      body = <ModuleOff module={state.module} wouldShow={state.wouldShow} />;
       break;
     case "offline":
       body = (
@@ -166,6 +187,7 @@ export function ScreenTemplate<T>({
   return (
     <section aria-labelledby={headingId} className="pp-screen" data-state={state.kind}>
       <h1 id={headingId}>{title}</h1>
+      {subnav}
       {body}
     </section>
   );

@@ -214,6 +214,19 @@ fn node_backed_path_refuses_any_marker_and_leaves_unmarked_directories_alone() {
             _ => assert_eq!(result, Err(OwnershipRefusal::RustOwned), "{spec:?}"),
         }
         assert_eq!(snapshot(installation.path()), before, "{spec:?}");
+        if spec.marker == KitMarker::Absent || spec.lease_leftovers.is_some() {
+            continue;
+        }
+        // The lease the Node-backed runtime takes refuses it too, and removes
+        // the lease files it created.
+        let Err(error) = ownership_marker::lease_unmarked(installation.path()) else {
+            panic!("{spec:?}: the Node-backed lease opened a marked directory");
+        };
+        assert_eq!(
+            error.downcast_ref::<OwnershipRefusal>(),
+            Some(&OwnershipRefusal::RustOwned)
+        );
+        assert_eq!(snapshot(installation.path()), before, "{spec:?}");
     }
 }
 
@@ -261,28 +274,75 @@ mod writer {
             .map(|value| value.parse().unwrap())
     }
 
-    /// Asserts a refused open changed nothing except the empty lease files
-    /// (`printpartner.lock` and a Rust `.desktop-lease`), which the lease
-    /// itself creates and removes.
+    /// Asserts a refused open left the full listing, lease files included,
+    /// byte for byte as it was.
     fn assert_unchanged(installation: &Installation, before: &BTreeMap<PathBuf, Option<Vec<u8>>>) {
-        let without_lease_files = |entries: &BTreeMap<PathBuf, Option<Vec<u8>>>| {
-            entries
-                .iter()
-                .filter(|(path, value)| {
-                    !(value.as_deref() == Some(&[][..])
-                        && (*path == Path::new("printpartner.lock")
-                            || *path == Path::new(".desktop-lease")))
-                })
-                .map(|(path, value)| (path.clone(), value.clone()))
-                .collect::<BTreeMap<_, _>>()
-        };
-        let after = snapshot(installation.path());
         assert_eq!(
-            without_lease_files(&after),
-            without_lease_files(before),
+            &snapshot(installation.path()),
+            before,
             "{:?}",
             installation.spec()
         );
+    }
+
+    fn refusal_of(installation: &Installation, gate: WriterGate) -> OwnershipRefusal {
+        let error = open(installation, gate).unwrap_err();
+        refusal(&error)
+            .cloned()
+            .unwrap_or_else(|| panic!("not an ownership refusal: {error:#}"))
+    }
+
+    /// The three writer refusal kinds, each on a directory without lease files.
+    fn writer_refusals() -> Vec<(Installation, WriterGate)> {
+        vec![
+            (
+                Installation::create(Fixture::NodeSchema34).unwrap(),
+                WriterGate::SwitchOn,
+            ),
+            (
+                Installation::create(Fixture::MarkedCorrupt).unwrap(),
+                WriterGate::SwitchOn,
+            ),
+            (
+                Installation::create(Fixture::Empty).unwrap(),
+                WriterGate::SwitchOff,
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_refusal_leaves_the_full_listing_identical() {
+        let mut kinds = Vec::new();
+        for (installation, gate) in writer_refusals() {
+            let before = snapshot(installation.path());
+            kinds.push(std::mem::discriminant(&refusal_of(&installation, gate)));
+            assert!(!installation.path().join("printpartner.lock").exists());
+            assert!(!installation.path().join(".desktop-lease").exists());
+            assert_unchanged(&installation, &before);
+        }
+        kinds.dedup();
+        assert_eq!(kinds.len(), 3, "not-empty, invalid marker and switch off");
+    }
+
+    /// A lease file that existed before a refused open stays, with the same
+    /// bytes and modification time.
+    #[test]
+    fn refusal_keeps_pre_existing_lease_files() {
+        let modified =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for (installation, gate) in writer_refusals() {
+            for name in ["printpartner.lock", ".desktop-lease"] {
+                let file = std::fs::File::create(installation.path().join(name)).unwrap();
+                file.set_modified(modified).unwrap();
+            }
+            let before = snapshot(installation.path());
+            refusal_of(&installation, gate);
+            assert_unchanged(&installation, &before);
+            for name in ["printpartner.lock", ".desktop-lease"] {
+                let metadata = std::fs::metadata(installation.path().join(name)).unwrap();
+                assert_eq!(metadata.modified().unwrap(), modified, "{name}");
+            }
+        }
     }
 
     /// Copies of Node-written schema 34 databases in otherwise empty installations.

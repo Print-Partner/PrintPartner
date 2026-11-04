@@ -384,6 +384,11 @@ fn write_marker(dir: &Dir, directory: &Path, marker: &Marker) -> std::io::Result
     Ok(())
 }
 
+// The opt-in turns the marker decision off, so it must never reach an
+// optimized build, whatever `--features` or `--all-features` asks for.
+#[cfg(all(feature = "test-unmarked-writer", not(debug_assertions)))]
+compile_error!("test-unmarked-writer must never be built in a release profile");
+
 /// How the storage writer treats ownership. Only `desktop_rebuild` builds
 /// enforce it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,8 +451,20 @@ pub(crate) fn admit_writer(locked: &crate::lease::LockedDirectory, gate: WriterG
     }
 }
 
+/// The Node-backed runtime's lease: [`crate::lease::StorageLease::acquire`],
+/// refusing a directory with any marker entry while the lock is held. A refusal
+/// leaves the lease files as it found them.
+pub fn lease_unmarked(directory: &Path) -> Result<crate::lease::StorageLease> {
+    let locked = crate::lease::admit_directory(directory)?.lock()?;
+    if let Err(refusal) = refuse_marked(locked.path()) {
+        locked.abandon();
+        return Err(refusal.into());
+    }
+    crate::lease::StorageLease::acquire_locked(locked)
+}
+
 /// The Node-backed runtime's check: any marker entry refuses the directory.
-/// Call it while the lease is held, before starting anything.
+/// [`lease_unmarked`] calls it while the lock is held.
 pub fn refuse_marked(directory: &Path) -> Result<(), OwnershipRefusal> {
     match inspect(directory) {
         MarkerState::Absent => Ok(()),
@@ -532,11 +549,7 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
-        assert_eq!(
-            names,
-            ["printpartner.lock"],
-            "no marker, database or storage directories"
-        );
+        assert!(names.is_empty(), "nothing left behind: {names:?}");
     }
 
     #[test]

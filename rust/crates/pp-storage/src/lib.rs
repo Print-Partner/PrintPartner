@@ -533,7 +533,10 @@ impl WriterOwner {
             "Storage limits must be positive"
         );
         let locked = lease::admit_directory(directory)?.lock()?;
-        ownership_marker::admit_writer(&locked, gate)?;
+        if let Err(error) = ownership_marker::admit_writer(&locked, gate) {
+            locked.abandon();
+            return Err(error);
+        }
         locked.preflight()?;
         let lease = lease::StorageLease::acquire_locked(locked)?;
         let path = lease.data_dir().join("print-partner.db");

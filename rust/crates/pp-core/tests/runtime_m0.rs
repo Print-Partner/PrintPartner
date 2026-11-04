@@ -410,9 +410,9 @@ async fn rust_marked_directory_is_refused_before_supervised_node_startup() {
         );
         assert_eq!(std::fs::read(&database).unwrap(), b"must remain unopened");
         assert_eq!(std::fs::read(installation.marker_path()).ok(), marker);
-        let mut after = installation.entries().unwrap();
-        after.remove("printpartner.lock");
-        assert_eq!(after, before, "{spec:?}");
+        // The full listing, lease files included: the refused start leaves no
+        // printpartner.lock or .desktop-lease behind.
+        assert_eq!(installation.entries().unwrap(), before, "{spec:?}");
     }
     println!(
         "{}",

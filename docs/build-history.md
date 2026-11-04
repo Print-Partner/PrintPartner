@@ -37,7 +37,11 @@ it is never undoable.
 Old rows stay readable. A decision or snapshot with empty text gets a summary
 from its label, kind or source. A timestamp that is not RFC 3339 is returned as
 stored and sorts as the oldest entry. A missing, blank or malformed send queue
-reads as no sends, as Node reads it.
+reads as no sends, as Node reads it. Queue items follow Node's `parseItem`:
+an item with an unknown state, or a blank id, filename, artifact path or
+printer, is skipped, and `profile_id` is read with JavaScript `Number()`, so
+`"1"` names Build 1. An item with no `created_at` is skipped too: Node stamps
+it with the time of each load, so it has no fixed place in History.
 
 Not listed:
 

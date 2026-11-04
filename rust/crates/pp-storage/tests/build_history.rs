@@ -187,8 +187,13 @@ fn seed(db: &Connection) {
     set_queue(
         db,
         &json!([
-            {"id":"send-a","filename":"plate_1.gcode","printer_id":"mk4","host_name":"MK4","state":"done","profile_id":1,"created_at":"2026-10-05T19:00:00.000Z","updated_at":"2026-10-05T19:30:00.000Z"},
-            {"id":"send-b","filename":"other.gcode","printer_id":"mk4","state":"done","profile_id":2,"created_at":"2026-10-05T19:00:00.000Z","updated_at":"2026-10-05T19:30:00.000Z"}
+            {"id":"send-a","filename":"plate_1.gcode","artifact_path":"/exports/a.gcode","printer_id":"mk4","host_name":"MK4","state":"done","profile_id":1,"created_at":"2026-10-05T19:00:00.000Z","updated_at":"2026-10-05T19:30:00.000Z"},
+            {"id":"send-b","filename":"other.gcode","artifact_path":"/exports/b.gcode","printer_id":"mk4","state":"done","profile_id":2,"created_at":"2026-10-05T19:00:00.000Z","updated_at":"2026-10-05T19:30:00.000Z"},
+            // Node's `Number(" 1 ")` names Build 1.
+            {"id":"send-c","filename":"plate_2.gcode","artifact_path":"/exports/c.gcode","printer_id":"mk4","state":"queued","profile_id":" 1 ","created_at":"2026-10-06T08:00:00.000Z"},
+            // Node's `parseItem` drops these: unknown state, blank printer.
+            {"id":"send-d","filename":"x.gcode","artifact_path":"/exports/d.gcode","printer_id":"mk4","state":"paused","profile_id":1,"created_at":"2026-10-06T09:00:00.000Z"},
+            {"id":"send-e","filename":"y.gcode","artifact_path":"/exports/e.gcode","printer_id":" ","state":"done","profile_id":1,"created_at":"2026-10-06T10:00:00.000Z"}
         ]),
     );
 }
@@ -218,6 +223,9 @@ fn build_history_lists_every_source_newest_first() {
     assert_eq!(
         json_entries(&page),
         vec![
+            json!({"id":"send:send-c","type":"send","at":"2026-10-06T08:00:00.000Z","actor":"user",
+                "summary":"Queued plate_2.gcode for mk4","link":{"kind":"send","id":"send-c"},
+                "undo":{"undoable":false,"reason":"printer_command"}}),
             json!({"id":"checkoff_burst:job-a","type":"checkoff_burst","at":"2026-10-05T20:00:00.000Z","actor":"user",
                 "summary":"Checked off 2 units, rejected 1 from plate_1.gcode","link":{"kind":"checkoff_burst","id":"job-a"},
                 "undo":{"undoable":false,"reason":"no_undo_token"}}),
@@ -285,7 +293,7 @@ fn build_history_cursor_pages_stay_stable_while_entries_arrive() {
             )
             .unwrap();
         let mut queue: Vec<Value> = serde_json::from_str(&queue).unwrap();
-        queue.push(json!({"id":format!("send-new-{arrivals}"),"filename":"new.gcode","printer_id":"mk4",
+        queue.push(json!({"id":format!("send-new-{arrivals}"),"filename":"new.gcode","artifact_path":"/exports/new.gcode","printer_id":"mk4",
             "state":"queued","profile_id":1,"created_at":"2026-11-02T00:00:00.000Z","updated_at":"2026-11-02T00:00:00.000Z"}));
         set_queue(&fixture.sql(), &Value::Array(queue));
 
@@ -295,7 +303,7 @@ fn build_history_cursor_pages_stay_stable_while_entries_arrive() {
     }
     assert!(
         arrivals >= 2,
-        "nine entries take at least three pages of three"
+        "ten entries take at least three pages of three"
     );
     let later: Vec<String> = {
         let db = fixture.sql();

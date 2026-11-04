@@ -480,18 +480,31 @@ fn sends(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
     };
     let mut entries = Vec::new();
     for item in &items {
-        let owner = item.get("profile_id").and_then(Value::as_f64);
-        if owner != Some(build as f64) {
+        // Node's `parseItem` drops an item with an unknown state or a blank
+        // id, filename, artifact path or printer, and reads `profile_id` with
+        // `Number()`.
+        let state = item.get("state").and_then(Value::as_str);
+        if !matches!(
+            state,
+            Some("queued" | "sending" | "done" | "error" | "cancelled")
+        ) || text(item, "artifact_path").is_none()
+            || item.get("profile_id").and_then(js_number) != Some(build as f64)
+        {
             continue;
         }
-        let (Some(id), Some(at)) = (text(item, "id"), text(item, "created_at")) else {
+        // Node stamps a missing `created_at` with the time of each load, which
+        // has no fixed place in History, so those items are skipped.
+        let at = item.get("created_at").and_then(Value::as_str);
+        let (Some(id), Some(file), Some(printer_id), Some(at)) = (
+            text(item, "id"),
+            text(item, "filename"),
+            text(item, "printer_id"),
+            at.filter(|at| !at.is_empty()),
+        ) else {
             continue;
         };
-        let file = text(item, "filename").unwrap_or_else(|| "a file".into());
-        let printer = text(item, "host_name")
-            .or_else(|| text(item, "printer_id"))
-            .unwrap_or_else(|| "a printer".into());
-        let summary = match text(item, "state").as_deref() {
+        let printer = text(item, "host_name").unwrap_or(printer_id);
+        let summary = match state {
             Some("done") => format!("Sent {file} to {printer}"),
             Some("sending") => format!("Sending {file} to {printer}"),
             Some("error") => format!("Send of {file} to {printer} failed"),
@@ -501,7 +514,7 @@ fn sends(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
         entries.push(entry(
             EntryType::Send,
             id,
-            at,
+            at.to_owned(),
             Actor::User,
             summary,
             Some(Undo::refused(UndoReason::PrinterCommand)),
@@ -509,6 +522,30 @@ fn sends(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
         ensure!(entries.len() <= MAX_SOURCE_ROWS, Failure::TooLarge);
     }
     Ok(entries)
+}
+
+/// JavaScript `Number(value)` for the JSON a queue item can hold: numbers,
+/// booleans, and decimal, exponent or `0x`/`0o`/`0b` strings.
+fn js_number(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::Bool(flag) => Some(f64::from(u8::from(*flag))),
+        Value::String(text) => {
+            let text = super::views::js_trim(text);
+            let radix = |digits: &str, radix: u32| {
+                u64::from_str_radix(digits, radix).ok().map(|n| n as f64)
+            };
+            match text.get(..2) {
+                _ if text.is_empty() => Some(0.0),
+                Some("0x" | "0X") => radix(&text[2..], 16),
+                Some("0o" | "0O") => radix(&text[2..], 8),
+                Some("0b" | "0B") => radix(&text[2..], 2),
+                // Rust also reads `inf` and `nan`; neither names a Build.
+                _ => text.parse().ok(),
+            }
+        }
+        _ => None,
+    }
 }
 
 fn decisions(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {

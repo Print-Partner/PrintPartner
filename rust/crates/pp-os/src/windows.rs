@@ -28,9 +28,9 @@ use windows_sys::{
     },
     Win32::{
         Foundation::{
-            ERROR_NO_MORE_FILES, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError,
-            STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED,
-            UNICODE_STRING,
+            ERROR_NO_MORE_FILES, ERROR_NOT_LOCKED, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE,
+            RtlNtStatusToDosError, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
+            STATUS_NOT_SUPPORTED, UNICODE_STRING,
         },
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY,
@@ -159,6 +159,15 @@ pub(crate) fn publish_rename(from: &Path, to: &Path) -> io::Result<()> {
 /// Without `MOVEFILE_REPLACE_EXISTING` the move fails when `to` exists.
 pub(crate) fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     move_file(from, to, MOVEFILE_WRITE_THROUGH)
+}
+
+/// New files inherit the directory's ACL; Windows has no mode bits.
+pub(crate) fn create_new_private_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 /// `FlushFileBuffers` needs write access; a read-only handle gets access
@@ -516,7 +525,7 @@ impl Dir {
     pub(crate) fn entries(&self) -> io::Result<Entries> {
         Ok(Entries {
             directory: self.reopen()?.directory,
-            buffer: vec![0; ENTRIES_BUFFER / 8],
+            buffer: vec![0; ENTRIES_BUFFER as usize / 8],
             next: None,
             done: false,
         })
@@ -524,12 +533,7 @@ impl Dir {
 
     pub(crate) fn open_file(&self, name: &str, how: FileOpen) -> io::Result<File> {
         match how {
-            FileOpen::Read => refuse_link(self.open_entry(
-                name,
-                FILE_GENERIC_READ,
-                FILE_OPEN,
-                FILE_OPEN_REPARSE_POINT,
-            )?),
+            FileOpen::Read => self.open_read_nofollow(name),
             FileOpen::ReadWrite => self.open_write_nofollow(name),
             // Attribute reads let callers check the type of what they created.
             FileOpen::CreateWriteOnly => {
@@ -597,7 +601,8 @@ impl Dir {
     }
 
     /// Open or create the lock file once and keep it for this `Dir`.
-    fn lock_file(&self, name: &str) -> io::Result<&File> {
+    fn lock_file(&self) -> io::Result<&File> {
+        let name = crate::DIR_LOCK_FILE;
         if let Some(file) = self.lock.get() {
             return Ok(file);
         }
@@ -615,8 +620,8 @@ impl Dir {
         Ok(self.lock.get_or_init(|| file))
     }
 
-    pub(crate) fn try_lock(&self, lock_file: &str) -> io::Result<()> {
-        match crate::try_lock(self.lock_file(lock_file)?) {
+    pub(crate) fn try_lock(&self) -> io::Result<()> {
+        match crate::try_lock(self.lock_file()?) {
             Ok(()) => Ok(()),
             Err(crate::TryLockError::WouldBlock) => Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -626,21 +631,25 @@ impl Dir {
         }
     }
 
-    pub(crate) fn lock(&self, lock_file: &str) -> io::Result<()> {
-        fs4::FileExt::lock(self.lock_file(lock_file)?)
+    pub(crate) fn lock(&self) -> io::Result<()> {
+        fs4::FileExt::lock(self.lock_file()?)
     }
 
-    /// Unix `flock(LOCK_UN)` succeeds without a lock; so does this.
+    /// Unix `flock(LOCK_UN)` succeeds without a lock; so does this, though
+    /// `UnlockFile` reports `ERROR_NOT_LOCKED`.
     pub(crate) fn unlock(&self) -> io::Result<()> {
-        match self.lock.get() {
-            Some(file) => crate::unlock(file),
-            None => Ok(()),
+        let Some(file) = self.lock.get() else {
+            return Ok(());
+        };
+        match crate::unlock(file) {
+            Err(error) if error.raw_os_error() == Some(ERROR_NOT_LOCKED as i32) => Ok(()),
+            unlocked => unlocked,
         }
     }
 }
 
 /// Room for many entries per call; one entry needs at most about 600 bytes.
-const ENTRIES_BUFFER: usize = 64 * 1024;
+const ENTRIES_BUFFER: u32 = 64 * 1024;
 
 /// Reads `FILE_FULL_DIR_INFO` records with `GetFileInformationByHandleEx`,
 /// one buffer at a time.
@@ -654,15 +663,14 @@ pub(crate) struct Entries {
 
 impl Entries {
     fn fill(&mut self) -> io::Result<bool> {
-        let bytes = u32::try_from(self.buffer.len() * 8).expect("buffer fits u32");
         // SAFETY: the handle is open and synchronous, and `buffer` has
-        // `bytes` writable bytes with the alignment the records need.
+        // `ENTRIES_BUFFER` writable bytes with the alignment the records need.
         let filled = unsafe {
             GetFileInformationByHandleEx(
                 self.directory.as_raw_handle(),
                 FileFullDirectoryInfo,
                 self.buffer.as_mut_ptr().cast(),
-                bytes,
+                ENTRIES_BUFFER,
             )
         };
         if filled != 0 {

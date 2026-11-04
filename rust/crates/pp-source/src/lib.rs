@@ -40,8 +40,13 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// file by absolute path gets ENAMETOOLONG at this many bytes.
 #[cfg(target_os = "macos")]
 const PATH_MAX: usize = libc::PATH_MAX as usize;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 const PATH_MAX: usize = 4096;
+/// Windows readers open long absolute paths through the `\\?\` form, which
+/// `std` adds itself, up to 32,767 UTF-16 units. A unit takes at least one
+/// WTF-8 byte, so counting bytes against it is conservative.
+#[cfg(windows)]
+const PATH_MAX: usize = 32_767;
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -979,14 +984,7 @@ mod tests {
     use crate::scratch::Scratch;
     use std::fs;
 
-    /// Pins a Unix mode so the ancestor check ignores the umask. Windows has
-    /// none.
-    fn pin_mode(path: impl AsRef<Path>, mode: u32) {
-        #[cfg(unix)]
-        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
-        #[cfg(windows)]
-        let _ = (path, mode);
-    }
+    use crate::modes::pin_mode;
 
     /// Removed when the scratch drops, including while a test unwinds from a
     /// panic.
@@ -1346,6 +1344,9 @@ mod tests {
 #[cfg(test)]
 #[path = "../../pp-storage/tests/common/cleanup.rs"]
 mod cleanup;
+#[cfg(test)]
+#[path = "../tests/support/modes.rs"]
+mod modes;
 /// Auto-removing test scratch, shared with pp-storage's tests.
 #[cfg(test)]
 #[path = "../../pp-storage/tests/common/scratch.rs"]

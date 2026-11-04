@@ -8,13 +8,9 @@ use std::{fs, path::PathBuf};
 mod scratch;
 use scratch::Scratch;
 
-/// Pins a Unix mode so root ancestor checks ignore the umask. Windows has none.
-fn pin_mode(path: impl AsRef<std::path::Path>, mode: u32) {
-    #[cfg(unix)]
-    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
-    #[cfg(windows)]
-    let _ = (path, mode);
-}
+#[path = "support/modes.rs"]
+mod modes;
+use modes::pin_mode;
 
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
@@ -38,7 +34,7 @@ impl Fixture {
 fn revisions_empty(fixture: &Fixture) -> bool {
     fs::read_dir(fixture.0.join("repos/42/revisions"))
         .unwrap()
-        .all(|entry| entry.unwrap().file_name() == ".pp-source-lock")
+        .all(|entry| entry.unwrap().file_name() == pp_os::DIR_LOCK_FILE)
 }
 fn request() -> SnapshotRequest {
     SnapshotRequest {
@@ -406,6 +402,28 @@ fn published_paths_stop_one_byte_short_of_path_max() {
     let published = source.materialize(req, &input, budget()).unwrap();
     assert_eq!(published.publication, Publication::Created);
     assert_eq!(fs::read(prefix.join(&label)).unwrap(), b"solid long");
+}
+
+/// Rust readers on Windows open long paths through `std`, so pp-source's
+/// limit there is the 32,767-unit extended-length maximum, not 4096 bytes.
+#[cfg(windows)]
+#[test]
+fn windows_publishes_paths_longer_than_unix_path_max() {
+    let fixture = Fixture::new();
+    let mut root = fixture.0.join("repos");
+    while root.as_os_str().len() <= 4096 {
+        root.push("d".repeat(200));
+    }
+    fs::create_dir_all(&root).unwrap();
+    let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
+    let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
+    let mut source = repos.source(42).unwrap();
+    let published = source.materialize(request(), &input, budget()).unwrap();
+    assert_eq!(published.publication, Publication::Created);
+    let stored = ["42", "revisions", "caller-uuid", "part.stl"]
+        .iter()
+        .fold(root, |path, part| path.join(part));
+    assert_eq!(fs::read(stored).unwrap(), b"solid bytes");
 }
 
 /// `PATH_MAX` and these `/`-joined byte counts are Unix rules.

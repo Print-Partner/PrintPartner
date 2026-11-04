@@ -16,9 +16,6 @@ use std::{
 };
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-/// The file Windows locks in place of the revisions directory.
-const SOURCE_LOCK: &str = ".pp-source-lock";
-
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
@@ -1073,7 +1070,7 @@ fn extraction_is_busy_while_a_peer_holds_the_source_revisions_lock() {
     let mut source = fixture.tenant().source(42).unwrap();
     // A peer process mid-materialize holds this lock on its own descriptor.
     let peer = pp_os::Dir::open(&fixture.0.join("repos/42/revisions")).unwrap();
-    peer.lock(SOURCE_LOCK).unwrap();
+    peer.lock().unwrap();
     assert!(matches!(
         source.extract_zip(
             fixture.input(),
@@ -1091,10 +1088,10 @@ fn extraction_is_busy_while_a_peer_holds_the_source_revisions_lock() {
             &AtomicBool::new(false),
         )
         .unwrap();
-    assert!(peer.try_lock(SOURCE_LOCK).is_err());
+    assert!(peer.try_lock().is_err());
     drop(extracted);
     assert!(!fixture.candidate().exists());
-    peer.try_lock(SOURCE_LOCK).unwrap();
+    peer.try_lock().unwrap();
 }
 
 fn deflated_zip(fixture: &Fixture, data: &[u8]) {
@@ -1679,13 +1676,13 @@ fn discarding_readiness_keeps_the_lock_for_a_running_owner_materialization() {
     }
     extracted.discard().unwrap();
     let peer = pp_os::Dir::open(&revisions).unwrap();
-    let acquired = peer.try_lock(SOURCE_LOCK).is_ok();
+    let acquired = peer.try_lock().is_ok();
     let running = !finished.load(Ordering::Acquire);
     assert!(running, "materialization finished before the check");
     assert!(!acquired, "a peer took the lock during the owner's copy");
     let snapshot = worker.join().unwrap().unwrap();
     assert_eq!(snapshot.files[0].size_bytes, 256 * 1024 * 1024);
-    peer.try_lock(SOURCE_LOCK).unwrap();
+    peer.try_lock().unwrap();
 }
 
 #[path = "../../pp-storage/tests/common/cleanup.rs"]

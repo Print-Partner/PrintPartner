@@ -21,13 +21,9 @@ const INJECTED_MODEL: &str = "<model><object name='injected'><mesh><vertex x='0'
 mod scratch;
 use scratch::Scratch;
 
-/// Pins a Unix mode so root ancestor checks ignore the umask. Windows has none.
-fn pin_mode(path: impl AsRef<std::path::Path>, mode: u32) {
-    #[cfg(unix)]
-    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
-    #[cfg(windows)]
-    let _ = (path, mode);
-}
+#[path = "support/modes.rs"]
+mod modes;
+use modes::pin_mode;
 
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);

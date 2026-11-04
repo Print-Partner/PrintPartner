@@ -6,11 +6,6 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// The file Windows locks in place of a directory, which `LockFileEx` cannot
-/// lock. Unix locks the directory itself. Revision keys and staging names
-/// never start with `.pp-source-lock`, so listings cannot mistake it.
-const LOCK_FILE: &str = ".pp-source-lock";
-
 pub(crate) struct Directory(pub(crate) Dir);
 
 impl Directory {
@@ -151,14 +146,15 @@ impl Directory {
         Ok(Self(self.0.try_clone()?))
     }
 
-    /// Takes this directory's exclusive lock without waiting; see
-    /// [`LOCK_FILE`].
+    /// Takes this directory's exclusive lock without waiting. On Windows
+    /// the lock is [`pp_os::DIR_LOCK_FILE`] inside the directory; revision
+    /// keys start with a letter or digit, so listings cannot mistake it.
     pub(crate) fn try_lock(&self) -> io::Result<()> {
-        self.0.try_lock(LOCK_FILE)
+        self.0.try_lock()
     }
 
     pub(crate) fn lock(&self) -> io::Result<()> {
-        self.0.lock(LOCK_FILE)
+        self.0.lock()
     }
 
     pub(crate) fn unlock(&self) -> io::Result<()> {

@@ -37,8 +37,8 @@
 //! held lock survives its name being deleted or replaced, so callers compare
 //! the locked file's [`Identity`] with the named entry after locking, as
 //! pp-storage's data-directory lease does with `printpartner.lock`.
-//! [`Dir::try_lock`] and [`Dir::lock`] take this lock file for the caller on
-//! Windows and `flock` the directory itself on Unix.
+//! [`Dir::try_lock`] and [`Dir::lock`] take such a lock on [`DIR_LOCK_FILE`]
+//! for the caller on Windows and `flock` the directory itself on Unix.
 //!
 //! # Windows entry names
 //!
@@ -382,23 +382,23 @@ impl Dir {
 
     /// Take an exclusive advisory lock on this directory without waiting,
     /// failing with `WouldBlock` while another handle holds it. Unix locks
-    /// the directory with `flock` and ignores `lock_file`. Windows locks the
-    /// regular file `lock_file` inside the directory, creating it when
-    /// missing, and keeps it open until this `Dir` drops; see
-    /// [Directory locks](#directory-locks). Use one `lock_file` name per
-    /// directory.
-    pub fn try_lock(&self, lock_file: &str) -> io::Result<()> {
-        self.inner.try_lock(checked_name(lock_file)?)
+    /// the directory with `flock`. Windows locks the regular file
+    /// [`DIR_LOCK_FILE`] inside the directory, creating it when missing, and
+    /// keeps it open until this `Dir` drops; see
+    /// [Directory locks](#directory-locks).
+    pub fn try_lock(&self) -> io::Result<()> {
+        self.inner.try_lock()
     }
 
     /// Take the lock as in [`Dir::try_lock`], waiting while another handle
     /// holds it.
-    pub fn lock(&self, lock_file: &str) -> io::Result<()> {
-        self.inner.lock(checked_name(lock_file)?)
+    pub fn lock(&self) -> io::Result<()> {
+        self.inner.lock()
     }
 
     /// Release a lock taken through this `Dir`. Closing the `Dir` also
-    /// releases it.
+    /// releases it. Like `flock(LOCK_UN)`, this succeeds when no lock is
+    /// held.
     pub fn unlock(&self) -> io::Result<()> {
         self.inner.unlock()
     }
@@ -409,6 +409,18 @@ impl std::os::fd::AsFd for Dir {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.inner.as_fd()
     }
+}
+
+/// The file [`Dir::try_lock`] and [`Dir::lock`] lock inside a directory on
+/// Windows, which cannot lock a directory. Unix never creates it. Listings of
+/// a locked directory on Windows include it.
+pub const DIR_LOCK_FILE: &str = ".pp-os-lock";
+
+/// Create the new file `path` for reading and writing, failing with
+/// `AlreadyExists` when it exists. Unix gives it mode 0600; on Windows it
+/// inherits its directory's ACL.
+pub fn create_new_private_file(path: &Path) -> io::Result<File> {
+    platform::create_new_private_file(path)
 }
 
 /// How [`Dir::open_file`] opens an entry. None follows a final link, and

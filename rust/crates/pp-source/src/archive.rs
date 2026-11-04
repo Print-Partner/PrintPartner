@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -652,13 +652,7 @@ impl BoundCopy {
             std::process::id(),
             BOUND_COPIES.fetch_add(1, Ordering::Relaxed)
         ));
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        // Windows files inherit the temporary directory's ACL, which is
-        // private to the user.
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let file = options.open(&path)?;
+        let file = pp_os::create_new_private_file(&path)?;
         Ok(Self {
             path,
             file: Some(file),

@@ -12,13 +12,9 @@ mod support;
 mod scratch;
 use scratch::Scratch;
 
-/// Pins a Unix mode so root ancestor checks ignore the umask. Windows has none.
-fn pin_mode(path: impl AsRef<std::path::Path>, mode: u32) {
-    #[cfg(unix)]
-    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
-    #[cfg(windows)]
-    let _ = (path, mode);
-}
+#[path = "support/modes.rs"]
+mod modes;
+use modes::pin_mode;
 
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
@@ -206,7 +202,7 @@ fn cli_invalid_revision_cleans_extraction_and_preserves_published_snapshot() {
         let mut names: Vec<_> = fs::read_dir(published.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name != ".pp-source-lock")
+            .filter(|name| name != pp_os::DIR_LOCK_FILE)
             .collect();
         names.sort();
         names
@@ -226,7 +222,7 @@ fn cli_invalid_revision_cleans_extraction_and_preserves_published_snapshot() {
             .exists()
     );
     let source_lock = pp_os::Dir::open(&fixture.0.join("repos/42/revisions")).unwrap();
-    source_lock.try_lock(".pp-source-lock").unwrap();
+    source_lock.try_lock().unwrap();
     assert_eq!(
         published_files.map(|name| fs::read(published.join(name)).unwrap()),
         retained

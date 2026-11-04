@@ -113,6 +113,15 @@ pub(crate) fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::remove_file(from)
 }
 
+pub(crate) fn create_new_private_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
 pub(crate) fn sync_file(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
@@ -205,11 +214,11 @@ impl Dir {
         Ok(())
     }
 
-    pub(crate) fn try_lock(&self, _lock_file: &str) -> io::Result<()> {
+    pub(crate) fn try_lock(&self) -> io::Result<()> {
         self.locked(libc::LOCK_EX | libc::LOCK_NB)
     }
 
-    pub(crate) fn lock(&self, _lock_file: &str) -> io::Result<()> {
+    pub(crate) fn lock(&self) -> io::Result<()> {
         self.locked(libc::LOCK_EX)
     }
 

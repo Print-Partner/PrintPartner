@@ -305,7 +305,6 @@ fn directory_operations_refuse_names_outside_the_directory() {
         refused(dir.remove_dir(name));
         refused(dir.rename_no_replace(name, "moved"));
         refused(dir.rename_no_replace("inside", name));
-        refused(dir.try_lock(name));
         refused(dir.open_dir_nofollow(name).map(drop));
         refused(dir.open_search_nofollow(name).map(drop));
         refused(dir.open_file(name, FileOpen::Read).map(drop));
@@ -399,23 +398,28 @@ fn directory_locks_exclude_a_second_handle_until_released() {
     let root = scratch();
     let first = Dir::open(root.path()).unwrap();
     let second = Dir::open(root.path()).unwrap();
-    first.try_lock("lock").unwrap();
-    assert_eq!(
-        second.try_lock("lock").unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
+    // Unlocking without a lock succeeds, as `flock(LOCK_UN)` does.
     first.unlock().unwrap();
-    second.try_lock("lock").unwrap();
-    assert_eq!(
-        first.try_lock("lock").unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
+    first.try_lock().unwrap();
+    let blocked = |dir: &Dir| {
+        assert_eq!(
+            dir.try_lock().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        // A refused lock leaves nothing to release.
+        dir.unlock().unwrap();
+    };
+    blocked(&second);
+    first.unlock().unwrap();
+    second.try_lock().unwrap();
+    blocked(&first);
     drop(second);
-    first.lock("lock").unwrap();
+    first.lock().unwrap();
     first.unlock().unwrap();
     first.unlock().unwrap();
     // Only Windows needs the lock file.
-    assert_eq!(root.path().join("lock").is_file(), cfg!(windows));
+    let lock_file = root.path().join(DIR_LOCK_FILE);
+    assert_eq!(lock_file.is_file(), cfg!(windows));
 }
 
 #[cfg(unix)]

@@ -46,7 +46,7 @@ Binaries each read one JSON command on stdin (8 MiB cap for `pp-source`, 1 MiB f
 
 - Reads and writes files under the configured repository root: revision directories, `.pp-source-candidate`, `.pp-source-archives` and `.pp-source-media` staging. It opens paths through no-follow directory handles from `pp-os` and checks ancestor ownership, modes and (macOS) ACLs. On Windows the root walk still pins every component and refuses links and junctions, but checks no ownership: Windows has no POSIX owner, and `pp-os` does not inspect ACLs yet.
 - 3MF preparation (`SourceRoot::prepare_media`) also creates short-lived `pp-source-bind-*` files in `std::env::temp_dir()`, so the system temp directory must be writable.
-- Takes an advisory exclusive lock on each Source's `revisions` directory and on the `.pp-source-archives` and `.pp-source-media` staging parents. Unix locks the directory with `flock`. Windows cannot lock a directory, so it locks a `.pp-source-lock` file inside it, created on first use and left in place.
+- Takes an advisory exclusive lock on each Source's `revisions` directory and on the `.pp-source-archives` and `.pp-source-media` staging parents. Unix locks the directory with `flock`. Windows cannot lock a directory, so it locks the `pp_os::DIR_LOCK_FILE` file (`.pp-os-lock`) inside it, created on first use and left in place.
 - With `desktop_rebuild`: writes `<data_dir>/source-captures` and `.pp-imports` staging, and draws capture IDs from `getrandom`.
 - No SQL, network, Tokio, threads or child processes. The only environment input is the platform's temp directory choice (`TMPDIR` on Unix).
 

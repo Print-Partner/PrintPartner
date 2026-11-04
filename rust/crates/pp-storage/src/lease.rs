@@ -28,36 +28,52 @@ struct CompatibilityReservation {
     directory: Dir,
     file: File,
     held: bool,
+    /// This acquisition created `.desktop-lease` rather than reusing a leftover.
+    created: bool,
 }
 
 impl CompatibilityReservation {
     fn acquire(admitted: &AdmittedDirectory) -> Result<Self> {
         // Node publishes a directory at this name. A regular file prevents that
         // rename and can be reused after a crash under the kernel lock.
-        let file = admitted.open_lock(c".desktop-lease").context(
+        let (file, created) = admitted.open_lock(c".desktop-lease").context(
             "Data directory already owned by standalone Node; stop it before starting Rust",
         )?;
-        validate_open_lock_identity(&file, &admitted.path.join(".desktop-lease"))
-            .context("Could not validate .desktop-lease compatibility reservation identity")?;
-        match pp_os::try_lock(&file) {
-            Ok(()) => {}
-            Err(pp_os::TryLockError::WouldBlock) => anyhow::bail!(
-                "Data directory already owned; .desktop-lease compatibility reservation is locked"
-            ),
-            Err(pp_os::TryLockError::Io(error)) => {
-                return Err(error)
-                    .context("Could not lock .desktop-lease compatibility reservation");
+        let mut held = false;
+        let directory = (|| {
+            validate_open_lock_identity(&file, &admitted.path.join(".desktop-lease"))
+                .context("Could not validate .desktop-lease compatibility reservation identity")?;
+            match pp_os::try_lock(&file) {
+                Ok(()) => held = true,
+                Err(pp_os::TryLockError::WouldBlock) => anyhow::bail!(
+                    "Data directory already owned; .desktop-lease compatibility reservation is locked"
+                ),
+                Err(pp_os::TryLockError::Io(error)) => {
+                    return Err(error)
+                        .context("Could not lock .desktop-lease compatibility reservation");
+                }
+            }
+            validate_open_lock_identity(&file, &admitted.path.join(".desktop-lease"))
+                .context("Could not validate .desktop-lease compatibility reservation identity")?;
+            admitted
+                .directory
+                .try_clone()
+                .context("Could not retain directory for .desktop-lease compatibility reservation")
+        })();
+        match directory {
+            Ok(directory) => Ok(Self {
+                directory,
+                file,
+                held: true,
+                created,
+            }),
+            Err(error) => {
+                if created {
+                    remove_created_lease(&admitted.directory, ".desktop-lease", &file, held);
+                }
+                Err(error)
             }
         }
-        validate_open_lock_identity(&file, &admitted.path.join(".desktop-lease"))
-            .context("Could not validate .desktop-lease compatibility reservation identity")?;
-        Ok(Self {
-            directory: admitted.directory.try_clone().context(
-                "Could not retain directory for .desktop-lease compatibility reservation",
-            )?,
-            file,
-            held: true,
-        })
     }
 
     fn release(&mut self) -> std::io::Result<()> {
@@ -117,6 +133,46 @@ pub(crate) struct LockedDirectory {
     admitted: AdmittedDirectory,
     compatibility: CompatibilityReservation,
     lock: File,
+    /// This lock created `printpartner.lock` rather than opening an existing one.
+    lock_created: bool,
+}
+
+impl LockedDirectory {
+    /// Give up a lock that failed before it became a [`StorageLease`], leaving
+    /// the lease files as found: `.desktop-lease` and `printpartner.lock` are
+    /// removed only if this lock created them, while the lock is still held.
+    fn abandon(self) {
+        let LockedDirectory {
+            admitted,
+            mut compatibility,
+            lock,
+            lock_created,
+        } = self;
+        if !compatibility.created {
+            compatibility.held = false;
+        }
+        drop(compatibility);
+        if lock_created {
+            remove_created_lease(&admitted.directory, "printpartner.lock", &lock, true);
+        }
+    }
+}
+
+/// Remove the lease file `name` that this process created, after a failed
+/// acquisition. The removal runs only while this process holds the file's lock:
+/// `held` says it already does, otherwise it takes the lock now and leaves the
+/// file when another owner holds it. It also runs only while the name still
+/// refers to the opened file. Errors are ignored; the caller reports the
+/// original failure.
+fn remove_created_lease(directory: &Dir, name: &str, file: &File, held: bool) {
+    if !held && pp_os::try_lock(file).is_err() {
+        return;
+    }
+    if let (Ok(named), Ok(opened)) = (directory.status_nofollow(name), pp_os::status_of(file))
+        && named.identity() == opened.identity()
+    {
+        let _ = directory.remove_file(name);
+    }
 }
 
 impl LockedDirectory {
@@ -202,27 +258,51 @@ impl AdmittedDirectory {
         self.validate_identity()?;
         validate_resolved_ancestors(&self.path, false)?;
         let path = self.path.join("printpartner.lock");
-        let lock = self.open_lock(c"printpartner.lock")?;
-        self.validate_identity()?;
-        validate_open_lock_identity(&lock, &path)?;
-        match pp_os::try_lock(&lock) {
-            Ok(()) => {}
-            Err(pp_os::TryLockError::WouldBlock) => anyhow::bail!(
-                "Data directory already owned; stop the other Print Partner process before starting another instance"
-            ),
-            Err(pp_os::TryLockError::Io(error)) => {
-                return Err(error).context("AdmittedDirectory::lock: try_lock printpartner.lock");
+        let (lock, lock_created) = self.open_lock(c"printpartner.lock")?;
+        let mut held = false;
+        let compatibility = (|| {
+            #[cfg(all(test, unix))]
+            tests::after_lock_created(&self.path)?;
+            self.validate_identity()?;
+            validate_open_lock_identity(&lock, &path)?;
+            match pp_os::try_lock(&lock) {
+                Ok(()) => held = true,
+                Err(pp_os::TryLockError::WouldBlock) => anyhow::bail!(
+                    "Data directory already owned; stop the other Print Partner process before starting another instance"
+                ),
+                Err(pp_os::TryLockError::Io(error)) => {
+                    return Err(error)
+                        .context("AdmittedDirectory::lock: try_lock printpartner.lock");
+                }
             }
-        }
-        self.validate_identity()?;
-        validate_open_lock_identity(&lock, &path)?;
-        let compatibility = CompatibilityReservation::acquire(&self)?;
-        self.validate_identity()?;
-        Ok(LockedDirectory {
+            self.validate_identity()?;
+            validate_open_lock_identity(&lock, &path)?;
+            #[cfg(all(test, unix))]
+            tests::before_reservation(&self.path)?;
+            CompatibilityReservation::acquire(&self)
+        })();
+        let compatibility = match compatibility {
+            Ok(compatibility) => compatibility,
+            Err(error) => {
+                // After WouldBlock another owner holds the lock: the removal
+                // below cannot take it and leaves the file.
+                if lock_created {
+                    remove_created_lease(&self.directory, "printpartner.lock", &lock, held);
+                }
+                return Err(error);
+            }
+        };
+        let locked = LockedDirectory {
             admitted: self,
             lock,
             compatibility,
-        })
+            lock_created,
+        };
+        if let Err(error) = locked.admitted.validate_identity() {
+            locked.abandon();
+            return Err(error);
+        }
+        Ok(locked)
     }
 
     pub(crate) fn preflight(&self) -> Result<()> {
@@ -290,14 +370,16 @@ impl AdmittedDirectory {
 
     /// Create with O_EXCL, then open an existing entry without O_CREAT. On macOS,
     /// racing dirfd-relative O_CREAT opens without O_EXCL can fail with ENOENT.
-    fn open_lock(&self, name: &CStr) -> Result<File> {
+    /// Also reports whether this call created the file.
+    fn open_lock(&self, name: &CStr) -> Result<(File, bool)> {
         let display = name.to_string_lossy();
         match self.directory.create_new_nofollow(&display) {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => self
                 .directory
                 .open_write_nofollow(&display)
+                .map(|file| (file, false))
                 .with_context(|| format!("open_lock: openat O_RDWR|O_NOFOLLOW {display}")),
-            result => result.with_context(|| {
+            result => result.map(|file| (file, true)).with_context(|| {
                 format!("open_lock: openat O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW {display}")
             }),
         }
@@ -387,23 +469,32 @@ impl StorageLease {
     }
 
     pub(crate) fn acquire_locked(locked: LockedDirectory) -> Result<Self> {
-        let LockedDirectory {
-            admitted,
-            lock,
-            compatibility,
-        } = locked;
-        admitted.validate_identity()?;
         let runtime_dir = std::env::temp_dir().join(format!(
             "pp-{}-{}",
             std::process::id(),
             hex::encode(rand::random::<[u8; 8]>())
         ));
-        pp_os::create_private_dir(&runtime_dir).with_context(|| {
-            format!(
-                "StorageLease::acquire_locked: create runtime directory {}",
-                runtime_dir.display()
-            )
-        })?;
+        let prepared = (|| {
+            #[cfg(all(test, unix))]
+            tests::before_runtime_dir(&locked.admitted.path)?;
+            locked.admitted.validate_identity()?;
+            pp_os::create_private_dir(&runtime_dir).with_context(|| {
+                format!(
+                    "StorageLease::acquire_locked: create runtime directory {}",
+                    runtime_dir.display()
+                )
+            })
+        })();
+        if let Err(error) = prepared {
+            locked.abandon();
+            return Err(error);
+        }
+        let LockedDirectory {
+            admitted,
+            lock,
+            compatibility,
+            lock_created: _,
+        } = locked;
         Ok(Self {
             advisory_lock: Some(lock),
             compatibility: Some(compatibility),
@@ -852,7 +943,7 @@ mod tests {
                             barrier.wait();
                             admitted
                                 .open_lock(&name)
-                                .map(|file| file.metadata().unwrap().ino())
+                                .map(|(file, _)| file.metadata().unwrap().ino())
                                 .map_err(|error| format!("{error:#}"))
                         })
                     })
@@ -995,5 +1086,204 @@ mod tests {
         std::fs::remove_dir_all(&path).unwrap();
         assert!(inherited.metadata().is_ok());
         drop(inherited);
+    }
+
+    thread_local! {
+        static LEASE_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+        static RACED_HOLDER: std::cell::RefCell<Option<File>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// After `printpartner.lock` was opened: 1 makes the directory
+    /// group-writable, so the identity check fails; 2 opens and locks the file
+    /// as another owner, so `try_lock` returns WouldBlock.
+    pub(super) fn after_lock_created(path: &Path) -> Result<()> {
+        match LEASE_FAILURE.get() {
+            1 => {
+                LEASE_FAILURE.set(0);
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o770))?;
+            }
+            2 => {
+                LEASE_FAILURE.set(0);
+                let holder = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path.join("printpartner.lock"))?;
+                pp_os::try_lock(&holder)
+                    .map_err(|error| anyhow::anyhow!("raced holder lock: {error:?}"))?;
+                RACED_HOLDER.set(Some(holder));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// 3 publishes a Node lease directory, so the reservation open fails.
+    pub(super) fn before_reservation(path: &Path) -> Result<()> {
+        if LEASE_FAILURE.get() == 3 {
+            LEASE_FAILURE.set(0);
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(path.join(".desktop-lease"))?;
+            std::fs::write(path.join(".desktop-lease/owner.json"), b"{}")?;
+        }
+        Ok(())
+    }
+
+    /// 4 makes the directory group-writable once the lock is built, so
+    /// `StorageLease::acquire_locked` fails.
+    pub(super) fn before_runtime_dir(path: &Path) -> Result<()> {
+        if LEASE_FAILURE.get() == 4 {
+            LEASE_FAILURE.set(0);
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o770))?;
+        }
+        Ok(())
+    }
+
+    /// Every entry under `root` with its bytes; directories map to `None`.
+    fn listing(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        let mut entries = BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                    entries.insert(relative, None);
+                    pending.push(path);
+                } else {
+                    entries.insert(relative, Some(std::fs::read(&path).unwrap()));
+                }
+            }
+        }
+        entries
+    }
+
+    /// Runs `StorageLease::acquire` with failure `stage`, restores the
+    /// directory mode, and returns the error text.
+    fn failed_acquire(path: &Path, stage: u8) -> String {
+        LEASE_FAILURE.set(stage);
+        let result = StorageLease::acquire(path);
+        LEASE_FAILURE.set(0);
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        match result {
+            Ok(_) => panic!("stage {stage} acquired the lease"),
+            Err(error) => format!("{error:#}"),
+        }
+    }
+
+    fn set_old_mtime(path: &Path) -> std::time::SystemTime {
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        modified
+    }
+
+    #[test]
+    fn identity_failure_after_creating_the_lock_removes_it() {
+        let path = directory();
+        let before = listing(&path);
+        let error = failed_acquire(&path, 1);
+        assert!(
+            error.contains("Unsafe data directory permissions"),
+            "{error}"
+        );
+        assert_eq!(listing(&path), before);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn would_block_on_a_lock_file_this_call_created_leaves_it_to_its_holder() {
+        let path = directory();
+        let error = failed_acquire(&path, 2);
+        assert!(error.contains("Data directory already owned"), "{error}");
+        // The raced holder locked the file this call created; it stays.
+        let mut expected = BTreeMap::new();
+        expected.insert(PathBuf::from("printpartner.lock"), Some(Vec::new()));
+        assert_eq!(listing(&path), expected);
+        let holder = RACED_HOLDER.take().unwrap();
+        let probe = File::open(path.join("printpartner.lock")).unwrap();
+        assert!(matches!(
+            pp_os::try_lock(&probe),
+            Err(pp_os::TryLockError::WouldBlock)
+        ));
+        drop(holder);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn would_block_on_a_held_pre_existing_lock_leaves_every_file() {
+        let path = directory();
+        let owner = StorageLease::acquire(&path).unwrap();
+        let modified = set_old_mtime(&path.join("printpartner.lock"));
+        let before = listing(&path);
+        let error = StorageLease::acquire(&path).err().unwrap();
+        assert!(
+            format!("{error:#}").contains("Data directory already owned"),
+            "{error:#}"
+        );
+        assert_eq!(listing(&path), before);
+        let metadata = std::fs::metadata(path.join("printpartner.lock")).unwrap();
+        assert_eq!(metadata.modified().unwrap(), modified);
+        drop(owner);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn node_lease_published_before_the_reservation_leaves_no_lock_file() {
+        let path = directory();
+        let mut expected = listing(&path);
+        let error = failed_acquire(&path, 3);
+        assert!(error.contains("standalone Node"), "{error}");
+        // Only the Node lease the hook published remains.
+        expected.insert(PathBuf::from(".desktop-lease"), None);
+        expected.insert(
+            PathBuf::from(".desktop-lease/owner.json"),
+            Some(b"{}".to_vec()),
+        );
+        assert_eq!(listing(&path), expected);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn acquire_locked_failure_removes_both_lease_files_it_created() {
+        let path = directory();
+        let before = listing(&path);
+        let error = failed_acquire(&path, 4);
+        assert!(
+            error.contains("Unsafe data directory permissions"),
+            "{error}"
+        );
+        assert_eq!(listing(&path), before);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn failures_keep_pre_existing_lease_files_byte_for_byte() {
+        for stage in [1, 4] {
+            let path = directory();
+            let mut modified = Vec::new();
+            for name in ["printpartner.lock", ".desktop-lease"] {
+                std::fs::write(path.join(name), b"").unwrap();
+                std::fs::set_permissions(path.join(name), std::fs::Permissions::from_mode(0o600))
+                    .unwrap();
+                modified.push(set_old_mtime(&path.join(name)));
+            }
+            let before = listing(&path);
+            failed_acquire(&path, stage);
+            assert_eq!(listing(&path), before, "stage {stage}");
+            for (name, modified) in ["printpartner.lock", ".desktop-lease"].iter().zip(modified) {
+                let metadata = std::fs::metadata(path.join(name)).unwrap();
+                assert_eq!(
+                    metadata.modified().unwrap(),
+                    modified,
+                    "stage {stage} {name}"
+                );
+            }
+            std::fs::remove_dir_all(path).unwrap();
+        }
     }
 }

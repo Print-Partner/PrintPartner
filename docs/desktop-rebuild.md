@@ -132,6 +132,25 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   `rust/scripts/workflow-smoke.sh`, `rust/tests/*.py`) build `pp-server`
   without the feature, so they always see Node mode.
 
+- `GET /health` lists each Module in `modules`, in this order: `farm` (farm
+  and printers), `spoolman`, `orders`, `bambu` and `assembly_tracking`. Each
+  entry is `{"state":"on","module":…}` or
+  `{"state":"off","module":…,"reason":…}`. The reason codes are `default_off`
+  (nobody turned it on), `turned_off` (the user chose off) and
+  `setting_unreadable` (the stored choice does not parse, so the module stays
+  off). `pp-storage::features::modules` reads the `default` tenant's
+  `feature_toggles` and `build_tracking_assembly` settings on every request,
+  so a change shows on the next `/health` without a restart. The body carries
+  only these fixed keys and codes, never a stored value or parse error, so it
+  holds no secrets, URLs or customer data. A storage read failure answers 503
+  `Module settings temporarily unavailable`. Plan overrides do not change
+  this list. Other Rust auth routers omit `modules`, so their body still
+  matches Node's, and Node-mode `/health` comes from Node unchanged.
+
+  ```json
+  "modules":[{"state":"on","module":"farm"},{"state":"off","module":"spoolman","reason":"default_off"},…]
+  ```
+
 `CoreRuntime::start` and every other combination of gates keep the Node-backed
 runtime, so existing flag-on Node tests are unchanged. With the feature off,
 the gateway route table is pinned by a digest test and Plan reads still go to
@@ -154,6 +173,17 @@ The `slice0_mount` tests check, for `PP_DESKTOP_REBUILD=1` and `true`:
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(slice0_mount)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(slice0_mount)'
+```
+
+The `health_modules` tests check the Module list through the same gateway:
+every module is listed, stored changes show on the next request, and a canary
+run plants secret-looking values in `feature_toggles`, `integrations`,
+`default_spoolman_integration_id` and `build_tracking_assembly`, plus an
+account email, a Plan name and the session token, and finds none of them, no
+`://` and no host address in the body.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(health_modules)'
 ```
 
 With `PP_JOURNEY_REPORT=1`, the feature-on pp-core gateway journey also writes

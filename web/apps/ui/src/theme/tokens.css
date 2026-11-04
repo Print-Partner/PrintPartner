@@ -37,11 +37,11 @@
   --interaction-selection: #123a42;
 
   /* Colour roles: status. A status always shows an icon and a word as well. */
-  --status-positive: #5fcf86;
-  --status-attention: #e8b04a;
-  --status-danger: #f2766d;
-  --status-active: #8fb2ff;
-  --status-neutral: #a3acb6;
+  --status-positive: #4ade80;
+  --status-attention: #fbbf24;
+  --status-danger: #f87171;
+  --status-active: #8b9cf7;
+  --status-neutral: #9aa3ad;
 
   /* Filament swatches: round chips with a border, never a pill */
   --filament-swatch-border: #8a949f;

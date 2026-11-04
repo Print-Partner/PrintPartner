@@ -116,11 +116,11 @@ Dark:
 | text on interaction-selection | 10.18 | | | | 4.5 |
 | text-muted | 8.29 | 7.82 | 7.20 | 6.44 | 4.5 |
 | interaction-text | 10.72 | 10.11 | 9.32 | 8.33 | 4.5 |
-| status-positive | 9.76 | 9.21 | 8.48 | 7.59 | 4.5 |
-| status-attention | 9.74 | 9.19 | 8.47 | 7.58 | 4.5 |
-| status-danger | 6.88 | 6.50 | 5.98 | 5.35 | 4.5 |
-| status-active | 9.05 | 8.54 | 7.87 | 7.04 | 4.5 |
-| status-neutral | 8.29 | 7.82 | 7.20 | 6.44 | 4.5 |
+| status-positive | 10.93 | 10.32 | 9.50 | 8.50 | 4.5 |
+| status-attention | 11.41 | 10.77 | 9.92 | 8.87 | 4.5 |
+| status-danger | 6.89 | 6.50 | 5.99 | 5.36 | 4.5 |
+| status-active | 7.44 | 7.02 | 6.46 | 5.78 | 4.5 |
+| status-neutral | 7.45 | 7.03 | 6.48 | 5.80 | 4.5 |
 | line-strong | 4.36 | 4.11 | 3.79 | 3.39 | 3 |
 | interaction-accent | 9.00 | 8.49 | 7.82 | 7.00 | 3 |
 | interaction-focus-ring | 10.72 | 10.11 | 9.32 | 8.33 | 3 |

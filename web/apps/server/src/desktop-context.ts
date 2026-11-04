@@ -150,6 +150,22 @@ export function releaseOrphanedDesktopOwner(setup: {
   }
 }
 
+// Rust writes this marker when it takes a data directory over. Any entry at this name
+// refuses standalone Node, whatever it holds, so a rollback cannot write into Rust data.
+const rustOwnershipMarker = ".pp-rust-owned.json";
+
+function assertNotRustOwned(dataDir: string): void {
+  try {
+    lstatSync(join(dataDir, rustOwnershipMarker));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(
+    `Data directory is owned by the Rust runtime (${rustOwnershipMarker}); standalone Node will not open it`,
+  );
+}
+
 function assertDataDirectoryAvailable(dataDir: string): void {
   if (!existsSync(dataDir)) return;
   const canonical = realpathSync(dataDir);
@@ -324,6 +340,7 @@ export function acquireDataDirectory(dataDir: string): () => void {
   const lease = acquireStorageLease(canonical);
   const marker = join(canonical, ".desktop-owner.json");
   try {
+    assertNotRustOwned(canonical);
     assertDataDirectoryAvailable(canonical);
     const fd = openSync(marker, "wx", 0o600);
     // The instance tells this reservation's marker apart from another one in the same process.

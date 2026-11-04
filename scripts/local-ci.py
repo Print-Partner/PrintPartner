@@ -124,26 +124,16 @@ STEPS = [
     # exits nonzero when it finds no tests.
     Step("ui-package", "replacement UI package typecheck, lint, tests, build and font requests",
          # The package's build script runs its typecheck first, so there is no separate
-         # typecheck line.
-         # The build adds apps/ui/dist, which the manifest's dependency inventory follows
-         # through node_modules, so regenerate the manifest afterwards, before any Rust
-         # test verifies it.
+         # typecheck line. The desktop does not ship apps/ui, so the measured manifest
+         # does not follow it and its tests and build leave rust/bundle-manifest.json valid.
          setup=("npm --prefix web run lint --workspace @print-partner/ui",
                 "npm --prefix web run test --workspace @print-partner/ui",
                 "npm --prefix web run build --workspace @print-partner/ui",
-                # Only when web-assets has built the desktop app; otherwise there is no
-                # measured manifest to keep in step with.
-                "if [ -f web/apps/web/dist/desktop-build.json ]; then",
-                "  node_path=$(node -p process.execPath)",
-                '  "$MANIFEST_PYTHON" rust/scripts/build-desktop-manifest.py --web web --node "$node_path" '
-                '--output rust/bundle-manifest.json --commit "$GITHUB_SHA"',
-                "fi",
-                # Serves the build and fails on any request to another origin. Last, so a
-                # failure here still leaves the manifest regenerated, and its exit 77 for
-                # a missing browser engine is the step's status.
+                # Serves the build and fails on any request to another origin. Last, so
+                # its exit 77 for a missing browser engine is the step's status.
                 "npm --prefix web run test:browser --workspace @print-partner/ui"),
          requires=(("node", "v24.21.0"), ("npm", None), ("python3", None)),
-         env={"MANIFEST_PYTHON": "python3"}, skip_status=77),
+         skip_status=77),
     # After web-assets, which installs the parser it loads from web/node_modules, and
     # before node-fixtures reinstalls them. Web CI runs it on Node 22.
     Step("workaround-ratchet", "TODO, eslint-disable and Rust #[allow] ratchet (Node 22)",

@@ -4,17 +4,13 @@
 // Engines: Chromium (Blink, as in WebView2) through playwright-core, and the system
 // WebKitGTK (WebKit, as in WKWebView) through webkitgtk-requests.py. A missing engine
 // prints SKIP and the run exits 77; a SKIP is not a pass. Run `npm run build` first.
-import { spawn } from "node:child_process";
 import { log } from "node:console";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { createServer } from "node:http";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { URL, fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import { DIST, runWebKitGtk as launchWebKitGtk, serveDist } from "./harness.mjs";
 
-const UI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const DIST = path.join(UI_ROOT, "dist");
 const EXPECTED_FACES = [
   "IBM Plex Mono 400",
   "IBM Plex Mono 500",
@@ -22,13 +18,6 @@ const EXPECTED_FACES = [
   "IBM Plex Sans 500",
   "IBM Plex Sans 600",
 ];
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".woff2": "font/woff2",
-  ".svg": "image/svg+xml",
-};
 
 const PROBE_BODY = `
   const deadline = Date.now() + 15000;
@@ -57,24 +46,6 @@ const controlBody = (url) => `
   await new FontFace("pp-control", "url(${url})").load().catch(() => {});
   return "done";
 `;
-
-function serveDist() {
-  const server = createServer((request, response) => {
-    const pathname = decodeURIComponent(new URL(request.url, "http://x").pathname);
-    let file = path.join(DIST, pathname);
-    if (!file.startsWith(DIST + path.sep) || !existsSync(file) || statSync(file).isDirectory()) {
-      // Client routes get index.html; anything with an extension, and /health, gets 404.
-      file = path.extname(pathname) || pathname === "/health" ? null : path.join(DIST, "index.html");
-    }
-    if (!file) {
-      response.writeHead(404).end();
-      return;
-    }
-    response.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream" });
-    response.end(readFileSync(file));
-  });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
-}
 
 function chromiumExecutable() {
   const candidates = [process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE];
@@ -108,32 +79,10 @@ async function runChromium(url, controlUrl) {
   }
 }
 
-// Async on purpose: the static server runs in this process, so a blocking spawn would
-// leave every WebKitGTK request unanswered.
-function runWebKitGtk(url, controlUrl) {
-  const script = path.join(UI_ROOT, "test/browser/webkitgtk-requests.py");
-  const args = ["-I", script, url, PROBE_BODY, controlBody(controlUrl)];
-  const hasDisplay = process.env.DISPLAY || process.env.WAYLAND_DISPLAY;
-  const [command, argv] = hasDisplay ? ["python3", args] : ["xvfb-run", ["-a", "python3", ...args]];
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, argv, {
-      env: { ...process.env, WEBKIT_DISABLE_DMABUF_RENDERER: "1" },
-      timeout: 60_000,
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", (error) =>
-      error.code === "ENOENT" ? resolve({ skip: `${command} not found` }) : reject(error),
-    );
-    child.on("close", (status) => {
-      const detail = stderr.split("\n").filter((line) => line && !line.startsWith("libEGL warning")).join("; ");
-      if (status === 3) resolve({ skip: detail });
-      else if (status !== 0) reject(new Error(`webkitgtk-requests.py exited ${status}: ${detail}`));
-      else resolve(JSON.parse(stdout));
-    });
-  });
+async function runWebKitGtk(url, controlUrl) {
+  const args = [url, PROBE_BODY, controlBody(controlUrl)];
+  const outcome = await launchWebKitGtk("webkitgtk-requests.py", args, 60_000);
+  return outcome.skip ? outcome : JSON.parse(outcome.stdout);
 }
 
 function check(engine, origin, controlUrl, { report, requests, control }) {
@@ -159,9 +108,6 @@ function check(engine, origin, controlUrl, { report, requests, control }) {
   );
 }
 
-if (!existsSync(path.join(DIST, "index.html"))) {
-  throw new Error(`${DIST}/index.html is missing; run the package build first`);
-}
 const assets = readdirSync(path.join(DIST, "assets")).filter((name) => name.endsWith(".woff2")).sort();
 let total = 0;
 for (const name of assets) {

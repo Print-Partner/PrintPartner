@@ -10,6 +10,10 @@ default = []
 desktop_rebuild = ["serde_json/raw_value", "dep:pp-domain", "pp-domain/desktop_rebuild", "dep:saphyr-parser", "dep:pp-contracts", "pp-contracts/desktop_rebuild"]
 # Weak features: codegen adds schemas without activating the gated edges.
 codegen = ["dep:schemars", "pp-contracts?/codegen", "pp-domain?/codegen"]
+# Test-only. Lets tests open unmarked directories with the Rust writer in a
+# desktop_rebuild build. Enabled only from [dev-dependencies]; check-boundaries.py
+# refuses any other activation, so release builds never contain it.
+test-unmarked-writer = []
 
 [[bin]]
 name = "required-unit-fixture"
@@ -44,7 +48,11 @@ ryu-js = "=1.0.2"
 saphyr-parser = { version = "=0.1.0", default-features = false, optional = true }
 schemars = { version = "=0.8.22", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
+pp-storage = { path = ".", features = ["test-unmarked-writer"] }
 pp-testkit = { path = "../pp-testkit" }
 rusqlite = { workspace = true, features = ["hooks"] }
 tempfile = "=3.27.0"

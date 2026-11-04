@@ -1,6 +1,6 @@
 use pp_source::{ArtifactBudget, Publication, SnapshotRequest, TenantRepos};
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, os::unix::fs::DirBuilderExt};
+use std::{collections::BTreeMap, fs};
 
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
@@ -19,7 +19,10 @@ fn assert_fixture(name: &str, fixture: &str) {
     let repos = root.join("repos");
     // Pin modes so source roots accept them under a permissive umask.
     for dir in [&input, &repos] {
-        fs::DirBuilder::new().mode(0o700).create(dir).unwrap();
+        let builder = &mut fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
+        builder.create(dir).unwrap();
     }
     for (path, content) in fixture.tree {
         let path = input.join(path);

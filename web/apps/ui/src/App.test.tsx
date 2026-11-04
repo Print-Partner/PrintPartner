@@ -1,30 +1,39 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { onlineManager } from "@tanstack/react-query";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "./App";
+import { HEALTH_TIMEOUT_MS } from "./frame/connection";
+import { SEQUENCE_MS } from "./frame/useShortcuts";
 import { routes } from "./routes";
 
-const coreJson = () =>
-  new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+const coreJson = () => new Response("{}", { headers: { "content-type": "application/json" } });
 
-function renderAt(path: string) {
+function renderAt(path: string, fetchImpl = vi.fn().mockResolvedValue(coreJson())) {
+  vi.stubGlobal("fetch", fetchImpl);
   const router = createMemoryRouter(routes, { initialEntries: [path] });
-  const queryClient = createQueryClient();
-  render(<App router={router} queryClient={queryClient} />);
-  return { fetchMock: globalThis.fetch as ReturnType<typeof vi.fn> };
+  render(<App router={router} queryClient={createQueryClient()} />);
+  return { router, fetchMock: fetchImpl, path: () => router.state.location.pathname };
 }
+
+const press = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) =>
+  act(() => void fireEvent.keyDown(target, { key, ...init }));
+const heading = () => screen.getByRole("heading", { level: 1 }).textContent;
 
 afterEach(() => {
   cleanup();
+  onlineManager.setOnline(true);
+  vi.restoreAllMocks();
+  localStorage.clear();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
-describe("App shell", () => {
-  it("renders the placeholder and reports a reachable core", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(coreJson()));
-    const { fetchMock } = renderAt("/");
-
-    expect(screen.getByRole("heading", { name: "Replacement UI" })).toBeTruthy();
+describe("App frame", () => {
+  it("opens on Today and reports a reachable core", async () => {
+    const { fetchMock, path } = renderAt("/");
+    expect(path()).toBe("/today");
+    expect(heading()).toBe("Today");
     expect(await screen.findByText("Core reachable")).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledWith(
       "/health",
@@ -32,18 +41,264 @@ describe("App shell", () => {
     );
   });
 
-  it("reports an unreachable core instead of a blank frame", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
-    renderAt("/");
+  it.each(["/nope/nothing", "/states/__proto__", "/states/constructor", "/states/toString"])(
+    "shows Not found inside the frame for %s",
+    (address) => {
+      renderAt(address);
+      expect(heading()).toBe("Not found");
+      expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
+    },
+  );
 
-    expect(await screen.findByText("Core unreachable")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Replacement UI" })).toBeTruthy();
+  it("keeps a pulse line slot that shows no false zeros", () => {
+    renderAt("/today");
+    expect(screen.getByRole("region", { name: "Printer pulse" }).textContent).toBe(
+      "Printer counts not loaded",
+    );
+  });
+});
+
+describe("FRM-01 rail and G shortcuts", () => {
+  it("lists the five destinations in order with their shortcuts", () => {
+    renderAt("/today");
+    const links = within(screen.getByRole("navigation", { name: "Main" })).getAllByRole("link");
+    expect(links.map((l) => l.textContent)).toEqual([
+      "TodayG T",
+      "BuildsG B",
+      "FarmG F",
+      "LibraryG L",
+      "SettingsG ,",
+    ]);
+    expect(links[0].getAttribute("aria-current")).toBe("page");
   });
 
-  it("shows Not found for unknown addresses", () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(coreJson()));
-    renderAt("/builds/nope");
+  it.each([
+    ["t", "/today", "Today"],
+    ["b", "/builds", "Builds"],
+    ["f", "/farm", "Farm"],
+    ["l", "/library", "Library"],
+    [",", "/settings", "Settings"],
+  ])("G then %s goes to %s", (key, to, title) => {
+    const { path } = renderAt(key === "t" ? "/settings" : "/today");
+    press("g");
+    press(key);
+    expect(path()).toBe(to);
+    expect(heading()).toBe(title);
+  });
 
-    expect(screen.getByRole("heading", { name: "Not found" })).toBeTruthy();
+  it("ignores the second key after the sequence window", () => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "setInterval", "Date"] });
+    const { path } = renderAt("/today");
+    press("g");
+    act(() => vi.advanceTimersByTime(SEQUENCE_MS + 1));
+    press("b");
+    expect(path()).toBe("/today");
+  });
+
+  it("ignores shortcuts typed into a text field", () => {
+    const { path } = renderAt("/today");
+    const field = document.body.appendChild(document.createElement("input"));
+    press("g", {}, field);
+    press("b", {}, field);
+    press("?", {}, field);
+    expect(path()).toBe("/today");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    field.remove();
+  });
+});
+
+describe("FRM-02 palette and shortcut list by keyboard", () => {
+  it.each([{ ctrlKey: true }, { metaKey: true }])(
+    "%o K toggles the palette with focus in it",
+    (mod) => {
+      renderAt("/today");
+      press("k", mod);
+      const dialog = screen.getByRole("dialog", { name: "Command palette" });
+      expect(document.activeElement).toBe(within(dialog).getByRole("combobox"));
+      press("k", mod, document.activeElement!);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    },
+  );
+
+  it("filters, moves with arrows, scrolls the active option into view and runs with Enter", () => {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    const { path } = renderAt("/today");
+    press("k", { ctrlKey: true });
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: "go to" } });
+    expect(screen.getAllByRole("option")).toHaveLength(5);
+    press("ArrowDown", {}, input);
+    press("ArrowDown", {}, input);
+    const active = document.getElementById(input.getAttribute("aria-activedescendant")!);
+    expect(active?.textContent).toBe("Go to FarmG F");
+    expect(active?.getAttribute("aria-selected")).toBe("true");
+    expect(scroll.mock.contexts.at(-1)).toBe(active);
+    // Keys that commit an IME composition stay with the IME.
+    press("ArrowDown", { isComposing: true }, input);
+    press("Enter", { isComposing: true }, input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(active?.id);
+    expect(path()).toBe("/today");
+    press("Enter", {}, input);
+    expect(path()).toBe("/farm");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("closes on Escape and returns focus to where it was", async () => {
+    renderAt("/today");
+    const opener = screen.getByRole("button", { name: /Commands/ });
+    opener.focus();
+    press("k", { ctrlKey: true }, opener);
+    // Escape during IME composition belongs to the composition.
+    press("Escape", { isComposing: true }, screen.getByRole("combobox"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    press("Escape", {}, screen.getByRole("combobox"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  it("? lists every shortcut and blocks shortcuts behind it", () => {
+    const { path } = renderAt("/today");
+    press("?");
+    const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    const keys = within(dialog)
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector("kbd")?.textContent);
+    expect(keys).toEqual(["G T", "G B", "G F", "G L", "G ,", "Cmd/Ctrl K", "?", "Esc"]);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    press("g", {}, document.activeElement!);
+    press("b", {}, document.activeElement!);
+    expect(path()).toBe("/today");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("pulls focus back when it leaves the dialog, as Shift+Tab from the panel does", () => {
+    renderAt("/today");
+    press("?");
+    const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    act(() => dialog.focus());
+    press("Tab", { shiftKey: true }, dialog);
+    // jsdom does not move focus on Tab; move it outside the way the browser would.
+    act(() => document.querySelector<HTMLElement>(".pp-rail-link")!.focus());
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+});
+
+describe("FRM-05 single-key shortcuts can be turned off (WCAG 2.1.4)", () => {
+  it("turns them off from the palette, keeps Cmd/Ctrl+K, and remembers the choice", () => {
+    const { path } = renderAt("/today");
+    press("k", { ctrlKey: true });
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: "single-key" } });
+    press("Enter", {}, input);
+    expect(localStorage.getItem("pp.characterShortcuts")).toBe("off");
+    press("g");
+    press("b");
+    press("?");
+    expect(path()).toBe("/today");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector(".pp-rail kbd")).toBeNull();
+    press("k", { ctrlKey: true });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    cleanup();
+    renderAt("/today");
+    press("g");
+    press("b");
+    expect(heading()).toBe("Today");
+  });
+
+  it("turns them back on from the shortcut list", () => {
+    localStorage.setItem("pp.characterShortcuts", "off");
+    const { path } = renderAt("/today");
+    fireEvent.click(screen.getByRole("button", { name: /Commands/ }));
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: "show keyboard" } });
+    press("Enter", {}, input);
+    const toggle = screen.getByRole("checkbox", { name: /Single-key shortcuts/ });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    press("g");
+    press("b");
+    expect(path()).toBe("/builds");
+    expect(localStorage.getItem("pp.characterShortcuts")).toBe("on");
+  });
+
+  it("stays on when storage throws", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    const { path } = renderAt("/today");
+    press("g");
+    press("b");
+    expect(path()).toBe("/builds");
+  });
+});
+
+describe("FRM-04 offline frame", () => {
+  it("says Offline and shows the offline state when the core does not answer", async () => {
+    renderAt("/builds", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    const section = screen.getByRole("heading", { name: "Builds" }).closest("section")!;
+    expect(section.dataset.state).toBe("offline");
+    expect(within(section).getByRole("status").textContent).toContain("cannot reach its core");
+    press("g"); // navigation keeps working offline
+    press("l");
+    expect(heading()).toBe("Library");
+  });
+
+  it("the offline sample state takes the header with it, and leaving it restores the probe", async () => {
+    const { router } = renderAt("/states/offline");
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(screen.queryByText("Core reachable")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Record a print" }).getAttribute("aria-disabled"),
+    ).toBe("true");
+    await act(() => router.navigate("/today"));
+    expect(await screen.findByText("Core reachable")).toBeTruthy();
+  });
+
+  it("stays offline, with changes disabled, through failed and hanging recovery probes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // A probe that never settles: the 4 s deadline is out of the picture here.
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
+    const probes = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockImplementation(() => new Promise(() => {}));
+    renderAt("/states/ready", probes);
+    const expectOffline = () => {
+      expect(document.querySelector(".pp-connection")?.textContent).toBe("Offline");
+      const button = screen.getByRole("button", { name: "Record a print" });
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+    };
+    await screen.findByText("Offline");
+    expectOffline();
+    for (const calls of [2, 3]) {
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(probes).toHaveBeenCalledTimes(calls);
+      expectOffline();
+    }
+  });
+
+  it("keeps probing while the browser reports no network", async () => {
+    onlineManager.setOnline(false);
+    renderAt("/today", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    expect(await screen.findByText("Offline")).toBeTruthy();
+  });
+
+  it("counts a core that never answers as offline after the timeout", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => AbortSignal.abort());
+    const hang = vi.fn((_: string, init: RequestInit) => {
+      return new Promise<Response>((_, reject) => {
+        if (init.signal?.aborted) reject(init.signal.reason);
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      });
+    });
+    renderAt("/today", hang);
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(timeout).toHaveBeenCalledWith(HEALTH_TIMEOUT_MS);
   });
 });

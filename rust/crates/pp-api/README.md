@@ -1,0 +1,69 @@
+# pp-api
+
+Axum routers and the MCP server that put authenticated HTTP in front of `pp-storage` clients. `pp-core` composes these routers; this crate binds no product listener.
+
+Current ownership and allowed dependencies: [Architecture](../../../docs/architecture.md#crates-and-allowed-edges) and [ADR 0009](../../../docs/adr/0009-keep-crates-and-deepen-modules.md). [ADR 0007](../../../docs/adr/0007-rust-crate-layout.md) is historical dependency evidence only.
+
+## Purpose
+
+- Owns request admission for its routes: loopback Host/Origin checks, credential extraction (session cookie or API key), body limits, rate limits, and bounded concurrency.
+- Owns the auth HTTP surface: login, registration, sessions, API keys, password reset mail, and GitHub/Discord OAuth.
+- Under `desktop_rebuild`, adapts Builds, drafts, Sources (catalog), Accepted Plan Checkoff, admin/legal reads, jobs, and MCP onto storage clients, matching the Node responses.
+- Owns the route list and DTO schemas that `web/packages/rust-client` is generated from.
+- Depends on `pp-storage`; `pp-services` only with `desktop_rebuild`.
+
+## Not responsible for
+
+- SQL, transactions, and credential/session state: `pp-storage` (for example `pp_storage::auth`).
+- Listeners, bootstrap/session admission at the socket, and static assets: `pp-gateway`.
+- Composing routers, starting workers, and startup/shutdown: `pp-core`.
+- MCP tool policy and the product catalog: `pp-services::mcp_domain`.
+- Printer protocols and outbound target policy: `pp-drivers`, `pp-net`.
+
+## Interface
+
+| Module | Entry points |
+| --- | --- |
+| `auth` | `auth_router(AuthHttpConfig, impl Into<AuthBackend>, ProviderClient, ResetMailer)`. `AuthBackend` is `Pool(AuthClient)` or, with `desktop_rebuild`, `Rebuild(RebuildAuthClient)`. `ResetMailer::disabled` or `ResetMailer::smtp(SmtpConfig)`; `OAuthCredentials`, `CookieTransport`, `Delivery`. |
+| `builds` | `build_router(BuildHttpConfig, BuildGraphClient)`: Plan list/detail/create/delete, layers, kit manifest. |
+| `drafts` | `draft_router(DraftHttpConfig, WorkingDraftClient, RebuildAuthClient)` and `admit_draft_routes`. |
+| `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. |
+| `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. |
+| `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
+| `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
+| `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient)`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. |
+| `client_contract` | `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document`, `document_bytes`. |
+| `fixtures` | Node/Rust parity runner: `Sandbox`, `Served`, `Exchange`, `Ledger`, `StateGraph`, `Labels`. |
+
+Every module except `auth` needs `desktop_rebuild`. Each `*HttpConfig::from_startup(origin, api_key_tenant, flag)` takes a loopback origin; `CatalogHttpConfig::from_startup` also takes an `AuthPolicy` before `flag`; the router mounts nothing unless `flag` is `1` or `true`. `pp-core` passes `Some("1")` from its gated composition. The private `loopback` module holds the shared Host/Origin and credential checks.
+
+Binaries:
+
+- `export-rust-client PATH` (needs `--features codegen`): writes the generator input (DTO schemas, routes, Rust-serialized fixtures) for `web/packages/rust-client`. `npm --prefix web/packages/rust-client run generate` and `run check` call it through `web/scripts/rust-contracts/client.mjs`.
+- `auth-http-fixture DISPOSABLE_DIRECTORY [PORT] [single|open|closed] [dev-reset|production] [CONFIG_JSON]`: serves only `auth_router` over a store in that directory on `127.0.0.1` for manual auth checks. Use a disposable directory.
+
+## Effects and flags
+
+- Network: inbound HTTP via routers mounted by the caller. Outbound HTTPS to the GitHub and Discord OAuth endpoints (`reqwest`, rustls, no redirects or proxy, 15 s timeout) and SMTP for reset mail (`lettre`) when configured.
+- Tokio: handlers are async; reset mail is sent on spawned tasks; `tokio::sync::Semaphore` bounds admission.
+- Files: `fixtures::Sandbox` creates and removes a `0700` directory; `StateGraph` hashes files and opens SQLite read-only. `auth-http-fixture` opens a `WriterOwner` in its directory; `export-rust-client` writes `PATH`.
+- Env: `BuildHttpConfig::new`, `CatalogHttpConfig::new`, `JobsHttpConfig::new`, and `DraftHttpConfig::new` read `PP_DESKTOP_REBUILD`. `from_startup` takes the value as an argument instead.
+
+Cargo features:
+
+- `desktop_rebuild` (default off): compiles every module except `auth`, adds `pp-services`, `rmcp`, `rusqlite`, `http-body`, `ryu-js`, and forwards to `pp-storage/desktop_rebuild`.
+- `codegen`: implies `desktop_rebuild`, adds `schemars`, forwards to `pp-storage/codegen`, and enables `export-rust-client`.
+
+## Tests
+
+- `tests/auth_*_parity.rs`: replay Node exchanges from `fixtures/parity/auth-*` at the repo root. `auth_authorization_start`, `auth_key_regenerate`, `auth_oauth`, `auth_password_change`, and `auth_session` need `desktop_rebuild`.
+- `tests/auth_http.rs`: auth router behavior.
+- `tests/builds_http.rs`, `catalog_http.rs`, `jobs_http.rs`, `manifest_options_http.rs`: mostly `desktop_rebuild`-gated tests against `fixtures/parity/*-http` and related directories.
+- `tests/ticket_t_10_fixtures.rs`, `ticket_t_61_read_model_http.rs`, `ticket_t_62_admin_http.rs`: gated parity suites.
+- Unit tests: `src/auth/tests/` (provider and SMTP, with `tests/fixtures/loopback-*.der`), `src/drafts/http/tests.rs`, `src/mcp/tests.rs`. Lib tests share scratch helpers from `pp-storage/tests/common`.
+- Dev-dependencies: `tokio-rustls`, `rusqlite`, `tempfile`.
+
+```sh
+cargo nextest run --manifest-path rust/Cargo.toml -p pp-api
+cargo nextest run --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild
+```

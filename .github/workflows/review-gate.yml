@@ -92,8 +92,9 @@ jobs:
 
           listed = [item["filename"] for page in pages(f"repos/{REPO}/pulls/{PR}/files?per_page=100") for item in page]
           files = set(listed)
-          changed = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
-                                              capture_output=True, text=True).stdout)["changed_files"]
+          pull = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
+                                           capture_output=True, text=True).stdout)
+          changed, pr_base = pull["changed_files"], pull["base"]["ref"]
           runs = [run for page in pages(f"repos/{REPO}/commits/{HEAD}/check-runs?filter=all&per_page=100")
                   for run in page["check_runs"] if run["name"] in ORIGINS]
           comments = [item for page in pages(f"repos/{REPO}/issues/{PR}/comments?per_page=100") for item in page]
@@ -101,16 +102,35 @@ jobs:
           suites = {}
 
 
-          def origin(run):
-              """Return (workflow path, event) of the Actions run that produced a check run, or None."""
+          def workflow_run(run):
+              """Return the Actions workflow run behind a check run, or None."""
               if (run.get("app") or {}).get("id") != ACTIONS_APP:
                   return None
               suite = run["check_suite"]["id"]
               if suite not in suites:
                   found = [item for page in pages(f"repos/{REPO}/actions/runs?check_suite_id={suite}")
                            for item in page["workflow_runs"]]
-                  suites[suite] = (found[0]["path"].split("@")[0], found[0]["event"]) if found else None
+                  suites[suite] = found[0] if found else None
               return suites[suite]
+
+
+          def origin(run):
+              """Return (workflow path, event) of the Actions run that produced a check run, or None."""
+              found = workflow_run(run)
+              return (found["path"].split("@")[0], found["event"]) if found else None
+
+
+          def for_this_pr(name):
+              """Whether the latest run of a check came from this PR into the default branch.
+
+              Another PR with the same head SHA but another base runs that base's copy of the workflow,
+              so the run's pull_requests must name this PR, and every PR it names must target the default
+              branch. Anything else, including an empty list, fails closed.
+              """
+              found = workflow_run(latest[name]) if name in latest else None
+              prs = (found or {}).get("pull_requests") or []
+              return (pr_base == DEFAULT and bool(prs) and any(str(item.get("number")) == PR for item in prs)
+                      and all((item.get("base") or {}).get("ref") == DEFAULT for item in prs))
 
 
           problems, latest, touched = [], {}, []
@@ -157,12 +177,16 @@ jobs:
 
 
           droid, code, security = state("droid-review"), state("claude-code-review"), state("claude-security-review")
-          droid_ok = (droid == "success" and base_definition(ORIGINS["droid-review"][0])
+          droid_ok = (droid == "success" and for_this_pr("droid-review") and base_definition(ORIGINS["droid-review"][0])
                       and droid_reviewed(latest["droid-review"]))
           if droid == "success" and not droid_ok:
-              droid = "success, but the Droid review did not run on this head or its workflow differs from main"
+              droid = ("success, but the run is not this PR's into main, the Droid review did not run, "
+                       "or its workflow differs from main")
           claude_ok = (code == "success" and security in ("success", "neutral")
+                       and for_this_pr("claude-code-review") and for_this_pr("claude-security-review")
                        and base_definition(ORIGINS["claude-code-review"][0]))
+          if code == "success" and not claude_ok and security in ("success", "neutral"):
+              code = "success, but the run is not this PR's into main or its workflow differs from main"
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write(f"## Review gate for `{HEAD}`\n\n| Path | State |\n| --- | --- |\n"
                             f"| droid-review | {droid} |\n| claude-code-review | {code} |\n"

@@ -23,7 +23,12 @@ DROID, CLAUDE = ".github/workflows/droid-review.yml", ".github/workflows/claude-
 # Check suite id -> (workflow path, event) of the Actions run behind it.
 SUITES = {1: (".github/workflows/review-gate.yml", "pull_request_target"), 2: (DROID, "pull_request"),
           3: (CLAUDE, "pull_request"), 4: (".github/workflows/review-gate.yml", "pull_request"),
-          9: (".github/workflows/evil.yml", "pull_request")}
+          9: (".github/workflows/evil.yml", "pull_request"),
+          # Same head SHA, but the run came from PR 8 into another base, or lists both PRs, or no PR.
+          6: (CLAUDE, "pull_request", [{"number": 8, "base": {"ref": "release"}}]),
+          7: (DROID, "pull_request", [{"number": 8, "base": {"ref": "release"}}]),
+          8: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "main"}}, {"number": 8, "base": {"ref": "release"}}]),
+          11: (DROID, "pull_request", [])}
 DROID_RAN = "##[end-action id=__Factory-AI_droid-action.droid;outcome=success;conclusion=success;duration_ms=128764]"
 DROID_SKIPPED = "##[end-action id=__Factory-AI_droid-action.droid;outcome=skipped;conclusion=skipped;duration_ms=0]"
 SUITE_FOR = {"review-gate": 1, "droid-review": 2, "claude-code-review": 3, "claude-security-review": 3}
@@ -39,14 +44,15 @@ def out(value):
 if path.endswith("/pulls/7/files") and slurp:
     out([[{"filename": name} for name in state["files"]]])
 elif path.endswith("/pulls/7") and not slurp:
-    out({"changed_files": state["changed_files"]})
+    out({"changed_files": state["changed_files"], "base": {"ref": state["pr_base"]}})
 elif path.endswith(f"/commits/{state['head']}/check-runs") and slurp and query["filter"] == ["all"]:
     out([{"check_runs": state["checks"]}])
 elif path.endswith("/issues/7/comments") and slurp:
     out(state["pages"])
 elif path.endswith("/actions/runs") and slurp:
     suite = state["suites"].get(query["check_suite_id"][0])
-    out([{"workflow_runs": [{"path": suite[0], "event": suite[1]}] if suite else []}])
+    prs = suite[2] if suite and len(suite) > 2 else [{"number": 7, "base": {"ref": "main"}}]
+    out([{"workflow_runs": [{"path": suite[0], "event": suite[1], "pull_requests": prs}] if suite else []}])
 elif "/actions/jobs/" in path and path.endswith("/logs") and "--allow-escape-sequences" in sys.argv:
     if state["droid_log"] is None:
         sys.exit("HTTP 410")
@@ -94,12 +100,12 @@ class ReviewGateStepTests(unittest.TestCase):
         self.script, self.env = step["run"], dict(step["env"])
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
-    def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None,
+    def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None, pr_base="main",
              droid_log=f"log\n{DROID_RAN}\nlog"):
         state = self.folder / "state.json"
         state.write_text(json.dumps({
             "head": HEAD, "checks": [run("review-gate", None), *checks], "pages": pages or [[]],
-            "droid_log": droid_log, "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
+            "droid_log": droid_log, "pr_base": pr_base, "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
             "suites": {str(key): value for key, value in SUITES.items()},
             "blobs": {f"{DROID}@{HEAD}": "d1", f"{DROID}@main": "d1", f"{CLAUDE}@{HEAD}": "c1",
                       f"{CLAUDE}@main": "c1"} if blobs is None else blobs}))
@@ -136,7 +142,23 @@ class ReviewGateStepTests(unittest.TestCase):
         for log in (f"log\n{DROID_SKIPPED}\nSkipping action due to workflow validation", "", None):
             with self.subTest(log=log):
                 result = self.assertFails(checks=[run("droid-review")], droid_log=log)
-                self.assertIn("the Droid review did not run on this head", result.stdout)
+                self.assertIn("the Droid review did not run", result.stdout)
+
+    def test_results_count_only_from_this_prs_run_into_main(self):
+        cases = {"droid run from a PR into another base": [run("droid-review", suite=7)],
+                 "claude runs from a PR into another base": [run("claude-code-review", suite=6),
+                                                             run("claude-security-review", suite=6)],
+                 "claude runs that also list a PR into another base": [run("claude-code-review", suite=8),
+                                                                       run("claude-security-review", suite=8)],
+                 "security run from another base": [run("claude-code-review"), run("claude-security-review", suite=6)],
+                 "droid run with no pull request": [run("droid-review", suite=11)]}
+        for label, checks in cases.items():
+            with self.subTest(label):
+                result = self.assertFails(checks=checks)
+                self.assertIn("not this PR's into main", result.stdout)
+        self.assertFails(checks=[run("droid-review")], pr_base="release")
+        self.assertFails(checks=[run("claude-code-review"), run("claude-security-review")], pr_base="release")
+        self.assertPasses(checks=[run("droid-review", suite=7)], pages=[[marker()]])
 
     def test_latest_run_of_a_check_decides(self):
         older, newer = "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z"

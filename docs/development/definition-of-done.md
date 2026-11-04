@@ -35,7 +35,7 @@ The coordinator merges a PR only when all of these hold on the same head commit:
 
 1. **Exact head.** Every check, review, and score below is on the PR's current head SHA.
 2. **Required checks** are green, including `review-gate`.
-3. **Every other reported check** passes or is skipped. Only these advisory checks may fail: `rust (macos)`. The owner extends that list.
+3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)`, which is advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list.
 4. **All review threads** are resolved.
 5. **Scorer.** The coordinator runs its own scorer on that head. The seat is from a different vendor than the PR's author, and the score is strictly above 8.
 6. **Sensitive PRs** that touch schema or migrations, auth, backup, Accept, or secrets need a score of 9 or more from each of two seats.
@@ -61,7 +61,7 @@ Every push starts a new `review-gate` run, which fails until one of these holds 
 
 The gate runs on `pull_request_target`, so GitHub runs the default branch's copy of `review-gate.yml`, never the PR's. The job reads the GitHub API only, with read permissions and no secrets, and never checks out or runs PR code. It applies these checks before any path counts:
 
-- **Result origin.** A `droid-review` or Claude result counts only when its check suite comes from the GitHub Actions app, from the expected workflow path, on `pull_request`, and GitHub ran the default branch's copy of that file. That holds when the file's blob at the head equals the default branch's blob, or the PR does not change the file, so the merge commit carries the base's copy.
+- **Result origin.** A `droid-review` or Claude result counts only when its check suite comes from the GitHub Actions app, from the expected workflow path, on `pull_request`, and GitHub ran the default branch's copy of that file. The workflow run must also belong to this PR: this PR targets the default branch, the run's `pull_requests` list names this PR, and every PR it names targets the default branch. A run from another PR with the same head SHA but another base, which runs that base's copy of the workflow, never counts, and neither does a run with an empty list. That holds when the file's blob at the head equals the default branch's blob, or the PR does not change the file, so the merge commit carries the base's copy.
 - **Same-named checks.** The gate fails when any check run on the head named `review-gate`, `droid-review`, `claude-code-review`, or `claude-security-review` comes from another app, another workflow file, or another event.
 - **Complete file list.** The gate fails when GitHub's file list for the PR is incomplete: the files API stops at 3000 files, so a PR with 3000 or more changed files, or a list shorter than the PR's `changed_files`, fails. Split such a PR.
 - **Protected files.** When a PR author other than the owner account changes a file under `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, or `.claude/` (the hook configs that load the guard), only the coordinator record counts: the owner's marker for that exact head is an explicit owner review. Droid and Claude results alone do not pass such a PR. Dependabot's weekly GitHub Actions bumps fall under this rule, so they need the owner's or the coordinator's marker after a review of that head.

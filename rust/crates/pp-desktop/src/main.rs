@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use pp_core::{CoreHandle, CoreRuntime};
+use pp_core::{CoreHandle, CoreRuntime, RuntimeStatus};
 use pp_desktop::{AllowedOrigin, ResourceLayout, desktop_data_dir, startup_diagnostic};
 use std::path::PathBuf;
 use tauri::{
@@ -488,7 +488,7 @@ fn build_tray(
         let mut shown_tone = None;
         loop {
             let state = receiver.borrow_and_update().clone();
-            let (text, tone) = pp_desktop::tray::status(&state);
+            let (text, tone) = pp_desktop::tray::runtime_status(&state);
             let badged = (shown_tone != Some(tone)).then(|| {
                 Image::new_owned(
                     pp_desktop::tray::badge(icon.rgba(), icon.width(), icon.height(), tone),
@@ -496,7 +496,10 @@ fn build_tray(
                     icon.height(),
                 )
             });
-            let guarded = gate.observe(&state);
+            let guarded = match &state {
+                RuntimeStatus::Node(state) => gate.observe(state),
+                RuntimeStatus::Rust(_) => false,
+            };
             let (status, recover, tray) = (status.clone(), recover.clone(), tray.clone());
             if app_handle
                 .run_on_main_thread(move || {

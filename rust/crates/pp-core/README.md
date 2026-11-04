@@ -29,7 +29,8 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `CoreRuntime::start(DesktopLaunch)` | Entry point. `start_with_compat_config` takes a `SupervisorConfig`. |
 | `CoreRuntime` methods | `origin`, `handle`, `take_launch_target`, `shutdown_requested`, `shutdown`, `shutdown_with_cutover`, `origin_change`, `runtime_dir`, `desktop_rebuild`. |
 | `DesktopLaunch`, `VerifiedBundle`, `CoreStatus` | Launch input (`data_dir`, `bundle`, `assets`) and child status, re-exported from `pp-compat`. |
-| `CoreHandle` | Clonable adapter handle: preferences and desktop settings, `suspend_monitoring`/`resume_monitoring`, `browser_launch_target`, `subscribe`, `recover_compat`, `track_shutdown_work`. |
+| `RuntimeStatus`, `StatusReceiver`, `RustStatus` | What `CoreHandle::subscribe` returns: the Node child's `CoreStatus`, or the Rust-only runtime's `RustStatus` (no child `generation` or `pid`). |
+| `CoreHandle` | Clonable adapter handle: preferences and desktop settings, `suspend_monitoring`/`resume_monitoring`, `browser_launch_target`, `subscribe`, `compat_status`, `recover_compat`, `track_shutdown_work`. |
 | `ShutdownReceipt`, `ShutdownGate`, `TrackedShutdownWork` | Shutdown evidence (`complete()`) and work that must finish before stop. |
 | `DesktopRebuild` | `from_env` reads the runtime switch once at start. |
 | `BrowserPreference(s)`, `Theme`, `PrinterPollInterval`, `DesktopSetting(s)`, `OriginChange` | Preference and settings types. |

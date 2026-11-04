@@ -9,6 +9,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Listener admission: loopback-only bind, exact `Host` match, `Origin` checks on effects, single-use 60-second bootstrap links that become a `pp_desktop_<port>` session cookie.
 - Serves `apps/web/dist` with gzip negotiation (`src/assets.rs`) and forwards admitted routes through `pp_compat::Endpoint`.
 - Answers a few routes itself: `/__desktop/bootstrap`, `/__desktop/rate-limit`, `/__runtime`, `POST /auth/logout`, and `/legal/summary` once that route is Rust-owned. It refuses `/mcp`.
+- Defines `RustStatus`, which `/__runtime` reports for a runtime started with `Gateway::start_rust_only`. `pp-core` owns the sender.
 - Runs Moonraker status watchers from `pp_drivers::moonraker` and the request drain used at shutdown.
 - Temporary ownership code (`ownership`): which runtime owns each operation participant, and the cutover record that moves one from Node to Rust.
 

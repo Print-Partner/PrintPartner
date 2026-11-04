@@ -2,7 +2,7 @@
 //! runtime value in a child process so the environment stays isolated.
 use super::{launch, process_tree::descendants, request, temporary};
 use axum::http::StatusCode;
-use pp_core::{CoreRuntime, CoreStatus};
+use pp_core::{CoreRuntime, CoreStatus, RuntimeStatus, RustStatus, StatusReceiver};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -52,11 +52,16 @@ async fn slice0_mount_launcher_in_child() {
     let rust = std::env::var("PP_SLICE0_RUST").unwrap() == "true";
     let mut runtime = CoreRuntime::start_for_launcher(launch(data)).await.unwrap();
     assert_eq!(runtime.rust_only(), rust);
-    let node = match *runtime.handle().subscribe().borrow() {
-        CoreStatus::Ready { pid, .. } => Some(pid),
-        _ => None,
+    // The desktop tray holds a handle and its subscription for the process lifetime.
+    let handle = runtime.handle();
+    let mut status = handle.subscribe();
+    let node = match status.borrow_and_update() {
+        RuntimeStatus::Rust(RustStatus::Ready) => None,
+        RuntimeStatus::Node(CoreStatus::Ready { pid, .. }) => Some(pid),
+        other => panic!("launcher not ready: {other:?}"),
     };
     assert_eq!(node.is_some(), !rust, "a Node child runs only without Rust");
+    assert_eq!(handle.compat_status().is_none(), rust);
     // The process table, not the runtime's own report: Rust-only mode starts
     // no child process at all, and the Node-backed mode shows its Node child.
     let check_children = || {
@@ -85,6 +90,7 @@ async fn slice0_mount_launcher_in_child() {
     assert_eq!(redeemed.status(), 303);
     let desktop = redeemed.headers()["set-cookie"].to_str().unwrap();
     let desktop = desktop.split(';').next().unwrap().to_owned();
+    assert_runtime_json(&origin, &desktop, rust).await;
     if rust {
         let (status, _, body) = request(
             &origin,
@@ -136,4 +142,33 @@ async fn slice0_mount_launcher_in_child() {
     check_children();
     let receipt = runtime.shutdown().await;
     assert!(receipt.complete(), "{receipt:?}");
+    if rust {
+        // Shutdown published Stopping then Stopped, and the channel stays open.
+        let StatusReceiver::Rust(mut status) = status else {
+            panic!("Rust-only runtime returned a Node status channel");
+        };
+        assert!(
+            status.has_changed().unwrap(),
+            "shutdown published no status"
+        );
+        assert_eq!(*status.borrow_and_update(), RustStatus::Stopped);
+        assert!(status.has_changed().is_ok(), "status channel closed");
+    }
+}
+
+/// `/__runtime` reports the Rust status and an unused compat backend in
+/// Rust-only mode, and the Node child with no `rust` key otherwise.
+async fn assert_runtime_json(origin: &str, desktop: &str, rust: bool) {
+    let (code, _, body) =
+        request(origin, "/__runtime", "GET", Some(desktop), None, None, None).await;
+    assert_eq!(code, StatusCode::OK);
+    let state: Value = serde_json::from_slice(&body).unwrap();
+    if rust {
+        assert_eq!(state["rust"], json!({"state": "ready"}), "{state}");
+        assert_eq!(state["compat"], json!({"state": "not_used"}), "{state}");
+    } else {
+        assert!(state.get("rust").is_none(), "{state}");
+        assert_eq!(state["compat"]["state"], "ready", "{state}");
+        assert!(state["compat"]["pid"].is_u64(), "{state}");
+    }
 }

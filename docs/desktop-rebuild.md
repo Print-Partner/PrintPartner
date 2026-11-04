@@ -73,7 +73,7 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   and the jobs router (including `/ws/jobs/{id}`) from that one owner, with the
   single-account auth policy. It passes the bundle's
   `community_manifests_dir()` to the Source reads.
-- `pp-core` hands that router to `Gateway::start_with_product`. `pp-gateway`
+- `pp-core` hands that router to `Gateway::start_rust_only`. `pp-gateway`
   takes an `axum::Router` and has no `pp-api` dependency. Host, Origin and the
   desktop session cookie are checked first. Every other admitted request that
   is not a gateway or asset path goes to the Rust routes, which do their own
@@ -92,14 +92,37 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   writer down. If tracked shutdown work is still running, the writer and its
   lock are kept until the process exits. The receipt reports
   `compat_reaped: true` because no child ran.
+- `pp-core` owns a `RustStatus` channel for this mode: `starting`, then
+  `ready` once the writer holds the lease and the gateway is serving, then
+  `stopping` and `stopped` during shutdown. The sender lives in `CoreHandle`,
+  so the channel stays open while the desktop holds a handle, including after
+  shutdown. `CoreHandle::subscribe()` returns a `StatusReceiver`: its `Rust`
+  variant carries this channel and its `Node` variant carries the supervisor's
+  channel unchanged. `CoreHandle::compat_status()` returns the Node child's
+  channel, or `None` in this mode. `RustStatus` has no `generation` or `pid`,
+  because no Node child exists to supply them.
+- The desktop tray maps the Rust states to the labels it already uses:
+  "Service starting", "Service ready", "Service stopping" and "Service
+  stopped". "Restart service" stays disabled, since there is no Node child to
+  restart.
+- `GET /__runtime` reports the Rust status and marks the compatibility backend
+  unused:
+
+  ```json
+  {"proof_class":"headless_unsigned","rust":{"state":"ready"},"compat":{"state":"not_used"},"gateway":{"active_requests":0,"active_upgrades":0}}
+  ```
+
+  In Node mode the body is unchanged and has no `rust` key. The gate scripts
+  that read `/__runtime` (`scripts/verify-rust-gateway/verify.py`,
+  `rust/scripts/workflow-smoke.sh`, `rust/tests/*.py`) build `pp-server`
+  without the feature, so they always see Node mode.
 
 `CoreRuntime::start` and every other combination of gates keep the Node-backed
 runtime, so existing flag-on Node tests are unchanged. With the feature off,
 the gateway route table is pinned by a digest test and Plan reads still go to
 the compatibility proxy. Use disposable data directories only: this mode does
 not yet refuse a directory Node has used, and it writes Rust schema into the
-directory it opens. The desktop tray reports the compatibility status, which
-stays at starting in this mode.
+directory it opens.
 
 The `slice0_mount` tests check, for `PP_DESKTOP_REBUILD=1` and `true`:
 

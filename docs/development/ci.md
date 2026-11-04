@@ -453,8 +453,8 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
-| `pp-storage` | GRE-653 | Its file mechanics now go through `pp-os`, and it type-checks for `x86_64-pc-windows-msvc`. The exclusion stays until a hosted Windows run passes its tests. Its Unix-only tests (POSIX modes, symbolic links, Node child probes) carry `#[cfg(unix)]`. |
-| `pp-source` | GRE-653 | Source directory reads use Unix file modes and no-follow opens. |
+| `pp-storage` | GRE-653 | Its file mechanics go through `pp-os` and it type-checks for `x86_64-pc-windows-msvc`, but a hosted Windows run fails 42 of its tests: byte-range locks block reads of lease files, open files cause sharing violations, SQLite rejects `file:\\?\` URIs, and some tests compare path spellings or run Node fixture scripts. |
+| `pp-source` | GRE-653 | Its file mechanics go through `pp-os`, but NTFS refuses to rename a directory while handles to entries inside it are open, and snapshot publication and retained capture rename under such handles. |
 | `pp-compat` | GRE-654 | The Node child supervisor uses Unix sockets, process groups, signals and file modes. |
 | `pp-core` | GRE-654 | It depends on `pp-compat` and `pp-storage`. |
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
@@ -463,7 +463,8 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 `pp-os` is not excluded. The Windows job builds and tests it, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
-tests for symbolic links, junctions and directory locks.
+tests for symbolic links, junctions, directory locks, write-through renames,
+device-name refusal and the FAT fallbacks.
 
 `rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.
 

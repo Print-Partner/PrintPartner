@@ -72,8 +72,14 @@ VARIABLE_READS = {"get", "help", "list"}
 MARKER_WORD = "pp-review-gate"
 MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or runs any command that names "
           "pp-review-gate, in any case or encoding; report readiness to the coordinator instead.")
-# Shells whose -c script the guard classifies like a top-level command.
+# Shells whose -c script the guard classifies like a top-level command, and the long options they
+# accept before it. Any other option makes the script position unknown.
 SHELLS = {"sh", "bash", "zsh", "dash"}
+SHELL_VALUE_LONG = {"--rcfile", "--init-file"}
+SHELL_FLAG_LONG = {"--login", "--norc", "--noprofile", "--posix", "--noediting", "--restricted", "--verbose",
+                   "--debugger", "--dump-strings", "--dump-po-strings", "--pretty-print"}
+SHELL_OPTIONS = ("Cannot tell which argument this shell runs as its script; run git and gh directly, "
+                 "or use plain bash -c without other options.")
 EVAL = ("Run git and gh commands directly, not through eval or source, so the guard can classify them.")
 JSON_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))')
 JSON_SIMPLE = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
@@ -1038,23 +1044,35 @@ def coordinator_worktree(cwd):
 
 
 def shell_script(args):
-    """Return the script that a sh, bash, zsh, or dash invocation runs with -c, or None."""
+    """Return (script, unclear) for a sh, bash, zsh, or dash invocation.
+
+    script is what the shell runs with -c, or None. unclear is True when an option before the
+    script is not one the guard knows, so it cannot tell which argument is the script.
+    """
     reads_script, i = False, 0
     while i < len(args):
         arg = args[i]
-        if arg in ("-o", "+o", "-O", "+O"):
+        if arg in SHELL_VALUE_LONG:
             i += 2
+        elif arg in SHELL_FLAG_LONG:
+            i += 1
         elif arg == "--":
             i += 1
             break
         elif arg.startswith("--"):
-            i += 1
-        elif arg[:1] in ("-", "+") and len(arg) > 1:
-            reads_script = reads_script or (arg[0] == "-" and "c" in arg[1:])
-            i += 1
+            return None, True
+        elif re.fullmatch(r"[-+][A-Za-z]+", arg):
+            flags = arg[1:]
+            # o and O take the next argument; anywhere but last in a bundle, the guard cannot place it.
+            if any(flag in "oO" for flag in flags[:-1]):
+                return None, True
+            reads_script = reads_script or (arg[0] == "-" and "c" in flags)
+            i += 2 if flags[-1] in "oO" else 1
+        elif arg.startswith(("-", "+")) and arg not in ("-", "+"):
+            return None, True
         else:
             break
-    return args[i] if reads_script and i < len(args) else None
+    return (args[i] if reads_script and i < len(args) else None), False
 
 
 def sourced_reason(name, rest, cwd):
@@ -1112,12 +1130,16 @@ def check_command(command, cwd):
                 cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
                 continue
             here = None if moved else cwd
-            if name in SHELLS and (script := shell_script(rest)) is not None:
-                # The script's own substitutions were already classified as nested commands.
-                reason = check_command(script.replace(EXPANDED, ""), here)
-                if reason:
-                    return reason
-                continue
+            if name in SHELLS:
+                script, unclear = shell_script(rest)
+                if unclear and re.search(r"\b(?:gh|git)\b", " ".join(rest)) and not coordinator_worktree(here):
+                    return SHELL_OPTIONS
+                if script is not None:
+                    # The script's own substitutions were already classified as nested commands.
+                    reason = check_command(script.replace(EXPANDED, ""), here)
+                    if reason:
+                        return reason
+                    continue
             # program() names "." as "", like any path ending in a slash; both are treated as source.
             if name in ("eval", "source", ""):
                 reason = sourced_reason(name, rest, here)

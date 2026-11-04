@@ -1021,6 +1021,35 @@ class ShellWrapperTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(hook(CLAUDE, claude_call("Bash", "/", command=command)).returncode, 0)
 
+    def test_shell_options_before_c_are_parsed_or_refused(self):
+        merge = "Only the coordinator worktree merges"
+        for command, reason in (("bash --rcfile x -c 'gh pr merge 12'", merge),
+                                ("bash --init-file x -c 'gh pr merge 12'", merge),
+                                ("bash -o posix -c 'gh pr merge 12'", merge), ("bash +o posix -c 'gh pr merge 12'", merge),
+                                ("bash -eo pipefail -c 'gh pr merge 12'", merge),
+                                ("bash -O extglob -c 'gh pr merge 12'", merge), ("sh -e -c 'gh pr merge 12'", merge),
+                                ("bash --login --norc -c 'gh pr merge 12'", merge),
+                                ("zsh -o shwordsplit -c 'git push --force origin HEAD:topic'", "Never force-push"),
+                                ("bash --unknown-option x -c 'gh pr merge 12'", "Cannot tell which argument"),
+                                ("bash --rcfile=x -c 'gh pr merge 12'", "Cannot tell which argument"),
+                                ("dash -oe x -c 'gh pr merge 12'", "Cannot tell which argument"),
+                                ("bash -%x -c 'git push origin HEAD:main'", "Cannot tell which argument")):
+            with self.subTest(command=command):
+                result = hook(CLAUDE, claude_call("Bash", "/", command=command))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(reason, result.stderr)
+        for command in ("bash --rcfile x -c 'echo hi'", "bash --unknown-option x -c 'echo hi'",
+                        "bash -o posix -c 'gh pr view 12'"):
+            with self.subTest(command=command):
+                self.assertEqual(hook(CLAUDE, claude_call("Bash", "/", command=command)).returncode, 0)
+
+    def test_coordinator_may_use_unknown_shell_options(self):
+        with tempfile.TemporaryDirectory() as folder:
+            coordinator = git_repo(Path(folder, "coordinator"))
+            command = "bash --unknown-option x -c 'gh pr view 12'"
+            self.assertEqual(hook(CLAUDE, claude_call("Bash", coordinator, command=command), coordinator).returncode, 0)
+            self.assertEqual(hook(CLAUDE, claude_call("Bash", coordinator, command=command)).returncode, 2)
+
     def test_eval_and_source_of_git_or_gh_are_refused(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "post.sh").write_text("gh pr comment 12 -b hi\n")

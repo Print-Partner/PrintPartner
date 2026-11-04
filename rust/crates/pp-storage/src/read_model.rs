@@ -1,3 +1,5 @@
+#[cfg(feature = "desktop_rebuild")]
+pub mod build_workflow;
 mod context;
 pub(crate) mod graph;
 #[cfg(feature = "desktop_rebuild")]
@@ -234,16 +236,7 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
     let mut builds = Vec::new();
     let mut budget = graph::Budget::default();
     for profile_id in profile_ids {
-        let accepted = match graph::read(&tx, &tenant, profile_id, &command.repos, &mut budget) {
-            Ok(read) => read,
-            Err(error) => match error.downcast_ref::<graph::Integrity>() {
-                Some(error) => AcceptedRead::IntegrityFailure {
-                    code: error.code.to_owned(),
-                    message: error.message.clone(),
-                },
-                None => return Err(error),
-            },
-        };
+        let accepted = accepted_read(&tx, &tenant, profile_id, &command.repos, &mut budget)?;
         let (context, context_error) =
             match context::capture(&tx, &tenant, profile_id, &accepted, &mut budget) {
                 Ok(value) => (value, None),
@@ -267,6 +260,26 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
     }
     tx.commit()?;
     Ok(Batch { builds })
+}
+
+/// The Accepted Plan of `profile`, with integrity failures as a read result.
+fn accepted_read(
+    tx: &rusqlite::Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    repos: &std::path::Path,
+    budget: &mut graph::Budget,
+) -> Result<AcceptedRead> {
+    match graph::read(tx, tenant, profile, repos, budget) {
+        Ok(read) => Ok(read),
+        Err(error) => match error.downcast_ref::<graph::Integrity>() {
+            Some(error) => Ok(AcceptedRead::IntegrityFailure {
+                code: error.code.to_owned(),
+                message: error.message.clone(),
+            }),
+            None => Err(error),
+        },
+    }
 }
 
 #[cfg(feature = "desktop_rebuild")]

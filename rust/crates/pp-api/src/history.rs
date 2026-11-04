@@ -6,7 +6,9 @@
 //! `next_cursor`). The route writes nothing. Admission is `accepted::Gate`.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Cancellation, Gate, failure, json_response, read_error},
+    accepted::{
+        AcceptedHttpConfig, Cancellation, Gate, build_id, failure, json_response, read_error,
+    },
     loopback::PresentedCredential,
 };
 use axum::{
@@ -16,11 +18,8 @@ use axum::{
     response::Response,
     routing::get,
 };
-use pp_storage::{
-    build_graph::PositiveId,
-    read_model::history::{
-        Cursor, DEFAULT_LIMIT, Failure, HistoryClient, MAX_LIMIT, Outcome, Request,
-    },
+use pp_storage::read_model::history::{
+    Cursor, DEFAULT_LIMIT, Failure, HistoryClient, MAX_LIMIT, Outcome, Request,
 };
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -80,13 +79,8 @@ async fn history(
         Ok(page) => page,
         Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
     };
-    // Only a decimal positive safe integer can name a Build. Any other id
-    // still authenticates, then answers not found.
-    let build = (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| id.parse().ok().and_then(|id| PositiveId::new(id).ok()))
-        .flatten();
     let request = Request {
-        build,
+        build: build_id(&id),
         cursor,
         limit,
     };

@@ -146,7 +146,8 @@ fn lease_names(source: &str) -> BTreeSet<String> {
 fn lease_names_in_rust_and_node_lease_code_and_the_marker_name_match_the_allowlist() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let rust = std::fs::read_to_string(manifest.join("src/lease.rs")).unwrap();
-    let rust = rust.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+    // Product code only: lease.rs's test module may use other names.
+    let rust = rust.split("\nmod tests {").next().unwrap();
     let node_root = manifest.join("../../../web/apps/server/src");
     let mut node = String::new();
     for file in ["storage-lease.ts", "desktop-context.ts"] {

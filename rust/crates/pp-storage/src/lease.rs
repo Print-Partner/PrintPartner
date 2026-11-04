@@ -41,6 +41,8 @@ impl CompatibilityReservation {
         )?;
         let mut held = false;
         let directory = (|| {
+            #[cfg(all(test, unix))]
+            tests::after_reservation_opened(&admitted.path)?;
             validate_open_lock_identity(&file, &admitted.path.join(".desktop-lease"))
                 .context("Could not validate .desktop-lease compatibility reservation identity")?;
             match pp_os::try_lock(&file) {
@@ -659,6 +661,7 @@ mod tests {
     use std::{
         ffi::CString,
         fs::OpenOptions,
+        io::Write,
         os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     };
 
@@ -1134,9 +1137,44 @@ mod tests {
                     .map_err(|error| anyhow::anyhow!("raced holder lock: {error:?}"))?;
                 RACED_HOLDER.set(Some(holder));
             }
+            8 => {
+                LEASE_FAILURE.set(0);
+                replace_with_file(&path.join("printpartner.lock"))?;
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// After `.desktop-lease` was opened: 5 makes it group-writable, 6 replaces
+    /// it with a symlink, 7 adds a hard link, and 9 replaces it with another
+    /// regular file. Each makes the reservation's identity check fail.
+    pub(super) fn after_reservation_opened(path: &Path) -> Result<()> {
+        let lease = path.join(".desktop-lease");
+        match LEASE_FAILURE.get() {
+            5 => std::fs::set_permissions(&lease, std::fs::Permissions::from_mode(0o620))?,
+            6 => {
+                std::fs::remove_file(&lease)?;
+                std::os::unix::fs::symlink("elsewhere", &lease)?;
+            }
+            7 => std::fs::hard_link(&lease, path.join("extra-link"))?,
+            9 => replace_with_file(&lease)?,
+            _ => return Ok(()),
+        }
+        LEASE_FAILURE.set(0);
+        Ok(())
+    }
+
+    /// Move the file at `path` to `<path>.moved`, keeping its one link, and
+    /// create a different regular file at `path`.
+    fn replace_with_file(path: &Path) -> std::io::Result<()> {
+        std::fs::rename(path, path.with_extension("moved"))?;
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?
+            .write_all(b"replacement")
     }
 
     /// 3 publishes a Node lease directory, so the reservation open fails.
@@ -1169,9 +1207,14 @@ mod tests {
             for entry in std::fs::read_dir(&directory).unwrap() {
                 let path = entry.unwrap().path();
                 let relative = path.strip_prefix(root).unwrap().to_path_buf();
-                if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                let kind = std::fs::symlink_metadata(&path).unwrap().file_type();
+                if kind.is_dir() {
                     entries.insert(relative, None);
                     pending.push(path);
+                } else if kind.is_symlink() {
+                    let target = std::fs::read_link(&path).unwrap();
+                    let text = format!("symlink -> {}", target.display());
+                    entries.insert(relative, Some(text.into_bytes()));
                 } else {
                     entries.insert(relative, Some(std::fs::read(&path).unwrap()));
                 }
@@ -1305,6 +1348,89 @@ mod tests {
                     "stage {stage} {name}"
                 );
             }
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    /// A reservation that fails after this call created `.desktop-lease`
+    /// removes it and the created lock, but never an entry that replaced it.
+    #[test]
+    fn reservation_failures_after_creating_it_leave_the_listing_as_found() {
+        let entry = |bytes: &[u8]| Some(bytes.to_vec());
+        let cases = [
+            (5, "Unsafe data directory lock", vec![]),
+            (
+                6,
+                "compatibility reservation identity",
+                vec![(".desktop-lease", entry(b"symlink -> elsewhere"))],
+            ),
+            (
+                7,
+                "Unsafe data directory lock",
+                vec![("extra-link", entry(b""))],
+            ),
+            (
+                9,
+                "Data directory lock was replaced",
+                vec![
+                    (".desktop-lease", entry(b"replacement")),
+                    (".desktop-lease.moved", entry(b"")),
+                ],
+            ),
+        ];
+        for (stage, message, added) in cases {
+            let path = directory();
+            let mut expected = listing(&path);
+            let error = failed_acquire(&path, stage);
+            assert!(error.contains(message), "stage {stage}: {error}");
+            // Only what the hook put there remains: no printpartner.lock, and
+            // a replacement at `.desktop-lease` is never unlinked.
+            for (name, bytes) in added {
+                expected.insert(PathBuf::from(name), bytes);
+            }
+            assert_eq!(listing(&path), expected, "stage {stage}");
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn replaced_lock_file_is_not_unlinked() {
+        let path = directory();
+        let mut expected = listing(&path);
+        let error = failed_acquire(&path, 8);
+        assert!(
+            error.contains("Data directory lock was replaced"),
+            "{error}"
+        );
+        // The replacement stays, and so does the moved-away original: cleanup
+        // removes only the name that still refers to the file it opened.
+        expected.insert(
+            PathBuf::from("printpartner.lock"),
+            Some(b"replacement".to_vec()),
+        );
+        expected.insert(PathBuf::from("printpartner.moved"), Some(Vec::new()));
+        assert_eq!(listing(&path), expected);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    /// The same reservation failures with a pre-existing `.desktop-lease`
+    /// leftover: it is not this call's to remove.
+    #[test]
+    fn reservation_failures_keep_a_pre_existing_reservation_byte_for_byte() {
+        for stage in [5, 7] {
+            let path = directory();
+            let lease = path.join(".desktop-lease");
+            std::fs::write(&lease, b"").unwrap();
+            std::fs::set_permissions(&lease, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let modified = set_old_mtime(&lease);
+            let mut expected = listing(&path);
+            failed_acquire(&path, stage);
+            if stage == 7 {
+                expected.insert(PathBuf::from("extra-link"), Some(Vec::new()));
+            }
+            assert_eq!(listing(&path), expected, "stage {stage}");
+            let metadata = std::fs::metadata(&lease).unwrap();
+            assert_eq!(metadata.modified().unwrap(), modified, "stage {stage}");
             std::fs::remove_dir_all(path).unwrap();
         }
     }

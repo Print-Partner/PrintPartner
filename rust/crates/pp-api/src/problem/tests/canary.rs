@@ -109,8 +109,6 @@ async fn assert_clean(label: &str, response: Response) {
 }
 
 type Mapper = fn(anyhow::Error) -> Response;
-/// A storage error and the problem types a router may answer it with.
-type Case = (fn() -> anyhow::Error, &'static [ProblemType]);
 
 async fn problem_of(response: Response) -> Problem {
     let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
@@ -157,32 +155,43 @@ async fn problem_response_canary_never_leaks_sql_paths_or_urls() {
 #[tokio::test]
 async fn problem_response_typed_storage_failures_keep_their_type_on_every_router() {
     use ProblemType::{OutcomeUnknown, Overloaded, Unavailable};
-    let cases: [Case; 5] = [
-        (|| AuthFailure::QueueFull.into(), &[Overloaded]),
-        (|| AuthFailure::CommitUnknown.into(), &[OutcomeUnknown]),
-        (|| anyhow::anyhow!("Writer queue full"), &[Overloaded]),
-        // Auth shares Node's one detail for a full and a stopping writer.
-        (
-            || anyhow::anyhow!("Storage stopped"),
-            &[Unavailable, Overloaded],
-        ),
-        (
-            || anyhow::anyhow!("Cancelled before admission"),
-            &[Unavailable, Overloaded],
-        ),
+    let failures: [fn() -> anyhow::Error; 5] = [
+        || AuthFailure::QueueFull.into(),
+        || AuthFailure::CommitUnknown.into(),
+        || anyhow::anyhow!("Writer queue full"),
+        || anyhow::anyhow!("Storage stopped"),
+        || anyhow::anyhow!("Cancelled before admission"),
+    ];
+    // The exact type per router, in `failures` order. Auth answers a stopping
+    // writer with the same retryable type as a full one, because Node sends one
+    // detail for both; every other router says `unavailable`.
+    let shared = [
+        Overloaded,
+        OutcomeUnknown,
+        Overloaded,
+        Unavailable,
+        Unavailable,
+    ];
+    let auth = [
+        Overloaded,
+        OutcomeUnknown,
+        Overloaded,
+        Overloaded,
+        Overloaded,
     ];
     for (name, mapper) in MAPPERS {
-        for (index, (error, kinds)) in cases.iter().enumerate() {
-            let response = mapper(error());
+        let expected = if name == "auth" { auth } else { shared };
+        for (index, (failure, kind)) in failures.iter().zip(expected).enumerate() {
+            let response = mapper(failure());
             assert_eq!(
                 response.status(),
                 StatusCode::SERVICE_UNAVAILABLE,
                 "{name} #{index}"
             );
-            let problem = problem_of(response).await;
-            assert!(
-                kinds.contains(&problem.problem_type),
-                "{name} #{index}: {problem:?}"
+            assert_eq!(
+                problem_of(response).await.problem_type,
+                kind,
+                "{name} #{index}"
             );
         }
     }

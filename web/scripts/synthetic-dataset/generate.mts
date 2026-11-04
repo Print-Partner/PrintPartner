@@ -22,6 +22,10 @@ import { AppRepository } from "../../apps/server/src/db/repository.js";
 import { currentSchemaVersion } from "../../apps/server/src/db/schema.js";
 import { plateId } from "../../apps/server/src/services/accepted-plate-workspace.js";
 import {
+  DEFAULT_LOCAL_SNAPSHOT_DOCS_BYTES,
+  DEFAULT_LOCAL_SNAPSHOT_STL_LIMIT,
+} from "../../apps/server/src/services/local-source-revision.js";
+import {
   LocalSourceSnapshotStore,
   sourceRelativePath,
 } from "../../apps/server/src/services/local-source-snapshot.js";
@@ -86,8 +90,8 @@ const FLEET: PrinterMachine[] = PRINTERS.map((printer) => ({
 }));
 // The limits the Node local-source path uses for a working-tree snapshot.
 const SNAPSHOT_SELECTION = {
-  maxStlFiles: 500,
-  maxDocumentationBytes: 1024 * 1024 * 1024,
+  maxStlFiles: DEFAULT_LOCAL_SNAPSHOT_STL_LIMIT,
+  maxDocumentationBytes: DEFAULT_LOCAL_SNAPSHOT_DOCS_BYTES,
   omittedFiles: [],
 };
 

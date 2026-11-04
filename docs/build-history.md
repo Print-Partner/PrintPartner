@@ -6,9 +6,9 @@ It is part of the replacement Rust API, which mounts only with the default-off
 `true`. With the flag off the route answers 404. Node has no such route.
 
 `pp_core::rebuild_api::read_router` mounts it at `/` and `/api/v2`, beside the
-Build and Checkoff reads, from the same `WriterOwner`. Admission matches the
-other read routers: loopback Host and Origin checks, then a session cookie or
-an API key.
+Build and Checkoff reads, from the same `WriterOwner`. It shares the Accepted
+Plan Checkoff router's admission (`pp_api::accepted::Gate`): loopback Host and
+Origin checks, then a session cookie or an API key.
 
 ## Entries
 
@@ -92,3 +92,5 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
 
 `build_history_reads_write_nothing` compares every table row and every managed
 file under the data directory before and after a full paged walk.
+`pp-core`'s `rebuild_read_http` test pages the route through the composed
+`read_router` and checks each refusal in the table above.

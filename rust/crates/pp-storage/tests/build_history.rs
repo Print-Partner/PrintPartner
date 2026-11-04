@@ -13,7 +13,7 @@ use pp_storage::{
 use rusqlite::{Connection, types::Value as SqlValue};
 use serde_json::{Value, json};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -24,19 +24,18 @@ struct Stored {
     files: Vec<(PathBuf, Vec<u8>)>,
 }
 
+#[path = "common/scratch.rs"]
+mod scratch;
+
 struct Fixture {
-    root: PathBuf,
+    root: scratch::Scratch,
     owner: Option<WriterOwner>,
     client: HistoryClient,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pp-build-history-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+        let root = scratch::Scratch::new("pp-build-history-");
         pp_os::create_private_dir_all(&root.join("repos/1/revisions/accepted")).unwrap();
         std::fs::write(
             root.join("repos/1/revisions/accepted/manifest.yaml"),
@@ -95,66 +94,67 @@ impl Fixture {
     /// Every table row in rowid order, and every file under the data
     /// directory except the SQLite database and its WAL and shared memory.
     fn stored(&self) -> Stored {
+        fn select(db: &Connection, sql: &str) -> Vec<Vec<SqlValue>> {
+            let mut statement = db.prepare(sql).unwrap();
+            let width = statement.column_count();
+            let mut cursor = statement.query([]).unwrap();
+            let mut found = Vec::new();
+            while let Some(row) = cursor.next().unwrap() {
+                found.push((0..width).map(|i| row.get(i).unwrap()).collect());
+            }
+            found
+        }
         let db = self.sql();
-        let tables = db
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        let rows = tables
-            .into_iter()
-            .map(|table| {
-                let mut statement = db
-                    .prepare(&format!(
-                        "SELECT * FROM \"{}\" ORDER BY rowid",
-                        table.replace('"', "\"\"")
-                    ))
-                    .unwrap();
-                let columns = statement.column_count();
-                let rows = statement
-                    .query_map([], |row| (0..columns).map(|i| row.get(i)).collect())
-                    .unwrap()
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .unwrap();
-                (table, rows)
-            })
-            .collect();
-        fn walk(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
-            for entry in std::fs::read_dir(directory).unwrap() {
-                let path = entry.unwrap().path();
+        let rows = select(
+            &db,
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+        )
+        .into_iter()
+        .map(|name| {
+            let SqlValue::Text(table) = &name[0] else {
+                panic!("table name {name:?}")
+            };
+            let sql = format!(
+                "SELECT * FROM \"{}\" ORDER BY rowid",
+                table.replace('"', "\"\"")
+            );
+            (table.clone(), select(&db, &sql))
+        })
+        .collect();
+        let mut files = Vec::new();
+        let mut stack = vec![self.root.to_path_buf()];
+        while let Some(directory) = stack.pop() {
+            for path in std::fs::read_dir(directory)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+            {
+                let name = path.strip_prefix(&*self.root).unwrap().to_owned();
                 if path.is_dir() {
-                    walk(root, &path, output);
-                    continue;
-                }
-                let relative = path.strip_prefix(root).unwrap().to_owned();
-                if [
+                    stack.push(path);
+                } else if ![
                     "print-partner.db",
                     "print-partner.db-wal",
                     "print-partner.db-shm",
                 ]
-                .iter()
-                .any(|name| relative == Path::new(name))
+                .contains(&name.to_str().unwrap())
                 {
-                    continue;
+                    files.push((name, std::fs::read(&path).unwrap()));
                 }
-                output.push((relative, std::fs::read(path).unwrap()));
             }
         }
-        let mut files = Vec::new();
-        walk(&self.root, &self.root, &mut files);
         files.sort();
         Stored { rows, files }
     }
 }
 
+/// Stops storage before `scratch` removes the directory.
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.take() {
-            owner.shutdown().unwrap();
-        }
-        std::fs::remove_dir_all(&self.root).unwrap();
+        self.owner
+            .take()
+            .map(WriterOwner::shutdown)
+            .transpose()
+            .unwrap();
     }
 }
 

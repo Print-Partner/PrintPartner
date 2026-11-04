@@ -16,7 +16,7 @@
 
 use super::Credential;
 use crate::{Envelope, Shared, WriterOwner, auth};
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use pp_domain::PositiveId;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -26,9 +26,8 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Rows read per source. A Build past this answers `Failure::TooLarge`
@@ -234,31 +233,8 @@ impl HistoryClient {
             (1..=MAX_LIMIT).contains(&request.limit),
             "Build history pages hold 1 to {MAX_LIMIT} entries"
         );
-        let deadline = Instant::now() + wait;
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
-        loop {
-            ensure!(!queue.closed, "Storage stopped");
-            ensure!(
-                !cancelled.load(Ordering::Acquire),
-                "Cancelled before admission"
-            );
-            if queue.pending.len() < self.shared.capacity {
-                break;
-            }
-            ensure!(Instant::now() < deadline, "Writer queue full");
-            queue = self
-                .shared
-                .changed
-                .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
-                .0;
-        }
-        let (reply, receiver) = mpsc::channel();
-        queue.pending.push_back(Envelope::History {
+        let flag = cancelled.clone();
+        super::submit_read(&self.shared, &flag, wait, |reply| Envelope::History {
             command: Command {
                 credential,
                 policy: self.policy,
@@ -266,12 +242,7 @@ impl HistoryClient {
                 cancelled,
             },
             reply,
-        });
-        self.shared.changed.notify_all();
-        drop(queue);
-        receiver
-            .recv()
-            .map_err(|_| anyhow!("Storage stopped without read result"))?
+        })
     }
 }
 

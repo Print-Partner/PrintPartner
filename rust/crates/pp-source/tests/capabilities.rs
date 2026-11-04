@@ -8,10 +8,6 @@ use std::{fs, path::PathBuf};
 mod scratch;
 use scratch::Scratch;
 
-#[path = "support/modes.rs"]
-mod modes;
-use modes::pin_mode;
-
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
 impl Fixture {
@@ -22,7 +18,7 @@ impl Fixture {
         fs::write(path.join("input/part.stl"), b"solid bytes").unwrap();
         // Pin modes so root ancestor checks do not depend on the caller's umask.
         for dir in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            pin_mode(dir, 0o755);
+            modes::pin_mode(dir, 0o755);
         }
         Self(path)
     }
@@ -84,7 +80,7 @@ fn configured_repository_roots_accept_normalized_utf8_and_filesystem_root() {
         let root = fixture.0.join(name);
         if name != "repos" {
             fs::create_dir(&root).unwrap();
-            pin_mode(&root, 0o755);
+            modes::pin_mode(&root, 0o755);
         }
         let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
         let mut source = repos.source(42).unwrap();
@@ -443,11 +439,11 @@ fn published_manifest_also_stops_one_byte_short_of_path_max() {
     while root_bytes - root.as_os_str().len() > 101 {
         root.push("d".repeat(99));
         fs::create_dir(&root).unwrap();
-        pin_mode(&root, 0o755);
+        modes::pin_mode(&root, 0o755);
     }
     root.push("e".repeat(root_bytes - root.as_os_str().len() - 1));
     fs::create_dir(&root).unwrap();
-    pin_mode(&root, 0o755);
+    modes::pin_mode(&root, 0o755);
     assert_eq!(root.as_os_str().len(), root_bytes);
     let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
@@ -926,3 +922,6 @@ mod cleanup;
 fn scratch_root_is_empty_after_tests() {
     cleanup::assert_test_run_clean(&["--skip", "scratch_root_is_empty_after_tests"]);
 }
+
+#[path = "support/modes.rs"]
+mod modes;

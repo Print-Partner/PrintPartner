@@ -21,10 +21,6 @@ const INJECTED_MODEL: &str = "<model><object name='injected'><mesh><vertex x='0'
 mod scratch;
 use scratch::Scratch;
 
-#[path = "support/modes.rs"]
-mod modes;
-use modes::pin_mode;
-
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
 impl Fixture {
@@ -33,7 +29,7 @@ impl Fixture {
         fs::create_dir(path.join("repos")).unwrap();
         fs::create_dir(path.join("input")).unwrap();
         for directory in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            pin_mode(directory, 0o755);
+            modes::pin_mode(directory, 0o755);
         }
         Self(path)
     }
@@ -339,3 +335,6 @@ fn direct_model_redirect_is_rejected_before_publish_and_valid_models_still_conve
     assert!(read_bytes < 200_000, "{read_bytes}");
     assert_eq!(fs::read(&sibling_model).unwrap(), package);
 }
+
+#[path = "support/modes.rs"]
+mod modes;

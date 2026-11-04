@@ -12,10 +12,6 @@ mod support;
 mod scratch;
 use scratch::Scratch;
 
-#[path = "support/modes.rs"]
-mod modes;
-use modes::pin_mode;
-
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
 impl Fixture {
@@ -24,7 +20,7 @@ impl Fixture {
         fs::create_dir(path.join("repos")).unwrap();
         fs::create_dir(path.join("input")).unwrap();
         for directory in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            pin_mode(directory, 0o755);
+            modes::pin_mode(directory, 0o755);
         }
         fs::write(path.join("input/part.stl"), b"solid bytes").unwrap();
         Self(path)
@@ -242,3 +238,6 @@ mod cleanup;
 fn scratch_root_is_empty_after_tests() {
     cleanup::assert_test_run_clean(&["--skip", "scratch_root_is_empty_after_tests"]);
 }
+
+#[path = "support/modes.rs"]
+mod modes;

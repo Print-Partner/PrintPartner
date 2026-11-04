@@ -8,8 +8,9 @@
  *   Status and filament tokens are never cyan.
  * - Every text ink reaches 4.5:1 (7:1 on shop floor) on all four surfaces, and
  *   control edges reach 3:1, in every theme and both forced-colors palettes.
- * - Every colour token has a forced-colors system colour.
- * - Reduced motion sets every duration to 0ms.
+ * - In every theme, every colour token has a forced-colors system colour, the same one
+ *   whatever the theme.
+ * - In every theme, reduced motion sets every duration to 0ms.
  */
 
 :root {
@@ -76,13 +77,6 @@
   --row-height: var(--row-comfortable);
   --touch-target-min: 44px;
   --touch-target: 48px;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
-  --radius-control: 6px;
 
   /* Motion: short, ease-out, showing where a thing went */
   --motion-duration-fast: 120ms;
@@ -149,8 +143,10 @@
   --row-height: var(--touch-target);
 }
 
+/* :root[data-theme] matches the theme rules' specificity, so these win in every theme. */
 @media (forced-colors: active) {
-  :root {
+  :root,
+  :root[data-theme] {
     --surface-sunken: Canvas;
     --surface-base: Canvas;
     --surface-raised: Canvas;
@@ -176,7 +172,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root,
+  :root[data-theme] {
     --motion-duration-fast: 0ms;
     --motion-duration-base: 0ms;
     --motion-duration-slow: 0ms;

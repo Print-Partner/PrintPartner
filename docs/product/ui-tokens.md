@@ -7,8 +7,9 @@ in [Design system](../design-system.md) and do not change.
 | File | What it holds |
 | --- | --- |
 | `web/apps/ui/src/theme/tokens.css` | Every token, per theme, plus the forced-colors and reduced-motion overrides |
-| `web/apps/ui/src/theme/theme.css` | Base rules that read the tokens: page colours, focus ring, accent fill, filament swatch, motion |
+| `web/apps/ui/src/theme/theme.css` | Base rules that read the tokens: page colours, focus ring, selection, filament swatch, motion |
 | `web/apps/ui/src/theme/tokenGate.ts` | The contrast and colour-role gate |
+| `web/apps/ui/src/theme/cssTokens.ts` | CSS parser and WCAG contrast arithmetic, shared with the old app's gate |
 | `web/apps/ui/src/theme/MotionCue.tsx` | Wrapper that states where a moved thing went, as text under reduced motion |
 
 ## Themes
@@ -27,6 +28,7 @@ high-contrast dark theme for reading at a distance: text reaches 7:1, body text 
 - **Interaction.** `--interaction-accent`, `-accent-hover`, `-on-accent`, `-text`,
   `-focus-ring` and `-selection`. These are the only cyan tokens: primary button,
   focus ring and selection. Status and filament tokens are never cyan.
+  `--interaction-on-accent` must read on both the resting and the hover fill.
 - **Status.** `--status-success`, `-warning`, `-danger`, `-info` and `-neutral`.
   A status always shows an icon and a word too; colour is never the only signal.
   Pills use `--status-pill-radius` (4 px), `-height` and `-padding-x`.
@@ -39,7 +41,7 @@ high-contrast dark theme for reading at a distance: text reaches 7:1, body text 
   and sizes `--text-xs` to `--text-2xl`. The Plex files are not bundled yet, so the
   stacks fall back to system fonts.
 - **Density.** `--row-comfortable` 40 px, `--row-compact` 32 px, `--row-height`,
-  `--touch-target-min` 44 px and `--touch-target` 48 px, plus a 4 px spacing scale.
+  `--touch-target-min` 44 px and `--touch-target` 48 px.
 - **Motion.** `--motion-duration-fast` 120 ms, `-base` 160 ms, `-slow` 200 ms and
   `--motion-ease-out`. Under `prefers-reduced-motion: reduce` every duration is 0 ms,
   and `MotionCue` shows its message as visible text instead of animating.
@@ -51,12 +53,16 @@ Under `forced-colors: active` every colour token maps to a system colour: surfac
 `Highlight`, `HighlightText` and `LinkText`. Only interaction tokens may use the
 highlight family, so status never borrows the system accent.
 
-Two classes in `theme.css` set `forced-color-adjust: none` there:
+The forced-colors and reduced-motion blocks select `:root, :root[data-theme]`. The
+theme rules are `:root[data-theme="..."]`, which outranks a bare `:root`, so without
+the second selector light and shop floor would keep their authored colours and
+durations.
 
-- `.pp-accent-fill`, the filled primary control. Without it, Chromium draws a Canvas
-  backplate behind the label, and the `HighlightText` label can disappear against it.
-- `.pp-filament-swatch`. A filament colour is data, like an image, so it keeps its
-  real colour inside a `CanvasText` border.
+`.pp-filament-swatch` sets `forced-color-adjust: none` there: a filament colour is
+data, like an image, so it keeps its real colour inside a `CanvasText` border. A
+control filled with `--interaction-accent` needs the same opt-out when it lands.
+Without it, Chromium draws a Canvas backplate behind the label, and a
+`HighlightText` label can disappear against it.
 
 ## The gate
 
@@ -70,16 +76,19 @@ npm --prefix web run test --workspace @print-partner/ui
 `--check` and the package tests fail when:
 
 - a text ink is below 4.5:1 (7:1 on shop floor) on any surface, a control edge, the
-  accent, the focus ring or a swatch border is below 3:1, or on-accent or selection
-  text is below the text minimum, in dark, light, shop floor or either forced-colors
-  palette;
+  accent, the focus ring or a swatch border is below 3:1, or on-accent text (on the
+  resting and hover fills) or selection text is below the text minimum, in dark,
+  light, shop floor or either forced-colors palette;
 - a token outside `--interaction-*` resolves to cyan (hue 165 to 200 degrees,
-  saturation 30% or more), or uses a forced-colors highlight keyword;
-- a colour token has no forced-colors system colour;
-- reduced motion leaves a `--motion-duration-*` token above 0 ms;
+  saturation 30% or more);
+- in any theme under forced colors, a colour token, after following `var()`, is not
+  a system colour, resolves to nothing, uses a highlight keyword outside
+  `--interaction-*`, or differs from its forced value in dark;
+- in any theme under reduced motion, a `--motion-duration-*` token is above 0 ms;
 - the tables below are stale (`--check` only).
 
-The forced-colors tables use the Windows "Night sky" and "Desert" contrast themes as
+The gate evaluates each theme with CSS specificity and source order, so a theme rule
+that outranks a media block is caught. The forced-colors tables use the Windows "Night sky" and "Desert" contrast themes as
 sample palettes. The browser chooses the real colours.
 
 ## Contrast
@@ -106,6 +115,7 @@ Dark:
 | interaction-focus-ring | 10.72 | 10.11 | 9.32 | 8.33 | 3 |
 | filament-swatch-border | 6.19 | 5.84 | 5.38 | 4.81 | 3 |
 | interaction-on-accent on interaction-accent | 8.54 | | | | 4.5 |
+| interaction-on-accent on interaction-accent-hover | 10.17 | | | | 4.5 |
 
 Light:
 
@@ -125,6 +135,7 @@ Light:
 | interaction-focus-ring | 4.27 | 4.68 | 5.06 | 5.06 | 3 |
 | filament-swatch-border | 4.00 | 4.39 | 4.75 | 4.75 | 3 |
 | interaction-on-accent on interaction-accent | 5.06 | | | | 4.5 |
+| interaction-on-accent on interaction-accent-hover | 6.57 | | | | 4.5 |
 
 Shop-floor:
 
@@ -144,6 +155,7 @@ Shop-floor:
 | interaction-focus-ring | 14.74 | 14.24 | 13.47 | 12.50 | 3 |
 | filament-swatch-border | 13.49 | 13.02 | 12.33 | 11.44 | 3 |
 | interaction-on-accent on interaction-accent | 11.51 | | | | 7 |
+| interaction-on-accent on interaction-accent-hover | 13.35 | | | | 7 |
 
 Forced colors, dark palette:
 
@@ -163,6 +175,7 @@ Forced colors, dark palette:
 | interaction-focus-ring | 14.37 | 14.37 | 14.37 | 14.37 | 3 |
 | filament-swatch-border | 21.00 | 21.00 | 21.00 | 21.00 | 3 |
 | interaction-on-accent on interaction-accent | 14.37 | | | | 4.5 |
+| interaction-on-accent on interaction-accent-hover | 14.37 | | | | 4.5 |
 
 Forced colors, light palette:
 
@@ -182,5 +195,6 @@ Forced colors, light palette:
 | interaction-focus-ring | 7.27 | 7.27 | 7.27 | 7.27 | 3 |
 | filament-swatch-border | 10.43 | 10.43 | 10.43 | 10.43 | 3 |
 | interaction-on-accent on interaction-accent | 7.00 | | | | 4.5 |
+| interaction-on-accent on interaction-accent-hover | 7.00 | | | | 4.5 |
 
 <!-- ui-tokens:end -->

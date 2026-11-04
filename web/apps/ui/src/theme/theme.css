@@ -18,11 +18,6 @@
   color: var(--text);
 }
 
-.pp-numeric {
-  font-family: var(--font-mono);
-  font-variant-numeric: var(--font-numeric);
-}
-
 /* A filament colour: a round chip with a border, so it never reads as a status pill. */
 .pp-filament-swatch {
   display: inline-block;
@@ -60,27 +55,8 @@
   }
 }
 
-/* A control filled with the accent, such as the one primary button on a screen. */
-.pp-accent-fill {
-  background: var(--interaction-accent);
-  color: var(--interaction-on-accent);
-}
-
-.pp-accent-fill:hover {
-  background: var(--interaction-accent-hover);
-}
-
-/*
- * The tokens are already system colours here (Highlight with HighlightText). Without
- * this, Chromium draws a Canvas backplate behind the label and HighlightText on it
- * can vanish.
- */
+/* A filament colour is data, like an image, so it keeps its real colour. Its border is CanvasText. */
 @media (forced-colors: active) {
-  .pp-accent-fill {
-    forced-color-adjust: none;
-  }
-
-  /* A filament colour is data, like an image, so it keeps its real colour. Its border is CanvasText. */
   .pp-filament-swatch {
     forced-color-adjust: none;
   }

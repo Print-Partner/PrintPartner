@@ -16,7 +16,7 @@ const prefersReducedMotion = () => reducedMotionQuery()?.matches ?? false;
 const serverSnapshot = () => false;
 
 /** True while the system asks for reduced motion. */
-export function usePrefersReducedMotion(): boolean {
+function usePrefersReducedMotion(): boolean {
   return useSyncExternalStore(subscribe, prefersReducedMotion, serverSnapshot);
 }
 

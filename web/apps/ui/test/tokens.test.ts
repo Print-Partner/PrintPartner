@@ -1,30 +1,27 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { parseRules } from "../src/theme/cssTokens.ts";
 import {
   FORCED_COLORS,
-  ROOT,
   THEMES,
   checkTokens,
   colourTokens,
+  effectiveTokens,
   isCyan,
   parseHex,
-  parseRules,
-  pick,
   resolve,
-  themeTokens,
 } from "../src/theme/tokenGate.ts";
 
 // Read from disk: Vitest serves CSS imports, ?raw included, as empty strings.
 const css = readFileSync(new URL("../src/theme/tokens.css", import.meta.url), "utf8");
 
 const rules = parseRules(css);
-const root = pick(rules, ROOT);
-const px = (name: string, tokens = root) => {
+const root = effectiveTokens(rules, {});
+const themeTokens = (theme: (typeof THEMES)[number]) => effectiveTokens(rules, theme.attrs);
+const px = (name: string, tokens = root): number => {
   const value = tokens.get(`--${name}`) ?? "";
   const ref = /^var\(--([\w-]+)\)$/.exec(value);
   if (ref) return px(ref[1], tokens);
@@ -36,11 +33,13 @@ const ms = (name: string) => {
   expect(value, `--${name}`).toMatch(/^\d+ms$/);
   return Number.parseInt(value, 10);
 };
+const problemsWith = (plant: string) => checkTokens(`${css}\n${plant}`).problems;
+const FORCED_ALL = `${FORCED_COLORS} { :root, :root[data-theme]`;
 
 describe("TOK-01 token coverage", () => {
   it("defines every colour role in each theme", () => {
     for (const theme of THEMES) {
-      const names = colourTokens(themeTokens(rules, theme));
+      const names = colourTokens(themeTokens(theme));
       for (const role of ["surface-", "text", "line", "interaction-", "status-", "filament-"]) {
         expect(
           names.some((n) => n.startsWith(role)),
@@ -65,8 +64,7 @@ describe("TOK-01 token coverage", () => {
     expect(px("row-comfortable")).toBe(40);
     expect(px("row-compact")).toBe(32);
     expect(px("row-height")).toBe(40);
-    const compact = new Map([...root, ...pick(rules, ':root[data-density="compact"]')]);
-    expect(px("row-height", compact)).toBe(32);
+    expect(px("row-height", effectiveTokens(rules, { "data-density": "compact" }))).toBe(32);
     expect(px("touch-target-min")).toBe(44);
     expect(px("touch-target")).toBeGreaterThanOrEqual(44);
     expect(px("touch-target")).toBeLessThanOrEqual(48);
@@ -87,9 +85,7 @@ describe("TOK-01 token coverage", () => {
 describe("TOK-02 cyan is interaction only", () => {
   it("detects cyan, so the check below can fail", () => {
     for (const theme of THEMES) {
-      expect(isCyan(resolve(themeTokens(rules, theme), "interaction-accent")!), theme.name).toBe(
-        true,
-      );
+      expect(isCyan(resolve(themeTokens(theme), "interaction-accent")!), theme.name).toBe(true);
     }
     expect(isCyan(parseHex("#16191d")!)).toBe(false);
     expect(isCyan(parseHex("#2f5bc8")!)).toBe(false);
@@ -97,25 +93,32 @@ describe("TOK-02 cyan is interaction only", () => {
 
   it("never resolves a status or filament token to cyan", () => {
     for (const theme of THEMES) {
-      const tokens = themeTokens(rules, theme);
+      const tokens = themeTokens(theme);
       const guarded = colourTokens(tokens).filter((n) => /^(status|filament)-/.test(n));
       expect(guarded.length).toBeGreaterThan(0);
-      for (const name of guarded)
+      for (const name of guarded) {
         expect(isCyan(resolve(tokens, name)!), `${theme.name} --${name}`).toBe(false);
+      }
     }
   });
 
   it("fails a status token that points at an interaction token", () => {
-    const planted = `${css}\n:root[data-theme="light"] { --status-info: var(--interaction-accent); }`;
-    expect(checkTokens(planted).problems).toContain(
-      "light: --status-info is cyan; cyan is for interaction tokens only",
-    );
+    expect(
+      problemsWith(':root[data-theme="light"] { --status-info: var(--interaction-accent); }'),
+    ).toContain("light: --status-info is cyan; cyan is for interaction tokens only");
   });
 
   it("fails a status token mapped to a forced-colors highlight", () => {
-    const planted = `${css}\n${FORCED_COLORS} { :root { --status-success: Highlight; } }`;
-    expect(checkTokens(planted).problems).toContain(
-      "forced colors: --status-success uses Highlight; highlight colours are for interaction tokens only",
+    expect(problemsWith(`${FORCED_ALL} { --status-success: Highlight; } }`)).toContain(
+      "forced colors (dark): --status-success uses Highlight; highlight colours are for interaction tokens only",
+    );
+  });
+
+  it("follows a forced-colors var() alias to the highlight keyword it ends at", () => {
+    expect(
+      problemsWith(`${FORCED_ALL} { --status-success: var(--interaction-text); } }`),
+    ).toContain(
+      "forced colors (dark): --status-success uses LinkText; highlight colours are for interaction tokens only",
     );
   });
 });
@@ -151,47 +154,71 @@ describe("TOK-03 contrast gate", () => {
       "dark: --line-strong on --surface-sunken",
     ],
     [
+      "accent hover fill",
+      ':root[data-theme="light"] { --interaction-accent-hover: #ffffff; }',
+      "light: --interaction-on-accent on --interaction-accent-hover",
+    ],
+    [
       "forced colors",
-      `${FORCED_COLORS} { :root { --text-muted: Canvas; } }`,
+      `${FORCED_ALL} { --text-muted: Canvas; } }`,
       "forced colors, dark palette: --text-muted on --surface-sunken",
     ],
   ])("fails a planted low-contrast pair (%s)", (_label, plant, expected) => {
-    const { problems } = checkTokens(`${css}\n${plant}`);
-    expect(problems.some((p) => p.startsWith(expected))).toBe(true);
+    expect(problemsWith(plant).some((p) => p.startsWith(expected))).toBe(true);
   });
 
-  it("fails a planted pair through web/scripts/design-system-contrast.mjs --check", () => {
+  it("runs from web/scripts/design-system-contrast.mjs --check", () => {
     const script = fileURLToPath(
       new URL("../../../scripts/design-system-contrast.mjs", import.meta.url),
     );
-    const scratch = mkdtempSync(join(tmpdir(), "ui-tokens-"));
-    try {
-      const planted = join(scratch, "tokens.css");
-      writeFileSync(planted, `${css}\n:root[data-theme="light"] { --text-muted: #9aa1a8; }`);
-      let stderr = "";
-      try {
-        execFileSync(process.execPath, [script, "--check", "--ui-css", planted], { stdio: "pipe" });
-      } catch (error) {
-        stderr = String((error as { stderr?: Buffer }).stderr);
-      }
-      expect(stderr).toMatch(
-        /apps\/ui: light: --text-muted on --surface-sunken is [\d.]+:1, below 4\.5:1/,
-      );
-    } finally {
-      rmSync(scratch, { recursive: true, force: true });
-    }
+    const output = execFileSync(process.execPath, [script, "--check"], { encoding: "utf8" });
+    expect(output).toContain("apps/ui tokens: dark, light, shop floor and forced colors pass");
   });
 
   it("fails a colour token with no forced-colors mapping", () => {
-    const { problems } = checkTokens(`${css}\n:root { --status-paused: #c29bf0; }`);
-    expect(problems).toContain("forced colors: --status-paused is not mapped to a system colour");
+    expect(problemsWith(":root { --status-paused: #c29bf0; }")).toContain(
+      "forced colors (dark): --status-paused is #c29bf0, not a system colour",
+    );
   });
 
-  it("fails a duration that reduced motion leaves running", () => {
-    const { problems } = checkTokens(`${css}\n:root { --motion-duration-extra: 180ms; }`);
-    expect(problems.some((p) => p.startsWith("reduced motion: --motion-duration-extra"))).toBe(
-      true,
+  it("fails a forced-colors alias that resolves to nothing", () => {
+    expect(
+      problemsWith(`${FORCED_ALL} { --filament-swatch-empty: var(--missing-token); } }`),
+    ).toContain("forced colors (light): --filament-swatch-empty does not resolve to a value");
+  });
+
+  it("fails a theme colour that outranks the forced-colors block", () => {
+    expect(problemsWith(':root[data-theme="light"] { --text: #000000; }')).toContain(
+      "forced colors (light): --text is #000000, not a system colour",
     );
+  });
+
+  it("fails forced colors that change with the theme", () => {
+    expect(
+      problemsWith(`${FORCED_COLORS} { :root[data-theme="light"] { --text-muted: GrayText; } }`),
+    ).toContain(
+      "forced colors (light): --text-muted is GrayText but CanvasText in dark; forced colors must not depend on the theme",
+    );
+  });
+
+  it.each([
+    [
+      "root",
+      ":root { --motion-duration-extra: 180ms; }",
+      "reduced motion (dark): --motion-duration-extra",
+    ],
+    [
+      "theme override",
+      ':root[data-theme="light"] { --motion-duration-base: 160ms; }',
+      "reduced motion (light): --motion-duration-base is 160ms",
+    ],
+    [
+      "duration only in a theme",
+      ':root[data-theme="shop-floor"] { --motion-duration-pulse: 140ms; }',
+      "reduced motion (shop-floor): --motion-duration-pulse",
+    ],
+  ])("fails a duration that reduced motion leaves running (%s)", (_label, plant, expected) => {
+    expect(problemsWith(plant).some((p) => p.startsWith(expected))).toBe(true);
   });
 });
 

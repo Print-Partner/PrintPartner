@@ -1,36 +1,28 @@
 // Contrast and colour-role gate for the replacement UI tokens in tokens.css.
 // web/scripts/design-system-contrast.mjs loads this file directly with Node's type
-// stripping, so it has no imports and uses only erasable TypeScript syntax.
+// stripping, so it uses only erasable TypeScript syntax and imports with a .ts suffix.
+import { contrast, parseRules, declarations, type CssRule, type Rgb } from "./cssTokens.ts";
 
-export type Rgb = readonly [number, number, number];
-
-export interface Rule {
-  media: string | null;
-  selector: string;
-  decls: Map<string, string>;
-}
-
-export interface Theme {
+interface Theme {
   name: string;
-  /** Rules merged in order; later rules win. */
-  selectors: readonly string[];
+  /** Root attributes that select the theme. Dark is the default and sets none. */
+  attrs: Readonly<Record<string, string>>;
   /** Minimum ratio for text inks. Shop floor is read from across a room, so 7:1. */
   textMin: number;
 }
 
-export const ROOT = ":root";
 export const FORCED_COLORS = "@media (forced-colors: active)";
-export const REDUCED_MOTION = "@media (prefers-reduced-motion: reduce)";
+const REDUCED_MOTION = "@media (prefers-reduced-motion: reduce)";
 
 export const THEMES: readonly Theme[] = [
-  { name: "dark", selectors: [ROOT], textMin: 4.5 },
-  { name: "light", selectors: [ROOT, ':root[data-theme="light"]'], textMin: 4.5 },
-  { name: "shop-floor", selectors: [ROOT, ':root[data-theme="shop-floor"]'], textMin: 7 },
+  { name: "dark", attrs: {}, textMin: 4.5 },
+  { name: "light", attrs: { "data-theme": "light" }, textMin: 4.5 },
+  { name: "shop-floor", attrs: { "data-theme": "shop-floor" }, textMin: 7 },
 ];
 
-export const SURFACES = ["surface-sunken", "surface-base", "surface-raised", "surface-overlay"];
+const SURFACES = ["surface-sunken", "surface-base", "surface-raised", "surface-overlay"];
 /** Inks that carry words. Each must reach the theme's text minimum on every surface. */
-export const TEXT_INKS = [
+const TEXT_INKS = [
   "text",
   "text-muted",
   "interaction-text",
@@ -41,20 +33,21 @@ export const TEXT_INKS = [
   "status-neutral",
 ];
 /** Control edges and indicators. WCAG 1.4.11 asks for 3:1 on every surface. */
-export const UI_INKS = [
+const UI_INKS = [
   "line-strong",
   "interaction-accent",
   "interaction-focus-ring",
   "filament-swatch-border",
 ];
 /** Ink on a filled background: [ink, fill]. */
-export const FILLED_PAIRS: readonly (readonly [string, string])[] = [
+const FILLED_PAIRS: readonly (readonly [string, string])[] = [
   ["interaction-on-accent", "interaction-accent"],
+  ["interaction-on-accent", "interaction-accent-hover"],
   ["text", "interaction-selection"],
 ];
 
 /** Only these tokens may be cyan, and only they may use forced-colors highlight keywords. */
-export const INTERACTION_PREFIX = "interaction-";
+const INTERACTION_PREFIX = "interaction-";
 const HIGHLIGHT_KEYWORDS = new Set([
   "highlight",
   "highlighttext",
@@ -72,7 +65,7 @@ const HIGHLIGHT_KEYWORDS = new Set([
  * "Desert"). The browser picks the real colours; the gate checks that the
  * keyword pairs the tokens use hold up in both.
  */
-export const FORCED_PALETTES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+const FORCED_PALETTES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "forced colors, dark palette": {
     canvas: "#000000",
     canvastext: "#ffffff",
@@ -101,61 +94,41 @@ export const FORCED_PALETTES: Readonly<Record<string, Readonly<Record<string, st
   },
 };
 
-/** Leaf rules with the @media they sit in. Other at-rules are transparent. */
-export function parseRules(css: string): Rule[] {
-  const source = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  const out: Rule[] = [];
-  const walk = (text: string, media: string | null) => {
-    let i = 0;
-    while (i < text.length) {
-      const open = text.indexOf("{", i);
-      if (open < 0) break;
-      let prelude = text.slice(i, open);
-      prelude = prelude
-        .slice(prelude.lastIndexOf(";") + 1)
-        .replace(/\s+/g, " ")
-        .trim();
-      let depth = 0;
-      let close = open;
-      for (; close < text.length; close++) {
-        if (text[close] === "{") depth++;
-        else if (text[close] === "}" && --depth === 0) break;
-      }
-      const body = text.slice(open + 1, close);
-      if (prelude.startsWith("@")) walk(body, prelude.startsWith("@media") ? prelude : media);
-      else {
-        const decls = new Map<string, string>();
-        for (const part of body.split(";")) {
-          const colon = part.indexOf(":");
-          if (colon >= 0) decls.set(part.slice(0, colon).trim(), part.slice(colon + 1).trim());
-        }
-        out.push({ media, selector: prelude, decls });
-      }
-      i = close + 1;
-    }
-  };
-  walk(source, null);
-  return out;
-}
-
-export function pick(
-  rules: readonly Rule[],
-  selector: string,
-  media: string | null = null,
-): Map<string, string> {
-  const merged = new Map<string, string>();
-  for (const rule of rules) {
-    if (rule.selector === selector && rule.media === media) {
-      for (const [k, v] of rule.decls) merged.set(k, v);
-    }
+/**
+ * Specificity of a `:root` selector with attribute selectors, as the number of
+ * class-level parts, when it matches these root attributes; otherwise null.
+ */
+function rootMatch(selector: string, attrs: Readonly<Record<string, string>>): number | null {
+  const m = /^:root((?:\[[\w-]+(?:="[^"]*")?\])*)$/.exec(selector.trim());
+  if (!m) return null;
+  let parts = 1;
+  for (const [, name, value] of m[1].matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)) {
+    if (!(name in attrs) || (value !== undefined && attrs[name] !== value)) return null;
+    parts++;
   }
-  return merged;
+  return parts;
 }
 
-export function themeTokens(rules: readonly Rule[], theme: Theme): Map<string, string> {
+/**
+ * Custom properties in effect on the root element with these attributes, while the
+ * given media queries match. Later rules win among equal specificity, as in CSS.
+ */
+export function effectiveTokens(
+  rules: readonly CssRule[],
+  attrs: Readonly<Record<string, string>>,
+  media: readonly string[] = [],
+): Map<string, string> {
+  const applying: { specificity: number; index: number; rule: CssRule }[] = [];
+  rules.forEach((rule, index) => {
+    if (rule.media !== null && !media.includes(rule.media)) return;
+    const matches = rule.selector.split(",").map((s) => rootMatch(s, attrs));
+    const specificity = Math.max(-1, ...matches.map((m) => m ?? -1));
+    if (specificity >= 0) applying.push({ specificity, index, rule });
+  });
+  applying.sort((a, b) => a.specificity - b.specificity || a.index - b.index);
   const merged = new Map<string, string>();
-  for (const selector of theme.selectors) {
-    for (const [k, v] of pick(rules, selector)) merged.set(k, v);
+  for (const { rule } of applying) {
+    for (const [k, v] of declarations(rule.body)) if (k.startsWith("--")) merged.set(k, v);
   }
   return merged;
 }
@@ -167,13 +140,9 @@ export function parseHex(value: string): Rgb | null {
   return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255) as unknown as Rgb;
 }
 
-/** Follows var() references to a hex colour, or to a system keyword in forced colors. */
-export function resolve(
-  tokens: Map<string, string>,
-  name: string,
-  palette?: Record<string, string>,
-): Rgb | null {
-  const seen = new Set<string>();
+/** Follows var() references to the final value; null for a missing token or a cycle. */
+function terminal(tokens: Map<string, string>, name: string): string | null {
+  const seen = new Set([name]);
   let value = tokens.get(`--${name}`);
   while (value !== undefined) {
     const ref = /^var\(--([\w-]+)\)$/.exec(value);
@@ -182,22 +151,20 @@ export function resolve(
     seen.add(ref[1]);
     value = tokens.get(`--${ref[1]}`);
   }
-  if (value === undefined) return null;
-  if (palette) {
-    const system = palette[value.toLowerCase()];
-    return system ? parseHex(system) : null;
-  }
-  return parseHex(value);
+  return value ?? null;
 }
 
-function luminance(rgb: Rgb): number {
-  const [r, g, b] = rgb.map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-export function contrast(a: Rgb, b: Rgb): number {
-  const [x, y] = [luminance(a), luminance(b)];
-  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+/** The token's colour: a hex value, or a system keyword looked up in a forced palette. */
+export function resolve(
+  tokens: Map<string, string>,
+  name: string,
+  palette?: Readonly<Record<string, string>>,
+): Rgb | null {
+  const value = terminal(tokens, name);
+  if (value === null) return null;
+  if (!palette) return parseHex(value);
+  const system = palette[value.toLowerCase()];
+  return system ? parseHex(system) : null;
 }
 
 /** Cyan: hue 165 to 200 degrees with HSL saturation of at least 30%. Graphite stays far below that. */
@@ -218,19 +185,17 @@ export function isCyan([r, g, b]: Rgb): boolean {
 
 /** Custom properties whose value resolves to a colour in this token set. */
 export function colourTokens(tokens: Map<string, string>): string[] {
-  return [...tokens.keys()]
-    .filter((k) => k.startsWith("--") && resolve(tokens, k.slice(2)) !== null)
-    .map((k) => k.slice(2));
+  return [...tokens.keys()].map((k) => k.slice(2)).filter((name) => resolve(tokens, name) !== null);
 }
 
-export interface Measured {
+interface Measured {
   ink: string;
   on: string;
   ratio: number;
   min: number;
 }
 
-export interface GateResult {
+interface GateResult {
   problems: string[];
   /** Per theme or forced palette: every measured pair. */
   tables: { label: string; rows: Measured[] }[];
@@ -241,7 +206,7 @@ function measure(
   textMin: number,
   label: string,
   problems: string[],
-  palette?: Record<string, string>,
+  palette?: Readonly<Record<string, string>>,
 ): Measured[] {
   const rows: Measured[] = [];
   const check = (ink: string, on: string, min: number) => {
@@ -262,61 +227,73 @@ function measure(
   return rows;
 }
 
+const SYSTEM_KEYWORDS = Object.keys(Object.values(FORCED_PALETTES)[0]);
+
+/**
+ * Forced colors: the browser swaps authored colours for system ones. Every colour
+ * token, after following var(), must be a system colour so nothing authored leaks
+ * through, only interaction tokens may borrow the highlight family, and the result
+ * must match the dark theme's.
+ */
+function checkForced(
+  label: string,
+  colours: readonly string[],
+  forced: Map<string, string>,
+  dark: Map<string, string>,
+  problems: string[],
+) {
+  for (const name of colours) {
+    const value = terminal(forced, name);
+    const keyword = value?.toLowerCase() ?? "";
+    const darkValue = terminal(dark, name);
+    if (value === null) problems.push(`${label}: --${name} does not resolve to a value`);
+    else if (!SYSTEM_KEYWORDS.includes(keyword)) {
+      problems.push(`${label}: --${name} is ${value}, not a system colour`);
+    } else if (HIGHLIGHT_KEYWORDS.has(keyword) && !name.startsWith(INTERACTION_PREFIX)) {
+      problems.push(
+        `${label}: --${name} uses ${value}; highlight colours are for interaction tokens only`,
+      );
+    } else if (keyword !== darkValue?.toLowerCase()) {
+      problems.push(
+        `${label}: --${name} is ${value} but ${darkValue} in dark; forced colors must not depend on the theme`,
+      );
+    }
+  }
+}
+
+/** Reduced motion: every duration in effect drops to 0ms. */
+function checkReducedMotion(label: string, reduced: Map<string, string>, problems: string[]) {
+  for (const [key, value] of reduced) {
+    if (key.startsWith("--motion-duration-") && value !== "0ms") {
+      problems.push(`${label}: ${key} is ${value}, must be 0ms`);
+    }
+  }
+}
+
 export function checkTokens(css: string): GateResult {
   const rules = parseRules(css);
   const problems: string[] = [];
   const tables: GateResult["tables"] = [];
-  const allColours = new Set<string>();
+  const darkForced = effectiveTokens(rules, THEMES[0].attrs, [FORCED_COLORS]);
 
   for (const theme of THEMES) {
-    const tokens = themeTokens(rules, theme);
+    const tokens = effectiveTokens(rules, theme.attrs);
     tables.push({ label: theme.name, rows: measure(tokens, theme.textMin, theme.name, problems) });
-    for (const name of colourTokens(tokens)) {
-      allColours.add(name);
-      const rgb = resolve(tokens, name);
-      if (rgb && isCyan(rgb) && !name.startsWith(INTERACTION_PREFIX)) {
+    const colours = colourTokens(tokens);
+    for (const name of colours) {
+      if (isCyan(resolve(tokens, name)!) && !name.startsWith(INTERACTION_PREFIX)) {
         problems.push(`${theme.name}: --${name} is cyan; cyan is for interaction tokens only`);
       }
     }
+    const forced = effectiveTokens(rules, theme.attrs, [FORCED_COLORS]);
+    checkForced(`forced colors (${theme.name})`, colours, forced, darkForced, problems);
+    const reduced = effectiveTokens(rules, theme.attrs, [REDUCED_MOTION]);
+    checkReducedMotion(`reduced motion (${theme.name})`, reduced, problems);
   }
 
-  // Forced colors: the browser swaps authored colours for system ones. Every colour
-  // token must name a system colour so nothing authored leaks through, and only
-  // interaction tokens may borrow the highlight family.
-  const forced = pick(rules, ROOT, FORCED_COLORS);
-  const palettes = Object.entries(FORCED_PALETTES);
-  for (const name of allColours) {
-    const value = forced.get(`--${name}`);
-    if (value === undefined) {
-      problems.push(`forced colors: --${name} is not mapped to a system colour`);
-      continue;
-    }
-    const keyword = /^var\(/.test(value) ? null : value.toLowerCase();
-    if (keyword !== null && !(keyword in palettes[0][1])) {
-      problems.push(`forced colors: --${name} is ${value}, not a known system colour`);
-    }
-    if (
-      keyword !== null &&
-      HIGHLIGHT_KEYWORDS.has(keyword) &&
-      !name.startsWith(INTERACTION_PREFIX)
-    ) {
-      problems.push(
-        `forced colors: --${name} uses ${value}; highlight colours are for interaction tokens only`,
-      );
-    }
+  for (const [label, palette] of Object.entries(FORCED_PALETTES)) {
+    tables.push({ label, rows: measure(darkForced, 4.5, label, problems, palette) });
   }
-  for (const [label, palette] of palettes) {
-    tables.push({ label, rows: measure(forced, 4.5, label, problems, palette) });
-  }
-
-  // Reduced motion: every duration token drops to 0ms.
-  const reduced = pick(rules, ROOT, REDUCED_MOTION);
-  for (const [key, value] of pick(rules, ROOT)) {
-    if (key.startsWith("--motion-duration-") && reduced.get(key) !== "0ms") {
-      problems.push(`reduced motion: ${key} is ${value}, must be 0ms under ${REDUCED_MOTION}`);
-    }
-  }
-
   return { problems, tables };
 }
 

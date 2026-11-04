@@ -16,10 +16,10 @@ use windows_sys::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
             FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
-            FILE_DISPOSITION_INFORMATION, FILE_DISPOSITION_INFORMATION_EX,
-            FILE_DISPOSITION_POSIX_SEMANTICS, FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE,
-            FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
-            FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+            FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
+            FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
+            FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+            FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
             FILE_SYNCHRONOUS_IO_NONALERT, FileDispositionInformation, FileDispositionInformationEx,
             FileRenameInformation, FileRenameInformationEx, NTCREATEFILE_CREATE_DISPOSITION,
             NTCREATEFILE_CREATE_OPTIONS, NtCreateFile, NtSetInformationFile,
@@ -224,9 +224,15 @@ fn set_information(
 /// Delete the object `file` is open on. POSIX semantics remove the name at
 /// once, even while other handles stay open, as `unlink` does. Without them
 /// the name stays until the last handle closes and cannot be opened again.
+/// The read-only attribute does not block the delete, as it does not block
+/// `unlink`; `std::fs::remove_file` uses the same flags. File systems without
+/// the extended class get the classic delete, which a read-only entry refuses,
+/// as `DeleteFileW` does there.
 fn delete_open(file: &File) -> io::Result<()> {
     let posix = FILE_DISPOSITION_INFORMATION_EX {
-        Flags: FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS,
+        Flags: FILE_DISPOSITION_DELETE
+            | FILE_DISPOSITION_POSIX_SEMANTICS
+            | FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE,
     };
     let status = set_information(
         file,

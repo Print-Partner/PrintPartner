@@ -253,6 +253,23 @@ fn entry_operations_follow_the_handle_after_the_directory_is_renamed() {
 }
 
 #[test]
+fn remove_file_removes_a_read_only_entry() {
+    let root = scratch();
+    let dir = Dir::open(root.path()).unwrap();
+    drop(dir.create_new_nofollow("read-only").unwrap());
+    let path = root.path().join("read-only");
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    dir.remove_file("read-only").unwrap();
+    assert!(!path.exists());
+    assert_eq!(
+        dir.status_nofollow("read-only").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
+#[test]
 fn open_directory_can_be_removed() {
     let root = scratch();
     let path = root.path().join("store");
@@ -569,6 +586,14 @@ mod windows {
             dir.status_nofollow("first").unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+        inner.create_dir("read-only").unwrap();
+        let mut permissions = std::fs::metadata(retired.join("read-only"))
+            .unwrap()
+            .permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(retired.join("read-only"), permissions).unwrap();
+        inner.remove_dir("read-only").unwrap();
+        assert!(!retired.join("read-only").exists());
         assert!(inner.remove_dir("second").is_err());
         assert!(retired.join("second").is_file());
         assert!(!path.join("second").exists());

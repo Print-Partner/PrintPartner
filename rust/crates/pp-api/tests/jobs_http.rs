@@ -2133,7 +2133,9 @@ async fn jobs_router_shutdown_closes_subscriptions() {
     );
     let (status, body) =
         ws_exchange(&server, &Method::GET, &path, &server.origin, Some(&cookie)).await;
-    assert_refusal(&Method::GET, status, &body, 500, "Jobs service unavailable");
+    // A stopped writer is a 503 refusal, not an internal error.
+    let detail = "Jobs service temporarily unavailable";
+    assert_refusal(&Method::GET, status, &body, 503, detail);
     assert_eq!(job_rows(&directory), rows);
     server.stop().await;
     drop(directory);

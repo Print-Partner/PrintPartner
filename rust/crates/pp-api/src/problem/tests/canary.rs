@@ -109,6 +109,8 @@ async fn assert_clean(label: &str, response: Response) {
 }
 
 type Mapper = fn(anyhow::Error) -> Response;
+/// A storage error and the problem types a router may answer it with.
+type Case = (fn() -> anyhow::Error, &'static [ProblemType]);
 
 async fn problem_of(response: Response) -> Problem {
     let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
@@ -149,31 +151,75 @@ async fn problem_response_canary_never_leaks_sql_paths_or_urls() {
 }
 
 /// A full writer queue is retryable on every router; an unknown commit is
-/// never a plain 500 or 401 that a client might blindly retry.
+/// never a plain 500 or 401 that a client might blindly retry. Storage reports
+/// writer admission both as typed failures and as plain messages (the job read
+/// paths), so both forms are checked.
 #[tokio::test]
 async fn problem_response_typed_storage_failures_keep_their_type_on_every_router() {
-    let cases: [(fn() -> anyhow::Error, ProblemType); 2] = [
-        (|| AuthFailure::QueueFull.into(), ProblemType::Overloaded),
+    use ProblemType::{OutcomeUnknown, Overloaded, Unavailable};
+    let cases: [Case; 5] = [
+        (|| AuthFailure::QueueFull.into(), &[Overloaded]),
+        (|| AuthFailure::CommitUnknown.into(), &[OutcomeUnknown]),
+        (|| anyhow::anyhow!("Writer queue full"), &[Overloaded]),
+        // Auth shares Node's one detail for a full and a stopping writer.
         (
-            || AuthFailure::CommitUnknown.into(),
-            ProblemType::OutcomeUnknown,
+            || anyhow::anyhow!("Storage stopped"),
+            &[Unavailable, Overloaded],
+        ),
+        (
+            || anyhow::anyhow!("Cancelled before admission"),
+            &[Unavailable, Overloaded],
         ),
     ];
     for (name, mapper) in MAPPERS {
-        for (error, kind) in cases {
-            let response = mapper(error().context(format!("query {SQL}")));
+        for (index, (error, kinds)) in cases.iter().enumerate() {
+            let response = mapper(error());
             assert_eq!(
                 response.status(),
                 StatusCode::SERVICE_UNAVAILABLE,
-                "{name} {kind:?}"
+                "{name} #{index}"
             );
             let problem = problem_of(response).await;
-            assert_eq!(problem.problem_type, kind, "{name}");
+            assert!(
+                kinds.contains(&problem.problem_type),
+                "{name} #{index}: {problem:?}"
+            );
         }
     }
-    let queue = crate::accepted::read_error(&anyhow::anyhow!("Writer queue full"));
-    let problem = problem_of(queue).await;
-    assert_eq!(problem.problem_type, ProblemType::Overloaded);
+    // The job read paths fail with storage's own job errors, not AuthFailure:
+    // `JobFailure::CommitUnknown` and `submit`'s plain admission messages.
+    let jobs = crate::jobs::domain_error;
+    let commit = jobs(anyhow::anyhow!(pp_storage::jobs::JobFailure::CommitUnknown));
+    assert_eq!(problem_of(commit).await.problem_type, OutcomeUnknown);
+    let full = jobs(anyhow::anyhow!("Writer queue full"));
+    assert_eq!(problem_of(full).await.problem_type, Overloaded);
+    let stopped = jobs(stopped_job_read());
+    assert_eq!(stopped.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(problem_of(stopped).await.problem_type, Unavailable);
+}
+
+/// A real `read_public` against a shut-down writer: `submit` refuses it.
+fn stopped_job_read() -> anyhow::Error {
+    use pp_storage::auth::{
+        AuthPolicy, FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy,
+    };
+    let directory = crate::scratch::Scratch::new("pp-problem-jobs-");
+    let limits = pp_storage::Limits::default();
+    let owner = pp_storage::WriterOwner::open(&directory, limits).unwrap().0;
+    let client = owner
+        .jobs(AuthPolicy {
+            registration: RegistrationPolicy::Open,
+            first_user: FirstUserTenant::NewUser,
+            session_tenant: SessionTenantPolicy::AccountTenant,
+        })
+        .unwrap();
+    owner.shutdown().unwrap();
+    let credential = pp_storage::jobs::Credential::Session(Secret::new("canary-7f3a".into()));
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let wait = std::time::Duration::from_millis(50);
+    client
+        .read_public(credential, "job".into(), &cancelled, wait)
+        .unwrap_err()
 }
 
 /// Manifest observation failures send only a closed `ReadFailure` name as

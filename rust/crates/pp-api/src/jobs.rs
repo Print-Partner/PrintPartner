@@ -28,7 +28,7 @@ use axum::{
 use pp_storage::{
     auth::{AuthFailure, Secret},
     jobs::{
-        AtomicJobClient, Credential, FrameAdmission, JobAccessFailure, JobSnapshot,
+        AtomicJobClient, Credential, FrameAdmission, JobAccessFailure, JobFailure, JobSnapshot,
         JobSubscription, LegacyListFilter, LegacyProfileFilter, LegacyStatusFilter,
         NonblockingSend, PreparedEvent, RetainedJobs, StreamClose,
     },
@@ -578,6 +578,22 @@ fn parse_node_profile_id(value: &str) -> Option<u64> {
 }
 
 pub(crate) fn domain_error(error: anyhow::Error) -> Response {
+    if let Some(refused) =
+        crate::problem::admission_response(&error, "Jobs service temporarily unavailable")
+    {
+        return refused;
+    }
+    // A job write whose commit could not be confirmed: reload, never retry blindly.
+    if matches!(
+        error.downcast_ref::<JobFailure>(),
+        Some(JobFailure::CommitUnknown)
+    ) {
+        return crate::problem::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Jobs service temporarily unavailable",
+            "outcome_unknown",
+        );
+    }
     if let Some(access) = error.downcast_ref::<JobAccessFailure>() {
         return match access {
             JobAccessFailure::NotFound | JobAccessFailure::InternalOnly => {

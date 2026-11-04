@@ -159,6 +159,38 @@ pub fn without_envelope(mut body: Value) -> Value {
     body
 }
 
+/// A writer-admission failure that storage reports as a plain message rather
+/// than a typed error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// The writer queue stayed full past the wait budget: retry later.
+    Full,
+    /// The writer is stopping or refused admission: unavailable.
+    Stopped,
+}
+
+/// Classifies storage's plain writer-admission messages anywhere in the error
+/// chain. Compared, never echoed.
+pub fn writer_admission(error: &anyhow::Error) -> Option<Admission> {
+    error
+        .chain()
+        .find_map(|cause| match cause.to_string().as_str() {
+            "Writer queue full" => Some(Admission::Full),
+            "Cancelled before admission" | "Writer admission poisoned" => Some(Admission::Stopped),
+            message if message.starts_with("Storage stopped") => Some(Admission::Stopped),
+            _ => None,
+        })
+}
+
+/// 503 for a plain writer-admission message: `overloaded` when the queue is
+/// full, `unavailable` when the writer is stopping. `None` for anything else.
+pub fn admission_response(error: &anyhow::Error, detail: &str) -> Option<Response> {
+    Some(match writer_admission(error)? {
+        Admission::Full => overloaded(detail),
+        Admission::Stopped => response(StatusCode::SERVICE_UNAVAILABLE, detail),
+    })
+}
+
 /// True when `bytes` is a JSON object: a readable body, so a refusal of it is a
 /// validation problem, not a malformed request.
 pub fn is_json_object(bytes: &[u8]) -> bool {

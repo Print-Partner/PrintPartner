@@ -64,6 +64,9 @@ impl From<anyhow::Error> for Failure {
             Some(QueueFull | Stopped) => (503, BUSY),
             #[cfg(feature = "desktop_rebuild")]
             Some(CommitUnknown) => (503, OUTCOME_UNKNOWN),
+            // Storage's plain admission messages are retryable too.
+            #[cfg(feature = "desktop_rebuild")]
+            None if crate::problem::writer_admission(&error).is_some() => (503, BUSY),
             _ => (500, "Authentication unavailable"),
         };
         let Ok(status) = StatusCode::from_u16(status) else {

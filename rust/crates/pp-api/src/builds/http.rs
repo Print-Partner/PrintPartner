@@ -659,6 +659,11 @@ fn summary_body(
 }
 
 pub(crate) fn domain_error(error: anyhow::Error) -> Response {
+    if let Some(refused) =
+        crate::problem::admission_response(&error, "Build service temporarily unavailable")
+    {
+        return refused;
+    }
     if let Some(auth) = error.downcast_ref::<AuthFailure>() {
         return match auth {
             AuthFailure::SessionRequired

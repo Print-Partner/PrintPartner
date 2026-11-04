@@ -1,0 +1,63 @@
+/* Base rules that read the tokens in tokens.css. Values come from tokens only. */
+
+:root {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--line-height-normal);
+  background: var(--surface-base);
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--interaction-focus-ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--interaction-selection);
+  color: var(--interaction-on-selection);
+}
+
+/* A filament colour: a round chip with a border, so it never reads as a status pill. */
+.pp-filament-swatch {
+  display: inline-block;
+  box-sizing: border-box;
+  width: var(--filament-swatch-size);
+  height: var(--filament-swatch-size);
+  border: var(--filament-swatch-border-width) solid var(--filament-swatch-border);
+  border-radius: var(--filament-swatch-radius);
+  background: var(--filament-swatch-empty);
+  vertical-align: middle;
+}
+
+.pp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pp-motion-cue[data-motion="full"] > .pp-motion-subject {
+  animation: pp-arrive var(--motion-duration-base) var(--motion-ease-out);
+}
+
+.pp-motion-text {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+@keyframes pp-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* A filament colour is data, like an image, so it keeps its real colour. Its border is CanvasText. */
+@media (forced-colors: active) {
+  .pp-filament-swatch {
+    forced-color-adjust: none;
+  }
+}

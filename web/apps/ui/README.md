@@ -50,7 +50,8 @@ server's copy of the notices matches.
 
 - `src/fonts/fonts.css` declares the faces. Sources are relative WOFF2 URLs only,
   with no `local()` and no remote URL; `test/fonts.test.ts` enforces that.
-- `src/typography.css` defines `--font-sans` and `--font-mono` and the `.num`
+- `src/theme/tokens.css` defines `--font-sans` and `--font-mono`, naming the
+  bundled families. `src/typography.css` holds the heading weights and the `.num`
   class: Plex Mono with `font-variant-numeric: tabular-nums`. Use `.num` for
   counts, ETAs, grams, IDs and order numbers.
 - `/type` renders every face and figure role, for screenshot checks.
@@ -102,6 +103,7 @@ colour here; change the Rust enum and regenerate.
   `typecheck` until it has a component.
 - `printerStatusPresentation` throws on an empty label instead of rendering an
   icon-only or blank status.
-- Each descriptor names a `--status-*` token defined in `src/index.css`. Cyan
+- Each descriptor names a `--status-*` token defined in `src/theme/tokens.css`
+  for every theme (see `docs/product/ui-tokens.md`). Cyan
   is reserved for focus, selection and the primary button, so
   `PrinterStatus.test.tsx` fails if a status token is a cyan hue.

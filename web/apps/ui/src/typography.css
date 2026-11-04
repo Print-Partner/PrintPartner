@@ -1,9 +1,8 @@
 /* Type roles from docs/product/ui-ux-target.md: Plex Sans 400/500/600 for UI text, Plex
-   Mono 400/500 with tabular figures for counts, ETAs, grams, IDs and order numbers. */
+   Mono 400/500 with tabular figures for counts, ETAs, grams, IDs and order numbers.
+   --font-sans, --font-mono and --font-numeric are defined once, in theme/tokens.css;
+   theme/theme.css sets the page font-family from --font-sans. */
 :root {
-  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  font-family: var(--font-sans);
   font-weight: 400;
 }
 
@@ -22,5 +21,5 @@ th {
 /* Counts, ETAs, grams, IDs and order numbers. */
 .num {
   font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: var(--font-numeric);
 }

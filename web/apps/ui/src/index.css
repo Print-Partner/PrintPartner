@@ -1,21 +1,3 @@
-:root {
-  color-scheme: dark;
-  --surface: #16191d;
-  --text: #e6e8eb;
-  --muted: #9aa3ad;
-  --line: #2a2f36;
-  /* Status colours. The Rust printer display descriptors name these tokens.
-     Cyan is reserved for interaction (focus, selection, the primary button),
-     so none of them may be cyan. */
-  --status-active: #8b9cf7;
-  --status-positive: #4ade80;
-  --status-attention: #fbbf24;
-  --status-danger: #f87171;
-  --status-neutral: #9aa3ad;
-  background: var(--surface);
-  color: var(--text);
-}
-
 body {
   margin: 0;
 }
@@ -33,7 +15,7 @@ body {
 }
 
 .core-status {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .shell-main {

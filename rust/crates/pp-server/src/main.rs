@@ -34,10 +34,12 @@ async fn main() -> Result<()> {
     .await?;
     if let Some(path) = credential_file {
         let url = runtime.take_launch_target()?.into_url();
-        let child_pid = match *runtime.handle().subscribe().borrow() {
-            CoreStatus::Ready { pid, .. } => Some(pid),
-            _ if runtime.rust_only() => None,
-            _ => bail!("Compatibility child is not ready for the test receipt"),
+        let child_pid = match runtime.handle().compat_status() {
+            None => None,
+            Some(status) => match *status.borrow() {
+                CoreStatus::Ready { pid, .. } => Some(pid),
+                _ => bail!("Compatibility child is not ready for the test receipt"),
+            },
         };
         let result = (|| -> Result<()> {
             let mut file = std::fs::OpenOptions::new()

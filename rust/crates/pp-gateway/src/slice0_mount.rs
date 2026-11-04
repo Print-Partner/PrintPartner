@@ -175,3 +175,64 @@ async fn slice0_mount_product_routes_answer_without_the_proxy() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     gateway.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn slice0_mount_rust_only_runtime_reports_rust_status() {
+    let root = Scratch::new("pp-slice0-mount-");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
+    let mut gateway = Gateway::start_rust_only(
+        listener,
+        root.to_path_buf(),
+        &OperationOwners::node_only(),
+        stub(),
+        receiver,
+    )
+    .unwrap();
+    let cookie = gateway.test_session().await;
+    let runtime = || async {
+        let (code, body) = text(
+            handle(
+                State(gateway.state.clone()),
+                get(&gateway, "/__runtime", Some(&cookie), Some("127.0.0.1:9")),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()
+    };
+    let starting = runtime().await;
+    assert_eq!(starting["rust"], serde_json::json!({"state": "starting"}));
+    status.send_replace(RustStatus::Ready);
+    let ready = runtime().await;
+    assert_eq!(
+        ready,
+        serde_json::json!({
+            "proof_class": "headless_unsigned",
+            "rust": {"state": "ready"},
+            "compat": {"state": "not_used"},
+            "gateway": {"active_requests": 0, "active_upgrades": 0},
+        })
+    );
+    gateway.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn slice0_mount_node_runtime_json_has_no_rust_status() {
+    let (gateway, cookie, _root) = started(Some(stub())).await;
+    let (code, body) = text(
+        handle(
+            State(gateway.state.clone()),
+            get(&gateway, "/__runtime", Some(&cookie), Some("127.0.0.1:9")),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        body,
+        r#"{"proof_class":"headless_unsigned","compat":{"state":"starting"},"gateway":{"active_requests":0,"active_upgrades":0}}"#
+    );
+    gateway.stop().await.unwrap();
+}

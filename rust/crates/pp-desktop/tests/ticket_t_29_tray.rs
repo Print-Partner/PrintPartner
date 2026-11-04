@@ -1,5 +1,5 @@
-use pp_core::CoreStatus;
-use pp_desktop::tray::{Tone, badge, menu_ids, status};
+use pp_core::{CoreStatus, RuntimeStatus, RustStatus};
+use pp_desktop::tray::{Tone, badge, menu_ids, runtime_status, status};
 
 fn every_status() -> Vec<CoreStatus> {
     vec![
@@ -37,6 +37,33 @@ fn ticket_t_29_tray_status_maps_every_core_state_to_text_and_color() {
             .into_iter()
             .collect();
     assert_eq!(colors.len(), 4, "each tone has its own color");
+}
+
+#[test]
+fn tray_runtime_status_keeps_node_labels_and_maps_rust_states() {
+    for state in every_status() {
+        assert_eq!(
+            runtime_status(&RuntimeStatus::Node(state.clone())),
+            status(&state)
+        );
+    }
+    let rows: Vec<_> = [
+        RustStatus::Starting,
+        RustStatus::Ready,
+        RustStatus::Stopping,
+        RustStatus::Stopped,
+    ]
+    .map(|state| runtime_status(&RuntimeStatus::Rust(state)))
+    .into();
+    assert_eq!(
+        rows,
+        [
+            ("Service starting", Tone::Busy),
+            ("Service ready", Tone::Ready),
+            ("Service stopping", Tone::Busy),
+            ("Service stopped", Tone::Stopped),
+        ]
+    );
 }
 
 #[test]

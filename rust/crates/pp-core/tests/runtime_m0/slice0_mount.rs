@@ -2,7 +2,7 @@
 //! runtime value in a child process so the environment stays isolated.
 use super::{launch, request, temporary};
 use axum::http::StatusCode;
-use pp_core::{CoreRuntime, CoreStatus};
+use pp_core::{CoreRuntime, CoreStatus, RuntimeStatus, RustStatus};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -52,11 +52,17 @@ async fn slice0_mount_launcher_in_child() {
     let rust = std::env::var("PP_SLICE0_RUST").unwrap() == "true";
     let mut runtime = CoreRuntime::start_for_launcher(launch(data)).await.unwrap();
     assert_eq!(runtime.rust_only(), rust);
-    let node_ready = matches!(
-        *runtime.handle().subscribe().borrow(),
-        CoreStatus::Ready { .. }
-    );
-    assert_eq!(node_ready, !rust, "a Node child runs only without Rust");
+    // The desktop tray holds a handle and its subscription for the process lifetime.
+    let handle = runtime.handle();
+    let mut status = handle.subscribe();
+    match status.borrow_and_update() {
+        RuntimeStatus::Rust(RustStatus::Ready) => assert!(rust, "Rust status without Rust"),
+        RuntimeStatus::Node(CoreStatus::Ready { .. }) => {
+            assert!(!rust, "a Node child runs only without Rust")
+        }
+        other => panic!("launcher not ready: {other:?}"),
+    }
+    assert_eq!(handle.compat_status().is_none(), rust);
     let origin = runtime.origin().to_owned();
     // Redeem the bootstrap the way the desktop window does: follow no redirect.
     let browser = reqwest::Client::builder()
@@ -72,6 +78,26 @@ async fn slice0_mount_launcher_in_child() {
     assert_eq!(redeemed.status(), 303);
     let desktop = redeemed.headers()["set-cookie"].to_str().unwrap();
     let desktop = desktop.split(';').next().unwrap().to_owned();
+    let (code, _, body) = request(
+        &origin,
+        "/__runtime",
+        "GET",
+        Some(&desktop),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK);
+    let state: Value = serde_json::from_slice(&body).unwrap();
+    if rust {
+        assert_eq!(state["rust"], json!({"state": "ready"}), "{state}");
+        assert_eq!(state["compat"], json!({"state": "not_used"}), "{state}");
+    } else {
+        assert!(state.get("rust").is_none(), "{state}");
+        assert_eq!(state["compat"]["state"], "ready", "{state}");
+        assert!(state["compat"]["pid"].is_u64(), "{state}");
+    }
     if rust {
         let (status, _, body) = request(
             &origin,
@@ -121,4 +147,16 @@ async fn slice0_mount_launcher_in_child() {
     }
     let receipt = runtime.shutdown().await;
     assert!(receipt.complete(), "{receipt:?}");
+    if rust {
+        // Shutdown published Stopping then Stopped, and the channel stays open.
+        assert!(
+            status.has_changed().unwrap(),
+            "shutdown published no status"
+        );
+        assert!(matches!(
+            status.borrow_and_update(),
+            RuntimeStatus::Rust(RustStatus::Stopped)
+        ));
+        assert!(status.has_changed().is_ok(), "status channel closed");
+    }
 }

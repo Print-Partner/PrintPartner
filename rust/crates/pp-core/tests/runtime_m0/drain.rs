@@ -53,7 +53,7 @@ async fn isolated_case_for(name: &str, rebuild: bool, limit: Duration) -> Option
 }
 
 fn pid(runtime: &CoreRuntime) -> u32 {
-    match *runtime.handle().subscribe().borrow() {
+    match *runtime.handle().compat_status().unwrap().borrow() {
         CoreStatus::Ready { pid, .. } => pid,
         ref state => panic!("expected ready child: {state:?}"),
     }

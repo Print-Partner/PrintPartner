@@ -208,7 +208,7 @@ async fn protected_real_node_lifecycle() {
     let build: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(build["id"].as_u64().is_some());
     assert!(CoreRuntime::start(launch(data.clone())).await.is_err());
-    let child_pid = match runtime.handle().subscribe().borrow().clone() {
+    let child_pid = match runtime.handle().compat_status().unwrap().borrow().clone() {
         CoreStatus::Ready { pid, .. } => pid,
         CoreStatus::Starting
         | CoreStatus::Backoff { .. }
@@ -286,7 +286,7 @@ async fn authenticated_logout_requests_complete_shutdown() {
         );
     }
     let runtime_dir = runtime.runtime_dir().to_owned();
-    let child_pid = match runtime.handle().subscribe().borrow().clone() {
+    let child_pid = match runtime.handle().compat_status().unwrap().borrow().clone() {
         CoreStatus::Ready { pid, .. } => pid,
         CoreStatus::Starting
         | CoreStatus::Backoff { .. }
@@ -711,7 +711,7 @@ async fn crash_guard_stops_after_five_failures_and_recovers_explicitly() {
     .unwrap();
     let handle = runtime.handle();
     assert!(handle.recover_compat().await.is_err());
-    let mut state = handle.subscribe();
+    let mut state = handle.compat_status().unwrap();
     let mut prior_pid = 0;
     let mut cycle_secs = Vec::new();
     for attempt in 0..5 {
@@ -924,7 +924,7 @@ async fn cleanup_error_publishes_failed_and_preserves_failure() {
     let data = temporary("compat-cleanup-status");
     let runtime = CoreRuntime::start(launch(data.clone())).await.unwrap();
     let handle = runtime.handle();
-    let mut state = handle.subscribe();
+    let mut state = handle.compat_status().unwrap();
     let pid = match *state.borrow() {
         CoreStatus::Ready { pid, .. } => pid,
         CoreStatus::Starting
@@ -980,7 +980,7 @@ async fn stable_child_resets_backoff_without_erasing_rapid_crash_escalation() {
     )
     .await
     .unwrap();
-    let mut state = runtime.handle().subscribe();
+    let mut state = runtime.handle().compat_status().unwrap();
     let mut prior_pid = 0;
     for (index, expected) in [0, 1, 0].into_iter().enumerate() {
         let pid = loop {
@@ -1092,7 +1092,7 @@ fn drop_after_caller_runtime_teardown_reaps_writer_and_descendant() {
     let runtime = caller
         .block_on(CoreRuntime::start(launch(data.clone())))
         .unwrap();
-    let pid = match *runtime.handle().subscribe().borrow() {
+    let pid = match *runtime.handle().compat_status().unwrap().borrow() {
         CoreStatus::Ready { pid, .. } => pid,
         CoreStatus::Starting
         | CoreStatus::Backoff { .. }
@@ -1144,7 +1144,7 @@ fn drop_after_caller_runtime_teardown_reaps_writer_and_descendant() {
 async fn compatibility_cleanup_failure_reports_failed_instead_of_ready() {
     let data = temporary("compat-cleanup-failure");
     let runtime = CoreRuntime::start(launch(data.clone())).await.unwrap();
-    let state = runtime.handle().subscribe();
+    let state = runtime.handle().compat_status().unwrap();
     assert!(matches!(*state.borrow(), CoreStatus::Ready { .. }));
     let runtime_dir = runtime.runtime_dir().to_owned();
     let socket = std::fs::read_dir(&runtime_dir)
@@ -1231,7 +1231,7 @@ async fn core_process_fixture() {
         return;
     };
     let runtime = CoreRuntime::start(launch(data.into())).await.unwrap();
-    let state = runtime.handle().subscribe().borrow().clone();
+    let state = runtime.handle().compat_status().unwrap().borrow().clone();
     let CoreStatus::Ready { pid, .. } = state else {
         panic!("not ready")
     };
@@ -1358,7 +1358,7 @@ fn core_death_terminates_stopped_node_and_allows_recovery() {
         let runtime = caller
             .block_on(CoreRuntime::start(launch(data.clone())))
             .expect("dead owner and terminated Node allow recovery");
-        let state = runtime.handle().subscribe().borrow().clone();
+        let state = runtime.handle().compat_status().unwrap().borrow().clone();
         let CoreStatus::Ready { pid: new_pid, .. } = state else {
             panic!("not ready")
         };
@@ -1533,7 +1533,7 @@ async fn ticket_t_4_real_gateway_hidden_status_and_config_cancellation() {
         "Reads must not make another outbound request"
     );
     // A stalled compatibility snapshot must not stall an already-cached read.
-    let pid = match runtime.handle().subscribe().borrow().clone() {
+    let pid = match runtime.handle().compat_status().unwrap().borrow().clone() {
         CoreStatus::Ready { pid, .. } => pid,
         _ => panic!("backend not ready"),
     };
@@ -1864,7 +1864,7 @@ async fn gre_335_shared_status_route_keeps_node_path_for_other_printers() {
     );
 
     // A Node stall past the 2 s snapshot deadline keeps Moonraker pollers alive.
-    let pid = match runtime.handle().subscribe().borrow().clone() {
+    let pid = match runtime.handle().compat_status().unwrap().borrow().clone() {
         CoreStatus::Ready { pid, .. } => pid,
         _ => panic!("backend not ready"),
     };

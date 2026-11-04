@@ -983,11 +983,11 @@ async fn fresh_store_stays_synthetic_when_enabled() {
 
 #[cfg(feature = "desktop_rebuild")]
 async fn crash_child(runtime: &CoreRuntime) {
-    let state = runtime.handle().subscribe().borrow().clone();
+    let state = runtime.handle().compat_status().unwrap().borrow().clone();
     let pp_core::CoreStatus::Ready { pid, .. } = state else {
         panic!("not ready")
     };
-    let mut states = runtime.handle().subscribe();
+    let mut states = runtime.handle().compat_status().unwrap();
     assert_eq!(
         unsafe { libc::kill(i32::try_from(pid).unwrap(), libc::SIGKILL) },
         0

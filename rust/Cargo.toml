@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/pp-api", "crates/pp-storage", "crates/pp-core", "crates/pp-compat", "crates/pp-gateway", "crates/pp-server", "crates/pp-contracts", "crates/pp-desktop", "crates/pp-domain", "crates/pp-api-types", "crates/pp-net", "crates/pp-drivers", "crates/pp-services", "crates/pp-source", "crates/pp-perf", "crates/pp-testkit"]
-default-members = ["crates/pp-api", "crates/pp-storage", "crates/pp-core", "crates/pp-compat", "crates/pp-gateway", "crates/pp-server", "crates/pp-contracts", "crates/pp-domain", "crates/pp-api-types", "crates/pp-net", "crates/pp-drivers", "crates/pp-services", "crates/pp-source", "crates/pp-perf", "crates/pp-testkit"]
+members = ["crates/pp-api", "crates/pp-storage", "crates/pp-core", "crates/pp-compat", "crates/pp-gateway", "crates/pp-server", "crates/pp-contracts", "crates/pp-desktop", "crates/pp-domain", "crates/pp-api-types", "crates/pp-net", "crates/pp-drivers", "crates/pp-services", "crates/pp-source", "crates/pp-perf", "crates/pp-testkit", "crates/pp-os"]
+default-members = ["crates/pp-api", "crates/pp-storage", "crates/pp-core", "crates/pp-compat", "crates/pp-gateway", "crates/pp-server", "crates/pp-contracts", "crates/pp-domain", "crates/pp-api-types", "crates/pp-net", "crates/pp-drivers", "crates/pp-services", "crates/pp-source", "crates/pp-perf", "crates/pp-testkit", "crates/pp-os"]
 exclude = ["fuzz"]
 resolver = "3"
 

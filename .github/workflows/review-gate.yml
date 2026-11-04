@@ -157,7 +157,8 @@ jobs:
           for comment in comments:
               if (comment.get("user") or {}).get("login") != OWNER:
                   continue
-              for head, reviewer, findings in MARKER.findall(comment.get("body") or ""):
+              body = (comment.get("body") or "").replace("\r\n", "\n")
+              for head, reviewer, findings in MARKER.findall(body):
                   if head == HEAD:
                       marker = f"{reviewer}, {findings} findings, {comment.get('html_url')}"
 

@@ -181,6 +181,8 @@ class ReviewGateStepTests(unittest.TestCase):
         self.assertFails(checks=[run("claude-security-review")])
 
     def test_owner_marker_for_the_head_passes(self):
+        crlf = {**marker(), "body": marker()["body"].replace("\n", "\r\n") + "\r\nThanks.\r\n"}
+        self.assertPasses(pages=[[crlf]])
         result = self.assertPasses(pages=[[marker()]], checks=[run("droid-review", "failure")])
         self.assertIn("gpt-5.6-sol, 2 findings", result.stdout)
         self.assertPasses(pages=[[{"user": {"login": OWNER}, "html_url": "u", "body": "hi"}], [marker()]])
@@ -264,6 +266,47 @@ class ReviewGateStepTests(unittest.TestCase):
             self.assertIn(row, summary)
 
 
+SYMLINK_STEP = (
+    "links=$(find . -path ./.git -prune -o -type l -print)\n"
+    "if [ -n \"$links\" ]; then\n"
+    "  echo \"::error::The checkout contains symlinks, which Claude's Read tool could follow:\"\n"
+    "  echo \"$links\"\n"
+    "  exit 1\n"
+    "fi\n")
+
+
+class SymlinkStepTests(unittest.TestCase):
+    """Run the Claude jobs' symlink step on scratch checkouts."""
+
+    def check(self, make_links):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".git").mkdir()
+            (root / ".git/config").write_text("[remote]\n")
+            (root / "src").mkdir()
+            (root / "src/a.py").write_text("x = 1\n")
+            make_links(root)
+            return subprocess.run(["bash", "-e", "-c", SYMLINK_STEP], cwd=root, capture_output=True, text=True,
+                                  env={**os.environ, "GITHUB_WORKSPACE": folder})
+
+    def test_a_tree_without_symlinks_passes(self):
+        self.assertEqual(self.check(lambda root: None).returncode, 0)
+
+    def test_any_symlink_fails(self):
+        targets = {"into .git": ".git/config", "inside the workspace": "src/a.py", "proc": "/proc/self/environ",
+                   "home credentials": os.path.expanduser("~/.git-credentials"), "dangling": "missing"}
+        for label, target in targets.items():
+            with self.subTest(label):
+                result = self.check(lambda root, target=target: (root / "src/link").symlink_to(target))
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("::error::The checkout contains symlinks", result.stdout)
+                self.assertIn("./src/link", result.stdout)
+
+    def test_repository_tracks_no_symlinks(self):
+        listed = subprocess.run(["git", "ls-files", "-s"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        self.assertEqual([line for line in listed.splitlines() if line.startswith("120000 ")], [])
+
+
 class ReviewWorkflowShapeTests(unittest.TestCase):
     def test_gate_runs_the_base_branch_definition_without_checkout_or_secrets(self):
         text = (WORKFLOWS / "review-gate.yml").read_text(encoding="utf-8")
@@ -317,10 +360,8 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
                 self.assertIn('--allowedTools "Read(./**),mcp__github_inline_comment__create_inline_comment"', args)
                 denied = args.split('--disallowedTools "', 1)[1].split('"', 1)[0].split(",")
                 names = [step.get("name", step.get("uses", "")) for step in steps]
-                self.assertLess(names.index("Refuse symlinks that leave the workspace"), names.index(review["name"]))
-                symlinks = steps[names.index("Refuse symlinks that leave the workspace")]["run"]
-                self.assertIn('realpath -m -- "$link"', symlinks)
-                self.assertIn("find . -path ./.git -prune -o -type l -print0", symlinks)
+                self.assertLess(names.index("Refuse symlinks in the checkout"), names.index(review["name"]))
+                self.assertEqual(steps[names.index("Refuse symlinks in the checkout")]["run"], SYMLINK_STEP)
                 for tool in ("Bash", "Edit", "Write", "WebFetch", "Task", "Read(./.git/**)", "Read(//proc/**)",
                              "Read(//proc/self/**)", "Read(//tmp/**)", "Read(~/.*/**)", "Read(~/.git-credentials)",
                              "Read(~/.config/**)", "Read(~/work/_temp/**)"):

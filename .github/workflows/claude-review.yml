@@ -49,19 +49,17 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Refuse symlinks that leave the workspace
-        # Read(./**) follows symlinks, so a link to /proc/self/environ or a credential file could
-        # expose the Claude token. realpath -m reads link targets without opening them.
+      - name: Refuse symlinks in the checkout
+        # Read(./**) follows symlinks, and the action writes the job's GITHUB_TOKEN into .git/config.
+        # A link into .git/, to /proc/self/environ, or to a credential file could expose a token.
+        # The repository tracks no symlinks (no mode 120000 in git ls-files -s), so any symlink fails.
         run: |
-          bad=0
-          while IFS= read -r -d '' link; do
-            target=$(realpath -m -- "$link")
-            case "$target" in
-              "$GITHUB_WORKSPACE" | "$GITHUB_WORKSPACE"/*) ;;
-              *) echo "::error::$link points outside the workspace, to $target"; bad=1 ;;
-            esac
-          done < <(find . -path ./.git -prune -o -type l -print0)
-          exit "$bad"
+          links=$(find . -path ./.git -prune -o -type l -print)
+          if [ -n "$links" ]; then
+            echo "::error::The checkout contains symlinks, which Claude's Read tool could follow:"
+            echo "$links"
+            exit 1
+          fi
       - name: Write the PR diff for Claude
         env:
           GH_TOKEN: ${{ github.token }}
@@ -121,19 +119,17 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Refuse symlinks that leave the workspace
-        # Read(./**) follows symlinks, so a link to /proc/self/environ or a credential file could
-        # expose the Claude token. realpath -m reads link targets without opening them.
+      - name: Refuse symlinks in the checkout
+        # Read(./**) follows symlinks, and the action writes the job's GITHUB_TOKEN into .git/config.
+        # A link into .git/, to /proc/self/environ, or to a credential file could expose a token.
+        # The repository tracks no symlinks (no mode 120000 in git ls-files -s), so any symlink fails.
         run: |
-          bad=0
-          while IFS= read -r -d '' link; do
-            target=$(realpath -m -- "$link")
-            case "$target" in
-              "$GITHUB_WORKSPACE" | "$GITHUB_WORKSPACE"/*) ;;
-              *) echo "::error::$link points outside the workspace, to $target"; bad=1 ;;
-            esac
-          done < <(find . -path ./.git -prune -o -type l -print0)
-          exit "$bad"
+          links=$(find . -path ./.git -prune -o -type l -print)
+          if [ -n "$links" ]; then
+            echo "::error::The checkout contains symlinks, which Claude's Read tool could follow:"
+            echo "$links"
+            exit 1
+          fi
       - name: Write the PR diff for Claude
         env:
           GH_TOKEN: ${{ github.token }}

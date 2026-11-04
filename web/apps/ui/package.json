@@ -14,7 +14,9 @@
     "test:browser": "node test/browser/font-requests.browser.mjs"
   },
   "dependencies": {
+    "@print-partner/rust-client": "*",
     "@tanstack/react-query": "^5.104.3",
+    "lucide-react": "^1.59.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router": "^7.18.4"

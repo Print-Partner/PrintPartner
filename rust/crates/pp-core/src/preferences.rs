@@ -189,10 +189,13 @@ impl Client {
     }
 }
 
-pub(super) async fn settle(receiver: &mut mpsc::Receiver<Command>, owner: &StorageLease) {
+pub(super) async fn settle(
+    receiver: &mut mpsc::Receiver<Command>,
+    mut execute: impl FnMut(Command),
+) {
     receiver.close();
     while let Some(command) = receiver.recv().await {
-        command.execute(owner);
+        execute(command);
     }
 }
 

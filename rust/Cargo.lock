@@ -3402,6 +3402,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 
@@ -3472,6 +3473,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tower",
 ]
 
 [[package]]
@@ -3485,6 +3487,16 @@ dependencies = [
  "hyper-util",
  "proptest",
  "tokio",
+]
+
+[[package]]
+name = "pp-os"
+version = "0.1.0"
+dependencies = [
+ "fs4",
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3568,6 +3580,7 @@ dependencies = [
  "libc",
  "pp-contracts",
  "pp-domain",
+ "pp-os",
  "pp-testkit",
  "rand 0.9.5",
  "regress 0.11.1",

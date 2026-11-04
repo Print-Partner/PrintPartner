@@ -1,3 +1,6 @@
+//! Unix only: the child processes report signals and plant symbolic links.
+#![cfg(unix)]
+
 use pp_storage::{Limits, WriterOwner, lease::StorageLease};
 use std::{
     fs::OpenOptions,

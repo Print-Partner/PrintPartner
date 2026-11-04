@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Outlet } from "react-router";
 import { checkCoreHealth } from "../core/client";
+import { PRINTER_DISPLAY_STATES, PrinterStatus } from "../status/PrinterStatus";
 
 function CoreStatus() {
   const health = useQuery({
@@ -43,6 +44,14 @@ export function Placeholder() {
     <section>
       <h1>Replacement UI</h1>
       <p>No screens yet. This package builds against the Rust core only.</p>
+      <h2>Printer states</h2>
+      <ul className="printer-states">
+        {PRINTER_DISPLAY_STATES.map((state) => (
+          <li key={state}>
+            <PrinterStatus state={state} />
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

@@ -16,6 +16,7 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 | Replacement UI: Today, Build tabs, History/Accept, Checkoff | [UI and UX target](product/ui-ux-target.md) |
 | Target runtime, crates, allowed edges, operation owners, cutover | [Architecture](architecture.md) |
 | Accepted decisions and what replaced them | [ADR index](adr/README.md) |
+| One crate's or package's interface, effects, flags and tests | Its README, linked from [Architecture](architecture.md#crates-and-allowed-edges) |
 | Which operations run in Node and which have a Rust owner | [Operation inventory](development/operation-inventory.md) and [the generated report](parity/operation-inventory.md) |
 | `desktop_rebuild` feature and `PP_DESKTOP_REBUILD` switch | [Desktop rebuild flag and slice plan](desktop-rebuild.md) |
 | Data directory, single-writer lock, migrations | [Storage](storage.md) |
@@ -89,7 +90,7 @@ will autosave into a draft and require an explicit Accept.
 
 | Page | Covers |
 |------|--------|
-| [Storage](storage.md) | Data directory, single-writer lock, and migrations. |
+| [Storage](storage.md) | Data directory, single-writer lock, migrations, and synthetic installations. |
 | [HTTP API](api.md) | The versioned integration API. |
 | [MCP](mcp.md) | The MCP server in the Rust core. |
 | [Network sharing](network-sharing.md) | "Share on network" in the desktop app. |

@@ -1,3 +1,7 @@
+//! Unix only: these tests check POSIX owners, modes, symbolic links and
+//! extended attributes. Windows access follows inherited ACLs.
+#![cfg(unix)]
+
 use pp_storage::{Limits, WriterOwner, lease::StorageLease};
 use std::os::unix::fs::DirBuilderExt;
 use std::{

@@ -1,6 +1,6 @@
 # Problem responses
 
-Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop_rebuild` feature and `PP_DESKTOP_REBUILD=1|true`) is an RFC 9457 problem document served as `application/problem+json` with `Cache-Control: private, no-store`. The Node compatibility server and the feature-off build are unchanged. MCP keeps JSON-RPC errors.
+Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop_rebuild` feature and `PP_DESKTOP_REBUILD=1|true`) is an RFC 9457 problem document served as `application/problem+json` with `Cache-Control: private, no-store`. The Node compatibility server is unchanged, and with the feature off `pp_api::problem` is not compiled and pp-api errors keep their legacy JSON bodies byte for byte. MCP keeps JSON-RPC errors.
 
 ```json
 {
@@ -16,7 +16,7 @@ Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop
 - `title` is fixed per type.
 - `detail` keeps the text the Node API sent, cut to 512 bytes. It is absent where Node sent none: draft conflicts and the draft 422.
 - `code` keeps Node's machine code where the route has one, cut to 64 bytes.
-- `errors` lists field errors as `{ "pointer": "/decision/value", "detail": "is invalid" }`: at most 16 entries, pointers up to 256 bytes, details up to 128 bytes. A field error names the field but never echoes its value.
+- `errors` lists field errors as `{ "pointer": "/decision/value", "detail": "is invalid" }`: at most 16 entries, pointers up to 256 bytes, details up to 128 bytes. A field error names the field but never echoes its value. An overlong pointer is shortened to its longest whole-token ancestor, so an RFC 6901 escape or a UTF-8 character is never split; a field error whose pointer would be the whole document is dropped. Draft edits name the failing member even though their wire shape is untagged.
 - Routes may add extension members, such as a draft conflict's `workspace` or a manifest observation failure's `reason`. An extension never replaces a standard member.
 
 ## Types
@@ -31,7 +31,7 @@ Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop
 | `method-not-allowed` | 405 | The `Allow` header is kept. |
 | `conflict` | 409 | The target's state does not allow the operation. |
 | `precondition-failed` | 409, 412 | The version or digest the request expected is no longer current (`draft_changed`, `base_changed`). |
-| `overloaded` | 503 | An admission semaphore or the writer queue is full. Retry later. |
+| `overloaded` | 503 | An admission semaphore or the writer queue is full, or the auth writer is stopping. Retry later. |
 | `timeout` | 408, 504 | The request body or an upstream call ran out of time. |
 | `unavailable` | 503 | The service is stopping or cancelled the request. |
 | `outcome-unknown` | 503 | A write may or may not have committed. Reload and reconcile; do not blindly retry. |

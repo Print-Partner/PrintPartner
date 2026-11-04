@@ -170,8 +170,15 @@ pub fn parse_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Vec<FieldError
         },
         Err(error) => error,
     };
+    Err(field_errors(&error))
+}
+
+/// The field error for a serde failure at a tracked path. None for a syntax
+/// error, a wrong top-level shape (`null`, `[]`), or a pointer with no whole
+/// token under [`MAX_POINTER_BYTES`].
+pub fn field_errors(error: &serde_path_to_error::Error<serde_json::Error>) -> Vec<FieldError> {
     if !error.inner().is_data() {
-        return Err(Vec::new());
+        return Vec::new();
     }
     let mut pointer = String::new();
     for segment in error.path().iter() {
@@ -202,11 +209,11 @@ pub fn parse_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Vec<FieldError
     } else {
         "is invalid"
     };
-    // A wrong top-level shape (`null`, `[]`) names no field.
-    if pointer.is_empty() {
-        return Err(Vec::new());
+    let error = FieldError::new(&pointer, detail);
+    if error.pointer.is_empty() {
+        return Vec::new();
     }
-    Err(vec![FieldError::new(&pointer, detail)])
+    vec![error]
 }
 
 /// Appends an RFC 6901 reference token.
@@ -214,7 +221,7 @@ fn push_token(pointer: &mut String, token: &str) {
     pointer.push_str(&token.replace('~', "~0").replace('/', "~1"));
 }
 
-#[cfg(all(test, feature = "desktop_rebuild"))]
+#[cfg(test)]
 #[path = "problem/tests/canary.rs"]
 mod canary;
 #[cfg(test)]

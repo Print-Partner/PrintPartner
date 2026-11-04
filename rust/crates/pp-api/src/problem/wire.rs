@@ -142,7 +142,7 @@ pub struct FieldError {
 impl FieldError {
     pub fn new(pointer: &str, detail: &str) -> Self {
         Self {
-            pointer: cut(pointer, MAX_POINTER_BYTES),
+            pointer: ancestor(pointer, MAX_POINTER_BYTES),
             detail: cut(detail, MAX_FIELD_DETAIL_BYTES),
         }
     }
@@ -166,7 +166,7 @@ pub struct Problem {
     #[cfg_attr(feature = "codegen", schemars(with = "String"))]
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "codegen", schemars(length(max = 16)))]
+    #[cfg_attr(feature = "codegen", schemars(length(max = "MAX_FIELD_ERRORS")))]
     pub errors: Vec<FieldError>,
 }
 
@@ -199,6 +199,19 @@ impl Problem {
         self.errors.extend(errors.into_iter().take(room));
         self
     }
+}
+
+/// The longest whole-token prefix of a JSON Pointer that fits `limit`, so an
+/// RFC 6901 escape or a UTF-8 character is never split. `""` (the whole
+/// document) when even the first token is too long.
+fn ancestor(pointer: &str, limit: usize) -> String {
+    if pointer.len() <= limit {
+        return pointer.to_owned();
+    }
+    // `/` is ASCII, so its byte offset is always a character boundary.
+    let bytes = &pointer.as_bytes()[..=limit];
+    let end = bytes.iter().rposition(|byte| *byte == b'/').unwrap_or(0);
+    pointer[..end].to_owned()
 }
 
 fn cut(text: &str, limit: usize) -> String {
@@ -276,5 +289,20 @@ mod tests {
         }
         let more = problem.with_errors([FieldError::new("/x", "y")]);
         assert_eq!(more.errors.len(), MAX_FIELD_ERRORS);
+    }
+
+    #[test]
+    fn problem_response_pointer_truncation_keeps_whole_tokens() {
+        // 254 `a` plus the `~1` escape for `/` is 257 bytes: never cut to a bare `~`.
+        let escaped = format!("/{}~1", "a".repeat(254));
+        assert_eq!(FieldError::new(&escaped, "x").pointer, "");
+        assert_eq!(
+            FieldError::new(&format!("/items{escaped}"), "x").pointer,
+            "/items"
+        );
+        let wide = format!("/decision/{}", "é".repeat(200));
+        assert_eq!(FieldError::new(&wide, "x").pointer, "/decision");
+        let fits = format!("/{}~0", "a".repeat(253));
+        assert_eq!(FieldError::new(&fits, "x").pointer, fits);
     }
 }

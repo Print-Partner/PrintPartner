@@ -17,7 +17,7 @@ use pp_storage::{
     required_units::{AdmissionFailure, DraftListResponse, Outcome as WorkspaceOutcome},
     working_drafts::{
         AbandonOutcome, AbandonRequest, DraftIdentity, DraftList, EditRequest, Failure, Outcome,
-        PositiveId, Request, WorkingDraftClient,
+        PositiveId, Request, WorkingDraftClient, edit_rejection,
     },
 };
 use serde_json::{Value, json};
@@ -453,7 +453,12 @@ async fn edit(
     };
     let request = match crate::problem::parse_body::<EditRequest>(&body) {
         Ok(request) => request,
-        Err(errors) => return invalid_body(errors),
+        // The untagged edit wire hides the failing member; recover it.
+        Err(_) => {
+            let rejection = edit_rejection(&body);
+            let errors = rejection.map(|error| crate::problem::field_errors(&error));
+            return invalid_body(&body, errors.unwrap_or_default());
+        }
     };
     match run_edit(&app, presented, profile, draft_id, request).await {
         Ok(outcome) => present_edit(outcome),
@@ -562,7 +567,7 @@ async fn abandon(
     };
     let request = match crate::problem::parse_body::<AbandonRequest>(&body) {
         Ok(request) => request,
-        Err(errors) => return invalid_body(errors),
+        Err(errors) => return invalid_body(&body, errors),
     };
     match run_abandon(&app, presented, profile, draft_id, request).await {
         Ok(outcome) => present_abandon(outcome),
@@ -805,14 +810,15 @@ fn invalid_request() -> Response {
         "invalid_request",
     )
 }
-/// 400 for a body that did not parse: malformed without field errors, a
-/// validation problem naming the field otherwise.
-fn invalid_body(errors: Vec<crate::problem::FieldError>) -> Response {
+/// 400 for a body that did not parse: malformed unless it is a JSON object,
+/// with a field error when one field is to blame.
+fn invalid_body(body: &[u8], errors: Vec<crate::problem::FieldError>) -> Response {
     use crate::problem::{Problem, ProblemType};
-    let kind = if errors.is_empty() {
-        ProblemType::MalformedRequest
-    } else {
+    let object = serde_json::from_slice::<Value>(body).is_ok_and(|body| body.is_object());
+    let kind = if object || !errors.is_empty() {
         ProblemType::Validation
+    } else {
+        ProblemType::MalformedRequest
     };
     let problem = Problem::new(kind, 400, "Request is invalid").with_code("invalid_request");
     crate::problem::build(problem.with_errors(errors), serde_json::Map::new())

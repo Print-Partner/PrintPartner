@@ -121,7 +121,8 @@ fn problem_response_parse_body_names_the_field_without_its_value() {
         assert_eq!(errors(body), expected, "{body}");
     }
     let long = format!(r#"{{"name":"a","items":[],"{}":1}}"#, "k".repeat(4096));
-    assert!(errors(&long)[0].pointer.len() <= 256);
+    // No whole token fits in 256 bytes, so no field is named.
+    assert_eq!(errors(&long), vec![]);
     let parsed = parse_body::<Edit>(br#"{"name":"a","items":[{"limit":2}]}"#).unwrap();
     assert_eq!((parsed.name.as_str(), parsed.items[0].limit), ("a", 2));
 }

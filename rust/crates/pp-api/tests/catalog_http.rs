@@ -179,7 +179,7 @@ impl Server {
                 Some(if status == 200 {
                     "application/json"
                 } else {
-                    pp_api::problem::PROBLEM_CONTENT_TYPE
+                    "application/problem+json"
                 })
             );
         }

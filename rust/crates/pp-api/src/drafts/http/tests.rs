@@ -1248,6 +1248,58 @@ async fn api_key_patch_skips_origin_and_rejects_foreign_or_revoked() {
     server.close().await;
 }
 
+/// The real edit wire is untagged, so serde reports member failures at the
+/// root; the problem still names the failing field (ERR-03).
+#[tokio::test]
+async fn problem_response_edit_field_errors_name_the_member() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let one = |decision: Value| json!({"expected_snapshot_digest": DIGEST, "decision": decision});
+    let included = |value: Value| json!({"kind":"set_included","draft_part_ids":[4],"value":value});
+    let cases = [
+        (one(included(json!("yes"))), "/decision", "is invalid"),
+        (
+            json!({"decision": included(json!(true))}),
+            "/expected_snapshot_digest",
+            "is required",
+        ),
+        (
+            json!({"expected_snapshot_digest": DIGEST}),
+            "/decision",
+            "is required",
+        ),
+        (
+            json!({"expected_snapshot_digest": DIGEST, "decisions": [included(json!(true)), {"kind":"rename"}]}),
+            "/decisions/1/kind",
+            "is invalid",
+        ),
+        (
+            json!({"expected_snapshot_digest": DIGEST, "decision": included(json!(true)), "decisions": []}),
+            "/decisions",
+            "is not allowed",
+        ),
+    ];
+    for (body, pointer, detail) in cases {
+        let response = server
+            .request(Method::PATCH, "/plans/1/drafts/2/parts")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{body}");
+        let problem: Value = response.json().await.unwrap();
+        assert_eq!(
+            problem["type"], "urn:print-partner:problem:validation",
+            "{body}"
+        );
+        assert_eq!(
+            problem["errors"],
+            json!([{"pointer": pointer, "detail": detail}]),
+            "{body}"
+        );
+    }
+    server.close().await;
+}
+
 #[tokio::test]
 async fn edit_bounds_and_typed_bodies_reject_before_mutation() {
     let server = ReadServer::start_limited(256, "").await;
@@ -1273,10 +1325,22 @@ async fn edit_bounds_and_typed_bodies_reject_before_mutation() {
             json!({"detail":"Request is invalid","code":"invalid_request"})
         );
     }
-    for body in [
-        json!({"expected_snapshot_digest":DIGEST,"decisions":[]}),
-        json!({"expected_snapshot_digest":DIGEST,"decision":{"kind":"set_included","draft_part_ids":[0],"value":true}}),
-        json!({"expected_snapshot_digest":DIGEST,"decision":{"kind":"set_quantity_override","draft_part_ids":[4],"value":10001}}),
+    // A batch rule names no field; a bad decision value names the decision.
+    let invalid_decision = json!({"detail":"Request is invalid","code":"invalid_request",
+        "errors":[{"pointer":"/decision","detail":"is invalid"}]});
+    for (body, expected) in [
+        (
+            json!({"expected_snapshot_digest":DIGEST,"decisions":[]}),
+            json!({"detail":"Request is invalid","code":"invalid_request"}),
+        ),
+        (
+            json!({"expected_snapshot_digest":DIGEST,"decision":{"kind":"set_included","draft_part_ids":[0],"value":true}}),
+            invalid_decision.clone(),
+        ),
+        (
+            json!({"expected_snapshot_digest":DIGEST,"decision":{"kind":"set_quantity_override","draft_part_ids":[4],"value":10001}}),
+            invalid_decision.clone(),
+        ),
     ] {
         assert_eq!(
             json_reply(
@@ -1286,7 +1350,7 @@ async fn edit_bounds_and_typed_bodies_reject_before_mutation() {
                 400
             )
             .await,
-            json!({"detail":"Request is invalid","code":"invalid_request"})
+            expected
         );
     }
     assert_eq!(

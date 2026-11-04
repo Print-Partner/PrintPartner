@@ -972,6 +972,36 @@ async fn stopped_writer_is_service_unavailable() {
     drop(directory);
 }
 
+/// Feature off, auth errors keep main's exact media type and bytes.
+#[cfg(not(feature = "desktop_rebuild"))]
+#[tokio::test]
+async fn feature_off_errors_keep_the_legacy_body() {
+    let server = Server::start(RegistrationPolicy::Open, false, false, None).await;
+    let me = server.request(Method::GET, "/auth/me", None, None).await;
+    assert_eq!(me.status(), 401);
+    assert_eq!(me.headers()["content-type"], "application/json");
+    assert_eq!(
+        me.text().await.unwrap(),
+        r#"{"detail":"Not authenticated"}"#
+    );
+    let login = server
+        .client
+        .post(format!("{}/auth/login", server.origin))
+        .header("Origin", &server.origin)
+        .header("Content-Type", "application/json")
+        .body("{")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 400);
+    assert_eq!(login.headers()["content-type"], "application/json");
+    assert_eq!(
+        login.text().await.unwrap(),
+        r#"{"detail":"Invalid JSON body"}"#
+    );
+    server.close().await;
+}
+
 fn domain_policy() -> AuthPolicy {
     AuthPolicy {
         registration: RegistrationPolicy::FirstAccountOnly,

@@ -5,7 +5,7 @@ import { NavLink, Outlet, useOutletContext, useParams } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
-import { WORKFLOW_PENDING_NOTE, workflowQuery, type BuildWorkflows } from "../core/workflow";
+import { buildWorkflowQuery, openDecisionCount } from "../core/workflow";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
@@ -36,7 +36,7 @@ function buildId(raw: string | undefined): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-export const buildQuery = (id: number) => ({
+const buildQuery = (id: number) => ({
   queryKey: ["core", "build", id],
   queryFn: async ({ signal }: { signal: AbortSignal }): Promise<BuildData> => {
     const [build, layers] = await Promise.all([
@@ -72,11 +72,34 @@ function BuildTabs({ id }: { id: number }) {
   );
 }
 
-function nextActionText(workflows: BuildWorkflows | undefined, id: number): ReactNode {
-  const workflow = workflows?.kind === "ready" ? workflows.byBuild.get(id) : undefined;
-  if (!workflow) return <span className="pp-muted">{WORKFLOW_PENDING_NOTE}</span>;
-  if (!workflow.nextAction) return "Nothing to do";
-  return `${workflow.nextAction.label}: ${workflow.nextAction.reason}`;
+/** The projection's next action and open-task count, or why they are missing. */
+function WorkflowFacts({ id }: { id: number }) {
+  const query = useQuery(buildWorkflowQuery(id));
+  const workflow = query.data;
+  if (!workflow) {
+    const detail = query.isError ? (
+      <>
+        <span className="pp-muted">Could not load: {query.error.message}</span>{" "}
+        <button type="button" className="pp-button" onClick={() => void query.refetch()}>
+          Retry
+        </button>
+      </>
+    ) : (
+      <span className="pp-muted">Loading</span>
+    );
+    return <Fact term="Next action">{detail}</Fact>;
+  }
+  return (
+    <>
+      <Fact term="Next action">
+        {workflow.next_action.label}
+        <span className="pp-fact-detail">{workflow.next_action.reason}</span>
+      </Fact>
+      <Fact term="Open decisions">
+        <span className="num">{openDecisionCount(workflow)}</span>
+      </Fact>
+    </>
+  );
 }
 
 function Fact({ term, children }: { term: string; children: ReactNode }) {
@@ -90,7 +113,6 @@ function Fact({ term, children }: { term: string; children: ReactNode }) {
 
 function OverviewBody({ build, layers }: BuildData) {
   const orders = useModule("orders");
-  const workflows = useQuery(workflowQuery).data;
   const layersId = useId();
   const freshness = freshnessText(build.freshness);
   return (
@@ -110,7 +132,7 @@ function OverviewBody({ build, layers }: BuildData) {
             </ul>
           )}
         </Fact>
-        <Fact term="Next action">{nextActionText(workflows, build.id)}</Fact>
+        <WorkflowFacts id={build.id} />
         {orders?.state === "on" && (
           <>
             <Fact term="Order">

@@ -1,21 +1,16 @@
 import type { ProfileSummary } from "@print-partner/rust-client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import type { KeyboardEvent } from "react";
 import { Link } from "react-router";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
-import {
-  WORKFLOW_PENDING_NOTE,
-  WORKFLOW_PENDING_TEXT,
-  workflowQuery,
-  type BuildWorkflows,
-} from "../core/workflow";
+import { tasksByBuild, tasksQuery, type Task } from "../core/workflow";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ModuleOff, ScreenTemplate } from "../screen/ScreenTemplate";
 import { progressText } from "./format";
 
-export const buildsQuery = {
+const buildsQuery = {
   queryKey: ["core", "builds"],
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listBuilds", {}, signal),
 } as const;
@@ -38,20 +33,46 @@ function moveRowFocus(event: KeyboardEvent<HTMLTableSectionElement>) {
   next.focus();
 }
 
-function openTasksText(workflows: BuildWorkflows | undefined, id: number): string {
-  if (workflows?.kind !== "ready") return WORKFLOW_PENDING_TEXT;
-  const open = workflows.byBuild.get(id)?.openTasks;
-  return open === undefined ? WORKFLOW_PENDING_TEXT : String(open);
+/** The next-action cell: the projection's task for this Build, or why there is none. */
+function NextActionCell({ tasks, id }: { tasks: ReadonlyMap<number, Task> | undefined; id: number }) {
+  if (!tasks) return <span className="pp-muted">Not loaded</span>;
+  const task = tasks.get(id);
+  if (!task) return <span className="pp-muted">Nothing open</span>;
+  return (
+    <>
+      {task.next_action.label}
+      {task.attention && <span className="pp-tag">Needs you</span>}
+    </>
+  );
+}
+
+/** Says when next actions are still loading or could not load, with a Retry. */
+function TasksNotice({ query }: { query: UseQueryResult<unknown> }) {
+  if (query.isError) {
+    return (
+      <div role="alert" className="pp-banner" data-kind="error">
+        <p>
+          {query.data === undefined ? "Could not load next actions." : "Could not refresh next actions."}
+        </p>
+        <p className="pp-banner-detail">{query.error.message}</p>
+        <button type="button" className="pp-button" onClick={() => void query.refetch()}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+  if (query.data === undefined) return <p className="pp-muted">Loading next actions.</p>;
+  return null;
 }
 
 function BuildsTable({
   builds,
   showOrder,
-  workflows,
+  tasks,
 }: {
   builds: ProfileSummary[];
   showOrder: boolean;
-  workflows: BuildWorkflows | undefined;
+  tasks: ReadonlyMap<number, Task> | undefined;
 }) {
   return (
     <table className="pp-builds-table" aria-label="Builds">
@@ -60,7 +81,7 @@ function BuildsTable({
           <th scope="col">Build</th>
           {showOrder && <th scope="col">Order</th>}
           <th scope="col">Progress</th>
-          <th scope="col">Open tasks</th>
+          <th scope="col">Next action</th>
         </tr>
       </thead>
       <tbody onKeyDown={moveRowFocus}>
@@ -74,7 +95,9 @@ function BuildsTable({
             </th>
             {showOrder && <td className="num">{build.order_number ?? "None"}</td>}
             <td>{progressText(build.accepted_progress)}</td>
-            <td className="pp-muted">{openTasksText(workflows, build.id)}</td>
+            <td>
+              <NextActionCell tasks={tasks} id={build.id} />
+            </td>
           </tr>
         ))}
       </tbody>
@@ -86,7 +109,7 @@ function BuildsTable({
 export function BuildsList() {
   const connection = useConnection();
   const builds = useQuery(buildsQuery);
-  const workflows = useQuery(workflowQuery);
+  const tasks = useQuery({ ...tasksQuery, select: tasksByBuild });
   const orders = useModule("orders");
   const state = queryScreenState(builds, connection, (data) => data.profiles.length === 0);
   return (
@@ -98,12 +121,8 @@ export function BuildsList() {
           {orders?.state === "off" && (
             <ModuleOff module="Orders" wouldShow="each Build's order number" where="this list" />
           )}
-          {workflows.data?.kind !== "ready" && <p className="pp-muted">{WORKFLOW_PENDING_NOTE}</p>}
-          <BuildsTable
-            builds={data.profiles}
-            showOrder={orders?.state === "on"}
-            workflows={workflows.data}
-          />
+          <TasksNotice query={tasks} />
+          <BuildsTable builds={data.profiles} showOrder={orders?.state === "on"} tasks={tasks.data} />
         </>
       )}
       empty={{ message: "No Builds yet. Builds you create appear here." }}

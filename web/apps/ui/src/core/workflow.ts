@@ -1,30 +1,30 @@
+import type { BuildWorkflow, TaskFeed } from "@print-partner/rust-client";
+import { readCore } from "./rust";
+
 /**
- * The per-Build next action and open-task count. They come from the shared Rust
- * workflow projection (GRE-1123), the same read Today and MCP use, so this UI
- * never ranks work itself.
- *
- * Until that route is in the generated client, readBuildWorkflows makes no
- * request and resolves "pending". Swap its body for the generated call when the
- * route lands; the screens already render both kinds.
+ * Next actions and open tasks come from the shared Rust workflow projection
+ * (GRE-1123), the same read Today and MCP use, so this UI never ranks work itself.
  */
-export interface BuildWorkflow {
-  openTasks: number;
-  nextAction: { label: string; reason: string; target: string } | null;
-}
+export type Task = TaskFeed["tasks"][number];
 
-export type BuildWorkflows =
-  | { kind: "pending" }
-  | { kind: "ready"; byBuild: ReadonlyMap<number, BuildWorkflow> };
-
-export const WORKFLOW_PENDING_TEXT = "Not available yet";
-export const WORKFLOW_PENDING_NOTE =
-  "Open tasks and next actions are not available from the core yet. They will come from the shared workflow projection.";
-
-export function readBuildWorkflows(): Promise<BuildWorkflows> {
-  return Promise.resolve({ kind: "pending" });
-}
-
-export const workflowQuery = {
-  queryKey: ["core", "workflow"],
-  queryFn: readBuildWorkflows,
+/** `GET /api/v2/tasks`: each open Build's next action, most urgent first. */
+export const tasksQuery = {
+  queryKey: ["core", "tasks"],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listTasks", {}, signal),
 } as const;
+
+/** `GET /api/v2/plans/{id}/workflow`: one Build's stages and next action. */
+export const buildWorkflowQuery = (id: number) => ({
+  queryKey: ["core", "workflow", id],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("readBuildWorkflow", { id }, signal),
+});
+
+/** Open decisions across a Build's stages: the sum of each stage's `task_count`. */
+export function openDecisionCount(workflow: BuildWorkflow): number {
+  return workflow.stages.reduce((sum, stage) => sum + (stage.status.task_count ?? 0), 0);
+}
+
+/** The feed's task for each Build. A Build with no entry has nothing open. */
+export function tasksByBuild(feed: TaskFeed): ReadonlyMap<number, Task> {
+  return new Map(feed.tasks.map((task) => [task.plan_id, task]));
+}

@@ -51,6 +51,63 @@ const health = (orders: "on" | "off"): Health => ({
       : [{ module: "orders", state: "off", reason: "default_off" }],
 });
 
+const action = (planId: number, kind: string, label: string, reason: string) => ({
+  kind,
+  label,
+  reason,
+  stage_id: "checkoff",
+  target: { plan_id: planId, tab: "checkoff" },
+});
+
+// The feed ranks Build 5 first, unlike the list's order, so a test can tell they differ.
+const TASKS = {
+  tasks: [
+    {
+      plan_id: 5,
+      build_name: "Synthetic Build 04",
+      due_date: null,
+      attention: false,
+      rank_reason: "No Sources",
+      next_action: action(5, "attach_sources", "Attach Sources", "This Build has no Sources"),
+    },
+    {
+      plan_id: 2,
+      build_name: "Synthetic Build 01",
+      due_date: null,
+      attention: true,
+      rank_reason: "Prints await verification",
+      next_action: action(2, "verify_prints", "Verify prints", "2 prints are waiting for verification"),
+    },
+  ],
+};
+
+const stage = (id: string, taskCount?: number) => ({
+  id,
+  group: id === "sources" || id === "plan" ? "prepare" : "make",
+  label: id,
+  status: { kind: taskCount ? "needs_attention" : "ready", summary: "", task_count: taskCount },
+});
+
+const workflow = (id: number) => ({
+  build: { id, name: "Synthetic Build 01" },
+  sources: { kind: "ready", attached_count: 2 },
+  accepted_plan: { kind: "ready", plan_version: 1, revision_id: 1, total_units: 40, remaining_units: 28 },
+  working_plan: { kind: "none" },
+  stock: { kind: "not_ready" },
+  stages: [stage("sources"), stage("plan", 1), stage("production"), stage("checkoff", 2)],
+  next_action: TASKS.tasks[1].next_action,
+  active_work: {
+    awaiting_verification: 2,
+    failed_jobs: 0,
+    failed_verifications: 0,
+    printing_jobs: 0,
+    queued_jobs: 0,
+    remaining_units: 28,
+    sending_jobs: 0,
+    total_units: 40,
+  },
+});
+
 type Handler = (path: string) => Response | Promise<Response>;
 
 /** A fake core: /health with the Orders module as given, plus `handler` for the rest. */
@@ -62,6 +119,9 @@ function core(handler: Handler, orders: "on" | "off" = "on") {
 
 const plans: Handler = (path) => {
   if (path === "/api/v2/plans") return json({ profiles: BUILDS });
+  if (path === "/api/v2/tasks") return json(TASKS);
+  const flow = /^\/api\/v2\/plans\/(\d+)\/workflow$/.exec(path);
+  if (flow) return json(workflow(Number(flow[1])));
   const match = /^\/api\/v2\/plans\/(\d+)(\/layers)?$/.exec(path);
   const build = BUILDS.find((b) => b.id === Number(match?.[1]));
   if (!build) return json({ type: "urn:print-partner:problem:not-found", title: "Not Found", status: 404 }, 404);
@@ -98,28 +158,40 @@ afterEach(() => {
 });
 
 describe("UI2-01 Builds list", () => {
-  it("shows name, order, progress and open tasks from the Rust API, in its order", async () => {
+  it("shows name, order, progress and next action from the Rust API, in the list's order", async () => {
     const fetchMock = core(plans);
     renderAt("/builds", fetchMock);
     await screen.findByRole("link", { name: "Synthetic Build 01" });
     await screen.findByRole("columnheader", { name: "Order" });
+    await screen.findByText("Attach Sources");
     const rows = within(table()).getAllByRole("row");
     expect(rows.map((r) => [...r.querySelectorAll("th, td")].map((c) => c.textContent))).toEqual([
-      ["Build", "Order", "Progress", "Open tasks"],
-      ["Synthetic Build 01", "SO-1001", "12 of 40 units printed", "Not available yet"],
-      ["Synthetic Build 04", "None", "No accepted units", "Not available yet"],
-      ["Synthetic Build 08Archived", "None", "Progress unavailable: not computed yet", "Not available yet"],
+      ["Build", "Order", "Progress", "Next action"],
+      ["Synthetic Build 01", "SO-1001", "12 of 40 units printed", "Verify printsNeeds you"],
+      ["Synthetic Build 04", "None", "No accepted units", "Attach Sources"],
+      ["Synthetic Build 08Archived", "None", "Progress unavailable: not computed yet", "Nothing open"],
     ]);
+    expect(requested(fetchMock)).toContain("/api/v2/tasks");
     expect(screen.getByRole("link", { name: "Synthetic Build 01" }).getAttribute("href")).toBe("/builds/2");
     expect(requested(fetchMock)).toContain("/api/v2/plans");
-    expect(requested(fetchMock).every((p) => p === "/health" || p.startsWith("/api/v2/plans"))).toBe(true);
+    expect(
+      requested(fetchMock).every(
+        (p) => p === "/health" || p === "/api/v2/tasks" || p.startsWith("/api/v2/plans"),
+      ),
+    ).toBe(true);
   });
 
-  it("says where open tasks will come from instead of ranking work itself", async () => {
-    renderAt("/builds", core(plans));
-    expect(
-      await screen.findByText(/Open tasks and next actions are not available from the core yet/),
-    ).toBeTruthy();
+  it("keeps the Builds readable when next actions fail, and retries them", async () => {
+    let tasksUp = false;
+    renderAt("/builds", core((p) => (p === "/api/v2/tasks" && !tasksUp ? json({}, 503) : plans(p))));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not load next actions.");
+    expect(screen.getAllByText("Not loaded")).toHaveLength(3);
+    expect(screen.getByRole("link", { name: "Synthetic Build 01" })).toBeTruthy();
+    tasksUp = true;
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Attach Sources")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("moves focus between Builds with Up, Down, Home and End", async () => {
@@ -266,12 +338,21 @@ describe("UI2-02 Build Overview", () => {
     expect(fact("Plan")).toMatch(/^Current, accepted /);
     expect(fact("Order")).toBe("SO-1001");
     expect(fact("Customer request")).toBe("Matte black");
-    expect(fact("Next action")).toMatch(/not available from the core yet/);
+    await screen.findByText("Open decisions", { selector: "dt" });
+    expect(fact("Next action")).toBe("Verify prints2 prints are waiting for verification");
+    expect(fact("Open decisions")).toBe("3");
     const layers = within(screen.getByRole("list", { name: "Layers" }));
     expect(layers.getAllByRole("listitem").map((l) => l.textContent)).toEqual([
       "Synthetic Source 05 base",
       "Synthetic Source 02 addon",
     ]);
+  });
+
+  it("says when the Build's workflow could not load, with a Retry", async () => {
+    renderAt("/builds/2", core((p) => (p.endsWith("/workflow") ? json({}, 500) : plans(p))));
+    await screen.findByText(/Could not load: Rust core answered 500/);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Layers" })).toBeTruthy();
   });
 
   it("lists stale reasons in words", async () => {

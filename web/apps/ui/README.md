@@ -80,13 +80,14 @@ the loopback server and WebKitGTK launcher that both browser checks use.
 ## Builds
 
 `/builds` lists every Build `GET /api/v2/plans` returns, in the core's order,
-with its name, order number, accepted progress and open tasks
+with its name, order number, accepted progress and next action
 (`src/builds/BuildsList.tsx`). `/builds/:id` opens the Build workspace: the tab
 bar Overview, Sources, Plan, Production, Checkoff and History (the Machine tab is
 parked), with Overview at the index route (`src/builds/BuildWorkspace.tsx`).
-Overview reads `GET /api/v2/plans/{id}` and `/layers` and shows progress, part
-count, the Plan's freshness with its reasons in words, the order number and
-customer request, last use, and the layers in layer order. The other tabs say
+Overview reads `GET /api/v2/plans/{id}`, `/layers` and `/workflow` and shows
+progress, part count, the Plan's freshness with its reasons in words, the next
+action with its reason, the count of open decisions, the order number and customer
+request, last use, and the layers in layer order. The other tabs say
 which slice brings them. Nothing here changes data.
 
 - **Order fields follow the Orders Module.** `useModule` (`src/core/modules.ts`)
@@ -96,11 +97,16 @@ which slice brings them. Nothing here changes data.
   no Module of their own, so the whole-screen Module-off state does not apply.
 - **No customer name or due date.** No Rust route or table holds them yet, so
   the list has no columns for them.
-- **Open tasks and next action** come from the shared workflow projection
-  (GRE-1123). `readBuildWorkflows` in `src/core/workflow.ts` is the typed seam:
-  it makes no request and resolves `pending` until that route is in the
-  generated client, and the screens say the values are not available yet. The UI
-  never ranks work itself.
+- **Open tasks and next action** come from the shared Rust workflow projection
+  (GRE-1123), the read Today and MCP use (`src/core/workflow.ts`). The list reads
+  `GET /api/v2/tasks` once: each open Build has one task, its next action, shown
+  with "Needs you" when the projection marks it for attention; a Build missing
+  from the feed shows "Nothing open". The list keeps the core's Build order and
+  never re-ranks by the feed. Overview reads `GET /api/v2/plans/{id}/workflow`:
+  the next action and reason, and the count of open decisions, the sum of the
+  stages' `task_count` (a next action such as Prepare Production is not a
+  decision, so the count can be 0 beside it). If the feed or the workflow read fails, the Builds stay
+  readable and that part says it could not load, with a Retry.
 - **States.** Both screens map their query through `queryScreenState`
   (`src/screen/queryState.ts`): loading, empty, error with the last-known data,
   its time and Retry, and offline with what was loaded. A Build ID that is not a

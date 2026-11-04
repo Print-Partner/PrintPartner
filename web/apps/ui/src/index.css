@@ -300,6 +300,16 @@ body {
   .pp-main {
     padding: 16px;
   }
+
+  .pp-builds-table :is(th, td) {
+    padding: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  .pp-tag {
+    display: inline-block;
+    margin-left: 0;
+  }
 }
 
 .pp-muted,
@@ -392,6 +402,11 @@ body {
 
 .pp-fact dd {
   margin: 4px 0 0;
+}
+
+.pp-fact-detail {
+  display: block;
+  color: var(--text-muted);
 }
 
 .pp-reasons {

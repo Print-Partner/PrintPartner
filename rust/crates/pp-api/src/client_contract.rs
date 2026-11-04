@@ -148,16 +148,16 @@ mod codegen {
             PartRef, PlateChanges, PlateRef, PreviewChanges, PreviewRevision, ProductionCheck,
             SnapshotNote, SpoolImpact, StockImpact, UnitChanges, UnitRef, Unmappable,
         },
-        required_units::{
-            AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
-            DraftListResponse, PartView, ReconciliationView, Workspace,
-        },
         read_model::{
             build_workflow::{TaskFeed, rank},
             workflow::{
                 self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Stock,
                 Working, Workspace as BuildWorkflow,
             },
+        },
+        required_units::{
+            AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
+            DraftListResponse, PartView, ReconciliationView, Workspace,
         },
         working_drafts::{AbandonRequest, EditRequest},
     };
@@ -668,7 +668,14 @@ mod codegen {
             issue_count: 1,
         };
         [
-            facts(1, Sources::Empty, Accepted::None, Working::None, 0, Stock::NotReady),
+            facts(
+                1,
+                Sources::Empty,
+                Accepted::None,
+                Working::None,
+                0,
+                Stock::NotReady,
+            ),
             facts(
                 2,
                 Sources::Ready { attached_count: 1 },
@@ -680,8 +687,22 @@ mod codegen {
                 0,
                 Stock::NotReady,
             ),
-            facts(3, stale.clone(), accepted(1), Working::None, 2, Stock::Ready { shortfalls: 1 }),
-            facts(MAX_SAFE, stale, accepted(0), Working::None, 0, Stock::Ready { shortfalls: 0 }),
+            facts(
+                3,
+                stale.clone(),
+                accepted(1),
+                Working::None,
+                2,
+                Stock::Ready { shortfalls: 1 },
+            ),
+            facts(
+                MAX_SAFE,
+                stale,
+                accepted(0),
+                Working::None,
+                0,
+                Stock::Ready { shortfalls: 0 },
+            ),
         ]
         .iter()
         .map(|facts| workflow::resolve(facts).expect("fixture facts are valid"))
@@ -771,7 +792,13 @@ mod codegen {
         }
         let workflows = build_workflows();
         let due = time::Date::from_calendar_date(2026, time::Month::November, 6).ok();
-        let feed = rank(workflows.iter().cloned().zip([None, due, None, due]).collect());
+        let feed = rank(
+            workflows
+                .iter()
+                .cloned()
+                .zip([None, due, None, due])
+                .collect(),
+        );
         cases.push(served("TaskFeed", "ranked", feed)?);
         cases.push(served("TaskFeed", "empty", TaskFeed { tasks: vec![] })?);
         for (index, value) in workflows.into_iter().enumerate() {

@@ -140,6 +140,19 @@ Build's accepted revisions, snapshots, checkoff bursts, sends and assistant
 decisions, newest first, one page at a time. [Build history](build-history.md)
 describes the entries and paging.
 
+### Workflow and tasks
+
+```text
+GET   /plans/:id/workflow
+GET   /api/v1/tasks
+```
+
+The Rust API serves these reads only with `desktop_rebuild` on. The workflow
+returns a Build's stages and next action with its reason and target; the task
+feed returns every open Build's next action, most urgent first. MCP
+`get_build_workflow` returns the same workflow body.
+[Build workflow and task feed](build-workflow.md) describes the rules.
+
 ### Plates and exports
 
 ```text

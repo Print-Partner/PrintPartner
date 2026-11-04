@@ -605,6 +605,14 @@ mod with_feature {
         }
 
         server.stop().await;
+        // Connection and MCP session tasks release their router clones shortly
+        // after the server stops; a router that never lets go still fails.
+        for _ in 0..200 {
+            if Arc::strong_count(&owner) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         shutdown(owner, directory);
     }
 
@@ -638,6 +646,7 @@ mod with_feature {
             .to_str()
             .unwrap()
             .to_owned();
+        response.text().await.unwrap();
         let initialized = post(
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             Some(session.clone()),
@@ -645,10 +654,11 @@ mod with_feature {
         .await
         .unwrap();
         assert!(initialized.status().is_success());
+        initialized.text().await.unwrap();
         let body = post(
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
                 "name": "get_build_workflow", "arguments": {"plan_id": 1}}}),
-            Some(session),
+            Some(session.clone()),
         )
         .await
         .unwrap()
@@ -662,6 +672,19 @@ mod with_feature {
             .find(|data| !data.is_empty())
             .unwrap_or(&body);
         let rpc: Value = serde_json::from_str(data).unwrap();
+        // Close the session so no session task outlives the server.
+        server
+            .client
+            .delete(format!("{}/mcp", server.origin))
+            .header("Origin", &server.origin)
+            .header("Authorization", bearer)
+            .header("mcp-session-id", session)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         let result = &rpc["result"];
         assert_ne!(result["isError"], true, "{rpc}");
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()

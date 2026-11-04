@@ -82,6 +82,10 @@ pub struct Task {
     pub plan_id: i64,
     pub build_name: String,
     /// `YYYY-MM-DD`, when the Build has one.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
     pub due_date: Option<String>,
     /// The next action is blocked on the user; these rank first.
     pub attention: bool,
@@ -220,13 +224,7 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
     let cancelled = || command.cancelled.load(Ordering::Acquire);
     ensure!(!cancelled(), "Cancelled before admission");
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let tenant = match &command.credential {
-        Credential::Session(secret) => auth::read_session_tenant(&tx, secret, command.policy)?,
-        Credential::ApiKey {
-            routed_tenant,
-            secret,
-        } => auth::read_key_tenant(&tx, routed_tenant, secret)?,
-    };
+    let tenant = super::read_tenant(&tx, &command.credential, command.policy)?;
     let ids = match command.request {
         Request::Build(None) => Vec::new(),
         Request::Build(Some(build)) => tx

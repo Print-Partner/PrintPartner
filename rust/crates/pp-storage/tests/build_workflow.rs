@@ -15,10 +15,12 @@ use pp_storage::{
 };
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+
+#[path = "common/scratch.rs"]
+mod scratch;
 
 const SESSION: &str = "read-fixture-secret";
 
@@ -35,29 +37,21 @@ fn due(day: u8) -> Option<time::Date> {
     Some(time::Date::from_calendar_date(2026, time::Month::November, day).unwrap())
 }
 
+/// Build 1 of the Node fixture in a scratch directory. `owner` drops before
+/// `root` removes the directory.
 struct Fixture {
-    root: PathBuf,
     owner: Option<WriterOwner>,
+    root: scratch::Scratch,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pp-build-workflow-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+        let root = scratch::Scratch::new("pp-build-workflow-");
+        let database = include_bytes!("fixtures/accepted-plan-node.db");
+        std::fs::write(root.join("print-partner.db"), database).unwrap();
         pp_os::create_private_dir_all(&root.join("repos/1/revisions/accepted")).unwrap();
-        std::fs::write(
-            root.join("print-partner.db"),
-            include_bytes!("fixtures/accepted-plan-node.db"),
-        )
-        .unwrap();
-        let (owner, _) = WriterOwner::open(&root, Limits::default()).unwrap();
-        Self {
-            root,
-            owner: Some(owner),
-        }
+        let owner = Some(WriterOwner::open(&root, Limits::default()).unwrap().0);
+        Self { owner, root }
     }
 
     fn owner(&self) -> &WriterOwner {
@@ -114,10 +108,11 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.take() {
-            owner.shutdown().unwrap();
-        }
-        std::fs::remove_dir_all(&self.root).unwrap();
+        self.owner
+            .take()
+            .map(WriterOwner::shutdown)
+            .transpose()
+            .unwrap();
     }
 }
 

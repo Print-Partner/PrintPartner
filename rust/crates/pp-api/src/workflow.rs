@@ -9,21 +9,10 @@
 //! Both write nothing. Admission is `accepted::Gate`. MCP `get_build_workflow`
 //! reads the same client.
 
-use crate::{
-    accepted::{
-        AcceptedHttpConfig, Cancellation, Gate, build_id, failure, json_response, read_error,
-    },
-    loopback::PresentedCredential,
-};
-use axum::{
-    Extension, Router,
-    extract::{Path, State},
-    http::StatusCode,
-    response::Response,
-    routing::get,
-};
+use crate::accepted::{AcceptedHttpConfig, Gate, build_id, failure, internal, ok_json, read_error};
+use crate::loopback::PresentedCredential;
+use axum::{Extension, Router, extract, http::StatusCode, response::Response, routing::get};
 use pp_storage::read_model::build_workflow::{Failure, Outcome, Request, WorkflowClient};
-use std::sync::{Arc, atomic::AtomicBool};
 
 #[derive(Clone)]
 struct App {
@@ -49,42 +38,36 @@ pub fn workflow_router(config: AcceptedHttpConfig, client: WorkflowClient) -> Ro
 }
 
 async fn workflow(
-    State(app): State<App>,
-    Path(id): Path<String>,
+    extract::State(app): extract::State<App>,
+    extract::Path(id): extract::Path<String>,
     Extension(presented): Extension<PresentedCredential>,
 ) -> Response {
     read(app, presented, Request::Build(build_id(&id))).await
 }
 
 async fn tasks(
-    State(app): State<App>,
+    extract::State(app): extract::State<App>,
     Extension(presented): Extension<PresentedCredential>,
 ) -> Response {
     read(app, presented, Request::Tasks).await
 }
 
 async fn read(app: App, presented: PresentedCredential, request: Request) -> Response {
-    let stop = Cancellation(Arc::new(AtomicBool::new(false)));
-    let (client, wait, cancelled) = (app.client, app.gate.wait(), stop.0.clone());
-    let read = tokio::task::spawn_blocking(move || {
-        client.read(presented.into_credential(), request, cancelled, wait)
-    })
-    .await;
-    drop(stop);
-    let body = match read {
-        Ok(Ok(Outcome::Workspace(workspace))) => serde_json::to_value(workspace),
-        Ok(Ok(Outcome::Tasks(feed))) => serde_json::to_value(feed),
-        Ok(Ok(Outcome::MissingBuild)) => {
-            return failure(StatusCode::NOT_FOUND, "Profile not found");
+    let client = app.client;
+    let read = app
+        .gate
+        .read(presented, move |credential, cancelled, wait| {
+            client.read(credential, request, cancelled, wait)
+        })
+        .await;
+    match read {
+        Some(Ok(Outcome::Workspace(workspace))) => ok_json(&workspace),
+        Some(Ok(Outcome::Tasks(feed))) => ok_json(&feed),
+        Some(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
+        Some(Err(error)) if error.downcast_ref::<Failure>().is_some() => {
+            failure(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())
         }
-        Ok(Err(error)) if error.downcast_ref::<Failure>().is_some() => {
-            return failure(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
-        }
-        Ok(Err(error)) => return read_error(&error),
-        Err(_) => return failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
-    };
-    match body {
-        Ok(body) => json_response(StatusCode::OK, &body, false),
-        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        Some(Err(error)) => read_error(&error),
+        None => internal(),
     }
 }

@@ -255,13 +255,7 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<O
         "Cancelled before admission"
     );
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let tenant = match &command.credential {
-        Credential::Session(secret) => auth::read_session_tenant(&tx, secret, command.policy)?,
-        Credential::ApiKey {
-            routed_tenant,
-            secret,
-        } => auth::read_key_tenant(&tx, routed_tenant, secret)?,
-    };
+    let tenant = super::read_tenant(&tx, &command.credential, command.policy)?;
     let build = match command.request.build {
         Some(build) => i64::try_from(build.get())?,
         None => 0,

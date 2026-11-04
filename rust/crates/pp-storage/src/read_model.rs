@@ -214,13 +214,7 @@ pub(crate) fn submit_read<T>(
 }
 pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<Batch> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let tenant = match command.credential {
-        Credential::Session(secret) => auth::read_session_tenant(&tx, &secret, command.policy)?,
-        Credential::ApiKey {
-            routed_tenant,
-            secret,
-        } => auth::read_key_tenant(&tx, &routed_tenant, &secret)?,
-    };
+    let tenant = read_tenant(&tx, &command.credential, command.policy)?;
     let profile_ids = match command.target {
         Target::Profiles(ids) => ids,
         Target::Part(part) => tx
@@ -260,6 +254,22 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
     }
     tx.commit()?;
     Ok(Batch { builds })
+}
+
+/// The tenant `credential` authenticates as, checked inside the read's own
+/// transaction.
+pub(crate) fn read_tenant(
+    tx: &rusqlite::Transaction<'_>,
+    credential: &Credential,
+    policy: auth::AuthPolicy,
+) -> Result<String> {
+    match credential {
+        Credential::Session(secret) => auth::read_session_tenant(tx, secret, policy),
+        Credential::ApiKey {
+            routed_tenant,
+            secret,
+        } => auth::read_key_tenant(tx, routed_tenant, secret),
+    }
 }
 
 /// The Accepted Plan of `profile`, with integrity failures as a read result.

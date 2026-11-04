@@ -166,10 +166,16 @@ pub struct StageStatus {
     pub kind: StatusKind,
     pub summary: String,
     /// Open decisions in this stage.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub task_count: Option<u64>,
     /// Work running in this stage.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub active_count: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -223,7 +229,10 @@ impl ActionKind {
 pub struct Target {
     pub plan_id: i64,
     pub tab: StageId,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub draft_id: Option<i64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -234,13 +243,25 @@ pub struct NextAction {
     pub label: String,
     pub reason: String,
     pub target: Target,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub item_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub draft_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub issue_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub unit_count: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

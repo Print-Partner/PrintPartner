@@ -99,6 +99,7 @@ pub struct CapturedContext {
     pub required_units: Vec<UnitHistory>,
     pub plate_revisions: Vec<PlateRef>,
     /// The facts `workflow` was resolved from, for the workflow read.
+    #[cfg(feature = "desktop_rebuild")]
     #[serde(skip)]
     pub(crate) facts: Facts,
 }
@@ -1117,6 +1118,7 @@ pub(super) fn capture(
         profile_summary_v2,
         profile_summary: json!({"kind":"found","summary":{"header":header,"progress":progress}}),
         workflow: json!({"kind":"ready","workspace":workflow::resolve(&f)?}),
+        #[cfg(feature = "desktop_rebuild")]
         facts: f,
         history,
         required_units: units,

@@ -634,7 +634,7 @@ mod codegen {
 
     /// Workflows resolved by the projection itself: a new Build, a saved
     /// draft, blocked Production with a stock shortfall, and a finished Build.
-    fn build_workflows() -> Vec<BuildWorkflow> {
+    fn build_workflows() -> Result<Vec<BuildWorkflow>, serde_json::Error> {
         let facts = |id: i64, sources, accepted_plan, working_plan, failed: u64, stock| Facts {
             build: Build {
                 id,
@@ -705,7 +705,9 @@ mod codegen {
             ),
         ]
         .iter()
-        .map(|facts| workflow::resolve(facts).expect("fixture facts are valid"))
+        .map(|facts| {
+            workflow::resolve(facts).map_err(<serde_json::Error as serde::ser::Error>::custom)
+        })
         .collect()
     }
 
@@ -790,7 +792,7 @@ mod codegen {
                 value,
             )?);
         }
-        let workflows = build_workflows();
+        let workflows = build_workflows()?;
         let due = time::Date::from_calendar_date(2026, time::Month::November, 6).ok();
         let feed = rank(
             workflows

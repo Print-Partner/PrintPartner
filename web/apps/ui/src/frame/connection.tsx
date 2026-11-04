@@ -24,21 +24,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [simulated, setSimulated] = useState<ConnectionStatus | null>(null);
   const health = useQuery({
     queryKey: ["core", "health"],
-    queryFn: async () => {
-      await checkCoreHealth(AbortSignal.timeout(HEALTH_TIMEOUT_MS));
-      return true;
-    },
+    // The probe resolves to reachable or not instead of throwing. A thrown error with no
+    // cached data puts the query back to pending on every retry, which would read as
+    // "checking" and re-enable changes before the core is back. A boolean stays cached
+    // while the next probe runs.
+    queryFn: () =>
+      checkCoreHealth(AbortSignal.timeout(HEALTH_TIMEOUT_MS)).then(
+        () => true,
+        () => false,
+      ),
     // The default "online" mode pauses the probe while the browser reports no network,
     // which would leave the last success standing. The probe itself decides.
     networkMode: "always",
-    retry: false,
-    refetchInterval: (query) => (query.state.status === "error" ? OFFLINE_POLL_MS : ONLINE_POLL_MS),
+    refetchInterval: (query) => (query.state.data === false ? OFFLINE_POLL_MS : ONLINE_POLL_MS),
   });
-  const probed: ConnectionStatus = health.isError
-    ? "offline"
-    : health.isSuccess
-      ? "online"
-      : "checking";
+  const probed: ConnectionStatus =
+    health.data === undefined ? "checking" : health.data ? "online" : "offline";
   return (
     <SimulateContext value={setSimulated}>
       <ConnectionContext value={simulated ?? probed}>{children}</ConnectionContext>

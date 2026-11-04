@@ -259,6 +259,30 @@ describe("FRM-04 offline frame", () => {
     expect(await screen.findByText("Core reachable")).toBeTruthy();
   });
 
+  it("stays offline, with changes disabled, through failed and hanging recovery probes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // A probe that never settles: the 4 s deadline is out of the picture here.
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
+    const probes = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockImplementation(() => new Promise(() => {}));
+    renderAt("/states/ready", probes);
+    const expectOffline = () => {
+      expect(document.querySelector(".pp-connection")?.textContent).toBe("Offline");
+      const button = screen.getByRole("button", { name: "Record a print" });
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+    };
+    await screen.findByText("Offline");
+    expectOffline();
+    for (const calls of [2, 3]) {
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(probes).toHaveBeenCalledTimes(calls);
+      expectOffline();
+    }
+  });
+
   it("keeps probing while the browser reports no network", async () => {
     onlineManager.setOnline(false);
     renderAt("/today", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));

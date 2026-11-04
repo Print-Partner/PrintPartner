@@ -41,7 +41,12 @@ const body = ({ setup = "", audit = false, theme = "dark" }) => `
   ${setup}
   await sleep(250);
   const root = document.documentElement;
-  const out = { overflow: root.scrollWidth - root.clientWidth, scrollHeight: root.scrollHeight,
+  // The dialog backdrop is its own scroll container, so the root alone would miss a
+  // palette or shortcut table that scrolls sideways inside it.
+  const scrollers = [root, ...document.querySelectorAll(".pp-backdrop, .pp-dialog")];
+  const overflow = Math.max(...scrollers.map((el) => el.scrollWidth - el.clientWidth));
+  const dialogs = document.querySelectorAll(".pp-dialog").length;
+  const out = { overflow, dialogs, scrollHeight: root.scrollHeight,
     innerWidth: window.innerWidth, violations: [] };
   const applyTheme = (attrs) => {
     root.removeAttribute("data-theme");
@@ -106,6 +111,10 @@ if (outcome.skip) {
 const problems = outcome.results.flatMap(({ result }, i) => [
   ...result.violations.map((v) => `${list[i].label}: ${v}`),
   ...(result.overflow > 0 ? [`${list[i].label}: scrolls sideways by ${result.overflow}px`] : []),
+  // The dialog jobs must measure an open dialog, or the overflow check proves nothing.
+  ...(/^(palette|shortcuts)/.test(list[i].label) && result.dialogs !== 1
+    ? [`${list[i].label}: expected one open dialog, found ${result.dialogs}`]
+    : []),
 ]);
 if (problems.length) throw new Error(`webkitgtk:\n  ${problems.join("\n  ")}`);
 log(

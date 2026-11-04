@@ -36,6 +36,7 @@
     "fixture:storage:prepare": "node --conditions=development --import tsx scripts/storage-fixtures/prepare.mts",
     "test:desktop-parity": "node --conditions=development --import tsx scripts/desktop-parity/verify.mts",
     "fixture:synthetic": "node --conditions=development --import tsx scripts/synthetic-dataset/generate.mts",
+    "fixture:synthetic:copy": "node --conditions=development --import tsx scripts/synthetic-dataset/copy.mts",
     "test:synthetic-dataset": "node --conditions=development --import tsx --test scripts/synthetic-dataset/generate.test.mts",
     "contracts:schemas": "node --conditions=development --import tsx scripts/desktop-contracts/schema-check.mjs",
     "contracts:reverse:generate": "node scripts/rust-contracts/run.mjs --write",

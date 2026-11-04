@@ -70,7 +70,7 @@ The durable ownership marker is `<data-dir>/.pp-rust-owned.json`. The fixtures w
 
 ## Synthetic installations
 
-`web/scripts/synthetic-dataset/generate.mts` writes a synthetic Node schema-34 data directory shaped like a long-lived installation, for invariant tests to run against. Owner UX checks and the cutover rehearsal can fall back to it when no production backup copy is available. Its Source revisions are plain STL folders without a `.printpartner-source-snapshot.json`, so saving a Source manifest on it fails. Its tests cover the stored shape and STL dimensions, not Plate initialization or 3MF export. It is not the representative copy that step 2 of [Whole-runtime cutover](architecture.md#whole-runtime-cutover-and-rollback) requires, and evidence built on it must say so.
+`web/scripts/synthetic-dataset/generate.mts` writes a synthetic Node schema-34 data directory shaped like a long-lived installation, for invariant tests to run against. Owner UX checks and the cutover rehearsal can fall back to it when no production backup copy is available. Its tests cover the stored shape, STL dimensions, saving a Source manifest, Plate initialization and unit transfer, not 3MF export. It is not the representative copy that step 2 of [Whole-runtime cutover](architecture.md#whole-runtime-cutover-and-rollback) requires, and evidence built on it must say so.
 
 From `web/`, with Node 24.21 and `better-sqlite3` built for it:
 
@@ -80,9 +80,19 @@ npm run fixture:synthetic -- --seed 1138 /tmp/pp-synthetic-1138
 
 The output directory must be new or empty. The generator refuses anything else, so it never writes into an existing data directory.
 
+### Disposable copies
+
+Node stores each active Source's snapshot as an absolute path in `projects.local_path`, so a plain `cp -r` of the output still reads Source files from the original directory. Copy with the helper instead:
+
+```sh
+npm run fixture:synthetic:copy -- /tmp/pp-synthetic-1138 /tmp/pp-synthetic-1138-copy
+```
+
+It refuses a source without `SYNTHETIC-DATASET.json` and a non-empty target. After copying, it opens the copy with Node and calls `activateSourceRevision` again for each Source's current revision, which resolves the stored snapshot locator against the copy's `repos` directory. The original directory can then be removed. Node connect re-seeds the starter profiles on that open, so the copy's digest differs from the manifest in `sqlite_sequence`; the measured shape does not change.
+
 ### How it is built
 
-Node's own `SqliteDatabase.connect` creates the schema-34 database. The repository then builds every row: `createSource`, `recordSourceRevision`, `activateSourceRevision`, `createProfile`, `addAddonLayer`, the accept and edit test helpers in `apps/server/src/test/accept-plan.ts`, `publishAcceptedPlates`, `deleteProfile` and `saveUnattributedPrint`. No SQL is written by hand. The clock starts at `2026-10-02T00:00:00.000Z` and advances one minute per operation. Required-unit tokens come from a seeded token factory. Plate IDs use the same `plate_<sha256 prefix>` form as the Node Plate workspace.
+Node's own `SqliteDatabase.connect` creates the schema-34 database. `saveFleet` writes the two synthetic printers to the `printer.fleet` setting. Each Source revision is written by `LocalSourceSnapshotStore.materialize`, the snapshot store Node sync uses, so it holds a `.printpartner-source-snapshot.json` and the revision row stores the digest and locator `materialize` returns. The repository then builds every row: `createSource`, `recordSourceRevision`, `activateSourceRevision`, `createProfile`, `addAddonLayer`, the accept and edit test helpers in `apps/server/src/test/accept-plan.ts`, `publishAcceptedPlates`, `deleteProfile` and `saveUnattributedPrint`. No SQL is written by hand. The clock starts at `2026-10-02T00:00:00.000Z` and advances one minute per operation. Required-unit tokens come from a seeded token factory. Plate IDs use the same `plate_<sha256 prefix>` form as the Node Plate workspace.
 
 ### Shapes
 
@@ -96,6 +106,7 @@ It produces only these shapes:
 | Plate size | Two anchor Builds: `Synthetic Build Anchor 100u15p` (100 units on 15 Plates) and `Synthetic Build Anchor 47u6p` (47 units on 6 Plates). Other Builds have up to 8 Plates or none. |
 | Accepted history | Builds with Plates and 3 or more Plan revisions keep a Plate revision on an earlier Plan revision. Each anchor has two Plate revisions on its current Plan. |
 | Unmatched prints | 18 open entries in the `printer.unattributed_prints` setting |
+| Printers | `synthetic-printer-1` and `synthetic-printer-2` in `printer.fleet`: 250 × 220 × 220 mm beds with a 5 mm margin, matching the stored Plates. Neither has an `integration_id` or `device_id`, so nothing can send to them. |
 
 Names are `Synthetic Source NN`, `Synthetic Build NN` and `synthetic-sNN-part-NN.stl`. Every part is a closed 20 × 20 × 10 mm ASCII STL box that matches the stored unit size, so Plate initialization and 3MF export accept it. URLs and printer hosts use `.invalid`. Nothing is copied from a real data directory.
 
@@ -105,7 +116,7 @@ Every run writes `SYNTHETIC-DATASET.json` at the root of the output with:
 
 - `label`: `synthetic: not the architecture's step-2 rehearsal`
 - `synthetic: true`, the `seed`, the `clock` and the Node version
-- `generator`: name, `version` (currently 1), script path and script SHA-256
+- `generator`: name, `version` (currently 2), script path and script SHA-256
 - `digest`: the installation digest
 - `shape`: the measured counts above, the deleted Build IDs and the Build ID density
 
@@ -122,7 +133,11 @@ The test generates seed 7 twice and seed 8 once, then checks:
 
 - the digests match for seed 7 and differ for seed 8;
 - the label and the shape counts;
-- Node opens a copy and reads accepted Plans, the anchor's Plates and the 18 prints.
+- Node opens a copy and reads accepted Plans, the anchor's Plates and the 18 prints;
+- each Source revision's digest matches its `.printpartner-source-snapshot.json`;
+- `publishSourceManifestRevision` saves a Source manifest on a copy;
+- a copy made by the helper serves `/sources/:id/stl-tree` for every Source after the original directory is removed;
+- the Plate routes initialize the `Synthetic Build Anchor 47u6p` Plates on `synthetic-printer-1` and transfer a unit to `synthetic-printer-2`.
 
 Node connect re-seeds the starter slicer profiles with `INSERT OR IGNORE`, which advances their `sqlite_sequence` rows on every open, so that check compares the measured shape rather than the digest.
 

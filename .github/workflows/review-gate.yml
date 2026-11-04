@@ -1,0 +1,226 @@
+name: Review gate
+
+# `review-gate` is the required review check. It runs on pull_request_target,
+# so GitHub runs this file and its logic from the base branch, never the PR's
+# copy. The job reads the GitHub API only (files, check runs, workflow runs and
+# comments). It never checks out or runs PR code, and it gets no secrets.
+#
+# It passes on a PR head when any of these holds for that exact head SHA:
+#   1. the droid-review job of .github/workflows/droid-review.yml succeeded
+#      and its log shows droid-action's review step ran (it skips silently);
+#   2. the claude-code-review job of .github/workflows/claude-review.yml
+#      succeeded and claude-security-review succeeded or was neutral;
+#   For 1 and 2 the check suite must come from that workflow path on
+#   pull_request, and GitHub must have run the default branch's copy of the
+#   file: its blob at the head equals the default branch's blob, or the PR does
+#   not change the file (the merge commit then carries the base's copy).
+#   3. a comment by the repository owner has a line that is exactly the
+#      coordinator marker, with lowercase hex and single spaces:
+#      <!-- pp-review-gate head=<40-char sha> reviewer=<model> findings=<n> -->
+# It fails, whatever else holds, when a check run named like one of these jobs
+# comes from any other workflow file or event, or when GitHub's file list for
+# the PR is incomplete (the files API stops at 3000). When a PR author other
+# than the owner changes a workflow, .github/zizmor.yml or
+# scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
+# the guard), as Dependabot's action bumps do, it needs both path 3 (the
+# owner's marker for that head) and path 1 or 2.
+# Every push starts a new run, which fails until one path holds for the new
+# head. review-gate-rerun.yml reruns this job when a review workflow finishes
+# or a marker comment changes. See docs/development/definition-of-done.md#code-review.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  review-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Require a finished review of the head commit
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          OWNER: ${{ github.repository_owner }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          import json, os, re, subprocess, sys
+
+          REPO, PR, HEAD = os.environ["REPO"], os.environ["PR_NUMBER"], os.environ["HEAD_SHA"]
+          AUTHOR, OWNER, DEFAULT = os.environ["AUTHOR"], os.environ["OWNER"], os.environ["DEFAULT_BRANCH"]
+          ACTIONS_APP = 15368
+          # Workflows, zizmor config, the safety guard, and the hook configs that load it.
+          PROTECTED = re.compile(r"^(?:\.github/workflows/|\.github/zizmor\.yml$|scripts/agent-guard\.py$"
+                                 r"|\.factory/|\.claude/)")
+          # droid-action logs this when its review step ran. It reports job success when it skips the
+          # review (for example on a PR that changes droid-review.yml), so the conclusion alone is not enough.
+          # Only a whole runner line counts, and the log must hold exactly one such line for the step.
+          DROID_STEP = re.compile(r"^\ufeff?(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?##\[end-action "
+                                  r"id=__Factory-AI_droid-action\.droid;outcome=(\w+);"
+                                  r"conclusion=\w+;duration_ms=\d+\]\r?$", re.M)
+          # Each job check the gate reads, and the only workflow file and event that may produce it.
+          ORIGINS = {
+              "review-gate": (".github/workflows/review-gate.yml", "pull_request_target"),
+              "droid-review": (".github/workflows/droid-review.yml", "pull_request"),
+              "claude-code-review": (".github/workflows/claude-review.yml", "pull_request"),
+              "claude-security-review": (".github/workflows/claude-review.yml", "pull_request"),
+          }
+          # The exact line the coordinator posts; GitHub stores comment text decoded, so no other form counts.
+          MARKER = re.compile(r"^<!-- pp-review-gate head=([0-9a-f]{40}) reviewer=([A-Za-z0-9._:/@+-]+) "
+                              r"findings=([0-9]+) -->$", re.M)
+          FILES_API_LIMIT = 3000
+
+
+          def pages(path):
+              out = subprocess.run(["gh", "api", "--paginate", "--slurp", path],
+                                   check=True, capture_output=True, text=True).stdout
+              return json.loads(out)
+
+
+          def blob(path, ref):
+              result = subprocess.run(["gh", "api", f"repos/{REPO}/contents/{path}?ref={ref}"],
+                                      capture_output=True, text=True)
+              return json.loads(result.stdout).get("sha") if result.returncode == 0 else None
+
+
+          listed = [item for page in pages(f"repos/{REPO}/pulls/{PR}/files?per_page=100") for item in page]
+          # Every path the PR touches: added, changed, removed (status "removed" keeps the old path in
+          # filename), and both sides of a rename, so moving a protected file away still counts.
+          files = {item["filename"] for item in listed} | {item["previous_filename"] for item in listed
+                                                           if item.get("previous_filename")}
+          pull = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
+                                           capture_output=True, text=True).stdout)
+          changed, pr_base = pull["changed_files"], pull["base"]["ref"]
+          runs = [run for page in pages(f"repos/{REPO}/commits/{HEAD}/check-runs?filter=all&per_page=100")
+                  for run in page["check_runs"] if run["name"] in ORIGINS]
+          comments = [item for page in pages(f"repos/{REPO}/issues/{PR}/comments?per_page=100") for item in page]
+
+          suites = {}
+
+
+          def workflow_run(run):
+              """Return the Actions workflow run behind a check run, or None."""
+              if (run.get("app") or {}).get("id") != ACTIONS_APP:
+                  return None
+              suite = run["check_suite"]["id"]
+              if suite not in suites:
+                  found = [item for page in pages(f"repos/{REPO}/actions/runs?check_suite_id={suite}")
+                           for item in page["workflow_runs"]]
+                  suites[suite] = found[0] if found else None
+              return suites[suite]
+
+
+          def origin(run):
+              """Return (workflow path, event) of the Actions run that produced a check run, or None."""
+              found = workflow_run(run)
+              return (found["path"].split("@")[0], found["event"]) if found else None
+
+
+          def for_this_pr(name):
+              """Whether the latest run of a check came from this PR into the default branch.
+
+              Another PR with the same head SHA but another base runs that base's copy of the workflow,
+              so the run's pull_requests must name this PR, and every PR it names must target the default
+              branch. Anything else, including an empty list, fails closed.
+              """
+              found = workflow_run(latest[name]) if name in latest else None
+              prs = (found or {}).get("pull_requests") or []
+              return (pr_base == DEFAULT and bool(prs) and any(str(item.get("number")) == PR for item in prs)
+                      and all((item.get("base") or {}).get("ref") == DEFAULT for item in prs))
+
+
+          problems, latest, touched = [], {}, []
+          if changed >= FILES_API_LIMIT or len(listed) != changed:
+              problems.append(f"GitHub listed {len(listed)} of the PR's {changed} changed files (the files API stops "
+                              f"at {FILES_API_LIMIT}), so the gate cannot check every path. Split the PR.")
+          if AUTHOR != OWNER:
+              touched = sorted(name for name in files if PROTECTED.match(name))
+          for run in runs:
+              name, where = run["name"], origin(run)
+              if where != ORIGINS[name]:
+                  problems.append(f"check run {name} ({run['id']}) comes from {where or 'another app'}, "
+                                  f"not {ORIGINS[name][0]} on {ORIGINS[name][1]}.")
+              elif name not in latest or (run.get("started_at") or "") > (latest[name].get("started_at") or ""):
+                  latest[name] = run
+
+
+          def state(name):
+              run = latest.get(name)
+              return "missing" if run is None else run.get("conclusion") or run.get("status")
+
+
+          marker = None
+          for comment in comments:
+              if (comment.get("user") or {}).get("login") != OWNER:
+                  continue
+              body = (comment.get("body") or "").replace("\r\n", "\n")
+              for head, reviewer, findings in MARKER.findall(body):
+                  if head == HEAD:
+                      marker = f"{reviewer}, {findings} findings, {comment.get('html_url')}"
+
+          def droid_reviewed(run):
+              """Whether droid-action's review step ran in this job. The Actions job id is the check run id."""
+              result = subprocess.run(["gh", "api", "--allow-escape-sequences",
+                                       f"repos/{REPO}/actions/jobs/{run['id']}/logs"], capture_output=True, text=True)
+              return result.returncode == 0 and DROID_STEP.findall(result.stdout) == ["success"]
+
+
+          def base_definition(path):
+              """Whether GitHub ran the default branch's copy of a workflow file for this head."""
+              if path not in files:
+                  return True
+              head = blob(path, HEAD)
+              return head is not None and head == blob(path, DEFAULT)
+
+
+          droid, code, security = state("droid-review"), state("claude-code-review"), state("claude-security-review")
+          droid_ok = (droid == "success" and for_this_pr("droid-review") and base_definition(ORIGINS["droid-review"][0])
+                      and droid_reviewed(latest["droid-review"]))
+          if droid == "success" and not droid_ok:
+              droid = ("success, but the run is not this PR's into main, the Droid review did not run, "
+                       "or its workflow differs from main")
+          claude_ok = (code == "success" and security in ("success", "neutral")
+                       and for_this_pr("claude-code-review") and for_this_pr("claude-security-review")
+                       and base_definition(ORIGINS["claude-code-review"][0]))
+          if code == "success" and not claude_ok and security in ("success", "neutral"):
+              code = "success, but the run is not this PR's into main or its workflow differs from main"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"## Review gate for `{HEAD}`\n\n| Path | State |\n| --- | --- |\n"
+                            f"| droid-review | {droid} |\n| claude-code-review | {code} |\n"
+                            f"| claude-security-review | {security} |\n| coordinator marker | {marker or 'none'} |\n")
+              for problem in problems:
+                  summary.write(f"\n**Blocked:** {problem}\n")
+          for problem in problems:
+              print(f"::error::{problem}")
+          if problems:
+              sys.exit(1)
+          if touched:
+              if not (marker and (droid_ok or claude_ok)):
+                  print(f"::error::{AUTHOR} is not the repository owner and changes {', '.join(touched)}. "
+                        f"This PR needs both the owner's pp-review-gate marker for {HEAD} and a passing Droid "
+                        f"or Claude review; marker: {'yes' if marker else 'no'}, automated review: "
+                        f"{'yes' if droid_ok or claude_ok else 'no'}.")
+                  sys.exit(1)
+              print(f"Passed: owner marker for {HEAD} ({marker}) and an automated review cover {AUTHOR}'s "
+                    f"changes to {', '.join(touched)}.")
+          elif droid_ok:
+              print(f"Passed: droid-review succeeded on {HEAD}.")
+          elif claude_ok:
+              print(f"Passed: claude-code-review succeeded and claude-security-review is {security} on {HEAD}.")
+          elif marker:
+              print(f"Passed: coordinator marker for {HEAD} ({marker}).")
+          else:
+              print(f"::error::No finished review of {HEAD}: droid-review is {droid}, claude-code-review is {code}, "
+                    f"claude-security-review is {security}, and no coordinator marker names this head. "
+                    "A review from a workflow file this PR changes away from the default branch does not count.")
+              sys.exit(1)

@@ -16,6 +16,7 @@ invocation, it refuses rather than guessing.
 """
 
 import argparse
+import html
 import itertools
 import json
 import os
@@ -24,7 +25,7 @@ import posixpath
 import re
 import subprocess
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 MERGE = ("Only the coordinator worktree merges, with `gh pr merge <number> --squash --match-head-commit <sha>`; "
          "other merges need the maintainer. Report readiness instead.")
@@ -65,8 +66,31 @@ GH_GROUPS = {"pr", "release", "variable"}
 GH_PATH_FLAGS = {"--help", "-h", "--version"}
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
 VARIABLE_READS = {"get", "help", "list"}
-VARIABLE = ("GitHub Actions variables, including the PP_REVIEW_FALLBACK_UNTIL outage switch, "
-            "are owner-maintained; ask the maintainer to change them.")
+# The word in the coordinator's review record, which the review-gate check accepts in place of an
+# automatic review. Outside the coordinator worktree, any command line that contains it in any case
+# or decodable encoding is refused, wherever it appears.
+MARKER_WORD = "pp-review-gate"
+MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or runs any command that names "
+          "pp-review-gate, in any case or encoding; report readiness to the coordinator instead.")
+# Shells whose -c script the guard classifies like a top-level command, and the long options they
+# accept before it. Any other option makes the script position unknown.
+SHELLS = {"sh", "bash", "zsh", "dash"}
+SHELL_VALUE_LONG = {"--rcfile", "--init-file"}
+SHELL_FLAG_LONG = {"--login", "--norc", "--noprofile", "--posix", "--noediting", "--restricted", "--verbose",
+                   "--debugger", "--dump-strings", "--dump-po-strings", "--pretty-print"}
+SHELL_OPTIONS = ("Cannot tell which argument this shell runs as its script; run git and gh directly, "
+                 "or use plain bash -c without other options.")
+EVAL = ("Run git and gh commands directly, not through eval or source, so the guard can classify them.")
+JSON_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))')
+JSON_SIMPLE = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+COMMENT_COMMANDS = (["pr", "comment"], ["issue", "comment"])
+# GraphQL mutations that write comment text, which could carry a marker.
+COMMENT_MUTATIONS = {"addComment", "addPullRequestReviewComment", "addPullRequestReviewThreadReply",
+                     "updateIssueComment", "updatePullRequestReviewComment"}
+UNREAD_BODY = ("The guard must read a comment body literally to check it for a pp-review-gate marker. "
+               "Write the body as a literal argument, or to a file passed with --body-file in a command "
+               "of its own; no variables, substitutions, or stdin.")
+VARIABLE = "GitHub Actions variables are owner-maintained; ask the maintainer to change them."
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -782,6 +806,53 @@ def review_events(fields, body, cwd):
     return events or {""}
 
 
+def json_unescape(text):
+    """Decode JSON and GraphQL string escapes such as \\u003c and \\n, leaving other text alone."""
+    return JSON_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)) if m.group(1) else JSON_SIMPLE[m.group(2)], text)
+
+
+def names_marker(text):
+    """Whether text, or any form GitHub or a browser could decode it to, contains MARKER_WORD.
+
+    The decoders (JSON and GraphQL escapes, URL encoding, HTML entities) are applied repeatedly in
+    every order, up to four layers deep, and the match ignores case.
+    """
+    forms, frontier = {text}, [text]
+    for _ in range(4):
+        frontier = [decoded for value in frontier for decode in (json_unescape, unquote_plus, html.unescape)
+                    if (decoded := decode(value)) not in forms and not forms.add(decoded)]
+    return any(MARKER_WORD in form.casefold() for form in forms)
+
+
+def marker_reason(texts, files, cwd, alone, ansi_c=False):
+    """Return why a comment write is refused, or None. texts are the literal arguments gh sends and
+    files the files it reads. Outside the coordinator worktree, a body the guard cannot read literally
+    is refused like a marker: an expansion, a $'...' string (ansi_c says the command line has one),
+    stdin, an unreadable file, or a file another command in the same line could change first."""
+    if coordinator_worktree(cwd):
+        return None
+    if ansi_c or any(EXPANDED in text for text in texts) or files and not alone:
+        return UNREAD_BODY
+    try:
+        bodies = [read_input(name, cwd) for name in files]
+    except Unclear:
+        return UNREAD_BODY
+    return MARKER if any(names_marker(text) for text in texts + bodies) else None
+
+
+def body_files(args):
+    """Return the files that gh pr comment or gh issue comment reads with -F or --body-file."""
+    files = []
+    for i, arg in enumerate(args):
+        if arg in ("-F", "--body-file") and i + 1 < len(args):
+            files.append(args[i + 1])
+        elif arg.startswith("--body-file="):
+            files.append(arg.split("=", 1)[1])
+        elif arg.startswith("-F") and len(arg) > 2:
+            files.append(arg[2:])
+    return files
+
+
 def without_repo_flags(args):
     kept, i = [], 0
     while i < len(args):
@@ -824,7 +895,8 @@ def gh_command(args):
     return path + without_repo_flags(args[i:])
 
 
-def gh_reason(args, cwd, alone=True):  # noqa: C901
+def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
+    """Return why a gh command is refused. marker says the command text holds a review marker."""
     args = gh_command(args)
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)
@@ -841,6 +913,10 @@ def gh_reason(args, cwd, alone=True):  # noqa: C901
         if not args[1:] or args[1] in VARIABLE_READS or all(arg in ("--help", "-h") for arg in args[1:]):
             return None
         return VARIABLE
+    if args[:2] in COMMENT_COMMANDS:
+        if marker and not coordinator_worktree(cwd):
+            return MARKER
+        return marker_reason(args[2:], body_files(args[2:]), cwd, alone, ansi_c)
     if args[:1] != ["api"]:
         return None
     method, endpoint, fields, body, i = None, None, [], None, 1
@@ -884,6 +960,8 @@ def gh_reason(args, cwd, alone=True):  # noqa: C901
     method = (method or ("POST" if fields or body is not None else "GET")).upper()
     if method in ("GET", "HEAD"):
         return None
+    if marker and not coordinator_worktree(cwd):
+        return MARKER
     # The hook reads request files before the command runs. Any other command, such as a
     # checkout, redirect, or directory change, could replace what gh reads.
     reads_file = body is not None or any(flag in ("-F", "--field") and value.partition("=")[2].startswith("@")
@@ -891,7 +969,26 @@ def gh_reason(args, cwd, alone=True):  # noqa: C901
     if reads_file and not alone:
         return STALE_INPUT
     path = urlsplit(endpoint).path.strip("/")
-    if path == "graphql" or path.endswith("/graphql"):
+    graphql = path == "graphql" or path.endswith("/graphql")
+    if graphql:
+        names = [mutation_fields(document) for document in graphql_documents(fields, body, cwd)]
+        comment_write = any(found is None or COMMENT_MUTATIONS & set(found) for found in names)
+    else:
+        comment_write = bool(COMMENT_WRITES.search(path) or REVIEW_WRITES.search(path))
+    if comment_write:
+        sent_files = [value.partition("=")[2][1:] for flag, value in fields
+                      if flag in ("-F", "--field") and value.partition("=")[2].startswith("@")]
+        reason = marker_reason([value for _, value in fields], sent_files + ([] if body is None else [body]),
+                               cwd, alone, ansi_c)
+        if reason:
+            return reason
+        # GitHub parses a REST request body as JSON; one the guard cannot parse is not read literally.
+        if body is not None and not graphql and not coordinator_worktree(cwd):
+            try:
+                json.loads(read_input(body, cwd))
+            except (Unclear, ValueError):
+                return UNREAD_BODY
+    if graphql:
         for document in graphql_documents(fields, body, cwd):
             names = mutation_fields(document)
             if names is None or set(names) - ALLOWED_MUTATIONS:
@@ -908,8 +1005,7 @@ def coordinator_merge(args, cwd):
     """Whether args is the one merge the coordinator may run.
 
     The form is gh pr merge [<number>] --squash --match-head-commit <full sha>, with no other
-    option. cwd must sit inside the worktree that PP_COORDINATOR_WORKTREE names: that root is
-    the Git top level of cwd and lies outside the lane worktrees. Lane hook configs never set it.
+    option, run from the coordinator worktree (see coordinator_worktree).
     """
     if args[:3] != ["gh", "pr", "merge"] or cwd is None:
         return False
@@ -926,10 +1022,17 @@ def coordinator_merge(args, cwd):
             number = arg
         else:
             return False
-    if not (squash and sha and FULL_SHA.match(sha)):
-        return False
+    return bool(squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
+
+
+def coordinator_worktree(cwd):
+    """Whether cwd sits inside the worktree that PP_COORDINATOR_WORKTREE names.
+
+    That root must be the Git top level of cwd and lie outside the lane worktrees.
+    Lane hook configs never set the variable.
+    """
     root = os.environ.get(COORDINATOR_ENV, "")
-    if not os.path.isabs(root):
+    if cwd is None or not os.path.isabs(root):
         return False
     try:
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
@@ -940,16 +1043,71 @@ def coordinator_merge(args, cwd):
     return bool(top) and os.path.realpath(top) == root and os.path.commonpath([root, lanes]) != lanes
 
 
-def check_command(command, cwd):
-    """Return why a shell command run in cwd is refused, or None to allow it."""
+def shell_script(args):
+    """Return (script, unclear) for a sh, bash, zsh, or dash invocation.
+
+    script is what the shell runs with -c, or None. unclear is True when an option before the
+    script is not one the guard knows, so it cannot tell which argument is the script.
+    """
+    reads_script, i = False, 0
+    while i < len(args):
+        arg = args[i]
+        if arg in SHELL_VALUE_LONG:
+            i += 2
+        elif arg in SHELL_FLAG_LONG:
+            i += 1
+        elif arg == "--":
+            i += 1
+            break
+        elif arg.startswith("--"):
+            return None, True
+        elif re.fullmatch(r"[-+][A-Za-z]+", arg):
+            flags = arg[1:]
+            # o and O take the next argument; anywhere but last in a bundle, the guard cannot place it.
+            if any(flag in "oO" for flag in flags[:-1]):
+                return None, True
+            reads_script = reads_script or (arg[0] == "-" and "c" in flags)
+            i += 2 if flags[-1] in "oO" else 1
+        elif arg.startswith(("-", "+")) and arg not in ("-", "+"):
+            return None, True
+        else:
+            break
+    return (args[i] if reads_script and i < len(args) else None), False
+
+
+def sourced_reason(name, rest, cwd):
+    """Return why an eval or source command is refused, or None. Both run text the guard cannot
+    classify as commands, so any git or gh in it, or text it cannot read, is refused."""
+    if name == "eval":
+        text = " ".join(rest)
+    else:
+        try:
+            text = read_input(rest[0], cwd) if rest else ""
+        except Unclear:
+            return EVAL
+    return EVAL if EXPANDED in text or re.search(r"\b(?:gh|git)\b", text) else None
+
+
+def check_command(command, cwd, outer=None):
+    """Return why a shell command run in cwd is refused, or None to allow it.
+
+    outer is (head_moves, config_unknown, env_config) from the line that runs this command as a
+    sh -c script. The script inherits them: an assignment, env option, or branch change on the
+    outer line applies to every git command inside it.
+    """
     # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
     # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
     if cwd and ".." in PurePosixPath(cwd).parts:
         cwd = os.path.realpath(cwd)
+    # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
+    # written now and posted later, so any mention of the word is refused outside the coordinator.
+    if names_marker(command) and not coordinator_worktree(cwd):
+        return MARKER
     try:
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
-        if len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
+        # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
+        if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
             return None
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]
@@ -958,8 +1116,12 @@ def check_command(command, cwd):
         head_moves = (any(moves_head(name, rest) for name, rest, *_ in commands)
                       or any(GIT_LOCATION.match(word) for word in assigned))
         env_config = any(GIT_CONFIG_ENV.match(word) for word in assigned)
+        marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
+        if outer is not None:
+            head_moves, config_unknown, env_config = (head_moves or outer[0], config_unknown or outer[1],
+                                                      env_config or outer[2])
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
             # Prefixes such as "{" or "!" can come before a control keyword.
@@ -977,7 +1139,24 @@ def check_command(command, cwd):
                 cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
                 continue
             here = None if moved else cwd
-            reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1) if name == "gh" else None
+            if name in SHELLS:
+                script, unclear = shell_script(rest)
+                if unclear and re.search(r"\b(?:gh|git)\b", " ".join(rest)) and not coordinator_worktree(here):
+                    return SHELL_OPTIONS
+                if script is not None:
+                    # The script's own substitutions were already classified as nested commands.
+                    reason = check_command(script.replace(EXPANDED, ""), here,
+                                           (head_moves, config_unknown, env_config))
+                    if reason:
+                        return reason
+                    continue
+            # program() names "." as "", like any path ending in a slash; both are treated as source.
+            if name in ("eval", "source", ""):
+                reason = sourced_reason(name, rest, here)
+                if reason:
+                    return reason
+                continue
+            reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker, "$'" in command) if name == "gh" else None
             if reason:
                 return reason
     except Unclear as error:

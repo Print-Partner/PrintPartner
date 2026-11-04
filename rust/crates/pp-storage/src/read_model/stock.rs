@@ -247,18 +247,21 @@ fn read_measured(
     profile_id: i64,
 ) -> Result<HashMap<i64, Measured>> {
     let mut statement = connection.prepare(
-        "SELECT p.part_id, j.id, j.filament_consumed_g,
-                (SELECT count(*) FROM print_job_parts u
-                  WHERE u.tenant_id=j.tenant_id AND u.job_id=j.id)
-           FROM print_jobs j
-           JOIN print_job_parts p ON p.tenant_id=j.tenant_id AND p.job_id=j.id
-          WHERE j.tenant_id=?1 AND j.profile_id=?2 AND j.status='completed'
-            AND typeof(j.filament_consumed_g)='integer' AND j.filament_consumed_g>0
-          GROUP BY p.part_id, j.id
-          ORDER BY p.part_id, COALESCE(j.completed_at, j.at) DESC, j.id DESC
-          LIMIT 50000",
+        "SELECT part_id, id, grams, units FROM (
+           SELECT p.part_id, j.id, j.filament_consumed_g AS grams,
+                  (SELECT count(*) FROM print_job_parts u
+                    WHERE u.tenant_id=j.tenant_id AND u.job_id=j.id) AS units,
+                  ROW_NUMBER() OVER (PARTITION BY p.part_id
+                    ORDER BY COALESCE(j.completed_at, j.at) DESC, j.id DESC) AS recency
+             FROM print_jobs j
+             JOIN print_job_parts p ON p.tenant_id=j.tenant_id AND p.job_id=j.id
+            WHERE j.tenant_id=?1 AND j.profile_id=?2 AND j.status='completed'
+              AND typeof(j.filament_consumed_g)='integer' AND j.filament_consumed_g>0
+            GROUP BY p.part_id, j.id)
+          WHERE recency<=?3
+          ORDER BY part_id, recency",
     )?;
-    let mut rows = statement.query(rusqlite::params![tenant, profile_id])?;
+    let mut rows = statement.query(rusqlite::params![tenant, profile_id, MEASURED_JOBS as i64])?;
     let mut per_unit = BTreeMap::<i64, Vec<(String, f64)>>::new();
     while let Some(row) = rows.next()? {
         let (part, job, grams, units): (i64, String, i64, i64) =

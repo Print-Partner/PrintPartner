@@ -8,6 +8,7 @@ use pp_api::{
     builds::{BuildHttpConfig, build_router},
     catalog::{CatalogHttpConfig, admit_catalog_routes},
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
+    history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpHttpConfig, mcp_router},
 };
@@ -162,7 +163,8 @@ pub fn router(
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
-/// Plan Checkoff, legal documents, custom filaments and key-only MCP) from one
+/// Plan Checkoff, Build history, legal documents, custom filaments and
+/// key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
 /// is off. Does not cut over production gateway ownership (GRE-593).
@@ -188,6 +190,7 @@ pub fn read_router(
             builds: builds_client,
         },
         accepted_client,
+        history_client,
         admin_files,
     ) = {
         let guard = owner
@@ -197,6 +200,7 @@ pub fn read_router(
             clients(rebuild, &guard, policy, auth.lifetimes, community_manifests)?
                 .ok_or_else(|| anyhow!("flag on constructs clients"))?,
             guard.accepted_reads_with_policy(policy)?,
+            guard.build_history(policy)?,
             guard.admin_files()?,
         )
     };
@@ -219,6 +223,10 @@ pub fn read_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client,
     );
+    let history = history_router(
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        history_client,
+    );
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
@@ -229,6 +237,7 @@ pub fn read_router(
             .merge(builds)
             .merge(catalog)
             .merge(accepted)
+            .merge(history)
             .merge(admin)
             .merge(mcp),
     ))

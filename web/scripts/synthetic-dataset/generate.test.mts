@@ -16,11 +16,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import Fastify from "fastify";
-// Type-only: the request and reply fields that the server's cookie, multipart
-// and auth modules declare, which routes/sources.ts relies on.
-import type {} from "@fastify/cookie";
-import type {} from "@fastify/multipart";
-import type {} from "../../apps/server/src/routes/auth.js";
+// Type-only: app.ts loads the cookie, multipart and auth modules whose request
+// and reply fields routes/sources.ts relies on.
+import type {} from "../../apps/server/src/app.js";
 import { parseAcceptedStlMesh, stlMeshDimensionsUm } from "@print-partner/domain";
 import { getDb, SqliteDatabase } from "../../apps/server/src/db/client.js";
 import { AppRepository } from "../../apps/server/src/db/repository.js";

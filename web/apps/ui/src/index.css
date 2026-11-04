@@ -1,14 +1,3 @@
-:root {
-  color-scheme: dark;
-  --surface: #16191d;
-  --text: #e6e8eb;
-  --muted: #9aa3ad;
-  --line: #2a2f36;
-  font-family: system-ui, sans-serif;
-  background: var(--surface);
-  color: var(--text);
-}
-
 body {
   margin: 0;
 }
@@ -26,7 +15,7 @@ body {
 }
 
 .core-status {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .shell-main {

@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::{
     fs::File,
     io::Read,
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -144,12 +145,15 @@ pub(crate) fn preflight(
     )));
     #[cfg(test)]
     PREFLIGHT_COPIES.update(|copies| copies + 1);
-    pp_os::create_private_dir(&copy.0).with_context(|| {
-        format!(
-            "schema::preflight: create temporary directory {}",
-            copy.0.display()
-        )
-    })?;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&copy.0)
+        .with_context(|| {
+            format!(
+                "schema::preflight: create temporary directory {}",
+                copy.0.display()
+            )
+        })?;
     for (suffix, bytes) in &source {
         if let Some(bytes) = bytes {
             std::fs::write(copy.0.join(format!("print-partner.db{suffix}")), bytes).with_context(
@@ -268,14 +272,20 @@ pub(crate) fn backup(conn: &Connection, path: &Path, replace: bool) -> Result<()
         let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         ensure!(integrity == "ok", "Backup integrity failed");
         drop(check);
-        pp_os::sync_file(&temp).context("schema::backup: sync temporary backup")?;
+        File::open(&temp)
+            .context("schema::backup: open temporary backup")?
+            .sync_all()
+            .context("schema::backup: sync temporary backup")?;
         if replace {
-            pp_os::publish_rename(&temp, path)
-                .context("schema::backup: rename temporary backup")?;
+            std::fs::rename(&temp, path).context("schema::backup: rename temporary backup")?;
         } else {
-            pp_os::publish_new(&temp, path).context("schema::backup: publish temporary backup")?;
+            std::fs::hard_link(&temp, path).context("schema::backup: link temporary backup")?;
+            std::fs::remove_file(&temp).context("schema::backup: unlink temporary backup")?;
         }
-        pp_os::sync_directory(parent).context("schema::backup: sync parent directory")?;
+        File::open(parent)
+            .context("schema::backup: open parent directory")?
+            .sync_all()
+            .context("schema::backup: sync parent directory")?;
         Ok(())
     })();
     for suffix in ["", "-wal", "-shm"] {
@@ -808,25 +818,7 @@ mod tests {
     }
 }
 
-/// The preflight race tests swap directories for symbolic links and plant
-/// FIFOs, so they run on Unix only. Elsewhere the hooks are never armed.
-#[cfg(all(test, not(unix)))]
-mod capture_tests {
-    use anyhow::Result;
-    use std::path::Path;
-
-    pub(super) fn arm_owned_swap() {}
-
-    pub(super) fn transient_swap(_: &Path, _: u8, _: bool) -> Result<()> {
-        Ok(())
-    }
-
-    pub(super) fn capture_checkpoint(_: &Path, _: u8) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod capture_tests {
     use super::*;
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};

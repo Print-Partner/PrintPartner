@@ -11,17 +11,11 @@ use std::path::Path;
 ///
 /// The directory is created under the canonical temp root, so its path has no
 /// symlink ancestors (such as `/var` on macOS), which source roots reject.
-///
-/// Windows has no mode bits; the directory inherits the temp root's ACL.
 fn temp_dir(prefix: &str) -> tempfile::TempDir {
-    let mut builder = tempfile::Builder::new();
-    builder.prefix(prefix);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        builder.permissions(std::fs::Permissions::from_mode(0o700));
-    }
-    builder
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
         .unwrap()
 }

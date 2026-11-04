@@ -1,6 +1,3 @@
-//! Unix only: the Node probe links `node_modules` with a symbolic link.
-#![cfg(unix)]
-
 use pp_storage::{
     Limits, Setting, SettingCommand, SettingSnapshot, WriterOwner, lease::StorageLease,
 };

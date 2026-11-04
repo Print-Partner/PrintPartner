@@ -4,6 +4,7 @@ use pp_testkit::node_schema::{
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::fs::DirBuilderExt;
 use std::process::Command;
 use std::sync::mpsc;
 
@@ -121,10 +122,7 @@ fn ticket_t_7_writer_business_and_commit_errors_are_not_replayed() {
 }
 
 fn exited_true_pid() -> u32 {
-    #[cfg(unix)]
     let mut prior = Command::new("/usr/bin/true").spawn().unwrap();
-    #[cfg(windows)]
-    let mut prior = Command::new("cmd").args(["/C", "exit 0"]).spawn().unwrap();
     let pid = prior.id();
     prior.wait().unwrap();
     pid
@@ -135,7 +133,11 @@ pub(super) fn directory(name: &str) -> PathBuf {
         "pp-storage-{name}-{}",
         hex::encode(rand::random::<[u8; 8]>())
     ));
-    pp_os::create_private_dir_all(&path).unwrap();
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&path)
+        .unwrap();
     path
 }
 fn fixture(name: &str) -> (PathBuf, WriterOwner, SettingsClient) {
@@ -519,7 +521,6 @@ fn backup_cannot_replace_the_open_database() {
     owner.shutdown().unwrap();
 }
 
-#[cfg(unix)]
 #[test]
 fn backup_rejects_managed_trees_aliases_and_existing_files() {
     use fs2::FileExt;
@@ -590,7 +591,6 @@ fn backup_rejects_managed_trees_aliases_and_existing_files() {
     owner.shutdown().unwrap();
 }
 
-#[cfg(unix)]
 #[test]
 fn backup_survives_missing_runtime_without_relaxing_destination_checks() {
     use std::os::unix::fs::symlink;
@@ -863,7 +863,6 @@ fn ticket_t_7_migrations_requires_pinned_runtime_identity() {
     assert!(require_schema_parity_runtime(&wrong_abi).is_err());
 }
 
-#[cfg(unix)]
 #[test]
 fn ticket_t_7_migrations_refuses_dispatcher_script() {
     use std::os::unix::fs::PermissionsExt;
@@ -961,7 +960,11 @@ fn tree_hashes(root: &Path) -> Vec<(String, String)> {
 }
 
 fn copy_db_files(from: &Path, to: &Path) {
-    pp_os::create_private_dir_all(to).unwrap();
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(to)
+        .unwrap();
     if !from.is_dir() {
         return;
     }
@@ -2296,7 +2299,6 @@ fn ticket_t_7_writer_bounds_queue_contention_and_cancellation() {
     owner.shutdown().unwrap();
 }
 
-#[cfg(unix)]
 #[test]
 fn ticket_t_7_writer_denies_managed_alias_backups_and_reopens() {
     use fs2::FileExt;
@@ -2856,7 +2858,6 @@ fn ticket_t_7_migrations_historical_order() {
     assert_second_open_keeps_catalog(&fresh_dir, "fresh");
 }
 
-#[cfg(unix)]
 fn plan_input_column_defs(db: &Path) -> Vec<String> {
     let connection = Connection::open(db).unwrap();
     let mut statement = connection
@@ -2878,7 +2879,6 @@ fn plan_input_column_defs(db: &Path) -> Vec<String> {
         .collect()
 }
 
-#[cfg(unix)]
 fn plan_input_index_defs(db: &Path) -> Vec<String> {
     let connection = Connection::open(db).unwrap();
     let mut listed = connection
@@ -2922,7 +2922,6 @@ fn plan_input_index_defs(db: &Path) -> Vec<String> {
     defs
 }
 
-#[cfg(unix)]
 fn plan_input_rows(db: &Path) -> Vec<String> {
     let connection = Connection::open(db).unwrap();
     let mut statement = connection
@@ -2946,11 +2945,9 @@ fn plan_input_rows(db: &Path) -> Vec<String> {
         .collect()
 }
 
-#[cfg(unix)]
 const HISTORICAL_NODE_CLIENT_SHA256: &str =
     "283c23182a1370c0ebfb9a56194db6f859ba763b178d10ec52dca7af780a72e5";
 
-#[cfg(unix)]
 fn materialize_historical_node() -> PathBuf {
     let root = directory("historical-node-src");
     let archive = Command::new("git")
@@ -3010,7 +3007,6 @@ fn materialize_historical_node() -> PathBuf {
     root
 }
 
-#[cfg(unix)]
 fn materialize_current_node_driver() -> PathBuf {
     let root = directory("current-node-driver");
     let client = serde_json::to_string(
@@ -3030,7 +3026,6 @@ fn materialize_current_node_driver() -> PathBuf {
     root
 }
 
-#[cfg(unix)]
 fn run_node_driver(driver_dir: &Path, data_dir: &Path) {
     let output = Command::new(schema_parity_node())
         .arg(repo_root().join("web/node_modules/tsx/dist/cli.mjs"))
@@ -3046,13 +3041,11 @@ fn run_node_driver(driver_dir: &Path, data_dir: &Path) {
     );
 }
 
-#[cfg(unix)]
 fn apply_historical_node_upgrade(data_dir: &Path) {
     let client = materialize_historical_node();
     run_node_driver(&client, data_dir);
 }
 
-#[cfg(unix)]
 fn blank_imported_at(graph: &mut SchemaGraph) {
     for table in ["printer_profiles", "process_profiles", "filament_profiles"] {
         let Some(columns) = graph.columns.get(table) else {
@@ -3077,7 +3070,6 @@ fn blank_imported_at(graph: &mut SchemaGraph) {
     }
 }
 
-#[cfg(unix)]
 fn drop_empty_plan_sequence(graph: &mut SchemaGraph) {
     let Some(rows) = graph.rows.get_mut("sqlite_sequence") else {
         return;
@@ -3090,7 +3082,6 @@ fn drop_empty_plan_sequence(graph: &mut SchemaGraph) {
     });
 }
 
-#[cfg(unix)]
 fn with_sql_identity(graph: &SchemaGraph) -> SchemaGraph {
     let mut graph = graph.clone();
     for (_, sql) in graph.objects.values_mut() {
@@ -3236,7 +3227,6 @@ fn node_owned_catalog(node: &SchemaGraph, rust: &SchemaGraph) -> Vec<String> {
     graph_diff(&node, &rust)
 }
 
-#[cfg(unix)]
 fn equivalent_catalog(left_db: &Path, right_db: &Path) -> Vec<String> {
     let mut left = with_sql_identity(&read_schema_graph(left_db));
     let mut right = with_sql_identity(&read_schema_graph(right_db));
@@ -3251,7 +3241,6 @@ fn equivalent_catalog(left_db: &Path, right_db: &Path) -> Vec<String> {
     graph_diff(&left, &right)
 }
 
-#[cfg(unix)]
 fn insert_historical_plan_inputs(db: &Path) {
     let connection = Connection::open(db).unwrap();
     connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
@@ -3275,7 +3264,6 @@ fn insert_historical_plan_inputs(db: &Path) {
         .unwrap();
 }
 
-#[cfg(unix)]
 #[test]
 fn ticket_t_7_migrations_preserves_plan_revision_inputs() {
     let source_31 = historical_source(&HISTORICAL_SCHEMA_31);
@@ -3422,7 +3410,6 @@ fn ticket_t_7_migrations_preserves_plan_revision_inputs() {
     assert_eq!(version, "31");
 }
 
-#[cfg(unix)]
 fn pinned_historical_copies() -> Vec<(&'static str, u64, PathBuf)> {
     let source_31 = historical_source(&HISTORICAL_SCHEMA_31);
     let source_33 = historical_source(&HISTORICAL_SCHEMA_33);
@@ -3468,7 +3455,6 @@ fn pinned_historical_copies() -> Vec<(&'static str, u64, PathBuf)> {
 // Current Node initialization no longer does. Rust must match that repair and
 // the current fresh catalog, including the two plan-input indexes and the
 // accepted-plate immutability trigger.
-#[cfg(unix)]
 #[test]
 fn ticket_t_7_migrations_matches_node_upgrade() {
     let current_client =

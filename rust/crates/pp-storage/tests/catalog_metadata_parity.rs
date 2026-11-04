@@ -8,7 +8,7 @@ use pp_storage::{
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
+use std::{os::unix::fs::DirBuilderExt, path::PathBuf};
 
 #[path = "common/process.rs"]
 mod child_process;
@@ -48,7 +48,11 @@ impl Fixture {
             "pp-catalog-metadata-{}",
             hex::encode(rand::random::<[u8; 16]>())
         ));
-        pp_os::create_private_dir_all(&directory).unwrap();
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
         for id in [7, 8, 9] {
             std::fs::create_dir_all(directory.join("local").join(id.to_string())).unwrap();
         }

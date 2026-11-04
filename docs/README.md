@@ -19,7 +19,7 @@ When two pages disagree, the authority below wins. Goals and decisions in flight
 | Which operations run in Node and which have a Rust owner | [Operation inventory](development/operation-inventory.md) and [the generated report](parity/operation-inventory.md) |
 | `desktop_rebuild` feature and `PP_DESKTOP_REBUILD` switch | [Desktop rebuild flag and slice plan](desktop-rebuild.md) |
 | Data directory, single-writer lock, migrations | [Storage](storage.md) |
-| Visual tokens and components | [UI and UX target](product/ui-ux-target.md) for the replacement UI; [Design system](design-system.md) for the existing UI |
+| Visual tokens and components | [UI and UX target](product/ui-ux-target.md) and [Replacement UI tokens](product/ui-tokens.md) for the replacement UI; [Design system](design-system.md) for the existing UI |
 | Manifest format | [Manifest format](../manifests/README.md) |
 | Agent and contributor rules | [AGENTS.md](../AGENTS.md), [Agent and contributor workflow](development/agent-workflow.md) |
 | Merge bar and review policy | [Definition of done](development/definition-of-done.md) |
@@ -89,7 +89,7 @@ will autosave into a draft and require an explicit Accept.
 
 | Page | Covers |
 |------|--------|
-| [Storage](storage.md) | Data directory, single-writer lock, migrations, and synthetic installations. |
+| [Storage](storage.md) | Data directory, single-writer lock, and migrations. |
 | [HTTP API](api.md) | The versioned integration API. |
 | [MCP](mcp.md) | The MCP server in the Rust core. |
 | [Network sharing](network-sharing.md) | "Share on network" in the desktop app. |
@@ -107,6 +107,7 @@ will autosave into a draft and require an explicit Accept.
 - [Cross-source Voron stack](examples/cross-source-voron/ldo-2.4-golden-stack.md): the golden stack manifests by repository, with [example manifests](examples/cross-source-voron/README.md) for a base and add-ons
 - [Plan autosave](plan-autosave.md)
 - [Accepted Plate 3MF validation](3MF_EXPORT_VALIDATION.md)
+- [Replacement UI tokens](product/ui-tokens.md): tokens, themes and the contrast gate for the replacement UI
 - [Design system](design-system.md): tokens and components for the existing UI
 - [Operation inventory](development/operation-inventory.md): what still runs in Node, what has a Rust owner, and [the generated report](parity/operation-inventory.md)
 - [API-key HTTP parity](parity/auth-key.md) and [password-reset request parity](parity/auth-reset.md)

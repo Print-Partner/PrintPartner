@@ -8,6 +8,7 @@ use pp_storage::{
 };
 use rusqlite::Connection;
 use serde_json::{Value, json};
+use std::os::unix::fs::DirBuilderExt;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
@@ -20,7 +21,11 @@ impl Fixture {
             "pp-catalog-{}",
             hex::encode(rand::random::<[u8; 16]>())
         ));
-        pp_os::create_private_dir_all(&p).unwrap();
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&p)
+            .unwrap();
         Self(p)
     }
     fn open(&self) -> WriterOwner {
@@ -532,7 +537,11 @@ fn ticket_t_59_catalog_deletion_retains_files_and_counts_docs() {
     let id = create(&client, "Docs");
     let source = value(&client, Request::Get { id });
     let path = PathBuf::from(source["local_path"].as_str().unwrap());
-    pp_os::create_private_dir_all(&path).unwrap();
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&path)
+        .unwrap();
     std::fs::write(path.join("part.stl"), b"retained").unwrap();
     owner.shutdown().unwrap();
     fixture.sql().execute("INSERT INTO source_docs(tenant_id,project_id,path,kind,updated_at) VALUES('default',?1,'readme.md','markdown','then')",[id]).unwrap();

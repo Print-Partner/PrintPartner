@@ -124,6 +124,8 @@ Graphite and cyan, IBM Plex, as decided. Dark is the default; light and a shop-f
 - **Accessibility.** WCAG 2.2 AA, focus appearance, 200% text, 400% reflow, forced colors, live regions for tallies and printer events. Drag has a menu and a keyboard equivalent. Every disabled control explains itself.
 - **Platforms.** WKWebView, WebView2 and WebKitGTK are release targets. On WebKitGTK set `WEBKIT_DISABLE_DMABUF_RENDERER=1` (the repo's value, not `WEBKIT_DMABUF_RENDERER_FORCE_SHM`), and the plate preview must have a non-WebGL fallback. Nothing in the first release needs WebGL.
 
+The tokens that implement this section, and the gate that checks them, are described in [Replacement UI tokens](ui-tokens.md).
+
 ## Contracts the UI needs
 
 Rules: the UI never calls Node. A contract marked **Port** exists in Node today and must move to Rust before the screen uses it. **Exists** means a Rust route is registered in `rust/crates/pp-api`. **New** means no route exists anywhere.

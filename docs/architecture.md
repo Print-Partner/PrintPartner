@@ -102,9 +102,8 @@ its parity-first sequencing and default-on proposal are superseded by these ADRs
 Keep the existing operation crates and deepen their private family modules.
 Do not require a blanket split, consolidation or rename, or freeze the crate
 count. Keep `pp-services`, `pp-source`, `pp-contracts`, and `pp-perf` initially.
-The narrow `pp-os` filesystem crate, specified in ADR 0015, exists with
-`pp-storage` as its first consumer. This is not a move of all platform code
-into one crate.
+Add a narrow `pp-os` filesystem crate during early Windows work, as specified
+in ADR 0015. This is not a move of all platform code into one crate.
 
 The following allowed workspace dependencies reflect
 [`check-boundaries.py`](../rust/scripts/check-boundaries.py) at the baseline.
@@ -118,7 +117,7 @@ An allowed edge does not mean every operation is implemented.
 | `pp-net` | Outbound target policy, checked connections, DNS/redirect restrictions | none |
 | `pp-drivers` | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
 | `pp-services` | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
-| `pp-storage` | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-os`; `pp-domain`, `pp-contracts`, both gated |
+| `pp-storage` | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-domain`, `pp-contracts`, both gated |
 | `pp-source` | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | none |
 | `pp-api` | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
 | `pp-gateway` | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
@@ -127,19 +126,14 @@ An allowed edge does not mean every operation is implemented.
 | `pp-desktop` | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
 | `pp-server` | Docker launcher, signals, headless lifecycle | `pp-core` |
 | `pp-perf` | Measurement records and regression comparison, not product telemetry | none |
-| `pp-os` | Directory handles, no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
 | `pp-testkit` | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
-The table is the implemented graph, not a manifest for the amendment.
-`pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies. `pp-storage`
-uses it for the data-directory lease's file mechanics, preflight opens, backup
-reads and durable backup publication. `pp-source` and `pp-core` are the next
-consumers; add each consumer edge to the checker and manifests only with that
-consumer's migration. It supplies directory-relative handle access,
-identity/no-follow checks, lock primitives and durable file publication. The
-crate documentation in `rust/crates/pp-os/src/lib.rs` lists where the Unix and
-Windows guarantees differ; on Windows it reports no POSIX owner or mode, so
-`pp-storage` skips those checks and relies on inherited ACLs. Storage keeps installation lease
+The table is the implemented baseline graph, not a manifest for the amendment.
+The proposed `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies.
+Its initial consumers are `pp-storage`, `pp-source` and `pp-core`; add each
+consumer edge to the checker and manifests only with that consumer's migration.
+It supplies directory-relative handle access, identity/no-follow checks, lock
+primitives and durable file publication. Storage keeps installation lease
 lifetime, migration ordering and SQL transactions. Source keeps snapshot policy.
 Native shell behavior and worker/signal orchestration stay with their owners.
 

@@ -340,7 +340,7 @@ function assignmentFailure(
   return unassigned.length > 0 ? { kind: "unassigned_units", tokens: unassigned } : null;
 }
 
-export function plateId(basis: AcceptedPlanBasis, printerId: string, tokens: readonly string[]): string {
+function plateId(basis: AcceptedPlanBasis, printerId: string, tokens: readonly string[]): string {
   const digest = createHash("sha256")
     .update(
       JSON.stringify([

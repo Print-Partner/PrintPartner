@@ -9,6 +9,7 @@ use pp_storage::{
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::os::unix::fs::DirBuilderExt;
 use std::{
     path::PathBuf,
     sync::{
@@ -33,7 +34,11 @@ impl Fixture {
             std::process::id(),
             rand::random::<u64>()
         ));
-        pp_os::create_private_dir_all(&root.join("repos/1/revisions/accepted")).unwrap();
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(root.join("repos/1/revisions/accepted"))
+            .unwrap();
         std::fs::write(root.join("print-partner.db"), database).unwrap();
         let (owner, _) = WriterOwner::open(
             &root,

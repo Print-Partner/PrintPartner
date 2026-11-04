@@ -1,9 +1,12 @@
 use anyhow::{Context, Result, ensure};
-use pp_os::{Dir, Status};
 use std::{
     collections::BTreeMap,
-    ffi::CStr,
-    fs::File,
+    ffi::{CStr, CString},
+    fs::{File, OpenOptions},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    },
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
@@ -25,7 +28,7 @@ pub struct StorageLease {
 }
 
 struct CompatibilityReservation {
-    directory: Dir,
+    directory: File,
     file: File,
     held: bool,
 }
@@ -39,12 +42,12 @@ impl CompatibilityReservation {
         )?;
         validate_open_lock_identity(&file, &admitted.path.join(".desktop-lease"))
             .context("Could not validate .desktop-lease compatibility reservation identity")?;
-        match pp_os::try_lock(&file) {
+        match fs4::FileExt::try_lock(&file) {
             Ok(()) => {}
-            Err(pp_os::TryLockError::WouldBlock) => anyhow::bail!(
+            Err(fs4::TryLockError::WouldBlock) => anyhow::bail!(
                 "Data directory already owned; .desktop-lease compatibility reservation is locked"
             ),
-            Err(pp_os::TryLockError::Io(error)) => {
+            Err(fs4::TryLockError::Error(error)) => {
                 return Err(error)
                     .context("Could not lock .desktop-lease compatibility reservation");
             }
@@ -62,26 +65,44 @@ impl CompatibilityReservation {
 
     fn release(&mut self) -> std::io::Result<()> {
         if self.held {
-            #[cfg(all(test, unix))]
+            #[cfg(test)]
             tests::assert_lock_held_during_reservation_release();
-            let named = match self.directory.status_nofollow(".desktop-lease") {
-                Ok(named) => named,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut named = std::mem::MaybeUninit::<libc::stat>::uninit();
+            let inspected = unsafe {
+                libc::fstatat(
+                    self.directory.as_raw_fd(),
+                    c".desktop-lease".as_ptr(),
+                    named.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            };
+            if inspected < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::NotFound {
                     self.held = false;
                     return Ok(());
                 }
-                Err(error) => return Err(error),
-            };
-            let acquired = pp_os::status_of(&self.file)?;
-            if named.identity() != acquired.identity() {
+                return Err(error);
+            }
+            let named = unsafe { named.assume_init() };
+            let mut acquired = std::mem::MaybeUninit::<libc::stat>::uninit();
+            if unsafe { libc::fstat(self.file.as_raw_fd(), acquired.as_mut_ptr()) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let acquired = unsafe { acquired.assume_init() };
+            if named.st_dev != acquired.st_dev || named.st_ino != acquired.st_ino {
                 return Err(std::io::Error::other(
                     ".desktop-lease compatibility reservation was replaced",
                 ));
             }
-            if let Err(error) = self.directory.remove_file(".desktop-lease")
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(error);
+            let removed = unsafe {
+                libc::unlinkat(self.directory.as_raw_fd(), c".desktop-lease".as_ptr(), 0)
+            };
+            if removed < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error);
+                }
             }
             self.held = false;
         }
@@ -95,22 +116,20 @@ impl Drop for CompatibilityReservation {
     }
 }
 
-/// Create private store directories and admit existing owner-controlled stores.
+/// Create private Unix store directories and admit existing owner-controlled stores.
 /// Existing modes and data-directory aliases are preserved. Existing lock entries
 /// must be owner-controlled regular files with one link. Ancestors must be root or
 /// effective-user owned and deny group/other write unless sticky. These are path
 /// snapshots, not confinement. A held descriptor checks leaf identity through
 /// canonicalization. Lock acquisition retains it through ownership cleanup.
-/// SQLite initialization and ACL policy remain separate concerns: on Windows,
-/// where `pp_os` reports no POSIX owner or mode, the owner and mode checks are
-/// skipped and the store relies on the ACL it inherits from its parent.
+/// SQLite initialization and ACL policy remain separate concerns.
 pub fn prepare_directory(path: &Path) -> Result<PathBuf> {
     Ok(admit_directory(path)?.path)
 }
 
 pub(crate) struct AdmittedDirectory {
     path: PathBuf,
-    directory: Dir,
+    directory: File,
 }
 
 pub(crate) struct LockedDirectory {
@@ -135,28 +154,35 @@ pub(crate) fn admit_directory(path: &Path) -> Result<AdmittedDirectory> {
             .join(path)
     };
     validate_input_ancestors(&path)?;
-    pp_os::create_private_dir_all(&path)
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&path)
         .with_context(|| format!("admit_directory: create data directory {}", path.display()))?;
-    let opened = Dir::open(&path).map_err(|error| {
-        let kind = error.kind();
-        let error = anyhow::Error::new(error).context(format!(
-            "admit_directory: open data directory {}",
-            path.display()
-        ));
-        match kind {
-            std::io::ErrorKind::PermissionDenied => {
-                error.context("Unsafe data directory permissions")
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|error| {
+            let errno = error.raw_os_error();
+            let error = anyhow::Error::new(error).context(format!(
+                "admit_directory: open data directory {}",
+                path.display()
+            ));
+            match errno {
+                Some(libc::EACCES | libc::EPERM) => {
+                    error.context("Unsafe data directory permissions")
+                }
+                Some(libc::ENOTDIR) => error.context("Data directory is not a directory"),
+                _ => error,
             }
-            std::io::ErrorKind::NotADirectory => error.context("Data directory is not a directory"),
-            _ => error,
-        }
-    })?;
+        })?;
     let metadata = opened
-        .status()
+        .metadata()
         .context("admit_directory: fstat opened data directory")?;
     ensure!(metadata.is_dir(), "Data directory is not a directory");
     validate_directory_permissions(&metadata)?;
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     tests::replace_directory_before_canonicalization(&path)?;
     let directory = path
         .canonicalize()
@@ -168,7 +194,7 @@ pub(crate) fn admit_directory(path: &Path) -> Result<AdmittedDirectory> {
     admitted.validate_identity()?;
     let directory = &admitted.path;
     validate_resolved_ancestors(directory, false)?;
-    match pp_os::status_nofollow(&directory.join("printpartner.lock")) {
+    match std::fs::symlink_metadata(directory.join("printpartner.lock")) {
         Ok(metadata) => validate_lock_metadata(&metadata)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -180,20 +206,18 @@ pub(crate) fn admit_directory(path: &Path) -> Result<AdmittedDirectory> {
             });
         }
     }
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     tests::replace_directory_before_writer_preflight(directory)?;
     Ok(admitted)
 }
 
-fn validate_directory_permissions(metadata: &Status) -> Result<()> {
-    if let Some(access) = metadata.posix_access() {
-        ensure!(
-            access.owned_by_current_user()
-                && access.mode() & 0o700 == 0o700
-                && access.mode() & 0o022 == 0,
-            "Unsafe data directory permissions"
-        );
-    }
+fn validate_directory_permissions(metadata: &std::fs::Metadata) -> Result<()> {
+    ensure!(
+        metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o700 == 0o700
+            && metadata.mode() & 0o022 == 0,
+        "Unsafe data directory permissions"
+    );
     Ok(())
 }
 
@@ -205,12 +229,12 @@ impl AdmittedDirectory {
         let lock = self.open_lock(c"printpartner.lock")?;
         self.validate_identity()?;
         validate_open_lock_identity(&lock, &path)?;
-        match pp_os::try_lock(&lock) {
+        match fs4::FileExt::try_lock(&lock) {
             Ok(()) => {}
-            Err(pp_os::TryLockError::WouldBlock) => anyhow::bail!(
+            Err(fs4::TryLockError::WouldBlock) => anyhow::bail!(
                 "Data directory already owned; stop the other Print Partner process before starting another instance"
             ),
-            Err(pp_os::TryLockError::Io(error)) => {
+            Err(fs4::TryLockError::Error(error)) => {
                 return Err(error).context("AdmittedDirectory::lock: try_lock printpartner.lock");
             }
         }
@@ -254,13 +278,13 @@ impl AdmittedDirectory {
     fn validate_identity(&self) -> Result<()> {
         let opened = self
             .directory
-            .status()
+            .metadata()
             .context("validate_identity: fstat admitted data directory")?;
-        let named = pp_os::status_nofollow(&self.path)
+        let named = std::fs::symlink_metadata(&self.path)
             .with_context(|| format!("validate_identity: lstat {}", self.path.display()))
             .context("Data directory was replaced")?;
         ensure!(
-            named.is_dir() && opened.identity() == named.identity(),
+            named.is_dir() && opened.dev() == named.dev() && opened.ino() == named.ino(),
             "Data directory was replaced"
         );
         validate_directory_permissions(&opened)?;
@@ -274,15 +298,34 @@ impl AdmittedDirectory {
                 format!("open_preflight_file: {stage} {name}: {error}"),
             )
         };
-        let file = self
-            .directory
-            .open_read_nofollow(name)
-            .map_err(|error| at_stage("openat O_RDONLY|O_NOFOLLOW", error))?;
+        let name = CString::new(name).map_err(|error| at_stage("encode name", error.into()))?;
+        let fd = unsafe {
+            libc::openat(
+                self.directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY
+                    | libc::O_CLOEXEC
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_NOCTTY,
+            )
+        };
+        if fd < 0 {
+            return Err(at_stage(
+                "openat O_RDONLY|O_NOFOLLOW",
+                std::io::Error::last_os_error(),
+            ));
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
         let metadata = file.metadata().map_err(|error| at_stage("fstat", error))?;
         if !metadata.is_file() {
             return Err(at_stage(
                 "require regular file",
-                pp_os::not_regular_file(metadata.is_dir()),
+                std::io::Error::from_raw_os_error(if metadata.is_dir() {
+                    libc::EISDIR
+                } else {
+                    libc::EINVAL
+                }),
             ));
         }
         Ok(file)
@@ -291,11 +334,18 @@ impl AdmittedDirectory {
     /// Create with O_EXCL, then open an existing entry without O_CREAT. On macOS,
     /// racing dirfd-relative O_CREAT opens without O_EXCL can fail with ENOENT.
     fn open_lock(&self, name: &CStr) -> Result<File> {
+        let flags = libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+        let open = |flags| {
+            let fd =
+                unsafe { libc::openat(self.directory.as_raw_fd(), name.as_ptr(), flags, 0o600) };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(unsafe { File::from_raw_fd(fd) })
+        };
         let display = name.to_string_lossy();
-        match self.directory.create_new_nofollow(&display) {
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => self
-                .directory
-                .open_write_nofollow(&display)
+        match open(flags | libc::O_CREAT | libc::O_EXCL) {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => open(flags)
                 .with_context(|| format!("open_lock: openat O_RDWR|O_NOFOLLOW {display}")),
             result => result.with_context(|| {
                 format!("open_lock: openat O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW {display}")
@@ -330,48 +380,47 @@ fn validate_input_ancestors(path: &Path) -> Result<()> {
 }
 
 fn validate_resolved_ancestors(path: &Path, include_self: bool) -> Result<()> {
+    let euid = unsafe { libc::geteuid() };
     for ancestor in path.ancestors().skip(usize::from(!include_self)) {
-        let metadata = pp_os::status_follow(ancestor)
+        let metadata = std::fs::metadata(ancestor)
             .with_context(|| format!("validate_resolved_ancestors: stat {}", ancestor.display()))?;
         ensure!(
             metadata.is_dir()
-                && metadata.posix_access().is_none_or(|access| {
-                    (access.owned_by_root() || access.owned_by_current_user())
-                        && (access.mode() & 0o022 == 0 || access.mode() & 0o1000 != 0)
-                }),
+                && (metadata.uid() == 0 || metadata.uid() == euid)
+                && (metadata.mode() & 0o022 == 0 || metadata.mode() & 0o1000 != 0),
             "Unsafe data directory ancestor"
         );
     }
     Ok(())
 }
 
-fn validate_lock_metadata(metadata: &Status) -> Result<()> {
+fn validate_lock_metadata(metadata: &std::fs::Metadata) -> Result<()> {
     ensure!(
         metadata.is_file()
-            && metadata.links() == 1
-            && metadata.posix_access().is_none_or(|access| {
-                access.owned_by_current_user() && access.mode() & 0o022 == 0
-            }),
+            && metadata.nlink() == 1
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o022 == 0,
         "Unsafe data directory lock"
     );
     Ok(())
 }
 
 fn validate_open_lock_identity(file: &File, path: &Path) -> Result<()> {
-    let opened = pp_os::status_of(file)
+    let opened = file
+        .metadata()
         .with_context(|| format!("validate_open_lock_identity: fstat {}", path.display()))?;
-    let named = pp_os::status_nofollow(path)
+    let named = std::fs::symlink_metadata(path)
         .with_context(|| format!("validate_open_lock_identity: lstat {}", path.display()))?;
     validate_lock_metadata(&opened)?;
     validate_lock_metadata(&named)?;
     ensure!(
-        opened.identity() == named.identity(),
+        opened.dev() == named.dev() && opened.ino() == named.ino(),
         "Data directory lock was replaced"
     );
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 thread_local! {
     static REPLACE_DIRECTORY_BEFORE_WRITER_PREFLIGHT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     static REPLACE_DIRECTORY_BEFORE_CANONICALIZATION: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
@@ -398,12 +447,15 @@ impl StorageLease {
             std::process::id(),
             hex::encode(rand::random::<[u8; 8]>())
         ));
-        pp_os::create_private_dir(&runtime_dir).with_context(|| {
-            format!(
-                "StorageLease::acquire_locked: create runtime directory {}",
-                runtime_dir.display()
-            )
-        })?;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&runtime_dir)
+            .with_context(|| {
+                format!(
+                    "StorageLease::acquire_locked: create runtime directory {}",
+                    runtime_dir.display()
+                )
+            })?;
         Ok(Self {
             advisory_lock: Some(lock),
             compatibility: Some(compatibility),
@@ -489,7 +541,7 @@ impl StorageLease {
             && self
                 .advisory_lock
                 .as_ref()
-                .is_none_or(|lock| pp_os::unlock(lock).is_ok());
+                .is_none_or(|lock| fs4::FileExt::unlock(lock).is_ok());
         if !lock_released {
             let retained = Self {
                 advisory_lock: self.advisory_lock.take(),
@@ -540,14 +592,10 @@ impl Drop for StorageLease {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        ffi::CString,
-        fs::OpenOptions,
-        os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-    };
+    use std::os::unix::fs::PermissionsExt;
 
     pub(super) fn replace_directory_before_canonicalization(path: &Path) -> Result<()> {
         match REPLACE_DIRECTORY_BEFORE_CANONICALIZATION.take() {

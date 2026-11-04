@@ -294,6 +294,19 @@ mod with_feature {
                 "{path}"
             );
         }
+        // Build history reads the same owner on `/` and `/api/v2`; a new Plan
+        // has no history yet.
+        for prefix in ["", "/api/v2"] {
+            let path = format!("{prefix}/plans/{id}/history");
+            assert_eq!(
+                server.json(Method::GET, &path, &headers, None).await,
+                (
+                    200,
+                    json!({"plan_id": id, "entries": [], "next_cursor": null})
+                ),
+                "{path}"
+            );
+        }
         // The same router answers Part assembled reads, which an empty Plan
         // has none of.
         for path in ["/parts/1/assembled", "/api/v1/parts/1/assembled"] {

@@ -129,6 +129,17 @@ POST  /plans/:id/progress/import
 
 Printer completion does not mark units complete without review. The printer checkoff routes record the host result, then accept a confirm or reject decision.
 
+### History
+
+```text
+GET   /plans/:id/history?limit=50&cursor=...
+```
+
+The Rust API serves this read only with `desktop_rebuild` on. It returns a
+Build's accepted revisions, snapshots, checkoff bursts, sends and assistant
+decisions, newest first, one page at a time. [Build history](build-history.md)
+describes the entries and paging.
+
 ### Plates and exports
 
 ```text

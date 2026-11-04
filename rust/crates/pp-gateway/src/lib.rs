@@ -396,7 +396,7 @@ impl Gateway {
     }
     /// Proxy attempts since start, counted at the route-miss path: requests
     /// that no gateway, asset or Rust product route answered. Rust-only mode
-    /// keeps this at 0. `/__runtime` reports it as `gateway.compat_forwards`.
+    /// keeps this at 0.
     pub fn compat_forwards(&self) -> u64 {
         self.state.compat_forwards.load(Ordering::Relaxed)
     }
@@ -771,7 +771,7 @@ async fn handle(
         Err(_) => return error(StatusCode::UNAUTHORIZED, "Desktop session required"),
     };
     if path == "/__runtime" && request.method() == "GET" {
-        return axum::Json(serde_json::json!({"proof_class":"headless_unsigned","compat":*state.compat.status.borrow(),"gateway":{"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len(),"compat_forwards":state.compat_forwards.load(Ordering::Relaxed)}})).into_response();
+        return axum::Json(serde_json::json!({"proof_class":"headless_unsigned","compat":*state.compat.status.borrow(),"gateway":{"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len()}})).into_response();
     }
     if path == "/auth/logout" && request.method() == "POST" {
         // Rust revokes its own session before the gateway ends the desktop one.

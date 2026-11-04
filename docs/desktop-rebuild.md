@@ -81,7 +81,7 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   forwarded to Node. `Gateway::compat_forwards()` counts proxy attempts at the
   gateway's route-miss path: each request that no gateway, asset or Rust
   product route answered and that entered the compatibility branch. It stays
-  at 0 in this mode, and `/__runtime` reports it as `gateway.compat_forwards`.
+  at 0 in this mode.
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
   session, then the gateway ends the desktop session and stops the runtime as
   it does today.
@@ -118,7 +118,7 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(slice0_mount)'
 ```
 
-With `PP_JOURNEY_REPORT=1`, the feature-on `pp-server` journey also writes
+With `PP_JOURNEY_REPORT=1`, the feature-on pp-core gateway journey also writes
 its count to `docs/parity/journey-route-misses.json`, which
 `scripts/operation-inventory.py` quotes in its rollup. See
 [Operation inventory](development/operation-inventory.md#journey-route-misses).

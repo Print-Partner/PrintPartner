@@ -11,7 +11,7 @@ Active phase: **P1**
 - Uncategorized entries: 459
 - Kept entries without a Rust owner: 0
 - Routes migrated to Rust: 0 of 781 (781 unmigrated)
-- Journey route misses: 0 proxy attempts in the pp-server journey with PP_DESKTOP_REBUILD=`1`, `true` (from `docs/parity/journey-route-misses.json`)
+- Journey route misses: 0 proxy attempts in the Rust-only gateway journey with PP_DESKTOP_REBUILD=`1`, `true` (from `docs/parity/journey-route-misses.json`)
 - Roster entries that match no inventory entry: 0
 
 | Kind | Entries | Rust owner + ticket | Delete with Node / stays denied | Gateway-owned, kept | Deferred, owner OK | Uncategorized |
@@ -582,7 +582,7 @@ A route counts as migrated only when its owner in the generated inputs is Rust.
 | Input | SHA-256 |
 |---|---|
 | docs/architecture.md (family table) | 666997b111de27336afa25d7918dcb0db67a5714125a452198d7d5edc0bd953e |
-| docs/parity/journey-route-misses.json | ecea1a7bf37f43c513a70bcba6fb235f2bf6c6f7ed813d6d89743242371191d1 |
+| docs/parity/journey-route-misses.json | b5a462bb575e9fc8b78eb71f31c5b250fd0b320cb5fd52b0bb752ef39a41883b |
 | docs/plan/inventory-roster.json | f7ecdf4874753d68c84c33417283afe70f8ace32b752fabe59a03534d1452b99 |
 | rust/crates/pp-gateway/operations.json | 0fc32f72f8ec0ebe34793d190ad530f52a5d46fc9a0ab272b193028f82d727fc |
 | rust/crates/pp-gateway/ownership-manifest.json | 9a68e965741634ac16f7b1e60940d05b42b718ae8c4fe5424809ca0cd3916a2a |

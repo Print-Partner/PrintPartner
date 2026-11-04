@@ -1,7 +1,7 @@
 {
-  "generated_by": "PP_JOURNEY_REPORT=1 cargo nextest run (slice0_mount_server_binary_serves_rust_routes)",
-  "journey": "pp-server binary, desktop_rebuild feature on: health, register, Plan reads, two unrouted paths, logout",
-  "counted_at": "gateway route-miss path (Gateway::compat_forwards, /__runtime gateway.compat_forwards)",
+  "generated_by": "PP_JOURNEY_REPORT=1 cargo nextest run (slice0_mount_routes_answer_through_the_gateway)",
+  "journey": "pp-core product routes in the gateway, desktop_rebuild feature on: register, Plan, draft and job reads, job WebSocket, manifest reads, two unrouted paths",
+  "counted_at": "gateway route-miss path (Gateway::compat_forwards)",
   "runs": [
     {
       "PP_DESKTOP_REBUILD": "1",

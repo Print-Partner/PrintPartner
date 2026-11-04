@@ -286,6 +286,48 @@ mod with_feature {
         }
     }
 
+    /// Sends two requests no Rust route serves, which get a Rust 404, and
+    /// returns the proxy attempts the gateway counted at its route-miss path.
+    async fn route_misses(fixture: &Fixture, session: &str) -> u64 {
+        let (status, body) = fixture.get("/api/v1/printers", Some(session)).await;
+        assert_eq!(status, 404, "{body}");
+        let response = fixture
+            .client
+            .post(format!("{}/api/v1/integrations", fixture.origin))
+            .header("origin", &fixture.origin)
+            .header("cookie", format!("{}; {session}", fixture.desktop))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        fixture.gateway.compat_forwards()
+    }
+
+    /// The generated report the operation inventory quotes. Never edit it by
+    /// hand: rerun this test with `PP_JOURNEY_REPORT=1`.
+    const JOURNEY_REPORT: &str = "docs/parity/journey-route-misses.json";
+
+    fn write_journey_report(runs: Vec<Value>) {
+        if std::env::var_os("PP_JOURNEY_REPORT").is_none_or(|value| value != "1") {
+            return;
+        }
+        let report = json!({
+            "generated_by": "PP_JOURNEY_REPORT=1 cargo nextest run (slice0_mount_routes_answer_through_the_gateway)",
+            "journey": "pp-core product routes in the gateway, desktop_rebuild feature on: register, Plan, draft and job reads, job WebSocket, manifest reads, two unrouted paths",
+            "counted_at": "gateway route-miss path (Gateway::compat_forwards)",
+            "runs": runs,
+        });
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(JOURNEY_REPORT);
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&report).unwrap()),
+        )
+        .unwrap();
+    }
+
     /// Accounts registered with the test email.
     fn accounts(data: &Path) -> i64 {
         let db = rusqlite::Connection::open(data.join("print-partner.db")).unwrap();
@@ -356,6 +398,7 @@ mod with_feature {
 
     #[tokio::test]
     async fn slice0_mount_routes_answer_through_the_gateway() {
+        let mut runs = Vec::new();
         for value in ["1", "true"] {
             let fixture = Fixture::start(value).await;
             let routes = [
@@ -435,7 +478,9 @@ mod with_feature {
             assert_ne!(missing, present, "community manifest read as missing");
             assert!(present.to_string().contains("custom"), "{present}");
 
-            assert_eq!(fixture.gateway.compat_forwards(), 0, "{value}");
+            let proxy_attempts = route_misses(&fixture, &session).await;
+            assert_eq!(proxy_attempts, 0, "{value}");
+            runs.push(json!({"PP_DESKTOP_REBUILD": value, "proxy_attempts": proxy_attempts}));
 
             // Logout revokes the Rust session as well as the desktop one.
             assert!(session_valid(&fixture.owner, &token));
@@ -452,6 +497,7 @@ mod with_feature {
             assert!(!session_valid(&fixture.owner, &token), "{value}");
             fixture.stop().await;
         }
+        write_journey_report(runs);
     }
 
     /// The mounted routes refuse a non-loopback peer themselves, not only

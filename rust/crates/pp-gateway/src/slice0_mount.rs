@@ -147,17 +147,6 @@ async fn slice0_mount_feature_off_route_table_is_unchanged() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(gateway.compat_forwards(), 2);
-    let (status, body) = text(
-        handle(
-            State(gateway.state.clone()),
-            get(&gateway, "/__runtime", Some(&cookie), Some("127.0.0.1:9")),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let runtime: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(runtime["gateway"]["compat_forwards"], 2, "{body}");
     gateway.stop().await.unwrap();
 }
 

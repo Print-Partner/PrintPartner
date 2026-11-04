@@ -9,7 +9,7 @@ generated inputs and the roster, and never edits them:
 - the "Operation families and write ownership" table in docs/architecture.md
 - docs/plan/inventory-roster.json (entry -> family and ticket, exceptions)
 - docs/parity/journey-route-misses.json, when present (proxy attempts the
-  pp-server journey counted; written by that test with PP_JOURNEY_REPORT=1)
+  Rust-only gateway journey counted; written by that test with PP_JOURNEY_REPORT=1)
 
     python3 scripts/operation-inventory.py           # rewrite the report
     python3 scripts/operation-inventory.py --check   # exit 1 if it is stale
@@ -218,7 +218,7 @@ def journey_line(journey):
                               f"non-negative proxy_attempts, got {run!r}")
     total = sum(run["proxy_attempts"] for run in runs)
     values = ", ".join(f"`{run['PP_DESKTOP_REBUILD']}`" for run in runs)
-    return (f"- Journey route misses: {total} proxy attempts in the pp-server journey "
+    return (f"- Journey route misses: {total} proxy attempts in the Rust-only gateway journey "
             f"with PP_DESKTOP_REBUILD={values} (from `{JOURNEY}`)")
 
 

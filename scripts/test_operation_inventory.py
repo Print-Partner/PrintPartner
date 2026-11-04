@@ -131,7 +131,7 @@ class InventoryTests(unittest.TestCase):
                 {"PP_DESKTOP_REBUILD": "true", "proxy_attempts": 0}]
         self.write(INVENTORY.JOURNEY, {"generated_by": "test", "runs": runs})
         report = self.report()
-        self.assertIn("- Journey route misses: 0 proxy attempts in the pp-server journey "
+        self.assertIn("- Journey route misses: 0 proxy attempts in the Rust-only gateway journey "
                       "with PP_DESKTOP_REBUILD=`1`, `true` (from "
                       "`docs/parity/journey-route-misses.json`)\n", report)
         self.assertIn("| docs/parity/journey-route-misses.json |", report)

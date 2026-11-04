@@ -21,7 +21,7 @@ The script reads only these files and never writes them:
 | `rust/crates/pp-gateway/ownership-manifest.json` | 8 Node-owned operations, 82 reviewed and 347 unresolved resource sets, and 10 `live_formats` |
 | The "Operation families and write ownership" table in [Architecture](../architecture.md) | The family names a roster entry may name as its Rust owner |
 | `docs/plan/inventory-roster.json` | Entry → family and ticket, and exceptions |
-| `docs/parity/journey-route-misses.json`, when present | Proxy attempts the Rust-only `pp-server` journey counted; see [Journey route misses](#journey-route-misses) |
+| `docs/parity/journey-route-misses.json`, when present | Proxy attempts the Rust-only gateway journey counted; see [Journey route misses](#journey-route-misses) |
 
 The two JSON files under `pp-gateway` are generated. Never edit them by hand; run
 their generators.
@@ -118,7 +118,7 @@ The rollup gives:
 - kept entries without a Rust owner: entries classed Rust owner, gateway-owned
   or deferred that have no family;
 - routes migrated to Rust out of the 781 compatibility routes;
-- journey route misses: proxy attempts the `pp-server` journey counted in
+- journey route misses: proxy attempts the gateway journey counted in
   Rust-only mode, from `docs/parity/journey-route-misses.json`, or "not
   measured" when that file is absent;
 - roster entries that match no inventory entry.
@@ -134,17 +134,18 @@ the parsed family table, so a change to any input makes `--check` fail.
 ## Journey route misses
 
 `docs/parity/journey-route-misses.json` is generated; never edit it by hand.
-The `slice0_mount_server_binary_serves_rust_routes` test writes it when
-`PP_JOURNEY_REPORT=1` is set and the `desktop_rebuild` feature is on. The test
-starts the `pp-server` binary with `PP_DESKTOP_REBUILD=1`, then `true`, runs
-its journey (health, register, Plan reads, two paths no Rust route serves,
-logout), reads `gateway.compat_forwards` from `/__runtime` before logout, and
-fails unless each count is 0. The gateway counts at its route-miss path, so
+The pp-core test `slice0_mount_routes_answer_through_the_gateway` writes it
+when `PP_JOURNEY_REPORT=1` is set; the test needs the `desktop_rebuild`
+feature. For `PP_DESKTOP_REBUILD=1`, then `true`, it mounts the Rust product
+routes in a real gateway on a loopback port, runs its journey over HTTP
+(register, Plan, draft and job reads, the job WebSocket, manifest reads, two
+paths no Rust route serves), reads `Gateway::compat_forwards()`, and fails
+unless each count is 0. The gateway counts at its route-miss path, so
 any request that would leave the Rust routes for the compatibility branch is
 counted, whether or not it reaches Node. Regenerate both files with:
 
 ```sh
-PP_JOURNEY_REPORT=1 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(slice0_mount_server_binary_serves_rust_routes)'
+PP_JOURNEY_REPORT=1 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(slice0_mount_routes_answer_through_the_gateway)'
 python3 scripts/operation-inventory.py
 ```
 

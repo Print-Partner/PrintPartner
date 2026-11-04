@@ -59,9 +59,7 @@ fn check_children(server: u32, node: &serde_json::Value) {
     }
 }
 
-/// Runs the journey and returns the gateway's proxy-attempt count, read from
-/// `/__runtime` just before logout.
-fn run(value: &str, root: &Path, rust: bool) -> u64 {
+fn run(value: &str, root: &Path, rust: bool) {
     let bundle = release::launch(root.join("data")).bundle;
     let credentials = root.join("credentials.json");
     let mut child = child_process::command(child_process::bin_exe("pp-server"))
@@ -98,11 +96,6 @@ fn run(value: &str, root: &Path, rust: bool) -> u64 {
         desktop
     };
     check_children(child.id(), &receipt["child_pid"]);
-    let response = exchange(&origin, "GET", "/__runtime", &cookies, "");
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    let runtime: serde_json::Value =
-        serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-    let proxy_attempts = runtime["gateway"]["compat_forwards"].as_u64().unwrap();
 
     // The gateway's logout stops the binary, which prints its shutdown receipt.
     // With Rust routes, Rust revokes its session first.
@@ -127,7 +120,6 @@ fn run(value: &str, root: &Path, rust: bool) -> u64 {
     let receipt: serde_json::Value = serde_json::from_str(rest.trim()).unwrap();
     assert_eq!(receipt["storage_released"], true, "{receipt}");
     assert_eq!(receipt["errors"], serde_json::json!([]), "{receipt}");
-    proxy_attempts
 }
 
 /// Desktop admission alone is not a session; Rust auth answers until a user
@@ -155,7 +147,7 @@ fn rust_routes(origin: &str, desktop: &str) -> String {
     let response = exchange(origin, "GET", "/api/v1/plans", &both, "");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.contains(r#""profiles":[]"#), "{response}");
-    // Paths no Rust route serves get a Rust 404 instead of a proxy attempt.
+    // Paths no Rust route serves get a Rust 404.
     for (method, path) in [
         ("GET", "/api/v1/printers"),
         ("POST", "/api/v1/integrations"),
@@ -169,45 +161,14 @@ fn rust_routes(origin: &str, desktop: &str) -> String {
     both
 }
 
-/// The generated journey report the operation inventory quotes. Never edit it
-/// by hand: rerun this test with `PP_JOURNEY_REPORT=1`.
-const JOURNEY_REPORT: &str = "docs/parity/journey-route-misses.json";
-
 #[test]
 fn slice0_mount_server_binary_serves_rust_routes() {
     let compiled = pp_core::DesktopRebuild::from_value(Some("1")).enabled();
-    let mut runs = Vec::new();
     for value in ["1", "true"] {
         let root =
             std::env::temp_dir().join(format!("pp-slice0-server-{value}-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let proxy_attempts = run(value, &root, compiled);
+        run(value, &root, compiled);
         std::fs::remove_dir_all(&root).unwrap();
-        if compiled {
-            assert_eq!(proxy_attempts, 0, "PP_DESKTOP_REBUILD={value}");
-        }
-        runs.push(
-            serde_json::json!({"PP_DESKTOP_REBUILD": value, "proxy_attempts": proxy_attempts}),
-        );
-    }
-    if std::env::var_os("PP_JOURNEY_REPORT").is_some_and(|value| value == "1") {
-        assert!(
-            compiled,
-            "the journey report needs --features pp-core/desktop_rebuild"
-        );
-        let report = serde_json::json!({
-            "generated_by": "PP_JOURNEY_REPORT=1 cargo nextest run (slice0_mount_server_binary_serves_rust_routes)",
-            "journey": "pp-server binary, desktop_rebuild feature on: health, register, Plan reads, two unrouted paths, logout",
-            "counted_at": "gateway route-miss path (Gateway::compat_forwards, /__runtime gateway.compat_forwards)",
-            "runs": runs,
-        });
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join(JOURNEY_REPORT);
-        std::fs::write(
-            path,
-            format!("{}\n", serde_json::to_string_pretty(&report).unwrap()),
-        )
-        .unwrap();
     }
 }

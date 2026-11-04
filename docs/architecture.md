@@ -186,7 +186,7 @@ use the same operation interface. A transport must not repeat its policy.
 | Builds, drafts, parts, order/customer/due-date fields | `pp-storage` build/draft modules own lifecycle, autosave receipts and order authority; `pp-services` holds extracted pure policy where useful |
 | Accept, proposals, accepted Plans, Required units, Plates | `pp-storage` publication owns one atomic acceptance transaction; UI and MCP share proposal/draft state |
 | Checkoff, assembly, bed confirmation, unmatched prints | `pp-storage::checkoff_progress` owns bursts, matching confirmation, receipts and compensating undo; drivers only supply observations |
-| Workflow, readiness, Today tasks, History | `pp-storage::read_model` owns consistent projections; task feed extends the GRE-415 workflow projection, not a second ranking engine; History includes legacy assistant decisions |
+| Workflow, readiness, Today tasks, History | `pp-storage::read_model` owns consistent projections; task feed extends the GRE-415 workflow projection, not a second ranking engine (served by `read_model::build_workflow`, [Build workflow](build-workflow.md)); History includes legacy assistant decisions |
 | Exports and production setup | Pure encoding/packing modules in `pp-domain` or existing `pp-services`, storage owns revision-bound artifact/job metadata, core runs workers and publishes staged files |
 | Printers, queue, discovery, Bambu | Storage owns admitted queue/effect records; `pp-drivers` owns protocols through `pp-net`; core owns watchers; Bambu remains status-only |
 | Stock and Spoolman shortfalls | `pp-drivers` provides Spoolman reads/effects; storage projects readiness/tasks and owns deduction intent/reconciliation. Spoolman alone owns stock counts |

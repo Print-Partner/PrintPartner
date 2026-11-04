@@ -24,6 +24,8 @@ DROID, CLAUDE = ".github/workflows/droid-review.yml", ".github/workflows/claude-
 SUITES = {1: (".github/workflows/review-gate.yml", "pull_request_target"), 2: (DROID, "pull_request"),
           3: (CLAUDE, "pull_request"), 4: (".github/workflows/review-gate.yml", "pull_request"),
           9: (".github/workflows/evil.yml", "pull_request")}
+DROID_RAN = "##[end-action id=__Factory-AI_droid-action.droid;outcome=success;conclusion=success;duration_ms=128764]"
+DROID_SKIPPED = "##[end-action id=__Factory-AI_droid-action.droid;outcome=skipped;conclusion=skipped;duration_ms=0]"
 SUITE_FOR = {"review-gate": 1, "droid-review": 2, "claude-code-review": 3, "claude-security-review": 3}
 
 FAKE_GH = r"""
@@ -36,6 +38,8 @@ def out(value):
     print(json.dumps(value))
 if path.endswith("/pulls/7/files") and slurp:
     out([[{"filename": name} for name in state["files"]]])
+elif path.endswith("/pulls/7") and not slurp:
+    out({"changed_files": state["changed_files"]})
 elif path.endswith(f"/commits/{state['head']}/check-runs") and slurp and query["filter"] == ["all"]:
     out([{"check_runs": state["checks"]}])
 elif path.endswith("/issues/7/comments") and slurp:
@@ -43,6 +47,10 @@ elif path.endswith("/issues/7/comments") and slurp:
 elif path.endswith("/actions/runs") and slurp:
     suite = state["suites"].get(query["check_suite_id"][0])
     out([{"workflow_runs": [{"path": suite[0], "event": suite[1]}] if suite else []}])
+elif "/actions/jobs/" in path and path.endswith("/logs") and "--allow-escape-sequences" in sys.argv:
+    if state["droid_log"] is None:
+        sys.exit("HTTP 410")
+    print(state["droid_log"])
 elif "/contents/" in path:
     sha = state["blobs"].get(path.split("/contents/", 1)[1] + "@" + query["ref"][0])
     if sha is None:
@@ -86,11 +94,13 @@ class ReviewGateStepTests(unittest.TestCase):
         self.script, self.env = step["run"], dict(step["env"])
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
-    def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None):
+    def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None,
+             droid_log=f"log\n{DROID_RAN}\nlog"):
         state = self.folder / "state.json"
         state.write_text(json.dumps({
             "head": HEAD, "checks": [run("review-gate", None), *checks], "pages": pages or [[]],
-            "files": list(files), "suites": {str(key): value for key, value in SUITES.items()},
+            "droid_log": droid_log, "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
+            "suites": {str(key): value for key, value in SUITES.items()},
             "blobs": {f"{DROID}@{HEAD}": "d1", f"{DROID}@main": "d1", f"{CLAUDE}@{HEAD}": "c1",
                       f"{CLAUDE}@main": "c1"} if blobs is None else blobs}))
         script = self.folder / "gate.py"
@@ -122,6 +132,12 @@ class ReviewGateStepTests(unittest.TestCase):
         self.assertIn("droid-review succeeded", self.assertPasses(checks=[run("droid-review")]).stdout)
         self.assertFails(checks=[run("droid-review", "skipped")])
 
+    def test_droid_counts_only_when_its_review_step_ran(self):
+        for log in (f"log\n{DROID_SKIPPED}\nSkipping action due to workflow validation", "", None):
+            with self.subTest(log=log):
+                result = self.assertFails(checks=[run("droid-review")], droid_log=log)
+                self.assertIn("the Droid review did not run on this head", result.stdout)
+
     def test_latest_run_of_a_check_decides(self):
         older, newer = "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z"
         self.assertFails(checks=[run("droid-review", "success", started=older),
@@ -151,7 +167,16 @@ class ReviewGateStepTests(unittest.TestCase):
         for bad in (marker(head=OLD), marker(head=HEAD[:12]), marker(head=HEAD.upper()), marker(author="lane-bot"),
                     marker(reviewer=""), marker(findings="many"),
                     {**marker(), "body": f"pp-review-gate head={HEAD} reviewer=x findings=0"},
-                    {**marker(), "body": None}):
+                    {**marker(), "body": None},
+                    # Only the exact line the coordinator posts counts.
+                    {**marker(), "body": f"<!--  pp-review-gate head={HEAD} reviewer=x findings=0 -->"},
+                    {**marker(), "body": f"<!--\tpp-review-gate head={HEAD} reviewer=x findings=0 -->"},
+                    {**marker(), "body": f"<!--pp-review-gate head={HEAD} reviewer=x findings=0-->"},
+                    {**marker(), "body": f"<!-- PP-REVIEW-GATE head={HEAD} reviewer=x findings=0 -->"},
+                    {**marker(), "body": f"<!-- pp-review-gate reviewer=x head={HEAD} findings=0 -->"},
+                    {**marker(), "body": f"Done <!-- pp-review-gate head={HEAD} reviewer=x findings=0 -->"},
+                    {**marker(), "body": f"&lt;!-- pp-review-gate head={HEAD} reviewer=x findings=0 --&gt;"},
+                    {**marker(), "body": f"\\u003c!-- pp-review-gate head={HEAD} reviewer=x findings=0 --\\u003e"}):
             with self.subTest(body=bad["body"], author=bad["user"]["login"]):
                 self.assertFails(pages=[[bad]])
 
@@ -167,14 +192,36 @@ class ReviewGateStepTests(unittest.TestCase):
                                           checks=[spoof, run("droid-review")], pages=[[marker()]])
                 self.assertNotIn("Passed", result.stdout)
 
-    def test_non_owner_cannot_change_workflows_guard_or_zizmor_config(self):
+    def test_non_owner_protected_changes_need_the_owner_marker(self):
         for name in (".github/workflows/review-gate.yml", ".github/workflows/new.yml", ".github/zizmor.yml",
-                     "scripts/agent-guard.py"):
+                     "scripts/agent-guard.py", ".factory/hooks.json", ".factory/hooks/guard.py",
+                     ".claude/hooks/guard.py", ".claude/settings.json"):
             with self.subTest(name=name):
-                self.assertFails("::error::lane-bot is not the repository owner and changes",
-                                 files=[name, "docs/a.md"], author="lane-bot", pages=[[marker()]])
-        self.assertPasses(files=["docs/a.md", "scripts/test_review_gate.py"], author="lane-bot", pages=[[marker()]])
-        self.assertPasses(files=[".github/workflows/new.yml"], pages=[[marker()]])
+                files = [name, "docs/a.md"]
+                self.assertFails("::error::lane-bot is not the repository owner and changes", files=files,
+                                 author="lane-bot", checks=[run("droid-review"), run("claude-code-review"),
+                                                            run("claude-security-review")])
+                self.assertPasses(files=files, author="lane-bot", pages=[[marker()]])
+        self.assertPasses(files=["docs/a.md"], author="lane-bot", checks=[run("droid-review")])
+        self.assertPasses(files=[".github/workflows/new.yml"], checks=[run("droid-review")])
+
+    def test_dependabot_workflow_bump_passes_only_with_an_exact_head_owner_marker(self):
+        bump = {"files": [".github/workflows/web-ci.yml"], "author": "dependabot[bot]"}
+        self.assertFails("::error::dependabot[bot] is not the repository owner and changes", **bump)
+        self.assertFails("::error::dependabot[bot] is not the repository owner", pages=[[marker(head=OLD)]], **bump)
+        self.assertFails("::error::dependabot[bot] is not the repository owner",
+                         pages=[[marker(author="dependabot[bot]")]], **bump)
+        result = self.assertPasses(pages=[[marker()]], **bump)
+        self.assertIn("covers dependabot[bot]'s changes to .github/workflows/web-ci.yml", result.stdout)
+
+    def test_incomplete_file_list_fails_closed(self):
+        for listed, changed in ((["docs/a.md"] * 1, 5), ([f"f{i}" for i in range(3000)], 3000),
+                                ([f"f{i}" for i in range(3000)], 4000)):
+            with self.subTest(listed=len(listed), changed=changed):
+                result = self.assertFails(f"::error::GitHub listed {len(listed)} of the PR's {changed} changed files",
+                                          files=listed, changed_files=changed, pages=[[marker()]],
+                                          checks=[run("droid-review")])
+                self.assertIn("Split the PR", result.stdout)
 
     def test_review_counts_only_from_the_default_branch_workflow_definition(self):
         changed = {f"{DROID}@{HEAD}": "d2", f"{DROID}@main": "d1", f"{CLAUDE}@{HEAD}": "c2", f"{CLAUDE}@main": "c1"}
@@ -247,8 +294,14 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
                 args = review["with"]["claude_args"]
                 self.assertIn('--allowedTools "Read(./**),mcp__github_inline_comment__create_inline_comment"', args)
                 denied = args.split('--disallowedTools "', 1)[1].split('"', 1)[0].split(",")
+                names = [step.get("name", step.get("uses", "")) for step in steps]
+                self.assertLess(names.index("Refuse symlinks that leave the workspace"), names.index(review["name"]))
+                symlinks = steps[names.index("Refuse symlinks that leave the workspace")]["run"]
+                self.assertIn('realpath -m -- "$link"', symlinks)
+                self.assertIn("find . -path ./.git -prune -o -type l -print0", symlinks)
                 for tool in ("Bash", "Edit", "Write", "WebFetch", "Task", "Read(./.git/**)", "Read(//proc/**)",
-                             "Read(//tmp/**)", "Read(~/.*/**)", "Read(~/work/_temp/**)"):
+                             "Read(//proc/self/**)", "Read(//tmp/**)", "Read(~/.*/**)", "Read(~/.git-credentials)",
+                             "Read(~/.config/**)", "Read(~/work/_temp/**)"):
                     self.assertIn(tool, denied)
                 self.assertNotRegex(args, r"Bash\(|\bgh\b")
                 self.assertEqual(review["env"], {"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"})

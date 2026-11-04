@@ -64,6 +64,8 @@ The workflow and configuration changes handle them as follows:
 | `template-injection` in Desktop WebKit | Pass the artifact URL through an environment variable before the shell command. |
 | `dangerous-triggers` in PR evidence | Allow only the trigger line. Checkout runs trusted default-branch tooling. The PR body enters the checker through an environment variable. |
 | `dangerous-triggers` in Linear PR sync | Allow only the trigger line. PR events run the immutable base commit. Scheduled runs use the default branch. The workflow never runs PR-head code. |
+| `dangerous-triggers` in Review gate | Allow only the `pull_request_target` line. The gate must run the default branch's logic so a PR cannot edit its own gate. It checks out nothing, runs no PR code, receives no secrets, and only reads the API with `actions`, `checks`, `contents`, and `pull-requests` read permission. |
+| `dangerous-triggers` in Review gate rerun | Allow only the `issue_comment` and `workflow_run` lines. Both run the default branch's file, check out nothing, read no comment text into a shell, and only rerun the gate, which re-checks every result's origin. |
 | Two `self-repository` notices in Release | Allow only the two local reusable-workflow lines. They resolve at the caller's commit. Actionlint 1.7.12 rejects zizmor's suggested `$/` replacement syntax. |
 | Mismatched action version comment in Chain tip gate | Replace the moving `# v2` comment with the verified `# v2.87.27` tag. Keep the existing commit SHA. |
 | `dependabot-cooldown` for every ecosystem | Set a seven-day cooldown on the GitHub Actions, npm, pip, Docker and Cargo entries. |
@@ -120,6 +122,8 @@ The ruleset has these protections:
   `Lint Evidence block`, and `review-gate`.
 - Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
 - `review-gate` runs on `pull_request_target` from the default branch and only reads the API; see [Code review](definition-of-done.md#code-review) for what it checks and its remaining risk.
+  Dependabot's weekly `github-actions` PRs change `.github/workflows/`, and their author is not the owner, so Droid or Claude results cannot pass them.
+- `claude-review.yml` and `droid-review.yml` stay on `pull_request`, not `pull_request_target`. On `pull_request`, fork PRs receive no secrets, so a fork's Droid job fails on the missing key, and the Claude jobs also require a same-repository head and the owner as author. Anyone who can push a same-repository branch already has write access, which lets them run any workflow with secrets through a push or a manual dispatch, so these workflows grant nothing beyond write access. `pull_request_target` would hand secrets to a run that checks out PR code, the classic pwn-request pattern. After reviewing such a PR's head, the owner or the coordinator posts the `pp-review-gate` marker for that head, which passes it.
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 

@@ -16,6 +16,7 @@ invocation, it refuses rather than guessing.
 """
 
 import argparse
+import html
 import itertools
 import json
 import os
@@ -24,7 +25,7 @@ import posixpath
 import re
 import subprocess
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 MERGE = ("Only the coordinator worktree merges, with `gh pr merge <number> --squash --match-head-commit <sha>`; "
          "other merges need the maintainer. Report readiness instead.")
@@ -65,10 +66,17 @@ GH_GROUPS = {"pr", "release", "variable"}
 GH_PATH_FLAGS = {"--help", "-h", "--version"}
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
 VARIABLE_READS = {"get", "help", "list"}
-# The coordinator's review record, which the review-gate check accepts in place of an automatic review.
-REVIEW_MARKER = re.compile(r"<!--\s*pp-review-gate", re.I)
-MARKER = ("Only the coordinator worktree posts pp-review-gate review markers; "
-          "report readiness to the coordinator instead.")
+# The word in the coordinator's review record, which the review-gate check accepts in place of an
+# automatic review. Outside the coordinator worktree, any command line that contains it in any case
+# or decodable encoding is refused, wherever it appears.
+MARKER_WORD = "pp-review-gate"
+MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or runs any command that names "
+          "pp-review-gate, in any case or encoding; report readiness to the coordinator instead.")
+# Shells whose -c script the guard classifies like a top-level command.
+SHELLS = {"sh", "bash", "zsh", "dash"}
+EVAL = ("Run git and gh commands directly, not through eval or source, so the guard can classify them.")
+JSON_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))')
+JSON_SIMPLE = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 COMMENT_COMMANDS = (["pr", "comment"], ["issue", "comment"])
 # GraphQL mutations that write comment text, which could carry a marker.
 COMMENT_MUTATIONS = {"addComment", "addPullRequestReviewComment", "addPullRequestReviewThreadReply",
@@ -792,6 +800,24 @@ def review_events(fields, body, cwd):
     return events or {""}
 
 
+def json_unescape(text):
+    """Decode JSON and GraphQL string escapes such as \\u003c and \\n, leaving other text alone."""
+    return JSON_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)) if m.group(1) else JSON_SIMPLE[m.group(2)], text)
+
+
+def names_marker(text):
+    """Whether text, or any form GitHub or a browser could decode it to, contains MARKER_WORD.
+
+    The decoders (JSON and GraphQL escapes, URL encoding, HTML entities) are applied repeatedly in
+    every order, up to four layers deep, and the match ignores case.
+    """
+    forms, frontier = {text}, [text]
+    for _ in range(4):
+        frontier = [decoded for value in frontier for decode in (json_unescape, unquote_plus, html.unescape)
+                    if (decoded := decode(value)) not in forms and not forms.add(decoded)]
+    return any(MARKER_WORD in form.casefold() for form in forms)
+
+
 def marker_reason(texts, files, cwd, alone):
     """Return why a comment write is refused, or None. texts are the literal arguments gh sends and
     files the files it reads. Outside the coordinator worktree, a body the guard cannot read literally
@@ -805,7 +831,7 @@ def marker_reason(texts, files, cwd, alone):
         bodies = [read_input(name, cwd) for name in files]
     except Unclear:
         return UNREAD_BODY
-    return MARKER if any(REVIEW_MARKER.search(text) for text in texts + bodies) else None
+    return MARKER if any(names_marker(text) for text in texts + bodies) else None
 
 
 def body_files(args):
@@ -937,7 +963,8 @@ def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
     if reads_file and not alone:
         return STALE_INPUT
     path = urlsplit(endpoint).path.strip("/")
-    if path == "graphql" or path.endswith("/graphql"):
+    graphql = path == "graphql" or path.endswith("/graphql")
+    if graphql:
         names = [mutation_fields(document) for document in graphql_documents(fields, body, cwd)]
         comment_write = any(found is None or COMMENT_MUTATIONS & set(found) for found in names)
     else:
@@ -949,7 +976,13 @@ def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
                                cwd, alone)
         if reason:
             return reason
-    if path == "graphql" or path.endswith("/graphql"):
+        # GitHub parses a REST request body as JSON; one the guard cannot parse is not read literally.
+        if body is not None and not graphql and not coordinator_worktree(cwd):
+            try:
+                json.loads(read_input(body, cwd))
+            except (Unclear, ValueError):
+                return UNREAD_BODY
+    if graphql:
         for document in graphql_documents(fields, body, cwd):
             names = mutation_fields(document)
             if names is None or set(names) - ALLOWED_MUTATIONS:
@@ -1004,12 +1037,49 @@ def coordinator_worktree(cwd):
     return bool(top) and os.path.realpath(top) == root and os.path.commonpath([root, lanes]) != lanes
 
 
+def shell_script(args):
+    """Return the script that a sh, bash, zsh, or dash invocation runs with -c, or None."""
+    reads_script, i = False, 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-o", "+o", "-O", "+O"):
+            i += 2
+        elif arg == "--":
+            i += 1
+            break
+        elif arg.startswith("--"):
+            i += 1
+        elif arg[:1] in ("-", "+") and len(arg) > 1:
+            reads_script = reads_script or (arg[0] == "-" and "c" in arg[1:])
+            i += 1
+        else:
+            break
+    return args[i] if reads_script and i < len(args) else None
+
+
+def sourced_reason(name, rest, cwd):
+    """Return why an eval or source command is refused, or None. Both run text the guard cannot
+    classify as commands, so any git or gh in it, or text it cannot read, is refused."""
+    if name == "eval":
+        text = " ".join(rest)
+    else:
+        try:
+            text = read_input(rest[0], cwd) if rest else ""
+        except Unclear:
+            return EVAL
+    return EVAL if EXPANDED in text or re.search(r"\b(?:gh|git)\b", text) else None
+
+
 def check_command(command, cwd):
     """Return why a shell command run in cwd is refused, or None to allow it."""
     # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
     # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
     if cwd and ".." in PurePosixPath(cwd).parts:
         cwd = os.path.realpath(cwd)
+    # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
+    # written now and posted later, so any mention of the word is refused outside the coordinator.
+    if names_marker(command) and not coordinator_worktree(cwd):
+        return MARKER
     try:
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
@@ -1022,7 +1092,7 @@ def check_command(command, cwd):
         head_moves = (any(moves_head(name, rest) for name, rest, *_ in commands)
                       or any(GIT_LOCATION.match(word) for word in assigned))
         env_config = any(GIT_CONFIG_ENV.match(word) for word in assigned)
-        marker = bool(REVIEW_MARKER.search(command))
+        marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
         control = 0
@@ -1042,6 +1112,18 @@ def check_command(command, cwd):
                 cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
                 continue
             here = None if moved else cwd
+            if name in SHELLS and (script := shell_script(rest)) is not None:
+                # The script's own substitutions were already classified as nested commands.
+                reason = check_command(script.replace(EXPANDED, ""), here)
+                if reason:
+                    return reason
+                continue
+            # program() names "." as "", like any path ending in a slash; both are treated as source.
+            if name in ("eval", "source", ""):
+                reason = sourced_reason(name, rest, here)
+                if reason:
+                    return reason
+                continue
             reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker) if name == "gh" else None
             if reason:
                 return reason

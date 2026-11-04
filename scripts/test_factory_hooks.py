@@ -881,6 +881,7 @@ class ReviewMarkerTests(unittest.TestCase):
             Path(folder, "marker.md").write_text(f"Reviewed.\n{MARKER}\n")
             Path(folder, "marker.json").write_text(json.dumps({"body": MARKER}))
             Path(folder, "plain.md").write_text("Fixed in the next commit.\n")
+            Path(folder, "plain.json").write_text(json.dumps({"body": "Fixed in the next commit."}))
 
     POSTS = (f"gh pr comment 12 --body '{MARKER}'", f"gh pr comment 12 -b '{MARKER}'",
              f"gh pr comment --body='{MARKER}' 12", f"gh -R o/r pr comment 12 -b '{MARKER}'",
@@ -917,18 +918,122 @@ class ReviewMarkerTests(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertIn("Only the coordinator worktree posts", result.stderr)
 
-    def test_other_comments_and_marker_reads_stay_allowed(self):
+    def test_other_comments_stay_allowed(self):
         for command in ("gh pr comment 12 -b 'Fixed in abc123.'", "gh pr comment 12 --body-file plain.md",
-                        "gh issue comment 12 -F plain.md", "gh pr comment 12 -b 'The pp-review-gate check failed.'",
+                        "gh issue comment 12 -F plain.md", "gh pr comment 12 -b 'The review gate check failed.'",
                         "gh api repos/o/r/issues/12/comments -f body='The review-gate check is red.'",
-                        "gh api repos/o/r/issues/12/comments --input plain.md",
-                        "gh api repos/o/r/issues/12/comments --jq '.[] | select(.body | test(\"<!-- pp-review-gate\"))'",
+                        "gh api repos/o/r/issues/12/comments --input plain.json",
                         "gh pr view 12 --comments", "gh pr create --body-file marker.md",
                         "gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) "
                         "{ thread { isResolved } } }' -f id=\"$THREAD\""):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class EncodedMarkerTests(unittest.TestCase):
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+    FILES = {"json-escape.json": '{"body": "\\u003c!-- pp-review-gate head=x reviewer=y findings=0 --\\u003e"}',
+             "letter-escape.json": '{"body": "<!-- \\u0070p-review-gate head=x -->"}',
+             "graphql.json": json.dumps({"query": "mutation($b: String!) { addComment(input: {subjectId: \"X\", "
+                                                  "body: $b}) { clientMutationId } }",
+                                         "variables": {"b": "<!-- pp-review-gate head=x -->"}}).replace("pp-", "\\u0070p-"),
+             "body.md": "\\u003c!-- \\u0070p-review-gate head=x --\\u003e\n",
+             "html.md": "&lt;!-- pp&#45;review&#45;gate head=x --&gt;\n",
+             "broken.json": '{"body": "unterminated'}
+    ESCAPED = ("gh api repos/o/r/issues/12/comments --input json-escape.json",
+               "gh api repos/o/r/issues/12/comments --input letter-escape.json",
+               "gh api graphql --input graphql.json",
+               "gh api graphql -f query='mutation { addComment(input: {subjectId: \"X\", "
+               "body: \"\\u003c!-- \\u0070p-review-gate head=x --\\u003e\"}) { clientMutationId } }'",
+               "gh api repos/o/r/issues/12/comments -f body='&lt;!-- pp&#45;review&#45;gate head=x --&gt;'",
+               "gh api repos/o/r/issues/12/comments -f body='%3C!--%20pp%2Dreview%2Dgate%20head=x%20--%3E'",
+               "gh api repos/o/r/issues/12/comments -F body=@body.md",
+               "gh pr comment 12 --body-file body.md", "gh pr comment 12 -F html.md",
+               "gh pr comment 12 -b 'Recorded: PP-REVIEW-GATE head=x'",
+               "gh issue comment 12 --body '%26lt%3B!-- pp-review%2Dgate'")
+
+    def setUp(self):
+        self.make_worktrees()
+        for folder in (self.coordinator, self.lane):
+            for name, text in self.FILES.items():
+                Path(folder, name).write_text(text)
+
+    def test_lane_worktrees_refuse_every_encoding_of_the_marker(self):
+        for command in self.ESCAPED:
+            for result in self.results(command, self.lane, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("Only the coordinator worktree posts pp-review-gate", result.stderr)
+
+    def test_lane_worktrees_refuse_a_rest_body_that_is_not_json(self):
+        for result in self.results("gh api repos/o/r/issues/12/comments --input broken.json", self.lane, None):
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("read a comment body literally", result.stderr)
+
+    def test_coordinator_worktree_sends_encoded_markers(self):
+        for command in self.ESCAPED:
+            for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class MarkerAnywhereTests(unittest.TestCase):
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+    ANYWHERE = (f"bash -c 'gh pr comment 12 -b \"{MARKER}\"'", f"sh -c 'gh pr comment 12 -b \"{MARKER}\"'",
+                f"zsh -c 'gh pr comment 12 -b \"{MARKER}\"'", f"env bash -lc 'gh pr comment 12 -b \"{MARKER}\"'",
+                f"python3 -c 'import subprocess; subprocess.run([\"gh\", \"pr\", \"comment\", \"12\", \"-b\", "
+                f"\"{MARKER}\"])'",
+                f"echo '{MARKER}' > m.md", f"cat > m.md <<'EOF'\n{MARKER}\nEOF",
+                "printf '%s' '\\u003c!-- \\u0070p-review-gate head=x -->' > m.md",
+                "printf '%s' '&lt;!-- pp&#45;review&#45;gate head=x --&gt;' > m.md",
+                "grep -rn PP-Review-Gate docs", "git commit -m 'note pp%2Dreview%2Dgate'")
+
+    def setUp(self):
+        self.make_worktrees()
+
+    def test_lane_worktrees_refuse_any_command_naming_the_marker(self):
+        for command in self.ANYWHERE:
+            for result in self.results(command, self.lane, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("runs any command that names pp-review-gate", result.stderr)
+
+    def test_coordinator_worktree_may_name_the_marker(self):
+        for command in self.ANYWHERE:
+            for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class ShellWrapperTests(unittest.TestCase):
+    def test_shell_c_scripts_are_classified_like_top_level_commands(self):
+        for shell in ("bash", "sh", "zsh", "dash", "/bin/bash", "env bash", "nohup sh"):
+            for command, reason in ((f"{shell} -c 'gh pr merge 12 --squash'", "Only the coordinator worktree merges"),
+                                    (f"{shell} -ec 'git push --force origin HEAD:topic'", "Never force-push"),
+                                    (f"{shell} -lc \"gh variable set X -b y\"", "owner-maintained"),
+                                    (f"{shell} -c 'bash -c \"gh pr merge 12\"'", "Only the coordinator worktree merges")):
+                with self.subTest(command=command):
+                    result = hook(CLAUDE, claude_call("Bash", "/", command=command))
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(reason, result.stderr)
+        for command in ("bash -c 'echo hi'", "sh -c 'gh pr view 12'", "bash script.sh", "bash -n script.sh"):
+            with self.subTest(command=command):
+                self.assertEqual(hook(CLAUDE, claude_call("Bash", "/", command=command)).returncode, 0)
+
+    def test_eval_and_source_of_git_or_gh_are_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "post.sh").write_text("gh pr comment 12 -b hi\n")
+            Path(folder, "env.sh").write_text("export A=1\n")
+            for command in ("eval gh pr view 12", "eval 'git push origin HEAD:topic'", "eval \"$CMD\"",
+                            "source post.sh", ". post.sh", "source missing.sh"):
+                with self.subTest(command=command):
+                    result = hook(CLAUDE, claude_call("Bash", folder, command=command))
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("not through eval or source", result.stderr)
+            for command in ("eval echo hi", "source env.sh", ". env.sh"):
+                with self.subTest(command=command):
+                    self.assertEqual(hook(CLAUDE, claude_call("Bash", folder, command=command)).returncode, 0)
 
 
 class UnreadableCommentBodyTests(unittest.TestCase):
@@ -960,7 +1065,8 @@ class UnreadableCommentBodyTests(unittest.TestCase):
             for result in self.results(command, self.lane, self.coordinator):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertIn("read a comment body literally", result.stderr)
+                    # A command that also names the marker word is refused for that first.
+                    self.assertRegex(result.stderr, "read a comment body literally|Only the coordinator worktree posts")
 
     def test_coordinator_worktree_may_send_any_body(self):
         for command in self.UNREAD:

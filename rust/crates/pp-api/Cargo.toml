@@ -14,6 +14,7 @@ desktop_rebuild = [
     "dep:rusqlite",
     "dep:pp-services",
     "dep:rmcp",
+    "dep:serde_path_to_error",
 ]
 codegen = ["desktop_rebuild", "dep:schemars", "pp-storage/codegen"]
 
@@ -32,6 +33,7 @@ http-body = { version = "=1.0.1", optional = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error = { workspace = true, optional = true }
 sha2.workspace = true
 hex.workspace = true
 base64 = "=0.22.1"
@@ -50,3 +52,4 @@ pp-storage = { path = "../pp-storage", features = ["test-unmarked-writer"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 rusqlite.workspace = true
 tempfile = "=3.27.0"
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }

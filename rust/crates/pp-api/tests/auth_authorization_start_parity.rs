@@ -363,7 +363,7 @@ async fn observe(response: Response, seen: &mut HashSet<String>) -> Observation 
     let body = if status == 302 {
         json!(text)
     } else {
-        serde_json::from_str(&text).expect("refusal JSON")
+        pp_api::problem::without_envelope(serde_json::from_str(&text).expect("refusal JSON"))
     };
     Observation {
         status,
@@ -415,7 +415,8 @@ async fn enabled_authorization_start_rejects_invalid_host() {
             case.id
         );
         assert!(
-            response.json::<Value>().await.unwrap() == json!({"detail": "Invalid request host"}),
+            pp_api::problem::without_envelope(response.json::<Value>().await.unwrap())
+                == json!({"detail": "Invalid request host"}),
             "{} invalid host refusal body changed",
             case.id
         );

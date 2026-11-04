@@ -259,7 +259,9 @@ joins workers before releasing the directory lock.
 Keep axum family routers over typed operation handles. Parse bounded inputs at
 the HTTP seam, enforce state/cross-field rules in the operation, and map safe
 typed errors to RFC 9457 problem responses. Preserve required MCP JSON-RPC errors.
-Never expose SQL, raw error chains, secrets or arbitrary paths.
+Never expose SQL, raw error chains, secrets or arbitrary paths. `pp_api::problem`
+is the one builder for those responses; [Problem responses](problem-responses.md)
+lists the stable types and the leak canary.
 
 Rust owns new wire contracts. Keep the working Rust schemars-to-JSON-Schema-to-Zod
 generation path first, including runtime validation and drift checks. Move

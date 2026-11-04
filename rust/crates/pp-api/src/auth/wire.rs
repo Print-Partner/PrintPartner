@@ -7,9 +7,30 @@ use axum::{
 use pp_storage::auth::{AuthFailure, Secret, User};
 use serde_json::{Value, json};
 
+/// Full admission, writer queue, or a stopping writer: retry later.
+const BUSY: &str = "Authentication temporarily unavailable";
+/// A write whose commit could not be confirmed: reload, do not retry blindly.
+#[cfg(feature = "desktop_rebuild")]
+const OUTCOME_UNKNOWN: &str = "Authentication outcome unknown; reload before retrying";
+
 #[derive(Debug)]
-pub(super) struct Failure(pub StatusCode, pub &'static str);
+pub(crate) struct Failure(pub StatusCode, pub &'static str);
 impl IntoResponse for Failure {
+    /// The rebuild serves problem documents.
+    #[cfg(feature = "desktop_rebuild")]
+    fn into_response(self) -> Response {
+        use crate::problem::{ProblemType, coded, response, typed};
+        match (self.0, self.1) {
+            (StatusCode::UNAUTHORIZED, "Current password is incorrect") => {
+                coded(self.0, self.1, "current_password_rejected")
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, BUSY) => typed(ProblemType::Overloaded, self.0, BUSY),
+            (_, OUTCOME_UNKNOWN) => coded(self.0, self.1, "outcome_unknown"),
+            _ => response(self.0, self.1),
+        }
+    }
+    /// Feature off keeps the Node-compatible bodies unchanged.
+    #[cfg(not(feature = "desktop_rebuild"))]
     fn into_response(self) -> Response {
         let mut body = json!({"detail": self.1});
         if self.0 == StatusCode::NOT_FOUND && self.1 == "API key not found" {
@@ -39,7 +60,13 @@ impl From<anyhow::Error> for Failure {
             Some(SingleAccountExists) => (403, "The single-user administrator already exists"),
             Some(OwnerMappingRequired) => (403, "Explicit account owner mapping is required"),
             Some(CredentialChanged) => (401, "Credential changed; sign in again"),
-            Some(QueueFull | Stopped) => (503, "Authentication temporarily unavailable"),
+            // Node sends one detail for both; both are retryable.
+            Some(QueueFull | Stopped) => (503, BUSY),
+            #[cfg(feature = "desktop_rebuild")]
+            Some(CommitUnknown) => (503, OUTCOME_UNKNOWN),
+            // Storage's plain admission messages are retryable too.
+            #[cfg(feature = "desktop_rebuild")]
+            None if crate::problem::writer_admission(&error).is_some() => (503, BUSY),
             _ => (500, "Authentication unavailable"),
         };
         let Ok(status) = StatusCode::from_u16(status) else {
@@ -136,8 +163,75 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
 
+    /// Status, media type and parsed body of a rendered failure.
+    async fn render(failure: Failure) -> (StatusCode, String, Value) {
+        let response = failure.into_response();
+        let status = response.status();
+        let media = response.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, media, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[cfg(feature = "desktop_rebuild")]
     #[tokio::test]
-    async fn failure_response_contracts() {
+    async fn problem_response_auth_failures() {
+        #[rustfmt::skip]
+        let cases = [
+            (StatusCode::NOT_FOUND, "API key not found", "not-found", "Not Found", None),
+            (StatusCode::BAD_REQUEST, "API key not found", "validation", "Validation Failed", None),
+            (StatusCode::UNAUTHORIZED, "Current password is incorrect", "unauthenticated",
+                "Authentication Required", Some("current_password_rejected")),
+            (StatusCode::BAD_REQUEST, "Invalid JSON body", "malformed-request", "Malformed Request", None),
+        ];
+        for (status, detail, kind, title, code) in cases {
+            let mut expected = json!({"type": format!("urn:print-partner:problem:{kind}"),
+                "title": title, "status": status.as_u16(), "detail": detail});
+            if let Some(code) = code {
+                expected["code"] = json!(code);
+            }
+            let rendered = render(Failure(status, detail)).await;
+            assert_eq!(
+                rendered,
+                (status, "application/problem+json".into(), expected)
+            );
+        }
+    }
+
+    /// Typed storage failures keep their cause: retry after overload, reload
+    /// after an unknown outcome.
+    #[cfg(feature = "desktop_rebuild")]
+    #[tokio::test]
+    async fn problem_response_auth_typed_failures() {
+        use AuthFailure::*;
+        for (failure, status, kind, code) in [
+            (QueueFull, 503, "overloaded", None),
+            (Stopped, 503, "overloaded", None),
+            (
+                CommitUnknown,
+                503,
+                "outcome-unknown",
+                Some("outcome_unknown"),
+            ),
+            (DuplicateEmail, 409, "conflict", None),
+            (SessionRequired, 401, "unauthenticated", None),
+            (Storage, 500, "internal", None),
+        ] {
+            let (got, _, body) = render(Failure::from(anyhow::Error::new(failure))).await;
+            assert_eq!(got.as_u16(), status, "{kind}");
+            assert_eq!(body["type"], format!("urn:print-partner:problem:{kind}"));
+            assert_eq!(body.get("code").and_then(Value::as_str), code, "{kind}");
+        }
+        let timeout = Failure(StatusCode::GATEWAY_TIMEOUT, "OAuth provider timed out");
+        let (_, _, body) = render(timeout).await;
+        assert_eq!(body["type"], "urn:print-partner:problem:timeout");
+    }
+
+    #[cfg(not(feature = "desktop_rebuild"))]
+    #[tokio::test]
+    async fn feature_off_failures_keep_the_node_body() {
         for (status, detail, expected) in [
             (
                 StatusCode::NOT_FOUND,
@@ -170,11 +264,8 @@ mod tests {
                 json!({"detail": "Current password is incorrect"}),
             ),
         ] {
-            let response = Failure(status, detail).into_response();
-            assert_eq!(response.status(), status, "{detail}");
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            let body: Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body, expected, "{status} {detail}");
+            let rendered = render(Failure(status, detail)).await;
+            assert_eq!(rendered, (status, "application/json".into(), expected));
         }
     }
 }

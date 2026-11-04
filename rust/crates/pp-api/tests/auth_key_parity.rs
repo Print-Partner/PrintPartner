@@ -98,7 +98,7 @@ impl Server {
     async fn json(&self, method: Method, path: &str, cookie: &str) -> Value {
         let response = self.send(method, path, Some(cookie)).await;
         let status = response.status().as_u16();
-        json!({"status":status,"body":response.json::<Value>().await.unwrap()})
+        json!({"status":status,"body":node_view(response.json::<Value>().await.unwrap())})
     }
     /// Returns the session cookie and the tenant the session resolves to.
     async fn register(&self, email: &str) -> (String, String) {
@@ -506,3 +506,7 @@ async fn comparison_rejects_leaked_secret_and_accepted_revoked_key() {
         assert!(!mismatches(&replay.steps, &raw).is_empty(), "{name}");
     }
 }
+
+#[path = "support/node_view.rs"]
+mod node_view;
+use node_view::node_view;

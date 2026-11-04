@@ -132,7 +132,7 @@ impl Server {
         let response = request.send().await.unwrap();
         (
             response.status().as_u16(),
-            response.json().await.unwrap_or(Value::Null),
+            pp_api::problem::without_envelope(response.json().await.unwrap_or(Value::Null)),
         )
     }
 
@@ -681,7 +681,7 @@ async fn build_reads_are_authenticated_and_tenant_scoped() {
         .await
         .unwrap();
     assert_eq!(key.status(), 201);
-    let key: Value = key.json().await.unwrap();
+    let key: Value = pp_api::problem::without_envelope(key.json().await.unwrap());
     let bearer = format!("Bearer {}", key["key"].as_str().unwrap());
     let (status, body) = server
         .send(Method::GET, "/plans", &[("Authorization", bearer.as_str())])
@@ -772,6 +772,39 @@ fn assert_created_shape(body: &Value, prefix: &str, name: &str) {
     assert!(body.get("archived_at").is_some());
     assert!(body.get("last_used_at").is_some());
     assert!(body["layers"].as_array().is_some());
+}
+
+/// A create or layer body that is not a JSON object cannot be read at all, so
+/// it is a malformed request; Node's 400 detail is kept.
+#[cfg(feature = "desktop_rebuild")]
+#[tokio::test]
+async fn problem_response_unreadable_build_bodies_are_malformed() {
+    let (directory, owner) = open();
+    let (mut server, cookie, _) = spawn_builds_with_auth(&owner, "default").await;
+    for (path, body, kind) in [
+        ("/plans", "{", "malformed-request"),
+        ("/plans", "[]", "malformed-request"),
+        ("/plans/1/layers", "{", "malformed-request"),
+        ("/plans", r#"{"name":7}"#, "validation"),
+    ] {
+        let response = server
+            .client
+            .post(format!("{}{path}", server.origin))
+            .header("Origin", &server.origin)
+            .header("Cookie", cookie.as_str())
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{path} {body}");
+        let problem: Value = response.json().await.unwrap();
+        let expected = format!("urn:print-partner:problem:{kind}");
+        assert_eq!(problem["type"], expected, "{path} {body}");
+        assert_eq!(problem["detail"], "Request is invalid", "{path} {body}");
+    }
+    server.stop().await;
+    shutdown(owner, directory);
 }
 
 /// POST /plans matches Node: summary fields plus `layers`, duplicate/base refusals.

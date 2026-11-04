@@ -122,7 +122,7 @@ impl Server {
         let response = request.send().await.unwrap();
         (
             response.status().as_u16(),
-            response.json().await.unwrap_or(Value::Null),
+            pp_api::problem::without_envelope(response.json().await.unwrap_or(Value::Null)),
         )
     }
 

@@ -1134,6 +1134,34 @@ fn check_draft(
     }))
 }
 
+/// Whether the selection's basis still matches the base units' current
+/// progress. A changed unit identity is corruption, not staleness.
+fn basis_is_current(
+    selected: &Value,
+    mapping: &Value,
+    base_identity: &HashMap<String, (i64, &ru::model::Unit)>,
+) -> Result<bool> {
+    let mut live_basis: Value = serde_json::from_str(text(selected, "selectionBasisJson")?)?;
+    for row in live_basis
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("Invalid basis"))?
+    {
+        let (id, u) = base_identity
+            .get(text(row, "token")?)
+            .ok_or_else(|| anyhow!("Missing basis token"))?;
+        ensure!(
+            row["revisionPartId"] == *id
+                && row["priorIndex"] == u.prior_index
+                && row["createdAt"] == u.created_at,
+            "Changed basis identity"
+        );
+        row["completed"] = json!(u.completed);
+        row["assembled"] = json!(u.assembled);
+    }
+    Ok(ru::storage::selection_basis_digest(mapping, &live_basis)
+        == selected["selectionBasisDigest"])
+}
+
 /// Checks the selected Required-unit reconciliation against the accepted base
 /// and prepares the Parts and units Accept would publish.
 fn check_selection(
@@ -1206,27 +1234,7 @@ fn check_selection(
             );
         }
     }
-    let mut live_basis: Value =
-        serde_json::from_str(text(&selected.header, "selectionBasisJson")?)?;
-    for row in live_basis
-        .as_array_mut()
-        .ok_or_else(|| anyhow!("Invalid basis"))?
-    {
-        let (id, u) = base_identity
-            .get(text(row, "token")?)
-            .ok_or_else(|| anyhow!("Missing basis token"))?;
-        ensure!(
-            row["revisionPartId"] == *id
-                && row["priorIndex"] == u.prior_index
-                && row["createdAt"] == u.created_at,
-            "Changed basis identity"
-        );
-        row["completed"] = json!(u.completed);
-        row["assembled"] = json!(u.assembled);
-    }
-    if ru::storage::selection_basis_digest(&mapping, &live_basis)
-        != selected.header["selectionBasisDigest"]
-    {
+    if !basis_is_current(&selected.header, &mapping, &base_identity)? {
         return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Stale,
         }));

@@ -1,7 +1,7 @@
 //! Routes and DTOs that `web/packages/rust-client` is generated from.
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
-//! [`crate::drafts`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::drafts`], [`crate::backup`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -101,6 +101,28 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("AbandonDraftRequest"),
         "DraftIdentity",
     ),
+    route(
+        "createInstallationBackup",
+        "POST",
+        "/api/v2/installation/backup",
+        None,
+        "InstallationBackup",
+    ),
+    // The request body is the gzip archive, not JSON.
+    route(
+        "stageInstallationRestore",
+        "POST",
+        "/api/v2/installation/restore/stage",
+        None,
+        "RestorePreview",
+    ),
+    route(
+        "restoreInstallation",
+        "POST",
+        "/api/v2/installation/restore",
+        Some("RestoreRequest"),
+        "RestoreOutcome",
+    ),
     ClientRoute {
         name: "readHealth",
         method: "GET",
@@ -158,6 +180,22 @@ mod codegen {
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema(
+            "InstallationBackup",
+            schemars::schema_for!(crate::backup::InstallationBackup),
+        )?;
+        schema(
+            "RestorePreview",
+            schemars::schema_for!(crate::backup::RestorePreview),
+        )?;
+        schema(
+            "RestoreRequest",
+            schemars::schema_for!(crate::backup::RestoreRequest),
+        )?;
+        schema(
+            "RestoreOutcome",
+            schemars::schema_for!(crate::backup::RestoreOutcome),
+        )?;
         schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
         schema(
             "PrinterDisplayDescriptor",
@@ -486,6 +524,41 @@ mod codegen {
                 "degraded",
                 health(Some("Authentication required")),
             )?,
+            served(
+                "InstallationBackup",
+                "full",
+                crate::backup::InstallationBackup {
+                    file_name: format!("print-partner-backup-{}.tar.gz", "e".repeat(32)),
+                    created_at: "2026-11-04T08:00:00.000Z".into(),
+                    app_version: UNICODE.into(),
+                    size_bytes: MAX_SAFE as u64,
+                    sha256: "f".repeat(64),
+                },
+            )?,
+            served(
+                "RestorePreview",
+                "staged",
+                crate::backup::RestorePreview {
+                    restore_id: "a".repeat(32),
+                    created_at: "2026-11-04T08:00:00.000Z".into(),
+                    app_version: UNICODE.into(),
+                    schema_version: 34,
+                    confirmation: pp_storage::restore::CONFIRMATION.into(),
+                },
+            )?,
+            served(
+                "RestoreOutcome",
+                "migrated",
+                crate::backup::RestoreOutcome {
+                    restored_schema_version: 34,
+                    schema_version: MAX_SAFE as u64,
+                },
+            )?,
+            request::<crate::backup::RestoreRequest>(
+                "RestoreRequest",
+                "confirmed",
+                json!({"restore_id": "a".repeat(32), "confirmation": pp_storage::restore::CONFIRMATION}),
+            ),
         ];
         for value in printer_states() {
             let name = format!("{:?}-{:?}", value.execution(), value.bed_clear());

@@ -5,6 +5,7 @@ use pp_api::{
     accepted::{AcceptedHttpConfig, accepted_router},
     admin::{AdminHttpConfig, admin_router},
     auth::auth_router,
+    backup::{BackupHttpConfig, backup_router as api_backup_router},
     builds::{BuildHttpConfig, build_router},
     catalog::{CatalogHttpConfig, admit_catalog_routes},
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
@@ -291,6 +292,27 @@ pub fn job_router(
     )))
 }
 
+/// Compose the authenticated whole-installation backup and confirmed restore
+/// routes when the stored rebuild setting is on. Returns `None` before
+/// creating a client when the setting is off. Build snapshot restore is a
+/// separate Plan route and is not mounted here.
+pub fn backup_router(
+    rebuild: DesktopRebuild,
+    owner: &WriterOwner,
+    policy: AuthPolicy,
+    origin: &str,
+    api_key_tenant: &str,
+) -> Result<Option<Router>> {
+    if !rebuild.enabled() {
+        return Ok(None);
+    }
+    Ok(Some(api_backup_router(
+        BackupHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        owner.accepted_reads_with_policy(policy)?,
+        owner.installation()?,
+    )))
+}
+
 /// The single-user auth policy the Rust-only runtime serves.
 pub fn desktop_policy() -> AuthPolicy {
     AuthPolicy {
@@ -301,7 +323,8 @@ pub fn desktop_policy() -> AuthPolicy {
 }
 
 /// The product routes a Rust-only runtime mounts in the gateway: the read
-/// routers, the draft routers and the jobs router, all from one owner.
+/// routers, the draft routers, the jobs router and the backup router, all
+/// from one owner.
 /// `community_manifests` is the bundle's
 /// `pp_compat::Bundle::community_manifests_dir`. Returns `None` before
 /// creating any client unless the stored setting is on.
@@ -324,7 +347,7 @@ pub fn product_router(
         providers: ProviderClient::new(None, None)?,
         mail: ResetMailer::disabled(),
     };
-    let (drafts, jobs) = {
+    let (drafts, jobs, backup) = {
         let guard = owner
             .lock()
             .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
@@ -339,6 +362,7 @@ pub fn product_router(
                 community_manifests,
             )?,
             job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
+            backup_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
         )
     };
     let reads = read_router(
@@ -352,7 +376,8 @@ pub fn product_router(
     Ok(reads
         .zip(drafts)
         .zip(jobs)
-        .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs)))
+        .zip(backup)
+        .map(|(((reads, drafts), jobs), backup)| reads.merge(drafts).merge(jobs).merge(backup)))
 }
 
 /// API keys route to the default tenant under the single-account policy.
@@ -460,6 +485,11 @@ mod tests {
         );
         assert!(
             job_router(rebuild, &owner, desktop_policy(), origin, "default")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            backup_router(rebuild, &owner, desktop_policy(), origin, "default")
                 .unwrap()
                 .is_none()
         );
@@ -619,6 +649,8 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "RestoreRequest" => json!({"restore_id": "0".repeat(32),
+                "confirmation": pp_storage::restore::CONFIRMATION}),
             other => panic!("no sample body for {other}"),
         }
     }
@@ -633,6 +665,7 @@ mod tests {
         let rebuild = DesktopRebuild::from_value(Some("1"));
         let (policy, lifetimes) = (desktop_policy(), lifetimes());
         let drafts = draft_router(rebuild, &owner, policy, lifetimes, &origin, "default", None);
+        let backup = backup_router(rebuild, &owner, policy, &origin, "default");
         let owner = Arc::new(std::sync::Mutex::new(owner));
         let reads = read_router(
             rebuild,
@@ -644,7 +677,11 @@ mod tests {
         );
         let (stop, server) = serve(
             listener,
-            reads.unwrap().unwrap().merge(drafts.unwrap().unwrap()),
+            reads
+                .unwrap()
+                .unwrap()
+                .merge(drafts.unwrap().unwrap())
+                .merge(backup.unwrap().unwrap()),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, cookie: Option<&str>, body: Option<Value>| {
@@ -704,8 +741,15 @@ mod tests {
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
+            // Handlers answer: no draft, no staged restore, or an empty
+            // upload refused by marker or archive validation.
+            let refused = match route.name {
+                "restoreInstallation" => status == 404,
+                "stageInstallationRestore" => status == 409 || status == 422,
+                _ => status == 404 && body["code"] == "draft_not_found",
+            };
             assert!(
-                status == 200 || (status == 404 && body["code"] == "draft_not_found"),
+                status == 200 || refused,
                 "{} {path}: {status} {body}",
                 route.method
             );

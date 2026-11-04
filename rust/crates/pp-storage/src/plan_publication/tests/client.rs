@@ -29,6 +29,7 @@ fn client(capacity: usize) -> PublicationClient {
             job_subscriptions: crate::jobs::JobSubscriptions::new(),
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             import_quota: Mutex::new(None),
+            restore_gate: Mutex::new(()),
         }),
         policy: policy(),
     }

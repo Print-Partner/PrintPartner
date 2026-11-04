@@ -193,7 +193,7 @@ use the same operation interface. A transport must not repeat its policy.
 | Optional external slicer jobs | Typed HTTP adapter in existing `pp-drivers`, policy in `pp-services`, job/effect state in `pp-storage`, worker lifetime in core |
 | Home Assistant, webhooks, Discord | `pp-drivers` checked adapters; storage owns configuration, deduplication and durable delivery state; core runs workers |
 | Jobs, cancel, restart recovery | `pp-storage::jobs` claims/fences/recovery; core runs workers; `pp-api` adapts commands and progress |
-| Backup, restore, migration/downgrade refusal | `pp-storage` owns snapshot/archive/activation and lock discipline; core quiesces workers/listeners; shell/API requests the operation |
+| Backup, restore, migration/downgrade refusal | `pp-storage` owns snapshot/archive/activation and lock discipline; core quiesces workers/listeners; shell/API requests the operation. Whole-installation backup and confirmed restore run through `pp_storage::restore` and `pp_api::backup` behind `desktop_rebuild` ([Storage](storage.md#whole-installation-backup-and-restore)) |
 | Admin, legal, logs, diagnostics, health | Storage owns settings; gateway/API exposes bounded safe reads; core owns local logging/liveness; shell owns update lifecycle |
 | Reference sharing | Storage owns reference projections, `pp-api` exposes them under [ADR 0004](adr/0004-share-references-without-redistributing-models.md); do not redistribute model bytes or imply LAN admission |
 | Assistant and old API aggregators | AI uses authenticated MCP over the same operations; assistant HTTP routes are not a separate policy engine. Rust routers replace v1/v2 aggregators |
@@ -268,12 +268,29 @@ by hand-authoring the generated Rust file.
 
 Add method/path/auth/request/response metadata tied to actual Rust registration,
 including the existing `/api/v2` draft routes. `web/packages/rust-client` is
-that package for Builds list and detail, layers, `/api/v2` drafts and health. Its
+that package for Builds list and detail, layers, `/api/v2` drafts, installation
+backup and restore, and health. Its
 route table is `pp_api::client_contract::CLIENT_ROUTES`, which a `pp-core` test
 checks against the composed routers. Its
 [README](../web/packages/rust-client/README.md) lists the coverage and wire rules. REST shape may change for the new
 UI; do not invent `/api/v3` or promise old aliases for screen parity. Preserve
 external MCP paths/tool names and verify the actual inventory before retirement.
+
+Whole-installation backup and restore (`pp_api::backup`, composed into
+`product_router` by `rebuild_api::backup_router`) need a session or API key and
+take no filesystem paths:
+
+| Route | Body | 200 response |
+| --- | --- | --- |
+| `POST /api/v2/installation/backup` | none | `InstallationBackup` (file name, created at, app version, size, SHA-256) |
+| `GET /api/v2/installation/backup/archive` | none | the latest backup as `application/gzip`; binary, so not in the generated client |
+| `POST /api/v2/installation/restore/stage` | the archive as `application/gzip` | `RestorePreview` (restore id, archive metadata, schema version, confirmation text) |
+| `POST /api/v2/installation/restore` | `RestoreRequest` (`restore_id`, `confirmation`) | `RestoreOutcome` (restored and current schema versions) |
+
+Refusals use the shared `{"detail"}` helper: 400 bad request or confirmation,
+404 unknown restore id or no backup, 409 no valid ownership marker, 413 upload
+over 20 GiB, 422 invalid archive or unsupported schema, 503 busy. See
+[Storage](storage.md#whole-installation-backup-and-restore).
 
 A bounded comparison may choose ts-rs or generated OpenAPI plus a typed fetch
 client. Neither is a prerequisite to the first useful screen. OpenAPI need not

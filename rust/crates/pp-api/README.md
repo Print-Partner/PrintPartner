@@ -30,6 +30,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. |
 | `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. |
 | `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
+| `backup` | `backup_router(BackupHttpConfig, ReadClient, InstallationClient)`: whole-installation backup, download, restore staging and confirmed restore under `/api/v2/installation`. |
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
 | `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient)`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. |
 | `client_contract` | `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document`, `document_bytes`. |

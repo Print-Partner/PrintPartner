@@ -39,7 +39,12 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/plans/{id}/drafts/{draft_id}` | | `DraftWorkspace` |
 | `PATCH /api/v2/plans/{id}/drafts/{draft_id}/parts` | `EditDraftPartsRequest` | `DraftWorkspace` |
 | `POST /api/v2/plans/{id}/drafts/{draft_id}/abandon` | `AbandonDraftRequest` | `DraftIdentity` |
+| `POST /api/v2/installation/backup` | | `InstallationBackup` |
+| `POST /api/v2/installation/restore/stage` | gzip archive bytes, not JSON | `RestorePreview` |
+| `POST /api/v2/installation/restore` | `RestoreRequest` | `RestoreOutcome` |
 | `GET /health` | | `Health` |
+
+`stageInstallationRestore` has `request: null` because its body is the archive itself; send the bytes with `Content-Type: application/gzip`. `GET /api/v2/installation/backup/archive` returns the archive bytes and is not in the table.
 
 `PrinterState` (execution, bed-clear and display state as separate fields) and `PrinterDisplayDescriptor` are DTOs without a route yet.
 

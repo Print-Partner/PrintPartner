@@ -21,7 +21,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Platform file mechanics: `pp-os` supplies no-follow opens and file status, private directory creation, advisory locks (`try_lock`, `unlock`), and durable rename and sync. Storage decides the paths and policy.
 - Sync policy and slicer operations: `pp-services`.
 - Printer and provider protocols: `pp-drivers`. Storage records queue and effect state; it never sends to a printer.
-- Archive restore and activation. The crate writes and validates archives (`archive::validate`) but does not restore them yet.
+- Restore of database-only or format-1 archives. `restore` accepts only full format-2 archives, and only with the `desktop_rebuild` feature.
 
 ## Interface
 
@@ -43,6 +43,7 @@ Modules available in every build:
 | `catalog` | `source_catalog`, `source_catalog_with_policy`, `local_source_catalog` return `SourceCatalogClient`. |
 | `read_model` | `accepted_reads`, `accepted_reads_with_policy` return `ReadClient`. Submodules `views` and `workflow`. |
 | `archive` | `Request`, `Metadata`, `Scope`, `Limits`, and `validate` for Node's tar.gz backup format. |
+| `restore` | `installation` (`InstallationClient`): `backup_to_temporary`, `create_backup`, `begin_upload`, `stage`, `activate`, plus `Refusal` and `CONFIRMATION`. Whole-installation restore with a journaled swap; see [Storage](../../../docs/storage.md#whole-installation-backup-and-restore). `desktop_rebuild` only. |
 | `lease` | `StorageLease`, `LeaseRelease`, `prepare_directory`. |
 
 Modules behind `#[cfg(feature = "desktop_rebuild")]`:

@@ -36,6 +36,8 @@ pub mod profiles;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]
 pub mod required_units;
+#[cfg(feature = "desktop_rebuild")]
+pub mod restore;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_scan;
@@ -179,6 +181,11 @@ enum Envelope {
         control: WriterControl,
         reply: mpsc::Sender<Result<u32>>,
     },
+    #[cfg(feature = "desktop_rebuild")]
+    Restore {
+        staged: PathBuf,
+        reply: mpsc::Sender<Result<restore::Activated>>,
+    },
 }
 #[cfg(feature = "desktop_rebuild")]
 fn stop_poisoned_queue(
@@ -214,6 +221,9 @@ struct Shared {
     import_epoch: std::sync::atomic::AtomicU64,
     #[cfg(feature = "desktop_rebuild")]
     import_quota: Mutex<Option<u64>>,
+    /// Serializes restore staging and activation.
+    #[cfg(feature = "desktop_rebuild")]
+    restore_gate: Mutex<()>,
 }
 #[derive(Clone)]
 pub struct SettingsClient {
@@ -537,6 +547,8 @@ impl WriterOwner {
             locked.abandon();
             return Err(error);
         }
+        #[cfg(feature = "desktop_rebuild")]
+        restore::recover(locked.path())?;
         locked.preflight()?;
         let lease = lease::StorageLease::acquire_locked(locked)?;
         let path = lease.data_dir().join("print-partner.db");
@@ -595,8 +607,16 @@ impl WriterOwner {
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             #[cfg(feature = "desktop_rebuild")]
             import_quota: Mutex::new(None),
+            #[cfg(feature = "desktop_rebuild")]
+            restore_gate: Mutex::new(()),
         });
         let worker = shared.clone();
+        #[cfg(feature = "desktop_rebuild")]
+        let (worker_readers, data_dir, seed) = (
+            readers.clone(),
+            lease.data_dir().to_owned(),
+            seed_timestamp.to_owned(),
+        );
         let mut catalog_state = catalog::State::new(lease.data_dir().to_owned());
         #[cfg(feature = "desktop_rebuild")]
         let mut publication_tokens = plan_publication::random_tokens();
@@ -820,6 +840,23 @@ impl WriterOwner {
                     }
                     Envelope::WriterControl { control, reply } => {
                         let _ = reply.send(writer_control(&connection, control));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::Restore { staged, reply } => {
+                        let result = restore::activate(
+                            &worker,
+                            &worker_readers,
+                            &data_dir,
+                            &seed,
+                            &mut connection,
+                            &staged,
+                        );
+                        if result.is_ok() {
+                            catalog_state = catalog::State::new(data_dir.clone());
+                            publication_tokens = plan_publication::random_tokens();
+                            worker.import_epoch.fetch_add(1, Ordering::AcqRel);
+                        }
+                        let _ = reply.send(result);
                     }
                 }
             }

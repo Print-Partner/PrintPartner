@@ -173,12 +173,40 @@ Set `PP_STORAGE_FIXTURE_BIN` to run the Rust check too. It opens a copy with `pp
 
 The generator does not produce open drafts, Checkoff progress, printer sends, exports or historical schema versions. Tests that need those build them separately.
 
+## Whole-installation backup and restore
+
+With the `desktop_rebuild` feature and `PP_DESKTOP_REBUILD=1` or `true`, the Rust runtime backs up and restores the whole installation: the database and every backup root (`repos`, `sources`, `exports`, `thumbs`, `covers`, `assistant-domain`, `manifests`, `custom_filaments.json`, `kit-catalog.json`, `kit-catalog.yaml`, `path-hints.yaml`). `pp_storage::restore` does the work and `pp_api::backup` serves it; the routes are listed in [Architecture](architecture.md#http-and-generated-typescript-contracts). Build snapshot restore is a separate Plan operation.
+
+Backup writes Node's format-2 archive with `archive::write` under an IMMEDIATE transaction, validates it, and publishes it into a new private directory under the system temporary directory. The API keeps one backup for download and removes it when a newer one replaces it or the runtime stops.
+
+Restore has two steps, and neither takes a filesystem path:
+
+1. **Stage.** The upload is written to `<data>/.pp-restore/incoming-<id>.tar.gz`, capped at 20 GiB. `archive::extract` runs the same entry, scope, size, ratio and `integrity_check` validation as `archive::validate` and writes every entry to `<data>/.pp-restore/staged-<id>/`. Only a `full` scope is accepted. `schema::preflight` then admits the staged database exactly as startup admits a live one: a newer schema, a schema older than 31, a missing schema version, or a failing job-table check refuses the restore. A refusal removes the staged copy and the upload and leaves the live files untouched. A new stage replaces an earlier one.
+2. **Activate.** The request repeats the confirmation text: "Restore replaces this installation's database and files with the backup. It cannot reverse prints already sent to printers or filament usage already recorded in Spoolman." The writer thread then:
+   - closes writer admission, so new storage work fails with `Storage stopped`, and drops work queued behind the restore;
+   - closes idle readers and waits up to 5 s for checkouts to return; if one is still out, it reopens the pool, resumes admission and refuses with no file changed;
+   - checkpoints the WAL and closes its own connection;
+   - writes `<data>/.pp-restore/journal.json` (state `swapping`, the managed names that exist live, the names arriving from the stage) and fsyncs it;
+   - renames each live database file (`print-partner.db`, `-wal`, `-shm`, `-journal`) and backup root into `prior-<id>/`, then each staged one into place, and fsyncs the data directory;
+   - opens the restored database like `WriterOwner::open`: preflight, migrations (with the usual `backups/pre-schema*` copies) and job recovery;
+   - rewrites the journal as `committed`, removes the prior and staged copies and the journal, revalidates job subscriptions, reopens the reader pool and resumes admission.
+
+   Any failure before the journal commits removes the restored entries, moves the prior ones back, reopens the old database and resumes. All renames stay inside the data directory, so each is atomic. Interrupted job claims in the restored database go through job recovery; an interrupted printer send is reconciled, never resent.
+
+`WriterOwner::open` runs `restore::recover` under the directory lock, after the ownership marker decision and before preflight. A `swapping` journal is rolled back and a `committed` one is finished, then `.pp-restore` is removed. A journal that does not parse, names an entry outside the managed set, or names a work directory that is not `staged-<32 hex>` or `prior-<32 hex>` refuses the open without moving anything.
+
+Restore never touches the ownership marker, the lock and lease files, `backups/` or desktop state files. Staging and activation both require a valid `.pp-rust-owned.json`, so restore never writes into an unmarked directory, and the restored installation keeps its marker. The archive cannot carry a marker: its entry guard accepts only the core files and the backup roots.
+
+Restoring replaces sessions and API keys with those in the backup. A session created after the backup no longer works.
+
+Tests: `pp-storage/src/restore/tests.rs` (pp-testkit installations with a copied schema-34 database: round trip, admission and connections during activation, failure and crash at every step, newer schema, unmarked directory, corrupt journal) and `pp-core/tests/installation_backup_http.rs` (the composed product router).
+
 ## To be written
 
 The storage milestone fills in these sections:
 
 - Schema versions and how migrations run on startup.
-- Backup, restore and downgrade blocking.
+- Downgrade blocking.
 - Durable jobs and recovery after an interrupted external effect. An interrupted printer send is never retried automatically.
 
 [Operations](../OPERATIONS.md) describes backups for the current Node server.

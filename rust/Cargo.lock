@@ -3320,6 +3320,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
 ]
 
 [[package]]

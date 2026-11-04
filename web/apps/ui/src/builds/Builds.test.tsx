@@ -203,6 +203,22 @@ describe("UI2-03 Builds list states", () => {
     expect(screen.queryByText("SO-1001")).toBeNull();
   });
 
+  it("shows order numbers once a failed Module read recovers", async () => {
+    let healthUp = false;
+    const fetchMock = vi.fn((path: string) =>
+      Promise.resolve(path === "/health" ? (healthUp ? json(health("on")) : json({}, 503)) : plans(path)),
+    );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderAt("/builds", fetchMock as unknown as ReturnType<typeof core>);
+    await screen.findByRole("link", { name: "Synthetic Build 01" });
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(within(table()).queryByRole("columnheader", { name: "Order" })).toBeNull();
+    healthUp = true;
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(await within(table()).findByRole("columnheader", { name: "Order" })).toBeTruthy();
+    expect(screen.getByText("SO-1001")).toBeTruthy();
+  });
+
   it("offline keeps the loaded Builds readable and says why", async () => {
     let down = false;
     const fetchMock = vi.fn((path: string) => {

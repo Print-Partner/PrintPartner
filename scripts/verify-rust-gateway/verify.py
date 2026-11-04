@@ -606,6 +606,11 @@ def check_seed(seed):
     # Only a synthetic dataset may seed a launch, so no customer data directory is copied.
     if not (seed / SEED_MANIFEST).is_file():
         raise SystemExit(f"--seed must be a synthetic dataset holding {SEED_MANIFEST}: {seed}")
+    # A copied symlink would let the launch write through it, outside the disposable copy.
+    for directory, names, files in os.walk(seed):
+        for name in names + files:
+            if (Path(directory) / name).is_symlink():
+                raise SystemExit(f"--seed must not contain symlinks: {Path(directory) / name}")
 
 
 def copy_seed(seed, data):
@@ -614,8 +619,12 @@ def copy_seed(seed, data):
     shutil.copytree(seed, data, symlinks=True)
     if os.environ.get("PP_DESKTOP_REBUILD") in ("1", "true"):
         created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        (data / RUST_OWNERSHIP_MARKER).write_text(
-            json.dumps({"version": 1, "owner": "rust", "created_at": created}) + "\n")
+        marker = data / RUST_OWNERSHIP_MARKER
+        if marker.is_symlink() or marker.exists():
+            marker.unlink()
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps({"version": 1, "owner": "rust", "created_at": created}) + "\n")
 
 
 def launch(root, credentials, binary=None, seed=None):

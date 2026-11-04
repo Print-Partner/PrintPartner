@@ -422,6 +422,19 @@ class SeedTest(unittest.TestCase):
             self.assertIn("--seed must be a synthetic dataset", result.stderr)
             self.assertIsNone(seen)
 
+    def test_seed_with_a_symlink_is_refused_and_its_target_untouched(self):
+        with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:
+            temp = Path(temporary)
+            seed = self.make_seed(temp)
+            outside = temp / "outside.txt"
+            outside.write_text("keep")
+            (seed / ".pp-rust-owned.json").symlink_to(outside)
+            result, seen = self.launch_with_seed(temp, seed, {"PP_DESKTOP_REBUILD": "1"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--seed must not contain symlinks", result.stderr)
+            self.assertIsNone(seen)
+            self.assertEqual(outside.read_text(), "keep")
+
     def test_seed_is_launch_only(self):
         result = subprocess.run([sys.executable, str(HELPER), "verify", "--seed", "."],
                                 capture_output=True, text=True, timeout=30)

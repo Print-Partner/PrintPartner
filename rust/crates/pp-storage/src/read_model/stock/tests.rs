@@ -12,7 +12,7 @@ impl Store {
         let root = std::env::temp_dir().join(format!("pp-stock-{}", rand::random::<u64>()));
         std::fs::create_dir_all(root.join("repos/1/revisions/accepted")).unwrap();
         let database = root.join("fixture.db");
-        let fixture = include_bytes!("../../tests/fixtures/accepted-plan-node.db");
+        let fixture = include_bytes!("../../../tests/fixtures/accepted-plan-node.db");
         std::fs::write(&database, fixture).unwrap();
         let connection = Connection::open(database).unwrap();
         Self(root, connection)
@@ -71,8 +71,13 @@ fn plan(parts: &[(i64, &str)]) -> Box<Snapshot> {
     snapshot
 }
 
-#[test]
-fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
+/// Eight Parts measured at 10.5 g a unit, two integrations configured, and
+/// `local`'s inventory.
+fn scenario() -> (
+    Box<Snapshot>,
+    StockInputs,
+    HashMap<String, Option<Inventory>>,
+) {
     let snapshot = plan(&[
         (10, "spoolman:local:filament:2"),
         (11, "spoolman:local:filament:2"),
@@ -102,11 +107,6 @@ fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
         integrations: vec![integration("other"), integration("local")],
         measured,
     };
-    let read: Vec<String> = integrations_to_read(&snapshot, &inputs)
-        .into_iter()
-        .map(|i| i.id)
-        .collect();
-    assert_eq!(read, ["local"], "only configured, named integrations");
     let filament = |label: &str| InventoryFilament {
         label: label.into(),
         hex: None,
@@ -129,6 +129,17 @@ fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
         ],
     };
     let inventories = HashMap::from([("local".to_owned(), Some(inventory))]);
+    (snapshot, inputs, inventories)
+}
+
+#[test]
+fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
+    let (snapshot, inputs, inventories) = scenario();
+    let read: Vec<String> = integrations_to_read(&snapshot, &inputs)
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(read, ["local"], "only configured, named integrations");
     let accepted = AcceptedRead::Ready { snapshot };
     let Some(FilamentShortfalls::Ready { filaments, .. }) =
         shortfalls(1, &accepted, &inputs, &inventories)

@@ -469,5 +469,4 @@ fn available(
 }
 
 #[cfg(test)]
-#[path = "stock_tests.rs"]
 mod tests;

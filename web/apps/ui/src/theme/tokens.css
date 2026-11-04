@@ -56,7 +56,7 @@
   --status-pill-height: 22px;
   --status-pill-padding-x: 8px;
 
-  /* Type. IBM Plex is not bundled yet; until it is, the stacks fall back to system fonts. */
+  /* Type. The one definition of the stacks; src/fonts/fonts.css bundles both IBM Plex families. */
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --font-weight-regular: 400;

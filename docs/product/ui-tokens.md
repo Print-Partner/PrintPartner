@@ -41,8 +41,9 @@ high-contrast dark theme for reading at a distance: text reaches 7:1, body text 
   status pill is not, so the two never look alike.
 - **Type.** `--font-sans` (IBM Plex Sans) and `--font-mono` (IBM Plex Mono), weights
   400, 500 and 600, `--font-numeric: tabular-nums` for counts, ETAs, grams and IDs,
-  and sizes `--text-xs` to `--text-2xl`. The Plex files are not bundled yet, so the
-  stacks fall back to system fonts.
+  and sizes `--text-xs` to `--text-2xl`. `tokens.css` holds the only definition of
+  the stacks. The Plex WOFF2 files are bundled in `web/apps/ui/src/fonts/`, so the UI
+  makes no remote font request.
 - **Density.** `--row-comfortable` 40 px, `--row-compact` 32 px, `--row-height`,
   `--touch-target-min` 44 px and `--touch-target` 48 px.
 - **Motion.** `--motion-duration-fast` 120 ms, `-base` 160 ms, `-slow` 200 ms and

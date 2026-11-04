@@ -1071,6 +1071,47 @@ async fn stable_child_resets_backoff_without_erasing_rapid_crash_escalation() {
     );
 }
 
+/// A standalone Node lease directory refuses the start, and the lock file the
+/// refused start created is removed: the directory listing is unchanged.
+#[tokio::test]
+async fn node_lease_directory_refuses_start_without_leaving_a_lock_file() {
+    let data = temporary("node-lease-no-lock-left");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(data.join(".desktop-lease"))
+        .unwrap();
+    std::fs::write(data.join(".desktop-lease/owner.json"), b"{}").unwrap();
+    let listing = |root: &Path| {
+        let mut entries = std::collections::BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                let bytes = if path.is_dir() {
+                    pending.push(path.clone());
+                    None
+                } else {
+                    Some(std::fs::read(&path).unwrap())
+                };
+                entries.insert(path.strip_prefix(root).unwrap().to_path_buf(), bytes);
+            }
+        }
+        entries
+    };
+    let before = listing(&data);
+    let error = CoreRuntime::start(launch(data.clone()))
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        format!("{error:#}").contains("standalone Node"),
+        "{error:#}"
+    );
+    assert_eq!(listing(&data), before);
+    std::fs::remove_dir_all(data).unwrap();
+}
+
 #[tokio::test]
 async fn unexpected_marker_directory_is_preserved_and_reported() {
     let data = temporary("cleanup-failure");

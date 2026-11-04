@@ -577,6 +577,14 @@ can leave the site half-published, and `release.yml` runs only on tags.
 The web validation job keeps its 45-minute limit on same-repository PRs; fork
 PRs and non-PR runs keep 20 minutes.
 
-## Reviewer fallback
+## Review checks
 
-When no reviewer from another vendor can score a pull request, follow [Reviewer fallback](definition-of-done.md#reviewer-fallback). That page holds the rule.
+| Hosted check | Workflow | Local command |
+| --- | --- | --- |
+| `review-gate` (required) | `review-gate.yml` on `pull_request_target`, rerun by `review-gate-rerun.yml` | `python3 -B -m unittest discover -s scripts -p test_review_gate.py -v` |
+| `droid-review` | `droid-review.yml` | none; needs the `FACTORY_API_KEY` secret |
+| `claude-code-review`, `claude-security-review` | `claude-review.yml` | none; needs the `CLAUDE_CODE_OAUTH_TOKEN` secret, or `ANTHROPIC_API_KEY` as a fallback |
+
+`scripts/test_review_gate.py` runs the gate's Python step unchanged against a fake `gh` and checks each pass and fail case: a Droid success, a Claude code review with its security review, an owner marker for the head, markers for another head or from another account, same-named checks from another workflow, event, or app, a review from a workflow file the PR changes, and a non-owner PR that changes workflows, `.github/zizmor.yml`, or the safety guard. It also checks that the gate runs on `pull_request_target` with no checkout or secrets, that its expected origins match the review workflows, and that the Claude jobs keep their author filter, permissions, and tool lists. The `changes` job in `actionlint.yml` runs it on every PR.
+
+[Code review](definition-of-done.md#code-review) describes the three ways to pass the gate, the coordinator's marker, and how the Claude jobs use the owner's subscription.

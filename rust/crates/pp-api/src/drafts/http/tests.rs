@@ -1605,3 +1605,528 @@ async fn present_abandon_matches_node_conflict_shapes() {
         json!({"detail":"Plan draft not found","code":"draft_not_found"})
     );
 }
+
+/// A second Plan with the same order number, a printed bracket unit, an
+/// accepted Plate holding that unit, a watched checkoff link, and Spoolman
+/// on with the bracket on spool 7.
+const PREVIEW_SETUP: &str = "
+UPDATE build_profiles SET order_number='#1001' WHERE id=1;
+INSERT INTO build_profiles(id,tenant_id,name,order_number) VALUES(3,'default','Second Build','#1001');
+UPDATE print_progress SET completed=1 WHERE part_id=1 AND unit_index=0;
+UPDATE parts SET spoolman_spool_id=7 WHERE id=1;
+INSERT INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"spoolman\":true}');
+INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.checkoff_links',
+  '[{\"id\":\"link-1\",\"state\":\"watching\",\"profile_id\":1,\"filename\":\"bracket.3mf\",\"units\":[{\"part_id\":1,\"unit_index\":0}]}]');
+INSERT INTO accepted_plate_revisions(id,tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,created_at)
+  SELECT 1,'default',1,1,1,r.snapshot_digest,s.mapping_digest,'layout',1,1,1,'2026-08-21T00:00:00.000Z'
+  FROM plan_revisions r JOIN plan_revision_required_unit_sets s ON s.revision_id=r.id WHERE r.id=1;
+INSERT INTO accepted_plates(tenant_id,revision_id,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um)
+  VALUES('default',1,'plate-a',1,'sim-1','Simulator','sim',256000,256000,256000,5000);
+INSERT INTO accepted_plate_units(tenant_id,revision_id,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um)
+  VALUES('default',1,'plate-a','ppu_00000000000000000000000000000001',0,0,1000,1000,1000);
+INSERT INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES('default',1,1);
+";
+const PREVIEW: &str = "/api/v2/plans/1/drafts/2/accept-preview";
+
+/// Every table's rows, sorted, plus the schema.
+fn logical_database(connection: &rusqlite::Connection) -> Vec<(String, Vec<String>)> {
+    let rows = |sql: &str| -> Vec<String> {
+        let mut statement = connection.prepare(sql).unwrap();
+        let width = statement.column_count();
+        let mut rows: Vec<String> = statement
+            .query_map([], |row| {
+                (0..width)
+                    .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|values| format!("{values:?}"))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows.sort();
+        rows
+    };
+    let tables = rows("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+    let mut dump = vec![(
+        "sqlite_master".to_owned(),
+        rows("SELECT type,name,tbl_name,sql FROM sqlite_master"),
+    )];
+    for table in tables {
+        let name: String = serde_json::from_str::<Vec<Value>>(
+            &table
+                .trim_start_matches("[Text(")
+                .trim_end_matches(")]")
+                .replace('\\', ""),
+        )
+        .map(|_| String::new())
+        .unwrap_or_else(|_| table[7..table.len() - 3].to_owned());
+        let sql = format!("SELECT * FROM \"{name}\"");
+        dump.push((name, rows(&sql)));
+    }
+    dump
+}
+
+/// Every file under the data directory with its bytes, except SQLite's
+/// database and shared-memory files; the WAL is kept by length.
+fn managed_files(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.strip_prefix(root).unwrap().display().to_string();
+            if path.is_dir() {
+                pending.push(path);
+            } else if name.ends_with("-wal") {
+                let length = std::fs::metadata(&path).unwrap().len();
+                files.insert(name, length.to_le_bytes().to_vec());
+            } else if !name.ends_with(".db") && !name.ends_with("-shm") {
+                files.insert(name, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    files
+}
+
+/// Excludes nothing and shrinks the bracket from 3 to 1, as `edit` does.
+async fn changed_draft(server: &ReadServer) -> Value {
+    json_reply(
+        server
+            .request(Method::PATCH, "/api/v2/plans/1/drafts/2/parts")
+            .json(&edit(DIGEST)),
+        200,
+    )
+    .await
+}
+
+fn accept(
+    server: &ReadServer,
+    revision: &Value,
+    key: &str,
+    remap_checkoff_links: bool,
+) -> pp_storage::plan_publication::Outcome {
+    let client = server.owner.publication_with_policy(policy()).unwrap();
+    let mut request = revision.clone();
+    let object = request.as_object_mut().unwrap();
+    object.remove("draft_id");
+    object.insert("remap_checkoff_links".into(), json!(remap_checkoff_links));
+    let command = pp_storage::plan_publication::PublicationCommand::new(
+        serde_json::from_value(json!(1)).unwrap(),
+        serde_json::from_value(revision["draft_id"].clone()).unwrap(),
+        serde_json::from_value(request).unwrap(),
+        key.into(),
+        pp_storage::read_model::Credential::Session(pp_storage::auth::Secret::new(
+            "required-unit-fixture-secret".into(),
+        )),
+    )
+    .unwrap();
+    client
+        .apply(command, &AtomicBool::new(false), Duration::from_secs(5))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn accept_preview_lists_changes_and_checks_then_accept_refuses_its_stale_revision() {
+    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    let changed = changed_draft(&server).await;
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    let digest = changed["draft"]["snapshot_digest"].clone();
+    assert_eq!(preview["kind"], "changed");
+    assert_eq!(
+        preview["revision"],
+        json!({"draft_id":2,"expected_snapshot_digest":digest,"expected_lifecycle_version":0,
+            "expected_base":{"revision_id":1,"plan_version":1}})
+    );
+    // The live Part moved to spool 7 after the revision stored none; Accept
+    // carries the live spool into the new revision.
+    assert_eq!(
+        preview["changes"]["fields"],
+        json!([
+            {"draft_part_id":4,"filename":"bracket.stl","field":"spoolman_spool_id",
+                "old":null,"new":{"kind":"text","value":"7"}},
+            {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_override",
+                "old":{"kind":"integer","value":3},"new":null},
+            {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_effective",
+                "old":{"kind":"integer","value":3},"new":{"kind":"integer","value":1}},
+            {"draft_part_id":5,"filename":"excluded.stl","field":"status",
+                "old":{"kind":"text","value":"base"},"new":{"kind":"text","value":"excluded"}},
+            {"draft_part_id":5,"filename":"excluded.stl","field":"included",
+                "old":{"kind":"flag","value":false},"new":{"kind":"flag","value":true}}
+        ])
+    );
+    assert_eq!(preview["changes"]["parts_added"], json!([]));
+    assert_eq!(preview["changes"]["parts_removed"], json!([]));
+    assert_eq!(preview["changes"]["inputs"], json!([]));
+    assert_eq!(preview["changes"]["required_units"]["added"], json!([]));
+    let unit = |token: u8, index: i64, printed: bool| {
+        json!({"token":format!("ppu_{token:032}"),"filename":"bracket.stl","unit_index":index,
+            "printed":printed,"assembled":false})
+    };
+    assert_eq!(
+        preview["changes"]["required_units"]["removed"],
+        json!([unit(2, 1, false), unit(3, 2, false)])
+    );
+    assert_eq!(
+        preview["changes"]["required_units"]["printed_affected"],
+        json!([unit(1, 0, true)])
+    );
+    assert_eq!(
+        preview["changes"]["plates"],
+        json!({"cleared":[{"plate_id":"plate-a","ordinal":1,"printer_name":"Simulator","unit_count":1}]})
+    );
+    assert_eq!(
+        preview["changes"]["stock"],
+        json!({"kind":"on","spools":[{"spool_id":"7","unprinted_before":2,"unprinted_after":0}]})
+    );
+    assert_eq!(
+        preview["changes"]["duplicate_orders"],
+        json!([{"profile_id":3,"name":"Second Build","order_number":"#1001"}])
+    );
+    assert_eq!(
+        preview["changes"]["production"],
+        json!({"checkoff_link_count":1,"send_queue_item_count":0,"unmappable":[]})
+    );
+    assert_eq!(preview["changes"]["blocked_by"], json!([]));
+    assert_eq!(preview["snapshot"]["saved_before_accept"], true);
+    // A later edit makes the preview's revision stale; Accept refuses it.
+    let restore = json!({"expected_snapshot_digest":digest,
+        "decision":{"kind":"set_included","draft_part_ids":[5],"value":false}});
+    json_reply(
+        server
+            .request(Method::PATCH, "/api/v2/plans/1/drafts/2/parts")
+            .json(&restore),
+        200,
+    )
+    .await;
+    let stale = accept(&server, &preview["revision"], "stale-preview", true);
+    assert!(
+        matches!(stale, pp_storage::plan_publication::Outcome::DraftChanged),
+        "{stale:?}"
+    );
+    let fresh = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    assert_ne!(fresh["revision"], preview["revision"]);
+    let applied = accept(&server, &fresh["revision"], "fresh-preview", true);
+    assert!(
+        matches!(
+            applied,
+            pp_storage::plan_publication::Outcome::Applied { .. }
+        ),
+        "{applied:?}"
+    );
+    // A consumed draft: the preview refuses as a second Accept with a new key.
+    let consumed = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(consumed["code"], "already_applied");
+    let again = accept(&server, &fresh["revision"], "second-accept", true);
+    assert_eq!(as_problem(&again), consumed);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn accept_preview_refusals_match_accept() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    // The fixture draft differs from its base and has no Required-unit
+    // selection yet, so Accept would refuse it.
+    assert_eq!(
+        json_reply(server.request(Method::GET, PREVIEW), 409).await,
+        json!({"code":"reconciliation_required","reason":"missing"})
+    );
+    // Fixture draft 1 is consumed and has an Accept receipt.
+    let consumed = json_reply(
+        server.request(Method::GET, "/api/v2/plans/1/drafts/1/accept-preview"),
+        409,
+    )
+    .await;
+    assert_eq!(consumed["code"], "already_applied");
+    let first = json!({"draft_id":1,"expected_snapshot_digest":"3912383330ef528d51a15c351d69eaffd856d7e8dc582ddfc66bf0bf5053b2b0",
+        "expected_lifecycle_version":0,"expected_base":{"revision_id":null,"plan_version":0}});
+    assert_eq!(
+        as_problem(&accept(&server, &first, "consumed", false)),
+        consumed
+    );
+    assert_eq!(
+        json_reply(
+            server.request(Method::GET, "/api/v2/plans/1/drafts/9/accept-preview"),
+            404
+        )
+        .await,
+        json!({"detail":"Plan draft not found","code":"draft_not_found"})
+    );
+    assert_eq!(
+        json_reply(
+            server.request(Method::GET, "/api/v2/plans/9/drafts/2/accept-preview"),
+            404
+        )
+        .await,
+        json!({"detail":"Plan not found","code":"profile_not_found"})
+    );
+    let unknown = server
+        .request(Method::GET, "/api/v2/plans/1/drafts/2/accept-preview/x")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status().as_u16(), 404);
+    server
+        .sql()
+        .execute_batch(
+            "UPDATE build_profiles SET archived_at='2026-11-04T00:00:00.000Z' WHERE id=1",
+        )
+        .unwrap();
+    assert_eq!(
+        json_reply(server.request(Method::GET, PREVIEW), 409).await,
+        json!({"code":"build_archived"})
+    );
+    // Accept checks the Plan before the draft, so a missing draft on an
+    // archived Plan is `build_archived` too, not `draft_not_found`.
+    let missing = json_reply(
+        server.request(Method::GET, "/api/v2/plans/1/drafts/9/accept-preview"),
+        409,
+    )
+    .await;
+    let draft_9 = json!({"draft_id":9,"expected_snapshot_digest":DIGEST,
+        "expected_lifecycle_version":0,"expected_base":{"revision_id":1,"plan_version":1}});
+    assert_eq!(
+        as_problem(&accept(&server, &draft_9, "missing", false)),
+        missing
+    );
+    assert_eq!(missing, json!({"code":"build_archived"}));
+    server.close().await;
+}
+
+#[tokio::test]
+async fn accept_preview_writes_nothing() {
+    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    changed_draft(&server).await;
+    let database = || logical_database(&server.sql());
+    let (rows, files) = (database(), managed_files(&server.directory));
+    for path in [
+        PREVIEW,
+        "/plans/1/drafts/2/accept-preview",
+        "/api/v2/plans/1/drafts/1/accept-preview",
+        "/api/v2/plans/1/drafts/9/accept-preview",
+    ] {
+        let response = server.request(Method::GET, path).send().await.unwrap();
+        assert!(response.status().as_u16() < 500, "{path}");
+    }
+    assert_eq!(database(), rows);
+    assert_eq!(managed_files(&server.directory), files);
+    server.close().await;
+}
+
+/// Both pinned by pp-storage's `accept_preview_test_revision_digests_are_pinned`.
+const LIVE_SPOOL_REVISION_DIGEST: &str =
+    "44de35eded4fab323f4df212ba4634a51912d1af49829c5672d86ebd7e552f7c";
+const ALIGNED_REVISION_DIGEST: &str =
+    "19ccb8c4f3f9e8d9c4da6083b64bd8fe25a2bfce6545a94782da40b99ca82b63";
+
+/// Marks the fixture's accepted excluded Part `excluded`, as its open draft
+/// does, so the draft equals the accepted Plan. The immutability triggers are
+/// dropped for the update and recreated from the fixture's own SQL.
+fn aligned_setup() -> String {
+    revision_setup("", ALIGNED_REVISION_DIGEST)
+}
+
+/// [`aligned_setup`] plus `extra` revision and projection updates; `digest` is
+/// the resulting revision digest.
+fn revision_setup(extra: &str, digest: &str) -> String {
+    let directory = crate::scratch::Scratch::new("pp-preview-align-");
+    let path = directory.join("fixture.db");
+    std::fs::write(
+        &path,
+        include_bytes!("../../../../pp-storage/tests/fixtures/required-units/unchanged.db"),
+    )
+    .unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let (mut drop, mut create) = (String::new(), String::new());
+    for name in [
+        "trg_plan_revisions_immutable_update",
+        "trg_plan_revision_parts_immutable_update",
+        "trg_parts_invalidate_accepted_revision_update",
+    ] {
+        let sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop.push_str(&format!("DROP TRIGGER {name};\n"));
+        create.push_str(&format!("{sql};\n"));
+    }
+    format!(
+        "{drop}UPDATE plan_revision_parts SET status='excluded' WHERE id=2;
+UPDATE parts SET status='excluded' WHERE id=2;
+{extra}
+UPDATE plan_revisions SET snapshot_digest='{digest}' WHERE id=1;
+{create}"
+    )
+}
+
+/// A no-op edit, which selects Required units without changing the draft.
+async fn select_units(server: &ReadServer) -> Value {
+    let edit = json!({"expected_snapshot_digest":DIGEST,
+        "decision":{"kind":"set_included","draft_part_ids":[5],"value":false}});
+    json_reply(
+        server
+            .request(Method::PATCH, "/api/v2/plans/1/drafts/2/parts")
+            .json(&edit),
+        200,
+    )
+    .await
+}
+
+/// The Accept request fields for a workspace's draft.
+fn revision_of(workspace: &Value) -> Value {
+    let draft = &workspace["draft"];
+    json!({"draft_id":draft["draft_id"],"expected_snapshot_digest":draft["snapshot_digest"],
+        "expected_lifecycle_version":draft["lifecycle_version"],"expected_base":draft["base"]})
+}
+
+/// Accept's refusal as the preview's problem body carries it.
+fn as_problem(outcome: &pp_storage::plan_publication::Outcome) -> Value {
+    let mut body = serde_json::to_value(outcome).unwrap();
+    let kind = body.as_object_mut().unwrap().remove("kind").unwrap();
+    body["code"] = kind;
+    body
+}
+
+#[tokio::test]
+async fn accept_preview_of_a_draft_equal_to_the_accepted_plan_is_no_change() {
+    let setup = aligned_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    let workspace = select_units(&server).await;
+    assert_eq!(workspace["reconciliation"]["kind"], "ready");
+    assert_eq!(
+        json_reply(server.request(Method::GET, PREVIEW), 200).await,
+        json!({"kind":"no_change","revision":revision_of(&workspace),
+            "snapshot":{"saved_before_accept":true,
+                "detail":"Print Partner saves a snapshot of the accepted Plan before it accepts this draft."}})
+    );
+    server.close().await;
+}
+
+/// An unchanged draft gets `no_change` only when Accept, sent without
+/// `remap_checkoff_links`, would pass. Otherwise both refuse alike.
+#[tokio::test]
+async fn accept_preview_of_an_unchanged_draft_refuses_exactly_as_accept() {
+    let setup = aligned_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    let unselected = json!({"draft_id":2,"expected_snapshot_digest":DIGEST,
+        "expected_lifecycle_version":0,"expected_base":{"revision_id":1,"plan_version":1}});
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(
+        preview,
+        json!({"code":"reconciliation_required","reason":"missing"})
+    );
+    assert_eq!(
+        as_problem(&accept(&server, &unselected, "unselected", false)),
+        preview
+    );
+
+    let revision = revision_of(&select_units(&server).await);
+    server
+        .sql()
+        .execute_batch(
+            "INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.checkoff_links',
+              '[{\"id\":\"link-1\",\"state\":\"watching\",\"profile_id\":1,\"filename\":\"bracket.3mf\",\"units\":[{\"part_id\":1,\"unit_index\":0}]}]')",
+        )
+        .unwrap();
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(
+        preview,
+        json!({"code":"production_active","checkoff_link_count":1,"send_queue_item_count":0})
+    );
+    assert_eq!(
+        as_problem(&accept(&server, &revision, "production", false)),
+        preview
+    );
+
+    let job = json!({"job_id":"running-export","tenant":"default","kind":"export-stl-pack",
+        "payload_version":1,"payload":{"kind":"export-stl-pack","payload":{"profile_id":1,
+        "missing_only":false,"group_by":"color_dir","unit_tokens":[],"filename_grouping":null}},
+        "state":"running","state_version":1,"attempt":1,"generation":1,"lease_until":null,
+        "created_at":1,"updated_at":1,"finished_at":null,"cancel_requested":false,
+        "progress":null,"result":null,"recovery":null,"effects":[]});
+    let sql = server.sql();
+    sql.execute_batch("DELETE FROM app_settings WHERE key='printer.checkoff_links'")
+        .unwrap();
+    sql.execute(
+        "INSERT INTO durable_jobs VALUES('running-export','default','export-stl-pack','running','fixture',1,1,NULL,1,1,?1)",
+        [job.to_string()],
+    )
+    .unwrap();
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(
+        preview,
+        json!({"code":"execution_conflict","operations":[
+            {"operation_id":"running-export","kind":"export-stl-pack","state":"running"}]})
+    );
+    assert_eq!(
+        as_problem(&accept(&server, &revision, "running", false)),
+        preview
+    );
+    server.close().await;
+}
+
+/// Accepted Part 1 and its live row on spool 7; the draft's Part 4 still says
+/// none. Accept publishes the live spool, so the preview diffs that.
+fn live_spool_setup() -> String {
+    revision_setup(
+        "UPDATE plan_revision_parts SET spoolman_spool_id='7' WHERE id=1;
+UPDATE parts SET spoolman_spool_id='7' WHERE id=1;",
+        LIVE_SPOOL_REVISION_DIGEST,
+    )
+}
+
+#[tokio::test]
+async fn accept_preview_ignores_draft_filament_that_accept_replaces_with_the_live_part() {
+    let setup = live_spool_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    let workspace = select_units(&server).await;
+    let spool = |sql: &str| -> Option<String> {
+        server.sql().query_row(sql, [], |row| row.get(0)).unwrap()
+    };
+    assert_eq!(
+        spool("SELECT spoolman_spool_id FROM plan_draft_parts WHERE id=4"),
+        None
+    );
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    assert_eq!(preview["kind"], "no_change");
+    let applied = accept(&server, &revision_of(&workspace), "live-spool", false);
+    assert!(
+        matches!(
+            applied,
+            pp_storage::plan_publication::Outcome::Applied { .. }
+        ),
+        "{applied:?}"
+    );
+    assert_eq!(
+        spool(
+            "SELECT r.spoolman_spool_id FROM plan_revision_parts r JOIN build_profiles b
+               ON b.accepted_plan_revision_id=r.revision_id WHERE b.id=1 AND r.filename='bracket.stl'"
+        ),
+        Some("7".into())
+    );
+    server.close().await;
+}
+
+#[tokio::test]
+async fn accept_preview_lists_only_the_changes_accept_publishes() {
+    let setup = live_spool_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    changed_draft(&server).await;
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    let integer = |value: i64| json!({"kind":"integer","value":value});
+    let flag = |value: bool| json!({"kind":"flag","value":value});
+    assert_eq!(
+        preview["changes"]["fields"],
+        json!([
+            {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_override",
+                "old":integer(3),"new":null},
+            {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_effective",
+                "old":integer(3),"new":integer(1)},
+            {"draft_part_id":5,"filename":"excluded.stl","field":"included",
+                "old":flag(false),"new":flag(true)}
+        ])
+    );
+    server.close().await;
+}

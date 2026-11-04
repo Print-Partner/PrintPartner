@@ -37,9 +37,10 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/plans/{id}/layers` | | `ProfileLayers` |
 | `GET /api/v2/plans/{id}/drafts` | | `DraftList` |
 | `GET /api/v2/plans/{id}/drafts/{draft_id}` | | `DraftWorkspace` |
+| `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | | `DraftAcceptPreview` |
 | `PATCH /api/v2/plans/{id}/drafts/{draft_id}/parts` | `EditDraftPartsRequest` | `DraftWorkspace` |
 | `POST /api/v2/plans/{id}/drafts/{draft_id}/abandon` | `AbandonDraftRequest` | `DraftIdentity` |
-| `GET /health` | | `Health` |
+| `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 
 `PrinterState` (execution, bed-clear and display state as separate fields) and `PrinterDisplayDescriptor` are DTOs without a route yet.
 

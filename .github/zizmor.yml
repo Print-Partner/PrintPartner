@@ -6,6 +6,14 @@ rules:
       # @droid mentions arrive as comments. droid-action ignores commenters
       # without write access, and comment events check out the default branch.
       - droid.yml:5
+      # Marker comments and finished review runs only rerun the review-gate
+      # job through the API. The job checks out nothing and passes no comment text to a shell.
+      - review-gate-rerun.yml:11
+      - review-gate-rerun.yml:13
+      # The gate must run the base branch's logic, so a PR cannot edit its own
+      # gate. It checks out nothing, runs no PR code, gets no secrets, and only
+      # reads the API with actions, checks and pull-requests read permission.
+      - review-gate.yml:31
   self-repository:
     ignore:
       # actionlint 1.7.12 rejects the replacement $/ syntax. These local workflows

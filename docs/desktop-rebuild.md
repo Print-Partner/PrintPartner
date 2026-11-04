@@ -132,6 +132,25 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   `rust/scripts/workflow-smoke.sh`, `rust/tests/*.py`) build `pp-server`
   without the feature, so they always see Node mode.
 
+- `GET /health` lists each Module in `modules`, in this order: `farm` (farm
+  and printers), `spoolman`, `orders`, `bambu` and `assembly_tracking`. Each
+  entry is `{"state":"on","module":…}` or
+  `{"state":"off","module":…,"reason":…}`. The reason codes are `default_off`
+  (nobody turned it on), `turned_off` (the user chose off) and
+  `setting_unreadable` (the stored choice does not parse, so the module stays
+  off). `pp-storage::features::modules` reads the `default` tenant's
+  `feature_toggles` and `build_tracking_assembly` settings on every request,
+  so a change shows on the next `/health` without a restart. The body carries
+  only these fixed keys and codes, never a stored value or parse error, so it
+  holds no secrets, URLs or customer data. A storage read failure answers 503
+  `Module settings temporarily unavailable`. Plan overrides do not change
+  this list. Other Rust auth routers omit `modules`, so their body still
+  matches Node's, and Node-mode `/health` comes from Node unchanged.
+
+  ```json
+  "modules":[{"state":"on","module":"farm"},{"state":"off","module":"spoolman","reason":"default_off"},…]
+  ```
+
 `CoreRuntime::start` and every other combination of gates keep the Node-backed
 runtime, so existing flag-on Node tests are unchanged. With the feature off,
 the gateway route table is pinned by a digest test and Plan reads still go to
@@ -154,6 +173,17 @@ The `slice0_mount` tests check, for `PP_DESKTOP_REBUILD=1` and `true`:
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(slice0_mount)'
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(slice0_mount)'
+```
+
+The `health_modules` tests check the Module list through the same gateway:
+every module is listed, stored changes show on the next request, and a canary
+run plants secret-looking values in `feature_toggles`, `integrations`,
+`default_spoolman_integration_id` and `build_tracking_assembly`, plus an
+account email, a Plan name and the session token, and finds none of them, no
+`://` and no host address in the body.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(health_modules)'
 ```
 
 With `PP_JOURNEY_REPORT=1`, the feature-on pp-core gateway journey also writes
@@ -2599,6 +2629,7 @@ Landed replacement slices for the superseded #635 monolith:
 | c | GRE-941 | API-key `ResolveKey` so `lastUsedAt` commits; foreign-tenant keys 401 |
 | d | GRE-942 | Part edits with Node conflict shapes |
 | e | GRE-988 | Abandon with storage lifecycle token |
+| f | GRE-1093 | Accept preview through Accept's own checks |
 
 With both gates on, `draft_router` serves these paths at the root and
 `/api/v2`:
@@ -2607,6 +2638,7 @@ With both gates on, `draft_router` serves these paths at the root and
 | --- | --- | --- |
 | GET | `/plans/{id}/drafts` | `WorkingDraftClient` list |
 | GET | `/plans/{id}/drafts/{draft_id}` | workspace read |
+| GET | `/plans/{id}/drafts/{draft_id}/accept-preview` | read-only Accept preview |
 | PATCH | `/plans/{id}/drafts/{draft_id}/parts` | `edit` with typed `EditRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
 
@@ -2646,6 +2678,60 @@ consumed or already-closed draft that is not the idempotent retry returns
 `invalid_request` before mutation. Server failures use the same
 `Plan draft update failed` detail as edit. The desktop gateway does not mount
 this router; D26 does.
+
+`GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
+draft's current revision would change, and writes nothing. It runs in one
+deferred read transaction on the writer. Storage owns the checks:
+`plan_publication::check_draft` and `check_selection` are the same functions
+Accept (`publish_in_transaction`) runs before it writes, in the same order.
+
+- A draft whose Parts and inputs equal its accepted base returns 200
+  `{ kind: "no_change", revision, snapshot }`, but only when Accept, sent
+  without `remap_checkoff_links`, would pass every check. Otherwise the preview
+  returns Accept's refusal, such as `reconciliation_required`,
+  `production_active` or `execution_conflict`. A changed draft reports active
+  production and running operations as checks in `changes` instead.
+- Otherwise 200 `{ kind: "changed", revision, changes, snapshot }`. The diff
+  and the `no_change` decision use the Parts Accept would publish: a Part with
+  a base takes `filament_color_id`, `filament_custom_hex` and
+  `spoolman_spool_id` from its live accepted Part, as Accept does, and a new
+  Part keeps its own. `changes` holds `fields` (each changed Part field, `old`
+  and `new`), `parts_added`,
+  `parts_removed`, `inputs` (changed Source input fields; each value is
+  `{ kind: "text" | "integer" | "flag", value }` or `null`), `required_units`
+  (`added`, `removed`, and `printed_affected`: printed units that Accept removes
+  or whose Part changes), `plates.cleared` (the accepted Plates Accept clears),
+  `stock` (`off`, or per Spoolman spool the unprinted unit count before and
+  after), `duplicate_orders` (other unarchived Plans with this order number),
+  `production` (active checkoff links and queued sends, with any link Accept
+  could not remap), and `blocked_by` (running operations Accept refuses on).
+- `revision` is `{ draft_id, expected_snapshot_digest,
+  expected_lifecycle_version, expected_base }`, the fields Accept's request
+  expects. Accept refuses a stale one with `draft_changed` or `base_changed`.
+- `snapshot` is `{ saved_before_accept: true, detail }`.
+- A refusal is the one Accept would return, as an RFC 9457 problem
+  ([Problem responses](problem-responses.md)): 404 `draft_not_found` for a
+  missing draft, otherwise 409 with no `detail`, Accept's outcome kind as
+  `code`, and its fields as extension members, for example
+  `{ code: "already_applied", receipt }` for a draft Accept already consumed,
+  `base_changed`, `inputs_changed`, `build_archived`, or
+  `{ code: "reconciliation_required", reason }`. Accept's idempotency-key
+  lookup has no preview counterpart, since a preview sends no key.
+- Refusals come in Accept's order, through the same storage functions:
+  `already_applied`; then the Plan (`build_archived`) before the draft
+  (`draft_not_found`, `not_open`), so a missing draft on an archived Plan is
+  `build_archived`; then `draft_changed`, `accepted_baseline_required`,
+  `base_changed`, `inputs_changed`, and `reconciliation_required`; then, for
+  `no_change` only, `production_active`, `checkoff_remap_unsafe` and
+  `execution_conflict`. Token allocation can still fail inside Accept's
+  write; a preview cannot predict that.
+
+Draft rows carry Parts and inputs only, so Plan name, order number, and other
+Plan header fields never appear in `fields`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(accept_preview)'
+```
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --lib

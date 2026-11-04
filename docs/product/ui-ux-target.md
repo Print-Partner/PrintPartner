@@ -148,7 +148,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |
 | Accept | `POST /plans/:id/drafts/:draftId/apply` | Port |
 | Verify one result | `POST /printer-checkoff/verify`, `/reconcile`, `/dismiss` | Port |
-| Health with module flags | `GET /health` plus module list and off reason | Extend |
+| Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |
 | Ranked task feed | `GET /api/v1/tasks` | New, a view over the workflow projection |
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
 | Match suggestions | `GET /printer-checkoff/unattributed/suggestions` | New |

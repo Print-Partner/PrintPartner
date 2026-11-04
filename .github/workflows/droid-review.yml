@@ -1,9 +1,10 @@
 name: Droid Auto Review
 
-# Factory Droid reviews every ready PR head. The `droid-review` job is a
-# required check; required review-thread resolution makes open findings block
-# the merge. Runs on synchronize too, so each new head gets its own review and
-# the required check never waits on a commit that was not reviewed.
+# Factory Droid reviews every ready PR head. Droid is optional: the required
+# check is `review-gate` (review-gate.yml), which accepts a head on which this
+# `droid-review` job succeeded, or one of the other review paths. Required
+# review-thread resolution makes open Droid findings block the merge. Runs on
+# synchronize too, so each new head gets its own review.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
@@ -31,7 +32,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Require the Factory API key
-        # Without the key droid-action skips and the required check would pass unreviewed.
+        # Without the key droid-action skips and the job would pass, and satisfy review-gate, unreviewed.
         env:
           FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
         run: |

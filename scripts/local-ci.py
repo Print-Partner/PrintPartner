@@ -40,6 +40,9 @@ class Step:
     node22: bool = False
     # Why the step cannot run on this machine at all.
     host_only: str = ""
+    # Nonzero exit status that means the step ran but a check in it could not run
+    # (a missing browser, say). Reported as SKIP, so --fail-on-skip fails on it.
+    skip_status: int = 0
 
 
 # rust-cross-os.yml sets INSTA_UPDATE workflow-wide so a snapshot mismatch fails
@@ -119,14 +122,18 @@ STEPS = [
     # The replacement UI package. No hosted job runs these yet, so they are local-only
     # lines. After web-assets, which installs web/node_modules on Node 24. Vitest
     # exits nonzero when it finds no tests.
-    Step("ui-package", "replacement UI package typecheck, lint, tests and build",
+    Step("ui-package", "replacement UI package typecheck, lint, tests, build and font requests",
          # The package's build script runs its typecheck first, so there is no separate
          # typecheck line. The desktop does not ship apps/ui, so the measured manifest
          # does not follow it and its tests and build leave rust/bundle-manifest.json valid.
          setup=("npm --prefix web run lint --workspace @print-partner/ui",
                 "npm --prefix web run test --workspace @print-partner/ui",
-                "npm --prefix web run build --workspace @print-partner/ui"),
-         requires=(("node", "v24.21.0"), ("npm", None))),
+                "npm --prefix web run build --workspace @print-partner/ui",
+                # Serves the build and fails on any request to another origin. Last, so
+                # its exit 77 for a missing browser engine is the step's status.
+                "npm --prefix web run test:browser --workspace @print-partner/ui"),
+         requires=(("node", "v24.21.0"), ("npm", None), ("python3", None)),
+         skip_status=77),
     # After web-assets, which installs the parser it loads from web/node_modules, and
     # before node-fixtures reinstalls them. Web CI runs it on Node 22.
     Step("workaround-ratchet", "TODO, eslint-disable and Rust #[allow] ratchet (Node 22)",
@@ -282,8 +289,14 @@ def main(argv=None, env=None, run=run_bash):
         print(f"\n== RUN {step.id}: {step.title}", flush=True)
         started = time.monotonic()
         code = run(step.id, "\n".join(step.setup + step.commands), ROOT / step.cwd, step_env(step, env))
-        status = "PASS" if code == 0 else "FAIL"
-        results.append((status, step, f"{time.monotonic() - started:.0f}s"))
+        detail = f"{time.monotonic() - started:.0f}s"
+        if code == 0:
+            status = "PASS"
+        elif step.skip_status and code == step.skip_status:
+            status, detail = "SKIP", f"{detail}; a check in the step printed SKIP"
+        else:
+            status = "FAIL"
+        results.append((status, step, detail))
 
     print("\n== local CI summary ==")
     for status, step, detail in results:

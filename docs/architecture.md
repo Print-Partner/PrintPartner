@@ -132,7 +132,7 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
-| `pp-os` | Directory handles, no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
+| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows, no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
 | [`pp-testkit`](../rust/crates/pp-testkit/README.md) | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented graph, not a manifest for the amendment.
@@ -144,7 +144,12 @@ consumer's migration. It supplies directory-relative handle access,
 identity/no-follow checks, lock primitives and durable file publication. The
 crate documentation in `rust/crates/pp-os/src/lib.rs` lists where the Unix and
 Windows guarantees differ; on Windows it reports no POSIX owner or mode, so
-`pp-storage` skips those checks and relies on inherited ACLs. Storage keeps installation lease
+`pp-storage` skips those checks and relies on inherited ACLs. On Windows a
+`Dir` handle shares delete, so the directory can be renamed or removed while it
+is open, as on Unix, and entries are opened, inspected, created and deleted
+with `NtCreateFile` relative to that handle, the counterpart of the Unix `*at`
+calls. NTFS refuses byte-range locks on a directory, so a directory lock on
+Windows is a lock on a regular file inside the directory. Storage keeps installation lease
 lifetime, migration ordering and SQL transactions. Source keeps snapshot policy.
 Native shell behavior and worker/signal orchestration stay with their owners.
 

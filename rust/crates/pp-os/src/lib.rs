@@ -10,15 +10,42 @@
 //!
 //! | Guarantee | Unix | Windows |
 //! | --- | --- | --- |
-//! | Entry access is relative to the opened directory | `openat`, `fstatat` and `unlinkat` on the directory descriptor | The directory handle denies delete sharing, so the directory cannot be renamed or removed while a [`Dir`] is open; entries are opened as `<final path>\<name>`, where the final path is read from the handle with junctions and links resolved |
+//! | Entry access is relative to the opened directory | `openat`, `fstatat` and `unlinkat` on the directory descriptor | `NtCreateFile` with the directory handle as `RootDirectory`, then `NtSetInformationFile` on the entry's own handle to delete it. No entry operation re-resolves a path |
+//! | The opened directory can be renamed or removed | Yes; entry operations keep reaching the moved directory, and creating entries in a removed one fails | The same: the directory handle shares read, write and delete |
 //! | No-follow | `O_NOFOLLOW` and `AT_SYMLINK_NOFOLLOW` | `FILE_FLAG_OPEN_REPARSE_POINT`, then refusal of any reparse point (symbolic links and junctions) |
 //! | Identity | device and inode | volume serial number and 64-bit file index |
 //! | Owner and mode | [`PosixAccess`] | `None`: access is governed by ACLs, which this crate does not inspect yet |
 //! | Durable rename | `rename` ([`publish_rename`]) or `link` and `unlink` ([`publish_new`]), then [`sync_directory`] | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`; [`sync_directory`] only checks that the directory opens |
 //! | File flush | `fsync` on a read-only descriptor | `FlushFileBuffers` on a handle with write access |
-//! | Lock | `flock` through `fs4` | `LockFileEx` through `fs4` |
+//! | Delete | `unlinkat`: the name goes at once, open handles stay valid | POSIX-semantics delete (`FILE_DISPOSITION_POSIX_SEMANTICS`), the same as Unix. File systems without it, such as FAT, get the classic delete: the name stays until the last handle closes and cannot be opened meanwhile |
+//! | Lock | `flock` through `fs4`, on a file or a directory | `LockFileEx` through `fs4`, on a regular file only; see [Directory locks](#directory-locks) |
 //!
 //! [ADR 0015]: ../../../docs/adr/0015-shared-filesystem-portability.md
+//!
+//! # Directory locks
+//!
+//! `LockFileEx` locks byte ranges of a file's data, and NTFS refuses it on a
+//! directory handle. A caller that locks a directory on Unix uses a lock file
+//! on Windows instead: a regular file inside the directory, created with
+//! [`Dir::create_new_nofollow`] or opened with [`Dir::open_write_nofollow`],
+//! then passed to [`try_lock`]. Every process that wants the directory takes
+//! that same file's lock, so the exclusivity matches `flock` on the directory:
+//! one holder at a time, released by [`unlock`], by closing the file or by
+//! process exit. A Windows lock is mandatory for the locked range, but a lock
+//! file holds no data, so that difference does not matter. On both systems a
+//! held lock survives its name being deleted or replaced, so callers compare
+//! the locked file's [`Identity`] with the named entry after locking, as
+//! pp-storage's data-directory lease does with `printpartner.lock`.
+//!
+//! # Windows entry names
+//!
+//! Entry names are matched without case, as Win32 paths are. `NtCreateFile`
+//! does not strip trailing dots and spaces the way Win32 path parsing does, so
+//! `name.` and `name` are different entries; callers should not use such
+//! names. The Windows adapter can also create a directory, rename an entry and
+//! remove an empty directory relative to the handle. The public [`Dir`] gains
+//! those operations, with their Unix adapters, when pp-source moves onto
+//! pp-os; until then only the Windows tests call them.
 
 use std::{
     ffi::OsStr,

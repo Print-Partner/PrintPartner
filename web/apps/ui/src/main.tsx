@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter } from "react-router";
 import { App, createQueryClient } from "./App";
 import { routes } from "./routes";
+import "./fonts/fonts.css";
+import "./typography.css";
 import "./index.css";
 
 const root = document.getElementById("root");

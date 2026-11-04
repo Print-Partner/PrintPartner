@@ -36,19 +36,20 @@ def fake_tools(directory, tools):
 class LocalCi:
     """Run main() with fake tools on PATH and a runner that records each step's script."""
 
-    def __init__(self, test, tools=TOOLS, node22="v22.23.3", fail=()):
+    def __init__(self, test, tools=TOOLS, node22="v22.23.3", fail=(), codes=None):
         scratch = Path(test.enterContext(tempfile.TemporaryDirectory()))
         self.env = {"PATH": str(fake_tools(scratch / "bin", tools)), "CARGO_TARGET_DIR": str(scratch / "target")}
         if node22:
             self.env["PP_SCHEMA_PARITY_NODE"] = str(fake_tools(scratch / "node22", {"node": node22, "npm": "10.0.0"}) / "node")
         self.fail = set(fail)
+        self.codes = codes or {}
         self.ran = []
         self.envs = {}
 
     def runner(self, step_id, script, cwd, env):
         self.ran.append(step_id)
         self.envs[step_id] = env
-        return 1 if step_id in self.fail else 0
+        return self.codes.get(step_id, 1 if step_id in self.fail else 0)
 
     def __call__(self, *argv):
         out = io.StringIO()
@@ -216,7 +217,19 @@ class LocalCiTests(unittest.TestCase):
         for script in ("lint", "test", "build"):
             self.assertIn(f"npm --prefix web run {script} --workspace @print-partner/ui", step.setup)
         self.assertNotIn("npm --prefix web run typecheck --workspace @print-partner/ui", step.setup)
+        build = step.setup.index("npm --prefix web run build --workspace @print-partner/ui")
+        browser = step.setup.index("npm --prefix web run test:browser --workspace @print-partner/ui")
+        self.assertLess(build, browser)
         self.assertFalse([line for line in step.setup if "build-desktop-manifest.py" in line])
+
+    def test_ui_package_reports_a_skipped_browser_engine_as_skip(self):
+        ci = LocalCi(self, codes={"ui-package": 77})
+        self.assertEqual(ci("--only", "ui-package"), 0)
+        self.assertEqual(ci.summary["ui-package"], "SKIP")
+        self.assertEqual(ci("--only", "ui-package", "--fail-on-skip"), 1)
+        ci = LocalCi(self, codes={"ui-package": 2})
+        self.assertEqual(ci("--only", "ui-package"), 1)
+        self.assertEqual(ci.summary["ui-package"], "FAIL")
 
     def test_ui_package_skips_without_node_24(self):
         ci = LocalCi(self, tools={**TOOLS, "node": "v22.23.3"})

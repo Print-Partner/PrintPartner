@@ -294,7 +294,7 @@ It runs the steps below in the order that `just ci --list` prints, and continues
 | `fmt` | Step 4 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
 | `rust-deps` | Scanner negative controls and `cargo machete rust`, pinned to 0.9.2 | `cargo-machete` in `rust-deps-weekly.yml` |
 | `web-assets` | Desktop web build and `rust/bundle-manifest.json` | `rust (linux)` (required) |
-| `ui-package` | `typecheck`, `lint`, `test` and `build` for the replacement UI workspace `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. | None yet. These are local-only lines; see [Replacement UI package](#replacement-ui-package). |
+| `ui-package` | `typecheck`, `lint`, `test`, `build` and `test:browser` for the replacement UI workspace `@print-partner/ui`, on Node 24.21.0. Vitest fails the step when it finds no tests. `test:browser` exits 77 for a missing browser engine, which the step reports as SKIP. | None yet. These are local-only lines; see [Replacement UI package](#replacement-ui-package). |
 | `workaround-ratchet` | `scripts/workaround-ratchet.mjs` and its tests, which cap `TODO`, `eslint-disable` and Rust `#[allow]` markers, on Node 22.23.3. It runs after `web-assets`, which installs its parser. | `web` job of `web-ci.yml` |
 | `duplication` | jscpd negative controls and the five-area duplicated-token baseline, on Node 22.23.3 | `duplication.yml` |
 | `clippy-off`, `clippy-on`, `nextest-off`, `nextest-on`, `doc-off`, `doc-on` | Steps 5 to 10 of the OS jobs, with the Linux `--workspace` scope | `rust (linux)` (required) |
@@ -326,7 +326,17 @@ npm --prefix web run typecheck --workspace @print-partner/ui
 npm --prefix web run lint --workspace @print-partner/ui
 npm --prefix web run test --workspace @print-partner/ui
 npm --prefix web run build --workspace @print-partner/ui
+npm --prefix web run test:browser --workspace @print-partner/ui
 ```
+
+`test:browser` serves the build on a loopback port and opens `/type` in a fresh
+profile in Chromium (through `playwright-core`) and in the system WebKitGTK
+(through PyGObject, under `xvfb-run` when there is no display). It fails on any
+request to another origin, on a bundled face that did not load, and when the
+figure cells are not Plex Mono with tabular figures. A missing engine prints
+`SKIP <engine>` and the script exits 77. The step declares 77 as its
+`skip_status`, so the summary shows `SKIP ui-package` and `--fail-on-skip`
+fails.
 
 Hosted Web CI covers part of it already. Its `npm run lint` runs `eslint .` over
 all of `web/`, which includes the package and its import-boundary rule, and
@@ -446,9 +456,10 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
 | `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |
 
-`pp-os` is not excluded. The Windows job builds and tests it, including its
-Windows-only tests for reparse points and for an open directory that cannot be
-renamed.
+`pp-os` is not excluded. The Windows job builds and tests it, including
+renaming and removing a directory while a `Dir` handle on it is open, entry
+operations through a handle after its directory was renamed, and Windows-only
+tests for symbolic links, junctions and directory locks.
 
 `rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.
 

@@ -52,16 +52,16 @@ const SAMPLE_STATES: Record<string, ScreenState<Sample>> = {
   ready: { kind: "ready", data: SAMPLE },
 };
 
-/** `/states/<kind>`, kind being a key of SAMPLE_STATES: one state on sample data, for screenshots. */
+/** `/states/<kind>` for each key of SAMPLE_STATES: that state on sample data. Other kinds 404. */
 export function StatesSpecimen() {
   const { kind = "" } = useParams();
-  const current = kind in SAMPLE_STATES ? kind : "loading";
+  if (!Object.hasOwn(SAMPLE_STATES, kind)) return <NotFound />;
   return (
-    <ConnectionOverride status={current === "offline" ? "offline" : "online"}>
+    <ConnectionOverride status={kind === "offline" ? "offline" : "online"}>
       <ScreenTemplate
-        key={current}
+        key={kind}
         title="Sample Builds"
-        state={SAMPLE_STATES[current]}
+        state={SAMPLE_STATES[kind]}
         renderData={(builds) => (
           <>
             <ul className="pp-sample-list">

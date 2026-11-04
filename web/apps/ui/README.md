@@ -40,23 +40,24 @@ shortcuts, the palette and the shortcut list read it. `/` redirects to `/today`.
 - The "Printer pulse" header region says "Printer counts not loaded" until the
   Farm slice feeds it, never zeros.
 - `src/frame/connection.tsx` polls `GET /health` every 30 s, or 5 s while it
-  fails, and shares `checking`, `online` or `offline`.
+  fails, and shares `checking`, `online` or `offline`. Each probe gives up after
+  4 s, and it keeps running while the browser reports no network.
 
 Every screen renders through `ScreenTemplate` (`src/screen/ScreenTemplate.tsx`).
-`screenState(query, connection, options)` picks module off, then offline, then
-loading, error, empty or ready from a TanStack Query result. Loading reserves its
+Loading reserves its
 rows and shows skeletons after 150 ms with no numbers; error keeps last-known
 data with its time and a Retry; module off links to Settings; offline keeps
 loaded data and says changes are off. `MutationButton` is the button for any
 change: offline it keeps focus, does nothing, and shows the reason beside it as
-its `aria-describedby`. `/states/:kind` renders each state on sample data.
+its `aria-describedby`. `/states/<kind>` renders each state on sample data; any
+other kind is Not found.
 
 `test/browser/frame.browser.mjs`, part of `npm run test:browser`, runs axe at
 WCAG 2.2 AA in WebKitGTK on every frame page, state and dialog in all three
 themes, and fails on sideways scrolling at 200% text and 400% zoom. With
-`PP_UI_EVIDENCE_DIR=<dir>` it saves a screenshot of each load there.
-`test/css-colours.test.ts` fails a colour literal in any stylesheet other than
-`src/theme/tokens.css`.
+`PP_UI_EVIDENCE_DIR=<dir>` it saves a screenshot of each load there. Its themes
+come from `THEMES` in `src/theme/tokenGate.ts`. `test/browser/harness.mjs` holds
+the loopback server and WebKitGTK launcher that both browser checks use.
 
 ## Talking to the Rust core
 

@@ -6,8 +6,6 @@ import {
   MutationButton,
   SKELETON_DELAY_MS,
   ScreenTemplate,
-  screenState,
-  type QueryLike,
   type ScreenState,
 } from "./ScreenTemplate";
 
@@ -105,47 +103,6 @@ describe("FRM-03 screen template", () => {
     expect(status.textContent).toContain(`${OFFLINE_REASON} Showing what was loaded at`);
     expect(status.querySelector("time")).toBeTruthy();
     expect(screen.getByRole("list", { name: "rows" })).toBeTruthy();
-  });
-});
-
-describe("FRM-03 picking the state from a query", () => {
-  const query = (over: Partial<QueryLike<Rows>> = {}): QueryLike<Rows> => ({
-    data: undefined,
-    dataUpdatedAt: 0,
-    error: null,
-    isPending: false,
-    isError: false,
-    refetch: vi.fn(),
-    ...over,
-  });
-  const isEmpty = (rows: Rows) => rows.length === 0;
-
-  it.each<[QueryLike<Rows>, ConnectionStatus, ScreenState<Rows>["kind"]]>([
-    [query({ isPending: true }), "online", "loading"],
-    [query({ data: [] }), "online", "empty"],
-    [query({ data: ROWS }), "online", "ready"],
-    [query({ isError: true, error: new Error("x") }), "online", "error"],
-    [query({ data: ROWS, dataUpdatedAt: AT }), "offline", "offline"],
-    [query({ isPending: true }), "offline", "offline"],
-  ])("%o while %s is %s", (q, connection, kind) => {
-    expect(screenState(q, connection, { isEmpty }).kind).toBe(kind);
-  });
-
-  it("module off wins over every other state", () => {
-    const module = { name: "Farm", wouldShow: "printers", enabled: false };
-    expect(screenState(query({ isPending: true }), "offline", { isEmpty, module })).toEqual({
-      kind: "module-off",
-      module: "Farm",
-      wouldShow: "printers",
-    });
-  });
-
-  it("an error keeps the last data, its time and a working retry", () => {
-    const q = query({ isError: true, error: new Error("boom"), data: ROWS, dataUpdatedAt: AT });
-    const state = screenState(q, "online", { isEmpty });
-    expect(state).toMatchObject({ kind: "error", message: "boom", lastData: ROWS, updatedAt: AT });
-    if (state.kind === "error") state.retry();
-    expect(q.refetch).toHaveBeenCalledOnce();
   });
 });
 

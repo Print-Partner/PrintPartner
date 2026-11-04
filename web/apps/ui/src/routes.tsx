@@ -34,7 +34,7 @@ export const routes: RouteObject[] = [
           </DestinationScreen>
         ),
       })),
-      { path: "states/:kind?", element: <StatesSpecimen /> },
+      { path: "states/:kind", element: <StatesSpecimen /> },
       { path: "type", element: <TypeSpecimen /> },
       { path: "*", element: <NotFound /> },
     ],

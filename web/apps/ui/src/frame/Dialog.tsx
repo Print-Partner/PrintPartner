@@ -29,7 +29,8 @@ export function Dialog({
   }, []);
 
   function onKeyDown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
+    // Escape during IME composition cancels the composition, not the dialog.
+    if (event.key === "Escape" && !event.nativeEvent.isComposing) {
       event.stopPropagation();
       onClose();
       return;

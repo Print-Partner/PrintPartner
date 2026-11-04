@@ -6,7 +6,7 @@ import { DESTINATIONS, shortcutLabel } from "./destinations";
 import { Dialog } from "./Dialog";
 import { useShortcuts } from "./useShortcuts";
 
-export const GLOBAL_SHORTCUTS: readonly { keys: string; action: string }[] = [
+const GLOBAL_SHORTCUTS: readonly { keys: string; action: string }[] = [
   ...DESTINATIONS.map((d) => ({ keys: shortcutLabel(d), action: `Go to ${d.label}` })),
   { keys: "Cmd/Ctrl K", action: "Open or close the command palette" },
   { keys: "?", action: "Show keyboard shortcuts" },

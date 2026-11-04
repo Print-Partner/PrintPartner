@@ -138,6 +138,14 @@ body {
   color: var(--interaction-on-accent);
 }
 
+/* docs/product/ui-tokens.md: an accent-filled control opts out of the forced-colors
+   backplate, so its HighlightText label stays on its Highlight fill. */
+@media (forced-colors: active) {
+  .pp-button-primary {
+    forced-color-adjust: none;
+  }
+}
+
 /* Offline mutations stay focusable so the reason can be read, and never look filled. */
 .pp-button[aria-disabled="true"] {
   border: 1px dashed var(--line-strong);

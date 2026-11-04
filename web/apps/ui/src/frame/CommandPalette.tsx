@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import { Dialog } from "./Dialog";
 
 export interface Command {
@@ -26,6 +26,13 @@ export function CommandPalette({
   const needle = query.trim().toLowerCase();
   const matches = commands.filter((c) => c.label.toLowerCase().includes(needle));
   const current = Math.min(active, Math.max(matches.length - 1, 0));
+  const activeId = matches[current] ? `${listId}-${matches[current].id}` : undefined;
+
+  // Focus stays in the input, so the browser does not scroll to the active option itself.
+  // At 400% zoom most options start below the fold.
+  useEffect(() => {
+    if (activeId) document.getElementById(activeId)?.scrollIntoView?.({ block: "nearest" });
+  }, [activeId]);
 
   function run(command: Command | undefined) {
     if (!command) return;
@@ -55,7 +62,7 @@ export function CommandPalette({
         aria-expanded="true"
         aria-controls={listId}
         aria-autocomplete="list"
-        aria-activedescendant={matches[current] ? `${listId}-${matches[current].id}` : undefined}
+        aria-activedescendant={activeId}
         placeholder="Type a command"
         autoComplete="off"
         spellCheck={false}

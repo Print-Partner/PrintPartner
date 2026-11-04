@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run frame.browser.mjs jobs, one at a time, in a fresh, ephemeral WebKitGTK web view.
 
-Usage: webkitgtk-frame.py JOBS_JSON, a file holding {"axe": <axe.min.js path>, "jobs": [...]}.
+Usage: webkitgtk-frame.py JOBS_JSON, a file holding {"axe": <axe-core source>, "jobs": [...]}.
 Each job has "url", "body" (an async JavaScript function body that returns a JSON string
 with "scrollHeight" and "innerWidth"; it may call runAxe()), "zoom", "text_only" and "png"
 (a screenshot path, or null). Prints the parsed results as a JSON list. Exits 3 when
@@ -30,8 +30,7 @@ PRELUDE = "if (!window.axe) (0, eval)(axeSource);\nconst runAxe = (o) => window.
 def main() -> int:
     with open(sys.argv[1], encoding="utf-8") as handle:
         spec = json.load(handle)
-    with open(spec["axe"], encoding="utf-8") as handle:
-        axe_args = GLib.Variant("a{sv}", {"axeSource": GLib.Variant("s", handle.read())})
+    axe_args = GLib.Variant("a{sv}", {"axeSource": GLib.Variant("s", spec["axe"])})
     jobs, results, failure = spec["jobs"], [], []
     state = {"index": -1, "timer": 0}
     loop = GLib.MainLoop()

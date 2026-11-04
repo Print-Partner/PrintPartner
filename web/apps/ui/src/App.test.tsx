@@ -1,7 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { onlineManager } from "@tanstack/react-query";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "./App";
+import { HEALTH_TIMEOUT_MS } from "./frame/connection";
 import { SEQUENCE_MS } from "./frame/useShortcuts";
 import { routes } from "./routes";
 
@@ -20,6 +22,8 @@ const heading = () => screen.getByRole("heading", { level: 1 }).textContent;
 
 afterEach(() => {
   cleanup();
+  onlineManager.setOnline(true);
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -36,11 +40,14 @@ describe("App frame", () => {
     );
   });
 
-  it("shows Not found inside the frame for unknown addresses", () => {
-    renderAt("/nope/nothing");
-    expect(heading()).toBe("Not found");
-    expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
-  });
+  it.each(["/nope/nothing", "/states/__proto__", "/states/constructor", "/states/toString"])(
+    "shows Not found inside the frame for %s",
+    (address) => {
+      renderAt(address);
+      expect(heading()).toBe("Not found");
+      expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
+    },
+  );
 
   it("keeps a pulse line slot that shows no false zeros", () => {
     renderAt("/today");
@@ -112,7 +119,9 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     },
   );
 
-  it("filters, moves with arrows and runs with Enter", () => {
+  it("filters, moves with arrows, scrolls the active option into view and runs with Enter", () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
     const { path } = renderAt("/today");
     press("k", { ctrlKey: true });
     const input = screen.getByRole("combobox");
@@ -123,6 +132,7 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     const active = document.getElementById(input.getAttribute("aria-activedescendant")!);
     expect(active?.textContent).toBe("Go to FarmG F");
     expect(active?.getAttribute("aria-selected")).toBe("true");
+    expect(scroll.mock.contexts.at(-1)).toBe(active);
     press("Enter", {}, input);
     expect(path()).toBe("/farm");
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -133,6 +143,9 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     const opener = screen.getByRole("button", { name: /Commands/ });
     opener.focus();
     press("k", { ctrlKey: true }, opener);
+    // Escape during IME composition belongs to the composition.
+    press("Escape", { isComposing: true }, screen.getByRole("combobox"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
     press("Escape", {}, screen.getByRole("combobox"));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(opener);
@@ -169,5 +182,24 @@ describe("FRM-04 offline frame", () => {
     press("g"); // navigation keeps working offline
     press("l");
     expect(heading()).toBe("Library");
+  });
+
+  it("keeps probing while the browser reports no network", async () => {
+    onlineManager.setOnline(false);
+    renderAt("/today", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    expect(await screen.findByText("Offline")).toBeTruthy();
+  });
+
+  it("counts a core that never answers as offline after the timeout", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => AbortSignal.abort());
+    const hang = vi.fn((_: string, init: RequestInit) => {
+      return new Promise<Response>((_, reject) => {
+        if (init.signal?.aborted) reject(init.signal.reason);
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      });
+    });
+    renderAt("/today", hang);
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(timeout).toHaveBeenCalledWith(HEALTH_TIMEOUT_MS);
   });
 });

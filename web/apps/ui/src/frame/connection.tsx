@@ -12,6 +12,8 @@ const ConnectionContext = createContext<ConnectionStatus>("checking");
 
 const ONLINE_POLL_MS = 30_000;
 const OFFLINE_POLL_MS = 5_000;
+/** A core that accepts the connection but never answers counts as offline after this. */
+export const HEALTH_TIMEOUT_MS = 4_000;
 
 /**
  * Polls GET /health and shares the result with every screen. The core is the only
@@ -21,9 +23,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const health = useQuery({
     queryKey: ["core", "health"],
     queryFn: async () => {
-      await checkCoreHealth();
+      await checkCoreHealth(AbortSignal.timeout(HEALTH_TIMEOUT_MS));
       return true;
     },
+    // The default "online" mode pauses the probe while the browser reports no network,
+    // which would leave the last success standing. The probe itself decides.
+    networkMode: "always",
+
     retry: false,
     refetchInterval: (query) => (query.state.status === "error" ? OFFLINE_POLL_MS : ONLINE_POLL_MS),
   });

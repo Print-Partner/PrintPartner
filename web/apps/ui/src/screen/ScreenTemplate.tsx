@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { OFFLINE_REASON, useConnection, type ConnectionStatus } from "../frame/connection";
+import { OFFLINE_REASON, useConnection } from "../frame/connection";
 
 /** The five states from docs/product/ui-ux-target.md (Screen states), plus "ready". */
 export type ScreenState<T> =
@@ -11,51 +11,12 @@ export type ScreenState<T> =
   | { kind: "module-off"; module: string; wouldShow: string }
   | { kind: "offline"; lastData?: T; updatedAt?: number };
 
-/** The parts of a TanStack Query result the template reads. */
-export interface QueryLike<T> {
-  data: T | undefined;
-  dataUpdatedAt: number;
-  error: Error | null;
-  isPending: boolean;
-  isError: boolean;
-  refetch: () => unknown;
-}
-
-/**
- * Picks a screen's state: module off first (`module` is the core's module state), then
- * offline keeping whatever was loaded, then the query's own state.
- */
-export function screenState<T>(
-  query: QueryLike<T>,
-  connection: ConnectionStatus,
-  options: {
-    isEmpty: (data: T) => boolean;
-    module?: { name: string; enabled: boolean; wouldShow: string };
-  },
-): ScreenState<T> {
-  const { module } = options;
-  if (module && !module.enabled)
-    return { kind: "module-off", module: module.name, wouldShow: module.wouldShow };
-  const last = {
-    lastData: query.data,
-    updatedAt: query.dataUpdatedAt > 0 ? query.dataUpdatedAt : undefined,
-  };
-  if (connection === "offline") return { kind: "offline", ...last };
-  if (query.isPending) return { kind: "loading" };
-  if (query.isError) {
-    const message = query.error?.message ?? "The read failed.";
-    return { kind: "error", message, ...last, retry: () => void query.refetch() };
-  }
-  const data = query.data as T;
-  return options.isEmpty(data) ? { kind: "empty" } : { kind: "ready", data };
-}
-
 /** Skeletons appear only after this long, so fast reads never flash. */
 export const SKELETON_DELAY_MS = 150;
 
 // The rows exist from the first frame so the layout does not jump, and become visible
 // after the delay. Nothing from the data renderer, so no false zeros.
-function Loading({ title, rows }: { title: string; rows: number }) {
+function Loading({ title }: { title: string }) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setVisible(true), SKELETON_DELAY_MS);
@@ -66,7 +27,7 @@ function Loading({ title, rows }: { title: string; rows: number }) {
       <p role="status" className="pp-visually-hidden">
         Loading {title}
       </p>
-      {Array.from({ length: rows }, (_, i) => (
+      {[0, 1, 2].map((i) => (
         <div key={i} className="pp-skeleton-row" aria-hidden="true" />
       ))}
     </div>
@@ -127,21 +88,19 @@ export function ScreenTemplate<T>({
   state,
   renderData,
   empty,
-  skeletonRows = 3,
 }: {
   title: string;
   state: ScreenState<T>;
   renderData: (data: T) => ReactNode;
   /** The empty state's message and its next useful action. */
   empty: { message: string; action?: ReactNode };
-  skeletonRows?: number;
 }) {
   const headingId = useId();
   const last = (s: { lastData?: T }) => s.lastData !== undefined && renderData(s.lastData);
   let body: ReactNode;
   switch (state.kind) {
     case "loading":
-      body = <Loading title={title} rows={skeletonRows} />;
+      body = <Loading title={title} />;
       break;
     case "empty":
       body = (

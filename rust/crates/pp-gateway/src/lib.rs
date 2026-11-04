@@ -815,11 +815,16 @@ async fn handle(
         Err(_) => return error(StatusCode::UNAUTHORIZED, "Desktop session required"),
     };
     if path == "/__runtime" && request.method() == "GET" {
-        if let Some(rust) = &state.rust_status {
-            let rust = *rust.borrow();
-            return axum::Json(serde_json::json!({"proof_class":"headless_unsigned","rust":rust,"compat":{"state":"not_used"},"gateway":{"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len()}})).into_response();
-        }
-        return axum::Json(serde_json::json!({"proof_class":"headless_unsigned","compat":*state.compat.status.borrow(),"gateway":{"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len()}})).into_response();
+        let gateway = serde_json::json!({"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len()});
+        let body = match &state.rust_status {
+            Some(rust) => {
+                serde_json::json!({"proof_class":"headless_unsigned","rust":*rust.borrow(),"compat":{"state":"not_used"},"gateway":gateway})
+            }
+            None => {
+                serde_json::json!({"proof_class":"headless_unsigned","compat":*state.compat.status.borrow(),"gateway":gateway})
+            }
+        };
+        return axum::Json(body).into_response();
     }
     if path == "/auth/logout" && request.method() == "POST" {
         // Rust revokes its own session before the gateway ends the desktop one.

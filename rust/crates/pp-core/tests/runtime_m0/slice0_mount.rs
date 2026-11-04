@@ -78,26 +78,7 @@ async fn slice0_mount_launcher_in_child() {
     assert_eq!(redeemed.status(), 303);
     let desktop = redeemed.headers()["set-cookie"].to_str().unwrap();
     let desktop = desktop.split(';').next().unwrap().to_owned();
-    let (code, _, body) = request(
-        &origin,
-        "/__runtime",
-        "GET",
-        Some(&desktop),
-        None,
-        None,
-        None,
-    )
-    .await;
-    assert_eq!(code, StatusCode::OK);
-    let state: Value = serde_json::from_slice(&body).unwrap();
-    if rust {
-        assert_eq!(state["rust"], json!({"state": "ready"}), "{state}");
-        assert_eq!(state["compat"], json!({"state": "not_used"}), "{state}");
-    } else {
-        assert!(state.get("rust").is_none(), "{state}");
-        assert_eq!(state["compat"]["state"], "ready", "{state}");
-        assert!(state["compat"]["pid"].is_u64(), "{state}");
-    }
+    assert_runtime_json(&origin, &desktop, rust).await;
     if rust {
         let (status, _, body) = request(
             &origin,
@@ -158,5 +139,22 @@ async fn slice0_mount_launcher_in_child() {
             RuntimeStatus::Rust(RustStatus::Stopped)
         ));
         assert!(status.has_changed().is_ok(), "status channel closed");
+    }
+}
+
+/// `/__runtime` reports the Rust status and an unused compat backend in
+/// Rust-only mode, and the Node child with no `rust` key otherwise.
+async fn assert_runtime_json(origin: &str, desktop: &str, rust: bool) {
+    let (code, _, body) =
+        request(origin, "/__runtime", "GET", Some(desktop), None, None, None).await;
+    assert_eq!(code, StatusCode::OK);
+    let state: Value = serde_json::from_slice(&body).unwrap();
+    if rust {
+        assert_eq!(state["rust"], json!({"state": "ready"}), "{state}");
+        assert_eq!(state["compat"], json!({"state": "not_used"}), "{state}");
+    } else {
+        assert!(state.get("rust").is_none(), "{state}");
+        assert_eq!(state["compat"]["state"], "ready", "{state}");
+        assert!(state["compat"]["pid"].is_u64(), "{state}");
     }
 }

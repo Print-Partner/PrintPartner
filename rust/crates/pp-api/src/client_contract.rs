@@ -663,6 +663,11 @@ mod codegen {
             need(measured(40), stock(752), Sufficiency::Sufficient),
             need(measured(MAX_SAFE as u64), stock(0), short),
         ];
+        let estimated = GramsNeeded::Estimated {
+            grams: 12,
+            job_count: 1,
+        };
+        filaments.push(need(estimated, stock(1), Sufficiency::Sufficient));
         for reason in [NeedUnknown::GramsNotRecorded, NeedUnknown::PartNotPrinted] {
             let unknown = GramsNeeded::Unknown { reason };
             filaments.push(need(unknown, stock(1), Sufficiency::Unknown));

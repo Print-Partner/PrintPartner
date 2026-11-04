@@ -134,8 +134,22 @@ pub struct PartNeed {
 pub enum GramsNeeded {
     /// From past prints, rounded up. `job_count` is the distinct jobs used.
     Measured { grams: u64, job_count: u64 },
+    /// From slicer estimates recorded at send, rounded up; a finished print
+    /// replaces its estimate with the measured value. A filament is
+    /// `estimated` when any of its Parts is. Nothing records estimates yet
+    /// (GRE-1165), so no read returns this today.
+    Estimated { grams: u64, job_count: u64 },
     /// At least one Part has no completed print with measured grams.
     Unknown { reason: NeedUnknown },
+}
+
+impl GramsNeeded {
+    fn known(&self) -> Option<u64> {
+        match *self {
+            Self::Measured { grams, .. } | Self::Estimated { grams, .. } => Some(grams),
+            Self::Unknown { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -385,16 +399,13 @@ pub fn shortfalls(
                 .collect();
             let needed = group_need(&parts);
             let (label, available) = available(&id, integrations, inventories);
-            let status = match (&needed, &available) {
-                (
-                    GramsNeeded::Measured { grams: need, .. },
-                    GramsAvailable::Spoolman { grams: have, .. },
-                ) if need > have => Sufficiency::Short {
-                    short_grams: need - have,
-                },
-                (GramsNeeded::Measured { .. }, GramsAvailable::Spoolman { .. }) => {
-                    Sufficiency::Sufficient
+            let status = match (needed.known(), &available) {
+                (Some(need), GramsAvailable::Spoolman { grams: have, .. }) if need > *have => {
+                    Sufficiency::Short {
+                        short_grams: need - have,
+                    }
                 }
+                (Some(_), GramsAvailable::Spoolman { .. }) => Sufficiency::Sufficient,
                 _ => Sufficiency::Unknown,
             };
             let mut parts: Vec<PartNeed> = parts.into_iter().map(|(need, _)| need).collect();
@@ -427,16 +438,19 @@ fn module_off(reason: ModuleOffReason) -> FilamentShortfalls {
 fn group_need(parts: &[(PartNeed, Vec<&str>)]) -> GramsNeeded {
     let mut grams = 0u64;
     let mut jobs = BTreeSet::new();
+    let mut estimated = false;
     for (part, part_jobs) in parts {
-        let GramsNeeded::Measured { grams: g, .. } = part.grams_needed else {
+        let Some(g) = part.grams_needed.known() else {
             return part.grams_needed.clone();
         };
+        estimated |= matches!(part.grams_needed, GramsNeeded::Estimated { .. });
         grams = grams.saturating_add(g);
         jobs.extend(part_jobs.iter().copied());
     }
-    GramsNeeded::Measured {
-        grams,
-        job_count: jobs.len() as u64,
+    let job_count = jobs.len() as u64;
+    match estimated {
+        true => GramsNeeded::Estimated { grams, job_count },
+        false => GramsNeeded::Measured { grams, job_count },
     }
 }
 

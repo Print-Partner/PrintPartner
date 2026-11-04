@@ -225,6 +225,33 @@ fn unknown_need_says_whether_any_grams_were_recorded() {
 }
 
 #[test]
+fn an_estimated_part_makes_its_filament_estimated() {
+    let part = |id, grams_needed| PartNeed {
+        part_id: id,
+        filename: String::new(),
+        remaining_units: 1,
+        grams_needed,
+    };
+    let measured = GramsNeeded::Measured {
+        grams: 4,
+        job_count: 1,
+    };
+    let estimated = GramsNeeded::Estimated {
+        grams: 6,
+        job_count: 1,
+    };
+    let parts = [
+        (part(1, measured), vec!["shared"]),
+        (part(2, estimated), vec!["shared", "send"]),
+    ];
+    let both = GramsNeeded::Estimated {
+        grams: 10,
+        job_count: 2,
+    };
+    assert_eq!(group_need(&parts), both);
+}
+
+#[test]
 fn inputs_read_module_state_integrations_and_measured_grams() {
     let store = Store::new();
     let inputs = || read_inputs(&store.1, "default", 1).unwrap();

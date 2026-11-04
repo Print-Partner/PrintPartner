@@ -1,12 +1,13 @@
 import "./specimen.css";
 
-const FACES = [
-  { name: "Plex Sans 400", className: undefined, weight: 400 },
-  { name: "Plex Sans 500", className: undefined, weight: 500 },
-  { name: "Plex Sans 600", className: undefined, weight: 600 },
-  { name: "Plex Mono 400", className: "num", weight: 400 },
-  { name: "Plex Mono 500", className: "num", weight: 500 },
+const FAMILIES = [
+  { label: "Plex Sans", className: undefined, weights: [400, 500, 600] },
+  { label: "Plex Mono", className: "num", weights: [400, 500] },
 ] as const;
+
+const FACES = FAMILIES.flatMap(({ label, className, weights }) =>
+  weights.map((weight) => ({ name: `${label} ${weight}`, className, weight })),
+);
 
 // Sample values only; nothing here is read from the core.
 const FIGURES = [

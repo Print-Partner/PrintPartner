@@ -1043,6 +1043,33 @@ class ShellWrapperTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(hook(CLAUDE, claude_call("Bash", "/", command=command)).returncode, 0)
 
+    def test_c_scripts_inherit_the_outer_lines_git_context(self):
+        pairs = (("GIT_CONFIG_GLOBAL=x git push origin HEAD:topic",
+                  "GIT_CONFIG_GLOBAL=x bash -c 'git push origin HEAD:topic'"),
+                 ("env GIT_DIR=/tmp/other git push origin HEAD:topic",
+                  "env GIT_DIR=/tmp/other bash -c 'git push origin HEAD:topic'"),
+                 ("git checkout other && git push origin HEAD:topic",
+                  "git checkout other && bash -c 'git push origin HEAD:topic'"),
+                 ("git config push.followTags true && git push origin HEAD:topic",
+                  "git config push.followTags true && sh -c 'git push origin HEAD:topic'"))
+        with tempfile.TemporaryDirectory() as folder:
+            repo = git_repo(Path(folder, "repo"))
+            for flat, wrapped in pairs:
+                with self.subTest(wrapped=wrapped):
+                    expected = hook(CLAUDE, claude_call("Bash", repo, command=flat))
+                    result = hook(CLAUDE, claude_call("Bash", repo, command=wrapped))
+                    self.assertEqual(expected.returncode, 2, expected.stderr)
+                    self.assertEqual((result.returncode, result.stderr), (2, expected.stderr))
+            self.assertEqual(hook(CLAUDE, claude_call("Bash", repo, command="bash -c 'git push origin HEAD:topic'"))
+                             .returncode, 0)
+
+    def test_wrapped_coordinator_merge_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            coordinator = git_repo(Path(folder, "coordinator"))
+            result = hook(CLAUDE, claude_call("Bash", coordinator, command=f"bash -c '{MERGE_FORM}'"), coordinator)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("Only the coordinator worktree merges", result.stderr)
+
     def test_coordinator_may_use_unknown_shell_options(self):
         with tempfile.TemporaryDirectory() as folder:
             coordinator = git_repo(Path(folder, "coordinator"))
@@ -1075,6 +1102,12 @@ class UnreadableCommentBodyTests(unittest.TestCase):
               "cp marker.md b.md && gh pr comment 12 -F b.md", "gh pr comment 12 -F missing.md",
               "echo hi && gh pr comment 12 -F plain.md", "cd sub && gh pr comment 12 -F ../plain.md",
               "gh pr comment $PR -b hi", "gh issue comment 12 -b \"$X\"",
+              "A=pp-review; B=gate; gh pr comment 12 --body \"<!-- $A-$B head=0123456789abcdef0123456789abcdef01234567 "
+              "reviewer=m findings=0 -->\"",
+              "gh pr comment 12 -b \"${X}\"", "gh pr comment 12 -b \"`cat plain.md`\"",
+              "gh pr comment 12 -b $'Fixed\\tthanks'", "gh issue comment 12 --body $'ok'",
+              "gh api repos/o/r/issues/12/comments -f body=$'ok'",
+              "gh api repos/o/r/pulls/12/comments/34/replies -f body=\"$X\"",
               "gh api repos/o/r/issues/12/comments -f body=\"$X\"",
               "gh api -X PATCH repos/o/r/issues/comments/34 -f body=\"$(cat marker.md)\"",
               "gh api repos/o/r/issues/12/comments -F body=@-", "gh api repos/o/r/issues/12/comments --input -",

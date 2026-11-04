@@ -22,8 +22,8 @@ name: Review gate
 # the PR is incomplete (the files API stops at 3000). When a PR author other
 # than the owner changes a workflow, .github/zizmor.yml or
 # scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
-# the guard), as Dependabot's action bumps do, only path 3
-# counts: the owner's marker for that head records an explicit owner review.
+# the guard), as Dependabot's action bumps do, it needs both path 3 (the
+# owner's marker for that head) and path 1 or 2.
 # Every push starts a new run, which fails until one path holds for the new
 # head. review-gate-rerun.yml reruns this job when a review workflow finishes
 # or a marker comment changes. See docs/development/definition-of-done.md#code-review.
@@ -64,7 +64,10 @@ jobs:
                                  r"|\.factory/|\.claude/)")
           # droid-action logs this when its review step ran. It reports job success when it skips the
           # review (for example on a PR that changes droid-review.yml), so the conclusion alone is not enough.
-          DROID_RAN = "##[end-action id=__Factory-AI_droid-action.droid;outcome=success;"
+          # Only a whole runner line counts, and the log must hold exactly one such line for the step.
+          DROID_STEP = re.compile(r"^\ufeff?(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?##\[end-action "
+                                  r"id=__Factory-AI_droid-action\.droid;outcome=(\w+);"
+                                  r"conclusion=\w+;duration_ms=\d+\]\r?$", re.M)
           # Each job check the gate reads, and the only workflow file and event that may produce it.
           ORIGINS = {
               "review-gate": (".github/workflows/review-gate.yml", "pull_request_target"),
@@ -169,7 +172,7 @@ jobs:
               """Whether droid-action's review step ran in this job. The Actions job id is the check run id."""
               result = subprocess.run(["gh", "api", "--allow-escape-sequences",
                                        f"repos/{REPO}/actions/jobs/{run['id']}/logs"], capture_output=True, text=True)
-              return result.returncode == 0 and DROID_RAN in result.stdout
+              return result.returncode == 0 and DROID_STEP.findall(result.stdout) == ["success"]
 
 
           def base_definition(path):
@@ -202,12 +205,14 @@ jobs:
           if problems:
               sys.exit(1)
           if touched:
-              if not marker:
+              if not (marker and (droid_ok or claude_ok)):
                   print(f"::error::{AUTHOR} is not the repository owner and changes {', '.join(touched)}. "
-                        f"Only the owner's pp-review-gate marker for {HEAD} can pass this PR; "
-                        "Droid and Claude results do not.")
+                        f"This PR needs both the owner's pp-review-gate marker for {HEAD} and a passing Droid "
+                        f"or Claude review; marker: {'yes' if marker else 'no'}, automated review: "
+                        f"{'yes' if droid_ok or claude_ok else 'no'}.")
                   sys.exit(1)
-              print(f"Passed: owner marker for {HEAD} ({marker}) covers {AUTHOR}'s changes to {', '.join(touched)}.")
+              print(f"Passed: owner marker for {HEAD} ({marker}) and an automated review cover {AUTHOR}'s "
+                    f"changes to {', '.join(touched)}.")
           elif droid_ok:
               print(f"Passed: droid-review succeeded on {HEAD}.")
           elif claude_ok:

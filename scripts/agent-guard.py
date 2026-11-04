@@ -824,14 +824,14 @@ def names_marker(text):
     return any(MARKER_WORD in form.casefold() for form in forms)
 
 
-def marker_reason(texts, files, cwd, alone):
+def marker_reason(texts, files, cwd, alone, ansi_c=False):
     """Return why a comment write is refused, or None. texts are the literal arguments gh sends and
     files the files it reads. Outside the coordinator worktree, a body the guard cannot read literally
-    is refused like a marker: an expansion, stdin, an unreadable file, or a file another command in
-    the same line could change first."""
+    is refused like a marker: an expansion, a $'...' string (ansi_c says the command line has one),
+    stdin, an unreadable file, or a file another command in the same line could change first."""
     if coordinator_worktree(cwd):
         return None
-    if any(EXPANDED in text for text in texts) or files and not alone:
+    if ansi_c or any(EXPANDED in text for text in texts) or files and not alone:
         return UNREAD_BODY
     try:
         bodies = [read_input(name, cwd) for name in files]
@@ -895,7 +895,7 @@ def gh_command(args):
     return path + without_repo_flags(args[i:])
 
 
-def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
+def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     """Return why a gh command is refused. marker says the command text holds a review marker."""
     args = gh_command(args)
     if any(EXPANDED in arg for arg in args[:2]):
@@ -916,7 +916,7 @@ def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
     if args[:2] in COMMENT_COMMANDS:
         if marker and not coordinator_worktree(cwd):
             return MARKER
-        return marker_reason(args[2:], body_files(args[2:]), cwd, alone)
+        return marker_reason(args[2:], body_files(args[2:]), cwd, alone, ansi_c)
     if args[:1] != ["api"]:
         return None
     method, endpoint, fields, body, i = None, None, [], None, 1
@@ -979,7 +979,7 @@ def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
         sent_files = [value.partition("=")[2][1:] for flag, value in fields
                       if flag in ("-F", "--field") and value.partition("=")[2].startswith("@")]
         reason = marker_reason([value for _, value in fields], sent_files + ([] if body is None else [body]),
-                               cwd, alone)
+                               cwd, alone, ansi_c)
         if reason:
             return reason
         # GitHub parses a REST request body as JSON; one the guard cannot parse is not read literally.
@@ -1088,8 +1088,13 @@ def sourced_reason(name, rest, cwd):
     return EVAL if EXPANDED in text or re.search(r"\b(?:gh|git)\b", text) else None
 
 
-def check_command(command, cwd):
-    """Return why a shell command run in cwd is refused, or None to allow it."""
+def check_command(command, cwd, outer=None):
+    """Return why a shell command run in cwd is refused, or None to allow it.
+
+    outer is (head_moves, config_unknown, env_config) from the line that runs this command as a
+    sh -c script. The script inherits them: an assignment, env option, or branch change on the
+    outer line applies to every git command inside it.
+    """
     # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
     # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
     if cwd and ".." in PurePosixPath(cwd).parts:
@@ -1101,7 +1106,8 @@ def check_command(command, cwd):
     try:
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
-        if len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
+        # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
+        if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
             return None
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]
@@ -1113,6 +1119,9 @@ def check_command(command, cwd):
         marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
+        if outer is not None:
+            head_moves, config_unknown, env_config = (head_moves or outer[0], config_unknown or outer[1],
+                                                      env_config or outer[2])
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
             # Prefixes such as "{" or "!" can come before a control keyword.
@@ -1136,7 +1145,8 @@ def check_command(command, cwd):
                     return SHELL_OPTIONS
                 if script is not None:
                     # The script's own substitutions were already classified as nested commands.
-                    reason = check_command(script.replace(EXPANDED, ""), here)
+                    reason = check_command(script.replace(EXPANDED, ""), here,
+                                           (head_moves, config_unknown, env_config))
                     if reason:
                         return reason
                     continue
@@ -1146,7 +1156,7 @@ def check_command(command, cwd):
                 if reason:
                     return reason
                 continue
-            reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker) if name == "gh" else None
+            reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker, "$'" in command) if name == "gh" else None
             if reason:
                 return reason
     except Unclear as error:

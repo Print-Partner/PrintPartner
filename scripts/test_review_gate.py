@@ -139,7 +139,12 @@ class ReviewGateStepTests(unittest.TestCase):
         self.assertFails(checks=[run("droid-review", "skipped")])
 
     def test_droid_counts_only_when_its_review_step_ran(self):
-        for log in (f"log\n{DROID_SKIPPED}\nSkipping action due to workflow validation", "", None):
+        stamp = "2026-11-02T23:59:24.1234567Z "
+        self.assertPasses(checks=[run("droid-review")], droid_log=f"\ufeff{stamp}start\n{stamp}{DROID_RAN}\n")
+        for log in (f"log\n{DROID_SKIPPED}\nSkipping action due to workflow validation", "", None,
+                    # PR text echoed into the log: a second line, or the text inside a longer line.
+                    f"{stamp}{DROID_SKIPPED}\n{stamp}{DROID_RAN}\n",
+                    f"{stamp}echo '{DROID_RAN}'\n", f"{stamp}note {DROID_RAN}\n"):
             with self.subTest(log=log):
                 result = self.assertFails(checks=[run("droid-review")], droid_log=log)
                 self.assertIn("the Droid review did not run", result.stdout)
@@ -216,7 +221,7 @@ class ReviewGateStepTests(unittest.TestCase):
                                           checks=[spoof, run("droid-review")], pages=[[marker()]])
                 self.assertNotIn("Passed", result.stdout)
 
-    def test_non_owner_protected_changes_need_the_owner_marker(self):
+    def test_non_owner_protected_changes_need_the_marker_and_an_automated_review(self):
         for name in (".github/workflows/review-gate.yml", ".github/workflows/new.yml", ".github/zizmor.yml",
                      "scripts/agent-guard.py", ".factory/hooks.json", ".factory/hooks/guard.py",
                      ".claude/hooks/guard.py", ".claude/settings.json"):
@@ -225,7 +230,10 @@ class ReviewGateStepTests(unittest.TestCase):
                 self.assertFails("::error::lane-bot is not the repository owner and changes", files=files,
                                  author="lane-bot", checks=[run("droid-review"), run("claude-code-review"),
                                                             run("claude-security-review")])
-                self.assertPasses(files=files, author="lane-bot", pages=[[marker()]])
+                self.assertFails("marker: yes, automated review: no", files=files, author="lane-bot",
+                                 pages=[[marker()]])
+                self.assertPasses(files=files, author="lane-bot", pages=[[marker()]], checks=[run("droid-review")])
+                self.assertPasses(files=files, author="lane-bot", pages=[[marker()]], checks=[run("claude-code-review"), run("claude-security-review")])
         self.assertPasses(files=["docs/a.md"], author="lane-bot", checks=[run("droid-review")])
         self.assertPasses(files=[".github/workflows/new.yml"], checks=[run("droid-review")])
 
@@ -245,18 +253,25 @@ class ReviewGateStepTests(unittest.TestCase):
                 self.assertFails("::error::lane-bot is not the repository owner and changes", files=[change],
                                  author="lane-bot", checks=[run("droid-review"), run("claude-code-review"),
                                                             run("claude-security-review")])
-                self.assertPasses(files=[change], author="lane-bot", pages=[[marker()]])
+                self.assertFails("marker: yes, automated review: no", files=[change], author="lane-bot",
+                                 pages=[[marker()]])
+                self.assertPasses(files=[change], author="lane-bot", pages=[[marker()]], checks=[run("claude-code-review"), run("claude-security-review")])
         moved = {"filename": "docs/droid.yml", "status": "renamed", "previous_filename": DROID}
         self.assertFails(checks=[run("droid-review")], files=[moved], blobs={f"{DROID}@main": "d1"})
 
-    def test_dependabot_workflow_bump_passes_only_with_an_exact_head_owner_marker(self):
+    def test_dependabot_workflow_bump_needs_the_owner_marker_and_an_automated_review(self):
         bump = {"files": [".github/workflows/web-ci.yml"], "author": "dependabot[bot]"}
+        claude = [run("claude-code-review"), run("claude-security-review")]
         self.assertFails("::error::dependabot[bot] is not the repository owner and changes", **bump)
-        self.assertFails("::error::dependabot[bot] is not the repository owner", pages=[[marker(head=OLD)]], **bump)
-        self.assertFails("::error::dependabot[bot] is not the repository owner",
+        self.assertFails("marker: no, automated review: yes", checks=claude, **bump)
+        self.assertFails("marker: yes, automated review: no", pages=[[marker()]], **bump)
+        self.assertFails("marker: no, automated review: yes", checks=claude, pages=[[marker(head=OLD)]], **bump)
+        self.assertFails("marker: no, automated review: yes", checks=claude,
                          pages=[[marker(author="dependabot[bot]")]], **bump)
-        result = self.assertPasses(pages=[[marker()]], **bump)
-        self.assertIn("covers dependabot[bot]'s changes to .github/workflows/web-ci.yml", result.stdout)
+        result = self.assertPasses(pages=[[marker()]], checks=claude, **bump)
+        self.assertIn("and an automated review cover dependabot[bot]'s changes to .github/workflows/web-ci.yml",
+                      result.stdout)
+        self.assertPasses(pages=[[marker()]], checks=[run("droid-review")], **bump)
 
     def test_incomplete_file_list_fails_closed(self):
         for listed, changed in ((["docs/a.md"] * 1, 5), ([f"f{i}" for i in range(3000)], 3000),
@@ -365,6 +380,7 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
                 self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "write"})
                 self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", job["if"])
                 self.assertIn("github.event.pull_request.user.login == github.repository_owner", job["if"])
+                self.assertIn("github.event.pull_request.user.login == 'dependabot[bot]'", job["if"])
                 steps = job["steps"]
                 self.assertIn("Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set", steps[0]["run"])
                 for step in steps:
@@ -374,6 +390,7 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
                         self.assertEqual(step["with"]["persist-credentials"], "false")
                 (review,) = [step for step in steps if step.get("uses", "").startswith("anthropics/claude-code-action@")]
                 self.assertEqual(review["with"]["claude_code_oauth_token"], "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}")
+                self.assertEqual(review["with"]["allowed_bots"], "dependabot")
                 self.assertEqual(review["with"]["anthropic_api_key"],
                                  "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}")
                 args = review["with"]["claude_args"]

@@ -1,0 +1,20 @@
+.specimen-faces {
+  padding: 0;
+  list-style: none;
+  font-size: 18px;
+  line-height: 1.8;
+}
+
+.specimen-figures td {
+  padding: 4px 16px;
+  text-align: right;
+}
+
+.specimen-figures th {
+  padding: 4px 16px 4px 0;
+  text-align: left;
+}
+
+.specimen-figures thead th + th {
+  text-align: right;
+}

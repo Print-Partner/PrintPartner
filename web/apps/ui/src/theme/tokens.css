@@ -1,0 +1,183 @@
+/*
+ * Design tokens for the replacement UI. Graphite and cyan; dark is the default.
+ * docs/product/ui-tokens.md explains each group. After changing a colour, run
+ * `node web/scripts/design-system-contrast.mjs --write` and commit the doc.
+ *
+ * Rules the gate (src/theme/tokenGate.ts) enforces:
+ * - Cyan is for --interaction-* tokens only: primary action, focus ring, selection.
+ *   Status and filament tokens are never cyan.
+ * - Every text ink reaches 4.5:1 (7:1 on shop floor) on all four surfaces, and
+ *   control edges reach 3:1, in every theme and both forced-colors palettes.
+ * - In every theme, every colour token has a forced-colors system colour, the same one
+ *   whatever the theme.
+ * - In every theme, reduced motion sets every duration to 0ms.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Colour roles: surfaces */
+  --surface-sunken: #0e1013;
+  --surface-base: #14171b;
+  --surface-raised: #1b1f24;
+  --surface-overlay: #232830;
+
+  /* Colour roles: ink and lines */
+  --text: #e7eaee;
+  --text-muted: #a3acb6;
+  --line: #2c323a;
+  --line-strong: #6f7a86;
+
+  /* Colour roles: interaction (the only cyan) */
+  --interaction-accent: #22c3dd;
+  --interaction-accent-hover: #4fd3e8;
+  --interaction-on-accent: #04191d;
+  --interaction-text: #4fd3e8;
+  --interaction-focus-ring: #4fd3e8;
+  --interaction-selection: #123a42;
+  --interaction-on-selection: var(--text);
+
+  /* Colour roles: status. A status always shows an icon and a word as well. */
+  --status-positive: #4ade80;
+  --status-attention: #fbbf24;
+  --status-danger: #f87171;
+  --status-active: #8b9cf7;
+  --status-neutral: #9aa3ad;
+
+  /* Filament swatches: round chips with a border, never a pill */
+  --filament-swatch-border: #8a949f;
+  --filament-swatch-empty: #2c323a;
+  --filament-swatch-size: 16px;
+  --filament-swatch-radius: 50%;
+  --filament-swatch-border-width: 1px;
+
+  /* Status pills: rounded rectangles, never round */
+  --status-pill-radius: 4px;
+  --status-pill-height: 22px;
+  --status-pill-padding-x: 8px;
+
+  /* Type. The one definition of the stacks; src/fonts/fonts.css bundles both IBM Plex families. */
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-numeric: tabular-nums;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+
+  /* Density: comfortable rows by default, compact on [data-density="compact"] */
+  --row-comfortable: 40px;
+  --row-compact: 32px;
+  --row-height: var(--row-comfortable);
+  --touch-target-min: 44px;
+  --touch-target: 48px;
+
+  /* Motion: short, ease-out, showing where a thing went */
+  --motion-duration-fast: 120ms;
+  --motion-duration-base: 160ms;
+  --motion-duration-slow: 200ms;
+  --motion-ease-out: cubic-bezier(0, 0, 0.2, 1);
+}
+
+:root[data-density="compact"] {
+  --row-height: var(--row-compact);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --surface-sunken: #e9ecef;
+  --surface-base: #f5f6f8;
+  --surface-raised: #ffffff;
+  --surface-overlay: #ffffff;
+  --text: #15191e;
+  --text-muted: #525b65;
+  --line: #d5dae0;
+  --line-strong: #7a838d;
+  --interaction-accent: #007a8a;
+  --interaction-accent-hover: #006775;
+  --interaction-on-accent: #ffffff;
+  --interaction-text: #006775;
+  --interaction-focus-ring: #007a8a;
+  --interaction-selection: #cdeef3;
+  --status-positive: #1b7339;
+  --status-attention: #855600;
+  --status-danger: #b3261e;
+  --status-active: #2f5bc8;
+  --status-neutral: #525b65;
+  --filament-swatch-border: #6b747e;
+  --filament-swatch-empty: #d5dae0;
+}
+
+/* Shop floor: read from across the room under bright light, with gloves on. */
+:root[data-theme="shop-floor"] {
+  color-scheme: dark;
+  --surface-sunken: #000000;
+  --surface-base: #050607;
+  --surface-raised: #0d0f12;
+  --surface-overlay: #15181c;
+  --text: #ffffff;
+  --text-muted: #c9d0d7;
+  --line: #3a414a;
+  --line-strong: #9aa4ae;
+  --interaction-accent: #3ddcf2;
+  --interaction-accent-hover: #7ce8f7;
+  --interaction-on-accent: #001316;
+  --interaction-text: #6fe5f6;
+  --interaction-focus-ring: #7ce8f7;
+  --interaction-selection: #0d3a42;
+  --status-positive: #7fe3a1;
+  --status-attention: #ffc75c;
+  --status-danger: #ff9a92;
+  --status-active: #a9c4ff;
+  --status-neutral: #c9d0d7;
+  --filament-swatch-border: #c9d0d7;
+  --filament-swatch-empty: #3a414a;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --row-height: var(--touch-target);
+}
+
+/* :root[data-theme] matches the theme rules' specificity, so these win in every theme. */
+@media (forced-colors: active) {
+  :root,
+  :root[data-theme] {
+    --surface-sunken: Canvas;
+    --surface-base: Canvas;
+    --surface-raised: Canvas;
+    --surface-overlay: Canvas;
+    --text: CanvasText;
+    --text-muted: CanvasText;
+    --line: CanvasText;
+    --line-strong: CanvasText;
+    --interaction-accent: Highlight;
+    --interaction-accent-hover: Highlight;
+    --interaction-on-accent: HighlightText;
+    --interaction-text: LinkText;
+    --interaction-focus-ring: Highlight;
+    --interaction-selection: Highlight;
+    --interaction-on-selection: HighlightText;
+    --status-positive: CanvasText;
+    --status-attention: CanvasText;
+    --status-danger: CanvasText;
+    --status-active: CanvasText;
+    --status-neutral: CanvasText;
+    --filament-swatch-border: CanvasText;
+    --filament-swatch-empty: Canvas;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  :root[data-theme] {
+    --motion-duration-fast: 0ms;
+    --motion-duration-base: 0ms;
+    --motion-duration-slow: 0ms;
+  }
+}

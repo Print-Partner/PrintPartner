@@ -131,6 +131,30 @@ mod with_feature {
             )
         }
 
+        /// A desktop-admitted request with the given Host and Origin headers;
+        /// `None` keeps the client's Host or sends no Origin.
+        async fn send(
+            &self,
+            method: reqwest::Method,
+            path: &str,
+            host: Option<&str>,
+            origin: Option<&str>,
+        ) -> (u16, String) {
+            let mut request = self
+                .client
+                .request(method, format!("{}{path}", self.origin))
+                .header("cookie", &self.desktop)
+                .json(&json!({"email": "slice0@example.test", "password": "password-1234"}));
+            if let Some(host) = host {
+                request = request.header("host", host);
+            }
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            let response = request.send().await.unwrap();
+            (response.status().as_u16(), response.text().await.unwrap())
+        }
+
         async fn register(&self) -> String {
             let response = self
                 .client
@@ -208,6 +232,114 @@ mod with_feature {
             .is_ok()
     }
 
+    /// The mounted routes inherit the gateway's Host and Origin checks.
+    async fn refuses_foreign_host_and_origin(fixture: &Fixture, value: &str) {
+        use reqwest::Method;
+        let own = Some(fixture.origin.as_str());
+        let foreign = Some("http://evil.example");
+        for (method, path, host, origin, status, detail) in [
+            (
+                Method::GET,
+                "/api/v1/plans",
+                Some("evil.example"),
+                own,
+                400,
+                "Invalid Host",
+            ),
+            (
+                Method::POST,
+                "/auth/register",
+                Some("evil.example"),
+                own,
+                400,
+                "Invalid Host",
+            ),
+            (
+                Method::GET,
+                "/api/v1/plans",
+                None,
+                foreign,
+                403,
+                "Invalid Origin",
+            ),
+            (
+                Method::POST,
+                "/auth/register",
+                None,
+                foreign,
+                403,
+                "Invalid Origin",
+            ),
+            (
+                Method::POST,
+                "/auth/register",
+                None,
+                None,
+                403,
+                "Invalid Origin",
+            ),
+        ] {
+            let label = format!("{value} {method} {path} host={host:?} origin={origin:?}");
+            let (got, body) = fixture.send(method, path, host, origin).await;
+            assert_eq!(got, status, "{label}: {body}");
+            assert!(body.contains(detail), "{label}: {body}");
+        }
+    }
+
+    /// Sends two requests no Rust route serves, which get a Rust 404, and
+    /// returns the proxy attempts the gateway counted at its route-miss path.
+    async fn route_misses(fixture: &Fixture, session: &str) -> u64 {
+        let (status, body) = fixture.get("/api/v1/printers", Some(session)).await;
+        assert_eq!(status, 404, "{body}");
+        let response = fixture
+            .client
+            .post(format!("{}/api/v1/integrations", fixture.origin))
+            .header("origin", &fixture.origin)
+            .header("cookie", format!("{}; {session}", fixture.desktop))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        fixture.gateway.compat_forwards()
+    }
+
+    /// The generated report the operation inventory quotes. Never edit it by
+    /// hand: rerun this test with `PP_JOURNEY_REPORT=1`.
+    const JOURNEY_REPORT: &str = "docs/parity/journey-route-misses.json";
+
+    fn write_journey_report(runs: Vec<Value>) {
+        if std::env::var_os("PP_JOURNEY_REPORT").is_none_or(|value| value != "1") {
+            return;
+        }
+        let report = json!({
+            "generated_by": "PP_JOURNEY_REPORT=1 cargo nextest run (slice0_mount_routes_answer_through_the_gateway)",
+            "journey": "pp-core product routes in the gateway, desktop_rebuild feature on: register, Plan, draft and job reads, job WebSocket, manifest reads, two unrouted paths",
+            "counted_at": "gateway route-miss path (Gateway::compat_forwards)",
+            "runs": runs,
+        });
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(JOURNEY_REPORT);
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&report).unwrap()),
+        )
+        .unwrap();
+    }
+
+    /// Accounts registered with the test email.
+    fn accounts(data: &Path) -> i64 {
+        let db = rusqlite::Connection::open(data.join("print-partner.db")).unwrap();
+        db.busy_timeout(Duration::from_secs(5)).unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM users WHERE email='slice0@example.test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
     /// One Source layer with a checkout and the community slug, added to the
     /// Plan directly because no mounted route sets a community slug.
     fn add_community_layer(data: &Path, checkout: &Path, plan: i64) {
@@ -266,6 +398,7 @@ mod with_feature {
 
     #[tokio::test]
     async fn slice0_mount_routes_answer_through_the_gateway() {
+        let mut runs = Vec::new();
         for value in ["1", "true"] {
             let fixture = Fixture::start(value).await;
             let routes = [
@@ -295,7 +428,12 @@ mod with_feature {
                 .unwrap();
             assert_eq!(response.status(), 401);
 
+            refuses_foreign_host_and_origin(&fixture, value).await;
+            // None of the refused registrations reached storage.
+            let data = fixture.root.join("data");
+            assert_eq!(accounts(&data), 0, "{value}");
             let session = fixture.register().await;
+            assert_eq!(accounts(&data), 1, "{value}");
             let token = session.strip_prefix("pp_session=").unwrap().to_owned();
             let plan = create_plan(&fixture.owner, &token);
             let (status, body) = fixture.get("/api/v1/plans", Some(&session)).await;
@@ -340,7 +478,9 @@ mod with_feature {
             assert_ne!(missing, present, "community manifest read as missing");
             assert!(present.to_string().contains("custom"), "{present}");
 
-            assert_eq!(fixture.gateway.compat_forwards(), 0, "{value}");
+            let proxy_attempts = route_misses(&fixture, &session).await;
+            assert_eq!(proxy_attempts, 0, "{value}");
+            runs.push(json!({"PP_DESKTOP_REBUILD": value, "proxy_attempts": proxy_attempts}));
 
             // Logout revokes the Rust session as well as the desktop one.
             assert!(session_valid(&fixture.owner, &token));
@@ -357,6 +497,7 @@ mod with_feature {
             assert!(!session_valid(&fixture.owner, &token), "{value}");
             fixture.stop().await;
         }
+        write_journey_report(runs);
     }
 
     /// The mounted routes refuse a non-loopback peer themselves, not only

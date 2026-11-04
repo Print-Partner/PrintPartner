@@ -8,6 +8,8 @@ generated inputs and the roster, and never edits them:
   live_formats)
 - the "Operation families and write ownership" table in docs/architecture.md
 - docs/plan/inventory-roster.json (entry -> family and ticket, exceptions)
+- docs/parity/journey-route-misses.json, when present (proxy attempts the
+  Rust-only gateway journey counted; written by that test with PP_JOURNEY_REPORT=1)
 
     python3 scripts/operation-inventory.py           # rewrite the report
     python3 scripts/operation-inventory.py --check   # exit 1 if it is stale
@@ -28,6 +30,7 @@ MANIFEST = "rust/crates/pp-gateway/ownership-manifest.json"
 ARCHITECTURE = "docs/architecture.md"
 ROSTER = "docs/plan/inventory-roster.json"
 REPORT = "docs/parity/operation-inventory.md"
+JOURNEY = "docs/parity/journey-route-misses.json"
 FAMILY_HEADING = "## Operation families and write ownership"
 ROSTER_SCHEMA = "pp-inventory-roster-v1"
 TICKET = re.compile(r"^[A-Z]+-[0-9]+$")
@@ -199,6 +202,26 @@ def format_status(entry):
     return "Rust writes an older version than Node reads"
 
 
+def journey_line(journey):
+    """The rollup line for the journey report, or 'not measured' without one."""
+    if journey is None:
+        return f"- Journey route misses: not measured (no {JOURNEY})"
+    runs = journey.get("runs") if isinstance(journey, dict) else None
+    if not runs or not isinstance(runs, list):
+        raise RosterError(f"{JOURNEY} must list runs")
+    for run in runs:
+        attempts = run.get("proxy_attempts") if isinstance(run, dict) else None
+        # type() rather than isinstance(): JSON true is a bool, which isinstance counts as int.
+        if type(attempts) is not int or attempts < 0 \
+                or not isinstance(run.get("PP_DESKTOP_REBUILD"), str):
+            raise RosterError(f"{JOURNEY}: each run needs PP_DESKTOP_REBUILD and a "
+                              f"non-negative proxy_attempts, got {run!r}")
+    total = sum(run["proxy_attempts"] for run in runs)
+    values = ", ".join(f"`{run['PP_DESKTOP_REBUILD']}`" for run in runs)
+    return (f"- Journey route misses: {total} proxy attempts in the Rust-only gateway journey "
+            f"with PP_DESKTOP_REBUILD={values} (from `{JOURNEY}`)")
+
+
 def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -225,7 +248,7 @@ def summarize(entries):
     }
 
 
-def render(entries, stale, roster, digests):
+def render(entries, stale, roster, digests, journey=None):
     s = summarize(entries)
     by_kind = s["by_kind"]
     out = [
@@ -243,7 +266,7 @@ def render(entries, stale, roster, digests):
         f"- Kept entries without a Rust owner: {s['kept_without_owner']}",
         f"- Routes migrated to Rust: {s['migrated']} of {s['routes']}"
         f" ({s['routes'] - s['migrated']} unmigrated)",
-        "- Journey route misses: not measured (a later ticket fills this field)",
+        journey_line(journey),
         f"- Roster entries that match no inventory entry: {len(stale)}",
         "",
     ]
@@ -315,9 +338,14 @@ def generate(root):
     stale = classify(entries, validate_roster(roster, families))
     digests = {path: digest(text) for path, text in texts.items() if path != ARCHITECTURE}
     digests[f"{ARCHITECTURE} (family table)"] = digest("\n".join(families))
+    journey = None
+    if (root / JOURNEY).is_file():
+        text = (root / JOURNEY).read_text()
+        journey = json.loads(text, object_pairs_hook=unique_keys)
+        digests[JOURNEY] = digest(text)
     expired = sorted(e["id"] for e in entries.values()
                      if "expires" in e and e["expires"] < datetime.date.today().isoformat())
-    return render(entries, stale, roster, digests), expired
+    return render(entries, stale, roster, digests, journey), expired
 
 
 def main(argv=None):

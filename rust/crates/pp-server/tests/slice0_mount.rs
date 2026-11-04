@@ -4,6 +4,8 @@
 
 #[path = "../../pp-storage/tests/common/process.rs"]
 mod child_process;
+#[path = "../../pp-core/tests/support/process_tree.rs"]
+mod process_tree;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
 
@@ -44,6 +46,19 @@ fn cookie(response: &str) -> String {
         .to_owned()
 }
 
+/// Asserts the live process tree under `pp-server`: no child in Rust-only
+/// mode, the receipt's Node child otherwise.
+fn check_children(server: u32, node: &serde_json::Value) {
+    let children = process_tree::descendants(server);
+    match node.as_u64() {
+        None => assert_eq!(children, [], "Rust-only pp-server started a process"),
+        Some(pid) => assert!(
+            children.iter().any(|(child, _)| u64::from(*child) == pid),
+            "Node child {pid} missing from {children:?}"
+        ),
+    }
+}
+
 fn run(value: &str, root: &Path, rust: bool) {
     let bundle = release::launch(root.join("data")).bundle;
     let credentials = root.join("credentials.json");
@@ -64,6 +79,7 @@ fn run(value: &str, root: &Path, rust: bool) {
     let receipt: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&credentials).unwrap()).unwrap();
     assert_eq!(receipt["child_pid"].is_null(), rust, "{receipt}");
+    check_children(child.id(), &receipt["child_pid"]);
     let bootstrap = receipt["bootstrap_url"].as_str().unwrap();
     let response = exchange(
         &origin,
@@ -79,6 +95,7 @@ fn run(value: &str, root: &Path, rust: bool) {
     } else {
         desktop
     };
+    check_children(child.id(), &receipt["child_pid"]);
 
     // The gateway's logout stops the binary, which prints its shutdown receipt.
     // With Rust routes, Rust revokes its session first.
@@ -130,6 +147,17 @@ fn rust_routes(origin: &str, desktop: &str) -> String {
     let response = exchange(origin, "GET", "/api/v1/plans", &both, "");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.contains(r#""profiles":[]"#), "{response}");
+    // Paths no Rust route serves get a Rust 404.
+    for (method, path) in [
+        ("GET", "/api/v1/printers"),
+        ("POST", "/api/v1/integrations"),
+    ] {
+        let response = exchange(origin, method, path, &both, "{}");
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "{method} {path}: {response}"
+        );
+    }
     both
 }
 

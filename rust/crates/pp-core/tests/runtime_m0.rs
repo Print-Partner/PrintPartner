@@ -22,6 +22,9 @@ mod drain;
 #[path = "runtime_m0/slice0_mount.rs"]
 mod slice0_mount;
 
+#[path = "support/process_tree.rs"]
+mod process_tree;
+
 #[path = "support/release.rs"]
 mod release;
 use release::{launch, launch_from_manifest};

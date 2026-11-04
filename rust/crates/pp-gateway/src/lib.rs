@@ -201,7 +201,8 @@ struct GatewayState {
     /// Set only for a Rust-only runtime: `/__runtime` reports it and marks the
     /// compatibility backend `not_used`.
     rust_status: Option<tokio::sync::watch::Receiver<RustStatus>>,
-    /// Requests that reached the compatibility proxy.
+    /// Proxy attempts: requests that missed every gateway, asset and product
+    /// route and entered the compatibility branch.
     compat_forwards: AtomicU64,
 }
 
@@ -440,7 +441,9 @@ impl Gateway {
             token: self.state.shutdown_requested.clone(),
         }
     }
-    /// How many requests reached the compatibility proxy since start.
+    /// Proxy attempts since start, counted at the route-miss path: requests
+    /// that no gateway, asset or Rust product route answered. Rust-only mode
+    /// keeps this at 0.
     pub fn compat_forwards(&self) -> u64 {
         self.state.compat_forwards.load(Ordering::Relaxed)
     }
@@ -883,6 +886,10 @@ async fn handle(
     if let Some(product) = product_router(&state) {
         return product_response(&state, product, request, admission).await;
     }
+    // Route miss: no gateway, asset or Rust product route answered, so the
+    // request enters the compatibility branch. Counted here, before any early
+    // return, so no path into that branch goes uncounted.
+    state.compat_forwards.fetch_add(1, Ordering::Relaxed);
     if let Some(denied) = state
         .denied
         .iter()
@@ -1042,7 +1049,6 @@ async fn handle(
             || path
                 .strip_prefix("/api/v1/integrations/")
                 .is_some_and(|tail| !tail.contains('/')));
-    state.compat_forwards.fetch_add(1, Ordering::Relaxed);
     let Some(endpoint) = state.compat.endpoint() else {
         return node_unavailable();
     };

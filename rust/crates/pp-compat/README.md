@@ -6,7 +6,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Purpose
 
-- Verifies the measured release against the embedded bundle manifest before each child start (`verify_bundle`).
+- Verifies the measured release, frontend and backend, against the embedded bundle manifest once during core startup (`verify_bundle`). Before each child restart the supervisor rechecks only the backend files (`release::verify_backend`).
 - Spawns, watches, restarts with backoff, crash-guards, and stops the Node child (`Supervisor`).
 - Forwards HTTP to the child over a per-generation Unix socket with a private key (`Endpoint::forward`).
 - Owns the local log files, the one redaction policy, and the table of Node environment settings.

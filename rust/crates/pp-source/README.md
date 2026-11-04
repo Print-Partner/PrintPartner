@@ -45,9 +45,10 @@ Binaries each read one JSON command on stdin (8 MiB cap for `pp-source`, 1 MiB f
 ## Effects and flags
 
 - Reads and writes files under the configured repository root: revision directories, `.pp-source-candidate`, `.pp-source-archives` and `.pp-source-media` staging. It opens paths through no-follow directory handles and checks ancestor ownership, modes and (macOS) ACLs.
+- 3MF preparation (`SourceRoot::prepare_media`) also creates short-lived `pp-source-bind-*` files in `std::env::temp_dir()`, so the system temp directory must be writable.
 - Takes an advisory exclusive lock on each Source's `revisions` directory.
 - With `desktop_rebuild`: writes `<data_dir>/source-captures` and `.pp-imports` staging, and draws capture IDs from `getrandom`.
-- No SQL, network, Tokio, threads, child processes or environment variables.
+- No SQL, network, Tokio, threads or child processes. The only environment input is the platform's temp directory choice (`TMPDIR` on Unix).
 
 Features: `desktop_rebuild` (default off) enables the three gated modules and the `getrandom` dependency. It does not read `PP_DESKTOP_REBUILD`; `pp-core` enables this feature.
 

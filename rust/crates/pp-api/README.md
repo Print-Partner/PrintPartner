@@ -35,7 +35,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `client_contract` | `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document`, `document_bytes`. |
 | `fixtures` | Node/Rust parity runner: `Sandbox`, `Served`, `Exchange`, `Ledger`, `StateGraph`, `Labels`. |
 
-Every module except `auth` needs `desktop_rebuild`. Each `*HttpConfig::from_startup(origin, api_key_tenant, flag)` takes a loopback origin; the router mounts nothing unless `flag` is `1` or `true`. `pp-core` passes `Some("1")` from its gated composition. The private `loopback` module holds the shared Host/Origin and credential checks.
+Every module except `auth` needs `desktop_rebuild`. Each `*HttpConfig::from_startup(origin, api_key_tenant, flag)` takes a loopback origin; `CatalogHttpConfig::from_startup` also takes an `AuthPolicy` before `flag`; the router mounts nothing unless `flag` is `1` or `true`. `pp-core` passes `Some("1")` from its gated composition. The private `loopback` module holds the shared Host/Origin and credential checks.
 
 Binaries:
 

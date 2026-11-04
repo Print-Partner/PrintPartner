@@ -11,7 +11,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Shutdown: rejects new work, drains within `MUTATION_DRAIN`, stops Node and the gateway, releases the lease, and reports a `ShutdownReceipt`. It can commit one operation cutover during that drain.
 - Keeps the desktop state files: saved port, browser preferences, and desktop settings.
 - Owns process launch for performance captures; `pp-perf` owns the records.
-- Behind `desktop_rebuild`: composes `pp-api` routers and runs Source import and acquisition workers.
+- Behind `desktop_rebuild`: provides `pp-api` router composition (`rebuild_api`) and the Source import and acquisition worker types. `CoreRuntime` startup does not mount those routers or start those workers yet; integration tests and explicit callers do. A launch with both gates on still serves the Node compatibility runtime.
 
 ## Not responsible for
 

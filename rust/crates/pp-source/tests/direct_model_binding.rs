@@ -8,7 +8,7 @@ use pp_source::{
     archive::{ArchiveLimits, ZipInput},
 };
 use serde_json::Value;
-use std::{fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio, sync::atomic::AtomicBool};
+use std::{fs, io::Write, process::Stdio, sync::atomic::AtomicBool};
 
 #[path = "support/process.rs"]
 mod support;
@@ -21,6 +21,14 @@ const INJECTED_MODEL: &str = "<model><object name='injected'><mesh><vertex x='0'
 mod scratch;
 use scratch::Scratch;
 
+/// Pins a Unix mode so root ancestor checks ignore the umask. Windows has none.
+fn pin_mode(path: impl AsRef<std::path::Path>, mode: u32) {
+    #[cfg(unix)]
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    #[cfg(windows)]
+    let _ = (path, mode);
+}
+
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
 impl Fixture {
@@ -29,7 +37,7 @@ impl Fixture {
         fs::create_dir(path.join("repos")).unwrap();
         fs::create_dir(path.join("input")).unwrap();
         for directory in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+            pin_mode(directory, 0o755);
         }
         Self(path)
     }

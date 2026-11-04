@@ -268,8 +268,7 @@ impl SourceRoot {
 
     /// Removes abandoned media, archive, and snapshot staging directories.
     pub fn discard_staging(&mut self) -> Result<()> {
-        use fs2::FileExt;
-        self.revisions.0.try_lock_exclusive()?;
+        self.revisions.try_lock()?;
         let result = (|| {
             for name in [".pp-source-archives", ".pp-source-media"] {
                 let parent = match self.revisions.child(name, false) {
@@ -279,14 +278,14 @@ impl SourceRoot {
                     }
                     Err(error) => return Err(error),
                 };
-                parent.0.try_lock_exclusive()?;
+                parent.try_lock()?;
                 parent.remove_tree(".candidate")?;
                 parent.sync()?;
             }
             self.revisions.remove_tree(crate::CANDIDATE)?;
             self.revisions.sync()
         })();
-        let unlocked = FileExt::unlock(&self.revisions.0);
+        let unlocked = self.revisions.unlock();
         result?;
         unlocked?;
         Ok(())

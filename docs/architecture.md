@@ -107,8 +107,8 @@ Keep the existing operation crates and deepen their private family modules.
 Do not require a blanket split, consolidation or rename, or freeze the crate
 count. Keep `pp-services`, `pp-source`, `pp-contracts`, and `pp-perf` initially.
 The narrow `pp-os` filesystem crate, specified in ADR 0015, exists with
-`pp-storage` as its first consumer. This is not a move of all platform code
-into one crate.
+`pp-storage` and `pp-source` as its consumers. This is not a move of all
+platform code into one crate.
 
 The following allowed workspace dependencies reflect
 [`check-boundaries.py`](../rust/scripts/check-boundaries.py) at the baseline.
@@ -124,7 +124,7 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-drivers`](../rust/crates/pp-drivers/README.md) | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
 | [`pp-services`](../rust/crates/pp-services/README.md) | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
 | [`pp-storage`](../rust/crates/pp-storage/README.md) | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-os`; `pp-domain`, `pp-contracts`, both gated |
-| [`pp-source`](../rust/crates/pp-source/README.md) | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | none |
+| [`pp-source`](../rust/crates/pp-source/README.md) | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | `pp-os` |
 | [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
 | [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | none |
@@ -132,15 +132,16 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
-| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows, no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
+| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows (open, inspect, enumerate, create, rename, remove), no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
 | [`pp-testkit`](../rust/crates/pp-testkit/README.md) | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented graph, not a manifest for the amendment.
 `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies. `pp-storage`
 uses it for the data-directory lease's file mechanics, preflight opens, backup
-reads and durable backup publication. `pp-source` and `pp-core` are the next
-consumers; add each consumer edge to the checker and manifests only with that
-consumer's migration. It supplies directory-relative handle access,
+reads and durable backup publication. `pp-source` uses it for every Source
+directory operation: the pinned root walk, staging, enumeration, publication by
+no-replace rename and its directory locks. `pp-core` is the next consumer; add
+its edge to the checker and manifests only with its migration. It supplies directory-relative handle access,
 identity/no-follow checks, lock primitives and durable file publication. The
 crate documentation in `rust/crates/pp-os/src/lib.rs` lists where the Unix and
 Windows guarantees differ; on Windows it reports no POSIX owner or mode, so
@@ -449,7 +450,7 @@ are not product analytics; no default remote exporter or Sentry initialization.
 | Target | Delivery and required evidence | Baseline gap / release decision |
 | --- | --- | --- |
 | macOS first | Build and sign the app/DMG for the owner-approved architecture set; notarize/staple; test installed WKWebView and restart/update on each supported architecture | Declared 13.5 minimum needs oldest-OS proof; architecture coverage, public identity and key custody remain open |
-| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | Eight crates are excluded from baseline Windows CI. Share filesystem mechanics through narrow `pp-os`, port consumers incrementally, and keep signals with their runtime owner; choose signing provider and OS/architecture minima |
+| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | Six crates are excluded from baseline Windows CI. Share filesystem mechanics through narrow `pp-os`, port consumers incrementally, and keep signals with their runtime owner; choose signing provider and OS/architecture minima |
 | Linux before 1.0 | AppImage plus selected deb/rpm, WebKitGTK 4.1, no-tray recovery, package/update trust appropriate to format | Declare oldest glibc/distro matrix and hardware GPU evidence. CI software rendering is not hardware certification |
 | Docker | Non-root amd64/arm64, SQLite/volume migration, health, TERM/restart and optional slicer simulator | Runtime base, volume permissions and architecture execution require proof |
 | LAN browsers | Shared UI, authenticated pairing, HTTPS/cookies, revocation and reconnect, mobile accessibility | LAN admission is not delivered by loopback-only routing; certificate trust must work on actual devices |

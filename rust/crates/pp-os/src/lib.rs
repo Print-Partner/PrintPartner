@@ -16,6 +16,7 @@
 //! | Identity | device and inode | volume serial number and 64-bit file index |
 //! | Owner and mode | [`PosixAccess`] | `None`: access is governed by ACLs, which this crate does not inspect yet |
 //! | Durable rename | `rename` ([`publish_rename`]) or `link` and `unlink` ([`publish_new`]), then [`sync_directory`] | `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`; [`sync_directory`] only checks that the directory opens |
+//! | Durable entry changes in a [`Dir`] | [`Dir::create_dir`] or [`Dir::rename_no_replace`], then [`Dir::sync`] (`fsync` on the directory) | Both open the entry with `FILE_WRITE_THROUGH`, the option `MoveFileExW` uses for `MOVEFILE_WRITE_THROUGH`; [`Dir::sync`] does nothing. See [Durability on Windows](#durability-on-windows) |
 //! | File flush | `fsync` on a read-only descriptor | `FlushFileBuffers` on a handle with write access |
 //! | Delete | `unlinkat`: the name goes at once, open handles stay valid | POSIX-semantics delete (`FILE_DISPOSITION_POSIX_SEMANTICS`), the same as Unix. File systems without it, such as FAT, get the classic delete: the name stays until the last handle closes and cannot be opened meanwhile |
 //! | Lock | `flock` through `fs4`, on a file or a directory | `LockFileEx` through `fs4`, on a regular file only; see [Directory locks](#directory-locks) |
@@ -36,19 +37,39 @@
 //! held lock survives its name being deleted or replaced, so callers compare
 //! the locked file's [`Identity`] with the named entry after locking, as
 //! pp-storage's data-directory lease does with `printpartner.lock`.
+//! [`Dir::try_lock`] and [`Dir::lock`] take this lock file for the caller on
+//! Windows and `flock` the directory itself on Unix.
 //!
 //! # Windows entry names
 //!
 //! Entry names are matched without case, as Win32 paths are. `NtCreateFile`
 //! does not strip trailing dots and spaces the way Win32 path parsing does, so
 //! `name.` and `name` are different entries; callers should not use such
-//! names. The Windows adapter can also create a directory, rename an entry and
-//! remove an empty directory relative to the handle. The public [`Dir`] gains
-//! those operations, with their Unix adapters, when pp-source moves onto
-//! pp-os; until then only the Windows tests call them.
+//! names. Every [`Dir`] entry operation, creating, renaming and removing
+//! directories included, refuses `.`, `..`, separators and drive prefixes
+//! before it reaches the system.
+//!
+//! # Durability on Windows
+//!
+//! A read handle cannot flush a directory, so [`Dir::sync`] does nothing on
+//! Windows. [`Dir::create_dir`] and [`Dir::rename_no_replace`] open the entry
+//! with `FILE_WRITE_THROUGH` instead, the create option `MoveFileExW` applies
+//! for `MOVEFILE_WRITE_THROUGH`, so the change is committed before the call
+//! returns. Callers that flush each file with `File::sync_all` and then
+//! publish with one `rename_no_replace` rely on that, where Unix callers
+//! `fsync` the directory after `renameat`. Tests check that both handles are
+//! write-through; nothing simulates power loss.
+//!
+//! # File systems without POSIX semantics
+//!
+//! Deletes and renames ask for POSIX semantics first. A file system that does
+//! not implement them, such as FAT, gets the classic information class: a
+//! deleted name stays until its last handle closes, and a rename onto an
+//! existing name fails as before. Hosted CI runs on NTFS, so tests drive the
+//! classic path directly and check the fallback decision with fake results.
 
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs::File,
     io,
     path::{Component, Path},
@@ -89,7 +110,6 @@ pub struct PosixAccess {
 }
 
 impl PosixAccess {
-    #[cfg(test)]
     pub fn uid(self) -> u32 {
         self.uid
     }
@@ -106,6 +126,11 @@ impl PosixAccess {
     pub fn owned_by_root(self) -> bool {
         self.uid == 0
     }
+}
+
+/// The effective user ID, or `None` on Windows, which has no POSIX owner.
+pub fn effective_uid() -> Option<u32> {
+    cfg!(unix).then(platform::effective_uid)
 }
 
 /// What one inspection of an entry saw.
@@ -242,9 +267,7 @@ impl Dir {
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(Self {
-            inner: self.inner.try_clone()?,
-        })
+        self.inner.try_clone().map(|inner| Self { inner })
     }
 
     /// Inspect the opened directory itself.
@@ -278,6 +301,139 @@ impl Dir {
     /// Remove the entry `name`, which must not be a directory.
     pub fn remove_file(&self, name: &str) -> io::Result<()> {
         self.inner.remove_file(checked_name(name)?)
+    }
+
+    /// Open the directory at `path`, following links in the path, only to
+    /// reach its entries and inspect it: `O_PATH` on Linux and `O_SEARCH` on
+    /// macOS, so it needs no read permission. Use [`Dir::reopen`] to
+    /// enumerate, sync or lock it. On Windows this is [`Dir::open`].
+    pub fn open_search(path: &Path) -> io::Result<Self> {
+        platform::Dir::open_search(path).map(|inner| Self { inner })
+    }
+
+    /// Open the directory `name` as in [`Dir::open_search`], without
+    /// following it.
+    pub fn open_search_nofollow(&self, name: &str) -> io::Result<Self> {
+        self.inner
+            .open_search_nofollow(checked_name(name)?)
+            .map(|inner| Self { inner })
+    }
+
+    /// Open the directory `name` without following it.
+    pub fn open_dir_nofollow(&self, name: &str) -> io::Result<Self> {
+        self.inner
+            .open_dir_nofollow(checked_name(name)?)
+            .map(|inner| Self { inner })
+    }
+
+    /// Open this directory again as a new, full handle: `openat(".")` on
+    /// Unix, a relative open with an empty name on Windows.
+    pub fn reopen(&self) -> io::Result<Self> {
+        self.inner.reopen().map(|inner| Self { inner })
+    }
+
+    /// The owner and mode bits of the opened directory, read with `fstat`, or
+    /// `None` on Windows, where access is governed by ACLs.
+    pub fn posix_access(&self) -> io::Result<Option<PosixAccess>> {
+        self.inner.posix_access()
+    }
+
+    /// The names in this directory, without `.` and `..`, in the order the
+    /// file system returns them.
+    pub fn entries(&self) -> io::Result<Entries> {
+        Ok(Entries {
+            inner: self.inner.entries()?,
+        })
+    }
+
+    /// Open the entry `name` as `how` says, without following it. The result
+    /// may be a directory or another non-regular file; callers that need a
+    /// regular file check [`status_of`].
+    pub fn open_file(&self, name: &str, how: FileOpen) -> io::Result<File> {
+        self.inner.open_file(checked_name(name)?, how)
+    }
+
+    /// Create the directory `name`, with mode 0700 on Unix. Fails with
+    /// `AlreadyExists` when any entry has the name. Follow with
+    /// [`Dir::sync`] to make the entry durable.
+    pub fn create_dir(&self, name: &str) -> io::Result<()> {
+        self.inner.create_dir(checked_name(name)?)
+    }
+
+    /// Rename the entry `from`, a link itself rather than its target, to `to`
+    /// in this directory, failing with `AlreadyExists` when `to` exists.
+    /// Follow with [`Dir::sync`] to make the new name durable.
+    pub fn rename_no_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        self.inner
+            .rename_no_replace(checked_name(from)?, checked_name(to)?)
+    }
+
+    /// Remove the empty directory `name`. A link is refused.
+    pub fn remove_dir(&self, name: &str) -> io::Result<()> {
+        self.inner.remove_dir(checked_name(name)?)
+    }
+
+    /// Make entry changes in this directory durable: `fsync` on Unix. On
+    /// Windows this does nothing; see
+    /// [Durability on Windows](#durability-on-windows).
+    pub fn sync(&self) -> io::Result<()> {
+        self.inner.sync()
+    }
+
+    /// Take an exclusive advisory lock on this directory without waiting,
+    /// failing with `WouldBlock` while another handle holds it. Unix locks
+    /// the directory with `flock` and ignores `lock_file`. Windows locks the
+    /// regular file `lock_file` inside the directory, creating it when
+    /// missing, and keeps it open until this `Dir` drops; see
+    /// [Directory locks](#directory-locks). Use one `lock_file` name per
+    /// directory.
+    pub fn try_lock(&self, lock_file: &str) -> io::Result<()> {
+        self.inner.try_lock(checked_name(lock_file)?)
+    }
+
+    /// Take the lock as in [`Dir::try_lock`], waiting while another handle
+    /// holds it.
+    pub fn lock(&self, lock_file: &str) -> io::Result<()> {
+        self.inner.lock(checked_name(lock_file)?)
+    }
+
+    /// Release a lock taken through this `Dir`. Closing the `Dir` also
+    /// releases it.
+    pub fn unlock(&self) -> io::Result<()> {
+        self.inner.unlock()
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsFd for Dir {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.inner.as_fd()
+    }
+}
+
+/// How [`Dir::open_file`] opens an entry. None follows a final link, and
+/// Unix handles are close-on-exec and non-blocking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileOpen {
+    /// Read an existing entry (`O_RDONLY`).
+    Read,
+    /// Read and write an existing entry (`O_RDWR`).
+    ReadWrite,
+    /// Create a new regular file for writing (`O_WRONLY | O_CREAT | O_EXCL`,
+    /// mode 0600), failing with `AlreadyExists` when any entry has the name.
+    CreateWriteOnly,
+}
+
+/// The names in a directory, from [`Dir::entries`].
+pub struct Entries {
+    inner: platform::Entries,
+}
+
+impl Iterator for Entries {
+    type Item = io::Result<OsString>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
     }
 }
 

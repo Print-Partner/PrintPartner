@@ -16,7 +16,6 @@ mod unicode16;
 mod test_process;
 
 use directory::Directory;
-use fs2::FileExt;
 use path_policy::PathCollisions;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,7 +23,6 @@ use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     fmt,
-    fs::File,
     io::{self, Read, Write},
     path::Path,
     sync::{Arc, Mutex, PoisonError},
@@ -129,11 +127,6 @@ impl Error {
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
-    }
-}
-impl From<rustix::io::Errno> for Error {
-    fn from(e: rustix::io::Errno) -> Self {
-        Self::Io(e.into())
     }
 }
 impl From<serde_json::Error> for Error {
@@ -358,11 +351,11 @@ pub struct SourceRoot {
     revisions_bytes: usize,
     lock: Arc<SourceLock>,
 }
-/// The per-Source advisory lock on this handle's revisions descriptor. The
-/// handle's materializations and its live `ExtractedArchive` share one flock
+/// The per-Source advisory lock on this handle's revisions directory. The
+/// handle's materializations and its live `ExtractedArchive` share one lock
 /// through a holder count, so releasing one holder never unlocks another.
 pub(crate) struct SourceLock {
-    revisions: File,
+    revisions: Directory,
     holders: Mutex<usize>,
 }
 pub(crate) struct SourceLockGuard {
@@ -374,7 +367,7 @@ impl SourceLock {
     fn acquire(self: &Arc<Self>) -> Result<SourceLockGuard> {
         let mut holders = self.holders.lock().unwrap_or_else(PoisonError::into_inner);
         if *holders == 0 {
-            self.revisions.lock_exclusive()?;
+            self.revisions.lock()?;
         }
         *holders += 1;
         Ok(SourceLockGuard {
@@ -388,7 +381,7 @@ impl SourceLock {
         if *holders > 0 {
             return Ok(None);
         }
-        match self.revisions.try_lock_exclusive() {
+        match self.revisions.try_lock() {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
             Err(error) => return Err(error),
@@ -413,7 +406,7 @@ impl SourceLockGuard {
             .unwrap_or_else(PoisonError::into_inner);
         *holders -= 1;
         if *holders == 0 {
-            FileExt::unlock(&self.lock.revisions)?;
+            self.lock.revisions.unlock()?;
         }
         Ok(())
     }
@@ -475,7 +468,7 @@ impl TenantRepos {
             tenant_id: self.tenant_id.clone(),
             source_id,
             lock: Arc::new(SourceLock {
-                revisions: revisions.0.try_clone()?,
+                revisions: revisions.try_clone()?,
                 holders: Mutex::new(0),
             }),
             revisions,
@@ -984,7 +977,16 @@ impl SourceRoot {
 mod tests {
     use super::*;
     use crate::scratch::Scratch;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::fs;
+
+    /// Pins a Unix mode so the ancestor check ignores the umask. Windows has
+    /// none.
+    fn pin_mode(path: impl AsRef<Path>, mode: u32) {
+        #[cfg(unix)]
+        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+        #[cfg(windows)]
+        let _ = (path, mode);
+    }
 
     /// Removed when the scratch drops, including while a test unwinds from a
     /// panic.
@@ -993,7 +995,7 @@ mod tests {
         fn new() -> Self {
             let path = Scratch::new("pp-source-tree-");
             // Pin the root mode so the ancestor check does not depend on umask.
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            pin_mode(&path, 0o755);
             Self(path)
         }
         fn paths(&self) -> Result<BTreeSet<String>> {
@@ -1011,26 +1013,24 @@ mod tests {
 
     #[test]
     fn handle_holders_share_one_flock_until_the_last_releases() {
-        use std::fs::File;
-
         let tree = Tree::new();
         let source = TenantRepos::open("tenant".into(), &tree.0)
             .unwrap()
             .source(1)
             .unwrap();
-        let peer = File::open(tree.0.join("1/revisions")).unwrap();
+        let peer = Directory(pp_os::Dir::open(&tree.0.join("1/revisions")).unwrap());
         // Archive readiness, then a materialization joining from this handle.
         let archive = source.lock.try_acquire_alone().unwrap().unwrap();
         assert!(source.lock.try_acquire_alone().unwrap().is_none());
         let materialize = source.lock.acquire().unwrap();
         // Discarding the archive must not unlock the running materialization.
         drop(archive);
-        assert!(peer.try_lock_exclusive().is_err());
+        assert!(peer.try_lock().is_err());
         assert!(source.lock.try_acquire_alone().unwrap().is_none());
         drop(materialize);
-        peer.try_lock_exclusive().unwrap();
+        peer.try_lock().unwrap();
         assert!(source.lock.try_acquire_alone().unwrap().is_none());
-        FileExt::unlock(&peer).unwrap();
+        peer.unlock().unwrap();
         assert!(source.lock.try_acquire_alone().unwrap().is_some());
     }
 
@@ -1052,6 +1052,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn normalized_listing_names_do_not_hide_symlinks() {
         use std::os::unix::fs::symlink;
@@ -1094,7 +1095,6 @@ mod tests {
     #[test]
     fn unicode16_manifest_stays_readable_while_new_writes_reject_it() {
         use sha2::Digest;
-        use std::os::unix::fs::PermissionsExt;
 
         let legacy = "a\u{1ADD}\u{0300}.stl".to_owned();
         let omitted = "notes\u{1ADD}\u{0300}.md".to_owned();
@@ -1135,9 +1135,9 @@ mod tests {
         for dir in ["repos", "input"] {
             let path = root.join(dir);
             fs::create_dir(&path).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            pin_mode(&path, 0o755);
         }
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        pin_mode(&root, 0o755);
         let revision = root.join("repos/42/revisions/legacy-rev");
         fs::create_dir_all(&revision).unwrap();
         fs::write(revision.join(&legacy), content).unwrap();
@@ -1200,7 +1200,6 @@ mod tests {
     #[test]
     fn unicode16_distinct_pair_stays_byte_exact_while_new_writes_still_collide() {
         use sha2::Digest;
-        use std::os::unix::fs::PermissionsExt;
 
         let legacy = "a\u{1ADD}\u{0300}.stl".to_owned();
         let composed = "\u{00E0}\u{1ADD}.stl".to_owned();
@@ -1258,9 +1257,9 @@ mod tests {
         for dir in ["repos", "input"] {
             let path = root.join(dir);
             fs::create_dir(&path).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            pin_mode(&path, 0o755);
         }
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        pin_mode(&root, 0o755);
         let revision = root.join("repos/42/revisions/pair-rev");
         fs::create_dir_all(&revision).unwrap();
         fs::write(revision.join(&legacy), legacy_bytes).unwrap();

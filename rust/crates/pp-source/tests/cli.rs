@@ -2,7 +2,6 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::Write,
-    os::unix::fs::PermissionsExt,
     process::{Output, Stdio},
 };
 
@@ -13,6 +12,14 @@ mod support;
 mod scratch;
 use scratch::Scratch;
 
+/// Pins a Unix mode so root ancestor checks ignore the umask. Windows has none.
+fn pin_mode(path: impl AsRef<std::path::Path>, mode: u32) {
+    #[cfg(unix)]
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    #[cfg(windows)]
+    let _ = (path, mode);
+}
+
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
 impl Fixture {
@@ -21,7 +28,7 @@ impl Fixture {
         fs::create_dir(path.join("repos")).unwrap();
         fs::create_dir(path.join("input")).unwrap();
         for directory in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+            pin_mode(directory, 0o755);
         }
         fs::write(path.join("input/part.stl"), b"solid bytes").unwrap();
         Self(path)
@@ -140,8 +147,6 @@ fn success_emits_json_matching_committed_example() {
 
 #[test]
 fn cli_invalid_revision_cleans_extraction_and_preserves_published_snapshot() {
-    use fs2::FileExt;
-
     let fixture = Fixture::new();
     let mut zip =
         zip::ZipWriter::new(fs::File::create(fixture.0.join("input/upload.zip")).unwrap());
@@ -197,9 +202,11 @@ fn cli_invalid_revision_cleans_extraction_and_preserves_published_snapshot() {
     let retained = published_files.map(|name| fs::read(published.join(name)).unwrap());
     assert_eq!(retained[0].as_slice(), b"solid tiny\nendsolid tiny\n");
     let revision_names = || {
+        // Windows locks a file inside the directory; Unix locks the directory.
         let mut names: Vec<_> = fs::read_dir(published.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != ".pp-source-lock")
             .collect();
         names.sort();
         names
@@ -218,8 +225,8 @@ fn cli_invalid_revision_cleans_extraction_and_preserves_published_snapshot() {
             .join("repos/42/revisions/.pp-source-archives/.candidate")
             .exists()
     );
-    let source_lock = fs::File::open(fixture.0.join("repos/42/revisions")).unwrap();
-    source_lock.try_lock_exclusive().unwrap();
+    let source_lock = pp_os::Dir::open(&fixture.0.join("repos/42/revisions")).unwrap();
+    source_lock.try_lock(".pp-source-lock").unwrap();
     assert_eq!(
         published_files.map(|name| fs::read(published.join(name)).unwrap()),
         retained

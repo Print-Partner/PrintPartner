@@ -3495,6 +3495,7 @@ version = "0.1.0"
 dependencies = [
  "fs4",
  "libc",
+ "rustix",
  "tempfile",
  "windows-sys 0.61.2",
 ]
@@ -3546,14 +3547,13 @@ name = "pp-source"
 version = "0.1.0"
 dependencies = [
  "caseless",
- "fs2",
  "getrandom 0.3.4",
  "hex",
  "insta",
  "libc",
+ "pp-os",
  "proptest",
  "regex",
- "rustix",
  "ryu-js",
  "serde",
  "serde_json",

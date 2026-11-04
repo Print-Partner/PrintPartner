@@ -3,7 +3,6 @@ use crate::{
     Directory, FileKind, LocalFiles, PathCollisions, SelectedFile, SourcePath, SourceRoot,
     compare_paths,
 };
-use fs2::FileExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -191,7 +190,7 @@ impl SourceRoot {
             collisions.insert(path, false)?;
         }
         let parent = self.revisions.child(".pp-source-media", true)?;
-        match parent.0.try_lock_exclusive() {
+        match parent.try_lock() {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Err(MediaError::Busy),
             Err(e) => return Err(e.into()),

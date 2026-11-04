@@ -1,50 +1,49 @@
 use crate::{Error, Result};
-use rustix::fs::{self, AtFlags, Mode, OFlags, RawMode, RenameFlags};
+use pp_os::{Dir, FileOpen};
 use std::{
     fs::File,
     io,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
-#[cfg(feature = "desktop_rebuild")]
-use std::os::unix::fs::MetadataExt;
+/// The file Windows locks in place of a directory, which `LockFileEx` cannot
+/// lock. Unix locks the directory itself. Revision keys and staging names
+/// never start with `.pp-source-lock`, so listings cannot mistake it.
+const LOCK_FILE: &str = ".pp-source-lock";
 
-pub(crate) struct Directory(pub(crate) File);
+pub(crate) struct Directory(pub(crate) Dir);
 
 impl Directory {
     pub(crate) fn open_root(path: &Path) -> Result<Self> {
-        Self::open_root_as(path, rustix::process::geteuid().as_raw())
+        Self::open_root_as(path, pp_os::effective_uid())
     }
 
     /// Opens `path` as the confinement root on behalf of `uid`. Every pinned
     /// component, from `/` to the root itself, is checked through its own
-    /// handle so a replaced path cannot slip past the ownership check.
-    fn open_root_as(path: &Path, uid: u32) -> Result<Self> {
+    /// handle so a replaced path cannot slip past the ownership check. On
+    /// Windows, which has no POSIX owner, the walk still pins every component
+    /// and refuses links and junctions, but checks no ownership: pp-os does
+    /// not inspect ACLs yet.
+    fn open_root_as(path: &Path, uid: Option<u32>) -> Result<Self> {
         if !path.is_absolute() {
             return Err(Error::UnsafePath);
         }
-        let mut root = Self(File::from(fs::open(
-            "/",
-            Self::search_flags() | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?));
-        // `/` is already pinned. A sticky directory is safe only when a
+        // `/` on Unix; the drive or share prefix and its root on Windows.
+        let mut components = path.components().peekable();
+        let mut anchor = PathBuf::new();
+        while let Some(part @ (Component::Prefix(_) | Component::RootDir)) = components.peek() {
+            anchor.push(part.as_os_str());
+            components.next();
+        }
+        let mut root = Self(Dir::open_search(&anchor)?);
+        // The anchor is already pinned. A sticky directory is safe only when a
         // subsequently checked component confines access below it.
-        let mut components = path.components().skip(1).peekable();
         root.check_ancestor(uid, components.peek().is_some())?;
         while let Some(component) = components.next() {
             match component {
                 Component::Normal(name) => {
                     let name = name.to_str().ok_or(Error::UnsafePath)?;
-                    root = Self(File::from(fs::openat(
-                        &root.0,
-                        name,
-                        Self::search_flags()
-                            | OFlags::DIRECTORY
-                            | OFlags::NOFOLLOW
-                            | OFlags::CLOEXEC,
-                        Mode::empty(),
-                    )?));
+                    root = Self(root.0.open_search_nofollow(name)?);
                     root.check_ancestor(uid, components.peek().is_some())?;
                 }
                 _ => return Err(Error::UnsafePath),
@@ -52,12 +51,14 @@ impl Directory {
         }
         // Only the selected root needs enumeration and fsync support. Reopen
         // the pinned directory rather than resolving the configured path again.
-        root.child(".", false)
+        Ok(Self(root.0.reopen()?))
     }
 
-    fn check_ancestor(&self, uid: u32, allow_sticky: bool) -> Result<()> {
-        let stat = fs::fstat(&self.0)?;
-        if !ancestor_is_trusted(stat.st_uid, stat.st_mode as RawMode, uid, allow_sticky) {
+    fn check_ancestor(&self, uid: Option<u32>, allow_sticky: bool) -> Result<()> {
+        let (Some(uid), Some(access)) = (uid, self.0.posix_access()?) else {
+            return Ok(());
+        };
+        if !ancestor_is_trusted(access.uid(), access.mode(), uid, allow_sticky) {
             return Err(Error::UnsafeAncestor);
         }
         // ACLs supplement mode bits on macOS; read them from the same handle.
@@ -71,35 +72,15 @@ impl Directory {
         Ok(())
     }
 
-    fn search_flags() -> OFlags {
-        #[cfg(target_os = "linux")]
-        {
-            OFlags::PATH
-        }
-        #[cfg(target_os = "macos")]
-        {
-            OFlags::from_bits_retain(libc::O_SEARCH as _)
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            OFlags::RDONLY
-        }
-    }
-
     pub(crate) fn child(&self, name: &str, create: bool) -> Result<Self> {
         if create {
-            match fs::mkdirat(&self.0, name, Mode::RUSR | Mode::WUSR | Mode::XUSR) {
+            match self.0.create_dir(name) {
                 Ok(()) => self.sync()?,
-                Err(rustix::io::Errno::EXIST) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e.into()),
             }
         }
-        Ok(Self(File::from(fs::openat(
-            &self.0,
-            name,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?)))
+        Ok(Self(self.0.open_dir_nofollow(name)?))
     }
 
     pub(crate) fn parent(&self, path: &str, create: bool) -> Result<(Self, String)> {
@@ -116,52 +97,27 @@ impl Directory {
 
     pub(crate) fn file(&self, path: &str, create: bool) -> Result<File> {
         let (parent, name) = self.parent(path, create)?;
-        let flags = OFlags::NOFOLLOW
-            | OFlags::CLOEXEC
-            | OFlags::NONBLOCK
-            | if create {
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL
-            } else {
-                OFlags::RDONLY
-            };
-        let file = File::from(fs::openat(
-            &parent.0,
-            name.as_str(),
-            flags,
-            Mode::RUSR | Mode::WUSR,
-        )?);
-        if !file.metadata()?.is_file() {
-            return Err(Error::UnsafePath);
-        }
-        Ok(file)
+        let how = if create {
+            FileOpen::CreateWriteOnly
+        } else {
+            FileOpen::Read
+        };
+        regular(parent.0.open_file(&name, how)?)
     }
 
     pub(crate) fn file_read_write(&self, path: &str) -> Result<File> {
         let (parent, name) = self.parent(path, false)?;
-        let flags = OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK | OFlags::RDWR;
-        let file = File::from(fs::openat(
-            &parent.0,
-            name.as_str(),
-            flags,
-            Mode::RUSR | Mode::WUSR,
-        )?);
-        if !file.metadata()?.is_file() {
-            return Err(Error::UnsafePath);
-        }
-        Ok(file)
+        regular(parent.0.open_file(&name, FileOpen::ReadWrite)?)
     }
 
     pub(crate) fn entries(&self) -> Result<Vec<String>> {
         let mut entries = Vec::new();
-        for entry in fs::Dir::read_from(&self.0)? {
-            let entry = entry?;
-            let name = entry.file_name().to_str().map_err(|_| Error::UnsafePath)?;
-            if name != "." && name != ".." {
-                if entries.len() > crate::MAX_ENTRIES {
-                    return Err(Error::Limit);
-                }
-                entries.push(name.to_owned());
+        for entry in self.0.entries()? {
+            let name = entry?.into_string().map_err(|_| Error::UnsafePath)?;
+            if entries.len() > crate::MAX_ENTRIES {
+                return Err(Error::Limit);
             }
+            entries.push(name);
         }
         Ok(entries)
     }
@@ -172,86 +128,85 @@ impl Directory {
                 for entry in child.entries()? {
                     child.remove_tree(&entry)?;
                 }
-                fs::unlinkat(&self.0, name, AtFlags::REMOVEDIR)?;
+                self.0.remove_dir(name)?;
             }
             Err(Error::Io(error)) if error.kind() == io::ErrorKind::NotFound => {}
             Err(_) => {
-                fs::unlinkat(&self.0, name, AtFlags::empty())?;
+                self.0.remove_file(name)?;
             }
         }
         Ok(())
     }
 
     pub(crate) fn sync(&self) -> Result<()> {
-        self.0.sync_all().map_err(Into::into)
+        self.0.sync().map_err(Into::into)
     }
 
     pub(crate) fn publish(&self, candidate: &str, revision: &str) -> Result<()> {
-        fs::renameat_with(
-            &self.0,
-            candidate,
-            &self.0,
-            revision,
-            RenameFlags::NOREPLACE,
-        )?;
+        self.0.rename_no_replace(candidate, revision)?;
         self.sync()
     }
-}
 
-#[cfg(feature = "desktop_rebuild")]
-impl Directory {
     pub(crate) fn try_clone(&self) -> Result<Self> {
         Ok(Self(self.0.try_clone()?))
     }
 
+    /// Takes this directory's exclusive lock without waiting; see
+    /// [`LOCK_FILE`].
+    pub(crate) fn try_lock(&self) -> io::Result<()> {
+        self.0.try_lock(LOCK_FILE)
+    }
+
+    pub(crate) fn lock(&self) -> io::Result<()> {
+        self.0.lock(LOCK_FILE)
+    }
+
+    pub(crate) fn unlock(&self) -> io::Result<()> {
+        self.0.unlock()
+    }
+}
+
+fn regular(file: File) -> Result<File> {
+    if !file.metadata()?.is_file() {
+        return Err(Error::UnsafePath);
+    }
+    Ok(file)
+}
+
+#[cfg(feature = "desktop_rebuild")]
+impl Directory {
     pub(crate) fn create_child_exclusive(&self, name: &str) -> Result<Self> {
-        fs::mkdirat(&self.0, name, Mode::RUSR | Mode::WUSR | Mode::XUSR)?;
+        self.0.create_dir(name)?;
         self.child(name, false)
     }
 
     pub(crate) fn create_child_unsynced(&self, name: &str) -> Result<(Self, bool)> {
-        let created = match fs::mkdirat(&self.0, name, Mode::RUSR | Mode::WUSR | Mode::XUSR) {
+        let created = match self.0.create_dir(name) {
             Ok(()) => true,
-            Err(rustix::io::Errno::EXIST) => false,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
             Err(error) => return Err(error.into()),
         };
         Ok((self.child(name, false)?, created))
     }
 
     pub(crate) fn file_exclusive(&self, name: &str) -> Result<File> {
-        let file = File::from(fs::openat(
-            &self.0,
-            name,
-            OFlags::WRONLY
-                | OFlags::CREATE
-                | OFlags::EXCL
-                | OFlags::NOFOLLOW
-                | OFlags::CLOEXEC
-                | OFlags::NONBLOCK,
-            Mode::RUSR | Mode::WUSR,
-        )?);
-        if !file.metadata()?.is_file() {
-            return Err(Error::UnsafePath);
-        }
-        Ok(file)
+        regular(self.0.open_file(name, FileOpen::CreateWriteOnly)?)
     }
 
     pub(crate) fn rename_no_replace(&self, from: &str, to: &str) -> Result<()> {
-        fs::renameat_with(&self.0, from, &self.0, to, RenameFlags::NOREPLACE)?;
+        self.0.rename_no_replace(from, to)?;
         Ok(())
     }
 
     pub(crate) fn remove_owned_file(&self, name: &str, owned: &File) -> Result<()> {
         self.require_owned_file(name, owned)?;
-        fs::unlinkat(&self.0, name, AtFlags::empty())?;
+        self.0.remove_file(name)?;
         Ok(())
     }
 
     pub(crate) fn require_owned_file(&self, name: &str, owned: &File) -> Result<()> {
-        let current = self.file(name, false)?;
-        let current = current.metadata()?;
-        let owned = owned.metadata()?;
-        if !current.is_file() || current.dev() != owned.dev() || current.ino() != owned.ino() {
+        let current = pp_os::status_of(&self.file(name, false)?)?;
+        if !current.is_file() || current.identity() != pp_os::status_of(owned)?.identity() {
             return Err(Error::CorruptSnapshot);
         }
         Ok(())
@@ -259,15 +214,13 @@ impl Directory {
 
     pub(crate) fn remove_owned_empty_directory(&self, name: &str, owned: &Directory) -> Result<()> {
         self.require_owned_directory(name, owned)?;
-        fs::unlinkat(&self.0, name, AtFlags::REMOVEDIR)?;
+        self.0.remove_dir(name)?;
         Ok(())
     }
 
     pub(crate) fn require_owned_directory(&self, name: &str, owned: &Directory) -> Result<()> {
-        let current = self.child(name, false)?;
-        let current = current.0.metadata()?;
-        let owned = owned.0.metadata()?;
-        if !current.is_dir() || current.dev() != owned.dev() || current.ino() != owned.ino() {
+        let current = self.child(name, false)?.0.status()?;
+        if !current.is_dir() || current.identity() != owned.0.status()?.identity() {
             return Err(Error::CorruptSnapshot);
         }
         Ok(())
@@ -279,14 +232,14 @@ impl Directory {
 /// Sticky `/tmp`-style ancestors are accepted because the next component must
 /// itself pass this check, so other users cannot rename it away. The selected
 /// root has no such checked child, so it must not be group/world-writable.
-fn ancestor_is_trusted(owner: u32, mode: RawMode, uid: u32, allow_sticky: bool) -> bool {
-    let mode = Mode::from_raw_mode(mode);
+fn ancestor_is_trusted(owner: u32, mode: u32, uid: u32, allow_sticky: bool) -> bool {
+    const GROUP_OR_OTHER_WRITE: u32 = 0o022;
+    const STICKY: u32 = 0o1000;
     (owner == uid || owner == 0)
-        && (!mode.intersects(Mode::WGRP | Mode::WOTH)
-            || (allow_sticky && mode.contains(Mode::SVTX)))
+        && (mode & GROUP_OR_OTHER_WRITE == 0 || (allow_sticky && mode & STICKY != 0))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::{
@@ -325,7 +278,7 @@ mod tests {
     }
 
     fn euid() -> u32 {
-        rustix::process::geteuid().as_raw()
+        pp_os::effective_uid().unwrap()
     }
 
     #[test]
@@ -368,9 +321,9 @@ mod tests {
             return;
         }
         let other = euid().wrapping_add(1);
-        assert!(Directory::open_root_as(&root, euid()).is_ok());
+        assert!(Directory::open_root_as(&root, Some(euid())).is_ok());
         assert!(matches!(
-            Directory::open_root_as(&root, other),
+            Directory::open_root_as(&root, Some(other)),
             Err(Error::UnsafeAncestor)
         ));
         // When every directory above the fixture is root-owned (Linux /tmp),
@@ -382,10 +335,10 @@ mod tests {
         {
             // A sticky temp directory is trusted as an intermediate ancestor,
             // even though it is no longer accepted as the selected root.
-            let temp_handle = Directory(File::open(temp).unwrap());
-            assert!(temp_handle.check_ancestor(other, true).is_ok());
+            let temp_handle = Directory(Dir::open(temp).unwrap());
+            assert!(temp_handle.check_ancestor(Some(other), true).is_ok());
             assert!(matches!(
-                Directory::open_root_as(&tree.0, other),
+                Directory::open_root_as(&tree.0, Some(other)),
                 Err(Error::UnsafeAncestor)
             ));
         }

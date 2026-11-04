@@ -284,6 +284,140 @@ fn open_directory_can_be_removed() {
     assert!(!path.exists());
 }
 
+#[test]
+fn directory_operations_refuse_names_outside_the_directory() {
+    let root = scratch();
+    let dir = Dir::open(root.path()).unwrap();
+    dir.create_dir("inside").unwrap();
+    let mut names = vec!["", ".", "..", "a/b", "../inside", "/a"];
+    if cfg!(windows) {
+        names.extend(["a\\b", "..\\inside", "C:", "C:a"]);
+    }
+    for name in names {
+        let refused = |result: io::Result<()>| {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "{name:?}"
+            );
+        };
+        refused(dir.create_dir(name));
+        refused(dir.remove_dir(name));
+        refused(dir.rename_no_replace(name, "moved"));
+        refused(dir.rename_no_replace("inside", name));
+        refused(dir.try_lock(name));
+        refused(dir.open_dir_nofollow(name).map(drop));
+        refused(dir.open_search_nofollow(name).map(drop));
+        refused(dir.open_file(name, FileOpen::Read).map(drop));
+    }
+    assert!(dir.status_nofollow("inside").unwrap().is_dir());
+}
+
+#[test]
+fn directories_are_created_renamed_and_removed_through_the_handle() {
+    let root = scratch();
+    let dir = Dir::open(root.path()).unwrap();
+    dir.create_dir("stage").unwrap();
+    dir.sync().unwrap();
+    assert_eq!(
+        dir.create_dir("stage").unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    let stage = dir.open_dir_nofollow("stage").unwrap();
+    let mut file = stage.open_file("file", FileOpen::CreateWriteOnly).unwrap();
+    file.write_all(b"staged").unwrap();
+    file.sync_all().unwrap();
+    assert!(status_of(&file).unwrap().is_file());
+    let again = stage.open_file("file", FileOpen::CreateWriteOnly);
+    assert_eq!(again.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+    let mut read = Vec::new();
+    let mut reader = stage.open_file("file", FileOpen::Read).unwrap();
+    reader.read_to_end(&mut read).unwrap();
+    assert_eq!(read, b"staged");
+    drop((file, reader));
+
+    dir.create_dir("taken").unwrap();
+    assert_eq!(
+        dir.rename_no_replace("stage", "taken").unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    dir.rename_no_replace("stage", "published").unwrap();
+    dir.sync().unwrap();
+    assert_eq!(
+        std::fs::read(root.path().join("published/file")).unwrap(),
+        b"staged"
+    );
+    assert_eq!(
+        dir.remove_dir("published").unwrap_err().kind(),
+        io::ErrorKind::DirectoryNotEmpty
+    );
+    stage.remove_file("file").unwrap();
+    dir.remove_dir("published").unwrap();
+    dir.remove_dir("taken").unwrap();
+    assert!(dir.entries().unwrap().next().is_none());
+}
+
+#[test]
+fn entries_list_every_name_once_without_dot_entries() {
+    let root = scratch();
+    let dir = Dir::open(root.path()).unwrap();
+    // Long names fill several enumeration buffers on Windows.
+    let mut expected = (0..300)
+        .map(|index| format!("{index:03}-{}", "n".repeat(200)))
+        .collect::<Vec<_>>();
+    for name in &expected {
+        drop(dir.create_new_nofollow(name).unwrap());
+    }
+    dir.create_dir("child").unwrap();
+    expected.push("child".to_owned());
+    expected.sort();
+    let clone = dir.try_clone().unwrap();
+    for listed in [&dir, &clone, &dir] {
+        let mut names = listed
+            .entries()
+            .unwrap()
+            .map(|name| name.unwrap().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, expected);
+    }
+    let search = Dir::open_search(root.path()).unwrap();
+    let child = search
+        .open_search_nofollow("child")
+        .unwrap()
+        .reopen()
+        .unwrap();
+    assert!(child.entries().unwrap().next().is_none());
+    assert_eq!(
+        child.status().unwrap().identity(),
+        dir.status_nofollow("child").unwrap().identity()
+    );
+}
+
+#[test]
+fn directory_locks_exclude_a_second_handle_until_released() {
+    let root = scratch();
+    let first = Dir::open(root.path()).unwrap();
+    let second = Dir::open(root.path()).unwrap();
+    first.try_lock("lock").unwrap();
+    assert_eq!(
+        second.try_lock("lock").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    first.unlock().unwrap();
+    second.try_lock("lock").unwrap();
+    assert_eq!(
+        first.try_lock("lock").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    drop(second);
+    first.lock("lock").unwrap();
+    first.unlock().unwrap();
+    first.unlock().unwrap();
+    // Only Windows needs the lock file.
+    assert_eq!(root.path().join("lock").is_file(), cfg!(windows));
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -301,11 +435,30 @@ mod unix {
                 dir.open_read_nofollow(name).unwrap_err(),
                 dir.open_write_nofollow(name).unwrap_err(),
                 open_read_nofollow(&root.path().join(name)).unwrap_err(),
+                dir.open_file(name, FileOpen::Read).unwrap_err(),
             ] {
                 assert_eq!(error.raw_os_error(), Some(libc::ELOOP), "{name}");
             }
+            // With `O_DIRECTORY`, Linux reports the link as not a directory.
+            for error in [
+                dir.open_dir_nofollow(name).map(drop).unwrap_err(),
+                dir.open_search_nofollow(name).map(drop).unwrap_err(),
+            ] {
+                let code = error.raw_os_error();
+                assert!(matches!(code, Some(libc::ENOTDIR | libc::ELOOP)), "{name}");
+            }
             assert_eq!(
                 dir.create_new_nofollow(name).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(
+                dir.open_file(name, FileOpen::CreateWriteOnly)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(
+                dir.create_dir(name).unwrap_err().kind(),
                 io::ErrorKind::AlreadyExists
             );
         }
@@ -529,10 +682,13 @@ mod windows {
         );
         assert!(dir.remove_file("junction").is_err());
         assert_eq!(
-            dir.inner.remove_dir("junction").unwrap_err().kind(),
+            dir.remove_dir("junction").unwrap_err().kind(),
             io::ErrorKind::NotADirectory
         );
-        dir.inner.rename("junction", "moved", false).unwrap();
+        assert!(dir.open_dir_nofollow("junction").is_err());
+        assert!(dir.open_search_nofollow("junction").is_err());
+        assert!(dir.open_file("junction", FileOpen::Read).is_err());
+        dir.rename_no_replace("junction", "moved").unwrap();
         assert_eq!(dir.status_nofollow("moved").unwrap().kind(), Kind::Link);
         assert_eq!(std::fs::read(target.join("inside")).unwrap(), b"secret");
         assert!(dir.status_nofollow("target-dir").unwrap().is_dir());
@@ -547,26 +703,25 @@ mod windows {
         let dir = Dir::open(&path).unwrap();
         std::fs::rename(&path, &retired).unwrap();
         std::fs::create_dir(&path).unwrap();
-        let inner = &dir.inner;
 
-        inner.create_dir("child").unwrap();
+        dir.create_dir("child").unwrap();
         assert_eq!(
-            inner.create_dir("child").unwrap_err().kind(),
+            dir.create_dir("child").unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
         );
         assert!(retired.join("child").is_dir());
         assert!(!path.join("child").exists());
 
         let child = Dir::open(&retired.join("child")).unwrap();
-        inner.rename("child", "renamed", false).unwrap();
+        dir.rename_no_replace("child", "renamed").unwrap();
         drop(child.create_new_nofollow("entry").unwrap());
         assert!(retired.join("renamed").join("entry").is_file());
         assert_eq!(
-            inner.remove_dir("renamed").unwrap_err().kind(),
+            dir.remove_dir("renamed").unwrap_err().kind(),
             io::ErrorKind::DirectoryNotEmpty
         );
         child.remove_file("entry").unwrap();
-        inner.remove_dir("renamed").unwrap();
+        dir.remove_dir("renamed").unwrap();
         assert!(!retired.join("renamed").exists());
         assert!(child.create_new_nofollow("late").is_err());
         drop(child);
@@ -575,28 +730,146 @@ mod windows {
         drop(dir.create_new_nofollow("second").unwrap());
         let first = dir.status_nofollow("first").unwrap().identity();
         assert_eq!(
-            inner.rename("first", "second", false).unwrap_err().kind(),
+            dir.rename_no_replace("first", "second").unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
         );
-        let held = dir.open_read_nofollow("second").unwrap();
-        inner.rename("first", "second", true).unwrap();
-        assert_eq!(dir.status_nofollow("second").unwrap().identity(), first);
-        assert_ne!(status_of(&held).unwrap().identity(), first);
-        assert_eq!(
-            dir.status_nofollow("first").unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
-        inner.create_dir("read-only").unwrap();
+        assert_eq!(dir.status_nofollow("first").unwrap().identity(), first);
+        dir.remove_file("first").unwrap();
+        dir.create_dir("read-only").unwrap();
         let mut permissions = std::fs::metadata(retired.join("read-only"))
             .unwrap()
             .permissions();
         permissions.set_readonly(true);
         std::fs::set_permissions(retired.join("read-only"), permissions).unwrap();
-        inner.remove_dir("read-only").unwrap();
+        dir.remove_dir("read-only").unwrap();
         assert!(!retired.join("read-only").exists());
-        assert!(inner.remove_dir("second").is_err());
+        assert!(dir.remove_dir("second").is_err());
         assert!(retired.join("second").is_file());
         assert!(!path.join("second").exists());
+    }
+
+    fn mode(file: &File) -> u32 {
+        use windows_sys::Wdk::Storage::FileSystem::{
+            FILE_MODE_INFORMATION, FileModeInformation, NtQueryInformationFile,
+        };
+        use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+        let mut information = FILE_MODE_INFORMATION::default();
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // SAFETY: the handle is open, and the buffer is the class's structure.
+        let status = unsafe {
+            NtQueryInformationFile(
+                std::os::windows::io::AsRawHandle::as_raw_handle(file),
+                &mut status_block,
+                (&raw mut information).cast(),
+                size_of::<FILE_MODE_INFORMATION>() as u32,
+                FileModeInformation,
+            )
+        };
+        assert!(status >= 0, "NtQueryInformationFile: {status:#x}");
+        information.Mode
+    }
+
+    #[test]
+    fn created_directories_and_renamed_entries_are_written_through() {
+        use windows_sys::Wdk::Storage::FileSystem::FILE_WRITE_THROUGH;
+        let root = scratch();
+        let dir = Dir::open(root.path()).unwrap();
+        let created = dir.inner.create_dir_handle("created").unwrap();
+        assert_ne!(mode(&created) & FILE_WRITE_THROUGH, 0);
+        let source = dir.inner.rename_source("created").unwrap();
+        assert_ne!(mode(&source) & FILE_WRITE_THROUGH, 0);
+        drop((created, source));
+        // Ordinary entry handles are not written through.
+        let file = dir.create_new_nofollow("file").unwrap();
+        assert_eq!(mode(&file) & FILE_WRITE_THROUGH, 0);
+    }
+
+    #[test]
+    fn fallback_runs_only_when_posix_semantics_are_unsupported() {
+        use crate::windows::with_fallback;
+        use std::cell::Cell;
+        use windows_sys::Win32::Foundation::{
+            STATUS_ACCESS_DENIED, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
+            STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_SUCCESS,
+        };
+        for unsupported in [
+            STATUS_INVALID_INFO_CLASS,
+            STATUS_INVALID_PARAMETER,
+            STATUS_NOT_SUPPORTED,
+        ] {
+            let classic = Cell::new(false);
+            with_fallback(
+                || Ok(unsupported),
+                || {
+                    classic.set(true);
+                    Ok(STATUS_SUCCESS)
+                },
+            )
+            .unwrap();
+            assert!(classic.get(), "{unsupported:#x}");
+            let error =
+                with_fallback(|| Ok(unsupported), || Ok(STATUS_OBJECT_NAME_COLLISION)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        }
+        for decided in [
+            STATUS_SUCCESS,
+            STATUS_ACCESS_DENIED,
+            STATUS_OBJECT_NAME_COLLISION,
+        ] {
+            let classic = Cell::new(false);
+            let result = with_fallback(
+                || Ok(decided),
+                || {
+                    classic.set(true);
+                    Ok(STATUS_SUCCESS)
+                },
+            );
+            assert!(!classic.get(), "{decided:#x}");
+            assert_eq!(result.is_ok(), decided == STATUS_SUCCESS);
+        }
+    }
+
+    /// NTFS implements the classic classes too, so the fallback requests run
+    /// here exactly as a FAT volume would receive them.
+    #[test]
+    fn classic_delete_and_rename_behave_as_on_fat() {
+        use crate::windows::{delete_classic, nt_result, rename_classic};
+        use std::os::windows::io::AsRawHandle;
+        let root = scratch();
+        let dir = Dir::open(root.path()).unwrap();
+        drop(dir.create_new_nofollow("first").unwrap());
+        drop(dir.create_new_nofollow("second").unwrap());
+        let handle = dir.inner.directory.as_raw_handle();
+
+        let source = dir.inner.rename_source("first").unwrap();
+        assert_eq!(
+            nt_result(rename_classic(&source, handle, "second").unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        nt_result(rename_classic(&source, handle, "renamed").unwrap()).unwrap();
+        drop(source);
+        assert!(dir.status_nofollow("renamed").unwrap().is_file());
+        assert!(!root.path().join("first").exists());
+
+        dir.create_dir("empty").unwrap();
+        let source = dir.inner.rename_source("empty").unwrap();
+        nt_result(rename_classic(&source, handle, "moved").unwrap()).unwrap();
+        drop(source);
+        assert!(dir.status_nofollow("moved").unwrap().is_dir());
+
+        // A classic delete keeps the name until the last handle closes.
+        let held = dir.open_read_nofollow("renamed").unwrap();
+        let victim = dir.inner.rename_source("renamed").unwrap();
+        nt_result(delete_classic(&victim).unwrap()).unwrap();
+        drop(victim);
+        assert!(dir.open_read_nofollow("renamed").is_err());
+        drop(held);
+        assert_eq!(
+            dir.status_nofollow("renamed").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
     }
 
     #[test]

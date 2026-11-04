@@ -2,11 +2,19 @@ use pp_source::{
     ArtifactBudget, FileKind, LocalFiles, Publication, SelectedFile, Selection, SnapshotRequest,
     SourcePath, TenantRepos,
 };
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+
+/// Pins a Unix mode so root ancestor checks ignore the umask. Windows has none.
+fn pin_mode(path: impl AsRef<std::path::Path>, mode: u32) {
+    #[cfg(unix)]
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    #[cfg(windows)]
+    let _ = (path, mode);
+}
 
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
@@ -18,13 +26,19 @@ impl Fixture {
         fs::write(path.join("input/part.stl"), b"solid bytes").unwrap();
         // Pin modes so root ancestor checks do not depend on the caller's umask.
         for dir in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+            pin_mode(dir, 0o755);
         }
         Self(path)
     }
     fn repos(&self) -> TenantRepos {
         TenantRepos::open("tenant-fixture".into(), &self.0.join("repos")).unwrap()
     }
+}
+/// Windows leaves the Source lock file in the revisions directory.
+fn revisions_empty(fixture: &Fixture) -> bool {
+    fs::read_dir(fixture.0.join("repos/42/revisions"))
+        .unwrap()
+        .all(|entry| entry.unwrap().file_name() == ".pp-source-lock")
 }
 fn request() -> SnapshotRequest {
     SnapshotRequest {
@@ -66,6 +80,7 @@ fn configured_repository_roots_reject_non_normalized_spellings() {
 
 #[test]
 fn configured_repository_roots_accept_normalized_utf8_and_filesystem_root() {
+    #[cfg(unix)]
     TenantRepos::open("tenant-fixture".into(), std::path::Path::new("/")).unwrap();
     let fixture = Fixture::new();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
@@ -73,7 +88,7 @@ fn configured_repository_roots_accept_normalized_utf8_and_filesystem_root() {
         let root = fixture.0.join(name);
         if name != "repos" {
             fs::create_dir(&root).unwrap();
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            pin_mode(&root, 0o755);
         }
         let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
         let mut source = repos.source(42).unwrap();
@@ -91,8 +106,10 @@ fn configured_repository_roots_accept_normalized_utf8_and_filesystem_root() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn searchable_ancestor_without_read_access_allows_publication_and_reuse() {
+    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
     struct RestorePermissions<'a>(&'a std::path::Path, fs::Permissions);
     impl Drop for RestorePermissions<'_> {
@@ -133,6 +150,7 @@ fn searchable_ancestor_without_read_access_allows_publication_and_reuse() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn root_walk_rejects_symlink_ancestors_and_selected_roots() {
     use std::os::unix::fs::symlink;
@@ -210,12 +228,7 @@ fn zero_source_and_unsafe_revision_do_not_publish() {
             .materialize(invalid, &input, budget())
             .is_err()
     );
-    assert!(
-        fs::read_dir(fixture.0.join("repos/42/revisions"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(revisions_empty(&fixture));
 }
 
 #[test]
@@ -278,12 +291,7 @@ fn filename_case_collisions_are_rejected_before_copying_in_either_order() {
                 .materialize(selected, &input, budget())
                 .unwrap_err();
             assert_eq!(error.category(), "duplicate-path");
-            assert_eq!(
-                fs::read_dir(fixture.0.join("repos/42/revisions"))
-                    .unwrap()
-                    .count(),
-                0
-            );
+            assert!(revisions_empty(&fixture));
         }
     }
 }
@@ -308,12 +316,7 @@ fn conflicting_directory_case_is_rejected_before_copying() {
         .materialize(selected, &input, budget())
         .unwrap_err();
     assert_eq!(error.category(), "duplicate-path");
-    assert!(
-        fs::read_dir(fixture.0.join("repos/42/revisions"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(revisions_empty(&fixture));
 }
 
 #[test]
@@ -348,6 +351,8 @@ fn max_flat_snapshot_publishes_and_retries_cleanly() {
     assert_eq!(second.publication, Publication::Reused);
 }
 
+/// `PATH_MAX` and these `/`-joined byte counts are Unix rules.
+#[cfg(unix)]
 #[test]
 fn published_paths_stop_one_byte_short_of_path_max() {
     let path_max = if cfg!(target_os = "macos") {
@@ -403,6 +408,8 @@ fn published_paths_stop_one_byte_short_of_path_max() {
     assert_eq!(fs::read(prefix.join(&label)).unwrap(), b"solid long");
 }
 
+/// `PATH_MAX` and these `/`-joined byte counts are Unix rules.
+#[cfg(unix)]
 #[test]
 fn published_manifest_also_stops_one_byte_short_of_path_max() {
     let path_max = if cfg!(target_os = "macos") {
@@ -418,11 +425,11 @@ fn published_manifest_also_stops_one_byte_short_of_path_max() {
     while root_bytes - root.as_os_str().len() > 101 {
         root.push("d".repeat(99));
         fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        pin_mode(&root, 0o755);
     }
     root.push("e".repeat(root_bytes - root.as_os_str().len() - 1));
     fs::create_dir(&root).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+    pin_mode(&root, 0o755);
     assert_eq!(root.as_os_str().len(), root_bytes);
     let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();

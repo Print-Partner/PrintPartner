@@ -5,7 +5,6 @@ use pp_source::{
 use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     sync::{
         Arc,
@@ -26,10 +25,10 @@ impl Fixture {
         let root = Scratch::new("pp-source-media-");
         // Pin modes so source roots accept them under a permissive umask.
         for dir in ["repos", "input"] {
-            fs::DirBuilder::new()
-                .mode(0o700)
-                .create(root.join(dir))
-                .unwrap();
+            let builder = &mut fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
+            builder.create(root.join(dir)).unwrap();
         }
         Self(root)
     }
@@ -304,6 +303,7 @@ fn cancelled_live_conversion_cleans_derived_files_and_retries() {
         .discard()
         .unwrap();
 }
+#[cfg(unix)]
 #[test]
 fn original_capability_survives_path_replacement_and_output_symlinks_are_confined() {
     let f = Fixture::new();

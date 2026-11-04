@@ -1204,12 +1204,11 @@ mod tests {
     }
 
     fn assert_replacement_slot_survives(path: &Path) {
-        use std::os::unix::fs::MetadataExt;
-        let replacement = fs::metadata(path).expect("replacement slot was deleted");
-        let original = fs::metadata(path.with_extension("original")).unwrap();
+        let replacement = pp_os::status_follow(path).expect("replacement slot was deleted");
+        let original = pp_os::status_follow(&path.with_extension("original")).unwrap();
         assert!(replacement.is_dir());
         assert!(original.is_dir());
-        assert_ne!(replacement.ino(), original.ino());
+        assert_ne!(replacement.identity(), original.identity());
         assert_eq!(fs::read_dir(path).unwrap().count(), 0);
         assert_eq!(
             fs::read_dir(path.with_extension("original"))

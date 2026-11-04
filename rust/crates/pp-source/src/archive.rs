@@ -8,7 +8,6 @@ use std::{
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
-    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -653,12 +652,13 @@ impl BoundCopy {
             std::process::id(),
             BOUND_COPIES.fetch_add(1, Ordering::Relaxed)
         ));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        // Windows files inherit the temporary directory's ACL, which is
+        // private to the user.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options.open(&path)?;
         Ok(Self {
             path,
             file: Some(file),

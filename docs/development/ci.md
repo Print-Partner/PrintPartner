@@ -437,17 +437,18 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
-| `pp-storage` | GRE-653 | Its file mechanics now go through `pp-os`, and it type-checks for `x86_64-pc-windows-msvc`. The exclusion stays until a hosted Windows run passes its tests. Its Unix-only tests (POSIX modes, symbolic links, Node child probes) carry `#[cfg(unix)]`. |
-| `pp-source` | GRE-653 | Source directory reads use Unix file modes and no-follow opens. |
 | `pp-compat` | GRE-654 | The Node child supervisor uses Unix sockets, process groups, signals and file modes. |
 | `pp-core` | GRE-654 | It depends on `pp-compat` and `pp-storage`. |
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
 | `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |
 
-`pp-os` is not excluded. The Windows job builds and tests it, including
-renaming and removing a directory while a `Dir` handle on it is open, entry
-operations through a handle after its directory was renamed, and Windows-only
-tests for symbolic links, junctions and directory locks.
+`pp-os`, `pp-storage` and `pp-source` are not excluded. The Windows job builds
+and tests them. For `pp-os` that includes renaming and removing a directory
+while a `Dir` handle on it is open, entry operations through a handle after its
+directory was renamed, and Windows-only tests for symbolic links, junctions,
+directory locks, write-through renames and the FAT fallbacks. Unix-only tests
+in `pp-storage` and `pp-source` (POSIX modes, symbolic links, `PATH_MAX`, Node
+child probes) carry `#[cfg(unix)]`.
 
 `rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.
 

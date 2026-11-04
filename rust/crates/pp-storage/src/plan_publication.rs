@@ -1086,15 +1086,14 @@ impl Checked {
     }
 }
 
-/// Checks the Plan, the draft's lifecycle and base, and its inputs against
-/// `request`, in Accept's order.
-fn check_draft(
+/// The Plan and draft rows, after Accept's first draft checks in its order:
+/// the Plan exists and is not archived, then the draft exists and is open.
+fn open_draft(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
     draft_id: i64,
-    request: &ApplyRequest,
-) -> Result<std::result::Result<DraftGate, Outcome>> {
+) -> Result<std::result::Result<(Value, Value), Outcome>> {
     let Some(profile_row) = one(
         tx,
         "SELECT * FROM build_profiles WHERE tenant_id=? AND id=?",
@@ -1130,6 +1129,22 @@ fn check_draft(
             state: serde_json::from_value(h["state"].clone())?,
         }));
     }
+    Ok(Ok((profile_row, h)))
+}
+
+/// Checks the Plan, the draft's lifecycle and base, and its inputs against
+/// `request`, in Accept's order.
+fn check_draft(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+    request: &ApplyRequest,
+) -> Result<std::result::Result<DraftGate, Outcome>> {
+    let (profile_row, h) = match open_draft(tx, tenant, profile, draft_id)? {
+        Ok(rows) => rows,
+        Err(refused) => return Ok(Err(refused)),
+    };
     if h["lifecycleVersion"].as_u64() != Some(request.expected_lifecycle_version.get())
         || h["snapshotDigest"] != request.expected_snapshot_digest.as_str()
         || !["plan-draft-v1", "plan-draft-v2"].contains(&text(&h, "digestFormat")?)

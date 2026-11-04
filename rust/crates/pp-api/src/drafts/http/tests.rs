@@ -1875,6 +1875,20 @@ async fn accept_preview_refusals_match_accept() {
         json_reply(server.request(Method::GET, PREVIEW), 409).await,
         json!({"code":"build_archived"})
     );
+    // Accept checks the Plan before the draft, so a missing draft on an
+    // archived Plan is `build_archived` too, not `draft_not_found`.
+    let missing = json_reply(
+        server.request(Method::GET, "/api/v2/plans/1/drafts/9/accept-preview"),
+        409,
+    )
+    .await;
+    let draft_9 = json!({"draft_id":9,"expected_snapshot_digest":DIGEST,
+        "expected_lifecycle_version":0,"expected_base":{"revision_id":1,"plan_version":1}});
+    assert_eq!(
+        as_problem(&accept(&server, &draft_9, "missing", false)),
+        missing
+    );
+    assert_eq!(missing, json!({"code":"build_archived"}));
     server.close().await;
 }
 

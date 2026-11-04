@@ -2717,6 +2717,14 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   `base_changed`, `inputs_changed`, `build_archived`, or
   `{ code: "reconciliation_required", reason }`. Accept's idempotency-key
   lookup has no preview counterpart, since a preview sends no key.
+- Refusals come in Accept's order, through the same storage functions:
+  `already_applied`; then the Plan (`build_archived`) before the draft
+  (`draft_not_found`, `not_open`), so a missing draft on an archived Plan is
+  `build_archived`; then `draft_changed`, `accepted_baseline_required`,
+  `base_changed`, `inputs_changed`, and `reconciliation_required`; then, for
+  `no_change` only, `production_active`, `checkoff_remap_unsafe` and
+  `execution_conflict`. Token allocation can still fail inside Accept's
+  write; a preview cannot predict that.
 
 Draft rows carry Parts and inputs only, so Plan name, order number, and other
 Plan header fields never appear in `fields`.

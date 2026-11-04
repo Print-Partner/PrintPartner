@@ -249,13 +249,9 @@ pub(crate) fn preview(
     if let Some(applied) = already_applied(tx, tenant, profile, draft_id)? {
         return Ok(PreviewOutcome::Refused(applied));
     }
-    let Some(h) = one(
-        tx,
-        "SELECT * FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND id=?",
-        &[&tenant, &profile, &draft_id],
-    )?
-    else {
-        return Ok(PreviewOutcome::Refused(Outcome::NotFound));
+    let h = match open_draft(tx, tenant, profile, draft_id)? {
+        Ok((_, h)) => h,
+        Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
     };
     let revision = PreviewRevision {
         draft_id,
@@ -266,14 +262,19 @@ pub(crate) fn preview(
             plan_version: num(&h, "basePlanVersion")?,
         },
     };
-    let request: ApplyRequest = serde_json::from_value(json!({
+    let request = serde_json::from_value::<ApplyRequest>(json!({
         "expected_snapshot_digest": revision.expected_snapshot_digest,
         "expected_lifecycle_version": revision.expected_lifecycle_version,
         "expected_base": {
             "revision_id": revision.expected_base.revision_id,
             "plan_version": revision.expected_base.plan_version,
         },
-    }))?;
+    }));
+    // No Accept request can name this revision, so every Accept gets
+    // `draft_changed`.
+    let Ok(request) = request else {
+        return Ok(PreviewOutcome::Refused(Outcome::DraftChanged));
+    };
     let mut gate = match check_draft(tx, tenant, profile, draft_id, &request)? {
         Ok(gate) => gate,
         Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
@@ -572,8 +573,9 @@ mod tests {
     const LIVE_SPOOL_REVISION_DIGEST: &str =
         "44de35eded4fab323f4df212ba4634a51912d1af49829c5672d86ebd7e552f7c";
 
-    /// The fixture's revision 1 digest after `sql` runs on a disposable copy.
-    fn revision_digest_after(sql: &str) -> String {
+    /// A disposable copy of the fixture after `sql`. The immutability and
+    /// invalidation triggers are dropped on the copy first.
+    fn fixture_after(sql: &str) -> (tempfile::TempDir, Connection) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("print-partner.db");
         std::fs::write(
@@ -581,21 +583,32 @@ mod tests {
             include_bytes!("../../tests/fixtures/required-units/unchanged.db"),
         )
         .unwrap();
-        let mut connection = Connection::open(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
         connection
             .execute_batch(&format!(
-                "DROP TRIGGER trg_plan_revision_parts_immutable_update; {sql}"
+                "DROP TRIGGER trg_plan_revisions_immutable_update;
+                 DROP TRIGGER trg_plan_revision_parts_immutable_update;
+                 DROP TRIGGER trg_parts_invalidate_accepted_revision_update;
+                 {sql}"
             ))
             .unwrap();
-        let tx = connection.transaction().unwrap();
+        (directory, connection)
+    }
+
+    fn revision_1_digest(tx: &Transaction<'_>) -> String {
         let mut parts = part_rows(
-            &tx,
+            tx,
             "SELECT * FROM plan_revision_parts WHERE tenant_id=? AND revision_id=? ORDER BY id",
             &[&"default", &1],
         )
         .unwrap();
         normalize_parts(&mut parts).unwrap();
         model::revision_digest(&parts).unwrap()
+    }
+
+    fn revision_digest_after(sql: &str) -> String {
+        let (_directory, mut connection) = fixture_after(sql);
+        revision_1_digest(&connection.transaction().unwrap())
     }
 
     #[test]
@@ -633,32 +646,12 @@ mod tests {
     /// draft, so the preview does too instead of answering `no_change`.
     #[test]
     fn accept_preview_of_an_unchanged_draft_without_a_selection_is_refused() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("print-partner.db");
-        std::fs::write(
-            &path,
-            include_bytes!("../../tests/fixtures/required-units/unchanged.db"),
-        )
-        .unwrap();
-        let mut connection = Connection::open(&path).unwrap();
-        connection
-            .execute_batch(
-                "DROP TRIGGER trg_plan_revisions_immutable_update;
-                 DROP TRIGGER trg_plan_revision_parts_immutable_update;
-                 DROP TRIGGER trg_parts_invalidate_accepted_revision_update;
-                 UPDATE plan_revision_parts SET status='excluded' WHERE id=2;
-                 UPDATE parts SET status='excluded' WHERE id=2;",
-            )
-            .unwrap();
+        let (_directory, mut connection) = fixture_after(
+            "UPDATE plan_revision_parts SET status='excluded' WHERE id=2;
+             UPDATE parts SET status='excluded' WHERE id=2;",
+        );
         let tx = connection.transaction().unwrap();
-        let mut parts = part_rows(
-            &tx,
-            "SELECT * FROM plan_revision_parts WHERE tenant_id=? AND revision_id=? ORDER BY id",
-            &[&"default", &1],
-        )
-        .unwrap();
-        normalize_parts(&mut parts).unwrap();
-        let digest = model::revision_digest(&parts).unwrap();
+        let digest = revision_1_digest(&tx);
         assert_eq!(digest, ALIGNED_REVISION_DIGEST);
         tx.execute(
             "UPDATE plan_revisions SET snapshot_digest=? WHERE id=1",

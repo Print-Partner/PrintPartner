@@ -79,7 +79,8 @@ npm --prefix web run test --workspace @print-partner/ui
 
 `--check` and the package tests fail when:
 
-- a text ink is below 4.5:1 (7:1 on shop floor) on any surface, a control edge, the
+- a text ink is below 4.5:1 (7:1 for the shop-floor theme's own colours, 4.5:1 in
+  both forced-colors palettes for every theme) on any surface, a control edge, the
   accent, the focus ring or a swatch border is below 3:1, or on-accent text (on the
   resting and hover fills) or selection text is below the text minimum, in dark,
   light, shop floor or either forced-colors palette;
@@ -105,6 +106,12 @@ npm --prefix web run test --workspace @print-partner/ui
 The gate evaluates each theme with CSS specificity and source order, so a theme rule
 that outranks a media block is caught. The forced-colors tables use the Windows "Night sky" and "Desert" contrast themes as
 sample palettes. The browser chooses the real colours.
+
+Forced-colors pairs are checked against 4.5:1 in every theme, shop floor included,
+because the user's system palette replaces the theme colours there. The 7:1
+shop-floor minimum applies to the shop-floor theme's own colours. In the light sample
+palette, for example, `--interaction-text` (`LinkText`) measures 6.94:1, which passes
+at 4.5:1.
 
 ## Contrast
 

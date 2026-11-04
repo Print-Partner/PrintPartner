@@ -380,6 +380,7 @@ export function checkTokens(css: string): GateResult {
   }
 
   for (const [label, palette] of Object.entries(FORCED_PALETTES)) {
+    // 4.5:1 in every theme: the user's system palette replaces theme colours, so shop floor's 7:1 applies only to its own colours.
     tables.push({ label, rows: measure(darkForced, 4.5, label, problems, palette) });
     checkSelectionVisible(label, darkForced, palette, problems);
   }

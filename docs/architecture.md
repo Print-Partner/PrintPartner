@@ -420,8 +420,13 @@ needs informed owner approval. A restore cannot undo a printer action or
 Spoolman effect. Unknown sends still require reconciliation.
 
 The baseline Rust schema ceilings are 35 without the Cargo feature and 41 with
-it. Opening with the rebuild build can migrate data even though the runtime
-switch is process-local. Turning the switch off is not a downgrade. Preflight
+it. In a rebuild build, the Rust storage writer opens only with the runtime
+switch on, and only a directory that carries the durable ownership marker
+`.pp-rust-owned.json` or is empty, in which case it writes the marker before
+any schema. It refuses a non-empty unmarked directory unchanged. The Node-backed
+runtime refuses any marked directory. See [Storage](storage.md#ownership-marker-decision).
+Opening a marked directory with the rebuild build can migrate data even though
+the runtime switch is process-local. Turning the switch off is not a downgrade. Preflight
 must reject unsupported/newer schemas without modifying the original. Prove the
 actual Node input versions and older-binary refusal on copies.
 

@@ -3391,6 +3391,7 @@ dependencies = [
  "pp-perf",
  "pp-source",
  "pp-storage",
+ "pp-testkit",
  "rand 0.9.5",
  "regress 0.11.1",
  "reqwest",
@@ -3581,6 +3582,7 @@ dependencies = [
  "pp-contracts",
  "pp-domain",
  "pp-os",
+ "pp-storage",
  "pp-testkit",
  "rand 0.9.5",
  "regress 0.11.1",
@@ -3596,6 +3598,7 @@ dependencies = [
  "tar",
  "tempfile",
  "time",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

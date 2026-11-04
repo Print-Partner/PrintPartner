@@ -2045,7 +2045,7 @@ runs, and prints both outcomes and the database before and after:
 
 ```sh
 PP_RECONCILIATION_SESSION=required-unit-fixture-secret \
-  cargo run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild \
+  cargo run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild,test-unmarked-writer \
   --bin required-unit-fixture -- DIRECTORY PROFILE_ID DRAFT_ID IDEMPOTENCY_KEY REQUEST_JSON
 ```
 

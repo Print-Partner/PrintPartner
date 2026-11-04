@@ -383,6 +383,51 @@ async fn ticket_t_12_hostile_lock_is_refused_before_supervised_node_startup() {
     std::fs::remove_dir_all(data).unwrap();
 }
 
+/// The Node-backed path refuses a Rust-marked directory, valid marker or not,
+/// after taking the lease and before cutover recovery, Source Sync admission or
+/// the Node child. Nothing in the directory changes.
+#[tokio::test]
+async fn rust_marked_directory_is_refused_before_supervised_node_startup() {
+    use pp_testkit::{Corruption, Fixture, Installation, MarkerState, Spec};
+    let specs = [
+        Fixture::RustMarked.spec(),
+        Fixture::MarkedCorrupt.spec(),
+        Spec {
+            marker: MarkerState::Corrupt(Corruption::UnsupportedVersion),
+            ..Spec::default()
+        },
+        Spec {
+            marker: MarkerState::Corrupt(Corruption::Directory),
+            ..Spec::default()
+        },
+    ];
+    for spec in specs {
+        let installation = Installation::create(spec).unwrap();
+        let data = installation.path().to_path_buf();
+        let database = installation.database_path();
+        std::fs::write(&database, b"must remain unopened").unwrap();
+        let marker = std::fs::read(installation.marker_path()).ok();
+        let before = installation.entries().unwrap();
+        let error = CoreRuntime::start(launch(data.clone()))
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains(".pp-rust-owned.json"),
+            "{spec:?}: {error:#}"
+        );
+        assert_eq!(std::fs::read(&database).unwrap(), b"must remain unopened");
+        assert_eq!(std::fs::read(installation.marker_path()).ok(), marker);
+        // The full listing, lease files included: the refused start leaves no
+        // printpartner.lock or .desktop-lease behind.
+        assert_eq!(installation.entries().unwrap(), before, "{spec:?}");
+    }
+    println!(
+        "{}",
+        serde_json::json!({"proof_class":"headless_unsigned", "case":"rust_marked_refused", "supervised_child_not_started":true, "entries_unchanged":true})
+    );
+}
+
 #[tokio::test]
 async fn ticket_t_12_unsafe_ancestor_is_refused_before_child_or_database_open() {
     use std::os::unix::fs::PermissionsExt;

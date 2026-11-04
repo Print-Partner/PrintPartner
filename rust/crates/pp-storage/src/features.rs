@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod modules;
+
 const USER_KEY: &str = "feature_toggles";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,7 +11,7 @@ mod with_feature {
         rebuild_api::{desktop_policy, product_router},
     };
     use pp_storage::{
-        Limits, WriterOwner,
+        Limits, Setting, SettingCommand, WriterOwner,
         auth::Secret,
         build_graph::{BuildCommand, BuildName, BuildOutcome},
         read_model,
@@ -188,6 +188,10 @@ mod with_feature {
     }
 
     fn create_plan(owner: &Mutex<WriterOwner>, token: &str) -> i64 {
+        create_named_plan(owner, token, "Slice Zero")
+    }
+
+    fn create_named_plan(owner: &Mutex<WriterOwner>, token: &str, name: &str) -> i64 {
         let client = owner
             .lock()
             .unwrap()
@@ -197,7 +201,7 @@ mod with_feature {
             .execute(
                 read_model::Credential::Session(Secret::new(token.into())),
                 BuildCommand::Create {
-                    name: BuildName::parse("Slice Zero".into()).unwrap(),
+                    name: BuildName::parse(name.into()).unwrap(),
                     base_source: None,
                 },
                 Arc::new(AtomicBool::new(false)),
@@ -529,5 +533,148 @@ mod with_feature {
         }
         drop(product);
         close(owner);
+    }
+
+    /// Store a `default`-tenant setting while the gateway keeps serving.
+    fn put(fixture: &Fixture, key: &str, value: &str) {
+        let setting = Setting {
+            tenant: "default".into(),
+            key: key.into(),
+            value: value.into(),
+        };
+        let settings = fixture.owner.lock().unwrap().client();
+        let wait = Duration::from_secs(5);
+        let reply = settings.submit(SettingCommand::Set(setting), &AtomicBool::new(false), wait);
+        assert!(reply.unwrap().recv().unwrap().unwrap());
+    }
+
+    /// The `/health` body as sent, and its `modules` list.
+    async fn health_modules(fixture: &Fixture, session: Option<&str>) -> (String, Value) {
+        let (status, body) = fixture.get("/health", session).await;
+        assert_eq!(status, 200, "{body}");
+        (body.to_string(), body["modules"].clone())
+    }
+
+    fn off(module: &str, reason: &str) -> Value {
+        json!({"state": "off", "module": module, "reason": reason})
+    }
+
+    fn on(module: &str) -> Value {
+        json!({"state": "on", "module": module})
+    }
+
+    /// Every module is listed, and a stored change shows on the next request
+    /// to the same running gateway.
+    #[tokio::test]
+    async fn health_modules_list_every_module_and_follow_changes_without_restart() {
+        let fixture = Fixture::start("1").await;
+        let (_, modules) = health_modules(&fixture, None).await;
+        let names = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"];
+        let defaults: Vec<Value> = names.map(|name| off(name, "default_off")).to_vec();
+        assert_eq!(modules, json!(defaults));
+
+        put(
+            &fixture,
+            "feature_toggles",
+            r#"{"farm":true,"spoolman":true}"#,
+        );
+        put(&fixture, "build_tracking_assembly", "1");
+        let (_, modules) = health_modules(&fixture, None).await;
+        assert_eq!(
+            modules,
+            json!([
+                on("farm"),
+                on("spoolman"),
+                off("orders", "default_off"),
+                off("bambu", "default_off"),
+                on("assembly_tracking"),
+            ])
+        );
+
+        put(
+            &fixture,
+            "feature_toggles",
+            r#"{"farm":false,"spoolman":true}"#,
+        );
+        put(&fixture, "build_tracking_assembly", "0");
+        let (_, modules) = health_modules(&fixture, None).await;
+        assert_eq!(modules[0], off("farm", "turned_off"));
+        assert_eq!(modules[1], on("spoolman"));
+        assert_eq!(modules[4], off("assembly_tracking", "turned_off"));
+        fixture.stop().await;
+    }
+
+    /// Canary: secret-looking values in module, Spoolman and Bambu settings,
+    /// the session token, the account email and a Plan name never reach the
+    /// body, and neither does any URL.
+    #[tokio::test]
+    async fn health_modules_canary_payload_has_no_secrets_urls_or_customer_data() {
+        let fixture = Fixture::start("1").await;
+        let session = fixture.register().await;
+        let token = session.strip_prefix("pp_session=").unwrap().to_owned();
+        let plan_name = "Canary Customer Order 7f3a";
+        create_named_plan(&fixture.owner, &token, plan_name);
+        put(
+            &fixture,
+            "feature_toggles",
+            &json!({
+                "farm": true,
+                "bambu": true,
+                "spoolman_url": "https://canary-spoolman.invalid:7912/api?token=canary-toggle-token-c0de",
+                "bambu_access_code": "canary-bambu-access-code-91d2",
+            })
+            .to_string(),
+        );
+        put(
+            &fixture,
+            "integrations",
+            &json!([
+                {"id": "canary-integration-id-4e4e", "kind": "spoolman",
+                 "base_url": "http://canary-spoolman.invalid:7912",
+                 "api_key": "canary-spoolman-api-key-5b1e"},
+                {"kind": "bambu", "host": "http://10.0.0.77",
+                 "serial": "canary-bambu-serial-01P00C",
+                 "access_code": "canary-bambu-access-code-91d2"},
+            ])
+            .to_string(),
+        );
+        put(
+            &fixture,
+            "default_spoolman_integration_id",
+            "canary-integration-id-4e4e",
+        );
+        put(
+            &fixture,
+            "build_tracking_assembly",
+            "canary-assembly-value-77aa",
+        );
+        let leaks = [
+            "canary",
+            "slice0@example.test",
+            plan_name,
+            token.as_str(),
+            "://",
+            "10.0.0.77",
+        ];
+        for session in [None, Some(session.as_str())] {
+            let (body, modules) = health_modules(&fixture, session).await;
+            assert_eq!(modules[0], on("farm"));
+            assert_eq!(modules[3], on("bambu"));
+            assert_eq!(modules[4], on("assembly_tracking"));
+            for leak in leaks {
+                assert!(!body.contains(leak), "health leaked {leak}: {body}");
+            }
+        }
+
+        // An unreadable toggle setting fails closed and does not echo itself.
+        put(
+            &fixture,
+            "feature_toggles",
+            r#"{"farm":"canary-toggle-token-c0de"}"#,
+        );
+        let (body, modules) = health_modules(&fixture, None).await;
+        assert_eq!(modules[0], off("farm", "setting_unreadable"));
+        assert!(!body.contains("canary"), "{body}");
+        fixture.stop().await;
     }
 }

@@ -844,3 +844,104 @@ fn admitted_patch_waits_for_its_result_despite_cancellation_and_zero_wait() {
     });
     assert_eq!(f.rows(&alice), [row("feature_toggles", r#"{"farm":true}"#)]);
 }
+
+/// `GET /health` Module state read from the same settings.
+mod health_modules {
+    use super::{Fixture, WAIT, params};
+    use crate::features::{
+        USER_KEY,
+        modules::{ASSEMBLY_TRACKING_KEY, Module, ModuleOffReason, ModuleStatus},
+    };
+
+    const TENANT: &str = "default";
+
+    fn put(f: &Fixture, tenant: &str, key: &str, value: &str) {
+        f.raw()
+            .execute(
+                "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3)
+                 ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
+                params![tenant, key, value],
+            )
+            .unwrap();
+    }
+    fn modules(f: &Fixture) -> Vec<ModuleStatus> {
+        f.owner
+            .as_ref()
+            .unwrap()
+            .client()
+            .modules(TENANT, WAIT)
+            .unwrap()
+    }
+    fn on(module: Module) -> ModuleStatus {
+        ModuleStatus::On { module }
+    }
+    fn off(module: Module, reason: ModuleOffReason) -> ModuleStatus {
+        ModuleStatus::Off { module, reason }
+    }
+    fn all_off(reason: ModuleOffReason) -> Vec<ModuleStatus> {
+        Module::ALL.map(|module| off(module, reason)).to_vec()
+    }
+
+    #[test]
+    fn fresh_install_lists_every_module_off_by_default() {
+        let f = Fixture::new();
+        assert_eq!(modules(&f), all_off(ModuleOffReason::DefaultOff));
+        assert_eq!(
+            serde_json::to_value(modules(&f)).unwrap()[0],
+            serde_json::json!({"state": "off", "module": "farm", "reason": "default_off"})
+        );
+    }
+
+    #[test]
+    fn each_change_shows_on_the_next_read() {
+        let f = Fixture::new();
+        put(&f, TENANT, USER_KEY, r#"{"farm":true,"bambu":false}"#);
+        put(&f, TENANT, ASSEMBLY_TRACKING_KEY, "1");
+        assert_eq!(
+            modules(&f),
+            [
+                on(Module::Farm),
+                off(Module::Spoolman, ModuleOffReason::DefaultOff),
+                off(Module::Orders, ModuleOffReason::DefaultOff),
+                off(Module::Bambu, ModuleOffReason::TurnedOff),
+                on(Module::AssemblyTracking),
+            ]
+        );
+        // Same owner, no reopen: the next read sees the new settings.
+        put(&f, TENANT, USER_KEY, r#"{"farm":false}"#);
+        put(&f, TENANT, ASSEMBLY_TRACKING_KEY, "0");
+        let now = modules(&f);
+        assert_eq!(now[0], off(Module::Farm, ModuleOffReason::TurnedOff));
+        assert_eq!(
+            now[4],
+            off(Module::AssemblyTracking, ModuleOffReason::TurnedOff)
+        );
+        // Empty matches Node's `getSetting(key, "0")` default.
+        put(&f, TENANT, ASSEMBLY_TRACKING_KEY, "");
+        assert_eq!(
+            modules(&f)[4],
+            off(Module::AssemblyTracking, ModuleOffReason::DefaultOff)
+        );
+    }
+
+    #[test]
+    fn reads_only_the_requested_tenant() {
+        let f = Fixture::new();
+        put(&f, "other", USER_KEY, r#"{"farm":true,"spoolman":true}"#);
+        put(&f, "other", ASSEMBLY_TRACKING_KEY, "1");
+        assert_eq!(modules(&f), all_off(ModuleOffReason::DefaultOff));
+    }
+
+    #[test]
+    fn unreadable_setting_stays_off_and_echoes_nothing() {
+        let f = Fixture::new();
+        let canary = "pp-canary-sk-0123456789abcdef";
+        put(&f, TENANT, USER_KEY, &format!(r#"{{"farm":"{canary}"}}"#));
+        put(&f, TENANT, ASSEMBLY_TRACKING_KEY, canary);
+        let read = modules(&f);
+        assert_eq!(read[..4], all_off(ModuleOffReason::SettingUnreadable)[..4]);
+        assert_eq!(read[4], on(Module::AssemblyTracking));
+        let body = serde_json::to_string(&read).unwrap();
+        assert!(!body.contains(canary), "{body}");
+    }
+}

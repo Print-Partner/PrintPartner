@@ -39,8 +39,19 @@ pub struct AuthHttpConfig {
     public_origin: Option<String>,
     dev_reset_exposure: bool,
     tenant_feature_toggles: bool,
+    #[cfg(feature = "desktop_rebuild")]
+    modules: Option<(pp_storage::SettingsClient, String)>,
 }
 impl AuthHttpConfig {
+    /// List each Module's effective state for `tenant` in `/health`, read
+    /// from storage on every request. Only the Rust-only runtime opts in;
+    /// without it `/health` omits `modules`, as Node does.
+    #[cfg(feature = "desktop_rebuild")]
+    #[must_use]
+    pub fn with_modules(mut self, settings: pp_storage::SettingsClient, tenant: &str) -> Self {
+        self.modules = Some((settings, tenant.to_owned()));
+        self
+    }
     /// Advertise `tenant_feature_toggles` in `/health`, as Node does when
     /// `PP_DESKTOP_REBUILD` opts in. The UI keys its rebuild behavior on it.
     #[must_use]
@@ -105,6 +116,8 @@ impl AuthHttpConfig {
             public_origin,
             dev_reset_exposure,
             tenant_feature_toggles: false,
+            #[cfg(feature = "desktop_rebuild")]
+            modules: None,
         })
     }
 }
@@ -593,6 +606,22 @@ async fn health(State(app): State<App>, headers: HeaderMap) -> Result<Response, 
     if app.config.tenant_feature_toggles {
         capabilities.push("tenant_feature_toggles");
     }
+    #[cfg(feature = "desktop_rebuild")]
+    let modules = match app.config.modules.clone() {
+        Some((settings, tenant)) => Some(
+            tokio::task::spawn_blocking(move || {
+                settings.modules(&tenant, Duration::from_millis(100))
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .ok_or(Failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Module settings temporarily unavailable",
+            ))?,
+        ),
+        None => None,
+    };
     Ok(wire::json_response(json!(wire::Health {
         ok: true,
         authentication_required: true,
@@ -606,6 +635,8 @@ async fn health(State(app): State<App>, headers: HeaderMap) -> Result<Response, 
         owner_mapping_required: status.owner_mapping_required,
         github_oauth_configured: app.providers.configured(Provider::Github),
         discord_oauth_configured: app.providers.configured(Provider::Discord),
+        #[cfg(feature = "desktop_rebuild")]
+        modules,
     })))
 }
 async fn keys(State(app): State<App>, headers: HeaderMap) -> Result<Response, Failure> {

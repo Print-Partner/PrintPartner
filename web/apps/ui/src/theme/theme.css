@@ -15,7 +15,7 @@
 
 ::selection {
   background: var(--interaction-selection);
-  color: var(--text);
+  color: var(--interaction-on-selection);
 }
 
 /* A filament colour: a round chip with a border, so it never reads as a status pill. */

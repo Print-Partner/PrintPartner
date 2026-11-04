@@ -26,7 +26,8 @@ high-contrast dark theme for reading at a distance: text reaches 7:1, body text 
   `-overlay`), ink (`--text`, `--text-muted`), lines (`--line` for decoration,
   `--line-strong` for control edges), interaction, status and filament.
 - **Interaction.** `--interaction-accent`, `-accent-hover`, `-on-accent`, `-text`,
-  `-focus-ring` and `-selection`. These are the only cyan tokens: primary button,
+  `-focus-ring`, `-selection` and `-on-selection` (selected text, `var(--text)` outside
+  forced colors). These are the only cyan tokens: primary button,
   focus ring and selection. Status and filament tokens are never cyan.
   `--interaction-on-accent` must read on both the resting and the hover fill.
 - **Status.** `--status-active`, `-positive`, `-attention`, `-danger` and
@@ -52,7 +53,8 @@ high-contrast dark theme for reading at a distance: text reaches 7:1, body text 
 
 Under `forced-colors: active` every colour token maps to a system colour: surfaces to
 `Canvas`, ink, lines, status and swatch borders to `CanvasText`, and interaction to
-`Highlight`, `HighlightText` and `LinkText`. Only interaction tokens may use the
+`Highlight`, `HighlightText` and `LinkText`. Selection uses `Highlight` with
+`HighlightText`, so selected text stays distinct from the `Canvas` page. Only interaction tokens may use the
 highlight family, so status never borrows the system accent.
 
 The forced-colors and reduced-motion blocks select `:root, :root[data-theme]`. The
@@ -86,6 +88,8 @@ npm --prefix web run test --workspace @print-partner/ui
 - in any theme under forced colors, a colour token, after following `var()`, is not
   a system colour, resolves to nothing, uses a highlight keyword outside
   `--interaction-*`, or differs from its forced value in dark;
+- in either forced-colors palette, `--interaction-selection` is the same colour as a
+  surface, which would make selected text look unselected;
 - in any theme under reduced motion, alone or with forced colors, a
   `--motion-duration-*` token is above 0 ms (forced colors is also checked with
   reduced motion on);
@@ -113,7 +117,6 @@ Dark:
 | Ink | sunken | base | raised | overlay | min |
 | --- | --- | --- | --- | --- | --- |
 | text | 15.79 | 14.90 | 13.72 | 12.27 | 4.5 |
-| text on interaction-selection | 10.18 | | | | 4.5 |
 | text-muted | 8.29 | 7.82 | 7.20 | 6.44 | 4.5 |
 | interaction-text | 10.72 | 10.11 | 9.32 | 8.33 | 4.5 |
 | status-positive | 10.93 | 10.32 | 9.50 | 8.50 | 4.5 |
@@ -127,13 +130,13 @@ Dark:
 | filament-swatch-border | 6.19 | 5.84 | 5.38 | 4.81 | 3 |
 | interaction-on-accent on interaction-accent | 8.54 | | | | 4.5 |
 | interaction-on-accent on interaction-accent-hover | 10.17 | | | | 4.5 |
+| interaction-on-selection on interaction-selection | 10.18 | | | | 4.5 |
 
 Light:
 
 | Ink | sunken | base | raised | overlay | min |
 | --- | --- | --- | --- | --- | --- |
 | text | 14.89 | 16.32 | 17.65 | 17.65 | 4.5 |
-| text on interaction-selection | 14.39 | | | | 4.5 |
 | text-muted | 5.82 | 6.38 | 6.90 | 6.90 | 4.5 |
 | interaction-text | 5.54 | 6.07 | 6.57 | 6.57 | 4.5 |
 | status-positive | 4.98 | 5.46 | 5.90 | 5.90 | 4.5 |
@@ -147,13 +150,13 @@ Light:
 | filament-swatch-border | 4.00 | 4.39 | 4.75 | 4.75 | 3 |
 | interaction-on-accent on interaction-accent | 5.06 | | | | 4.5 |
 | interaction-on-accent on interaction-accent-hover | 6.57 | | | | 4.5 |
+| interaction-on-selection on interaction-selection | 14.39 | | | | 4.5 |
 
 Shop-floor:
 
 | Ink | sunken | base | raised | overlay | min |
 | --- | --- | --- | --- | --- | --- |
 | text | 21.00 | 20.28 | 19.19 | 17.81 | 7 |
-| text on interaction-selection | 12.35 | | | | 7 |
 | text-muted | 13.49 | 13.02 | 12.33 | 11.44 | 7 |
 | interaction-text | 14.21 | 13.73 | 12.99 | 12.05 | 7 |
 | status-positive | 13.40 | 12.94 | 12.25 | 11.37 | 7 |
@@ -167,13 +170,13 @@ Shop-floor:
 | filament-swatch-border | 13.49 | 13.02 | 12.33 | 11.44 | 3 |
 | interaction-on-accent on interaction-accent | 11.51 | | | | 7 |
 | interaction-on-accent on interaction-accent-hover | 13.35 | | | | 7 |
+| interaction-on-selection on interaction-selection | 12.35 | | | | 7 |
 
 Forced colors, dark palette:
 
 | Ink | sunken | base | raised | overlay | min |
 | --- | --- | --- | --- | --- | --- |
 | text | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
-| text on interaction-selection | 21.00 | | | | 4.5 |
 | text-muted | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
 | interaction-text | 19.56 | 19.56 | 19.56 | 19.56 | 4.5 |
 | status-positive | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
@@ -187,13 +190,13 @@ Forced colors, dark palette:
 | filament-swatch-border | 21.00 | 21.00 | 21.00 | 21.00 | 3 |
 | interaction-on-accent on interaction-accent | 14.37 | | | | 4.5 |
 | interaction-on-accent on interaction-accent-hover | 14.37 | | | | 4.5 |
+| interaction-on-selection on interaction-selection | 14.37 | | | | 4.5 |
 
 Forced colors, light palette:
 
 | Ink | sunken | base | raised | overlay | min |
 | --- | --- | --- | --- | --- | --- |
 | text | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
-| text on interaction-selection | 10.43 | | | | 4.5 |
 | text-muted | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
 | interaction-text | 6.94 | 6.94 | 6.94 | 6.94 | 4.5 |
 | status-positive | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
@@ -207,5 +210,6 @@ Forced colors, light palette:
 | filament-swatch-border | 10.43 | 10.43 | 10.43 | 10.43 | 3 |
 | interaction-on-accent on interaction-accent | 7.00 | | | | 4.5 |
 | interaction-on-accent on interaction-accent-hover | 7.00 | | | | 4.5 |
+| interaction-on-selection on interaction-selection | 7.00 | | | | 4.5 |
 
 <!-- ui-tokens:end -->

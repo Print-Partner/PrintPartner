@@ -35,6 +35,7 @@
   --interaction-text: #4fd3e8;
   --interaction-focus-ring: #4fd3e8;
   --interaction-selection: #123a42;
+  --interaction-on-selection: var(--text);
 
   /* Colour roles: status. A status always shows an icon and a word as well. */
   --status-positive: #4ade80;
@@ -160,7 +161,8 @@
     --interaction-on-accent: HighlightText;
     --interaction-text: LinkText;
     --interaction-focus-ring: Highlight;
-    --interaction-selection: Canvas;
+    --interaction-selection: Highlight;
+    --interaction-on-selection: HighlightText;
     --status-positive: CanvasText;
     --status-attention: CanvasText;
     --status-danger: CanvasText;

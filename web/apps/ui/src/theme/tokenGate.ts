@@ -43,7 +43,7 @@ const UI_INKS = [
 const FILLED_PAIRS: readonly (readonly [string, string])[] = [
   ["interaction-on-accent", "interaction-accent"],
   ["interaction-on-accent", "interaction-accent-hover"],
-  ["text", "interaction-selection"],
+  ["interaction-on-selection", "interaction-selection"],
 ];
 
 /** Only these tokens may be cyan, and only they may use forced-colors highlight keywords. */
@@ -330,6 +330,27 @@ function checkReducedMotion(label: string, reduced: Map<string, string>, problem
   }
 }
 
+/**
+ * Forced colors collapse the surfaces to one system colour, so a selection fill
+ * that maps to the same colour makes selected text look unselected.
+ */
+function checkSelectionVisible(
+  label: string,
+  forced: Map<string, string>,
+  palette: Readonly<Record<string, string>>,
+  problems: string[],
+) {
+  const selection = resolve(forced, "interaction-selection", palette);
+  for (const surface of SURFACES) {
+    const fill = resolve(forced, surface, palette);
+    if (selection && fill && selection.every((v, i) => v === fill[i])) {
+      problems.push(
+        `${label}: --interaction-selection is the same colour as --${surface}, so selected text looks unselected`,
+      );
+    }
+  }
+}
+
 export function checkTokens(css: string): GateResult {
   const rules = parseRules(css);
   const problems: string[] = [];
@@ -360,6 +381,7 @@ export function checkTokens(css: string): GateResult {
 
   for (const [label, palette] of Object.entries(FORCED_PALETTES)) {
     tables.push({ label, rows: measure(darkForced, 4.5, label, problems, palette) });
+    checkSelectionVisible(label, darkForced, palette, problems);
   }
   return { problems, tables };
 }

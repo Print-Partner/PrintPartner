@@ -175,6 +175,19 @@ describe("TOK-03 contrast gate", () => {
     expect(output).toContain("apps/ui tokens: dark, light, shop floor and forced colors pass");
   });
 
+  it("keeps selected text visible under forced colors", () => {
+    const forced = effectiveTokens(rules, {}, [FORCED_COLORS]);
+    expect(forced.get("--interaction-selection")).toBe("Highlight");
+    expect(forced.get("--interaction-on-selection")).toBe("HighlightText");
+    // The mapping this PR shipped first: selection painted with the page's own colours.
+    failsWith(
+      problemsWith(
+        `${FORCED_ALL} { --interaction-selection: Canvas; --interaction-on-selection: CanvasText; } }`,
+      ),
+      "forced colors, dark palette: --interaction-selection is the same colour as --surface-base",
+    );
+  });
+
   it("fails a colour token with no forced-colors mapping", () => {
     expect(problemsWith(":root { --status-paused: #c29bf0; }")).toContain(
       "forced colors (dark): --status-paused is #c29bf0, not a system colour",

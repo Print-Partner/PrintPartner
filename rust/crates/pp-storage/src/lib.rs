@@ -965,6 +965,12 @@ impl WriterOwner {
         }
         Ok(())
     }
+    /// The directory lease this owner holds until shutdown, for a Rust-only
+    /// runtime's desktop state files next to the database.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn lease(&self) -> Option<&lease::StorageLease> {
+        self.lease.as_ref()
+    }
     pub fn shutdown(mut self) -> Result<()> {
         let result = self.close();
         if result.is_err()

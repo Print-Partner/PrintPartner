@@ -73,8 +73,12 @@ protection and Spoolman shortfall tasks in this program. These stay out:
 The shipped gateway still supervises Node through `pp-compat` and a private Unix
 socket. Rust owns the directory lock and process lifetime; Node owns live domain
 operations. Rust storage, HTTP routers, and jobs already have substantial tested
-implementations behind `desktop_rebuild`, but the baseline shipped launchers do
-not mount the product routers. A registered router is not a delivered operation.
+implementations behind `desktop_rebuild`. With both gates on, `pp-server` and
+`pp-desktop` now start without a Node child and mount the read, draft and jobs
+routers in the gateway as a sibling router composed by `pp-core`
+([Rust-only product entry point](desktop-rebuild.md#rust-only-product-entry-point)).
+That mode is for disposable data until refusal of Node-used directories lands.
+A registered router is not a delivered operation.
 
 The baseline gateway inventory has 781 compatibility routes. The operation
 manifest has eight Node-owned operations and 82 reviewed resource sets. The

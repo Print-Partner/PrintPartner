@@ -38,8 +38,16 @@ pub struct AuthHttpConfig {
     multi_user: bool,
     public_origin: Option<String>,
     dev_reset_exposure: bool,
+    tenant_feature_toggles: bool,
 }
 impl AuthHttpConfig {
+    /// Advertise `tenant_feature_toggles` in `/health`, as Node does when
+    /// `PP_DESKTOP_REBUILD` opts in. The UI keys its rebuild behavior on it.
+    #[must_use]
+    pub fn with_tenant_feature_toggles(mut self) -> Self {
+        self.tenant_feature_toggles = true;
+        self
+    }
     pub fn new(
         origin: &str,
         transport: CookieTransport,
@@ -96,6 +104,7 @@ impl AuthHttpConfig {
             multi_user,
             public_origin,
             dev_reset_exposure,
+            tenant_feature_toggles: false,
         })
     }
 }
@@ -578,6 +587,9 @@ async fn health(State(app): State<App>, headers: HeaderMap) -> Result<Response, 
     }
     if app.providers.configured(Provider::Discord) {
         capabilities.push("discord_oauth");
+    }
+    if app.config.tenant_feature_toggles {
+        capabilities.push("tenant_feature_toggles");
     }
     Ok(wire::json_response(json!(wire::Health {
         ok: true,

@@ -17,7 +17,7 @@ use axum::{
 use pp_storage::{
     auth::AuthFailure,
     read_model::{
-        AcceptedRead, ReadClient,
+        AcceptedRead, Credential, ReadClient,
         stock::{self, Inventory, SpoolmanIntegration},
         views::{self, CatalogOnly},
     },
@@ -183,6 +183,23 @@ async fn assembled(
     project(app, &id, request, View::Assembled).await
 }
 
+/// Runs a storage read on the blocking pool with the request's credential.
+/// Dropping the request flags the read cancelled.
+async fn blocking_read<T: Send + 'static>(
+    app: &App,
+    presented: PresentedCredential,
+    read: impl FnOnce(ReadClient, Credential, &AtomicBool, Duration) -> Result<T> + Send + 'static,
+) -> Result<Result<T>, tokio::task::JoinError> {
+    let (client, wait) = (app.client.clone(), app.config.wait);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let flag = Cancellation(cancelled.clone());
+    let credential = presented.into_credential();
+    let result =
+        tokio::task::spawn_blocking(move || read(client, credential, &cancelled, wait)).await;
+    drop(flag);
+    result
+}
+
 async fn project(app: App, id: &str, request: axum::extract::Request, view: View) -> Response {
     let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
         return failure(StatusCode::UNAUTHORIZED, "Authentication required");
@@ -191,33 +208,33 @@ async fn project(app: App, id: &str, request: axum::extract::Request, view: View
     // An id that cannot name a row is "not found" once the credential is
     // proven (an empty batch).
     let target = node_id(id);
-    let client = app.client.clone();
-    let wait = app.config.wait;
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let flag = Cancellation(cancelled.clone());
-    let read = tokio::task::spawn_blocking(move || {
-        let credential = presented.into_credential();
-        let batch = match (view, target) {
-            (View::Assembled, Some(part)) => {
-                client.read_part(credential, part, &cancelled, wait)?
-            }
-            _ => client.read(credential, target.as_slice(), &cancelled, wait)?,
-        };
-        let Some(build) = batch.builds.first() else {
-            return Ok(None);
-        };
-        Ok::<_, anyhow::Error>(Some(match (view, target) {
-            (View::Checkoff, _) if needs_filament_lookup(&build.accepted) => {
-                json!({"kind":"filament_lookup_unavailable"})
-            }
-            (View::Checkoff, _) => {
-                views::checkoff(build.profile_id, &build.accepted, &CatalogOnly)?
-            }
-            (View::Assembled, part) => views::assembled(part.unwrap_or_default(), &build.accepted),
-        }))
-    })
+    let read = blocking_read(
+        &app,
+        presented,
+        move |client, credential, cancelled, wait| {
+            let batch = match (view, target) {
+                (View::Assembled, Some(part)) => {
+                    client.read_part(credential, part, cancelled, wait)?
+                }
+                _ => client.read(credential, target.as_slice(), cancelled, wait)?,
+            };
+            let Some(build) = batch.builds.first() else {
+                return Ok(None);
+            };
+            Ok::<_, anyhow::Error>(Some(match (view, target) {
+                (View::Checkoff, _) if needs_filament_lookup(&build.accepted) => {
+                    json!({"kind":"filament_lookup_unavailable"})
+                }
+                (View::Checkoff, _) => {
+                    views::checkoff(build.profile_id, &build.accepted, &CatalogOnly)?
+                }
+                (View::Assembled, part) => {
+                    views::assembled(part.unwrap_or_default(), &build.accepted)
+                }
+            }))
+        },
+    )
     .await;
-    drop(flag);
     match read {
         Ok(Ok(Some(body))) => present(body, head, view.missing()),
         Ok(Ok(None)) => failure(StatusCode::NOT_FOUND, view.missing()),
@@ -243,20 +260,18 @@ async fn filament_shortfalls(
     };
     let head = *request.method() == Method::HEAD;
     let target = node_id(&id);
-    let client = app.client.clone();
-    let wait = app.config.wait;
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let flag = Cancellation(cancelled.clone());
-    let read = tokio::task::spawn_blocking(move || {
-        let credential = presented.into_credential();
-        match target {
-            Some(id) => client.read_stock(credential, id, &cancelled, wait),
-            // An unusable id still proves the credential (an empty batch).
-            None => client.read(credential, &[], &cancelled, wait),
-        }
-    })
+    let read = blocking_read(
+        &app,
+        presented,
+        move |client, credential, cancelled, wait| {
+            match target {
+                Some(id) => client.read_stock(credential, id, cancelled, wait),
+                // An unusable id still proves the credential (an empty batch).
+                None => client.read(credential, &[], cancelled, wait),
+            }
+        },
+    )
     .await;
-    drop(flag);
     let mut batch = match read {
         Ok(Ok(batch)) => batch,
         Ok(Err(error)) => return read_error(&error),

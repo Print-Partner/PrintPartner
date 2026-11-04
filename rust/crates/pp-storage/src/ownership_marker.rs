@@ -256,7 +256,7 @@ pub const EMPTY_ALLOWLIST: &[&str] = &[
 /// Whether a top-level entry name is in [`EMPTY_ALLOWLIST`]. Inside a
 /// `.desktop-lease` directory only [`allowed_in_node_lease`] names may exist,
 /// and `.desktop-owner.json` must not name a live process
-/// ([`first_non_empty_entry`] checks both).
+/// (`first_non_empty_entry_in` checks both).
 pub fn allowed_in_empty(name: &str) -> bool {
     EMPTY_ALLOWLIST
         .iter()
@@ -274,11 +274,8 @@ pub fn allowed_in_node_lease(name: &str) -> bool {
     matches!(name, "owner.json" | "previous-marker.json")
 }
 
-/// The first entry that makes `directory` non-empty, or `None` when empty.
-pub fn first_non_empty_entry(directory: &Path) -> std::io::Result<Option<String>> {
-    first_non_empty_entry_in(&Dir::open(directory)?, directory)
-}
-
+/// The first entry that makes `directory` (opened as `dir`) non-empty, or
+/// `None` when it is empty.
 fn first_non_empty_entry_in(dir: &Dir, directory: &Path) -> std::io::Result<Option<String>> {
     let mut names = std::fs::read_dir(directory)?
         .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
@@ -549,8 +546,11 @@ mod tests {
             .path()
             .join(format!("{MARKER_TEMP_PREFIX}0011223344556677"));
         std::fs::write(&leftover, b"{\"version\":1").unwrap();
-        assert_eq!(first_non_empty_entry(directory.path()).unwrap(), None);
         let dir = Dir::open(directory.path()).unwrap();
+        assert_eq!(
+            first_non_empty_entry_in(&dir, directory.path()).unwrap(),
+            None
+        );
         write_marker(&dir, directory.path(), &Marker::now()).unwrap();
         assert!(!leftover.exists());
         assert!(matches!(inspect(directory.path()), MarkerState::Valid(_)));

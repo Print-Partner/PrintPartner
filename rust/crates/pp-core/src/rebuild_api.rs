@@ -449,7 +449,7 @@ mod tests {
             draft_router(
                 rebuild,
                 &owner,
-                policy(),
+                desktop_policy(),
                 lifetimes(),
                 origin,
                 "default",
@@ -459,7 +459,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            job_router(rebuild, &owner, policy(), origin, "default")
+            job_router(rebuild, &owner, desktop_policy(), origin, "default")
                 .unwrap()
                 .is_none()
         );

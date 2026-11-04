@@ -5,7 +5,8 @@ integration test replays its public serde requests through `SourceCatalogClient`
 and compares the entire outcome and persistent snapshot after every command.
 All data lives in disposable temporary SQLite databases and local directories.
 The generator initializes its database through the existing `storage-fixture`
-binary and `WriterOwner`, through Cargo. Node's real repository
+binary and `WriterOwner`, through Cargo, with the test-only
+`test-unmarked-writer` feature, because the directory has no ownership marker. Node's real repository
 then connects directly through Drizzle. This preserves Rust's current schema,
 including `source_configuration_version`, in every raw project snapshot.
 

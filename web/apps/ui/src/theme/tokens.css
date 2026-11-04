@@ -37,10 +37,10 @@
   --interaction-selection: #123a42;
 
   /* Colour roles: status. A status always shows an icon and a word as well. */
-  --status-success: #5fcf86;
-  --status-warning: #e8b04a;
+  --status-positive: #5fcf86;
+  --status-attention: #e8b04a;
   --status-danger: #f2766d;
-  --status-info: #8fb2ff;
+  --status-active: #8fb2ff;
   --status-neutral: #a3acb6;
 
   /* Filament swatches: round chips with a border, never a pill */
@@ -105,10 +105,10 @@
   --interaction-text: #006775;
   --interaction-focus-ring: #007a8a;
   --interaction-selection: #cdeef3;
-  --status-success: #1b7339;
-  --status-warning: #855600;
+  --status-positive: #1b7339;
+  --status-attention: #855600;
   --status-danger: #b3261e;
-  --status-info: #2f5bc8;
+  --status-active: #2f5bc8;
   --status-neutral: #525b65;
   --filament-swatch-border: #6b747e;
   --filament-swatch-empty: #d5dae0;
@@ -131,10 +131,10 @@
   --interaction-text: #6fe5f6;
   --interaction-focus-ring: #7ce8f7;
   --interaction-selection: #0d3a42;
-  --status-success: #7fe3a1;
-  --status-warning: #ffc75c;
+  --status-positive: #7fe3a1;
+  --status-attention: #ffc75c;
   --status-danger: #ff9a92;
-  --status-info: #a9c4ff;
+  --status-active: #a9c4ff;
   --status-neutral: #c9d0d7;
   --filament-swatch-border: #c9d0d7;
   --filament-swatch-empty: #3a414a;
@@ -161,10 +161,10 @@
     --interaction-text: LinkText;
     --interaction-focus-ring: Highlight;
     --interaction-selection: Canvas;
-    --status-success: CanvasText;
-    --status-warning: CanvasText;
+    --status-positive: CanvasText;
+    --status-attention: CanvasText;
     --status-danger: CanvasText;
-    --status-info: CanvasText;
+    --status-active: CanvasText;
     --status-neutral: CanvasText;
     --filament-swatch-border: CanvasText;
     --filament-swatch-empty: Canvas;

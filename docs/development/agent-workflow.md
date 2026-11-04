@@ -76,7 +76,7 @@ A hook adapter can send one JSON object on stdin to `python3 -B scripts/agent-gu
 {"operation": "patch", "patch": "*** Update File: /abs/checkout/a.py\n..."}
 ```
 
-The guard rejects other operations, missing or extra fields, a relative or missing `cwd`, an empty path, and a patch with no `*** Add File:`, `*** Update File:`, `*** Delete File:`, or `*** Move to:` line. A unified diff has none of those lines, so the guard rejects it rather than leave its paths unchecked. Map your runner's shell tool to `command`, its file writes to `file`, and its patch tool to `patch`; never pass a tool through unchecked.
+The guard rejects other operations, missing or extra fields, a relative or missing `cwd`, an empty path, and a patch with no `*** Add File:`, `*** Update File:`, `*** Delete File:`, or `*** Move to:` line. A unified diff has none of those lines, so the guard rejects it rather than leave its paths unchecked. A `cwd` that contains `..` is resolved through symlinks first, as the kernel does when it enters the directory; any other `cwd` is used as given, like the shell's logical `$PWD`. Map your runner's shell tool to `command`, its file writes to `file`, and its patch tool to `patch`; never pass a tool through unchecked.
 
 The guard refuses merges (except the [coordinator's](#coordinator-merges)), force pushes, pushes to `main`, release publishing or editing, tag pushes, and hook bypasses. It also refuses edits to real `.env` files, Git metadata, generated manifests, and the Claude Code settings and hooks that run the guard: `.claude/settings.json`, `.claude/settings.local.json`, and `.claude/hooks/`.
 
@@ -86,6 +86,7 @@ The guard refuses merges (except the [coordinator's](#coordinator-merges)), forc
 - Run a `gh api` write that reads a request file (`-F key=@file` or `--input`) as its own command, after writing the file. `cd -P`, directory changes inside conditionals or groups, and a `cd` in a subshell, a pipeline, or under `env -C` leave the directory unknown, so relative `gh api` input files are refused.
 - Through `gh api`, agents may read, write PR or issue comments, submit comment-only or pending PR reviews, and reply to or resolve review threads. Other API writes need the maintainer, including writes to Actions variables.
 - `gh variable` may only `list`, `get`, or show help. Setting or deleting a variable needs the maintainer.
+- Put `gh` options after the subcommand. Before it, and between `pr`, `release`, or `variable` and their subcommand, the guard accepts only `-R`/`--repo`, `--help`/`-h`, and `--version`, with or without `=value`, and refuses any other option there. It still classifies the command, so `gh --help=false variable set` is refused as a variable write. It also refuses a shell expansion there, including in an option's value, as in `gh --help=$opts` or `gh -R "$repo" pr view`, because an unquoted expansion can split into the subcommand itself. Write `gh pr view -R "$repo"` instead.
 - It refuses a git or gh command it cannot classify.
 
 The guard catches mistakes. It is not a shell sandbox or a security boundary, and an agent can run commands without it. Repository rules and required GitHub checks stay authoritative. Changes to the guard need the same review as any other security control, and the owner merges them.

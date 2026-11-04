@@ -73,8 +73,12 @@ protection and Spoolman shortfall tasks in this program. These stay out:
 The shipped gateway still supervises Node through `pp-compat` and a private Unix
 socket. Rust owns the directory lock and process lifetime; Node owns live domain
 operations. Rust storage, HTTP routers, and jobs already have substantial tested
-implementations behind `desktop_rebuild`, but the baseline shipped launchers do
-not mount the product routers. A registered router is not a delivered operation.
+implementations behind `desktop_rebuild`. With both gates on, `pp-server` and
+`pp-desktop` now start without a Node child and mount the read, draft and jobs
+routers in the gateway as a sibling router composed by `pp-core`
+([Rust-only product entry point](desktop-rebuild.md#rust-only-product-entry-point)).
+That mode is for disposable data until refusal of Node-used directories lands.
+A registered router is not a delivered operation.
 
 The baseline gateway inventory has 781 compatibility routes. The operation
 manifest has eight Node-owned operations and 82 reviewed resource sets. The
@@ -109,26 +113,27 @@ into one crate.
 The following allowed workspace dependencies reflect
 [`check-boundaries.py`](../rust/scripts/check-boundaries.py) at the baseline.
 An allowed edge does not mean every operation is implemented.
+Each linked crate README lists its public interface, effects, flags and tests.
 
 | Crate | Responsibility and interface | Allowed `pp-*` dependencies |
 | --- | --- | --- |
-| `pp-domain` | Bounded IDs/values and pure rules; no I/O, Tokio, SQL, HTTP, or Tauri | none |
-| `pp-api-types` | Wire DTOs, constructors, validation, serialization | `pp-domain` |
-| `pp-contracts` | Existing operation contracts, compatibility facade and parity tooling | `pp-api-types` |
-| `pp-net` | Outbound target policy, checked connections, DNS/redirect restrictions | none |
-| `pp-drivers` | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
-| `pp-services` | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
-| `pp-storage` | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-os`; `pp-domain`, `pp-contracts`, both gated |
-| `pp-source` | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | none |
-| `pp-api` | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
-| `pp-gateway` | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
-| `pp-compat` | Temporary Node supervision/private socket, retired with Node | none |
-| `pp-core` | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`; `pp-source`, `pp-net`, `pp-api` gated |
-| `pp-desktop` | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
-| `pp-server` | Docker launcher, signals, headless lifecycle | `pp-core` |
-| `pp-perf` | Measurement records and regression comparison, not product telemetry | none |
+| [`pp-domain`](../rust/crates/pp-domain/README.md) | Bounded IDs/values and pure rules; no I/O, Tokio, SQL, HTTP, or Tauri | none |
+| [`pp-api-types`](../rust/crates/pp-api-types/README.md) | Wire DTOs, constructors, validation, serialization | `pp-domain` |
+| [`pp-contracts`](../rust/crates/pp-contracts/README.md) | Existing operation contracts, compatibility facade and parity tooling | `pp-api-types` |
+| [`pp-net`](../rust/crates/pp-net/README.md) | Outbound target policy, checked connections, DNS/redirect restrictions | none |
+| [`pp-drivers`](../rust/crates/pp-drivers/README.md) | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
+| [`pp-services`](../rust/crates/pp-services/README.md) | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
+| [`pp-storage`](../rust/crates/pp-storage/README.md) | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-os`; `pp-domain`, `pp-contracts`, both gated |
+| [`pp-source`](../rust/crates/pp-source/README.md) | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | none |
+| [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
+| [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
+| [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | none |
+| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`; `pp-source`, `pp-net`, `pp-api` gated |
+| [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
+| [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
+| [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
 | `pp-os` | Directory handles, no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
-| `pp-testkit` | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
+| [`pp-testkit`](../rust/crates/pp-testkit/README.md) | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented graph, not a manifest for the amendment.
 `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies. `pp-storage`
@@ -329,8 +334,7 @@ The package exists: `@print-partner/ui` at `web/apps/ui` (see its
 [README](../web/apps/ui/README.md)). The ESLint rule
 `print-partner/ui-boundary` (`web/eslint-rules/ui-boundary.js`) fails any import
 that leaves `web/apps/ui` by relative path, and any `@print-partner/*` package
-not on its allowlist. The allowlist is empty; the generated client joins it
-when it lands. The dev server forwards `/api`, `/ws` and `/health` only to
+not on its allowlist. The allowlist holds only `@print-partner/rust-client`. The dev server forwards `/api`, `/ws` and `/health` only to
 `PP_UI_CORE_URL` and has no default target.
 
 Starting choices, kept until the Builds comparison says otherwise: React Router 7
@@ -342,7 +346,11 @@ Use one server-state cache, validated Build URLs, and feature-local presentation
 state. Compare TanStack Router with the existing React Router in one Builds
 slice; retain Radix/cmdk unless an accessibility test shows a reason to switch.
 Bundle IBM Plex, generate exhaustive status descriptors from Rust, and preserve
-execution state separately from bed-clear state. Deliver loading, empty, error,
+execution state separately from bed-clear state. `pp_domain::printer_display_state`
+defines the printer display enum, its label, icon and colour token in one
+wildcard-free match, and `PrinterStateView`, which keeps `execution` and
+`bed_clear` as separate fields next to the derived `display` word. The client
+generator emits the descriptors as `printerDisplayDescriptors`. Deliver loading, empty, error,
 Module-off and offline states. Ship accessible 2D plate views first; lazy 3D
 cannot become a requirement for Checkoff, Accept or Production.
 

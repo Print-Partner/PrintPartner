@@ -104,21 +104,21 @@ describe("TOK-02 cyan is interaction only", () => {
 
   it("fails a status token that points at an interaction token", () => {
     expect(
-      problemsWith(':root[data-theme="light"] { --status-info: var(--interaction-accent); }'),
-    ).toContain("light: --status-info is cyan; cyan is for interaction tokens only");
+      problemsWith(':root[data-theme="light"] { --status-active: var(--interaction-accent); }'),
+    ).toContain("light: --status-active is cyan; cyan is for interaction tokens only");
   });
 
   it("fails a status token mapped to a forced-colors highlight", () => {
-    expect(problemsWith(`${FORCED_ALL} { --status-success: Highlight; } }`)).toContain(
-      "forced colors (dark): --status-success uses Highlight; highlight colours are for interaction tokens only",
+    expect(problemsWith(`${FORCED_ALL} { --status-positive: Highlight; } }`)).toContain(
+      "forced colors (dark): --status-positive uses Highlight; highlight colours are for interaction tokens only",
     );
   });
 
   it("follows a forced-colors var() alias to the highlight keyword it ends at", () => {
     expect(
-      problemsWith(`${FORCED_ALL} { --status-success: var(--interaction-text); } }`),
+      problemsWith(`${FORCED_ALL} { --status-positive: var(--interaction-text); } }`),
     ).toContain(
-      "forced colors (dark): --status-success uses LinkText; highlight colours are for interaction tokens only",
+      "forced colors (dark): --status-positive uses LinkText; highlight colours are for interaction tokens only",
     );
   });
 });
@@ -140,8 +140,8 @@ describe("TOK-03 contrast gate", () => {
     ["dark", ":root { --text-muted: #3a3f45; }", "dark: --text-muted on --surface-sunken"],
     [
       "light",
-      ':root[data-theme="light"] { --status-warning: #d0a040; }',
-      "light: --status-warning on --surface-sunken",
+      ':root[data-theme="light"] { --status-attention: #d0a040; }',
+      "light: --status-attention on --surface-sunken",
     ],
     [
       "shop floor at 7:1",

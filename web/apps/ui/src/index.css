@@ -21,3 +21,24 @@ body {
 .shell-main {
   padding: 16px;
 }
+
+.printer-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.printer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--status-color);
+}
+
+.printer-status-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}

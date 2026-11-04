@@ -35,6 +35,7 @@ HOOKS = "Do not bypass Git hooks."
 UNCLEAR = "Cannot classify this git or gh command; run it without the wrapper option."
 UNPARSABLE = "Cannot parse shell command; use a simpler command."
 EXPANSION = "Cannot classify a shell expansion here; write git and gh arguments literally."
+GH_OPTIONS = "Put gh options after the subcommand; only -R/--repo, --help, and --version may come before it."
 
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 SHELL_PREFIXES = {"!", "{", "}", "if", "then", "elif", "else", "while", "until", "do"}
@@ -58,6 +59,10 @@ PUSH_VALUE_LONG = {"--exec", "--push-option", "--receive-pack", "--repo"}
 COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-message",
                      "--reuse-message", "--template", "--trailer"}
 GH_SHORT_BOOLEAN = set("ih")
+# gh command groups whose subcommand the guard classifies.
+GH_GROUPS = {"pr", "release", "variable"}
+# gh options that may come before or between command words; none takes the next word as its value.
+GH_PATH_FLAGS = {"--help", "-h", "--version"}
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
 VARIABLE_READS = {"get", "help", "list"}
 VARIABLE = ("GitHub Actions variables, including the PP_REVIEW_FALLBACK_UNTIL outage switch, "
@@ -647,7 +652,7 @@ def moves_head(name, args):
             operands = [arg for arg in rest if not arg.startswith("-")]
             return len(operands) > 1 or any(arg == "-d" or long_prefix(arg, "--delete", 3) for arg in rest)
         return command in BRANCH_CHANGES
-    return name == "gh" and without_repo_flags(args)[:2] == ["pr", "checkout"]
+    return name == "gh" and gh_command(args)[:2] == ["pr", "checkout"]
 
 
 def git_reason(args, cwd, head_moves=False, config_unknown=False, env_config=False):
@@ -790,8 +795,37 @@ def without_repo_flags(args):
     return kept
 
 
+def gh_command(args):
+    """Return gh arguments with the command path first and the options inside it removed.
+
+    gh accepts options before and between command words, so `gh --help=false variable set`
+    still runs `variable set`. The path is one word, or two for a group in GH_GROUPS. Inside
+    it, only -R/--repo and the GH_PATH_FLAGS, with an optional =value, are skipped. Any other
+    option could take the next word as its value, so the path is unknown and gh_command refuses.
+    An expansion anywhere before the path ends, including a skipped option's value, is refused:
+    unquoted, it splits into more words, so `gh --help=$x` can supply the whole path.
+    """
+    path, i = [], 0
+    while i < len(args) and len(path) < (2 if path[:1] and path[0] in GH_GROUPS else 1):
+        arg = args[i]
+        i += 1
+        if EXPANDED in arg:
+            raise Unclear(EXPANSION)
+        if not arg.startswith("-"):
+            path.append(arg)
+        elif arg in ("-R", "--repo"):
+            if EXPANDED in "".join(args[i:i + 1]):
+                raise Unclear(EXPANSION)
+            i += 1
+        elif arg.startswith(("--repo=", "-R")):
+            continue
+        elif arg.split("=", 1)[0] not in GH_PATH_FLAGS:
+            raise Unclear(GH_OPTIONS)
+    return path + without_repo_flags(args[i:])
+
+
 def gh_reason(args, cwd, alone=True):  # noqa: C901
-    args = without_repo_flags(args)
+    args = gh_command(args)
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)
     if args[:1] == ["help"]:
@@ -908,6 +942,10 @@ def coordinator_merge(args, cwd):
 
 def check_command(command, cwd):
     """Return why a shell command run in cwd is refused, or None to allow it."""
+    # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
+    # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
+    if cwd and ".." in PurePosixPath(cwd).parts:
+        cwd = os.path.realpath(cwd)
     try:
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
@@ -1040,7 +1078,7 @@ def run(argv):
     args = parse_arguments(argv)
     if args.operation == "command":
         text = read_text(args.command) if args.command == "-" else args.command
-        return check_command(text, directory(os.path.abspath(args.cwd)))
+        return check_command(text, directory(os.path.join(os.getcwd(), args.cwd)))
     if args.operation == "file":
         if not all(path.strip() for path in args.paths):
             raise InvalidRequest("path is empty")

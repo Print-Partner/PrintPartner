@@ -74,6 +74,8 @@ export function generate(document) {
       assert(schema.$ref.startsWith("#/definitions/"), "External schema reference forbidden");
       return reference(schema.$ref.slice(14), visiting);
     }
+    // A unit enum with doc comments on its variants: one string per branch.
+    if (schema.oneOf?.every(isStringLiteral)) return emit({ type: "string", enum: schema.oneOf.map((branch) => branch.enum[0]) }, visiting);
     if (schema.oneOf) return discriminated(schema.oneOf, visiting);
     if (schema.anyOf) return nullableUnion(schema.anyOf, visiting);
     if (Array.isArray(schema.type)) {
@@ -172,14 +174,48 @@ export function routePath<N extends RouteName>(name: N, params: RouteParams<N>):
   });
 }
 `;
-  const index = `export * from "./routes.generated.js";\nexport * from "./schemas.generated.js";\n`;
-  return { "index.ts": header(index), "routes.generated.ts": header(routes), "schemas.generated.ts": header(schemas) };
+  const descriptors = descriptorTables(document, named, dtoNames);
+  const index = `export * from "./descriptors.generated.js";\nexport * from "./routes.generated.js";\nexport * from "./schemas.generated.js";\n`;
+  return { "descriptors.generated.ts": header(descriptors), "index.ts": header(index), "routes.generated.ts": header(routes), "schemas.generated.ts": header(schemas) };
+}
+
+const isStringLiteral = (branch) => branch.type === "string" && branch.enum?.length === 1 && typeof branch.enum[0] === "string" && Object.keys(branch).every((key) => ["type", "enum", "description"].includes(key));
+
+/** The string literals a schema allows, following one local reference. */
+function enumValues(schema, named) {
+  const resolved = schema.$ref ? named.get(schema.$ref.slice(14)) : schema;
+  if (resolved?.oneOf?.every(isStringLiteral)) return resolved.oneOf.map((branch) => branch.enum[0]);
+  assert(Array.isArray(resolved?.enum) && resolved.enum.every((value) => typeof value === "string"), "Descriptor key must be a string enum");
+  return resolved.enum;
+}
+
+/**
+ * Emits each entry of the document's `descriptors` list as a record keyed
+ * by its key field. Rows must cover the key's Rust enum exactly, in order, and
+ * `satisfies Record<...>` makes TypeScript refuse a missing or extra key.
+ */
+function descriptorTables(document, named, dtoNames) {
+  assert(Array.isArray(document.descriptors), "Missing descriptor tables");
+  const tables = document.descriptors.map((table) => {
+    assert(/^[a-z][A-Za-z]+$/.test(table.name), `Invalid descriptor table name ${table.name}`);
+    assert(dtoNames.includes(table.dto), `Descriptor table ${table.name} names unknown DTO ${table.dto}`);
+    const keySchema = named.get(table.dto).properties?.[table.key];
+    assert(keySchema && named.get(table.dto).required?.includes(table.key), `Descriptor table ${table.name} has no required key ${table.key}`);
+    const keys = table.values.map((row) => row[table.key]);
+    assert.deepEqual(keys, enumValues(keySchema, named), `Descriptor table ${table.name} must list every ${table.dto}.${table.key} value once, in Rust order`);
+    const rows = table.values.map((row) => `  ${quote(row[table.key])}: ${JSON.stringify(row)},`);
+    return `/** Rows of ${table.dto}, keyed by \`${table.key}\`, from pp_api::client_contract. */
+export const ${table.name} = {
+${rows.join("\n")}
+} as const satisfies Record<dto.${table.dto}[${quote(table.key)}], dto.${table.dto}>;`;
+  });
+  return `import type * as dto from "./schemas.generated.js";\n\n${tables.join("\n\n")}\n`;
 }
 
 /** Fails unless `directory` holds exactly the generated files with intact content hashes. */
 export function verifyIntegrity(directory = packageSource) {
   const names = readdirSync(directory).sort();
-  assert.deepEqual(names, ["index.ts", "routes.generated.ts", "schemas.generated.ts"], "rust-client src must hold only generated files");
+  assert.deepEqual(names, ["descriptors.generated.ts", "index.ts", "routes.generated.ts", "schemas.generated.ts"], "rust-client src must hold only generated files");
   for (const name of names) {
     const text = readFileSync(join(directory, name), "utf8");
     const match = /^(?:\/\/ .*\n){2}\/\/ Content SHA256: ([a-f0-9]{64})\n/.exec(text);

@@ -38,12 +38,13 @@ describe("apps/ui import boundary", () => {
     expect(errors).toHaveLength(1);
   });
 
-  it("allows imports inside apps/ui and from npm packages", async () => {
+  it("allows imports inside apps/ui, npm packages and the generated Rust client", async () => {
     const code = [
       'import { fetchCore } from "./core/client";',
       'import { routes } from "../src/routes";',
       'import { useQuery } from "@tanstack/react-query";',
-      "export { fetchCore, routes, useQuery };",
+      'import { printerDisplayDescriptors } from "@print-partner/rust-client";',
+      "export { fetchCore, routes, useQuery, printerDisplayDescriptors };",
     ].join("\n");
     expect(await boundaryErrors(code)).toEqual([]);
   });

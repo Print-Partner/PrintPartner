@@ -26,10 +26,10 @@ const TEXT_INKS = [
   "text",
   "text-muted",
   "interaction-text",
-  "status-success",
-  "status-warning",
+  "status-positive",
+  "status-attention",
   "status-danger",
-  "status-info",
+  "status-active",
   "status-neutral",
 ];
 /** Control edges and indicators. WCAG 1.4.11 asks for 3:1 on every surface. */

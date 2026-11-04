@@ -41,7 +41,7 @@ async fn serve(
             }
         }
     }
-    settle(&mut commands, &owner).await;
+    settle(&mut commands, |command| command.execute(&owner)).await;
 }
 
 #[tokio::test]
@@ -168,7 +168,7 @@ async fn shutdown_settles_queued_commands_and_closes_admission() {
     };
     tokio::task::yield_now().await;
     assert!(!blocked.is_finished());
-    settle(&mut commands, &owner).await;
+    settle(&mut commands, |command| command.execute(&owner)).await;
     for result in results {
         assert_eq!(result.await.unwrap().unwrap().theme, Some(Theme::Dark));
     }

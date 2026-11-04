@@ -4,7 +4,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
-use pp_core::{CoreRuntime, CoreStatus, DesktopLaunch, SupervisorConfig, VerifiedBundle};
+use pp_core::{CoreRuntime, CoreStatus, SupervisorConfig};
 use std::os::unix::fs::DirBuilderExt;
 use std::{
     path::{Path, PathBuf},
@@ -19,63 +19,16 @@ const RESPAWN_READY_FUSE: Duration = Duration::from_secs(50);
 #[path = "runtime_m0/drain.rs"]
 mod drain;
 
+#[path = "runtime_m0/slice0_mount.rs"]
+mod slice0_mount;
+
+#[path = "support/release.rs"]
+mod release;
+use release::{launch, launch_from_manifest};
+
 #[cfg(target_os = "linux")]
 #[path = "runtime_m0/ticket_t_68_desktop_account_mapping.rs"]
 mod ticket_t_68_desktop_account_mapping;
-
-fn launch(data: PathBuf) -> DesktopLaunch {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .canonicalize()
-        .unwrap();
-    let manifest = std::env::var_os("PP_DESKTOP_RELEASE_MANIFEST")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("rust/bundle-manifest.json"));
-    launch_from_manifest(data, &manifest)
-}
-
-fn launch_from_manifest(data: PathBuf, manifest: &Path) -> DesktopLaunch {
-    let inventory: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
-    let (web, node, release) = if inventory["dependencies"]["web_path"] == "." {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .canonicalize()
-            .unwrap();
-        (
-            root.join("web"),
-            std::env::var_os("PP_TEST_NODE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/usr/bin/node")),
-            inventory,
-        )
-    } else {
-        let stage = manifest.parent().unwrap().canonicalize().unwrap();
-        let identity = if stage.join("release.json").is_file() {
-            stage.join("release.json")
-        } else {
-            stage.join("Resources/desktop-runtime/release.json")
-        };
-        let release: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(identity).unwrap()).unwrap();
-        (
-            stage.join(release["web"].as_str().unwrap()),
-            stage.join(release["node"].as_str().unwrap()),
-            release,
-        )
-    };
-    DesktopLaunch {
-        data_dir: data,
-        assets: web.join("apps/web/dist"),
-        bundle: VerifiedBundle {
-            node,
-            entry: web.join("apps/server/dist/current/desktop.js"),
-            web_root: web,
-            runtime_version: release["runtime_version"].as_str().unwrap().into(),
-            commit: release["commit"].as_str().unwrap().into(),
-        },
-    }
-}
 
 async fn request(
     origin: &str,

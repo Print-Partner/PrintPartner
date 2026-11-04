@@ -29,9 +29,11 @@ high-contrast dark theme for reading at a distance: text reaches 7:1, body text 
   `-focus-ring` and `-selection`. These are the only cyan tokens: primary button,
   focus ring and selection. Status and filament tokens are never cyan.
   `--interaction-on-accent` must read on both the resting and the hover fill.
-- **Status.** `--status-success`, `-warning`, `-danger`, `-info` and `-neutral`.
-  A status always shows an icon and a word too; colour is never the only signal.
-  Pills use `--status-pill-radius` (4 px), `-height` and `-padding-x`.
+- **Status.** `--status-active`, `-positive`, `-attention`, `-danger` and
+  `-neutral`. The names match the Rust `StatusColor` enum that the generated
+  printer display descriptors use, so they change only with that enum. A status
+  always shows an icon and a word too; colour is never the only signal. Pills use
+  `--status-pill-radius` (4 px), `-height` and `-padding-x`.
 - **Filament.** Swatches are round chips with a border: `--filament-swatch-size`
   (16 px), `-radius` (50%), `-border-width` (1 px), `-border` and `-empty` (no colour
   known). `.pp-filament-swatch` in `theme.css` applies them. A swatch is round and a
@@ -114,10 +116,10 @@ Dark:
 | text on interaction-selection | 10.18 | | | | 4.5 |
 | text-muted | 8.29 | 7.82 | 7.20 | 6.44 | 4.5 |
 | interaction-text | 10.72 | 10.11 | 9.32 | 8.33 | 4.5 |
-| status-success | 9.76 | 9.21 | 8.48 | 7.59 | 4.5 |
-| status-warning | 9.74 | 9.19 | 8.47 | 7.58 | 4.5 |
+| status-positive | 9.76 | 9.21 | 8.48 | 7.59 | 4.5 |
+| status-attention | 9.74 | 9.19 | 8.47 | 7.58 | 4.5 |
 | status-danger | 6.88 | 6.50 | 5.98 | 5.35 | 4.5 |
-| status-info | 9.05 | 8.54 | 7.87 | 7.04 | 4.5 |
+| status-active | 9.05 | 8.54 | 7.87 | 7.04 | 4.5 |
 | status-neutral | 8.29 | 7.82 | 7.20 | 6.44 | 4.5 |
 | line-strong | 4.36 | 4.11 | 3.79 | 3.39 | 3 |
 | interaction-accent | 9.00 | 8.49 | 7.82 | 7.00 | 3 |
@@ -134,10 +136,10 @@ Light:
 | text on interaction-selection | 14.39 | | | | 4.5 |
 | text-muted | 5.82 | 6.38 | 6.90 | 6.90 | 4.5 |
 | interaction-text | 5.54 | 6.07 | 6.57 | 6.57 | 4.5 |
-| status-success | 4.98 | 5.46 | 5.90 | 5.90 | 4.5 |
-| status-warning | 5.32 | 5.83 | 6.31 | 6.31 | 4.5 |
+| status-positive | 4.98 | 5.46 | 5.90 | 5.90 | 4.5 |
+| status-attention | 5.32 | 5.83 | 6.31 | 6.31 | 4.5 |
 | status-danger | 5.51 | 6.04 | 6.54 | 6.54 | 4.5 |
-| status-info | 5.13 | 5.63 | 6.08 | 6.08 | 4.5 |
+| status-active | 5.13 | 5.63 | 6.08 | 6.08 | 4.5 |
 | status-neutral | 5.82 | 6.38 | 6.90 | 6.90 | 4.5 |
 | line-strong | 3.24 | 3.56 | 3.85 | 3.85 | 3 |
 | interaction-accent | 4.27 | 4.68 | 5.06 | 5.06 | 3 |
@@ -154,10 +156,10 @@ Shop-floor:
 | text on interaction-selection | 12.35 | | | | 7 |
 | text-muted | 13.49 | 13.02 | 12.33 | 11.44 | 7 |
 | interaction-text | 14.21 | 13.73 | 12.99 | 12.05 | 7 |
-| status-success | 13.40 | 12.94 | 12.25 | 11.37 | 7 |
-| status-warning | 13.58 | 13.11 | 12.41 | 11.51 | 7 |
+| status-positive | 13.40 | 12.94 | 12.25 | 11.37 | 7 |
+| status-attention | 13.58 | 13.11 | 12.41 | 11.51 | 7 |
 | status-danger | 10.29 | 9.94 | 9.40 | 8.72 | 7 |
-| status-info | 12.03 | 11.61 | 10.99 | 10.20 | 7 |
+| status-active | 12.03 | 11.61 | 10.99 | 10.20 | 7 |
 | status-neutral | 13.49 | 13.02 | 12.33 | 11.44 | 7 |
 | line-strong | 8.30 | 8.01 | 7.58 | 7.03 | 3 |
 | interaction-accent | 12.72 | 12.28 | 11.62 | 10.78 | 3 |
@@ -174,10 +176,10 @@ Forced colors, dark palette:
 | text on interaction-selection | 21.00 | | | | 4.5 |
 | text-muted | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
 | interaction-text | 19.56 | 19.56 | 19.56 | 19.56 | 4.5 |
-| status-success | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
-| status-warning | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
+| status-positive | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
+| status-attention | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
 | status-danger | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
-| status-info | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
+| status-active | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
 | status-neutral | 21.00 | 21.00 | 21.00 | 21.00 | 4.5 |
 | line-strong | 21.00 | 21.00 | 21.00 | 21.00 | 3 |
 | interaction-accent | 14.37 | 14.37 | 14.37 | 14.37 | 3 |
@@ -194,10 +196,10 @@ Forced colors, light palette:
 | text on interaction-selection | 10.43 | | | | 4.5 |
 | text-muted | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
 | interaction-text | 6.94 | 6.94 | 6.94 | 6.94 | 4.5 |
-| status-success | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
-| status-warning | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
+| status-positive | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
+| status-attention | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
 | status-danger | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
-| status-info | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
+| status-active | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
 | status-neutral | 10.43 | 10.43 | 10.43 | 10.43 | 4.5 |
 | line-strong | 10.43 | 10.43 | 10.43 | 10.43 | 3 |
 | interaction-accent | 7.27 | 7.27 | 7.27 | 7.27 | 3 |

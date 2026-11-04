@@ -240,7 +240,11 @@ function noticesRepo(context) {
     join(REPO_ROOT, "scripts/update-third-party-notices.mjs"),
     join(root, "scripts/update-third-party-notices.mjs"),
   );
-  write(root, "web/package.json", '{"name":"notices-fixture","private":true}\n');
+  write(
+    root,
+    "web/package.json",
+    '{"name":"notices-fixture","private":true,"workspaces":["apps/*","packages/*"]}\n',
+  );
   write(
     root,
     "web/package-lock.json",
@@ -314,6 +318,26 @@ test("notices --check rejects a stale server copy without writing either file", 
   assert.equal(beforeServer.sha256, createHash("sha256").update(STALE_NOTICE).digest("hex"));
   assert.deepEqual(noticeSnapshot(root, ROOT_NOTICE), beforeRoot);
   assert.deepEqual(noticeSnapshot(root, SERVER_NOTICE), beforeServer);
+});
+
+test("notices list the dependencies of every declared workspace", (context) => {
+  const root = noticesRepo(context);
+  write(root, "web/apps/ui/package.json", '{"dependencies":{"router":"1.0.0"}}\n');
+  write(
+    root,
+    "web/node_modules/router/package.json",
+    '{"name":"router","version":"1.0.0","license":"MIT","homepage":"https://example.test/router"}\n',
+  );
+  write(root, ROOT_NOTICE, FRESH_NOTICE);
+  write(root, SERVER_NOTICE, FRESH_NOTICE);
+
+  const result = runNotices(root, []);
+
+  assert.equal(result.status, 0, result.stderr);
+  const notices = readFileSync(join(root, ROOT_NOTICE), "utf8");
+  assert.match(notices, /\| router \| 1\.0\.0 \| MIT \| https:\/\/example\.test\/router \|/);
+  assert.match(notices, /\| widget \| 2\.0\.0 \|/);
+  assert.equal(readFileSync(join(root, SERVER_NOTICE), "utf8"), notices);
 });
 
 test("notices --check rejects a missing root copy without creating it", (context) => {

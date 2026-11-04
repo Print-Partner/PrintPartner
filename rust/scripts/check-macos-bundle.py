@@ -19,11 +19,10 @@ import time
 import unittest
 from unittest.mock import patch
 
+from desktop_workspaces import ARTIFACTS, shipped_workspaces
 from macos_addon_slices import better_sqlite3_addon_path, select_better_sqlite3_prebuild
 
 WEB = 'Resources/desktop-runtime/web'
-ARTIFACTS = {'frontend': 'apps/web/dist', 'backend': 'apps/server/dist/current',
-             'contracts': 'packages/contracts/dist/current', 'domain': 'packages/domain/dist/current'}
 FLOOR = (13, 5, 0)
 MAX_PROBE_STREAM_BYTES = 4096
 PROBE_CLEANUP_SECONDS = 1
@@ -83,8 +82,7 @@ def dependency_roots(root, web):
         if ancestor == root:
             break
         ancestor = ancestor.parent
-    for workspace in [*(p for p in web.glob('apps/*') if p.is_dir() and p.name != 'node_modules'),
-                      *(p for p in web.glob('packages/*') if p.is_dir() and p.name != 'node_modules')]:
+    for workspace in shipped_workspaces(web):
         for directory in [workspace, workspace / 'dist', workspace / 'dist/current']:
             search.add(directory / 'node_modules')
     return sorted(p.relative_to(root).as_posix() for p in search)
@@ -172,6 +170,7 @@ def verify_resources(root, manifest, arch):
         relative_path(name)
         require(isinstance(target, str) and target and not pathlib.Path(target).is_absolute(), 'Invalid alias target')
     require(deps.get('roots') == dependency_roots(root, web), 'Missing or changed resolver roots')
+    require(not deps.get('unshipped_links'), 'Bundle manifest lists unshipped workspace links')
     actual = dependency_inventory(root, deps['roots'])
     require(actual == {'files': deps['files'], 'links': deps['links']}, 'Changed dependency bytes or aliases')
     for name in ('contracts', 'domain'):

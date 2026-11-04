@@ -220,9 +220,7 @@ class LocalCiTests(unittest.TestCase):
         build = step.setup.index("npm --prefix web run build --workspace @print-partner/ui")
         browser = step.setup.index("npm --prefix web run test:browser --workspace @print-partner/ui")
         self.assertLess(build, browser)
-        manifest = next(i for i, line in enumerate(step.setup) if "build-desktop-manifest.py" in line)
-        self.assertLess(build, manifest)
-        self.assertLess(manifest, browser)
+        self.assertFalse([line for line in step.setup if "build-desktop-manifest.py" in line])
 
     def test_ui_package_reports_a_skipped_browser_engine_as_skip(self):
         ci = LocalCi(self, codes={"ui-package": 77})

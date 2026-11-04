@@ -345,6 +345,18 @@ and `build` scripts list workspaces by name, so they do not run this package.
 Running its typecheck, tests and build in hosted CI needs a `web-ci.yml` change
 by the workflow owner.
 
+The desktop does not ship `apps/ui`, so `rust/bundle-manifest.json` does not
+measure it. You can run these commands after building the manifest; Vitest's
+cache in `apps/ui/node_modules/.vite` and `apps/ui/dist` leave the Rust launch
+tests passing.
+
+`THIRD_PARTY_NOTICES.md` lists the direct runtime dependencies of every
+workspace in `web/package.json`, including this one. After changing a
+workspace's `dependencies`, run `npm --prefix web run docs:licenses`. Web CI runs
+the same script with `--check`. `fixtures/admin/node-oracle.json` records the
+notice's length and SHA-256 for `/legal/third-party`, so a changed table also
+needs the oracle update in [fixtures/admin/README.md](../../fixtures/admin/README.md).
+
 ## Run a job locally
 
 To run the same checks on your machine, build the assets and manifest first. From the repository root:

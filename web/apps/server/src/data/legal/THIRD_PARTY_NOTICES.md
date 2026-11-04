@@ -59,6 +59,7 @@ Transitive packages are recorded in `web/package-lock.json` and remain subject t
 | pino | 10.4.0 | MIT | https://getpino.io |
 | react | 19.3.1 | MIT | https://react.dev/ |
 | react-dom | 19.3.1 | MIT | https://react.dev/ |
+| react-router | 7.18.4 | MIT | https://github.com/remix-run/react-router |
 | react-router-dom | 7.18.4 | MIT | https://github.com/remix-run/react-router |
 | sonner | 2.0.8 | MIT | https://sonner.emilkowal.ski/ |
 | tailwind-merge | 3.7.0 | MIT | https://github.com/dcastil/tailwind-merge |

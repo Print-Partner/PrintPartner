@@ -1,17 +1,36 @@
 #!/usr/bin/env node
 
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const checkOnly = process.argv.slice(2).includes("--check");
 const webRoot = join(repoRoot, "web");
-const workspacePackageFiles = [
-  "apps/server/package.json",
-  "apps/web/package.json",
-  "packages/contracts/package.json",
-  "packages/domain/package.json",
-];
+
+// Every workspace that web/package.json declares, so a new one cannot be left out.
+async function workspacePackageFiles() {
+  const root = JSON.parse(await readFile(join(webRoot, "package.json"), "utf8"));
+  const files = [];
+  for (const pattern of root.workspaces ?? []) {
+    const parent = pattern.slice(0, -"/*".length);
+    if (!pattern.endsWith("/*") || parent.includes("*")) {
+      throw new Error(`Unsupported workspace pattern: ${pattern}`);
+    }
+    const entries = await readdir(join(webRoot, parent), { withFileTypes: true });
+    const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    for (const name of names) {
+      const relativePath = `${parent}/${name}/package.json`;
+      try {
+        await access(join(webRoot, relativePath));
+        files.push(relativePath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  }
+  if (files.length === 0) throw new Error("web/package.json declares no workspaces");
+  return files;
+}
 
 function normalizeRepositoryUrl(raw) {
   const url = raw
@@ -55,7 +74,7 @@ async function dependencyManifestPath(workspaceDirectory, name) {
 }
 
 const directDependencies = new Map();
-for (const relativePath of workspacePackageFiles) {
+for (const relativePath of await workspacePackageFiles()) {
   const workspaceManifestPath = join(webRoot, relativePath);
   const manifest = JSON.parse(await readFile(workspaceManifestPath, "utf8"));
   for (const name of Object.keys(manifest.dependencies ?? {})) {

@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { readSchemaVersion } from "../../apps/server/src/db/upgrade-guard.js";
 
 export const GENERATOR_NAME = "print-partner-synthetic-dataset";
-export const GENERATOR_VERSION = 1;
+export const GENERATOR_VERSION = 2;
 export const SYNTHETIC_LABEL = "synthetic: not the architecture's step-2 rehearsal";
 export const MANIFEST_FILE = "SYNTHETIC-DATASET.json";
 const DATABASE_FILE = "print-partner.db";

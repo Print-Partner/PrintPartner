@@ -8,7 +8,9 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compare, exportDocument, generate, packageSource, verifyIntegrity } from "./client.mjs";
-import { dtoSchemas, routePath, routes } from "../../packages/rust-client/src/index.ts";
+import * as client from "../../packages/rust-client/src/index.ts";
+
+const { dtoSchemas, routePath, routes } = client;
 
 const document = JSON.parse(readFileSync(process.env.PP_RUST_CLIENT_DOCUMENT ?? exportDocument(), "utf8"));
 const requestDtos = new Set(document.routes.map((route) => route.request).filter(Boolean));
@@ -47,6 +49,26 @@ test("routes cover Builds, layers, v2 drafts and health, all generated from pp-a
 test("every DTO has accepted Rust fixtures", () => {
   assert.deepEqual(Object.keys(dtoSchemas).sort(), Object.keys(document.dtos).sort());
   for (const name of Object.keys(dtoSchemas)) assert(document.fixtures.some((fixture) => fixture.dto === name && fixture.rust_accepts), name);
+});
+
+test("descriptor tables hold Rust's rows, parse with their DTO and cover the key enum", () => {
+  assert(document.descriptors.length > 0);
+  for (const table of document.descriptors) {
+    const generated = client[table.name];
+    assert.deepEqual(Object.values(generated), table.values, table.name);
+    const schema = dtoSchemas[table.dto];
+    for (const [key, row] of Object.entries(generated)) {
+      assert.deepEqual(schema.parse(row), row, `${table.name}.${key}`);
+      assert.equal(row[table.key], key);
+    }
+    assert.deepEqual(Object.keys(generated), schema.shape[table.key].options);
+  }
+});
+
+test("a descriptor table missing a key value is refused", () => {
+  const changed = JSON.parse(JSON.stringify(document));
+  changed.descriptors[0].values.pop();
+  assert.throws(() => generate(changed), /must list every/);
 });
 
 for (const fixture of document.fixtures) {

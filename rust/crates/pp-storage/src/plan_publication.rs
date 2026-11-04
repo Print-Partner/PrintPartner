@@ -222,6 +222,26 @@ fn projection(p: &DraftPart) -> Result<DraftPart> {
     row["role"] = json!(ru::model::role(p));
     Ok(row)
 }
+/// Filament fields an accepted Part may change without a new revision. Accept
+/// publishes the live accepted Part's values for them, not the draft's.
+const LIVE_FILAMENT_FIELDS: [&str; 3] = ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"];
+
+/// Gives each draft Part that has a base its accepted Part's live filament, as
+/// Accept publishes it. `predecessors` come from [`validate_projection`]. A new
+/// Part keeps its own values.
+fn inherit_live_filament(parts: &mut [DraftPart], predecessors: &[DraftPart]) {
+    for part in parts {
+        if let Some(old) = predecessors
+            .iter()
+            .find(|row| row["id"] == part["baseRevisionPartId"])
+        {
+            for key in LIVE_FILAMENT_FIELDS {
+                part[key] = old[key].clone();
+            }
+        }
+    }
+}
+
 fn validate_projection(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -264,8 +284,7 @@ fn validate_projection(
             .as_object()
             .ok_or_else(|| anyhow!("Invalid Part"))?
         {
-            if !["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"].contains(&key.as_str())
-            {
+            if !LIVE_FILAMENT_FIELDS.contains(&key.as_str()) {
                 ensure!(actual[key] == *value, "Accepted projection mismatch {key}");
             }
         }
@@ -291,7 +310,7 @@ fn validate_projection(
                 "Invalid accepted progress"
             );
         }
-        for field in ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"] {
+        for field in LIVE_FILAMENT_FIELDS {
             part[field] = actual[field].clone();
         }
     }
@@ -1278,16 +1297,7 @@ fn check_selection(
             reason: ReconciliationReason::Stale,
         }));
     }
-    for p in &mut d.parts {
-        if let Some(old) = predecessors
-            .iter()
-            .find(|r| r["id"] == p["baseRevisionPartId"])
-        {
-            for key in ["filamentColorId", "filamentCustomHex", "spoolmanSpoolId"] {
-                p[key] = old[key].clone();
-            }
-        }
-    }
+    inherit_live_filament(&mut d.parts, &predecessors);
     let production = production(tx, tenant, profile)?;
     let selected_result: Value = serde_json::from_str(text(&selected.header, "resultJson")?)?;
     let prepared = model::prepare(d.parts, &selected_result["assignments"], &base)?;

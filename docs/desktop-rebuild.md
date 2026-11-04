@@ -2691,8 +2691,12 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   returns Accept's refusal, such as `reconciliation_required`,
   `production_active` or `execution_conflict`. A changed draft reports active
   production and running operations as checks in `changes` instead.
-- Otherwise 200 `{ kind: "changed", revision, changes, snapshot }`. `changes`
-  holds `fields` (each changed Part field, `old` and `new`), `parts_added`,
+- Otherwise 200 `{ kind: "changed", revision, changes, snapshot }`. The diff
+  and the `no_change` decision use the Parts Accept would publish: a Part with
+  a base takes `filament_color_id`, `filament_custom_hex` and
+  `spoolman_spool_id` from its live accepted Part, as Accept does, and a new
+  Part keeps its own. `changes` holds `fields` (each changed Part field, `old`
+  and `new`), `parts_added`,
   `parts_removed`, `inputs` (changed Source input fields; each value is
   `{ kind: "text" | "integer" | "flag", value }` or `null`), `required_units`
   (`added`, `removed`, and `printed_affected`: printed units that Accept removes

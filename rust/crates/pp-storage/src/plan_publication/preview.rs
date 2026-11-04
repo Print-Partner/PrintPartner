@@ -274,7 +274,7 @@ pub(crate) fn preview(
             "plan_version": revision.expected_base.plan_version,
         },
     }))?;
-    let gate = match check_draft(tx, tenant, profile, draft_id, &request)? {
+    let mut gate = match check_draft(tx, tenant, profile, draft_id, &request)? {
         Ok(gate) => gate,
         Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
     };
@@ -282,6 +282,8 @@ pub(crate) fn preview(
         saved_before_accept: true,
         detail: SNAPSHOT_DETAIL.into(),
     };
+    // Diff the Parts Accept would publish: filament comes from the live Part.
+    inherit_live_filament(&mut gate.draft.parts, &gate.predecessors);
     let diff = diff::read(tx, tenant, &gate.profile_row, &gate.draft)?.0;
     let checked = match check_selection(tx, tenant, profile, gate)? {
         Ok(checked) => checked,
@@ -565,6 +567,67 @@ mod tests {
     /// pp-api preview tests seed the same revision digest.
     const ALIGNED_REVISION_DIGEST: &str =
         "19ccb8c4f3f9e8d9c4da6083b64bd8fe25a2bfce6545a94782da40b99ca82b63";
+    /// The aligned revision with accepted Part 1 on Spoolman spool 7. Seeded by
+    /// the pp-api test where only the live Part's spool differs from the draft.
+    const LIVE_SPOOL_REVISION_DIGEST: &str =
+        "44de35eded4fab323f4df212ba4634a51912d1af49829c5672d86ebd7e552f7c";
+
+    /// The fixture's revision 1 digest after `sql` runs on a disposable copy.
+    fn revision_digest_after(sql: &str) -> String {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("print-partner.db");
+        std::fs::write(
+            &path,
+            include_bytes!("../../tests/fixtures/required-units/unchanged.db"),
+        )
+        .unwrap();
+        let mut connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&format!(
+                "DROP TRIGGER trg_plan_revision_parts_immutable_update; {sql}"
+            ))
+            .unwrap();
+        let tx = connection.transaction().unwrap();
+        let mut parts = part_rows(
+            &tx,
+            "SELECT * FROM plan_revision_parts WHERE tenant_id=? AND revision_id=? ORDER BY id",
+            &[&"default", &1],
+        )
+        .unwrap();
+        normalize_parts(&mut parts).unwrap();
+        model::revision_digest(&parts).unwrap()
+    }
+
+    #[test]
+    fn accept_preview_test_revision_digests_are_pinned() {
+        let aligned = "UPDATE plan_revision_parts SET status='excluded' WHERE id=2;";
+        assert_eq!(revision_digest_after(aligned), ALIGNED_REVISION_DIGEST);
+        let spool =
+            format!("{aligned} UPDATE plan_revision_parts SET spoolman_spool_id='7' WHERE id=1;");
+        assert_eq!(revision_digest_after(&spool), LIVE_SPOOL_REVISION_DIGEST);
+    }
+
+    /// Accept and the preview give a Part with a base its live filament; a new
+    /// Part keeps its own.
+    #[test]
+    fn accept_preview_parts_take_live_filament_only_with_a_base() {
+        let part = |value: Value| DraftPart::new(value, Default::default());
+        let live = [part(
+            json!({"id":1,"filamentColorId":null,"filamentCustomHex":"#112233","spoolmanSpoolId":"7"}),
+        )];
+        let mut parts = [
+            part(
+                json!({"id":4,"baseRevisionPartId":1,"filamentColorId":5,"filamentCustomHex":null,"spoolmanSpoolId":"9"}),
+            ),
+            part(
+                json!({"id":5,"baseRevisionPartId":null,"filamentColorId":6,"filamentCustomHex":null,"spoolmanSpoolId":"8"}),
+            ),
+        ];
+        inherit_live_filament(&mut parts, &live);
+        let filament = |part: &DraftPart| LIVE_FILAMENT_FIELDS.map(|key| part[key].clone());
+        assert_eq!(filament(&parts[0]), filament(&live[0]));
+        assert_eq!(filament(&parts[1]), [json!(6), Value::Null, json!("8")]);
+    }
 
     /// With no Required-unit selection, Accept refuses even an unchanged
     /// draft, so the preview does too instead of answering `no_change`.

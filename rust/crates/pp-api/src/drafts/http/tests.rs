@@ -1737,9 +1737,13 @@ async fn accept_preview_lists_changes_and_checks_then_accept_refuses_its_stale_r
         json!({"draft_id":2,"expected_snapshot_digest":digest,"expected_lifecycle_version":0,
             "expected_base":{"revision_id":1,"plan_version":1}})
     );
+    // The live Part moved to spool 7 after the revision stored none; Accept
+    // carries the live spool into the new revision.
     assert_eq!(
         preview["changes"]["fields"],
         json!([
+            {"draft_part_id":4,"filename":"bracket.stl","field":"spoolman_spool_id",
+                "old":null,"new":{"kind":"text","value":"7"}},
             {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_override",
                 "old":{"kind":"integer","value":3},"new":null},
             {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_effective",
@@ -1894,8 +1898,9 @@ async fn accept_preview_writes_nothing() {
     server.close().await;
 }
 
-/// Pinned by pp-storage's
-/// `accept_preview_of_an_unchanged_draft_without_a_selection_is_refused`.
+/// Both pinned by pp-storage's `accept_preview_test_revision_digests_are_pinned`.
+const LIVE_SPOOL_REVISION_DIGEST: &str =
+    "44de35eded4fab323f4df212ba4634a51912d1af49829c5672d86ebd7e552f7c";
 const ALIGNED_REVISION_DIGEST: &str =
     "19ccb8c4f3f9e8d9c4da6083b64bd8fe25a2bfce6545a94782da40b99ca82b63";
 
@@ -1903,6 +1908,12 @@ const ALIGNED_REVISION_DIGEST: &str =
 /// does, so the draft equals the accepted Plan. The immutability triggers are
 /// dropped for the update and recreated from the fixture's own SQL.
 fn aligned_setup() -> String {
+    revision_setup("", ALIGNED_REVISION_DIGEST)
+}
+
+/// [`aligned_setup`] plus `extra` revision and projection updates; `digest` is
+/// the resulting revision digest.
+fn revision_setup(extra: &str, digest: &str) -> String {
     let directory = crate::scratch::Scratch::new("pp-preview-align-");
     let path = directory.join("fixture.db");
     std::fs::write(
@@ -1930,7 +1941,8 @@ fn aligned_setup() -> String {
     format!(
         "{drop}UPDATE plan_revision_parts SET status='excluded' WHERE id=2;
 UPDATE parts SET status='excluded' WHERE id=2;
-UPDATE plan_revisions SET snapshot_digest='{ALIGNED_REVISION_DIGEST}' WHERE id=1;
+{extra}
+UPDATE plan_revisions SET snapshot_digest='{digest}' WHERE id=1;
 {create}"
     )
 }
@@ -2037,6 +2049,70 @@ async fn accept_preview_of_an_unchanged_draft_refuses_exactly_as_accept() {
     assert_eq!(
         as_problem(&accept(&server, &revision, "running", false)),
         preview
+    );
+    server.close().await;
+}
+
+/// Accepted Part 1 and its live row on spool 7; the draft's Part 4 still says
+/// none. Accept publishes the live spool, so the preview diffs that.
+fn live_spool_setup() -> String {
+    revision_setup(
+        "UPDATE plan_revision_parts SET spoolman_spool_id='7' WHERE id=1;
+UPDATE parts SET spoolman_spool_id='7' WHERE id=1;",
+        LIVE_SPOOL_REVISION_DIGEST,
+    )
+}
+
+#[tokio::test]
+async fn accept_preview_ignores_draft_filament_that_accept_replaces_with_the_live_part() {
+    let setup = live_spool_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    let workspace = select_units(&server).await;
+    let spool = |sql: &str| -> Option<String> {
+        server.sql().query_row(sql, [], |row| row.get(0)).unwrap()
+    };
+    assert_eq!(
+        spool("SELECT spoolman_spool_id FROM plan_draft_parts WHERE id=4"),
+        None
+    );
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    assert_eq!(preview["kind"], "no_change");
+    let applied = accept(&server, &revision_of(&workspace), "live-spool", false);
+    assert!(
+        matches!(
+            applied,
+            pp_storage::plan_publication::Outcome::Applied { .. }
+        ),
+        "{applied:?}"
+    );
+    assert_eq!(
+        spool(
+            "SELECT r.spoolman_spool_id FROM plan_revision_parts r JOIN build_profiles b
+               ON b.accepted_plan_revision_id=r.revision_id WHERE b.id=1 AND r.filename='bracket.stl'"
+        ),
+        Some("7".into())
+    );
+    server.close().await;
+}
+
+#[tokio::test]
+async fn accept_preview_lists_only_the_changes_accept_publishes() {
+    let setup = live_spool_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    changed_draft(&server).await;
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    let integer = |value: i64| json!({"kind":"integer","value":value});
+    let flag = |value: bool| json!({"kind":"flag","value":value});
+    assert_eq!(
+        preview["changes"]["fields"],
+        json!([
+            {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_override",
+                "old":integer(3),"new":null},
+            {"draft_part_id":4,"filename":"bracket.stl","field":"quantity_effective",
+                "old":integer(3),"new":integer(1)},
+            {"draft_part_id":5,"filename":"excluded.stl","field":"included",
+                "old":flag(false),"new":flag(true)}
+        ])
     );
     server.close().await;
 }

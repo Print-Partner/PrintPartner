@@ -11,7 +11,6 @@ use pp_storage::{
 };
 use rusqlite::Connection;
 use std::{
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -44,11 +43,7 @@ impl Fixture {
             std::process::id(),
             rand::random::<u64>()
         ));
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root.join("repos/1/revisions/accepted"))
-            .unwrap();
+        pp_os::create_private_dir_all(&root.join("repos/1/revisions/accepted")).unwrap();
         std::fs::write(root.join("print-partner.db"), database).unwrap();
         let (owner, _) = WriterOwner::open(
             &root,

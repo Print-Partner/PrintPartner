@@ -24,11 +24,10 @@
 //! valid or not, refuses it.
 
 use anyhow::Result;
+use pp_os::Dir;
 use std::{
     fmt,
-    fs::{File, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
@@ -163,39 +162,45 @@ pub enum MarkerState {
 
 /// Reads the marker without following symlinks and without writing.
 pub fn inspect(directory: &Path) -> MarkerState {
-    let path = directory.join(MARKER_FILE);
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) if !metadata.file_type().is_file() => {
+    match Dir::open(directory) {
+        Ok(dir) => inspect_in(&dir),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => MarkerState::Absent,
+        Err(error) => MarkerState::Refused(MarkerRefusal::Unreadable(error.kind())),
+    }
+}
+
+fn inspect_in(dir: &Dir) -> MarkerState {
+    match dir.status_nofollow(MARKER_FILE) {
+        Ok(status) if !status.is_file() => {
             return MarkerState::Refused(MarkerRefusal::NotRegularFile);
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return MarkerState::Absent,
         Err(error) => return MarkerState::Refused(MarkerRefusal::Unreadable(error.kind())),
     }
-    let read = || -> std::io::Result<Result<Vec<u8>, MarkerRefusal>> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(&path)?;
-        if !file.metadata()?.is_file() {
-            return Ok(Err(MarkerRefusal::NotRegularFile));
-        }
-        let mut bytes = Vec::new();
-        file.take(MARKER_MAX_BYTES + 1).read_to_end(&mut bytes)?;
-        Ok(if bytes.len() as u64 > MARKER_MAX_BYTES {
-            Err(MarkerRefusal::TooLarge)
-        } else {
-            Ok(bytes)
-        })
-    };
-    match read() {
-        Ok(Ok(bytes)) => match Marker::parse(&bytes) {
+    match read_regular_file(dir, MARKER_FILE, MARKER_MAX_BYTES) {
+        Ok(Some(bytes)) => match Marker::parse(&bytes) {
             Ok(marker) => MarkerState::Valid(marker),
             Err(refusal) => MarkerState::Refused(refusal),
         },
-        Ok(Err(refusal)) => MarkerState::Refused(refusal),
+        Ok(None) => MarkerState::Refused(MarkerRefusal::TooLarge),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            MarkerState::Refused(MarkerRefusal::NotRegularFile)
+        }
         Err(error) => MarkerState::Refused(MarkerRefusal::Unreadable(error.kind())),
     }
+}
+
+/// Reads the regular file `name` without following it. `Ok(None)` when it
+/// holds more than `limit` bytes; `InvalidData` when it is not a regular file.
+fn read_regular_file(dir: &Dir, name: &str, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let file = dir.open_read_nofollow(name)?;
+    if !pp_os::status_of(&file)?.is_file() {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
 }
 
 /// A refusal to open a data directory, before anything in it changed.
@@ -271,6 +276,10 @@ pub fn allowed_in_node_lease(name: &str) -> bool {
 
 /// The first entry that makes `directory` non-empty, or `None` when empty.
 pub fn first_non_empty_entry(directory: &Path) -> std::io::Result<Option<String>> {
+    first_non_empty_entry_in(&Dir::open(directory)?, directory)
+}
+
+fn first_non_empty_entry_in(dir: &Dir, directory: &Path) -> std::io::Result<Option<String>> {
     let mut names = std::fs::read_dir(directory)?
         .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
         .collect::<std::io::Result<Vec<_>>>()?;
@@ -279,16 +288,15 @@ pub fn first_non_empty_entry(directory: &Path) -> std::io::Result<Option<String>
         if !allowed_in_empty(&name) {
             return Ok(Some(name));
         }
-        let path = directory.join(&name);
-        if name == ".desktop-lease" && std::fs::symlink_metadata(&path)?.is_dir() {
-            for inner in std::fs::read_dir(&path)? {
+        if name == ".desktop-lease" && dir.status_nofollow(&name)?.is_dir() {
+            for inner in std::fs::read_dir(directory.join(&name))? {
                 let inner = inner?.file_name().to_string_lossy().into_owned();
                 if !allowed_in_node_lease(&inner) {
                     return Ok(Some(format!(".desktop-lease/{inner}")));
                 }
             }
         }
-        if name == OWNER_RECORD && owner_record_is_live(&path) {
+        if name == OWNER_RECORD && owner_record_is_live(dir) {
             return Ok(Some(name));
         }
     }
@@ -298,15 +306,16 @@ pub fn first_non_empty_entry(directory: &Path) -> std::io::Result<Option<String>
 /// A process lease record names a running process when its pid is alive and
 /// its recorded identity, if any, still matches. An unreadable record, or an
 /// identity that cannot be looked up, counts as live.
-fn owner_record_is_live(path: &Path) -> bool {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return true;
-    };
-    if !metadata.is_file() || metadata.len() > 64 * 1024 {
+fn owner_record_is_live(dir: &Dir) -> bool {
+    if !dir
+        .status_nofollow(OWNER_RECORD)
+        .is_ok_and(|status| status.is_file())
+    {
         return true;
     }
-    let Ok(record) = std::fs::read(path)
+    let Ok(record) = read_regular_file(dir, OWNER_RECORD, 64 * 1024)
         .map_err(|_| ())
+        .and_then(|bytes| bytes.ok_or(()))
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|_| ()))
     else {
         return true;
@@ -347,37 +356,32 @@ fn process_identity(pid: i32) -> Option<String> {
 
 /// Writes `marker` atomically: a temporary file in the same directory, fsync,
 /// rename onto [`MARKER_FILE`], then fsync the directory.
-fn write_marker(directory: &Path, marker: &Marker) -> std::io::Result<()> {
-    let temp = directory.join(format!(
+fn write_marker(dir: &Dir, directory: &Path, marker: &Marker) -> std::io::Result<()> {
+    let temp = format!(
         "{MARKER_TEMP_PREFIX}{}",
         hex::encode(rand::random::<[u8; 8]>())
-    ));
+    );
     let written = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temp)?;
+        let mut file = dir.create_new_nofollow(&temp)?;
         file.write_all(&marker.to_bytes())?;
         file.sync_all()?;
         #[cfg(test)]
         tests::fail_after_temp_sync()?;
-        std::fs::rename(&temp, directory.join(MARKER_FILE))
+        pp_os::publish_rename(&directory.join(&temp), &directory.join(MARKER_FILE))
     })();
     if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
+        let _ = dir.remove_file(&temp);
         return written;
     }
-    File::open(directory)?.sync_all()?;
+    pp_os::sync_directory(directory)?;
     // Earlier crash leftovers are ours; the marker now supersedes them.
     for entry in std::fs::read_dir(directory)?.flatten() {
-        if entry
+        if let Some(name) = entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with(MARKER_TEMP_PREFIX))
+            .filter(|name| name.starts_with(MARKER_TEMP_PREFIX))
         {
-            let _ = std::fs::remove_file(entry.path());
+            let _ = dir.remove_file(name);
         }
     }
     Ok(())
@@ -423,20 +427,20 @@ pub(crate) fn admit_writer(locked: &crate::lease::LockedDirectory, gate: WriterG
     if !cfg!(feature = "desktop_rebuild") {
         return Ok(());
     }
-    let directory = locked.path();
+    let (dir, directory) = (locked.dir(), locked.path());
     match gate {
         #[cfg(any(test, feature = "test-unmarked-writer"))]
         WriterGate::Unchecked => Ok(()),
         WriterGate::SwitchOff => Err(OwnershipRefusal::SwitchOff.into()),
-        WriterGate::SwitchOn => match inspect(directory) {
+        WriterGate::SwitchOn => match inspect_in(dir) {
             MarkerState::Valid(_) => Ok(()),
             MarkerState::Refused(refusal) => Err(OwnershipRefusal::Marker(refusal).into()),
             MarkerState::Absent => {
-                if let Some(first_entry) = first_non_empty_entry(directory)? {
+                if let Some(first_entry) = first_non_empty_entry_in(dir, directory)? {
                     return Err(OwnershipRefusal::NotEmptyUnmarked { first_entry }.into());
                 }
-                write_marker(directory, &Marker::now())?;
-                match inspect(directory) {
+                write_marker(dir, directory, &Marker::now())?;
+                match inspect_in(dir) {
                     MarkerState::Valid(_) => Ok(()),
                     _ => anyhow::bail!("Ownership marker did not read back after writing"),
                 }
@@ -508,7 +512,8 @@ mod tests {
     fn failed_marker_write_leaves_no_marker_and_no_temp_file() {
         let directory = tempfile::tempdir().unwrap();
         FAIL_AFTER_TEMP_SYNC.set(true);
-        let result = write_marker(directory.path(), &Marker::now());
+        let dir = Dir::open(directory.path()).unwrap();
+        let result = write_marker(&dir, directory.path(), &Marker::now());
         FAIL_AFTER_TEMP_SYNC.set(false);
         assert!(result.is_err());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
@@ -545,7 +550,8 @@ mod tests {
             .join(format!("{MARKER_TEMP_PREFIX}0011223344556677"));
         std::fs::write(&leftover, b"{\"version\":1").unwrap();
         assert_eq!(first_non_empty_entry(directory.path()).unwrap(), None);
-        write_marker(directory.path(), &Marker::now()).unwrap();
+        let dir = Dir::open(directory.path()).unwrap();
+        write_marker(&dir, directory.path(), &Marker::now()).unwrap();
         assert!(!leftover.exists());
         assert!(matches!(inspect(directory.path()), MarkerState::Valid(_)));
     }

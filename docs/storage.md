@@ -76,7 +76,7 @@ In a `desktop_rebuild` build, `WriterOwner::open`, `open_at` and `open_with_job_
 | `1` or `true` | present but invalid | any | Refuse. Nothing changes. |
 | unset or anything else | any | any | Refuse before any write. |
 
-The writer creates `.pp-rust-owned.json.tmp-<16 hex>` in the data directory with mode `0600` and `O_EXCL`, writes and fsyncs it, renames it onto `.pp-rust-owned.json`, then fsyncs the directory. If the write fails, it removes the temporary file and opens nothing. After a successful write it removes older temporary files.
+The writer creates `.pp-rust-owned.json.tmp-<16 hex>` in the data directory with mode `0600` and `O_EXCL`, writes and fsyncs it, renames it onto `.pp-rust-owned.json`, then fsyncs the directory. Reads, creation, removal, the rename (`pp_os::publish_rename`) and the directory sync (`pp_os::sync_directory`) go through `pp-os`, on the directory handle the lock holds. If the write fails, it removes the temporary file and opens nothing. After a successful write it removes older temporary files.
 
 "Empty" means only these top-level entries: `printpartner.lock`, `.desktop-lease` (a Rust file, or a Node directory holding only `owner.json` and `previous-marker.json`), `.desktop-lease-candidate-*`, `.desktop-lease-release-*`, `.desktop-lease-retired-*`, `.desktop-owner.json`, `.desktop-owner-release-*.json`, `lost+found`, and the marker writer's own `.pp-rust-owned.json.tmp-*` crash leftover. A `.desktop-owner.json` whose pid is running and whose `process_identity` still matches (`<boot id>:<start time>` from `/proc`, as Node computes it) makes the directory non-empty. So does an unreadable record, or a running pid whose identity cannot be looked up. The test `lease_names_in_rust_and_node_lease_code_and_the_marker_name_match_the_allowlist` reads `pp-storage/src/lease.rs`, `web/apps/server/src/storage-lease.ts` and `web/apps/server/src/desktop-context.ts` and fails if their lease names and the allowlist differ.
 
@@ -91,6 +91,68 @@ The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision
 - `pp-storage` owns the SQLite connection, migrations, the bounded settings writer, the read-only pool, the storage lease and safe backups.
 - The Node server still runs the application SQL, startup migrations and jobs.
 - The desktop rebuild slices move these operations into `pp-storage` behind `desktop_rebuild`. See [Desktop rebuild flag](desktop-rebuild.md).
+
+## Synthetic installations
+
+`web/scripts/synthetic-dataset/generate.mts` writes a synthetic Node schema-34 data directory shaped like a long-lived installation, for invariant tests to run against. Owner UX checks and the cutover rehearsal can fall back to it when no production backup copy is available. Its Source revisions are plain STL folders without a `.printpartner-source-snapshot.json`, so saving a Source manifest on it fails. Its tests cover the stored shape and STL dimensions, not Plate initialization or 3MF export. It is not the representative copy that step 2 of [Whole-runtime cutover](architecture.md#whole-runtime-cutover-and-rollback) requires, and evidence built on it must say so.
+
+From `web/`, with Node 24.21 and `better-sqlite3` built for it:
+
+```sh
+npm run fixture:synthetic -- --seed 1138 /tmp/pp-synthetic-1138
+```
+
+The output directory must be new or empty. The generator refuses anything else, so it never writes into an existing data directory.
+
+### How it is built
+
+Node's own `SqliteDatabase.connect` creates the schema-34 database. The repository then builds every row: `createSource`, `recordSourceRevision`, `activateSourceRevision`, `createProfile`, `addAddonLayer`, the accept and edit test helpers in `apps/server/src/test/accept-plan.ts`, `publishAcceptedPlates`, `deleteProfile` and `saveUnattributedPrint`. No SQL is written by hand. The clock starts at `2026-10-02T00:00:00.000Z` and advances one minute per operation. Required-unit tokens come from a seeded token factory. Plate IDs use the same `plate_<sha256 prefix>` form as the Node Plate workspace.
+
+### Shapes
+
+It produces only these shapes:
+
+| Shape | What the output holds |
+| --- | --- |
+| ID density | 22 live Builds and 7 deleted Builds, interleaved, so Build IDs run 1 to 29 with gaps. The deletions also leave gaps in Plan revision, Part and layer IDs. |
+| Immutable IDs | Plan, Plate and Required-unit IDs created by Node, kept through later Plan and Plate revisions |
+| Plan size | 10 Sources with 3 to 8 STL files each. Builds have 1 to 5 layers and 1 to 4 accepted Plan revisions. |
+| Plate size | Two anchor Builds: `Synthetic Build Anchor 100u15p` (100 units on 15 Plates) and `Synthetic Build Anchor 47u6p` (47 units on 6 Plates). Other Builds have up to 8 Plates or none. |
+| Accepted history | Builds with Plates and 3 or more Plan revisions keep a Plate revision on an earlier Plan revision. Each anchor has two Plate revisions on its current Plan. |
+| Unmatched prints | 18 open entries in the `printer.unattributed_prints` setting |
+
+Names are `Synthetic Source NN`, `Synthetic Build NN` and `synthetic-sNN-part-NN.stl`. Every part is a closed 20 × 20 × 10 mm ASCII STL box that matches the stored unit size, so Plate initialization and 3MF export accept it. URLs and printer hosts use `.invalid`. Nothing is copied from a real data directory.
+
+### Manifest and digest
+
+Every run writes `SYNTHETIC-DATASET.json` at the root of the output with:
+
+- `label`: `synthetic: not the architecture's step-2 rehearsal`
+- `synthetic: true`, the `seed`, the `clock` and the Node version
+- `generator`: name, `version` (currently 1), script path and script SHA-256
+- `digest`: the installation digest
+- `shape`: the measured counts above, the deleted Build IDs and the Build ID density
+
+The digest is a SHA-256 over every table's schema and rows, sorted by all columns, plus the hash of every file except the manifest and the database files. Node stores absolute snapshot paths in `projects.local_path`, so the digest replaces the output directory with `$DATA`. The same seed gives the same digest in any directory.
+
+### Readers and tests
+
+```sh
+npm run test:synthetic-dataset
+npx tsc -p scripts/synthetic-dataset/tsconfig.json
+```
+
+The test generates seed 7 twice and seed 8 once, then checks:
+
+- the digests match for seed 7 and differ for seed 8;
+- the label and the shape counts;
+- Node opens a copy and reads accepted Plans, the anchor's Plates and the 18 prints.
+
+Node connect re-seeds the starter slicer profiles with `INSERT OR IGNORE`, which advances their `sqlite_sequence` rows on every open, so that check compares the measured shape rather than the digest.
+
+Set `PP_STORAGE_FIXTURE_BIN` to run the Rust check too. It opens a copy with `pp-storage`'s `storage-fixture initialize`, which migrates it from schema 34 to 35 and takes the `pre-schema35.db` backup. The shape must survive. Build the binary with `cargo build --manifest-path rust/Cargo.toml --locked -p pp-storage --bin storage-fixture`.
+
+The generator does not produce open drafts, Checkoff progress, printer sends, exports or historical schema versions. Tests that need those build them separately.
 
 ## To be written
 

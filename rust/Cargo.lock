@@ -3489,6 +3489,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pp-os"
+version = "0.1.0"
+dependencies = [
+ "fs4",
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pp-perf"
 version = "0.1.0"
 dependencies = [
@@ -3569,6 +3579,7 @@ dependencies = [
  "libc",
  "pp-contracts",
  "pp-domain",
+ "pp-os",
  "pp-storage",
  "pp-testkit",
  "rand 0.9.5",

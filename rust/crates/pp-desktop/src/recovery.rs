@@ -1,4 +1,4 @@
-use pp_core::{CoreHandle, CoreStatus};
+use pp_core::{CoreHandle, CoreStatus, RuntimeStatus};
 use pp_desktop::AllowedOrigin;
 use std::{
     path::PathBuf,
@@ -169,8 +169,10 @@ pub(crate) fn open_in_browser(app: &AppHandle, handle: &CoreHandle, origin: &All
 }
 
 pub(crate) fn restart(app: &AppHandle, handle: CoreHandle, gate: Arc<RecoveryGate>) {
-    if !gate.admit(&handle.subscribe().borrow()) {
-        return;
+    // A Rust-only runtime has no Node child to restart.
+    match handle.subscribe().current() {
+        RuntimeStatus::Node(state) if gate.admit(&state) => {}
+        _ => return,
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {

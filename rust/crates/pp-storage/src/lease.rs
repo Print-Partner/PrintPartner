@@ -28,13 +28,15 @@ struct CompatibilityReservation {
     directory: Dir,
     file: File,
     held: bool,
+    /// This acquisition created `.desktop-lease` rather than reusing a leftover.
+    created: bool,
 }
 
 impl CompatibilityReservation {
     fn acquire(admitted: &AdmittedDirectory) -> Result<Self> {
         // Node publishes a directory at this name. A regular file prevents that
         // rename and can be reused after a crash under the kernel lock.
-        let file = admitted.open_lock(c".desktop-lease").context(
+        let (file, created) = admitted.open_lock(c".desktop-lease").context(
             "Data directory already owned by standalone Node; stop it before starting Rust",
         )?;
         validate_open_lock_identity(&file, &admitted.path.join(".desktop-lease"))
@@ -57,6 +59,7 @@ impl CompatibilityReservation {
             )?,
             file,
             held: true,
+            created,
         })
     }
 
@@ -117,11 +120,50 @@ pub(crate) struct LockedDirectory {
     admitted: AdmittedDirectory,
     compatibility: CompatibilityReservation,
     lock: File,
+    /// This lock created `printpartner.lock` rather than opening an existing one.
+    lock_created: bool,
 }
 
 impl LockedDirectory {
     pub(crate) fn preflight(&self) -> Result<()> {
         self.admitted.preflight()
+    }
+
+    /// The canonical data directory this lock holds.
+    pub(crate) fn path(&self) -> &Path {
+        &self.admitted.path
+    }
+
+    /// The open handle of that directory.
+    pub(crate) fn dir(&self) -> &Dir {
+        &self.admitted.directory
+    }
+
+    /// Give up a lock that refused to open the directory and leave the lease
+    /// files as found: remove `.desktop-lease` and `printpartner.lock` only if
+    /// this lock created them. Removal runs while the lock is still held and
+    /// only when the name still refers to the file this lock opened.
+    pub(crate) fn abandon(self) {
+        let LockedDirectory {
+            admitted,
+            mut compatibility,
+            lock,
+            lock_created,
+        } = self;
+        if !compatibility.created {
+            compatibility.held = false;
+        }
+        drop(compatibility);
+        if lock_created
+            && let (Ok(named), Ok(opened)) = (
+                admitted.directory.status_nofollow("printpartner.lock"),
+                pp_os::status_of(&lock),
+            )
+            && named.identity() == opened.identity()
+        {
+            let _ = admitted.directory.remove_file("printpartner.lock");
+        }
+        drop(lock);
     }
 }
 
@@ -201,8 +243,20 @@ impl AdmittedDirectory {
     pub(crate) fn lock(self) -> Result<LockedDirectory> {
         self.validate_identity()?;
         validate_resolved_ancestors(&self.path, false)?;
+        // A standalone Node lease is a directory. Refuse it before creating
+        // printpartner.lock, so Rust writes nothing while Node holds the lease.
+        // The reservation below still refuses a lease published after this check.
+        if self
+            .directory
+            .status_nofollow(".desktop-lease")
+            .is_ok_and(|status| status.is_dir())
+        {
+            anyhow::bail!(
+                "Data directory already owned by standalone Node; stop it before starting Rust"
+            );
+        }
         let path = self.path.join("printpartner.lock");
-        let lock = self.open_lock(c"printpartner.lock")?;
+        let (lock, lock_created) = self.open_lock(c"printpartner.lock")?;
         self.validate_identity()?;
         validate_open_lock_identity(&lock, &path)?;
         match pp_os::try_lock(&lock) {
@@ -222,6 +276,7 @@ impl AdmittedDirectory {
             admitted: self,
             lock,
             compatibility,
+            lock_created,
         })
     }
 
@@ -290,14 +345,16 @@ impl AdmittedDirectory {
 
     /// Create with O_EXCL, then open an existing entry without O_CREAT. On macOS,
     /// racing dirfd-relative O_CREAT opens without O_EXCL can fail with ENOENT.
-    fn open_lock(&self, name: &CStr) -> Result<File> {
+    /// Also reports whether this call created the file.
+    fn open_lock(&self, name: &CStr) -> Result<(File, bool)> {
         let display = name.to_string_lossy();
         match self.directory.create_new_nofollow(&display) {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => self
                 .directory
                 .open_write_nofollow(&display)
+                .map(|file| (file, false))
                 .with_context(|| format!("open_lock: openat O_RDWR|O_NOFOLLOW {display}")),
-            result => result.with_context(|| {
+            result => result.map(|file| (file, true)).with_context(|| {
                 format!("open_lock: openat O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW {display}")
             }),
         }
@@ -391,6 +448,7 @@ impl StorageLease {
             admitted,
             lock,
             compatibility,
+            lock_created: _,
         } = locked;
         admitted.validate_identity()?;
         let runtime_dir = std::env::temp_dir().join(format!(
@@ -852,7 +910,7 @@ mod tests {
                             barrier.wait();
                             admitted
                                 .open_lock(&name)
-                                .map(|file| file.metadata().unwrap().ino())
+                                .map(|(file, _)| file.metadata().unwrap().ino())
                                 .map_err(|error| format!("{error:#}"))
                         })
                     })

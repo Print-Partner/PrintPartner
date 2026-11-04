@@ -10,6 +10,9 @@ assert all(GATED[package] <= ALLOWED[package] for package in GATED), GATED
 # so they never reach a release binary. ALLOWED never lists them as a normal edge.
 DEV_ONLY = {"pp-testkit"}
 assert not any(DEV_ONLY & edges for edges in ALLOWED.values()), DEV_ONLY
+# Test-only features. Only a [dev-dependencies] entry may enable one, so release
+# builds never contain it. No feature table, default, or normal edge may.
+TEST_ONLY_FEATURES = {"pp-storage": {"test-unmarked-writer"}}
 
 
 def rebuild_edge_is_gated(package, dependency):
@@ -33,16 +36,44 @@ def rebuild_edge_is_gated(package, dependency):
     )
 
 
+def test_only_feature_violations(packages):
+    found = []
+    for package in packages:
+        # Feature forwarding names a dependency by its key in Cargo.toml, which
+        # is the `package = "..."` alias when one is set.
+        packages_by_key = {dependency.get("rename") or dependency["name"]: dependency["name"]
+                           for dependency in package["dependencies"]}
+        for feature, members in package.get("features", {}).items():
+            for member in members:
+                owner, _, name = member.rpartition("/")
+                owner = owner.removesuffix("?").removeprefix("dep:")
+                owner = packages_by_key.get(owner, owner) if owner else package["name"]
+                if name in TEST_ONLY_FEATURES.get(owner, set()) and not (
+                        owner == package["name"] and feature == name and members == []):
+                    found.append((package["name"], f"{feature} -> {member}"))
+        for feature in TEST_ONLY_FEATURES.get(package["name"], set()):
+            if package.get("features", {}).get(feature, []) != []:
+                found.append((package["name"], f"{feature} must be an empty feature"))
+        for dependency in package["dependencies"]:
+            enabled = TEST_ONLY_FEATURES.get(dependency["name"], set()) & set(dependency.get("features", []))
+            if enabled and dependency.get("kind") != "dev":
+                found.append((package["name"], f"{dependency['name']}/{sorted(enabled)[0]}"))
+    return found
+
+
 def violations(packages):
     return [(package["name"], dependency["name"]) for package in packages
             for dependency in package["dependencies"]
-            if dependency["name"].startswith("pp-") and (
+            if dependency["name"].startswith("pp-") and not (
+                # A package may dev-depend on itself to enable its test-only features.
+                dependency["name"] == package["name"] and dependency.get("kind") == "dev"
+            ) and (
                 dependency.get("kind") != "dev" if dependency["name"] in DEV_ONLY else (
                     dependency["name"] not in ALLOWED[package["name"]]
                     or (dependency["name"] in GATED.get(package["name"], set())
                         and not rebuild_edge_is_gated(package, dependency))
                 )
-            )]
+            )] + test_only_feature_violations(packages)
 
 
 manifest = Path(__file__).resolve().parents[1] / "Cargo.toml"
@@ -68,6 +99,15 @@ def planted_edges_rejected():
         ([{"name": "pp-storage", "dependencies": [{"name": "pp-testkit", "kind": None}]}], [("pp-storage", "pp-testkit")]),
         ([{"name": "pp-server", "dependencies": [{"name": "pp-testkit", "kind": "build"}]}], [("pp-server", "pp-testkit")]),
         ([{"name": "pp-testkit", "dependencies": [{"name": "pp-storage", "kind": None}]}], [("pp-testkit", "pp-storage")]),
+        ([{"name": "pp-storage", "features": {"test-unmarked-writer": []}, "dependencies": [{"name": "pp-storage", "kind": "dev", "features": ["test-unmarked-writer"]}]}], []),
+        ([{"name": "pp-storage", "dependencies": [{"name": "pp-storage", "kind": None}]}], [("pp-storage", "pp-storage")]),
+        ([{"name": "pp-core", "dependencies": [{"name": "pp-storage", "kind": None, "features": ["test-unmarked-writer"]}]}], [("pp-core", "pp-storage/test-unmarked-writer")]),
+        ([{"name": "pp-core", "features": {"desktop_rebuild": ["pp-storage/test-unmarked-writer"]}, "dependencies": []}], [("pp-core", "desktop_rebuild -> pp-storage/test-unmarked-writer")]),
+        ([{"name": "pp-storage", "features": {"test-unmarked-writer": [], "default": ["test-unmarked-writer"]}, "dependencies": []}], [("pp-storage", "default -> test-unmarked-writer")]),
+        ([{"name": "pp-core", "features": {"desktop_rebuild": ["store/test-unmarked-writer"]}, "dependencies": [{"name": "pp-storage", "rename": "store", "kind": None}]}], [("pp-core", "desktop_rebuild -> store/test-unmarked-writer")]),
+        ([{"name": "pp-core", "features": {"desktop_rebuild": ["store?/test-unmarked-writer"]}, "dependencies": [{"name": "pp-storage", "rename": "store", "kind": None, "optional": True}]}], [("pp-core", "desktop_rebuild -> store?/test-unmarked-writer")]),
+        ([{"name": "pp-core", "dependencies": [{"name": "pp-storage", "rename": "store", "kind": None, "features": ["test-unmarked-writer"]}]}], [("pp-core", "pp-storage/test-unmarked-writer")]),
+        ([{"name": "pp-core", "dependencies": [{"name": "pp-storage", "rename": "store", "kind": "dev", "features": ["test-unmarked-writer"]}]}], []),
     )
     for package, dependencies in GATED.items():
         for dependency in sorted(dependencies):

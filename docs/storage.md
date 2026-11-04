@@ -78,7 +78,7 @@ In a `desktop_rebuild` build, `WriterOwner::open`, `open_at` and `open_with_job_
 | `1` or `true` | present but invalid | any | Refuse. Nothing changes. |
 | unset or anything else | any | any | Refuse before any write. |
 
-In Rust-only startup this decision is the first step that touches the data directory. Release verification, `cutover::recover` and source-sync admission run after it, and only on an accepted directory; see [Rust-only product entry point](desktop-rebuild.md#rust-only-product-entry-point). `pp-core`'s `rust_startup` tests prove the order on pp-testkit installations, including a copied Node schema 34 database.
+In Rust-only startup only `prepare_data_dir` runs before this decision. It creates the data directory if it is missing (`pp_storage::lease::prepare_directory`) and finishes a lease release that this process failed earlier (`StorageLease::retry_failed_release_if_present`). It creates no schema, marker or other file in an existing directory. Release verification, `cutover::recover` and source-sync admission run after it, and only on an accepted directory; see [Rust-only product entry point](desktop-rebuild.md#rust-only-product-entry-point). `pp-core`'s `rust_startup` tests prove the order on pp-testkit installations, including a copied Node schema 34 database.
 
 Taking the lock can create `printpartner.lock` and the `.desktop-lease` reservation. On any refusal, and when the marker write fails, the lock removes the lease files this open created, while it still holds the lock and only if each name still refers to the file it opened. Lease files that already existed stay with the same bytes and modification time, so the directory listing after a refusal matches the one before.
 

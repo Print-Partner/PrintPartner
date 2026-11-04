@@ -8,9 +8,10 @@
 //! gate explicitly with `WriterOwner::open_with_gate`.
 
 use super::{self as rust_startup, Admitted};
+use pp_gateway::ownership::cutover::{CUTOVER_FILE, EVIDENCE_FILE};
 use pp_storage::{
     Limits, WriterOwner,
-    ownership_marker::{OwnershipRefusal, WriterGate},
+    ownership_marker::{MARKER_FILE, OwnershipRefusal, WriterGate},
 };
 use pp_testkit::{Fixture, Installation, MarkerState, Spec};
 use std::{
@@ -18,10 +19,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const MARKER: &str = ".pp-rust-owned.json";
+/// Matches cutover recovery's private `.operation-cutover.*.tmp` pattern.
 const CUTOVER_TEMPORARY: &str = ".operation-cutover.planted.tmp";
-const CUTOVER_RECORD: &str = "operation-cutover.json";
-const CUTOVER_EVIDENCE: &str = "operation-cutover-evidence.jsonl";
+/// pp-gateway's receipt name is private.
 const SOURCE_SYNC_RECEIPT: &str = "source-sync-admission.json";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,9 +48,9 @@ type Trace = Arc<Mutex<Vec<Seen>>>;
 fn observe(trace: &Trace, directory: &Path, step: Step) {
     trace.lock().unwrap().push(Seen {
         step,
-        marker: directory.join(MARKER).exists(),
+        marker: directory.join(MARKER_FILE).exists(),
         cutover_temporary: directory.join(CUTOVER_TEMPORARY).exists(),
-        cutover_evidence: directory.join(CUTOVER_EVIDENCE).exists(),
+        cutover_evidence: directory.join(EVIDENCE_FILE).exists(),
         source_sync_receipt: directory.join(SOURCE_SYNC_RECEIPT).exists(),
     });
 }
@@ -221,7 +221,7 @@ async fn accepted_schema_34_directory_runs_all_three_steps_after_the_marker_deci
     // and source-sync admission wrote its receipt.
     let directory = installation.path();
     assert!(!directory.join(CUTOVER_TEMPORARY).exists());
-    let evidence = std::fs::read_to_string(directory.join(CUTOVER_EVIDENCE)).unwrap();
+    let evidence = std::fs::read_to_string(directory.join(EVIDENCE_FILE)).unwrap();
     assert!(
         evidence.contains("\"abandoned_temporaries\":1"),
         "{evidence}"
@@ -251,16 +251,16 @@ async fn failed_verification_skips_recovery_and_admission_and_releases_the_lease
     );
     let directory = installation.path();
     assert!(directory.join(CUTOVER_TEMPORARY).exists());
-    assert!(!directory.join(CUTOVER_EVIDENCE).exists());
+    assert!(!directory.join(EVIDENCE_FILE).exists());
     assert!(!directory.join(SOURCE_SYNC_RECEIPT).exists());
-    assert!(directory.join(MARKER).exists());
+    assert!(directory.join(MARKER_FILE).exists());
     reopen_and_close(&installation);
 }
 
 #[tokio::test]
 async fn refused_cutover_record_skips_admission_and_releases_the_lease() {
     let installation = marked_schema_34();
-    std::fs::write(installation.path().join(CUTOVER_RECORD), b"{}").unwrap();
+    std::fs::write(installation.path().join(CUTOVER_FILE), b"{}").unwrap();
     let trace = Trace::default();
     let error = admit(&installation, WriterGate::SwitchOn, &trace, Ok(()))
         .await

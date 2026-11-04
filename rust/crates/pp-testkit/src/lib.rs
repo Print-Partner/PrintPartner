@@ -31,8 +31,11 @@ use std::{
 /// every directory as `None`, keyed by path relative to the root.
 pub type Snapshot = BTreeMap<PathBuf, Option<Vec<u8>>>;
 
-/// Lists `root` recursively without following symlinks. Compare two snapshots
-/// to prove that an operation left a directory byte-for-byte unchanged.
+/// Lists `root` recursively. Compare two snapshots to prove that an operation
+/// left a directory byte-for-byte unchanged. Only real directories are
+/// descended into (`symlink_metadata`); every other entry is read with
+/// `fs::read`, which follows symlinks, so a file symlink records its target's
+/// bytes and a directory symlink fails the snapshot.
 pub fn snapshot(root: &Path) -> io::Result<Snapshot> {
     let mut entries = BTreeMap::new();
     let mut pending = vec![root.to_path_buf()];

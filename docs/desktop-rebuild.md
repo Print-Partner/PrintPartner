@@ -66,11 +66,15 @@ Core tests isolate environment changes in child processes. They cover absent, di
 With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 `true`, that start runs Rust only:
 
-- No Node child starts. Startup runs in this order (`pp_core::rust_startup`):
+- No Node child starts. First `prepare_data_dir` creates the data directory
+  if it is missing and finishes a lease release this process failed earlier;
+  it creates no schema or marker. Then startup runs in this order
+  (`pp_core::rust_startup`):
   1. `WriterOwner::open_with_job_feature_admission` takes the data directory
      lease and makes the [ownership marker decision](storage.md#ownership-marker-decision),
      then opens the schema. A refused directory stops startup here, before
-     anything else reads or writes it, and stays byte-for-byte unchanged.
+     release verification, recovery or admission, and stays byte-for-byte
+     unchanged.
   2. `pp_compat::verify_bundle` verifies the release.
   3. `cutover::recover` runs without an ownership index: it removes stray
      cutover temporaries, and a cutover record refuses startup.

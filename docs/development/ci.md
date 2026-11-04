@@ -343,7 +343,9 @@ tests passing.
 `THIRD_PARTY_NOTICES.md` lists the direct runtime dependencies of every
 workspace in `web/package.json`, including this one. After changing a
 workspace's `dependencies`, run `npm --prefix web run docs:licenses`. Web CI runs
-the same script with `--check`.
+the same script with `--check`. `fixtures/admin/node-oracle.json` records the
+notice's length and SHA-256 for `/legal/third-party`, so a changed table also
+needs the oracle update in [fixtures/admin/README.md](../../fixtures/admin/README.md).
 
 ## Run a job locally
 

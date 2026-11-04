@@ -6,28 +6,10 @@ use pp_storage::ownership_marker::{
     OwnershipRefusal,
 };
 use pp_testkit::{Corruption, Fixture, Installation, MarkerState as KitMarker, Spec};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeSet, path::Path};
 
-/// Every regular file under `root` with its bytes, and every directory as `None`.
-fn snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    let mut entries = BTreeMap::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let path = entry.unwrap().path();
-            let relative = path.strip_prefix(root).unwrap().to_path_buf();
-            if std::fs::symlink_metadata(&path).unwrap().is_dir() {
-                entries.insert(relative, None);
-                pending.push(path);
-            } else {
-                entries.insert(relative, Some(std::fs::read(&path).unwrap()));
-            }
-        }
-    }
-    entries
+fn snapshot(root: &Path) -> pp_testkit::Snapshot {
+    pp_testkit::snapshot(root).unwrap()
 }
 
 /// Corruption specs, plus each named fixture.
@@ -276,7 +258,7 @@ mod writer {
 
     /// Asserts a refused open left the full listing, lease files included,
     /// byte for byte as it was.
-    fn assert_unchanged(installation: &Installation, before: &BTreeMap<PathBuf, Option<Vec<u8>>>) {
+    fn assert_unchanged(installation: &Installation, before: &pp_testkit::Snapshot) {
         assert_eq!(
             &snapshot(installation.path()),
             before,

@@ -424,7 +424,9 @@ it. In a rebuild build, the Rust storage writer opens only with the runtime
 switch on, and only a directory that carries the durable ownership marker
 `.pp-rust-owned.json` or is empty, in which case it writes the marker before
 any schema. It refuses a non-empty unmarked directory unchanged. The Node-backed
-runtime refuses any marked directory. See [Storage](storage.md#ownership-marker-decision).
+runtime refuses any marked directory. Rust-only startup makes this decision
+before release verification, cutover recovery and source-sync admission, so a
+refused directory sees none of them. See [Storage](storage.md#ownership-marker-decision).
 Opening a marked directory with the rebuild build can migrate data even though
 the runtime switch is process-local. Turning the switch off is not a downgrade. Preflight
 must reject unsupported/newer schemas without modifying the original. Prove the

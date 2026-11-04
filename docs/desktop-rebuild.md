@@ -66,9 +66,20 @@ Core tests isolate environment changes in child processes. They cover absent, di
 With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 `true`, that start runs Rust only:
 
-- No Node child starts. The release is still verified, then
-  `WriterOwner::open_with_job_feature_admission` takes the data directory lease
-  and the gateway binds its usual loopback origin.
+- No Node child starts. Startup runs in this order (`pp_core::rust_startup`):
+  1. `WriterOwner::open_with_job_feature_admission` takes the data directory
+     lease and makes the [ownership marker decision](storage.md#ownership-marker-decision),
+     then opens the schema. A refused directory stops startup here, before
+     anything else reads or writes it, and stays byte-for-byte unchanged.
+  2. `pp_compat::verify_bundle` verifies the release.
+  3. `cutover::recover` runs without an ownership index: it removes stray
+     cutover temporaries, and a cutover record refuses startup.
+  4. Source-sync admission writes or reuses `source-sync-admission.json`.
+
+  If step 2, 3 or 4 fails, the writer shuts down and releases the lease. The
+  marker, and the schema it opened, stay: Rust owns the directory from step 1.
+  The gateway then binds its usual loopback origin. The Node-backed start keeps
+  its order: release verification, the lease, recovery, admission, the child.
 - `rebuild_api::product_router` composes the read routers, the draft routers
   and the jobs router (including `/ws/jobs/{id}`) from that one owner, with the
   single-account auth policy. It passes the bundle's

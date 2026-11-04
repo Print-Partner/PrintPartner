@@ -24,6 +24,8 @@ pub mod perf_launch;
 pub mod perf_seed;
 mod preferences;
 mod rebuild;
+#[cfg(feature = "desktop_rebuild")]
+mod rust_startup;
 mod state_file;
 
 pub use desktop_settings::{DesktopSetting, DesktopSettings};
@@ -438,7 +440,8 @@ async fn start_resources(
 
 /// Verify the release and prepare the data directory, retrying a failed
 /// release first. Returns the canonical assets, the measured bundle and the
-/// prepared directory.
+/// prepared directory. The Node-backed start only; Rust-only startup verifies
+/// after the marker decision (`rust_startup`).
 async fn admit_release(input: DesktopLaunch) -> Result<(PathBuf, MeasuredBundle, PathBuf)> {
     let assets = input
         .assets
@@ -451,7 +454,15 @@ async fn admit_release(input: DesktopLaunch) -> Result<(PathBuf, MeasuredBundle,
     })
     .await
     .context("Release verification task failed")??;
-    let data_dir = pp_storage::lease::prepare_directory(&input.data_dir)?;
+    let data_dir = prepare_data_dir(&input.data_dir)?;
+    Ok((assets, bundle, data_dir))
+}
+
+/// Create a missing data directory or admit an existing one, then retry a
+/// release this process failed earlier. An existing directory this process
+/// never held stays unchanged.
+fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
+    let data_dir = pp_storage::lease::prepare_directory(data_dir)?;
     if let Some(released) = StorageLease::retry_failed_release_if_present(&data_dir)? {
         anyhow::ensure!(
             released.marker_removed
@@ -461,28 +472,42 @@ async fn admit_release(input: DesktopLaunch) -> Result<(PathBuf, MeasuredBundle,
             "Storage cleanup still incomplete; ownership retained"
         );
     }
-    Ok((assets, bundle, data_dir))
+    Ok(data_dir)
 }
 
 /// Start without a Node child: the Rust writer owns the data directory and the
-/// gateway answers admitted requests from the `pp-api` routers. Use disposable
-/// directories only; refusing real ones is separate work.
+/// gateway answers admitted requests from the `pp-api` routers. The marker
+/// decision runs first; release verification, cutover recovery and source-sync
+/// admission run only on an accepted directory (`rust_startup::admit`).
 #[cfg(feature = "desktop_rebuild")]
 async fn start_rust_resources(
     input: DesktopLaunch,
     desktop_rebuild: DesktopRebuild,
 ) -> Result<Resources> {
-    let (assets, bundle, data_dir) = admit_release(input).await?;
+    let assets = input
+        .assets
+        .canonicalize()
+        .context("React assets unavailable")?;
+    let data_dir = prepare_data_dir(&input.data_dir)?;
+    let verified_assets = assets.clone();
+    let bundle = input.bundle;
+    let rust_startup::Admitted {
+        writer,
+        verified: bundle,
+        owners,
+    } = rust_startup::admit(
+        data_dir,
+        |data_dir| {
+            pp_storage::WriterOwner::open_with_job_feature_admission(
+                data_dir,
+                pp_storage::Limits::default(),
+            )
+            .map(|(writer, _)| writer)
+        },
+        move || pp_compat::verify_bundle(bundle, &verified_assets),
+    )
+    .await?;
     let community_manifests = bundle.community_manifests_dir();
-    let writer = tokio::task::spawn_blocking(move || {
-        pp_storage::WriterOwner::open_with_job_feature_admission(
-            &data_dir,
-            pp_storage::Limits::default(),
-        )
-    })
-    .await
-    .context("Storage open task failed")??
-    .0;
     let (listener, origin_change) =
         bind_origin(writer.lease().context("Storage lease unavailable")?).await?;
     let origin = format!("http://{}", listener.local_addr()?);
@@ -494,7 +519,6 @@ async fn start_rust_resources(
         community_manifests.as_deref(),
     )?
     .context("Rust product routes need the rebuild setting")?;
-    let owners = OperationOwners::node_only();
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
     let gateway = Gateway::start_rust_only(listener, assets, product, receiver)?;
     // The writer opened above and the gateway is serving.

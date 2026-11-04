@@ -1306,6 +1306,28 @@ fn check_selection(
     }))
 }
 
+/// `AlreadyApplied` with its receipt when Accept already consumed the draft.
+/// Accept checks it after its idempotency-key lookup and before
+/// [`check_draft`]; the preview has no key, so it checks this first.
+fn already_applied(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+) -> Result<Option<Outcome>> {
+    one(
+        tx,
+        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND profile_id=? AND draft_id=?",
+        &[&tenant, &profile, &draft_id],
+    )?
+    .map(|row| {
+        Ok(Outcome::AlreadyApplied {
+            receipt: receipt(tx, tenant, &row)?,
+        })
+    })
+    .transpose()
+}
+
 /// Mirrors Node AppRepository.applyPlanChanges inside the caller-owned transaction.
 pub(crate) fn publish_in_transaction(
     tx: &Transaction<'_>,
@@ -1335,14 +1357,8 @@ pub(crate) fn publish_in_transaction(
             Outcome::IdempotencyConflict
         });
     }
-    if let Some(row) = one(
-        tx,
-        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND profile_id=? AND draft_id=?",
-        &[&tenant, &profile, &draft_id],
-    )? {
-        return Ok(Outcome::AlreadyApplied {
-            receipt: receipt(tx, tenant, &row)?,
-        });
+    if let Some(applied) = already_applied(tx, tenant, profile, draft_id)? {
+        return Ok(applied);
     }
     let request = requests.execution;
     let gate = match check_draft(tx, tenant, profile, draft_id, request)? {

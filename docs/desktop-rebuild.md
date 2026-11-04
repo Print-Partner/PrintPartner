@@ -2709,9 +2709,10 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   ([Problem responses](problem-responses.md)): 404 `draft_not_found` for a
   missing draft, otherwise 409 with no `detail`, Accept's outcome kind as
   `code`, and its fields as extension members, for example
-  `{ code: "not_open", state: "consumed" }`, `base_changed`,
-  `inputs_changed`, `build_archived`, or `{ code: "reconciliation_required",
-  reason }`.
+  `{ code: "already_applied", receipt }` for a draft Accept already consumed,
+  `base_changed`, `inputs_changed`, `build_archived`, or
+  `{ code: "reconciliation_required", reason }`. Accept's idempotency-key
+  lookup has no preview counterpart, since a preview sends no key.
 
 Draft rows carry Parts and inputs only, so Plan name, order number, and other
 Plan header fields never appear in `fields`.

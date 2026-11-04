@@ -1809,6 +1809,11 @@ async fn accept_preview_lists_changes_and_checks_then_accept_refuses_its_stale_r
         ),
         "{applied:?}"
     );
+    // A consumed draft: the preview refuses as a second Accept with a new key.
+    let consumed = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(consumed["code"], "already_applied");
+    let again = accept(&server, &fresh["revision"], "second-accept", true);
+    assert_eq!(as_problem(&again), consumed);
     server.close().await;
 }
 
@@ -1821,13 +1826,18 @@ async fn accept_preview_refusals_match_accept() {
         json_reply(server.request(Method::GET, PREVIEW), 409).await,
         json!({"code":"reconciliation_required","reason":"missing"})
     );
+    // Fixture draft 1 is consumed and has an Accept receipt.
+    let consumed = json_reply(
+        server.request(Method::GET, "/api/v2/plans/1/drafts/1/accept-preview"),
+        409,
+    )
+    .await;
+    assert_eq!(consumed["code"], "already_applied");
+    let first = json!({"draft_id":1,"expected_snapshot_digest":"3912383330ef528d51a15c351d69eaffd856d7e8dc582ddfc66bf0bf5053b2b0",
+        "expected_lifecycle_version":0,"expected_base":{"revision_id":null,"plan_version":0}});
     assert_eq!(
-        json_reply(
-            server.request(Method::GET, "/api/v2/plans/1/drafts/1/accept-preview"),
-            409
-        )
-        .await,
-        json!({"code":"not_open","state":"consumed"})
+        as_problem(&accept(&server, &first, "consumed", false)),
+        consumed
     );
     assert_eq!(
         json_reply(

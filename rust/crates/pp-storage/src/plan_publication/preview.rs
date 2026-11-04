@@ -245,6 +245,10 @@ pub(crate) fn preview(
     profile: i64,
     draft_id: i64,
 ) -> Result<PreviewOutcome> {
+    // Accept's idempotency-key lookup comes first there; a preview has no key.
+    if let Some(applied) = already_applied(tx, tenant, profile, draft_id)? {
+        return Ok(PreviewOutcome::Refused(applied));
+    }
     let Some(h) = one(
         tx,
         "SELECT * FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND id=?",

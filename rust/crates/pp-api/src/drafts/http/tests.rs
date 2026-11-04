@@ -1703,12 +1703,13 @@ fn accept(
     server: &ReadServer,
     revision: &Value,
     key: &str,
+    remap_checkoff_links: bool,
 ) -> pp_storage::plan_publication::Outcome {
     let client = server.owner.publication_with_policy(policy()).unwrap();
     let mut request = revision.clone();
     let object = request.as_object_mut().unwrap();
     object.remove("draft_id");
-    object.insert("remap_checkoff_links".into(), json!(true));
+    object.insert("remap_checkoff_links".into(), json!(remap_checkoff_links));
     let command = pp_storage::plan_publication::PublicationCommand::new(
         serde_json::from_value(json!(1)).unwrap(),
         serde_json::from_value(revision["draft_id"].clone()).unwrap(),
@@ -1793,14 +1794,14 @@ async fn accept_preview_lists_changes_and_checks_then_accept_refuses_its_stale_r
         200,
     )
     .await;
-    let stale = accept(&server, &preview["revision"], "stale-preview");
+    let stale = accept(&server, &preview["revision"], "stale-preview", true);
     assert!(
         matches!(stale, pp_storage::plan_publication::Outcome::DraftChanged),
         "{stale:?}"
     );
     let fresh = json_reply(server.request(Method::GET, PREVIEW), 200).await;
     assert_ne!(fresh["revision"], preview["revision"]);
-    let applied = accept(&server, &fresh["revision"], "fresh-preview");
+    let applied = accept(&server, &fresh["revision"], "fresh-preview", true);
     assert!(
         matches!(
             applied,
@@ -1880,5 +1881,152 @@ async fn accept_preview_writes_nothing() {
     }
     assert_eq!(database(), rows);
     assert_eq!(managed_files(&server.directory), files);
+    server.close().await;
+}
+
+/// Pinned by pp-storage's
+/// `accept_preview_of_an_unchanged_draft_without_a_selection_is_refused`.
+const ALIGNED_REVISION_DIGEST: &str =
+    "19ccb8c4f3f9e8d9c4da6083b64bd8fe25a2bfce6545a94782da40b99ca82b63";
+
+/// Marks the fixture's accepted excluded Part `excluded`, as its open draft
+/// does, so the draft equals the accepted Plan. The immutability triggers are
+/// dropped for the update and recreated from the fixture's own SQL.
+fn aligned_setup() -> String {
+    let directory = crate::scratch::Scratch::new("pp-preview-align-");
+    let path = directory.join("fixture.db");
+    std::fs::write(
+        &path,
+        include_bytes!("../../../../pp-storage/tests/fixtures/required-units/unchanged.db"),
+    )
+    .unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let (mut drop, mut create) = (String::new(), String::new());
+    for name in [
+        "trg_plan_revisions_immutable_update",
+        "trg_plan_revision_parts_immutable_update",
+        "trg_parts_invalidate_accepted_revision_update",
+    ] {
+        let sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop.push_str(&format!("DROP TRIGGER {name};\n"));
+        create.push_str(&format!("{sql};\n"));
+    }
+    format!(
+        "{drop}UPDATE plan_revision_parts SET status='excluded' WHERE id=2;
+UPDATE parts SET status='excluded' WHERE id=2;
+UPDATE plan_revisions SET snapshot_digest='{ALIGNED_REVISION_DIGEST}' WHERE id=1;
+{create}"
+    )
+}
+
+/// A no-op edit, which selects Required units without changing the draft.
+async fn select_units(server: &ReadServer) -> Value {
+    let edit = json!({"expected_snapshot_digest":DIGEST,
+        "decision":{"kind":"set_included","draft_part_ids":[5],"value":false}});
+    json_reply(
+        server
+            .request(Method::PATCH, "/api/v2/plans/1/drafts/2/parts")
+            .json(&edit),
+        200,
+    )
+    .await
+}
+
+/// The Accept request fields for a workspace's draft.
+fn revision_of(workspace: &Value) -> Value {
+    let draft = &workspace["draft"];
+    json!({"draft_id":draft["draft_id"],"expected_snapshot_digest":draft["snapshot_digest"],
+        "expected_lifecycle_version":draft["lifecycle_version"],"expected_base":draft["base"]})
+}
+
+/// Accept's refusal as the preview's problem body carries it.
+fn as_problem(outcome: &pp_storage::plan_publication::Outcome) -> Value {
+    let mut body = serde_json::to_value(outcome).unwrap();
+    let kind = body.as_object_mut().unwrap().remove("kind").unwrap();
+    body["code"] = kind;
+    body
+}
+
+#[tokio::test]
+async fn accept_preview_of_a_draft_equal_to_the_accepted_plan_is_no_change() {
+    let setup = aligned_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    let workspace = select_units(&server).await;
+    assert_eq!(workspace["reconciliation"]["kind"], "ready");
+    assert_eq!(
+        json_reply(server.request(Method::GET, PREVIEW), 200).await,
+        json!({"kind":"no_change","revision":revision_of(&workspace),
+            "snapshot":{"saved_before_accept":true,
+                "detail":"Print Partner saves a snapshot of the accepted Plan before it accepts this draft."}})
+    );
+    server.close().await;
+}
+
+/// An unchanged draft gets `no_change` only when Accept, sent without
+/// `remap_checkoff_links`, would pass. Otherwise both refuse alike.
+#[tokio::test]
+async fn accept_preview_of_an_unchanged_draft_refuses_exactly_as_accept() {
+    let setup = aligned_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    let unselected = json!({"draft_id":2,"expected_snapshot_digest":DIGEST,
+        "expected_lifecycle_version":0,"expected_base":{"revision_id":1,"plan_version":1}});
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(
+        preview,
+        json!({"code":"reconciliation_required","reason":"missing"})
+    );
+    assert_eq!(
+        as_problem(&accept(&server, &unselected, "unselected", false)),
+        preview
+    );
+
+    let revision = revision_of(&select_units(&server).await);
+    server
+        .sql()
+        .execute_batch(
+            "INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.checkoff_links',
+              '[{\"id\":\"link-1\",\"state\":\"watching\",\"profile_id\":1,\"filename\":\"bracket.3mf\",\"units\":[{\"part_id\":1,\"unit_index\":0}]}]')",
+        )
+        .unwrap();
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(
+        preview,
+        json!({"code":"production_active","checkoff_link_count":1,"send_queue_item_count":0})
+    );
+    assert_eq!(
+        as_problem(&accept(&server, &revision, "production", false)),
+        preview
+    );
+
+    let job = json!({"job_id":"running-export","tenant":"default","kind":"export-stl-pack",
+        "payload_version":1,"payload":{"kind":"export-stl-pack","payload":{"profile_id":1,
+        "missing_only":false,"group_by":"color_dir","unit_tokens":[],"filename_grouping":null}},
+        "state":"running","state_version":1,"attempt":1,"generation":1,"lease_until":null,
+        "created_at":1,"updated_at":1,"finished_at":null,"cancel_requested":false,
+        "progress":null,"result":null,"recovery":null,"effects":[]});
+    let sql = server.sql();
+    sql.execute_batch("DELETE FROM app_settings WHERE key='printer.checkoff_links'")
+        .unwrap();
+    sql.execute(
+        "INSERT INTO durable_jobs VALUES('running-export','default','export-stl-pack','running','fixture',1,1,NULL,1,1,?1)",
+        [job.to_string()],
+    )
+    .unwrap();
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
+    assert_eq!(
+        preview,
+        json!({"code":"execution_conflict","operations":[
+            {"operation_id":"running-export","kind":"export-stl-pack","state":"running"}]})
+    );
+    assert_eq!(
+        as_problem(&accept(&server, &revision, "running", false)),
+        preview
+    );
     server.close().await;
 }

@@ -279,16 +279,21 @@ pub(crate) fn preview(
         detail: SNAPSHOT_DETAIL.into(),
     };
     let diff = diff::read(tx, tenant, &gate.profile_row, &gate.draft)?.0;
+    let checked = match check_selection(tx, tenant, profile, gate)? {
+        Ok(checked) => checked,
+        Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
+    };
     if diff.is_empty() {
+        // `no_change` only when Accept, sent without `remap_checkoff_links`,
+        // would pass too. A changed preview reports these as checks instead.
+        if let Err(refused) = checked.refusals(tx, tenant, profile, false)? {
+            return Ok(PreviewOutcome::Refused(refused));
+        }
         return Ok(PreviewOutcome::Ready(Box::new(AcceptPreview::NoChange {
             revision,
             snapshot,
         })));
     }
-    let checked = match check_selection(tx, tenant, profile, gate)? {
-        Ok(checked) => checked,
-        Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
-    };
     let (fields, parts_added, parts_removed, inputs) = changes(&diff)?;
     let production = checked
         .production(profile)?
@@ -552,9 +557,15 @@ mod tests {
     /// The fixture's accepted revision marks its excluded Part `base`; its open
     /// draft marks it `excluded`. Marking the revision and its projection
     /// `excluded` too makes the draft equal to the accepted Plan. The
-    /// immutability triggers are dropped on this disposable copy only.
+    /// immutability triggers are dropped on this disposable copy only. The
+    /// pp-api preview tests seed the same revision digest.
+    const ALIGNED_REVISION_DIGEST: &str =
+        "19ccb8c4f3f9e8d9c4da6083b64bd8fe25a2bfce6545a94782da40b99ca82b63";
+
+    /// With no Required-unit selection, Accept refuses even an unchanged
+    /// draft, so the preview does too instead of answering `no_change`.
     #[test]
-    fn accept_preview_of_a_draft_equal_to_the_accepted_plan_is_no_change() {
+    fn accept_preview_of_an_unchanged_draft_without_a_selection_is_refused() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("print-partner.db");
         std::fs::write(
@@ -580,22 +591,19 @@ mod tests {
         )
         .unwrap();
         normalize_parts(&mut parts).unwrap();
+        let digest = model::revision_digest(&parts).unwrap();
+        assert_eq!(digest, ALIGNED_REVISION_DIGEST);
         tx.execute(
             "UPDATE plan_revisions SET snapshot_digest=? WHERE id=1",
-            [model::revision_digest(&parts).unwrap()],
+            [digest],
         )
         .unwrap();
-        let PreviewOutcome::Ready(preview) = preview(&tx, "default", 1, 2).unwrap() else {
-            panic!("preview refused")
+        let PreviewOutcome::Refused(refused) = preview(&tx, "default", 1, 2).unwrap() else {
+            panic!("preview answered without a selection")
         };
         assert_eq!(
-            serde_json::to_value(&preview).unwrap(),
-            json!({"kind":"no_change",
-                "revision":{"draft_id":2,
-                    "expected_snapshot_digest":"ae11e670337e3e5eab736b29b4e294edbea8b564661cf15972625783f8930ee3",
-                    "expected_lifecycle_version":0,
-                    "expected_base":{"revision_id":1,"plan_version":1}},
-                "snapshot":{"saved_before_accept":true,"detail":SNAPSHOT_DETAIL}})
+            serde_json::to_value(&refused).unwrap(),
+            json!({"kind":"reconciliation_required","reason":"missing"})
         );
     }
 }

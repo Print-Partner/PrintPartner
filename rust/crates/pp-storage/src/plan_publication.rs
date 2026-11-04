@@ -991,6 +991,9 @@ struct DraftGate {
     predecessors: Vec<DraftPart>,
 }
 
+/// Old checkoff coordinate (Part, unit index) to its new one.
+type CheckoffRemap = HashMap<(i64, i64), (i64, i64)>;
+
 /// What Accept would publish, after every read-only check passed.
 struct Checked {
     profile_row: Value,
@@ -1009,6 +1012,42 @@ struct Checked {
 }
 
 impl Checked {
+    /// Accept's last refusals, after [`check_selection`]: active production
+    /// without the remap opt-in or with an unsafe remap, then running
+    /// operations. Returns the checkoff remap Accept writes.
+    fn refusals(
+        &self,
+        tx: &Transaction<'_>,
+        tenant: &str,
+        profile: i64,
+        remap_checkoff_links: bool,
+    ) -> Result<std::result::Result<CheckoffRemap, Outcome>> {
+        let production = &self.production;
+        let remapping = if production.link_count > 0 || production.queue_count > 0 {
+            if !remap_checkoff_links {
+                return Ok(Err(Outcome::ProductionActive {
+                    checkoff_link_count: production.link_count,
+                    send_queue_item_count: production.queue_count,
+                }));
+            }
+            match remap(production, profile, &self.old_tokens, &self.prepared)? {
+                Remap::Mapped(mapped) => mapped,
+                Remap::Unmappable(unmappable) => {
+                    return Ok(Err(Outcome::CheckoffRemapUnsafe { unmappable }));
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        let conflicts = crate::jobs::publication_conflicts(tx, tenant, profile)?;
+        if !conflicts.is_empty() {
+            return Ok(Err(Outcome::ExecutionConflict {
+                operations: conflicts,
+            }));
+        }
+        Ok(Ok(remapping))
+    }
+
     /// Checkoff links and queued sends that Accept would have to remap, and
     /// whether the remap is safe.
     fn production(&self, profile: i64) -> Result<Option<(usize, usize, Vec<UnmappableLink>)>> {
@@ -1310,42 +1349,24 @@ pub(crate) fn publish_in_transaction(
         Ok(gate) => gate,
         Err(refused) => return Ok(refused),
     };
+    let checked = match check_selection(tx, tenant, profile, gate)? {
+        Ok(checked) => checked,
+        Err(refused) => return Ok(refused),
+    };
+    let remapping = match checked.refusals(tx, tenant, profile, request.remap_checkoff_links)? {
+        Ok(remapping) => remapping,
+        Err(refused) => return Ok(refused),
+    };
     let Checked {
         inputs,
         previous,
         version,
         selected,
         base,
-        old_tokens,
         prepared,
         production,
         ..
-    } = match check_selection(tx, tenant, profile, gate)? {
-        Ok(checked) => checked,
-        Err(refused) => return Ok(refused),
-    };
-    let remapping = if production.link_count > 0 || production.queue_count > 0 {
-        if !request.remap_checkoff_links {
-            return Ok(Outcome::ProductionActive {
-                checkoff_link_count: production.link_count,
-                send_queue_item_count: production.queue_count,
-            });
-        }
-        match remap(&production, profile, &old_tokens, &prepared)? {
-            Remap::Mapped(m) => m,
-            Remap::Unmappable(unmappable) => {
-                return Ok(Outcome::CheckoffRemapUnsafe { unmappable });
-            }
-        }
-    } else {
-        HashMap::new()
-    };
-    let conflicts = crate::jobs::publication_conflicts(tx, tenant, profile)?;
-    if !conflicts.is_empty() {
-        return Ok(Outcome::ExecutionConflict {
-            operations: conflicts,
-        });
-    }
+    } = checked;
     let existing = rows(tx, "SELECT token,object_name FROM required_units", &[])?;
     let mut existing_tokens: HashSet<String> = existing
         .iter()

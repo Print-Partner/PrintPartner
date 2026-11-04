@@ -2686,7 +2686,11 @@ deferred read transaction on the writer. Storage owns the checks:
 Accept (`publish_in_transaction`) runs before it writes, in the same order.
 
 - A draft whose Parts and inputs equal its accepted base returns 200
-  `{ kind: "no_change", revision, snapshot }`.
+  `{ kind: "no_change", revision, snapshot }`, but only when Accept, sent
+  without `remap_checkoff_links`, would pass every check. Otherwise the preview
+  returns Accept's refusal, such as `reconciliation_required`,
+  `production_active` or `execution_conflict`. A changed draft reports active
+  production and running operations as checks in `changes` instead.
 - Otherwise 200 `{ kind: "changed", revision, changes, snapshot }`. `changes`
   holds `fields` (each changed Part field, `old` and `new`), `parts_added`,
   `parts_removed`, `inputs` (changed Source input fields; each value is

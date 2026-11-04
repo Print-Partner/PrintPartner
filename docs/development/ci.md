@@ -333,8 +333,12 @@ npm --prefix web run test:browser --workspace @print-partner/ui
 profile in Chromium (through `playwright-core`) and in the system WebKitGTK
 (through PyGObject, under `xvfb-run` when there is no display). It fails on any
 request to another origin, on a bundled face that did not load, and when the
-figure cells are not Plex Mono with tabular figures. A missing engine prints
-`SKIP <engine>` and the script exits 77. The step declares 77 as its
+figure cells are not Plex Mono with tabular figures. `frame.browser.mjs` then
+runs in WebKitGTK: axe at WCAG 2.2 AA on every frame page, screen state and
+dialog in all three themes, and a sideways-scroll check at 200% text and 400%
+zoom. Set `PP_UI_EVIDENCE_DIR` to save its screenshots. A missing engine prints
+`SKIP <engine>`. `test/browser/all.mjs` runs both checks even when one skips or
+fails, and exits with the worst status: a failure, then 77, then 0. The step declares 77 as its
 `skip_status`, so the summary shows `SKIP ui-package` and `--fail-on-skip`
 fails.
 

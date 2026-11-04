@@ -12,7 +12,9 @@ async function boundaryErrors(code: string, file = "apps/ui/src/planted.ts") {
   return result.messages.filter((message) => message.ruleId === "print-partner/ui-boundary");
 }
 
-describe("apps/ui import boundary", () => {
+// The first lint builds ESLint's config and parser for the whole package, which takes
+// several seconds on a loaded machine; the default 5 s limit made the first case flaky.
+describe("apps/ui import boundary", { timeout: 30_000 }, () => {
   it.each([
     ['import { x } from "@print-partner/contracts";', "contracts by name"],
     ['import { x } from "@print-partner/contracts/schemas";', "contracts subpath"],

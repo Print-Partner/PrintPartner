@@ -316,9 +316,14 @@ pub fn product_router(
     }
     let policy = desktop_policy();
     let lifetimes = AuthLifetimes::default();
+    let settings = owner
+        .lock()
+        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
+        .client();
     let auth = AuthRoutes {
         http: AuthHttpConfig::new(origin, CookieTransport::LoopbackHttp, false, None, false)?
-            .with_tenant_feature_toggles(),
+            .with_tenant_feature_toggles()
+            .with_modules(settings, DESKTOP_TENANT),
         policy,
         lifetimes,
         providers: ProviderClient::new(None, None)?,

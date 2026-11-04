@@ -440,6 +440,29 @@ mod codegen {
             owner_mapping_required: false,
             github_oauth_configured: !filled,
             discord_oauth_configured: !filled,
+            modules: Some({
+                use pp_storage::features::modules::{Module, ModuleOffReason, ModuleStatus};
+                vec![
+                    ModuleStatus::On {
+                        module: Module::Farm,
+                    },
+                    ModuleStatus::Off {
+                        module: Module::Spoolman,
+                        reason: ModuleOffReason::DefaultOff,
+                    },
+                    ModuleStatus::Off {
+                        module: Module::Orders,
+                        reason: ModuleOffReason::TurnedOff,
+                    },
+                    ModuleStatus::Off {
+                        module: Module::Bambu,
+                        reason: ModuleOffReason::SettingUnreadable,
+                    },
+                    ModuleStatus::On {
+                        module: Module::AssemblyTracking,
+                    },
+                ]
+            }),
         }
     }
 

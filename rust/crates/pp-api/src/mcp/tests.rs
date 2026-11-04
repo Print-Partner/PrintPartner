@@ -57,7 +57,13 @@ impl McpServer {
         let auth = owner
             .rebuild_auth_with_policy(policy(), Default::default())
             .unwrap();
-        let router = mcp_router(config, auth);
+        let workflow = owner
+            .build_workflow(
+                policy(),
+                Arc::new(pp_storage::read_model::build_workflow::PendingInputs),
+            )
+            .unwrap();
+        let router = mcp_router(config, auth, workflow);
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,

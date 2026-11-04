@@ -342,6 +342,15 @@ pub(crate) fn json_response(status: StatusCode, value: &Value, head: bool) -> Re
         .unwrap_or_else(|_| Response::new(axum::body::Body::empty()))
 }
 
+/// The Build a path segment names. Only a decimal positive safe integer names
+/// one; any other id still authenticates in storage, then answers not found.
+pub(crate) fn build_id(id: &str) -> Option<pp_storage::build_graph::PositiveId> {
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| id.parse().ok())
+        .flatten()
+        .and_then(|id| pp_storage::build_graph::PositiveId::new(id).ok())
+}
+
 pub(crate) fn failure(status: StatusCode, detail: &str) -> Response {
     crate::problem::response(status, detail)
 }

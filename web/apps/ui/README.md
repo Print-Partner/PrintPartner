@@ -116,10 +116,10 @@ which slice brings them. Nothing here changes data.
 - **Large lists.** Every row renders; rows off screen use
   `content-visibility: auto` so they skip layout and paint. This was chosen from
   `test/browser/builds.browser.mjs` on 10,000 Builds on a 4-CPU cloud host:
-  WebKitGTK showed the first row 2.0 to 3.3 s after navigation (fetch, schema
+  WebKitGTK showed the first row 2.0 to 3.5 s after navigation (fetch, schema
   check and render of all rows) and moved focus to the next row by the next
-  frame in a median of 17 to 22 ms (max 33 ms); headless Chromium took 1.2 to
-  1.4 s and 67 ms. There is no approved latency budget, so the check records the
+  frame in a median of 17 to 38 ms (max 89 ms); headless Chromium took 1.2 to
+  2.0 s and a median of 67 to 101 ms. There is no approved latency budget, so the check records the
   numbers and fails only on a missing row or misplaced focus. Revisit
   virtualization if a measurement says otherwise.
 

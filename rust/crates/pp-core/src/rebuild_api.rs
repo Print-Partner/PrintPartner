@@ -16,7 +16,10 @@ use pp_api::{
 pub use pp_api::auth::{AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer};
 use pp_storage::{
     WriterOwner,
-    auth::{AuthPolicy, rebuild::AuthLifetimes, rebuild::RebuildAuthClient},
+    auth::{
+        AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy,
+        rebuild::AuthLifetimes, rebuild::RebuildAuthClient,
+    },
     build_graph::BuildGraphClient,
     working_drafts::{
         WorkingDraftClient,
@@ -288,28 +291,82 @@ pub fn job_router(
     )))
 }
 
+/// The single-user auth policy the Rust-only runtime serves.
+pub fn desktop_policy() -> AuthPolicy {
+    AuthPolicy {
+        registration: RegistrationPolicy::FirstAccountOnly,
+        first_user: FirstUserTenant::NewUser,
+        session_tenant: SessionTenantPolicy::SingleAccountDefault,
+    }
+}
+
+/// The product routes a Rust-only runtime mounts in the gateway: the read
+/// routers, the draft routers and the jobs router, all from one owner.
+/// `community_manifests` is the bundle's
+/// `pp_compat::Bundle::community_manifests_dir`. Returns `None` before
+/// creating any client unless the stored setting is on.
+pub fn product_router(
+    rebuild: DesktopRebuild,
+    owner: Arc<Mutex<WriterOwner>>,
+    origin: &str,
+    community_manifests: Option<&Path>,
+) -> Result<Option<Router>> {
+    if !rebuild.enabled() {
+        return Ok(None);
+    }
+    let policy = desktop_policy();
+    let lifetimes = AuthLifetimes::default();
+    let auth = AuthRoutes {
+        http: AuthHttpConfig::new(origin, CookieTransport::LoopbackHttp, false, None, false)?
+            .with_tenant_feature_toggles(),
+        policy,
+        lifetimes,
+        providers: ProviderClient::new(None, None)?,
+        mail: ResetMailer::disabled(),
+    };
+    let (drafts, jobs) = {
+        let guard = owner
+            .lock()
+            .map_err(|_| anyhow!("rebuild owner lock poisoned"))?;
+        (
+            draft_router(
+                rebuild,
+                &guard,
+                policy,
+                lifetimes,
+                origin,
+                DESKTOP_TENANT,
+                community_manifests,
+            )?,
+            job_router(rebuild, &guard, policy, origin, DESKTOP_TENANT)?,
+        )
+    };
+    let reads = read_router(
+        rebuild,
+        owner,
+        auth,
+        origin,
+        DESKTOP_TENANT,
+        community_manifests,
+    )?;
+    Ok(reads
+        .zip(drafts)
+        .zip(jobs)
+        .map(|((reads, drafts), jobs)| reads.merge(drafts).merge(jobs)))
+}
+
+/// API keys route to the default tenant under the single-account policy.
+const DESKTOP_TENANT: &str = "default";
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pp_storage::{
-        Limits,
-        auth::{FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
-        build_graph::BuildCommand,
-        read_model::Credential,
-    };
+    use pp_storage::{Limits, auth::Secret, build_graph::BuildCommand, read_model::Credential};
     use serde_json::{Value, json};
     use std::{
         sync::{Arc, atomic::AtomicBool},
         time::Duration,
     };
-
-    fn policy() -> AuthPolicy {
-        AuthPolicy {
-            registration: RegistrationPolicy::FirstAccountOnly,
-            first_user: FirstUserTenant::NewUser,
-            session_tenant: SessionTenantPolicy::SingleAccountDefault,
-        }
-    }
 
     fn lifetimes() -> AuthLifetimes {
         AuthLifetimes::shorter(Duration::from_secs(3600), Some(Duration::from_secs(600))).unwrap()
@@ -319,7 +376,7 @@ mod tests {
         AuthRoutes {
             http: AuthHttpConfig::new(origin, CookieTransport::LoopbackHttp, false, None, false)
                 .unwrap(),
-            policy: policy(),
+            policy: desktop_policy(),
             lifetimes: lifetimes(),
             providers: ProviderClient::new(None, None).unwrap(),
             mail: ResetMailer::disabled(),
@@ -335,6 +392,32 @@ mod tests {
             WriterOwner::open(&directory, Limits::default()).unwrap().0,
             directory,
         )
+    }
+
+    /// The flag-on client bundle over `owner` with the desktop policy.
+    fn enabled_clients(owner: &WriterOwner) -> RebuildHttpClients {
+        clients(
+            DesktopRebuild::from_value(Some("1")),
+            owner,
+            desktop_policy(),
+            lifetimes(),
+            None,
+        )
+        .unwrap()
+        .expect("flag on constructs clients")
+    }
+
+    /// A fresh writer plus a loopback listener and its origin.
+    async fn bound() -> (
+        WriterOwner,
+        std::path::PathBuf,
+        tokio::net::TcpListener,
+        String,
+    ) {
+        let (owner, directory) = owner();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        (owner, directory, listener, origin)
     }
 
     #[test]
@@ -406,7 +489,7 @@ mod tests {
                 clients(
                     DesktopRebuild::from_value(value),
                     &owner,
-                    policy(),
+                    desktop_policy(),
                     lifetimes(),
                     None,
                 )
@@ -426,7 +509,7 @@ mod tests {
         let (owner, directory) = owner();
         // ast-grep-ignore: no-writer-family-literal -- A test path for the read-only community manifests root.
         let manifests = directory.join("bundle/data/manifests");
-        let reads = source_reads(&owner, policy(), Some(&manifests)).unwrap();
+        let reads = source_reads(&owner, desktop_policy(), Some(&manifests)).unwrap();
         assert_eq!(reads.community_manifests(), Some(manifests.as_path()));
         assert_eq!(
             reads.filesystem_policy(),
@@ -434,7 +517,7 @@ mod tests {
         );
         let multi_user = AuthPolicy {
             session_tenant: SessionTenantPolicy::AccountTenant,
-            ..policy()
+            ..desktop_policy()
         };
         let reads = source_reads(&owner, multi_user, None).unwrap();
         assert_eq!(reads.community_manifests(), None);
@@ -448,15 +531,7 @@ mod tests {
     #[test]
     fn ticket_t_10_draftreads_production_clients_read_sources() {
         let (owner, directory) = owner();
-        let bundle = clients(
-            DesktopRebuild::from_value(Some("1")),
-            &owner,
-            policy(),
-            lifetimes(),
-            None,
-        )
-        .unwrap()
-        .expect("flag on constructs clients");
+        let bundle = enabled_clients(&owner);
         let refused = bundle
             .drafts
             .recompute(
@@ -480,15 +555,7 @@ mod tests {
     #[test]
     fn application_host_closes_owned_clients() {
         let (owner, directory) = owner();
-        let bundle = clients(
-            DesktopRebuild::from_value(Some("1")),
-            &owner,
-            policy(),
-            lifetimes(),
-            None,
-        )
-        .unwrap()
-        .expect("flag on constructs clients");
+        let bundle = enabled_clients(&owner);
         // Policy-backed Build client refuses a missing session (not LocalOwner).
         let refused = bundle
             .builds
@@ -562,11 +629,9 @@ mod tests {
     #[tokio::test]
     async fn client_routes_match_registrations() {
         use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
-        let (owner, directory) = owner();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (owner, directory, listener, origin) = bound().await;
         let rebuild = DesktopRebuild::from_value(Some("1"));
-        let (policy, lifetimes) = (policy(), lifetimes());
+        let (policy, lifetimes) = (desktop_policy(), lifetimes());
         let drafts = draft_router(rebuild, &owner, policy, lifetimes, &origin, "default", None);
         let owner = Arc::new(std::sync::Mutex::new(owner));
         let reads = read_router(
@@ -654,9 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_setting_on_serves_auth_through_the_rebuild_client() {
-        let (owner, directory) = owner();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (owner, directory, listener, origin) = bound().await;
         let router = router(
             DesktopRebuild::from_value(Some("1")),
             &owner,

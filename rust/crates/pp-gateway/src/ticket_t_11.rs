@@ -36,21 +36,7 @@ impl Fixture {
             &crate::ownership::cutover::OperationOwners::node_only(),
         )
         .unwrap();
-        let launch = gateway.take_launch_target().unwrap().into_url();
-        let request = Request::builder()
-            .uri(launch.strip_prefix(gateway.origin()).unwrap())
-            .header("host", &gateway.state.host)
-            .body(Body::empty())
-            .unwrap();
-        let response = handle(State(gateway.state.clone()), request).await;
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let cookie = response.headers()["set-cookie"]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        let cookie = gateway.test_session().await;
         Self {
             gateway,
             root,

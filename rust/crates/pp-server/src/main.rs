@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
         runtime_version: format!("{version}-web"),
         commit: commit.context("--commit is required")?,
     };
-    let mut runtime = CoreRuntime::start(DesktopLaunch {
+    let mut runtime = CoreRuntime::start_for_launcher(DesktopLaunch {
         data_dir: data.context("--data is required")?,
         assets: web.join("apps/web/dist"),
         bundle,
@@ -34,9 +34,10 @@ async fn main() -> Result<()> {
     .await?;
     if let Some(path) = credential_file {
         let url = runtime.take_launch_target()?.into_url();
-        let CoreStatus::Ready { pid: child_pid, .. } = *runtime.handle().subscribe().borrow()
-        else {
-            bail!("Compatibility child is not ready for the test receipt");
+        let child_pid = match *runtime.handle().subscribe().borrow() {
+            CoreStatus::Ready { pid, .. } => Some(pid),
+            _ if runtime.rust_only() => None,
+            _ => bail!("Compatibility child is not ready for the test receipt"),
         };
         let result = (|| -> Result<()> {
             let mut file = std::fs::OpenOptions::new()

@@ -41,7 +41,7 @@ Admission resolves the stored job tenant and `PrinterUpload.profile_id` through 
 
 `CoreRuntime::start` reads `PP_DESKTOP_REBUILD` once at startup and stores the effective setting. `CoreRuntime::desktop_rebuild().enabled()` returns that setting. Only the exact values `1` and `true` enable it, and only when `pp-core` was compiled with `desktop_rebuild`. Missing, non-Unicode, empty, false, and unrecognized values produce false. The setting is process-local and does not change `desktop.toml` or persisted data.
 
-D1 adds no routes, storage migrations, UI, or rebuild execution. The existing gateway and Node compatibility runtime continue to run even when both gates are enabled. Future rebuild behavior must check the stored runtime setting and compile behind the Cargo feature.
+D1 adds no routes, storage migrations, UI, or rebuild execution. `CoreRuntime::start` keeps the gateway and Node compatibility runtime even when both gates are enabled; the launchers use `start_for_launcher`, described under [Rust-only product entry point](#rust-only-product-entry-point). Future rebuild behavior must check the stored runtime setting and compile behind the Cargo feature.
 
 Build the native shell with the core gate enabled using its existing staging prerequisites:
 
@@ -59,6 +59,53 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-core --lib --features 
 ```
 
 Core tests isolate environment changes in child processes. They cover absent, disabled, invalid, and enabled values with and without the Cargo feature. The existing autosave consumer tests run in both contract builds. The Rust runtime proof checks the existing authenticated endpoints, source creation, response shapes, and shutdown with the runtime opt-in absent or false.
+
+## Rust-only product entry point
+
+`pp-server` and `pp-desktop` start through `CoreRuntime::start_for_launcher`.
+With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
+`true`, that start runs Rust only:
+
+- No Node child starts. The release is still verified, then
+  `WriterOwner::open_with_job_feature_admission` takes the data directory lease
+  and the gateway binds its usual loopback origin.
+- `rebuild_api::product_router` composes the read routers, the draft routers
+  and the jobs router (including `/ws/jobs/{id}`) from that one owner, with the
+  single-account auth policy. It passes the bundle's
+  `community_manifests_dir()` to the Source reads.
+- `pp-core` hands that router to `Gateway::start_with_product`. `pp-gateway`
+  takes an `axum::Router` and has no `pp-api` dependency. Host, Origin and the
+  desktop session cookie are checked first. Every other admitted request that
+  is not a gateway or asset path goes to the Rust routes, which do their own
+  session or API-key authentication. Unknown paths get a Rust 404. Nothing is
+  forwarded to Node, and `Gateway::compat_forwards()` counts any request that
+  reaches the compatibility proxy.
+- `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
+  session, then the gateway ends the desktop session and stops the runtime as
+  it does today.
+- The gateway listener is loopback only and passes the peer address to the
+  Rust routes as `ConnectInfo`; they refuse a non-loopback peer. LAN sharing is
+  not part of this mode.
+- Shutdown drains and stops the gateway, drops its routes, then shuts the
+  writer down. If tracked shutdown work is still running, the writer and its
+  lock are kept until the process exits. The receipt reports
+  `compat_reaped: true` because no child ran.
+
+`CoreRuntime::start` and every other combination of gates keep the Node-backed
+runtime, so existing flag-on Node tests are unchanged. With the feature off,
+the gateway route table is pinned by a digest test and Plan reads still go to
+the compatibility proxy. Use disposable data directories only: this mode does
+not yet refuse a directory Node has used, and it writes Rust schema into the
+directory it opens. The desktop tray reports the compatibility status, which
+stays at starting in this mode.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(slice0_mount)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail -E 'test(slice0_mount)'
+```
+
+The launcher and `pp-server` tests need the built web assets and
+`rust/bundle-manifest.json`, like the other runtime tests.
 
 ## Slice plan
 

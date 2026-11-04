@@ -109,7 +109,7 @@ Every screen designs five states, and the fifth is not optional:
 4. **Module off.** Says which module is off, what would appear, and links to Settings. Module state comes from the core, not from guessing at a 404.
 5. **Offline.** The core is unreachable: navigation of already-loaded records still works, mutations are disabled with the reason in text and in the screen-reader description.
 
-Printer states are never blank. The vocabulary is Printing, Bed to clear, Ready, Paused, Failed, Unreachable, Not set up, Manual, Unknown. Execution state and bed-clear state are separate facts even when one row summarises both.
+Printer states are never blank. The vocabulary is Printing, Bed to clear, Ready, Paused, Failed, Unreachable, Not set up, Manual, Unknown. Execution state and bed-clear state are separate facts even when one row summarises both. An idle printer shows Ready only when its bed is confirmed clear; an unknown bed shows Bed to clear. `pp_domain::printer_display_state` holds the vocabulary and the summary rule.
 
 ## Design system
 

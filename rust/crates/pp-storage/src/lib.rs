@@ -30,6 +30,8 @@ pub mod ownership_marker;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plan_publication;
 #[cfg(feature = "desktop_rebuild")]
+pub use pp_domain::printer_display_state;
+#[cfg(feature = "desktop_rebuild")]
 pub mod profiles;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]
@@ -989,6 +991,12 @@ impl WriterOwner {
             );
         }
         Ok(())
+    }
+    /// The directory lease this owner holds until shutdown, for a Rust-only
+    /// runtime's desktop state files next to the database.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn lease(&self) -> Option<&lease::StorageLease> {
+        self.lease.as_ref()
     }
     pub fn shutdown(mut self) -> Result<()> {
         let result = self.close();

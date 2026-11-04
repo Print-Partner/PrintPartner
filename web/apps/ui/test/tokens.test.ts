@@ -222,6 +222,73 @@ describe("TOK-03 contrast gate", () => {
   });
 });
 
+const replaced = (from: string, to: string) => {
+  expect(css).toContain(from);
+  return checkTokens(css.replace(from, to)).problems;
+};
+const failsWith = (problems: string[], prefix: string) =>
+  expect(
+    problems.filter((p) => p.startsWith(prefix)),
+    prefix,
+  ).not.toEqual([]);
+
+describe("the gate fails closed on CSS it does not model", () => {
+  it.each([
+    ["single-quoted", ":root[data-theme='light']"],
+    ["unquoted", ":root[data-theme=light]"],
+  ])("fails a %s theme attribute instead of skipping it", (_label, selector) => {
+    failsWith(
+      problemsWith(`${selector} { --text: #ffffff; }`),
+      `unsupported: selector ${selector}`,
+    );
+  });
+
+  it("fails a colour token in a syntax it cannot read", () => {
+    failsWith(
+      replaced("--filament-swatch-empty: #2c323a;", "--filament-swatch-empty: rgb(34 195 221);"),
+      "unsupported: :root: --filament-swatch-empty: rgb(34 195 221)",
+    );
+    failsWith(
+      problemsWith(":root { --status-paused: rgb(34 195 221); }"),
+      "unsupported: :root: --status-paused: rgb(34 195 221)",
+    );
+  });
+
+  it("checks reduced motion while forced colors is on too", () => {
+    failsWith(
+      problemsWith(`${FORCED_ALL} { --motion-duration-base: 160ms; } }`),
+      "reduced motion with forced colors (dark): --motion-duration-base is 160ms",
+    );
+  });
+
+  it.each([
+    [
+      "compound",
+      "@media (prefers-reduced-motion: reduce) and (forced-colors: none) { :root { --motion-duration-base: 160ms; } }",
+      "unsupported: @media (prefers-reduced-motion: reduce) and (forced-colors: none) :root",
+    ],
+    [
+      "nested",
+      "@media (prefers-reduced-motion: reduce) { @media (min-width: 1px) { :root { --motion-duration-base: 160ms; } } }",
+      "unsupported: @media (prefers-reduced-motion: reduce) @media (min-width: 1px) :root",
+    ],
+    [
+      "non-media",
+      "@supports (color: red) { :root { --text: #ffffff; } }",
+      "unsupported: @supports (color: red) :root",
+    ],
+  ])("fails a %s conditional rule that sets tokens", (_label, plant, prefix) => {
+    failsWith(problemsWith(plant), prefix);
+  });
+
+  it("fails an !important token declaration", () => {
+    failsWith(
+      replaced("  --text: #e7eaee;", "  --text: #e7eaee !important;\n  --text: #e7eaee;"),
+      "unsupported: :root: --text uses !important",
+    );
+  });
+});
+
 describe("TOK-05 filament swatches", () => {
   it("are round chips with a visible border, unlike status pills", () => {
     expect(root.get("--filament-swatch-radius")).toBe("50%");

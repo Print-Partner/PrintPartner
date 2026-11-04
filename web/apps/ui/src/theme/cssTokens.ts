@@ -7,15 +7,17 @@
 export type Rgb = readonly [number, number, number];
 
 export interface CssRule {
-  /** The @media prelude the rule sits in, or null. Other at-rules are transparent. */
+  /** The innermost @media prelude the rule sits in, or null. */
   media: string | null;
+  /** Every enclosing at-rule prelude, outermost first, @media or not. */
+  atRules: string[];
   selector: string;
   body: string;
 }
 
 export function parseRules(css: string): CssRule[] {
   const out: CssRule[] = [];
-  const walk = (text: string, media: string | null) => {
+  const walk = (text: string, media: string | null, atRules: string[]) => {
     let i = 0;
     while (i < text.length) {
       const open = text.indexOf("{", i);
@@ -32,12 +34,13 @@ export function parseRules(css: string): CssRule[] {
         else if (text[close] === "}" && --depth === 0) break;
       }
       const body = text.slice(open + 1, close);
-      if (prelude.startsWith("@")) walk(body, prelude.startsWith("@media") ? prelude : media);
-      else out.push({ media, selector: prelude, body });
+      if (prelude.startsWith("@")) {
+        walk(body, prelude.startsWith("@media") ? prelude : media, [...atRules, prelude]);
+      } else out.push({ media, atRules, selector: prelude, body });
       i = close + 1;
     }
   };
-  walk(css.replace(/\/\*[\s\S]*?\*\//g, ""), null);
+  walk(css.replace(/\/\*[\s\S]*?\*\//g, ""), null, []);
   return out;
 }
 

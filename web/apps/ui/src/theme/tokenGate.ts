@@ -120,7 +120,7 @@ export function effectiveTokens(
 ): Map<string, string> {
   const applying: { specificity: number; index: number; rule: CssRule }[] = [];
   rules.forEach((rule, index) => {
-    if (rule.media !== null && !media.includes(rule.media)) return;
+    if (!rule.atRules.every((a) => media.includes(a))) return;
     const matches = rule.selector.split(",").map((s) => rootMatch(s, attrs));
     const specificity = Math.max(-1, ...matches.map((m) => m ?? -1));
     if (specificity >= 0) applying.push({ specificity, index, rule });
@@ -229,6 +229,66 @@ function measure(
 
 const SYSTEM_KEYWORDS = Object.keys(Object.values(FORCED_PALETTES)[0]);
 
+const SUPPORTED_SELECTOR = /^:root(?:\[[\w-]+(?:="[^"]*")?\])*$/;
+const SUPPORTED_VALUES: readonly RegExp[] = [
+  /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i,
+  /^var\(--[\w-]+\)$/,
+  /^\d+(?:\.\d+)?(?:px|%|ms)?$/,
+  /^cubic-bezier\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*\)$/,
+  /^tabular-nums$/,
+  // A font stack: names or quoted names, ending in a generic family.
+  /^(?:(?:"[^"]+"|[\w-]+)\s*,\s*)+(?:sans-serif|serif|monospace|system-ui|ui-monospace)$/,
+];
+
+/**
+ * The gate models a small subset of CSS: :root rules with double-quoted or bare
+ * attribute selectors, at top level or directly inside the forced-colors or
+ * reduced-motion query, without !important, holding hex colours, var() references
+ * and a few non-colour forms. Anything else that sets a custom property fails the
+ * gate instead of being skipped, because the gate could not tell what it does.
+ */
+function checkSupported(rules: readonly CssRule[], problems: string[]) {
+  for (const rule of rules) {
+    const custom = rule.body
+      .split(";")
+      .map((part) => [
+        part.slice(0, part.indexOf(":")).trim(),
+        part.slice(part.indexOf(":") + 1).trim(),
+      ])
+      .filter(([name]) => name.startsWith("--"));
+    if (custom.length === 0) continue;
+    const where = [...rule.atRules, rule.selector].join(" ");
+    const [context, ...nested] = rule.atRules;
+    const forced = context === FORCED_COLORS;
+    if (nested.length > 0 || (context !== undefined && !forced && context !== REDUCED_MOTION)) {
+      problems.push(
+        `unsupported: ${where}: tokens may sit only at top level or directly in ${FORCED_COLORS} or ${REDUCED_MOTION}`,
+      );
+    }
+    for (const part of rule.selector.split(",").map((p) => p.trim())) {
+      if (!SUPPORTED_SELECTOR.test(part)) {
+        problems.push(
+          `unsupported: selector ${part}: use :root, :root[attr] or :root[attr="value"]`,
+        );
+      }
+    }
+    for (const [name, value] of custom) {
+      if (/!\s*important/i.test(value)) {
+        problems.push(
+          `unsupported: ${where}: ${name} uses !important, which the gate does not model`,
+        );
+      } else if (
+        !SUPPORTED_VALUES.some((re) => re.test(value)) &&
+        !(forced && SYSTEM_KEYWORDS.includes(value.toLowerCase()))
+      ) {
+        problems.push(
+          `unsupported: ${where}: ${name}: ${value} is not a hex colour, var(--token)${forced ? ", system colour" : ""} or known non-colour value`,
+        );
+      }
+    }
+  }
+}
+
 /**
  * Forced colors: the browser swaps authored colours for system ones. Every colour
  * token, after following var(), must be a system colour so nothing authored leaks
@@ -275,6 +335,7 @@ export function checkTokens(css: string): GateResult {
   const problems: string[] = [];
   const tables: GateResult["tables"] = [];
   const darkForced = effectiveTokens(rules, THEMES[0].attrs, [FORCED_COLORS]);
+  checkSupported(rules, problems);
 
   for (const theme of THEMES) {
     const tokens = effectiveTokens(rules, theme.attrs);
@@ -285,10 +346,16 @@ export function checkTokens(css: string): GateResult {
         problems.push(`${theme.name}: --${name} is cyan; cyan is for interaction tokens only`);
       }
     }
-    const forced = effectiveTokens(rules, theme.attrs, [FORCED_COLORS]);
-    checkForced(`forced colors (${theme.name})`, colours, forced, darkForced, problems);
-    const reduced = effectiveTokens(rules, theme.attrs, [REDUCED_MOTION]);
-    checkReducedMotion(`reduced motion (${theme.name})`, reduced, problems);
+    // Each accessibility mode alone and both together, as a user can have both on.
+    for (const media of [[FORCED_COLORS], [FORCED_COLORS, REDUCED_MOTION]]) {
+      const label = `${media.length > 1 ? "forced colors with reduced motion" : "forced colors"} (${theme.name})`;
+      const forced = effectiveTokens(rules, theme.attrs, media);
+      checkForced(label, colours, forced, darkForced, problems);
+    }
+    for (const media of [[REDUCED_MOTION], [REDUCED_MOTION, FORCED_COLORS]]) {
+      const label = `${media.length > 1 ? "reduced motion with forced colors" : "reduced motion"} (${theme.name})`;
+      checkReducedMotion(label, effectiveTokens(rules, theme.attrs, media), problems);
+    }
   }
 
   for (const [label, palette] of Object.entries(FORCED_PALETTES)) {

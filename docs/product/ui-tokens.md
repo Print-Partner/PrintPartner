@@ -84,7 +84,16 @@ npm --prefix web run test --workspace @print-partner/ui
 - in any theme under forced colors, a colour token, after following `var()`, is not
   a system colour, resolves to nothing, uses a highlight keyword outside
   `--interaction-*`, or differs from its forced value in dark;
-- in any theme under reduced motion, a `--motion-duration-*` token is above 0 ms;
+- in any theme under reduced motion, alone or with forced colors, a
+  `--motion-duration-*` token is above 0 ms (forced colors is also checked with
+  reduced motion on);
+- `tokens.css` sets a custom property in a way the gate does not model: a selector
+  other than `:root`, `:root[attr]` or `:root[attr="value"]`; a rule inside any
+  at-rule other than a top-level `@media (forced-colors: active)` or
+  `@media (prefers-reduced-motion: reduce)`; `!important`; or a value that is not a
+  hex colour, `var(--token)`, a system colour (forced colors only), a length, a
+  number, a font stack, `cubic-bezier()` or `tabular-nums`. The gate fails on these
+  instead of skipping them;
 - the tables below are stale (`--check` only).
 
 The gate evaluates each theme with CSS specificity and source order, so a theme rule

@@ -19,6 +19,7 @@ import Fastify from "fastify";
 // Type-only: app.ts loads the cookie, multipart and auth modules whose request
 // and reply fields routes/sources.ts relies on.
 import type {} from "../../apps/server/src/app.js";
+import { parseAcceptedPlateWorkspace } from "@print-partner/contracts";
 import { parseAcceptedStlMesh, stlMeshDimensionsUm } from "@print-partner/domain";
 import { getDb, SqliteDatabase } from "../../apps/server/src/db/client.js";
 import { AppRepository } from "../../apps/server/src/db/repository.js";
@@ -347,17 +348,15 @@ test("the synthetic printers are connection-free fleet entries that Plate setup 
     const app = Fastify();
     try {
       await registerAcceptedPlateRoutes(app, { repo, reposDir: repo.reposDir });
-      const current = (
-        await app.inject({ method: "GET", url: `/plans/${anchor.id}/plates` })
-      ).json() as {
-        kind: string;
-        basis: unknown;
-        plate_revision_id: number;
-        printers: Array<{ id: string }>;
-        plates: Array<{ units: Array<{ token: string }> }>;
-        unassigned: Array<{ token: string }>;
+      const workspace = (body: string) => {
+        const parsed = parseAcceptedPlateWorkspace(JSON.parse(body));
+        assert.equal(parsed.kind, "ready");
+        return parsed as Extract<typeof parsed, { kind: "ready" }>;
       };
-      assert.equal(current.kind, "ready");
+      const read = async () =>
+        workspace((await app.inject({ method: "GET", url: `/plans/${anchor.id}/plates` })).body);
+
+      const current = await read();
       assert.deepEqual(
         current.printers.map((printer) => printer.id),
         ["synthetic-printer-1", "synthetic-printer-2"],
@@ -377,16 +376,7 @@ test("the synthetic printers are connection-free fleet entries that Plate setup 
         },
       });
       assert.equal(initialized.statusCode, 200, initialized.body);
-      const ready = initialized.json() as {
-        kind: string;
-        plate_revision_id: number;
-        plates: Array<{
-          plate_id: string;
-          printer: { id: string };
-          units: Array<{ token: string }>;
-        }>;
-      };
-      assert.equal(ready.kind, "ready");
+      const ready = workspace(initialized.body);
       assert.equal(
         ready.plates.every((plate) => plate.printer.id === "synthetic-printer-1"),
         true,
@@ -405,12 +395,11 @@ test("the synthetic printers are connection-free fleet entries that Plate setup 
       });
       assert.equal(transferred.statusCode, 200, transferred.body);
       // A transferred unit lands unplaced on a Plate for the target printer.
-      const after = (
-        await app.inject({ method: "GET", url: `/plans/${anchor.id}/plates` })
-      ).json() as { unplaced: Array<{ token: string; printer_id: string }> };
-      assert.deepEqual(after.unplaced, [
-        { ...after.unplaced[0], token: plate.units[0].token, printer_id: "synthetic-printer-2" },
-      ]);
+      const after = await read();
+      assert.deepEqual(
+        after.unplaced.map((unit) => [unit.token, unit.printer_id]),
+        [[plate.units[0].token, "synthetic-printer-2"]],
+      );
     } finally {
       await app.close();
     }

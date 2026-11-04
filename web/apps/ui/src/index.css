@@ -258,6 +258,12 @@ body {
   margin-bottom: 8px;
 }
 
+.pp-setting input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--interaction-accent);
+}
+
 .pp-shortcut-table {
   width: 100%;
   margin-bottom: 16px;

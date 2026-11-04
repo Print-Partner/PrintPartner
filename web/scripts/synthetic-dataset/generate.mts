@@ -10,15 +10,26 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { mock } from "node:test";
+import { listStlRelativePaths, type PrinterMachine } from "@print-partner/domain";
 import { getDb, SqliteDatabase } from "../../apps/server/src/db/client.js";
 import { acceptedPlanBasis } from "../../apps/server/src/db/accepted-plan-progress.js";
 import type { AcceptedPlateInput } from "../../apps/server/src/db/accepted-plates.js";
 import { AppRepository } from "../../apps/server/src/db/repository.js";
 import { currentSchemaVersion } from "../../apps/server/src/db/schema.js";
 import { plateId } from "../../apps/server/src/services/accepted-plate-workspace.js";
+import {
+  DEFAULT_LOCAL_SNAPSHOT_DOCS_BYTES,
+  DEFAULT_LOCAL_SNAPSHOT_STL_LIMIT,
+} from "../../apps/server/src/services/local-source-revision.js";
+import {
+  LocalSourceSnapshotStore,
+  sourceRelativePath,
+} from "../../apps/server/src/services/local-source-snapshot.js";
+import { saveFleet } from "../../apps/server/src/services/printer-fleet.js";
 import { saveUnattributedPrint } from "../../apps/server/src/services/unattributed-print-store.js";
 import {
   acceptPlanForTest,
@@ -43,7 +54,13 @@ const ANCHORS = [
   { name: "Synthetic Build Anchor 100u15p", layers: 4, revisions: 4, units: 100, plates: 15 },
   { name: "Synthetic Build Anchor 47u6p", layers: 3, revisions: 3, units: 47, plates: 6 },
 ] as const;
-const BED = { bedWidthUm: 250_000, bedDepthUm: 220_000, bedHeightUm: 220_000, marginUm: 5_000 };
+const BED_MM = { width: 250, depth: 220, height: 220, margin: 5 };
+const BED = {
+  bedWidthUm: BED_MM.width * 1_000,
+  bedDepthUm: BED_MM.depth * 1_000,
+  bedHeightUm: BED_MM.height * 1_000,
+  marginUm: BED_MM.margin * 1_000,
+};
 const UNIT = { widthUm: 20_000, depthUm: 20_000, heightUm: 10_000 };
 const PITCH_UM = 30_000;
 const COLUMNS = 8;
@@ -54,6 +71,29 @@ const PRINTERS = [1, 2].map((n) => ({
   printerName: `Synthetic Printer ${n}`,
   printerModel: "Synthetic Model 250",
 }));
+// Fleet entries with no host link, so nothing can send to them. Plate
+// initialization and unit transfer read printer geometry from this setting.
+const FLEET: PrinterMachine[] = PRINTERS.map((printer) => ({
+  id: printer.printerId,
+  name: printer.printerName,
+  model: printer.printerModel,
+  bed_width_mm: BED_MM.width,
+  bed_depth_mm: BED_MM.depth,
+  bed_height_mm: BED_MM.height,
+  margin_mm: BED_MM.margin,
+  max_filament_slots: 1,
+  loaded_filaments: [],
+  integration_id: null,
+  device_id: null,
+  preset_id: null,
+  preferred_slicer: null,
+}));
+// The limits the Node local-source path uses for a working-tree snapshot.
+const SNAPSHOT_SELECTION = {
+  maxStlFiles: DEFAULT_LOCAL_SNAPSHOT_STL_LIMIT,
+  maxDocumentationBytes: DEFAULT_LOCAL_SNAPSHOT_DOCS_BYTES,
+  omittedFiles: [],
+};
 
 function parseArgs(argv: readonly string[]): { seed: number; output: string } {
   let seed: number | undefined;
@@ -98,7 +138,6 @@ function prng(seed: number) {
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 // A closed box with the stored UNIT size in millimetres, so the accepted
 // geometry loader and the exporters' stored-dimension checks accept every part.
 const stl = (name: string) => {
@@ -191,22 +230,45 @@ function finalQuantities(
   return next;
 }
 
-function sourceFiles(root: string, label: string, count: number): string[] {
-  mkdirSync(root, { recursive: true });
-  const names = Array.from(
-    { length: count },
-    (_, part) => `synthetic-s${label}-part-${pad(part + 1)}.stl`,
+// Writes the Source revision through the same snapshot store Node sync uses, so
+// it carries a .printpartner-source-snapshot.json and its content digest.
+async function materializeSource(
+  store: LocalSourceSnapshotStore,
+  sourceId: number,
+  label: string,
+  count: number,
+) {
+  const content = new Map(
+    Array.from({ length: count }, (_, part) => {
+      const name = `synthetic-s${label}-part-${pad(part + 1)}.stl`;
+      return [name, Buffer.from(stl(name))] as const;
+    }),
   );
-  for (const name of names) {
-    writeFileSync(join(root, name), stl(name));
-    utimesSync(join(root, name), new Date(), new Date());
-  }
-  return names;
+  const snapshot = await store.materialize({
+    sourceId,
+    upstreamRevisionKey: "synthetic-a",
+    files: [...content].map(([name, bytes]) => ({
+      path: sourceRelativePath(name),
+      kind: "stl",
+      sizeHintBytes: bytes.byteLength,
+    })),
+    selection: SNAPSHOT_SELECTION,
+    openFile: async (file) => {
+      const bytes = content.get(file.path)!;
+      return { stream: Readable.from([bytes]), contentLengthBytes: bytes.byteLength };
+    },
+  });
+  for (const entry of readdirSync(snapshot.absolutePath))
+    utimesSync(join(snapshot.absolutePath, entry), new Date(), new Date());
+  return snapshot;
 }
 
-function populate(repo: AppRepository, reposDir: string, random: Random): number[] {
+async function populate(repo: AppRepository, reposDir: string, random: Random): Promise<number[]> {
   const tick = () => mock.timers.tick(60_000);
-  const sources = Array.from({ length: SOURCE_COUNT }, (_, index) => {
+  saveFleet(repo, FLEET);
+  const store = new LocalSourceSnapshotStore({ reposDir });
+  const sources: number[] = [];
+  for (let index = 0; index < SOURCE_COUNT; index += 1) {
     const label = pad(index + 1);
     const source = repo.createSource({
       name: `Synthetic Source ${label}`,
@@ -215,13 +277,12 @@ function populate(repo: AppRepository, reposDir: string, random: Random): number
     });
     const observed = repo.getProjectRow(source.id);
     if (!observed) throw new Error("synthetic Source row is missing");
-    const locator = `${source.id}/revisions/synthetic-a`;
-    const names = sourceFiles(join(reposDir, locator), label, random.int(3, 8));
+    const snapshot = await materializeSource(store, source.id, label, random.int(3, 8));
     const revision = repo.recordSourceRevision({
       sourceId: source.id,
-      upstreamRevisionKey: "synthetic-a",
-      manifestDigest: sha256(names.join("\n")),
-      snapshotLocator: locator,
+      upstreamRevisionKey: snapshot.upstreamRevisionKey,
+      manifestDigest: snapshot.manifestDigest,
+      snapshotLocator: snapshot.snapshotLocator,
       syncedAt: new Date().toISOString(),
       completeness: "complete",
     });
@@ -232,8 +293,8 @@ function populate(repo: AppRepository, reposDir: string, random: Random): number
       sourceVersion: "synthetic-a",
     });
     tick();
-    return source.id;
-  });
+    sources.push(source.id);
+  }
 
   const createBuild = (name: string, layerCount: number) => {
     const [base, ...addons] = random.shuffle(sources).slice(0, layerCount);
@@ -346,9 +407,8 @@ function populate(repo: AppRepository, reposDir: string, random: Random): number
 }
 
 function addUnmatchedPrints(repo: AppRepository, reposDir: string, random: Random) {
-  const filenames = readdirSync(reposDir, { recursive: true, encoding: "utf8" })
-    .filter((path) => path.endsWith(".stl"))
-    .map((path) => path.split(/[\\/]/).pop()!)
+  const filenames = listStlRelativePaths(reposDir)
+    .map((path) => basename(path))
     .sort();
   for (let index = 0; index < UNMATCHED_PRINT_COUNT; index += 1) {
     const base = filenames[random.int(0, filenames.length - 1)]!.replace(/\.stl$/, "");
@@ -369,7 +429,7 @@ function addUnmatchedPrints(repo: AppRepository, reposDir: string, random: Rando
   }
 }
 
-function generate(seed: number, output: string) {
+async function generate(seed: number, output: string) {
   if (currentSchemaVersion !== 34)
     throw new Error(`generator targets Node schema 34, found ${currentSchemaVersion}`);
   if (existsSync(output) && readdirSync(output).length > 0) {
@@ -389,7 +449,7 @@ function generate(seed: number, output: string) {
       clock: () => new Date(),
       tokenFactory: () => `ppu_${tokens.hex(32)}`,
     });
-    deletedBuildIds = populate(repo, database.reposDir, random);
+    deletedBuildIds = await populate(repo, database.reposDir, random);
     addUnmatchedPrints(repo, database.reposDir, random);
   } finally {
     database.close();
@@ -424,7 +484,7 @@ function generate(seed: number, output: string) {
 }
 
 const { seed, output } = parseArgs(process.argv.slice(2));
-const manifest = generate(seed, output);
+const manifest = await generate(seed, output);
 process.stdout.write(
   `${JSON.stringify({ output, seed, digest: manifest.digest, label: manifest.label })}\n`,
 );

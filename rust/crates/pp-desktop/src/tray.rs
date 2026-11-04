@@ -1,7 +1,7 @@
 //! Tray status model: menu text and icon badge color per core status.
 use crate::autostart::LaunchAgent;
 use anyhow::Result;
-use pp_core::CoreStatus;
+use pp_core::{CoreStatus, RuntimeStatus, RustStatus};
 
 /// Menu id of the macOS "Open at login" check item (T-31).
 pub const OPEN_AT_LOGIN: &str = "open_at_login";
@@ -34,6 +34,18 @@ pub fn status(state: &CoreStatus) -> (&'static str, Tone) {
         CoreStatus::Stopping => ("Service stopping", Tone::Busy),
         CoreStatus::Stopped => ("Service stopped", Tone::Stopped),
         CoreStatus::Failed => ("Service failed", Tone::Failed),
+    }
+}
+
+/// The tray text and badge for either runtime. A Rust-only runtime uses the
+/// same labels; it never reconnects or hits the crash guard.
+pub fn runtime_status(state: &RuntimeStatus) -> (&'static str, Tone) {
+    match state {
+        RuntimeStatus::Node(state) => status(state),
+        RuntimeStatus::Rust(RustStatus::Starting) => ("Service starting", Tone::Busy),
+        RuntimeStatus::Rust(RustStatus::Ready) => ("Service ready", Tone::Ready),
+        RuntimeStatus::Rust(RustStatus::Stopping) => ("Service stopping", Tone::Busy),
+        RuntimeStatus::Rust(RustStatus::Stopped) => ("Service stopped", Tone::Stopped),
     }
 }
 

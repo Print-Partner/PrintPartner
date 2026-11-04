@@ -162,6 +162,7 @@ pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router
         )
         .nest("/api/v2", routes)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .route_layer(middleware::map_response(crate::problem::layer))
         .with_state(app)
 }
 
@@ -171,10 +172,7 @@ async fn guard(
     next: Next,
 ) -> Response {
     let Ok(_permit) = app.admission.try_acquire() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Build service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Build service temporarily unavailable");
     };
     if request.uri().to_string().len() > 16_384 {
         return failure(StatusCode::URI_TOO_LONG, "Request target too long");
@@ -222,6 +220,7 @@ async fn create(State(app): State<App>, request: axum::extract::Request) -> Resp
     };
     let body: CreateBuildRequest = match serde_json::from_slice(&bytes) {
         Ok(body) => body,
+        Err(_) if !crate::problem::is_json_object(&bytes) => return unreadable(),
         Err(error) => {
             let message = error.to_string();
             // Node reads `String(body.name ?? "")`, so an object without a
@@ -379,7 +378,7 @@ async fn attachment(
             .get("project_id")
             .and_then(source_id)
             .and_then(|id| PositiveId::new(id).ok()),
-        _ => return failure(StatusCode::BAD_REQUEST, "Request is invalid"),
+        _ => return unreadable(),
     };
     let contract = SummaryContract::Accepted;
     let Some(source) = source else {
@@ -478,11 +477,7 @@ async fn outcome(
     command: BuildCommand,
 ) -> Result<BuildOutcome, Box<Response>> {
     let Ok(permit) = app.waiters.clone().try_acquire_owned() else {
-        return Err(Box::new(json_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"detail":"Build service temporarily unavailable","code":"writer_queue_full"}),
-            false,
-        )));
+        return Err(Box::new(temporarily_unavailable("writer_queue_full")));
     };
     let client = app.client.clone();
     let wait = app.config.wait;
@@ -663,7 +658,12 @@ fn summary_body(
     Ok(body)
 }
 
-fn domain_error(error: anyhow::Error) -> Response {
+pub(crate) fn domain_error(error: anyhow::Error) -> Response {
+    if let Some(refused) =
+        crate::problem::admission_response(&error, "Build service temporarily unavailable")
+    {
+        return refused;
+    }
     if let Some(auth) = error.downcast_ref::<AuthFailure>() {
         return match auth {
             AuthFailure::SessionRequired
@@ -675,6 +675,9 @@ fn domain_error(error: anyhow::Error) -> Response {
                 StatusCode::FORBIDDEN,
                 "Explicit account owner mapping is required",
             ),
+            AuthFailure::QueueFull => temporarily_unavailable("writer_queue_full"),
+            AuthFailure::Stopped => temporarily_unavailable("writer_stopped"),
+            AuthFailure::CommitUnknown => temporarily_unavailable("outcome_unknown"),
             _ => failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Build service unavailable",
@@ -694,11 +697,7 @@ fn domain_error(error: anyhow::Error) -> Response {
                 );
             }
         };
-        return json_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"detail":"Build service temporarily unavailable","code":code}),
-            false,
-        );
+        return temporarily_unavailable(code);
     }
     failure(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -739,18 +738,33 @@ fn encode_json_response(
         .map_err(|_| ())
 }
 
+/// 400 for a body that is not a JSON object: malformed, not invalid.
+fn unreadable() -> Response {
+    crate::problem::typed(
+        crate::problem::ProblemType::MalformedRequest,
+        StatusCode::BAD_REQUEST,
+        "Request is invalid",
+    )
+}
+
+/// 503 whose `code` gives the cause: overloaded, stopped or outcome unknown.
+fn temporarily_unavailable(code: &str) -> Response {
+    crate::problem::coded(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Build service temporarily unavailable",
+        code,
+    )
+}
+
 fn encode_unavailable() -> Response {
-    const BODY: &[u8] = br#"{"detail":"Build service unavailable"}"#;
-    Response::builder()
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CONTENT_LENGTH, BODY.len())
-        .body(axum::body::Body::from(BODY))
-        .unwrap_or_else(|_| Response::new(axum::body::Body::from(BODY)))
+    failure(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Build service unavailable",
+    )
 }
 
 pub(super) fn failure(status: StatusCode, detail: &str) -> Response {
-    json_response(status, &json!({"detail": detail}), false)
+    crate::problem::response(status, detail)
 }
 
 #[cfg(test)]
@@ -874,7 +888,10 @@ mod tests {
         let response = present(&Method::GET, "/plans", contract, outcome);
         let status = response.status().as_u16();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        (
+            status,
+            crate::problem::without_envelope(serde_json::from_slice(&bytes).unwrap()),
+        )
     }
 
     /// Node's legacy v1 projection (`toLegacyProfileSummary` and

@@ -7,11 +7,12 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 ## Purpose
 
 - Composes `pp-storage`, `pp-compat`, and `pp-gateway` into `CoreRuntime`, run on a dedicated owner thread.
-- Startup: storage lease, release verification, cutover recovery, Source Sync admission, loopback port, Node readiness (32-second budget), then the gateway.
+- Node-backed startup: release verification, storage lease (refusing any ownership marker), cutover recovery, Source Sync admission, loopback port, Node readiness (32-second budget), then the gateway.
+- Rust-only startup (`start_for_launcher` with `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, in `rust_startup`): the storage writer takes the lease and makes the ownership marker decision first. Release verification, cutover recovery (no ownership index) and Source Sync admission run after it, only on an accepted directory; a failure in any of them shuts the writer down. Then the loopback port and the gateway with the `pp-api` routers. No Node child.
 - Shutdown: rejects new work, drains within `MUTATION_DRAIN`, stops Node and the gateway, releases the lease, and reports a `ShutdownReceipt`. It can commit one operation cutover during that drain.
 - Keeps the desktop state files: saved port, browser preferences, and desktop settings.
 - Owns process launch for performance captures; `pp-perf` owns the records.
-- Behind `desktop_rebuild`: provides `pp-api` router composition (`rebuild_api`) and the Source import and acquisition worker types. `CoreRuntime` startup does not mount those routers or start those workers yet; integration tests and explicit callers do. A launch with both gates on still serves the Node compatibility runtime.
+- Behind `desktop_rebuild`: provides `pp-api` router composition (`rebuild_api`) and the Source import and acquisition worker types. `CoreRuntime::start` never mounts those routers; `start_for_launcher` with both gates on serves them without Node.
 
 ## Not responsible for
 
@@ -26,10 +27,11 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 | Item | What it does |
 | --- | --- |
-| `CoreRuntime::start(DesktopLaunch)` | Entry point. `start_with_compat_config` takes a `SupervisorConfig`. |
+| `CoreRuntime::start(DesktopLaunch)` | Node-backed entry point. `start_with_compat_config` takes a `SupervisorConfig`. `start_for_launcher` is the launchers' entry point: Rust-only with both gates on, otherwise `start`. |
 | `CoreRuntime` methods | `origin`, `handle`, `take_launch_target`, `shutdown_requested`, `shutdown`, `shutdown_with_cutover`, `origin_change`, `runtime_dir`, `desktop_rebuild`. |
 | `DesktopLaunch`, `VerifiedBundle`, `CoreStatus` | Launch input (`data_dir`, `bundle`, `assets`) and child status, re-exported from `pp-compat`. |
-| `CoreHandle` | Clonable adapter handle: preferences and desktop settings, `suspend_monitoring`/`resume_monitoring`, `browser_launch_target`, `subscribe`, `recover_compat`, `track_shutdown_work`. |
+| `RuntimeStatus`, `StatusReceiver`, `RustStatus` | What `CoreHandle::subscribe` returns: the Node child's `CoreStatus`, or the Rust-only runtime's `RustStatus` (no child `generation` or `pid`). |
+| `CoreHandle` | Clonable adapter handle: preferences and desktop settings, `suspend_monitoring`/`resume_monitoring`, `browser_launch_target`, `subscribe`, `compat_status`, `recover_compat`, `track_shutdown_work`. |
 | `ShutdownReceipt`, `ShutdownGate`, `TrackedShutdownWork` | Shutdown evidence (`complete()`) and work that must finish before stop. |
 | `DesktopRebuild` | `from_env` reads the runtime switch once at start. |
 | `BrowserPreference(s)`, `Theme`, `PrinterPollInterval`, `DesktopSetting(s)`, `OriginChange` | Preference and settings types. |
@@ -57,7 +59,7 @@ Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --n
 
 ## Tests
 
-- Unit tests in `src/` (`origin_tests.rs`, `review_observations_tests.rs`, `preferences/tests.rs`, `desktop_settings/tests.rs`, and others).
+- Unit tests in `src/` (`origin_tests.rs`, `review_observations_tests.rs`, `rust_startup/tests.rs` (Rust-only startup order on pp-testkit installations, feature only), `preferences/tests.rs`, `desktop_settings/tests.rs`, and others).
 - Lifecycle: `runtime_m0.rs` (with `runtime_m0/`), `ticket_t_30_single_instance.rs`, `ticket_t_3_drain.rs`, `shutdown_gate_wait_idle.rs`, `source_sync_process_admission.rs`, `ticket_t_53_capture.rs`.
 - Feature-only: `production_geometry.rs`, `profile_interpreter*.rs`, `source_acquisition_*.rs`, `source_import_*.rs`, and `rebuild_*_http.rs` (empty stubs without the feature).
 - Fixtures: `tests/fixtures/drain_child.rs` (compiled with `RUSTC`), `tests/fixtures/profile-parser/node-capture.json`, `tests/support/scratch.rs`. Runtime tests need built web assets and `rust/bundle-manifest.json`, and use `PP_TEST_NODE` (default `/usr/bin/node`).

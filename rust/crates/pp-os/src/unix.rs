@@ -1,17 +1,30 @@
-use crate::{Identity, Kind, PosixAccess, Status};
+use crate::{FileOpen, Identity, Kind, PosixAccess, Status};
+use rustix::fs::{self as rfs, AtFlags, Mode, OFlags, RenameFlags};
 use std::{
-    ffi::CString,
+    ffi::{CString, OsStr, OsString},
     fs::{File, Metadata, OpenOptions},
     io,
     os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+        fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd},
+        unix::{
+            ffi::OsStrExt,
+            fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+        },
     },
     path::Path,
 };
 
 pub(crate) fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
+}
+
+pub(crate) fn optional_uid() -> Option<u32> {
+    Some(effective_uid())
+}
+
+/// Unix names have no device aliases.
+pub(crate) fn refuses_alias(_name: &str) -> bool {
+    false
 }
 
 fn from_metadata(metadata: &Metadata) -> Status {
@@ -109,6 +122,15 @@ pub(crate) fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::remove_file(from)
 }
 
+pub(crate) fn create_new_private_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
 pub(crate) fn sync_file(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
@@ -193,5 +215,151 @@ impl Dir {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+    /// `flock(LOCK_EX | LOCK_NB)` on the directory. A held lock reports
+    /// `EWOULDBLOCK`, the error `fs2` returned before.
+    pub(crate) fn try_lock(&self) -> io::Result<()> {
+        crate::try_lock_or(&self.directory, || {
+            io::Error::from_raw_os_error(libc::EWOULDBLOCK)
+        })
+    }
+
+    pub(crate) fn lock(&self) -> io::Result<()> {
+        fs4::FileExt::lock(&self.directory)
+    }
+
+    pub(crate) fn unlock(&self) -> io::Result<()> {
+        crate::unlock(&self.directory)
+    }
+
+    pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
+        self.directory.as_fd()
+    }
+}
+
+/// Directory operations that use `rustix`, with the flags and modes
+/// pp-source passed to it before it moved onto pp-os.
+impl Dir {
+    fn from_fd(fd: std::os::fd::OwnedFd) -> Self {
+        Self {
+            directory: File::from(fd),
+        }
+    }
+
+    /// Search-only access: `O_PATH` on Linux, `O_SEARCH` on macOS.
+    fn search_flags() -> OFlags {
+        #[cfg(target_os = "linux")]
+        {
+            OFlags::PATH
+        }
+        #[cfg(target_os = "macos")]
+        {
+            OFlags::from_bits_retain(libc::O_SEARCH as _)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            OFlags::RDONLY
+        }
+    }
+
+    pub(crate) fn open_search(path: &Path) -> io::Result<Self> {
+        Ok(Self::from_fd(rfs::open(
+            path,
+            Self::search_flags() | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?))
+    }
+
+    pub(crate) fn open_search_nofollow(&self, name: &str) -> io::Result<Self> {
+        Ok(Self::from_fd(rfs::openat(
+            &self.directory,
+            name,
+            Self::search_flags() | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?))
+    }
+
+    pub(crate) fn open_dir_nofollow(&self, name: &str) -> io::Result<Self> {
+        Ok(Self::from_fd(rfs::openat(
+            &self.directory,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?))
+    }
+
+    pub(crate) fn reopen(&self) -> io::Result<Self> {
+        self.open_dir_nofollow(".")
+    }
+
+    pub(crate) fn posix_access(&self) -> io::Result<Option<PosixAccess>> {
+        let stat = rfs::fstat(&self.directory)?;
+        Ok(Some(PosixAccess {
+            uid: stat.st_uid,
+            mode: stat.st_mode as u32,
+        }))
+    }
+
+    pub(crate) fn entries(&self) -> io::Result<Entries> {
+        Ok(Entries(rfs::Dir::read_from(&self.directory)?))
+    }
+
+    pub(crate) fn open_file(&self, name: &str, how: FileOpen) -> io::Result<File> {
+        let access = match how {
+            FileOpen::Read => OFlags::RDONLY,
+            FileOpen::ReadWrite => OFlags::RDWR,
+            FileOpen::CreateWriteOnly => OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
+        };
+        Ok(File::from(rfs::openat(
+            &self.directory,
+            name,
+            OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK | access,
+            Mode::RUSR | Mode::WUSR,
+        )?))
+    }
+
+    pub(crate) fn create_dir(&self, name: &str) -> io::Result<()> {
+        Ok(rfs::mkdirat(
+            &self.directory,
+            name,
+            Mode::RUSR | Mode::WUSR | Mode::XUSR,
+        )?)
+    }
+
+    pub(crate) fn rename_no_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        Ok(rfs::renameat_with(
+            &self.directory,
+            from,
+            &self.directory,
+            to,
+            RenameFlags::NOREPLACE,
+        )?)
+    }
+
+    pub(crate) fn remove_dir(&self, name: &str) -> io::Result<()> {
+        Ok(rfs::unlinkat(&self.directory, name, AtFlags::REMOVEDIR)?)
+    }
+
+    pub(crate) fn sync(&self) -> io::Result<()> {
+        self.directory.sync_all()
+    }
+}
+
+pub(crate) struct Entries(rfs::Dir);
+
+impl Iterator for Entries {
+    type Item = io::Result<OsString>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let entry = match self.0.next()? {
+                Ok(entry) => entry,
+                Err(error) => return Some(Err(error.into())),
+            };
+            let name = OsStr::from_bytes(entry.file_name().to_bytes());
+            if name != "." && name != ".." {
+                return Some(Ok(name.to_owned()));
+            }
+        }
     }
 }

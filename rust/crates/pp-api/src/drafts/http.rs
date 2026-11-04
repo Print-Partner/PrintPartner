@@ -17,7 +17,7 @@ use pp_storage::{
     required_units::{AdmissionFailure, DraftListResponse, Outcome as WorkspaceOutcome},
     working_drafts::{
         AbandonOutcome, AbandonRequest, DraftIdentity, DraftList, EditRequest, Failure, Outcome,
-        PositiveId, Request, WorkingDraftClient,
+        PositiveId, Request, WorkingDraftClient, edit_rejection,
     },
 };
 use serde_json::{Value, json};
@@ -106,6 +106,7 @@ pub fn admit_draft_routes(config: DraftHttpConfig, routes: Router) -> Router {
         .nest("/api/v2", routes)
         .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(guard_state, guard))
+        .route_layer(middleware::map_response(crate::problem::layer))
 }
 
 async fn guard(
@@ -114,10 +115,7 @@ async fn guard(
     next: Next,
 ) -> Response {
     let Ok(permit) = admission.try_acquire_owned() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Draft service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Draft service temporarily unavailable");
     };
     if request.uri().to_string().len() > TARGET_LIMIT {
         return failure(StatusCode::URI_TOO_LONG, "Request target too long");
@@ -189,7 +187,7 @@ fn admit_request(
 }
 
 fn failure(status: StatusCode, detail: &str) -> Response {
-    (status, Json(json!({"detail":detail}))).into_response()
+    crate::problem::response(status, detail)
 }
 
 #[cfg(test)]
@@ -323,10 +321,7 @@ async fn authorize(
                 ReadError::Storage(error) => (error_class(&error), storage_failure(&error)),
                 ReadError::Busy => (
                     "read_pool_exhausted",
-                    failure(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Draft service temporarily unavailable",
-                    ),
+                    crate::problem::overloaded("Draft service temporarily unavailable"),
                 ),
             };
             if response.status().is_server_error() {
@@ -456,8 +451,14 @@ async fn edit(
     let Some((profile, draft_id)) = edit_target(uri.path()) else {
         return invalid_request();
     };
-    let Ok(request) = serde_json::from_slice::<EditRequest>(&body) else {
-        return invalid_request();
+    let request = match crate::problem::parse_body::<EditRequest>(&body) {
+        Ok(request) => request,
+        // The untagged edit wire hides the failing member; recover it.
+        Err(_) => {
+            let rejection = edit_rejection(&body);
+            let errors = rejection.map(|error| crate::problem::field_errors(&error));
+            return invalid_body(&body, errors.unwrap_or_default());
+        }
     };
     match run_edit(&app, presented, profile, draft_id, request).await {
         Ok(outcome) => present_edit(outcome),
@@ -470,10 +471,7 @@ async fn edit(
                 ),
                 ReadError::Busy => (
                     "read_pool_exhausted",
-                    failure(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Draft service temporarily unavailable",
-                    ),
+                    crate::problem::overloaded("Draft service temporarily unavailable"),
                 ),
             };
             if response.status().is_server_error() {
@@ -567,8 +565,9 @@ async fn abandon(
     let Some((profile, draft_id)) = abandon_target(uri.path()) else {
         return invalid_request();
     };
-    let Ok(request) = serde_json::from_slice::<AbandonRequest>(&body) else {
-        return invalid_request();
+    let request = match crate::problem::parse_body::<AbandonRequest>(&body) {
+        Ok(request) => request,
+        Err(errors) => return invalid_body(&body, errors),
     };
     match run_abandon(&app, presented, profile, draft_id, request).await {
         Ok(outcome) => present_abandon(outcome),
@@ -581,10 +580,7 @@ async fn abandon(
                 ),
                 ReadError::Busy => (
                     "read_pool_exhausted",
-                    failure(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Draft service temporarily unavailable",
-                    ),
+                    crate::problem::overloaded("Draft service temporarily unavailable"),
                 ),
             };
             if response.status().is_server_error() {
@@ -677,18 +673,23 @@ fn present_edit(outcome: WorkspaceOutcome) -> Response {
         WorkspaceOutcome::AcceptedBaselineRequired => conflict("accepted_baseline_required", None),
         WorkspaceOutcome::IdempotencyConflict => conflict("idempotency_conflict", None),
         WorkspaceOutcome::DomainError { code } => {
-            json_response(StatusCode::UNPROCESSABLE_ENTITY, json!({"code": code}))
+            let code = serde_json::to_value(code).ok();
+            let code = code.as_ref().and_then(Value::as_str);
+            let status = StatusCode::UNPROCESSABLE_ENTITY;
+            let problem = crate::problem::problem(status, "", Some(code.unwrap_or("domain_error")));
+            crate::problem::build(problem.without_detail(), serde_json::Map::new())
         }
     }
 }
 
+/// Node sends no `detail` here, so the problem has none either.
 fn conflict(code: &str, workspace: Option<Value>) -> Response {
-    let mut body = serde_json::Map::new();
-    body.insert("code".into(), json!(code));
+    let mut extensions = serde_json::Map::new();
     if let Some(workspace) = workspace {
-        body.insert("workspace".into(), workspace);
+        extensions.insert("workspace".into(), workspace);
     }
-    json_response(StatusCode::CONFLICT, body)
+    let problem = crate::problem::problem(StatusCode::CONFLICT, "", Some(code));
+    crate::problem::build(problem.without_detail(), extensions)
 }
 
 fn listed(profile: PositiveId, drafts: &DraftList) -> Result<DraftListResponse> {
@@ -718,7 +719,7 @@ fn storage_failure(error: &anyhow::Error) -> Response {
     storage_failure_with(error, READ_DETAIL)
 }
 
-fn storage_failure_with(error: &anyhow::Error, detail: &str) -> Response {
+pub(crate) fn storage_failure_with(error: &anyhow::Error, detail: &str) -> Response {
     if let Some(auth) = error.downcast_ref::<AuthFailure>() {
         return match auth {
             AuthFailure::SessionRequired
@@ -809,8 +810,20 @@ fn invalid_request() -> Response {
         "invalid_request",
     )
 }
+/// 400 for a body that did not parse: malformed unless it is a JSON object,
+/// with a field error when one field is to blame.
+fn invalid_body(body: &[u8], errors: Vec<crate::problem::FieldError>) -> Response {
+    use crate::problem::{Problem, ProblemType};
+    let kind = if crate::problem::is_json_object(body) || !errors.is_empty() {
+        ProblemType::Validation
+    } else {
+        ProblemType::MalformedRequest
+    };
+    let problem = Problem::new(kind, 400, "Request is invalid").with_code("invalid_request");
+    crate::problem::build(problem.with_errors(errors), serde_json::Map::new())
+}
 fn coded(status: StatusCode, detail: &str, code: &str) -> Response {
-    json_response(status, json!({"detail": detail, "code": code}))
+    crate::problem::coded(status, detail, code)
 }
 fn json_response(status: StatusCode, value: impl serde::Serialize) -> Response {
     (status, Json(value)).into_response()

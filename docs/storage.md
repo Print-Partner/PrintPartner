@@ -22,6 +22,8 @@ The supervised Node compatibility child inherits the locked descriptor at fd 198
 
 Until standalone Node retires, Rust reserves the `.desktop-lease` name with a regular file while holding the advisory lock. Standalone Node publishes a directory at that same name. Neither publication can replace the other file type, so Rust and standalone Node exclude each other before opening the database. Rust refuses an existing directory without reading its contents, checking PIDs, or recovering stale leases. Standalone Node, including today's Docker image, keeps its existing directory lease behavior.
 
+Standalone Node refuses a data directory that holds the [ownership marker](#ownership-marker-format) `.pp-rust-owned.json`, so a mistaken rollback cannot write into Rust-owned data. Any entry at that name refuses: a valid marker, an unparseable file, an unknown version, a directory or a symlink. Node checks only that the name exists and does not read the file. The check runs in `acquireDataDirectory` after Node takes its `.desktop-lease` directory and before it inspects `.desktop-owner.json`. On refusal Node releases the lease and changes nothing else, then fails with `Data directory is owned by the Rust runtime (.pp-rust-owned.json); standalone Node will not open it`. Every standalone entrypoint goes through that function: the server (`node dist/current/index.js`), MCP stdio, `db:migrate`, ownership migration and `SqliteDatabase.connect()`. The supervised compatibility child runs under the Rust core's lock and skips this check. Without a marker, Node's lease and owner-record handling is unchanged. `web/apps/server/src/rust-ownership-marker.test.ts` covers each entrypoint.
+
 A Rust crash can leave the regular `.desktop-lease` file. The next Rust instance reuses it after acquiring `printpartner.lock` and removes it on orderly shutdown before releasing the advisory lock. Cleanup compares the current entry with the acquired reservation by device and inode through the held directory descriptor. A replacement entry is left untouched, and cleanup retains the advisory lock until the acquired reservation is restored or the entry is removed. Standalone Node conservatively refuses that file until a Rust instance completes shutdown. A lease directory left by standalone Node also blocks Rust. Stop every instance before manually clearing a legacy Node lease.
 
 Rust does not create or inspect owner markers, marker directories, or `.desktop.lock`. Legacy artifacts have no authority over Rust admission beyond the `.desktop-lease` compatibility name. Pre-GRE-636 Rust executables do not cooperate with this locking model.
@@ -60,7 +62,35 @@ The durable ownership marker is `<data-dir>/.pp-rust-owned.json`. The fixtures w
 {"version":1,"owner":"rust","created_at":"2026-11-03T00:00:00Z"}
 ```
 
-`version` is the integer 1. `owner` is the string `rust`. `created_at` is UTC in the form `YYYY-MM-DDTHH:MM:SSZ`. A reader refuses any other key, version, owner, or timestamp shape. `Marker::parse` in the kit is the test oracle for these rules. The product writer and reader do not exist yet; when they land, they use this format and their tests compare bytes with the kit.
+`version` is the integer 1. `owner` is the string `rust`. `created_at` is UTC in the form `YYYY-MM-DDTHH:MM:SSZ`. A reader refuses any other key, version, owner, or timestamp shape. `Marker::parse` in the kit is the test oracle for these rules. The product reader and writer are `pp_storage::ownership_marker`; its tests compare bytes with the kit.
+
+### Ownership marker decision
+
+The marker is separate from the `.desktop-owner.json` process lease record. `pp_storage::ownership_marker` reads it without following symlinks and refuses a marker that is not a regular file, is over 1,024 bytes, is empty or truncated, is not JSON, has an unknown or missing key, has a version other than 1, has an owner other than `rust`, or has a `created_at` that is not a real UTC time.
+
+In a `desktop_rebuild` build, `WriterOwner::open`, `open_at` and `open_with_job_feature_admission` take the directory lock first. While the lock is held, and before the schema preflight, storage directories or any schema write, they apply this decision:
+
+| `PP_DESKTOP_REBUILD` | Marker | Directory | Result |
+| --- | --- | --- | --- |
+| `1` or `true` | valid | any | Open. The marker is not rewritten. |
+| `1` or `true` | absent | empty | Write the marker, then open. |
+| `1` or `true` | absent | not empty | Refuse. Nothing changes. |
+| `1` or `true` | present but invalid | any | Refuse. Nothing changes. |
+| unset or anything else | any | any | Refuse before any write. |
+
+In Rust-only startup only `prepare_data_dir` runs before this decision. It creates the data directory if it is missing (`pp_storage::lease::prepare_directory`) and finishes a lease release that this process failed earlier (`StorageLease::retry_failed_release_if_present`). It creates no schema, marker or other file in an existing directory. Release verification, `cutover::recover` and source-sync admission run after it, and only on an accepted directory; see [Rust-only product entry point](desktop-rebuild.md#rust-only-product-entry-point). `pp-core`'s `rust_startup` tests prove the order on pp-testkit installations, including a copied Node schema 34 database.
+
+Taking the lock can create `printpartner.lock` and the `.desktop-lease` reservation. On any refusal, and when the marker write fails, the lock removes the lease files this open created, while it still holds the lock and only if each name still refers to the file it opened. Lease files that already existed stay with the same bytes and modification time, so the directory listing after a refusal matches the one before.
+
+The writer creates `.pp-rust-owned.json.tmp-<16 hex>` in the data directory with mode `0600` and `O_EXCL`, writes and fsyncs it, renames it onto `.pp-rust-owned.json`, then fsyncs the directory. Reads, creation, removal, the rename (`pp_os::publish_rename`) and the directory sync (`pp_os::sync_directory`) go through `pp-os`, on the directory handle the lock holds. Listing entries for the emptiness check and the leftover cleanup uses `std::fs::read_dir` on the canonical path, because `pp_os::Dir` has no listing call yet. Adding one needs a Unix and a Windows adapter in `pp-os`, so it is left to a `pp-os` change. If the write fails, it removes the temporary file and opens nothing. After a successful write it removes older temporary files.
+
+"Empty" means only these top-level entries: `printpartner.lock`, `.desktop-lease` (a Rust file, or a Node directory holding only `owner.json` and `previous-marker.json`), `.desktop-lease-candidate-*`, `.desktop-lease-release-*`, `.desktop-lease-retired-*`, `.desktop-owner.json`, `.desktop-owner-release-*.json`, `lost+found`, and the marker writer's own `.pp-rust-owned.json.tmp-*` crash leftover. A `.desktop-owner.json` whose pid is running and whose `process_identity` still matches (`<boot id>:<start time>` from `/proc`, as Node computes it) makes the directory non-empty. So does an unreadable record, or a running pid whose identity cannot be looked up. On Unix the probe is `kill(pid, 0)`, where only `ESRCH` means not running. On Windows it is `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` plus `GetExitCodeProcess` returning `STILL_ACTIVE`; Node's Windows identity cannot be looked up, so a running pid counts as live there. Both probes live in `ownership_marker/{unix,windows}.rs`. The test `lease_names_in_rust_and_node_lease_code_and_the_marker_name_match_the_allowlist` reads `pp-storage/src/lease.rs`, `web/apps/server/src/storage-lease.ts` and `web/apps/server/src/desktop-context.ts` and fails if their lease names and the allowlist differ.
+
+A standalone Node lease is a `.desktop-lease` directory. The Rust lock refuses it before creating `printpartner.lock`, so Rust writes nothing while Node holds the lease. A Node lease published after that check still fails the existing `.desktop-lease` reservation.
+
+The Node-backed runtime (`pp-core` supervising the Node child) takes its lease with `ownership_marker::lease_unmarked`, which runs `refuse_marked` while the lock is held and, on refusal, removes the lease files it created. Any marker entry, valid or not, refuses the start before cutover recovery, Source Sync admission or the Node child. Unmarked directories start as before. Node itself reads schema 34 and refuses newer databases (`web/apps/server/src/db/client.ts`).
+
+The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision off for `WriterOwner::open` in tests that open unmarked fixture directories. Only `[dev-dependencies]` entries enable it (pp-storage on itself, pp-api and pp-core), and `rust/scripts/check-boundaries.py` refuses it in any feature table, default, or normal dependency, so release builds never contain it. pp-storage also fails to compile with a `compile_error!` if the feature is enabled without `debug_assertions`, so an optimized build with `--features` or `--all-features` cannot ship it. With it on, `WriterOwner::open_with_gate` takes an explicit gate; the marker tests in `rust/crates/pp-storage/tests/ownership_marker.rs` use it on pp-testkit installations and copied Node schema 34 databases. A manual run of a pp-storage fixture binary in a `desktop_rebuild` build adds `--features desktop_rebuild,test-unmarked-writer`.
 
 ## Ownership today
 
@@ -70,7 +100,7 @@ The durable ownership marker is `<data-dir>/.pp-rust-owned.json`. The fixtures w
 
 ## Synthetic installations
 
-`web/scripts/synthetic-dataset/generate.mts` writes a synthetic Node schema-34 data directory shaped like a long-lived installation, for invariant tests to run against. Owner UX checks and the cutover rehearsal can fall back to it when no production backup copy is available. Its Source revisions are plain STL folders without a `.printpartner-source-snapshot.json`, so saving a Source manifest on it fails. Its tests cover the stored shape and STL dimensions, not Plate initialization or 3MF export. It is not the representative copy that step 2 of [Whole-runtime cutover](architecture.md#whole-runtime-cutover-and-rollback) requires, and evidence built on it must say so.
+`web/scripts/synthetic-dataset/generate.mts` writes a synthetic Node schema-34 data directory shaped like a long-lived installation, for invariant tests to run against. Owner UX checks and the cutover rehearsal can fall back to it when no production backup copy is available. Its tests cover the stored shape, STL dimensions, saving a Source manifest, Plate initialization and unit transfer, not 3MF export. It is not the representative copy that step 2 of [Whole-runtime cutover](architecture.md#whole-runtime-cutover-and-rollback) requires, and evidence built on it must say so.
 
 From `web/`, with Node 24.21 and `better-sqlite3` built for it:
 
@@ -80,9 +110,19 @@ npm run fixture:synthetic -- --seed 1138 /tmp/pp-synthetic-1138
 
 The output directory must be new or empty. The generator refuses anything else, so it never writes into an existing data directory.
 
+### Disposable copies
+
+Node stores each active Source's snapshot as an absolute path in `projects.local_path`, so a plain `cp -r` of the output still reads Source files from the original directory. Copy with the helper instead:
+
+```sh
+npm run fixture:synthetic:copy -- /tmp/pp-synthetic-1138 /tmp/pp-synthetic-1138-copy
+```
+
+It refuses a source without `SYNTHETIC-DATASET.json` and a non-empty target. After copying, it opens the copy with Node and calls `activateSourceRevision` again for each Source's current revision, which resolves the stored snapshot locator against the copy's `repos` directory. The original directory can then be removed. Node connect re-seeds the starter profiles on that open, so the copy's digest differs from the manifest in `sqlite_sequence`; the measured shape does not change.
+
 ### How it is built
 
-Node's own `SqliteDatabase.connect` creates the schema-34 database. The repository then builds every row: `createSource`, `recordSourceRevision`, `activateSourceRevision`, `createProfile`, `addAddonLayer`, the accept and edit test helpers in `apps/server/src/test/accept-plan.ts`, `publishAcceptedPlates`, `deleteProfile` and `saveUnattributedPrint`. No SQL is written by hand. The clock starts at `2026-10-02T00:00:00.000Z` and advances one minute per operation. Required-unit tokens come from a seeded token factory. Plate IDs use the same `plate_<sha256 prefix>` form as the Node Plate workspace.
+Node's own `SqliteDatabase.connect` creates the schema-34 database. `saveFleet` writes the two synthetic printers to the `printer.fleet` setting. Each Source revision is written by `LocalSourceSnapshotStore.materialize`, the snapshot store Node sync uses, so it holds a `.printpartner-source-snapshot.json` and the revision row stores the digest and locator `materialize` returns. The repository then builds every row: `createSource`, `recordSourceRevision`, `activateSourceRevision`, `createProfile`, `addAddonLayer`, the accept and edit test helpers in `apps/server/src/test/accept-plan.ts`, `publishAcceptedPlates`, `deleteProfile` and `saveUnattributedPrint`. No SQL is written by hand. The clock starts at `2026-10-02T00:00:00.000Z` and advances one minute per operation. Required-unit tokens come from a seeded token factory. Plate IDs use the same `plate_<sha256 prefix>` form as the Node Plate workspace.
 
 ### Shapes
 
@@ -96,6 +136,7 @@ It produces only these shapes:
 | Plate size | Two anchor Builds: `Synthetic Build Anchor 100u15p` (100 units on 15 Plates) and `Synthetic Build Anchor 47u6p` (47 units on 6 Plates). Other Builds have up to 8 Plates or none. |
 | Accepted history | Builds with Plates and 3 or more Plan revisions keep a Plate revision on an earlier Plan revision. Each anchor has two Plate revisions on its current Plan. |
 | Unmatched prints | 18 open entries in the `printer.unattributed_prints` setting |
+| Printers | `synthetic-printer-1` and `synthetic-printer-2` in `printer.fleet`: 250 × 220 × 220 mm beds with a 5 mm margin, matching the stored Plates. Neither has an `integration_id` or `device_id`, so nothing can send to them. |
 
 Names are `Synthetic Source NN`, `Synthetic Build NN` and `synthetic-sNN-part-NN.stl`. Every part is a closed 20 × 20 × 10 mm ASCII STL box that matches the stored unit size, so Plate initialization and 3MF export accept it. URLs and printer hosts use `.invalid`. Nothing is copied from a real data directory.
 
@@ -105,7 +146,7 @@ Every run writes `SYNTHETIC-DATASET.json` at the root of the output with:
 
 - `label`: `synthetic: not the architecture's step-2 rehearsal`
 - `synthetic: true`, the `seed`, the `clock` and the Node version
-- `generator`: name, `version` (currently 1), script path and script SHA-256
+- `generator`: name, `version` (currently 2), script path and script SHA-256
 - `digest`: the installation digest
 - `shape`: the measured counts above, the deleted Build IDs and the Build ID density
 
@@ -122,7 +163,11 @@ The test generates seed 7 twice and seed 8 once, then checks:
 
 - the digests match for seed 7 and differ for seed 8;
 - the label and the shape counts;
-- Node opens a copy and reads accepted Plans, the anchor's Plates and the 18 prints.
+- Node opens a copy and reads accepted Plans, the anchor's Plates and the 18 prints;
+- each Source revision's digest matches its `.printpartner-source-snapshot.json`;
+- `publishSourceManifestRevision` saves a Source manifest on a copy;
+- a copy made by the helper serves `/sources/:id/stl-tree` for every Source after the original directory is removed;
+- the Plate routes initialize the `Synthetic Build Anchor 47u6p` Plates on `synthetic-printer-1` and transfer a unit to `synthetic-printer-2`.
 
 Node connect re-seeds the starter slicer profiles with `INSERT OR IGNORE`, which advances their `sqlite_sequence` rows on every open, so that check compares the measured shape rather than the digest.
 

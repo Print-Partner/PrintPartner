@@ -73,6 +73,8 @@ Each source is capped at 10,000 rows. A Build past the cap answers `500`
 
 ## Responses
 
+Errors are RFC 9457 problems (`application/problem+json`, see `pp_api::problem`) whose `detail` is the text below.
+
 | Case | Response |
 | --- | --- |
 | Build found | `200` with the page |

@@ -24,6 +24,8 @@ pub mod perf_launch;
 pub mod perf_seed;
 mod preferences;
 mod rebuild;
+#[cfg(feature = "desktop_rebuild")]
+mod rust_startup;
 mod state_file;
 
 pub use desktop_settings::{DesktopSetting, DesktopSettings};
@@ -73,9 +75,53 @@ pub use pp_compat::{Bundle as VerifiedBundle, Status as CoreStatus};
 pub use pp_compat::{CoreLog, redact};
 pub use pp_compat::{log_folder, recent_diagnostics, recent_logs};
 pub use pp_gateway::LaunchTarget as DesktopLaunchTarget;
+pub use pp_gateway::RustStatus;
+
+/// What [`CoreHandle::subscribe`] reports: the supervised Node child's status,
+/// or, for a Rust-only runtime, the Rust backend's own status.
+#[derive(Clone, Debug)]
+pub enum RuntimeStatus {
+    Node(CoreStatus),
+    Rust(RustStatus),
+}
+
+/// A live status channel. The Node variant is the compatibility supervisor's
+/// own channel, unchanged. The Rust variant stays open while any
+/// [`CoreHandle`] exists, so it outlives the runtime's shutdown.
+#[derive(Clone)]
+pub enum StatusReceiver {
+    Node(tokio::sync::watch::Receiver<CoreStatus>),
+    Rust(tokio::sync::watch::Receiver<RustStatus>),
+}
+
+impl StatusReceiver {
+    pub fn current(&self) -> RuntimeStatus {
+        match self {
+            Self::Node(receiver) => RuntimeStatus::Node(receiver.borrow().clone()),
+            Self::Rust(receiver) => RuntimeStatus::Rust(*receiver.borrow()),
+        }
+    }
+
+    pub fn borrow_and_update(&mut self) -> RuntimeStatus {
+        match self {
+            Self::Node(receiver) => RuntimeStatus::Node(receiver.borrow_and_update().clone()),
+            Self::Rust(receiver) => RuntimeStatus::Rust(*receiver.borrow_and_update()),
+        }
+    }
+
+    pub async fn changed(&mut self) -> Result<(), tokio::sync::watch::error::RecvError> {
+        match self {
+            Self::Node(receiver) => receiver.changed().await,
+            Self::Rust(receiver) => receiver.changed().await,
+        }
+    }
+}
 
 pub struct CoreHandle {
     compat: CompatHandle,
+    /// Set only for a Rust-only runtime. Holding the sender here keeps the
+    /// channel open for as long as the desktop holds a handle.
+    rust_status: Option<Arc<tokio::sync::watch::Sender<RustStatus>>>,
     monitoring: pp_gateway::MonitoringControl,
     bootstrap: pp_gateway::BootstrapMinter,
     gate: ShutdownGate,
@@ -85,6 +131,7 @@ impl Clone for CoreHandle {
     fn clone(&self) -> Self {
         Self {
             compat: self.compat.clone(),
+            rust_status: self.rust_status.clone(),
             monitoring: self.monitoring.clone(),
             bootstrap: self.bootstrap.clone(),
             gate: self.gate.clone(),
@@ -128,8 +175,20 @@ impl CoreHandle {
         self.bootstrap.mint()
     }
 
-    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<pp_compat::Status> {
-        self.compat.status.clone()
+    /// The runtime's live status: the Node child's in Node mode, the Rust
+    /// backend's in Rust-only mode.
+    pub fn subscribe(&self) -> StatusReceiver {
+        match &self.rust_status {
+            Some(sender) => StatusReceiver::Rust(sender.subscribe()),
+            None => StatusReceiver::Node(self.compat.status.clone()),
+        }
+    }
+
+    /// The Node child's status channel. `None` when no Node child is used.
+    pub fn compat_status(&self) -> Option<tokio::sync::watch::Receiver<CoreStatus>> {
+        self.rust_status
+            .is_none()
+            .then(|| self.compat.status.clone())
     }
     pub async fn recover_compat(&self) -> Result<()> {
         self.compat.recover().await
@@ -175,16 +234,27 @@ enum Backend {
     },
     /// Rust only: no Node child. The writer holds the lease.
     #[cfg(feature = "desktop_rebuild")]
-    Rust(Arc<std::sync::Mutex<pp_storage::WriterOwner>>),
+    Rust {
+        writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
+        status: Arc<tokio::sync::watch::Sender<RustStatus>>,
+    },
 }
 
 impl Resources {
+    fn rust_status(&self) -> Option<Arc<tokio::sync::watch::Sender<RustStatus>>> {
+        match &self.backend {
+            Backend::Node { .. } => None,
+            #[cfg(feature = "desktop_rebuild")]
+            Backend::Rust { status, .. } => Some(Arc::clone(status)),
+        }
+    }
+
     /// `None` only once the Rust writer has shut down.
     fn with_lease<R>(&self, use_lease: impl FnOnce(&StorageLease) -> R) -> Option<R> {
         match &self.backend {
             Backend::Node { owner, .. } => Some(use_lease(owner)),
             #[cfg(feature = "desktop_rebuild")]
-            Backend::Rust(writer) => writer
+            Backend::Rust { writer, .. } => writer
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .lease()
@@ -277,7 +347,8 @@ async fn start_resources(
     desktop_rebuild: DesktopRebuild,
 ) -> Result<Resources> {
     let (assets, bundle, data_dir) = admit_release(input).await?;
-    let mut owner = StorageLease::acquire(&data_dir)?;
+    // A Rust-marked directory never reaches the Node child.
+    let mut owner = pp_storage::ownership_marker::lease_unmarked(&data_dir)?;
     let account_pin =
         pp_compat::DesktopAccountPin::capture(owner.data_dir(), desktop_rebuild.enabled())?;
     let (owners, boot) = cutover::recover(owner.data_dir(), ownership)
@@ -369,7 +440,8 @@ async fn start_resources(
 
 /// Verify the release and prepare the data directory, retrying a failed
 /// release first. Returns the canonical assets, the measured bundle and the
-/// prepared directory.
+/// prepared directory. The Node-backed start only; Rust-only startup verifies
+/// after the marker decision (`rust_startup`).
 async fn admit_release(input: DesktopLaunch) -> Result<(PathBuf, MeasuredBundle, PathBuf)> {
     let assets = input
         .assets
@@ -382,7 +454,15 @@ async fn admit_release(input: DesktopLaunch) -> Result<(PathBuf, MeasuredBundle,
     })
     .await
     .context("Release verification task failed")??;
-    let data_dir = pp_storage::lease::prepare_directory(&input.data_dir)?;
+    let data_dir = prepare_data_dir(&input.data_dir)?;
+    Ok((assets, bundle, data_dir))
+}
+
+/// Create a missing data directory or admit an existing one, then retry a
+/// release this process failed earlier. An existing directory this process
+/// never held stays unchanged.
+fn prepare_data_dir(data_dir: &Path) -> Result<PathBuf> {
+    let data_dir = pp_storage::lease::prepare_directory(data_dir)?;
     if let Some(released) = StorageLease::retry_failed_release_if_present(&data_dir)? {
         anyhow::ensure!(
             released.marker_removed
@@ -392,28 +472,42 @@ async fn admit_release(input: DesktopLaunch) -> Result<(PathBuf, MeasuredBundle,
             "Storage cleanup still incomplete; ownership retained"
         );
     }
-    Ok((assets, bundle, data_dir))
+    Ok(data_dir)
 }
 
 /// Start without a Node child: the Rust writer owns the data directory and the
-/// gateway answers admitted requests from the `pp-api` routers. Use disposable
-/// directories only; refusing real ones is separate work.
+/// gateway answers admitted requests from the `pp-api` routers. The marker
+/// decision runs first; release verification, cutover recovery and source-sync
+/// admission run only on an accepted directory (`rust_startup::admit`).
 #[cfg(feature = "desktop_rebuild")]
 async fn start_rust_resources(
     input: DesktopLaunch,
     desktop_rebuild: DesktopRebuild,
 ) -> Result<Resources> {
-    let (assets, bundle, data_dir) = admit_release(input).await?;
+    let assets = input
+        .assets
+        .canonicalize()
+        .context("React assets unavailable")?;
+    let data_dir = prepare_data_dir(&input.data_dir)?;
+    let verified_assets = assets.clone();
+    let bundle = input.bundle;
+    let rust_startup::Admitted {
+        writer,
+        verified: bundle,
+        owners,
+    } = rust_startup::admit(
+        data_dir,
+        |data_dir| {
+            pp_storage::WriterOwner::open_with_job_feature_admission(
+                data_dir,
+                pp_storage::Limits::default(),
+            )
+            .map(|(writer, _)| writer)
+        },
+        move || pp_compat::verify_bundle(bundle, &verified_assets),
+    )
+    .await?;
     let community_manifests = bundle.community_manifests_dir();
-    let writer = tokio::task::spawn_blocking(move || {
-        pp_storage::WriterOwner::open_with_job_feature_admission(
-            &data_dir,
-            pp_storage::Limits::default(),
-        )
-    })
-    .await
-    .context("Storage open task failed")??
-    .0;
     let (listener, origin_change) =
         bind_origin(writer.lease().context("Storage lease unavailable")?).await?;
     let origin = format!("http://{}", listener.local_addr()?);
@@ -425,16 +519,19 @@ async fn start_rust_resources(
         community_manifests.as_deref(),
     )?
     .context("Rust product routes need the rebuild setting")?;
-    let owners = OperationOwners::node_only();
-    let compat = CompatHandle::unpublished();
-    let gateway =
-        Gateway::start_with_product(listener, assets, compat.clone(), &owners, Some(product))?;
+    let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
+    let gateway = Gateway::start_rust_only(listener, assets, product, receiver)?;
+    // The writer opened above and the gateway is serving.
+    status.send_replace(RustStatus::Ready);
     Ok(Resources {
         owners,
         origin_change,
         gateway,
-        compat,
-        backend: Backend::Rust(writer),
+        compat: CompatHandle::unpublished(),
+        backend: Backend::Rust {
+            writer,
+            status: Arc::new(status),
+        },
         gate: ShutdownGate::new(),
     })
 }
@@ -519,6 +616,7 @@ impl CoreRuntime {
                             resources.gateway.origin().to_owned(),
                             CoreHandle {
                                 compat: resources.compat.clone(),
+                                rust_status: resources.rust_status(),
                                 monitoring: resources.gateway.monitoring_control(),
                                 bootstrap: resources.gateway.bootstrap_minter(),
                                 gate: resources.gate.clone(),
@@ -710,7 +808,12 @@ async fn stop_resources(
             stop_node(gateway, gate, supervisor, owner, plan).await
         }
         #[cfg(feature = "desktop_rebuild")]
-        Backend::Rust(writer) => (stop_rust(gateway, gate, writer).await, None),
+        Backend::Rust { writer, status } => {
+            status.send_replace(RustStatus::Stopping);
+            let receipt = stop_rust(gateway, gate, writer).await;
+            status.send_replace(RustStatus::Stopped);
+            (receipt, None)
+        }
     }
 }
 

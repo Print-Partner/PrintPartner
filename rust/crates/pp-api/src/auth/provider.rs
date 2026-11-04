@@ -326,7 +326,7 @@ fn random() -> Result<String, Failure> {
 fn digest(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
 }
-fn network(error: reqwest::Error) -> Failure {
+pub(crate) fn network(error: reqwest::Error) -> Failure {
     if error.is_timeout() {
         Failure(StatusCode::GATEWAY_TIMEOUT, "OAuth provider timed out")
     } else {

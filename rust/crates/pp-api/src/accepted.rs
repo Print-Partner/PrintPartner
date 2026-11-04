@@ -78,9 +78,12 @@ impl Gate {
         self.config.wait
     }
 
-    /// Runs `guard` in front of every route in `routes`.
+    /// Runs `guard` in front of every route in `routes`, and serves every
+    /// error, the guard's included, as an RFC 9457 problem.
     pub(crate) fn guard<S: Clone + Send + Sync + 'static>(&self, routes: Router<S>) -> Router<S> {
-        routes.layer(middleware::from_fn_with_state(self.clone(), guard))
+        routes
+            .layer(middleware::from_fn_with_state(self.clone(), guard))
+            .route_layer(middleware::map_response(crate::problem::layer))
     }
 }
 
@@ -117,10 +120,7 @@ async fn guard(
     next: Next,
 ) -> Response {
     let Ok(_permit) = gate.admission.try_acquire() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Service temporarily unavailable");
     };
     if request.uri().to_string().len() > 16_384 {
         return failure(StatusCode::URI_TOO_LONG, "Request target too long");
@@ -283,13 +283,10 @@ fn present(view: Value, head: bool, missing: &str) -> Response {
             StatusCode::INTERNAL_SERVER_ERROR,
             "Accepted Plan data is inconsistent",
         ),
-        Some("filament_lookup_unavailable") => json_response(
+        Some("filament_lookup_unavailable") => crate::problem::coded(
             StatusCode::SERVICE_UNAVAILABLE,
-            &json!({
-                "detail": "Custom and Spoolman filament details are not available on this server yet",
-                "code": "filament_lookup_unavailable",
-            }),
-            false,
+            "Custom and Spoolman filament details are not available on this server yet",
+            "filament_lookup_unavailable",
         ),
         _ => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
     }
@@ -298,6 +295,8 @@ fn present(view: Value, head: bool, missing: &str) -> Response {
 /// `ReadClient` refuses credentials with `AuthFailure` (sessions) or the plain
 /// "Authentication required" message (API keys); admission refusals are plain
 /// messages too. Anything else is Node's opaque 500.
+const BUSY: &str = "Service temporarily unavailable";
+
 pub(crate) fn read_error(error: &anyhow::Error) -> Response {
     match error.downcast_ref::<AuthFailure>() {
         Some(
@@ -311,18 +310,19 @@ pub(crate) fn read_error(error: &anyhow::Error) -> Response {
                 "Explicit account owner mapping is required",
             );
         }
-        Some(AuthFailure::QueueFull | AuthFailure::Stopped | AuthFailure::Storage) => {
-            return failure(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Service temporarily unavailable",
-            );
+        Some(AuthFailure::QueueFull) => return crate::problem::overloaded(BUSY),
+        Some(AuthFailure::CommitUnknown) => {
+            return crate::problem::coded(StatusCode::SERVICE_UNAVAILABLE, BUSY, "outcome_unknown");
+        }
+        Some(AuthFailure::Stopped | AuthFailure::Storage) => {
+            return failure(StatusCode::SERVICE_UNAVAILABLE, BUSY);
         }
         _ => {}
     }
     match error.to_string().as_str() {
         "Authentication required" => failure(StatusCode::UNAUTHORIZED, "Authentication required"),
-        "Writer queue full"
-        | "Storage stopped"
+        "Writer queue full" => crate::problem::overloaded(BUSY),
+        "Storage stopped"
         | "Storage stopped without read result"
         | "Cancelled before admission" => failure(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -343,7 +343,7 @@ pub(crate) fn json_response(status: StatusCode, value: &Value, head: bool) -> Re
 }
 
 pub(crate) fn failure(status: StatusCode, detail: &str) -> Response {
-    json_response(status, &json!({"detail": detail}), false)
+    crate::problem::response(status, detail)
 }
 
 #[cfg(test)]
@@ -355,7 +355,8 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
             .unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        let body = serde_json::from_slice(&bytes).unwrap();
+        (status, crate::problem::without_envelope(body))
     }
 
     #[tokio::test]

@@ -115,7 +115,7 @@ async fn observe(response: Response) -> PublicResponse {
             .iter()
             .map(|header| header.to_str().unwrap().to_owned())
             .collect(),
-        body: response.json().await.unwrap(),
+        body: pp_api::problem::without_envelope(response.json().await.unwrap()),
     }
 }
 

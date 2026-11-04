@@ -210,13 +210,16 @@ impl OwnedTree {
 
     fn remove(self) -> Result<()> {
         self.validate()?;
-        for owned in self.files.into_iter().rev() {
-            owned.parent.remove_owned_file(&owned.name, &owned.file)?;
+        for OwnedFile { parent, file, name } in self.files.into_iter().rev() {
+            parent.remove_owned_file(&name, file)?;
         }
         for owned in self.directories.into_iter().rev() {
-            owned
-                .parent
-                .remove_owned_empty_directory(&owned.name, &owned.directory)?;
+            let OwnedDirectory {
+                parent,
+                directory,
+                name,
+            } = owned;
+            parent.remove_owned_empty_directory(&name, directory)?;
         }
         Ok(())
     }
@@ -507,7 +510,7 @@ impl RetainedCaptureVault {
                 Err(source) => {
                     let mut phase = Some(RetainedCapturePhase::Malformed);
                     let _ =
-                        cleanup_generated_slot(&self.parent, &slot, &id, &self.trace, &mut phase);
+                        cleanup_generated_slot(&self.parent, slot, &id, &self.trace, &mut phase);
                     let retained = phase.map(|phase| RetainedCaptureReceipt { id, phase });
                     Err(CandidateAllocationError { retained, source })
                 }
@@ -574,10 +577,10 @@ impl RetainedCaptureVault {
                     }
                     self.trace.before("tree_remove")?;
                     self.trace.before_deleting_remove(&slot)?;
-                    slot.remove_owned_empty_directory(DELETING, &deleting)?;
+                    slot.remove_owned_empty_directory(DELETING, deleting)?;
                     self.trace.before_slot_remove(&slot)?;
                     self.parent
-                        .remove_owned_empty_directory(id.as_str(), &slot)?;
+                        .remove_owned_empty_directory(id.as_str(), slot)?;
                     self.trace.before("parent_sync")?;
                     self.parent.sync()?;
                     removed += 1;
@@ -600,7 +603,7 @@ fn require_only_entry(directory: &Directory, expected: &str) -> Result<()> {
 
 fn cleanup_generated_slot(
     parent: &Directory,
-    slot: &Directory,
+    slot: Directory,
     id: &RetainedCaptureId,
     trace: &Trace,
     phase: &mut Option<RetainedCapturePhase>,
@@ -614,7 +617,7 @@ fn cleanup_generated_slot(
                 [] => {}
                 [name] if name == INPUT => {
                     let input = candidate.child(INPUT, false)?;
-                    candidate.remove_owned_empty_directory(INPUT, &input)?;
+                    candidate.remove_owned_empty_directory(INPUT, input)?;
                 }
                 _ => return Err(Error::CorruptSnapshot),
             }
@@ -623,14 +626,14 @@ fn cleanup_generated_slot(
             *phase = Some(RetainedCapturePhase::Deleting);
             trace.before("slot_sync")?;
             slot.sync()?;
-            require_only_entry(slot, DELETING)?;
+            require_only_entry(&slot, DELETING)?;
             trace.before("tree_remove")?;
-            slot.remove_owned_empty_directory(DELETING, &candidate)?;
+            slot.remove_owned_empty_directory(DELETING, candidate)?;
             *phase = Some(RetainedCapturePhase::Malformed);
         }
         _ => return Err(Error::CorruptSnapshot),
     }
-    trace.before_slot_remove(slot)?;
+    trace.before_slot_remove(&slot)?;
     parent.remove_owned_empty_directory(id.as_str(), slot)?;
     *phase = None;
     trace.before("parent_sync")?;
@@ -776,11 +779,11 @@ impl CaptureCandidate {
             slot.sync()?;
             require_only_entry(&slot, DELETING)?;
             owned_tree.remove()?;
-            candidate.remove_owned_empty_directory(INPUT, &input)?;
+            candidate.remove_owned_empty_directory(INPUT, input)?;
             trace.before("tree_remove")?;
-            slot.remove_owned_empty_directory(DELETING, &candidate)?;
+            slot.remove_owned_empty_directory(DELETING, candidate)?;
             trace.before_slot_remove(&slot)?;
-            parent.remove_owned_empty_directory(id.as_str(), &slot)?;
+            parent.remove_owned_empty_directory(id.as_str(), slot)?;
             trace.before("parent_sync")?;
             parent.sync()
         })();
@@ -953,13 +956,13 @@ impl FrozenCapture {
         require_only_entry(&self.slot, DELETING)?;
         owned.remove()?;
         self.frozen
-            .remove_owned_empty_directory(INPUT, &self.input)?;
+            .remove_owned_empty_directory(INPUT, self.input)?;
         self.trace.before("tree_remove")?;
         self.slot
-            .remove_owned_empty_directory(DELETING, &self.frozen)?;
+            .remove_owned_empty_directory(DELETING, self.frozen)?;
         self.trace.before_slot_remove(&self.slot)?;
         self.parent
-            .remove_owned_empty_directory(self.id.as_str(), &self.slot)?;
+            .remove_owned_empty_directory(self.id.as_str(), self.slot)?;
         self.trace.before("parent_sync")?;
         self.parent.sync()
     }
@@ -1204,12 +1207,11 @@ mod tests {
     }
 
     fn assert_replacement_slot_survives(path: &Path) {
-        use std::os::unix::fs::MetadataExt;
-        let replacement = fs::metadata(path).expect("replacement slot was deleted");
-        let original = fs::metadata(path.with_extension("original")).unwrap();
+        let replacement = pp_os::status_follow(path).expect("replacement slot was deleted");
+        let original = pp_os::status_follow(&path.with_extension("original")).unwrap();
         assert!(replacement.is_dir());
         assert!(original.is_dir());
-        assert_ne!(replacement.ino(), original.ino());
+        assert_ne!(replacement.identity(), original.identity());
         assert_eq!(fs::read_dir(path).unwrap().count(), 0);
         assert_eq!(
             fs::read_dir(path.with_extension("original"))

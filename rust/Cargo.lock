@@ -3315,11 +3315,13 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2",
  "tempfile",
  "time",
  "tokio",
  "tokio-rustls",
+ "tower",
 ]
 
 [[package]]
@@ -3391,6 +3393,7 @@ dependencies = [
  "pp-perf",
  "pp-source",
  "pp-storage",
+ "pp-testkit",
  "rand 0.9.5",
  "regress 0.11.1",
  "reqwest",
@@ -3495,6 +3498,7 @@ version = "0.1.0"
 dependencies = [
  "fs4",
  "libc",
+ "rustix",
  "tempfile",
  "windows-sys 0.61.2",
 ]
@@ -3546,14 +3550,13 @@ name = "pp-source"
 version = "0.1.0"
 dependencies = [
  "caseless",
- "fs2",
  "getrandom 0.3.4",
  "hex",
  "insta",
  "libc",
+ "pp-os",
  "proptest",
  "regex",
- "rustix",
  "ryu-js",
  "serde",
  "serde_json",
@@ -3581,6 +3584,7 @@ dependencies = [
  "pp-contracts",
  "pp-domain",
  "pp-os",
+ "pp-storage",
  "pp-testkit",
  "rand 0.9.5",
  "regress 0.11.1",
@@ -3591,11 +3595,13 @@ dependencies = [
  "scrypt",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2",
  "subtle",
  "tar",
  "tempfile",
  "time",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

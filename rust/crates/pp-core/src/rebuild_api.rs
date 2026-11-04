@@ -445,6 +445,51 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    /// S0-02: with the feature on and `PP_DESKTOP_REBUILD` unset, no Rust
+    /// product route answers. Every mount entry point returns no router.
+    #[test]
+    fn s0_02_switch_unset_mounts_no_rust_product_route() {
+        let origin = "http://127.0.0.1:9";
+        let rebuild = DesktopRebuild::from_value(None);
+        assert!(!rebuild.enabled());
+        let (owner, directory) = owner();
+        assert!(router(rebuild, &owner, routes(origin)).unwrap().is_none());
+        assert!(
+            draft_router(
+                rebuild,
+                &owner,
+                desktop_policy(),
+                lifetimes(),
+                origin,
+                "default",
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            job_router(rebuild, &owner, desktop_policy(), origin, "default")
+                .unwrap()
+                .is_none()
+        );
+        let owner = Arc::new(Mutex::new(owner));
+        assert!(
+            read_router(
+                rebuild,
+                Arc::clone(&owner),
+                routes(origin),
+                origin,
+                "default",
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+        let owner = Arc::into_inner(owner).unwrap().into_inner().unwrap();
+        owner.shutdown().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn application_host_flag_off_constructs_no_rebuild_clients() {
         let (owner, directory) = owner();

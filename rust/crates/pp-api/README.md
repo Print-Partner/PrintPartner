@@ -34,6 +34,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
 | `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient)`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. |
 | `client_contract` | `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document`, `document_bytes`. |
+| `problem` | With `desktop_rebuild` only (feature off, just an identity `without_envelope`): `Problem`, `FieldError`, `ProblemType` (stable types, `title`, `classify`) and their bounds, plus the one builder for error responses: `response`, `coded`, `typed`, `overloaded`, `build`, the `layer` backstop each router mounts, `parse_body` for field errors, and `without_envelope` for Node comparisons. See [Problem responses](../../../docs/problem-responses.md). |
 | `fixtures` | Node/Rust parity runner: `Sandbox`, `Served`, `Exchange`, `Ledger`, `StateGraph`, `Labels`. |
 
 Every module except `auth` needs `desktop_rebuild`. Each `*HttpConfig::from_startup(origin, api_key_tenant, flag)` takes a loopback origin; `CatalogHttpConfig::from_startup` also takes an `AuthPolicy` before `flag`; the router mounts nothing unless `flag` is `1` or `true`. `pp-core` passes `Some("1")` from its gated composition. The private `loopback` module holds the shared Host/Origin and credential checks.
@@ -52,13 +53,14 @@ Binaries:
 
 Cargo features:
 
-- `desktop_rebuild` (default off): compiles every module except `auth`, adds `pp-services`, `rmcp`, `rusqlite`, `http-body`, `ryu-js`, and forwards to `pp-storage/desktop_rebuild`.
+- `desktop_rebuild` (default off): compiles every module except `auth`, switches `auth` errors to problem responses, adds `pp-services`, `rmcp`, `rusqlite`, `http-body`, `ryu-js`, `serde_path_to_error`, and forwards to `pp-storage/desktop_rebuild`.
 - `codegen`: implies `desktop_rebuild`, adds `schemars`, forwards to `pp-storage/codegen`, and enables `export-rust-client`.
 
 ## Tests
 
 - `tests/auth_*_parity.rs`: replay Node exchanges from `fixtures/parity/auth-*` at the repo root. `auth_authorization_start`, `auth_key_regenerate`, `auth_oauth`, `auth_password_change`, and `auth_session` need `desktop_rebuild`.
 - `tests/auth_http.rs`: auth router behavior.
+- `src/problem/tests.rs` and, with `desktop_rebuild`, `src/problem/tests/canary.rs` (`-E 'test(problem_response)'`): problem envelope, extractor rejections, field-error bounds, and the leak canary.
 - `tests/builds_http.rs`, `catalog_http.rs`, `jobs_http.rs`, `manifest_options_http.rs`: mostly `desktop_rebuild`-gated tests against `fixtures/parity/*-http` and related directories.
 - `tests/ticket_t_10_fixtures.rs`, `ticket_t_61_read_model_http.rs`, `ticket_t_62_admin_http.rs`: gated parity suites.
 - Unit tests: `src/auth/tests/` (provider and SMTP, with `tests/fixtures/loopback-*.der`), `src/drafts/http/tests.rs`, `src/mcp/tests.rs`. Lib tests share scratch helpers from `pp-storage/tests/common`.

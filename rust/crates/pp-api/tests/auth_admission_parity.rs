@@ -888,7 +888,7 @@ impl Server {
             .filter_map(|value| value.to_str().ok()?.split(';').next())
             .find(|pair| pair.starts_with("pp_session=") && *pair != "pp_session=")
             .map(str::to_owned);
-        let body: Value = response.json().await?;
+        let body: Value = pp_api::problem::without_envelope(response.json().await?);
         Ok((
             Reply {
                 status,

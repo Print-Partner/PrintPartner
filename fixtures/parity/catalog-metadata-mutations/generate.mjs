@@ -252,7 +252,8 @@ try {
   for (const id of [7, 8, 9]) mkdirSync(join(directory, "local", String(id)), { recursive: true });
   execFileSync("cargo", [
     "run", "--locked", "--quiet", "--manifest-path", join(root, "rust/Cargo.toml"), "-p", "pp-storage",
-    "--features", "desktop_rebuild", "--bin", "storage-fixture", "--", "initialize", directory,
+    // test-unmarked-writer: the disposable directory has local/ and no ownership marker.
+    "--features", "desktop_rebuild,test-unmarked-writer", "--bin", "storage-fixture", "--", "initialize", directory,
     "2025-01-02T03:04:05.000Z",
   ], { cwd: root, stdio: ["ignore", "pipe", "inherit"], env: {
     ...process.env, CARGO_BUILD_JOBS: "3",

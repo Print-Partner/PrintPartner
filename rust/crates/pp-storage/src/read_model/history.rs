@@ -405,14 +405,24 @@ fn snapshots(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry
 }
 
 /// One `print_jobs` row is one recorded Checkoff burst: the units one
-/// outcome call recorded for one printer link.
+/// outcome call recorded for one printer link. Outcomes with no job (Node's
+/// legacy blob migration, or a deleted job) group by time and link into a
+/// burst named `outcomes-{first outcome id}`. Outcomes are counted in one
+/// pass over the Build's rows, which `idx_print_job_parts_profile` serves.
 fn bursts(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
     collect(
         tx,
-        "SELECT job.id,job.at,job.filename,\
-         (SELECT COUNT(*) FROM print_job_parts part WHERE part.job_id=job.id AND part.result='confirmed'),\
-         (SELECT COUNT(*) FROM print_job_parts part WHERE part.job_id=job.id AND part.result<>'confirmed')\
-         FROM print_jobs job WHERE job.tenant_id=?1 AND job.profile_id=?2",
+        "WITH counts AS MATERIALIZED (\
+           SELECT job_id,MIN(id) AS first,at,MIN(filename) AS filename,\
+           SUM(result='confirmed') AS confirmed,SUM(result<>'confirmed') AS rejected \
+           FROM print_job_parts WHERE tenant_id=?1 AND profile_id=?2 \
+           GROUP BY job_id,CASE WHEN job_id IS NULL THEN at END,\
+           CASE WHEN job_id IS NULL THEN COALESCE(link_id,'') END) \
+         SELECT job.id,job.at,job.filename,COALESCE(counts.confirmed,0),COALESCE(counts.rejected,0) \
+         FROM print_jobs job LEFT JOIN counts ON counts.job_id=job.id \
+         WHERE job.tenant_id=?1 AND job.profile_id=?2 \
+         UNION ALL \
+         SELECT 'outcomes-' || first,at,filename,confirmed,rejected FROM counts WHERE job_id IS NULL",
         tenant,
         build,
         |row| {

@@ -19,7 +19,7 @@ Each page reads every source in one SQLite read transaction
 | --- | --- | --- | --- | --- |
 | `revision` | `plan_revisions` | `accepted_at` | `user` | none |
 | `snapshot` | `plan_snapshots` | `created_at` | `assistant` when `source` is `assistant`, else `user` | none |
-| `checkoff_burst` | one `print_jobs` row, with its `print_job_parts` counted | `at` | `user` | `{"undoable": false, "reason": "no_undo_token"}` |
+| `checkoff_burst` | one `print_jobs` row, with its `print_job_parts` counted; `print_job_parts` with no job (Node's legacy outcome migration or a deleted job) group by `at` and link into one burst whose id is `outcomes-{first outcome id}` | `at` | `user` | `{"undoable": false, "reason": "no_undo_token"}` |
 | `send` | the Build's items in the `printer.send_queue` setting, in any state | `created_at` | `user` | `{"undoable": false, "reason": "printer_command"}` |
 | `decision` | `plan_decisions`, the rows `GET /plans/:id/decisions` returns | `created_at` | the row's `actor` (`user` or `assistant`) | none |
 
@@ -51,7 +51,7 @@ Not listed:
 
 | Query | Meaning |
 | --- | --- |
-| `limit` | Entries per page, 1 to 200. Default 50. |
+| `limit` | Entries per page, 1 to 200. Default 50. Keys and values are URL-decoded first. |
 | `cursor` | The previous page's `next_cursor`. |
 
 ```json

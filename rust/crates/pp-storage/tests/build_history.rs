@@ -178,7 +178,10 @@ fn seed(db: &Connection) {
          INSERT INTO print_job_parts (id,tenant_id,job_id,at,profile_id,part_id,unit_index,result) VALUES
            ('p1','default','job-a','2026-10-05T20:00:00.000Z',1,1,0,'confirmed'),
            ('p2','default','job-a','2026-10-05T20:00:00.000Z',1,2,0,'confirmed'),
-           ('p3','default','job-a','2026-10-05T20:00:00.000Z',1,2,1,'rejected');",
+           ('p3','default','job-a','2026-10-05T20:00:00.000Z',1,2,1,'rejected'),
+           ('p4','default',NULL,'2026-09-30T10:00:00.000Z',1,1,1,'confirmed'),
+           ('p5','default',NULL,'2026-09-30T10:00:00.000Z',1,2,2,'rejected'),
+           ('p6','default',NULL,'2026-09-30T10:00:00.000Z',2,1,0,'confirmed');",
     )
     .unwrap();
     set_queue(
@@ -233,6 +236,9 @@ fn build_history_lists_every_source_newest_first() {
                 "summary":"Swapped the frame to PETG","link":{"kind":"decision","id":"1"}}),
             json!({"id":"snapshot:1","type":"snapshot","at":"2026-10-01T08:00:00.000Z","actor":"user",
                 "summary":"Before PETG","link":{"kind":"snapshot","id":"1"}}),
+            json!({"id":"checkoff_burst:outcomes-p4","type":"checkoff_burst","at":"2026-09-30T10:00:00.000Z","actor":"user",
+                "summary":"Checked off 1 unit, rejected 1","link":{"kind":"checkoff_burst","id":"outcomes-p4"},
+                "undo":{"undoable":false,"reason":"no_undo_token"}}),
         ]
     );
 }
@@ -289,7 +295,7 @@ fn build_history_cursor_pages_stay_stable_while_entries_arrive() {
     }
     assert!(
         arrivals >= 2,
-        "eight entries take at least three pages of three"
+        "nine entries take at least three pages of three"
     );
     let later: Vec<String> = {
         let db = fixture.sql();

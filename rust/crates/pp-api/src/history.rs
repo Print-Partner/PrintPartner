@@ -44,19 +44,16 @@ pub fn history_router(config: HistoryHttpConfig, client: HistoryClient) -> Route
         .with_state(App { gate, client })
 }
 
-/// Reads `limit` and `cursor`. Other parameters are ignored; a repeated or
-/// malformed one is refused.
+/// Reads `limit` and `cursor`, URL-decoded as `jobs.rs` decodes its query.
+/// Other parameters are ignored; a repeated or malformed one is refused.
 fn page_query(query: Option<&str>) -> Result<(Option<Cursor>, u16), &'static str> {
     let (mut cursor, mut limit) = (None, None);
-    for pair in query
-        .unwrap_or_default()
-        .split('&')
-        .filter(|p| !p.is_empty())
-    {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        match key {
+    let url = reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default()))
+        .map_err(|_| "Request is invalid")?;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
             "cursor" if cursor.is_none() => {
-                cursor = Some(Cursor::parse(value).ok_or("Invalid history cursor")?);
+                cursor = Some(Cursor::parse(&value).ok_or("Invalid history cursor")?);
             }
             "limit" if limit.is_none() => {
                 limit = Some(
@@ -116,5 +113,28 @@ async fn history(
         ),
         Ok(Err(error)) => read_error(&error),
         Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_query;
+
+    #[test]
+    fn build_history_query_is_decoded_before_validation() {
+        assert_eq!(page_query(Some("limit=%32")).unwrap().1, 2);
+        assert_eq!(page_query(Some("%6cimit=3")).unwrap().1, 3);
+        assert_eq!(page_query(None).unwrap().1, 50);
+        for query in ["limit=1&%6cimit=2", "limit=%30", "limit=+5"] {
+            assert_eq!(
+                page_query(Some(query)),
+                Err("Invalid history limit"),
+                "{query}"
+            );
+        }
+        assert_eq!(
+            page_query(Some("cursor=%00")),
+            Err("Invalid history cursor")
+        );
     }
 }

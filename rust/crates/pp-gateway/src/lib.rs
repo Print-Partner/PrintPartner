@@ -257,7 +257,6 @@ impl Gateway {
     pub fn start_rust_only(
         listener: TcpListener,
         assets: PathBuf,
-        owners: &OperationOwners,
         product: axum::Router,
         status: tokio::sync::watch::Receiver<RustStatus>,
     ) -> Result<Self> {
@@ -265,7 +264,7 @@ impl Gateway {
             listener,
             assets,
             CompatHandle::unpublished(),
-            owners,
+            &OperationOwners::node_only(),
             Some(product),
             Some(status),
         )

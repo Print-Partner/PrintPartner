@@ -280,14 +280,8 @@ async fn slice0_mount_rust_only_runtime_reports_rust_status() {
     let root = Scratch::new("pp-slice0-mount-");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let mut gateway = Gateway::start_rust_only(
-        listener,
-        root.to_path_buf(),
-        &OperationOwners::node_only(),
-        stub(),
-        receiver,
-    )
-    .unwrap();
+    let mut gateway =
+        Gateway::start_rust_only(listener, root.to_path_buf(), stub(), receiver).unwrap();
     let cookie = gateway.test_session().await;
     let runtime = || async {
         let (code, body) = text(

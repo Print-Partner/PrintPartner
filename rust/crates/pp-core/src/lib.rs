@@ -113,13 +113,6 @@ impl StatusReceiver {
             Self::Rust(receiver) => receiver.changed().await,
         }
     }
-
-    pub fn has_changed(&self) -> Result<bool, tokio::sync::watch::error::RecvError> {
-        match self {
-            Self::Node(receiver) => receiver.has_changed(),
-            Self::Rust(receiver) => receiver.has_changed(),
-        }
-    }
 }
 
 pub struct CoreHandle {
@@ -502,7 +495,7 @@ async fn start_rust_resources(
     .context("Rust product routes need the rebuild setting")?;
     let owners = OperationOwners::node_only();
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let gateway = Gateway::start_rust_only(listener, assets, &owners, product, receiver)?;
+    let gateway = Gateway::start_rust_only(listener, assets, product, receiver)?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);
     Ok(Resources {

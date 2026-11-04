@@ -1,4 +1,4 @@
-use super::{launch, request, temporary};
+use super::{compat, launch, request, temporary};
 use axum::http::StatusCode;
 use fs2::FileExt;
 use pp_compat::CompatExit;
@@ -53,7 +53,7 @@ async fn isolated_case_for(name: &str, rebuild: bool, limit: Duration) -> Option
 }
 
 fn pid(runtime: &CoreRuntime) -> u32 {
-    match *runtime.handle().compat_status().unwrap().borrow() {
+    match *compat(runtime).borrow() {
         CoreStatus::Ready { pid, .. } => pid,
         ref state => panic!("expected ready child: {state:?}"),
     }

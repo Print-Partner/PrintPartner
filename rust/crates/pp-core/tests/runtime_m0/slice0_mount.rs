@@ -2,7 +2,7 @@
 //! runtime value in a child process so the environment stays isolated.
 use super::{launch, process_tree::descendants, request, temporary};
 use axum::http::StatusCode;
-use pp_core::{CoreRuntime, CoreStatus, RuntimeStatus, RustStatus};
+use pp_core::{CoreRuntime, CoreStatus, RuntimeStatus, RustStatus, StatusReceiver};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -144,14 +144,14 @@ async fn slice0_mount_launcher_in_child() {
     assert!(receipt.complete(), "{receipt:?}");
     if rust {
         // Shutdown published Stopping then Stopped, and the channel stays open.
+        let StatusReceiver::Rust(mut status) = status else {
+            panic!("Rust-only runtime returned a Node status channel");
+        };
         assert!(
             status.has_changed().unwrap(),
             "shutdown published no status"
         );
-        assert!(matches!(
-            status.borrow_and_update(),
-            RuntimeStatus::Rust(RustStatus::Stopped)
-        ));
+        assert_eq!(*status.borrow_and_update(), RustStatus::Stopped);
         assert!(status.has_changed().is_ok(), "status channel closed");
     }
 }

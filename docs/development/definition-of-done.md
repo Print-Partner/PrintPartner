@@ -6,7 +6,7 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 1. **One job per PR.** Keep the diff under about 1,500 lines, or about 600 for a Mission PR. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
 2. **Unslopped.** Run the unslop pass on code, comments and docs before review. Remove filler comments, dead code and speculative abstractions.
-3. **Reviewed.** Factory Droid's automatic review runs on the exact head commit, every review thread is resolved, and required CI is green on that commit. The coordinator's scorer run passes the [merge gate](#merge-gate).
+3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. The coordinator's scorer run passes the [merge gate](#merge-gate).
 4. **Docs in the same PR.** When the PR changes behavior, setup or an interface, update the matching page under `docs/` in the same PR.
 
 ## Review and merge policy
@@ -34,7 +34,7 @@ The coordinator merges, from its own worktree (see [Safety guard](agent-workflow
 The coordinator merges a PR only when all of these hold on the same head commit:
 
 1. **Exact head.** Every check, review, and score below is on the PR's current head SHA.
-2. **Required checks** are green.
+2. **Required checks** are green, including `review-gate`.
 3. **Every other reported check** passes or is skipped. Only these advisory checks may fail: `rust (macos)`. The owner extends that list.
 4. **All review threads** are resolved.
 5. **Scorer.** The coordinator runs its own scorer on that head. The seat is from a different vendor than the PR's author, and the score is strictly above 8.
@@ -51,9 +51,51 @@ Scorer seats, in order. Use the first available seat whose vendor differs from t
 
 ## Code review
 
-`.github/workflows/droid-review.yml` runs Factory Droid code and security review on every ready PR and on each new push. Its `droid-review` job is a required check, and the main ruleset requires review threads to be resolved, so an open finding blocks the merge. Fix the finding, or reply with the reason it does not apply and resolve the thread. Critical and high security findings also request changes. The job fails when the `FACTORY_API_KEY` secret is missing. On a PR that adds or changes `droid-review.yml` itself, droid-action skips the review and the job passes, so ask for `@droid review` after merging such a change.
+The required `review-gate` check (`.github/workflows/review-gate.yml`) passes on a PR head when any of these holds for that exact head SHA:
+
+1. **Factory Droid.** The `droid-review` job succeeded.
+2. **Claude.** The `claude-code-review` job succeeded, and `claude-security-review` succeeded or was neutral.
+3. **Coordinator record.** A comment by the repository owner account, `poitee`, carries a `pp-review-gate` marker for that head. See [Coordinator review record](#coordinator-review-record).
+
+Every push starts a new `review-gate` run, which fails until one of these holds for the new head. `.github/workflows/review-gate-rerun.yml` reruns the gate when a Droid or Claude review run finishes and when the owner creates, edits, or deletes a marker comment. If the check stays red after a review finished, rerun the `review-gate` job from the PR's Checks tab. The job reads the GitHub API only and never checks out PR code.
+
+Every reviewer posts findings as review threads, and the ruleset requires every thread to be resolved, whichever path passed the gate. Fix the finding, or reply with the reason it does not apply and resolve the thread.
+
+The gate trusts the workflow files. A PR that edits a workflow could change what the gate accepts, so CODEOWNERS assigns `.github/workflows/` to the owner, and the owner merges workflow changes.
+
+### Factory Droid
+
+Droid is optional. `.github/workflows/droid-review.yml` runs Droid code and security review on every ready PR and on each new push. When Droid's weekly usage runs out, the job fails and one of the other paths carries the PR; when Droid does review, its threads still have to be resolved. Critical and high security findings also request changes. The job fails when the `FACTORY_API_KEY` secret is missing. On a PR that adds or changes `droid-review.yml` itself, droid-action skips the review and the job passes, so ask for `@droid review` after merging such a change.
 
 Mention `@droid` in a PR or issue comment to ask Droid a question or request another review (`.github/workflows/droid.yml`).
+
+### Claude
+
+`.github/workflows/claude-review.yml` runs two `anthropics/claude-code-action` jobs with Claude Opus 5.5 (`claude-opus-5-5`) on every ready PR head. `claude-code-review` looks for correctness bugs and breaks of the AGENTS.md rules. `claude-security-review` looks for injection, missing authentication or admission checks, secrets in logs or responses, path traversal, unsafe file operations, unconfirmed printer sends, and unsafe CI changes. Both post findings as inline review comments.
+
+- **Trusted authors only.** The action is not hardened against prompt injection, so both jobs run only on PRs from this repository authored by the owner account. PRs from forks, Dependabot, or any other account skip both jobs and need Droid or a coordinator record.
+- **No PR code runs.** Claude may read files and run only `gh pr diff`, `gh pr view`, and `gh pr comment`. The action replaces `.claude/`, `.mcp.json`, `CLAUDE.md`, and the other files Claude Code reads at startup with the base branch's copies.
+- **Subscription, not per-call billing.** The jobs sign in with the owner's Claude subscription through the `CLAUDE_CODE_OAUTH_TOKEN` repository secret, which the owner creates with `claude setup-token`. If only `ANTHROPIC_API_KEY` is set, the jobs use it instead, and that key bills per call. With neither secret, both jobs fail with an error naming them.
+- **Usage limits.** Each push to a ready PR runs both jobs, and each review draws on the subscription's usage limits. When the limit runs out the jobs fail, which is why `review-gate` keeps the Droid and coordinator-record paths. Drafts skip both jobs, so keep a PR in draft while pushing work in progress.
+
+### Coordinator review record
+
+When no automatic review passes the gate, for example while Droid is out of usage on a PR the Claude jobs skip, the coordinator records its own review:
+
+1. Check out the PR head at its exact SHA in a separate worktree, for example `git fetch origin pull/<n>/head` and then `git worktree add --detach <path> <sha>`.
+2. Run an independent model review on that checkout. The reviewer comes from a different vendor than the PR's author; use the scorer seat order under [Merge gate](#merge-gate). Post its findings as PR review threads.
+3. Wait until every finding is fixed or answered and its thread resolved. A fix is a new push, so start again at step 1 for the new head.
+4. From the coordinator worktree, post the marker as a PR comment:
+
+   ```sh
+   gh pr comment <n> --body '<!-- pp-review-gate head=<40-character sha> reviewer=<model id> findings=<count> -->'
+   ```
+
+The gate counts a marker only when the comment's author is the repository owner account, `head=` equals the PR's current head SHA in full lowercase, `reviewer=` is not empty, and `findings=` is a whole number. A marker for an older head never counts. The safety guard refuses `gh pr comment`, `gh issue comment`, and `gh api` writes that contain `<!-- pp-review-gate` unless they run from the [coordinator worktree](agent-workflow.md#coordinator-merges), the same rule as merges.
+
+### Copilot
+
+The owner can also turn on **Automatically request Copilot code review** in the main ruleset. Copilot's comments are review threads that must be resolved like any other, but Copilot does not satisfy `review-gate`.
 
 ## Parity scope
 

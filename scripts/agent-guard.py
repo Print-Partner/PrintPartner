@@ -65,8 +65,12 @@ GH_GROUPS = {"pr", "release", "variable"}
 GH_PATH_FLAGS = {"--help", "-h", "--version"}
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
 VARIABLE_READS = {"get", "help", "list"}
-VARIABLE = ("GitHub Actions variables, including the PP_REVIEW_FALLBACK_UNTIL outage switch, "
-            "are owner-maintained; ask the maintainer to change them.")
+# The coordinator's review record, which the review-gate check accepts in place of an automatic review.
+REVIEW_MARKER = re.compile(r"<!--\s*pp-review-gate", re.I)
+MARKER = ("Only the coordinator worktree posts pp-review-gate review markers; "
+          "report readiness to the coordinator instead.")
+COMMENT_COMMANDS = (["pr", "comment"], ["issue", "comment"])
+VARIABLE = "GitHub Actions variables are owner-maintained; ask the maintainer to change them."
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -782,6 +786,28 @@ def review_events(fields, body, cwd):
     return events or {""}
 
 
+def has_marker(name, cwd):
+    """Whether a file gh will send holds a review marker. Stdin and unreadable files count as none;
+    check_command searches the whole command text, which covers heredocs and here-strings."""
+    try:
+        return bool(REVIEW_MARKER.search(read_input(name, cwd)))
+    except Unclear:
+        return False
+
+
+def body_files(args):
+    """Return the files that gh pr comment or gh issue comment reads with -F or --body-file."""
+    files = []
+    for i, arg in enumerate(args):
+        if arg in ("-F", "--body-file") and i + 1 < len(args):
+            files.append(args[i + 1])
+        elif arg.startswith("--body-file="):
+            files.append(arg.split("=", 1)[1])
+        elif arg.startswith("-F") and len(arg) > 2:
+            files.append(arg[2:])
+    return files
+
+
 def without_repo_flags(args):
     kept, i = [], 0
     while i < len(args):
@@ -824,7 +850,8 @@ def gh_command(args):
     return path + without_repo_flags(args[i:])
 
 
-def gh_reason(args, cwd, alone=True):  # noqa: C901
+def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
+    """Return why a gh command is refused. marker says the command text holds a review marker."""
     args = gh_command(args)
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)
@@ -841,6 +868,9 @@ def gh_reason(args, cwd, alone=True):  # noqa: C901
         if not args[1:] or args[1] in VARIABLE_READS or all(arg in ("--help", "-h") for arg in args[1:]):
             return None
         return VARIABLE
+    if args[:2] in COMMENT_COMMANDS:
+        posts_marker = marker or any(has_marker(name, cwd) for name in body_files(args[2:]))
+        return MARKER if posts_marker and not coordinator_worktree(cwd) else None
     if args[:1] != ["api"]:
         return None
     method, endpoint, fields, body, i = None, None, [], None, 1
@@ -884,6 +914,11 @@ def gh_reason(args, cwd, alone=True):  # noqa: C901
     method = (method or ("POST" if fields or body is not None else "GET")).upper()
     if method in ("GET", "HEAD"):
         return None
+    sent_files = [value.partition("=")[2][1:] for flag, value in fields
+                  if flag in ("-F", "--field") and value.partition("=")[2].startswith("@")]
+    sent_files += [] if body is None else [body]
+    if (marker or any(has_marker(name, cwd) for name in sent_files)) and not coordinator_worktree(cwd):
+        return MARKER
     # The hook reads request files before the command runs. Any other command, such as a
     # checkout, redirect, or directory change, could replace what gh reads.
     reads_file = body is not None or any(flag in ("-F", "--field") and value.partition("=")[2].startswith("@")
@@ -908,8 +943,7 @@ def coordinator_merge(args, cwd):
     """Whether args is the one merge the coordinator may run.
 
     The form is gh pr merge [<number>] --squash --match-head-commit <full sha>, with no other
-    option. cwd must sit inside the worktree that PP_COORDINATOR_WORKTREE names: that root is
-    the Git top level of cwd and lies outside the lane worktrees. Lane hook configs never set it.
+    option, run from the coordinator worktree (see coordinator_worktree).
     """
     if args[:3] != ["gh", "pr", "merge"] or cwd is None:
         return False
@@ -926,10 +960,17 @@ def coordinator_merge(args, cwd):
             number = arg
         else:
             return False
-    if not (squash and sha and FULL_SHA.match(sha)):
-        return False
+    return bool(squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
+
+
+def coordinator_worktree(cwd):
+    """Whether cwd sits inside the worktree that PP_COORDINATOR_WORKTREE names.
+
+    That root must be the Git top level of cwd and lie outside the lane worktrees.
+    Lane hook configs never set the variable.
+    """
     root = os.environ.get(COORDINATOR_ENV, "")
-    if not os.path.isabs(root):
+    if cwd is None or not os.path.isabs(root):
         return False
     try:
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
@@ -958,6 +999,7 @@ def check_command(command, cwd):
         head_moves = (any(moves_head(name, rest) for name, rest, *_ in commands)
                       or any(GIT_LOCATION.match(word) for word in assigned))
         env_config = any(GIT_CONFIG_ENV.match(word) for word in assigned)
+        marker = bool(REVIEW_MARKER.search(command))
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
         control = 0
@@ -977,7 +1019,7 @@ def check_command(command, cwd):
                 cwd = os.path.normpath(os.path.join(cwd, targets[0])) if plain and cwd else None
                 continue
             here = None if moved else cwd
-            reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1) if name == "gh" else None
+            reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker) if name == "gh" else None
             if reason:
                 return reason
     except Unclear as error:

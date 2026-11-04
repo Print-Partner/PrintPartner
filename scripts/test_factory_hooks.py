@@ -869,6 +869,67 @@ class CoordinatorMergeTests(unittest.TestCase):
                 self.assertFalse(guard.coordinator_merge(args, self.coordinator))
 
 
+MARKER = f"<!-- pp-review-gate head={SHA} reviewer=gpt-5.6-sol findings=0 -->"
+
+
+class ReviewMarkerTests(unittest.TestCase):
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+
+    def setUp(self):
+        self.make_worktrees()
+        for folder in (self.coordinator, self.lane):
+            Path(folder, "marker.md").write_text(f"Reviewed.\n{MARKER}\n")
+            Path(folder, "marker.json").write_text(json.dumps({"body": MARKER}))
+            Path(folder, "plain.md").write_text("Fixed in the next commit.\n")
+
+    POSTS = (f"gh pr comment 12 --body '{MARKER}'", f"gh pr comment 12 -b '{MARKER}'",
+             f"gh pr comment --body='{MARKER}' 12", f"gh -R o/r pr comment 12 -b '{MARKER}'",
+             f"gh pr comment 12 --edit-last -b '{MARKER}'", "gh pr comment 12 --body-file marker.md",
+             "gh pr comment 12 -F marker.md", "gh pr comment 12 --body-file=marker.md",
+             f"gh pr comment 12 --body-file - <<'EOF'\n{MARKER}\nEOF",
+             f"gh pr comment 12 -F - <<< '{MARKER}'",
+             f"gh issue comment 12 -b '{MARKER}'", f"gh issue -R o/r comment 12 --body-file marker.md",
+             f"gh api repos/o/r/issues/12/comments -f body='{MARKER}'",
+             f"gh api -X PATCH repos/o/r/issues/comments/34 -f body='{MARKER}'",
+             "gh api repos/o/r/issues/12/comments -F body=@marker.md",
+             "gh api repos/o/r/issues/12/comments --input marker.json",
+             f"gh api graphql -f query='mutation {{ addComment(input: {{subjectId: \"X\", body: \"{MARKER}\"}}) "
+             "{ clientMutationId } }'",
+             f"echo ok && gh pr comment 12 -b '{MARKER.upper()}'",
+             f"gh pr comment 12 -b '<!--pp-review-gate head={SHA}-->'")
+
+    def test_lane_worktrees_cannot_post_markers(self):
+        for command in self.POSTS:
+            for coordinator in (None, self.coordinator):
+                for result in self.results(command, self.lane, coordinator):
+                    with self.subTest(command=command, coordinator=coordinator):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("Only the coordinator worktree posts pp-review-gate", result.stderr)
+
+    def test_coordinator_worktree_posts_markers(self):
+        for command in self.POSTS:
+            for result in self.results(command, self.coordinator, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        # Without the variable, or after leaving the worktree, the coordinator is a lane.
+        for command, coordinator in ((self.POSTS[0], None), (f"cd {self.lane} && {self.POSTS[0]}", self.coordinator)):
+            for result in self.results(command, self.coordinator, coordinator):
+                with self.subTest(command=command):
+                    self.assertIn("Only the coordinator worktree posts", result.stderr)
+
+    def test_other_comments_and_marker_reads_stay_allowed(self):
+        for command in ("gh pr comment 12 -b 'Fixed in abc123.'", "gh pr comment 12 --body-file plain.md",
+                        "gh issue comment 12 -F plain.md", "gh pr comment 12 -b 'The pp-review-gate check failed.'",
+                        "gh api repos/o/r/issues/12/comments -f body='The review-gate check is red.'",
+                        "gh api repos/o/r/issues/12/comments --input plain.md",
+                        "gh api repos/o/r/issues/12/comments --jq '.[] | select(.body | test(\"<!-- pp-review-gate\"))'",
+                        "gh pr view 12 --comments", "gh pr comment 12 --body-file - < plain.md",
+                        "gh pr create --body-file marker.md"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class RetiredFleetIntakeTests(unittest.TestCase):
     def test_lane_rules_no_longer_drive_intake_or_merges(self):
         text = (ROOT / "scripts/fleet/lane-rules.yaml").read_text(encoding="utf-8")

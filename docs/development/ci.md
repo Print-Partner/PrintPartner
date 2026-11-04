@@ -577,6 +577,14 @@ can leave the site half-published, and `release.yml` runs only on tags.
 The web validation job keeps its 45-minute limit on same-repository PRs; fork
 PRs and non-PR runs keep 20 minutes.
 
-## Reviewer fallback
+## Review checks
 
-When no reviewer from another vendor can score a pull request, follow [Reviewer fallback](definition-of-done.md#reviewer-fallback). That page holds the rule.
+| Hosted check | Workflow | Local command |
+| --- | --- | --- |
+| `review-gate` (required) | `review-gate.yml`, rerun by `review-gate-rerun.yml` | `python3 -B -m unittest discover -s scripts -p test_review_gate.py -v` |
+| `droid-review` | `droid-review.yml` | none; needs the `FACTORY_API_KEY` secret |
+| `claude-code-review`, `claude-security-review` | `claude-review.yml` | none; needs the `CLAUDE_CODE_OAUTH_TOKEN` secret, or `ANTHROPIC_API_KEY` as a fallback |
+
+`scripts/test_review_gate.py` runs the gate's shell step unchanged against a fake `gh` and checks each pass and fail case: a Droid success, a Claude code review with its security review, an owner marker for the head, and markers for another head or from another account. It also checks that the gate reads the job names the review workflows define and that the Claude jobs keep their author filter and permissions. The `changes` job in `actionlint.yml` runs it on every PR.
+
+[Code review](definition-of-done.md#code-review) describes the three ways to pass the gate, the coordinator's marker, and how the Claude jobs use the owner's subscription.

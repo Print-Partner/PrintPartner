@@ -117,13 +117,14 @@ The ruleset has these protections:
 - Block branch deletion and force pushes.
 - Require a pull request and allow only squash merges.
 - Require GitHub Actions checks `actionlint`, `zizmor`, `rust (linux)`, `rust (windows)`,
-  `Lint Evidence block`, and `droid-review`.
-- Require every review thread to be resolved, so an open Factory Droid finding blocks the merge.
+  `Lint Evidence block`, and `review-gate`.
+- Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 
 `rust (macos)` is absent, consistent with its advisory status in [Continuous integration](ci.md).
 `droid-review` replaced the `pp/score-verified` model-score check on 2026-10-31.
+`review-gate` replaces `droid-review` once the owner applies the committed JSON with the command below; until then the live ruleset still requires `droid-review`.
 
 No approving reviews are required. Chad authors PRs as `poitee`, and GitHub forbids
 self-approval. CODEOWNERS requests Chad's review but does not make it a merge requirement.

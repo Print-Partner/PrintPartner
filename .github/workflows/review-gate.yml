@@ -1,0 +1,79 @@
+name: Review gate
+
+# `review-gate` is the required review check. It passes on a PR head when any
+# of these holds for that exact head SHA:
+#   1. the `droid-review` job succeeded;
+#   2. the `claude-code-review` job succeeded, and `claude-security-review`
+#      succeeded or was neutral;
+#   3. a comment by the repository owner carries the coordinator marker
+#      <!-- pp-review-gate head=<40-char sha> reviewer=<model> findings=<n> -->
+# Every push starts a new run, which fails until one of them holds for the new
+# head. review-gate-rerun.yml reruns this job when a review workflow finishes
+# or a marker comment changes. The job reads the GitHub API only; it never
+# checks out or runs PR code. See docs/development/definition-of-done.md#code-review.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+permissions: {}
+
+jobs:
+  review-gate:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      checks: read
+      pull-requests: read
+    steps:
+      - name: Require a finished review of the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OWNER: ${{ github.repository_owner }}
+          # Input: every page of the PR's issue comments. Output: the newest
+          # owner marker whose head is HEAD_SHA, or nothing.
+          MARKER_FILTER: |
+            [ .[][]
+              | select(.user.login == $owner)
+              | .html_url as $url
+              | (.body // "")
+              | scan("<!--[ \t]*pp-review-gate[ \t]+([^>]*?)[ \t]*-->")
+              | [.[0] | scan("([a-z]+)=([^ \t]+)") | {(.[0]): .[1]}] | add // {}
+              | select(.head == $head and (.reviewer // "") != "" and ((.findings // "") | test("^[0-9]+$")))
+              | "\(.reviewer), \(.findings) findings, \($url)"
+            ] | last // empty
+        run: |
+          set -euo pipefail
+          # GitHub Actions (app 15368) owns every job check this gate reads.
+          check() {
+            gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=$1&app_id=15368&filter=latest" \
+              | jq -r '.check_runs[0] | if . == null then "missing" else (.conclusion // .status) end'
+          }
+          droid=$(check droid-review)
+          code=$(check claude-code-review)
+          security=$(check claude-security-review)
+          gh api --paginate --slurp "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" > "$RUNNER_TEMP/comments.json"
+          marker=$(jq -r --arg owner "$OWNER" --arg head "$HEAD_SHA" "$MARKER_FILTER" "$RUNNER_TEMP/comments.json")
+          {
+            echo "## Review gate for \`$HEAD_SHA\`"
+            echo
+            echo '| Path | State |'
+            echo '| --- | --- |'
+            echo "| droid-review | $droid |"
+            echo "| claude-code-review | $code |"
+            echo "| claude-security-review | $security |"
+            echo "| coordinator marker | ${marker:-none} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$droid" = success ]; then
+            echo "Passed: droid-review succeeded on $HEAD_SHA."
+          elif [ "$code" = success ] && { [ "$security" = success ] || [ "$security" = neutral ]; }; then
+            echo "Passed: claude-code-review succeeded and claude-security-review is $security on $HEAD_SHA."
+          elif [ -n "$marker" ]; then
+            echo "Passed: coordinator marker for $HEAD_SHA ($marker)."
+          else
+            echo "::error::No finished review of $HEAD_SHA: droid-review is $droid, claude-code-review is $code, claude-security-review is $security, and no coordinator marker names this head."
+            exit 1
+          fi

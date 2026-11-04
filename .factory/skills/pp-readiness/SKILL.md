@@ -10,7 +10,7 @@ Readiness work is tracked in Linear under [GRE-1067](https://linear.app/greetz/i
 ## Pick up a sub-issue
 
 1. Read the sub-issue, or its exported [task brief](../../../docs/development/agent-workflow.md#start-from-a-task-brief), and the root [agent guide](../../../AGENTS.md). Start from current `main` in a new worktree.
-2. Split the work into PRs of about 600 lines or fewer. Open the next PR only after the previous one has its required review, currently Droid review, and green CI.
+2. Split the work into PRs of about 600 lines or fewer. Open the next PR only after the previous one has its required review (`review-gate`) and green CI.
 3. Use existing tools first: ESLint, Knip, Clippy, `scripts/local-ci.py`, and the verification helpers. Add a new tool only when nothing in the repo covers the criterion.
 4. Prove each check with a negative control: show it fails on a bad input before you rely on it passing.
 

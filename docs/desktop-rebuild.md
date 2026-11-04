@@ -2561,6 +2561,7 @@ Landed replacement slices for the superseded #635 monolith:
 | c | GRE-941 | API-key `ResolveKey` so `lastUsedAt` commits; foreign-tenant keys 401 |
 | d | GRE-942 | Part edits with Node conflict shapes |
 | e | GRE-988 | Abandon with storage lifecycle token |
+| f | GRE-1093 | Accept preview through Accept's own checks |
 
 With both gates on, `draft_router` serves these paths at the root and
 `/api/v2`:
@@ -2569,6 +2570,7 @@ With both gates on, `draft_router` serves these paths at the root and
 | --- | --- | --- |
 | GET | `/plans/{id}/drafts` | `WorkingDraftClient` list |
 | GET | `/plans/{id}/drafts/{draft_id}` | workspace read |
+| GET | `/plans/{id}/drafts/{draft_id}/accept-preview` | read-only Accept preview |
 | PATCH | `/plans/{id}/drafts/{draft_id}/parts` | `edit` with typed `EditRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
 
@@ -2608,6 +2610,41 @@ consumed or already-closed draft that is not the idempotent retry returns
 `invalid_request` before mutation. Server failures use the same
 `Plan draft update failed` detail as edit. The desktop gateway does not mount
 this router; D26 does.
+
+`GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
+draft's current revision would change, and writes nothing. It runs in one
+deferred read transaction on the writer. Storage owns the checks:
+`plan_publication::check_draft` and `check_selection` are the same functions
+Accept (`publish_in_transaction`) runs before it writes, in the same order.
+
+- A draft whose Parts and inputs equal its accepted base returns 200
+  `{ kind: "no_change", revision, snapshot }`.
+- Otherwise 200 `{ kind: "changed", revision, changes, snapshot }`. `changes`
+  holds `fields` (each changed Part field, `old` and `new`), `parts_added`,
+  `parts_removed`, `inputs` (changed Source input fields; each value is
+  `{ kind: "text" | "integer" | "flag", value }` or `null`), `required_units`
+  (`added`, `removed`, and `printed_affected`: printed units that Accept removes
+  or whose Part changes), `plates.cleared` (the accepted Plates Accept clears),
+  `stock` (`off`, or per Spoolman spool the unprinted unit count before and
+  after), `duplicate_orders` (other unarchived Plans with this order number),
+  `production` (active checkoff links and queued sends, with any link Accept
+  could not remap), and `blocked_by` (running operations Accept refuses on).
+- `revision` is `{ draft_id, expected_snapshot_digest,
+  expected_lifecycle_version, expected_base }`, the fields Accept's request
+  expects. Accept refuses a stale one with `draft_changed` or `base_changed`.
+- `snapshot` is `{ saved_before_accept: true, detail }`.
+- A refusal is the one Accept would return: 404 `draft_not_found` for a missing
+  draft, otherwise 409 with Accept's outcome kind as `code` and its fields, for
+  example `{ code: "not_open", state: "consumed" }`, `base_changed`,
+  `inputs_changed`, `build_archived`, or `{ code: "reconciliation_required",
+  reason }`.
+
+Draft rows carry Parts and inputs only, so Plan name, order number, and other
+Plan header fields never appear in `fields`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(accept_preview)'
+```
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --lib

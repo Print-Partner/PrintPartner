@@ -1,4 +1,5 @@
 mod model;
+pub mod preview;
 #[cfg(test)]
 mod tests;
 
@@ -980,54 +981,72 @@ fn publish_inputs(
     Ok(id)
 }
 
-/// Mirrors Node AppRepository.applyPlanChanges inside the caller-owned transaction.
-pub(crate) fn publish_in_transaction(
+/// The draft half of Accept's gate. Accept and its preview both run it, then
+/// [`check_selection`]; neither writes.
+struct DraftGate {
+    profile_row: Value,
+    draft: ru::storage::Draft,
+    previous: Option<i64>,
+    version: i64,
+    predecessors: Vec<DraftPart>,
+}
+
+/// What Accept would publish, after every read-only check passed.
+struct Checked {
+    profile_row: Value,
+    inputs: Vec<Value>,
+    previous: Option<i64>,
+    version: i64,
+    predecessors: Vec<DraftPart>,
+    /// The selected reconciliation's header.
+    selected: Value,
+    base_parts: Vec<ru::model::BasePart>,
+    /// Base Required units by token: stored row, completed, assembled.
+    base: HashMap<String, (Value, bool, bool)>,
+    old_tokens: HashMap<(i64, i64), String>,
+    prepared: Prepared,
+    production: Production,
+}
+
+impl Checked {
+    /// Checkoff links and queued sends that Accept would have to remap, and
+    /// whether the remap is safe.
+    fn production(&self, profile: i64) -> Result<Option<(usize, usize, Vec<UnmappableLink>)>> {
+        let production = &self.production;
+        if production.link_count == 0 && production.queue_count == 0 {
+            return Ok(None);
+        }
+        let unmappable = match remap(production, profile, &self.old_tokens, &self.prepared)? {
+            Remap::Mapped(_) => Vec::new(),
+            Remap::Unmappable(unmappable) => unmappable,
+        };
+        Ok(Some((
+            production.link_count,
+            production.queue_count,
+            unmappable,
+        )))
+    }
+}
+
+/// Checks the Plan, the draft's lifecycle and base, and its inputs against
+/// `request`, in Accept's order.
+fn check_draft(
     tx: &Transaction<'_>,
-    context: &AuthenticatedPublicationContext,
-    profile: PositiveId,
-    draft_id: PositiveId,
-    requests: PublicationRequests<'_>,
-    key: &str,
-    tokens: &mut dyn RequiredUnitTokenAllocator,
-) -> Result<Outcome> {
-    let tenant = context.tenant.as_str();
-    let actor = context.actor.as_str();
-    let profile = profile.get() as i64;
-    let draft_id = draft_id.get() as i64;
-    let admitted_hash = request_digest(profile, draft_id, requests.admitted);
-    let request_hash = request_digest(profile, draft_id, requests.execution);
-    if let Some(row) = one(
-        tx,
-        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND actor_id=? AND profile_id=? AND idempotency_key=?",
-        &[&tenant, &actor, &profile, &key],
-    )? {
-        return Ok(if admission_matches(tx, &row, requests.admitted)? {
-            Outcome::Existing {
-                receipt: receipt(tx, tenant, &row)?,
-            }
-        } else {
-            Outcome::IdempotencyConflict
-        });
-    }
-    if let Some(row) = one(
-        tx,
-        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND profile_id=? AND draft_id=?",
-        &[&tenant, &profile, &draft_id],
-    )? {
-        return Ok(Outcome::AlreadyApplied {
-            receipt: receipt(tx, tenant, &row)?,
-        });
-    }
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+    request: &ApplyRequest,
+) -> Result<std::result::Result<DraftGate, Outcome>> {
     let Some(profile_row) = one(
         tx,
         "SELECT * FROM build_profiles WHERE tenant_id=? AND id=?",
         &[&tenant, &profile],
     )?
     else {
-        return Ok(Outcome::NotFound);
+        return Ok(Err(Outcome::NotFound));
     };
     if !profile_row["archivedAt"].is_null() {
-        return Ok(Outcome::BuildArchived);
+        return Ok(Err(Outcome::BuildArchived));
     }
     model::validate_named_text(
         &profile_row,
@@ -1046,20 +1065,19 @@ pub(crate) fn publish_in_transaction(
         &[&tenant, &profile, &draft_id],
     )?
     else {
-        return Ok(Outcome::NotFound);
+        return Ok(Err(Outcome::NotFound));
     };
     if h["state"] != "open" {
-        return Ok(Outcome::NotOpen {
+        return Ok(Err(Outcome::NotOpen {
             state: serde_json::from_value(h["state"].clone())?,
-        });
+        }));
     }
-    if h["lifecycleVersion"].as_u64() != Some(requests.execution.expected_lifecycle_version.get())
-        || h["snapshotDigest"] != requests.execution.expected_snapshot_digest.as_str()
+    if h["lifecycleVersion"].as_u64() != Some(request.expected_lifecycle_version.get())
+        || h["snapshotDigest"] != request.expected_snapshot_digest.as_str()
         || !["plan-draft-v1", "plan-draft-v2"].contains(&text(&h, "digestFormat")?)
     {
-        return Ok(Outcome::DraftChanged);
+        return Ok(Err(Outcome::DraftChanged));
     }
-    let request = requests.execution;
     let previous = request
         .expected_base
         .revision_id()
@@ -1078,16 +1096,16 @@ pub(crate) fn publish_in_transaction(
         accepted_version <= 0
     };
     if needs_baseline {
-        return Ok(Outcome::AcceptedBaselineRequired);
+        return Ok(Err(Outcome::AcceptedBaselineRequired));
     }
     if profile_row["acceptedPlanRevisionId"] != json!(previous)
         || profile_row["acceptedPlanVersion"] != version
         || h["baseRevisionId"] != json!(previous)
         || h["basePlanVersion"] != version
     {
-        return Ok(Outcome::BaseChanged);
+        return Ok(Err(Outcome::BaseChanged));
     }
-    let mut d = ru::storage::draft(tx, tenant, profile, draft_id)?
+    let d = ru::storage::draft(tx, tenant, profile, draft_id)?
         .ok_or_else(|| anyhow!("Missing draft"))?;
     let attached = rows(
         tx,
@@ -1100,22 +1118,46 @@ pub(crate) fn publish_in_transaction(
         .map(|r| ru::model::project(r, &["sourceId", "sourceLayer", "layerOrder"]))
         .collect();
     if attached != identities {
-        return Ok(Outcome::InputsChanged);
+        return Ok(Err(Outcome::InputsChanged));
     }
     validate_inputs(tx, tenant, &d.inputs)?;
     let predecessors = previous
         .map(|id| validate_projection(tx, tenant, profile, id))
         .transpose()?
         .unwrap_or_default();
+    Ok(Ok(DraftGate {
+        profile_row,
+        draft: d,
+        previous,
+        version,
+        predecessors,
+    }))
+}
+
+/// Checks the selected Required-unit reconciliation against the accepted base
+/// and prepares the Parts and units Accept would publish.
+fn check_selection(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    gate: DraftGate,
+) -> Result<std::result::Result<Checked, Outcome>> {
+    let DraftGate {
+        profile_row,
+        draft: mut d,
+        previous,
+        version,
+        predecessors,
+    } = gate;
     let Some(selected) = &d.selected else {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Missing,
-        });
+        }));
     };
     if selected.header["resultKind"] != "ready" {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Unresolved,
-        });
+        }));
     }
     ensure!(
         selected.header["planningDigest"] == d.planning
@@ -1123,14 +1165,14 @@ pub(crate) fn publish_in_transaction(
         "Invalid selected reconciliation"
     );
     let Some((mapping, base_parts)) = ru::storage::base(tx, tenant, profile, previous)? else {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Stale,
-        });
+        }));
     };
     if mapping != selected.header["baseMappingDigest"] {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Stale,
-        });
+        }));
     }
     let mut base = HashMap::new();
     let mut base_identity = HashMap::new();
@@ -1185,9 +1227,9 @@ pub(crate) fn publish_in_transaction(
     if ru::storage::selection_basis_digest(&mapping, &live_basis)
         != selected.header["selectionBasisDigest"]
     {
-        return Ok(Outcome::ReconciliationRequired {
+        return Ok(Err(Outcome::ReconciliationRequired {
             reason: ReconciliationReason::Stale,
-        });
+        }));
     }
     for p in &mut d.parts {
         if let Some(old) = predecessors
@@ -1202,6 +1244,78 @@ pub(crate) fn publish_in_transaction(
     let production = production(tx, tenant, profile)?;
     let selected_result: Value = serde_json::from_str(text(&selected.header, "resultJson")?)?;
     let prepared = model::prepare(d.parts, &selected_result["assignments"], &base)?;
+    Ok(Ok(Checked {
+        profile_row,
+        inputs: d.inputs,
+        previous,
+        version,
+        predecessors,
+        selected: selected.header.clone(),
+        base_parts,
+        base,
+        old_tokens,
+        prepared,
+        production,
+    }))
+}
+
+/// Mirrors Node AppRepository.applyPlanChanges inside the caller-owned transaction.
+pub(crate) fn publish_in_transaction(
+    tx: &Transaction<'_>,
+    context: &AuthenticatedPublicationContext,
+    profile: PositiveId,
+    draft_id: PositiveId,
+    requests: PublicationRequests<'_>,
+    key: &str,
+    tokens: &mut dyn RequiredUnitTokenAllocator,
+) -> Result<Outcome> {
+    let tenant = context.tenant.as_str();
+    let actor = context.actor.as_str();
+    let profile = profile.get() as i64;
+    let draft_id = draft_id.get() as i64;
+    let admitted_hash = request_digest(profile, draft_id, requests.admitted);
+    let request_hash = request_digest(profile, draft_id, requests.execution);
+    if let Some(row) = one(
+        tx,
+        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND actor_id=? AND profile_id=? AND idempotency_key=?",
+        &[&tenant, &actor, &profile, &key],
+    )? {
+        return Ok(if admission_matches(tx, &row, requests.admitted)? {
+            Outcome::Existing {
+                receipt: receipt(tx, tenant, &row)?,
+            }
+        } else {
+            Outcome::IdempotencyConflict
+        });
+    }
+    if let Some(row) = one(
+        tx,
+        "SELECT * FROM plan_apply_requests WHERE tenant_id=? AND profile_id=? AND draft_id=?",
+        &[&tenant, &profile, &draft_id],
+    )? {
+        return Ok(Outcome::AlreadyApplied {
+            receipt: receipt(tx, tenant, &row)?,
+        });
+    }
+    let request = requests.execution;
+    let gate = match check_draft(tx, tenant, profile, draft_id, request)? {
+        Ok(gate) => gate,
+        Err(refused) => return Ok(refused),
+    };
+    let Checked {
+        inputs,
+        previous,
+        version,
+        selected,
+        base,
+        old_tokens,
+        prepared,
+        production,
+        ..
+    } = match check_selection(tx, tenant, profile, gate)? {
+        Ok(checked) => checked,
+        Err(refused) => return Ok(refused),
+    };
     let remapping = if production.link_count > 0 || production.queue_count > 0 {
         if !request.remap_checkoff_links {
             return Ok(Outcome::ProductionActive {
@@ -1276,7 +1390,7 @@ pub(crate) fn publish_in_transaction(
         params![tenant, profile],
     )?;
     ensure!(tx.execute("UPDATE build_profiles SET accepted_plan_revision_id=NULL WHERE tenant_id=? AND id=? AND accepted_plan_revision_id IS ? AND accepted_plan_version=?",params![tenant,profile,previous,version])?==1,"Accepted pointer detach failed");
-    let input_set = publish_inputs(tx, tenant, profile, &d.inputs, &at)?;
+    let input_set = publish_inputs(tx, tenant, profile, &inputs, &at)?;
     let number:i64=tx.query_row("SELECT COALESCE(MAX(revision_number),0)+1 FROM plan_revisions WHERE tenant_id=? AND profile_id=?",params![tenant,profile],|r|r.get(0))?;
     let revision = insert(
         tx,
@@ -1376,9 +1490,9 @@ pub(crate) fn publish_in_transaction(
     tx.execute("INSERT INTO plan_accepted_input_sets(tenant_id,profile_id,input_set_id,accepted_at) VALUES(?,?,?,?) ON CONFLICT(profile_id) DO UPDATE SET input_set_id=excluded.input_set_id,accepted_at=excluded.accepted_at",params![tenant,profile,input_set,at])?;
     ensure!(tx.execute("UPDATE build_profiles SET accepted_plan_revision_id=?,accepted_plan_version=?,last_recomputed_at=? WHERE tenant_id=? AND id=? AND accepted_plan_revision_id IS NULL AND accepted_plan_version=?",params![revision,version+1,at,tenant,profile,version])?==1,"Accepted pointer publication failed");
     let life = request.expected_lifecycle_version.get() as i64;
-    let reconciliation = num(&selected.header, "id")?;
+    let reconciliation = num(&selected, "id")?;
     ensure!(tx.execute("UPDATE plan_drafts SET state='consumed',lifecycle_version=?,consumed_revision_id=?,consumed_at=? WHERE tenant_id=? AND profile_id=? AND id=? AND state='open' AND lifecycle_version=? AND snapshot_digest=? AND current_required_unit_reconciliation_id=?",params![life+1,revision,at,tenant,profile,draft_id,life,request.expected_snapshot_digest.as_str(),reconciliation])?==1,"Draft consumption failed");
-    let receipt_row = json!({"tenantId":tenant,"profileId":profile,"draftId":draft_id,"actorId":actor,"idempotencyKey":key,"requestFormat":model::REQUEST_FORMAT,"requestDigest":request_hash,"expectedSnapshotDigest":request.expected_snapshot_digest,"expectedLifecycleVersion":life,"expectedBaseRevisionId":previous,"expectedBasePlanVersion":version,"reconciliationId":reconciliation,"reconciliationDigest":selected.header["reconciliationDigest"],"revisionId":revision,"planVersion":version+1,"revisionDigest":prepared.digest,"requiredUnitMappingDigest":mapping_digest,"draftLifecycleVersion":life+1,"appliedAt":at});
+    let receipt_row = json!({"tenantId":tenant,"profileId":profile,"draftId":draft_id,"actorId":actor,"idempotencyKey":key,"requestFormat":model::REQUEST_FORMAT,"requestDigest":request_hash,"expectedSnapshotDigest":request.expected_snapshot_digest,"expectedLifecycleVersion":life,"expectedBaseRevisionId":previous,"expectedBasePlanVersion":version,"reconciliationId":reconciliation,"reconciliationDigest":selected["reconciliationDigest"],"revisionId":revision,"planVersion":version+1,"revisionDigest":prepared.digest,"requiredUnitMappingDigest":mapping_digest,"draftLifecycleVersion":life+1,"appliedAt":at});
     let apply_request_id = insert(tx, "plan_apply_requests", &receipt_row, false)?;
     insert(
         tx,

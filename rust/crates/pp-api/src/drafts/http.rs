@@ -14,6 +14,7 @@ use axum::{
 };
 use pp_storage::{
     auth::{self, AuthFailure, Secret, rebuild::RebuildAuthClient},
+    plan_publication::{Outcome as AcceptOutcome, preview::PreviewOutcome},
     required_units::{AdmissionFailure, DraftListResponse, Outcome as WorkspaceOutcome},
     working_drafts::{
         AbandonOutcome, AbandonRequest, DraftIdentity, DraftList, EditRequest, Failure, Outcome,
@@ -230,7 +231,7 @@ enum ReadError {
     Storage(anyhow::Error),
 }
 
-/// Mounts list/workspace reads, part edits, and abandon when the startup gate
+/// Mounts list/workspace reads, Accept previews, part edits, and abandon when the startup gate
 /// is on. Storage accepts the presented credential before a handler runs.
 /// API-key reads also resolve the key so `lastUsedAt` commits as Node does.
 /// A disabled gate mounts nothing.
@@ -278,6 +279,10 @@ fn mount(
     let routes = Router::new()
         .route("/plans/{id}/drafts", get(list))
         .route("/plans/{id}/drafts/{draft_id}", get(workspace))
+        .route(
+            "/plans/{id}/drafts/{draft_id}/accept-preview",
+            get(accept_preview),
+        )
         .route("/plans/{id}/drafts/{draft_id}/parts", patch(edit))
         .route("/plans/{id}/drafts/{draft_id}/abandon", post(abandon))
         .route_layer(middleware::from_fn_with_state(app, authorize));
@@ -308,6 +313,7 @@ async fn authorize(
         Request::Read { draft_id }
         | Request::Diff { draft_id }
         | Request::Workspace { draft_id } => ("read", Some(*draft_id)),
+        Request::AcceptPreview { draft_id } => ("accept_preview", Some(*draft_id)),
     };
     match load(&app, presented, profile, operation).await {
         Ok(outcome) => {
@@ -415,10 +421,12 @@ fn read_target(path: &str) -> Option<(PositiveId, Request)> {
         None => parts.next().is_none().then_some((profile, Request::List)),
         Some(draft) => {
             let draft_id = path_id(draft)?;
-            parts
-                .next()
-                .is_none()
-                .then_some((profile, Request::Workspace { draft_id }))
+            let request = match parts.next() {
+                None => Request::Workspace { draft_id },
+                Some("accept-preview") => Request::AcceptPreview { draft_id },
+                Some(_) => return None,
+            };
+            parts.next().is_none().then_some((profile, request))
         }
     }
 }
@@ -444,6 +452,33 @@ async fn workspace(Extension(read): Extension<Authorized>) -> Response {
         Outcome::ProfileNotFound => profile_missing(),
         Outcome::DraftNotFound => draft_missing(),
         _ => internal_error(),
+    }
+}
+
+async fn accept_preview(Extension(read): Extension<Authorized>) -> Response {
+    match read.outcome.as_ref() {
+        Outcome::AcceptPreview { preview } => present_preview(preview),
+        Outcome::ProfileNotFound => profile_missing(),
+        Outcome::DraftNotFound => draft_missing(),
+        _ => internal_error(),
+    }
+}
+
+/// A preview is 200. A refusal is the one Accept would return: 404 for a
+/// missing draft, otherwise 409 with Accept's outcome kind as `code` and its
+/// fields alongside.
+fn present_preview(preview: &PreviewOutcome) -> Response {
+    match preview {
+        PreviewOutcome::Ready(preview) => json_response(StatusCode::OK, preview),
+        PreviewOutcome::Refused(AcceptOutcome::NotFound) => draft_missing(),
+        PreviewOutcome::Refused(refused) => match serde_json::to_value(refused) {
+            Ok(Value::Object(mut body)) => {
+                let code = body.remove("kind").unwrap_or(Value::Null);
+                body.insert("code".into(), code);
+                json_response(StatusCode::CONFLICT, body)
+            }
+            _ => internal_error(),
+        },
     }
 }
 

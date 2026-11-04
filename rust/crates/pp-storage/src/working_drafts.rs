@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod diff;
+pub(crate) mod diff;
 pub mod observation;
 mod preparation;
 #[cfg(test)]
@@ -53,9 +53,19 @@ mod yaml_continuation_tests;
 #[derive(Clone, Debug)]
 pub enum Request {
     List,
-    Read { draft_id: PositiveId },
-    Diff { draft_id: PositiveId },
-    Workspace { draft_id: PositiveId },
+    Read {
+        draft_id: PositiveId,
+    },
+    Diff {
+        draft_id: PositiveId,
+    },
+    Workspace {
+        draft_id: PositiveId,
+    },
+    /// What accepting the draft would change, through Accept's own checks.
+    AcceptPreview {
+        draft_id: PositiveId,
+    },
 }
 
 /// The JSON body of Node's draft Part edit route. It accepts what
@@ -268,6 +278,9 @@ pub enum Outcome {
     Workspace {
         workspace: Box<required_units::Workspace>,
     },
+    AcceptPreview {
+        preview: crate::plan_publication::preview::PreviewOutcome,
+    },
     ProfileNotFound,
     DraftNotFound,
 }
@@ -372,7 +385,7 @@ impl DraftList {
     }
 }
 #[derive(Debug)]
-pub struct DraftDiff(diff::DraftDiffModel);
+pub struct DraftDiff(pub(crate) diff::DraftDiffModel);
 impl DraftDiff {
     pub fn into_json_body(self) -> DraftDiffJsonBody {
         DraftDiffJsonBody(self.0.write_json())
@@ -850,6 +863,9 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<O
             draft_origin(&draft.header)?;
             Outcome::Workspace { workspace: required_units::view::workspace(&tx, &tenant, &profile_row, &draft)? }
         }
+        Request::AcceptPreview { draft_id } => Outcome::AcceptPreview {
+            preview: crate::plan_publication::preview::preview(&tx, &tenant, profile, i64::try_from(draft_id.get())?)?,
+        },
     };
     ensure!(
         !command.cancelled.load(Ordering::Acquire),
@@ -1626,6 +1642,18 @@ impl Outcome {
                 Some("workspace"),
                 serde_json::to_vec(&workspace)?,
             ),
+            Self::AcceptPreview { preview } => match preview {
+                crate::plan_publication::preview::PreviewOutcome::Ready(preview) => (
+                    "accept_preview",
+                    Some("preview"),
+                    serde_json::to_vec(&preview)?,
+                ),
+                crate::plan_publication::preview::PreviewOutcome::Refused(refused) => (
+                    "accept_refused",
+                    Some("refused"),
+                    serde_json::to_vec(&refused)?,
+                ),
+            },
             Self::ProfileNotFound => ("profile_not_found", None, Vec::new()),
             Self::DraftNotFound => ("draft_not_found", None, Vec::new()),
         };

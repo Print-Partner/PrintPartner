@@ -5,7 +5,7 @@ use required_units::model::{INPUT_FIELDS, PART_FIELDS, js_cmp, project};
 use rusqlite::Transaction;
 use std::collections::{HashMap, HashSet};
 
-pub(super) fn read(
+pub(crate) fn read(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: &Value,
@@ -153,17 +153,17 @@ pub(super) fn read(
 }
 
 #[derive(Debug)]
-struct ChangedPart {
-    before: DraftPart,
-    after: DraftPart,
-    fields: Vec<&'static str>,
+pub(crate) struct ChangedPart {
+    pub(crate) before: DraftPart,
+    pub(crate) after: DraftPart,
+    pub(crate) fields: Vec<&'static str>,
 }
 #[derive(Debug)]
-pub(super) struct DraftDiffModel {
-    ordinary: Map<String, Value>,
-    added: Vec<DraftPart>,
-    removed: Vec<DraftPart>,
-    changed: Vec<ChangedPart>,
+pub(crate) struct DraftDiffModel {
+    pub(crate) ordinary: Map<String, Value>,
+    pub(crate) added: Vec<DraftPart>,
+    pub(crate) removed: Vec<DraftPart>,
+    pub(crate) changed: Vec<ChangedPart>,
 }
 fn before_json(part: &DraftPart) -> Vec<u8> {
     part.json_fields(&[vec!["id"], PART_FIELDS.to_vec()].concat(), false)
@@ -179,6 +179,16 @@ fn array<T>(values: &[T], output: &mut Vec<u8>, write: impl Fn(&T, &mut Vec<u8>)
     output.push(b']');
 }
 impl DraftDiffModel {
+    /// No Part or input differs from the base revision.
+    pub(crate) fn is_empty(&self) -> bool {
+        let inputs = &self.ordinary["inputs"];
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+            && ["added", "removed", "changed"]
+                .iter()
+                .all(|key| inputs[*key].as_array().is_none_or(Vec::is_empty))
+    }
     pub(super) fn write_json(&self) -> Vec<u8> {
         let object = &self.ordinary;
         let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();

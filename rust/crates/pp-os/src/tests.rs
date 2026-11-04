@@ -313,6 +313,52 @@ fn directory_operations_refuse_names_outside_the_directory() {
 }
 
 #[test]
+fn windows_aliases_are_recognized_and_refused_only_on_windows() {
+    for alias in [
+        "NUL",
+        "nul.stl",
+        "Con",
+        "con.tar.gz",
+        "AUX .txt",
+        "COM1",
+        "lpt9.md",
+        "COM¹",
+        "CONOUT$",
+        "name.",
+        "name ",
+        "a.b.",
+    ] {
+        assert!(is_windows_alias(alias), "{alias:?}");
+    }
+    for plain in [
+        "null.stl",
+        "COM10",
+        "LPT",
+        "console.txt",
+        ".hidden",
+        "a.b",
+        "nu l",
+    ] {
+        assert!(!is_windows_alias(plain), "{plain:?}");
+    }
+    let root = scratch();
+    let dir = Dir::open(root.path()).unwrap();
+    for alias in ["NUL.stl", "con", "trailing.", "trailing "] {
+        let created = dir.create_new_nofollow(alias);
+        if cfg!(windows) {
+            assert_eq!(created.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                dir.create_dir(alias).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        } else {
+            drop(created.unwrap());
+            dir.remove_file(alias).unwrap();
+        }
+    }
+}
+
+#[test]
 fn directories_are_created_renamed_and_removed_through_the_handle() {
     let root = scratch();
     let dir = Dir::open(root.path()).unwrap();
@@ -874,6 +920,26 @@ mod windows {
             dir.status_nofollow("renamed").unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn a_held_directory_lock_file_cannot_be_removed_or_replaced() {
+        let root = scratch();
+        let first = Dir::open(root.path()).unwrap();
+        let second = Dir::open(root.path()).unwrap();
+        first.try_lock().unwrap();
+        let path = root.path().join(DIR_LOCK_FILE);
+        assert!(second.remove_file(DIR_LOCK_FILE).is_err());
+        assert!(std::fs::remove_file(&path).is_err());
+        assert!(std::fs::rename(&path, root.path().join("moved")).is_err());
+        assert_eq!(
+            second.try_lock().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        first.unlock().unwrap();
+        second.try_lock().unwrap();
+        drop((first, second));
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

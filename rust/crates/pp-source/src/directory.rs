@@ -194,8 +194,11 @@ impl Directory {
         Ok(())
     }
 
-    pub(crate) fn remove_owned_file(&self, name: &str, owned: &File) -> Result<()> {
-        self.require_owned_file(name, owned)?;
+    /// Takes the handle so it closes as soon as the entry is gone. Without
+    /// POSIX delete semantics (FAT on Windows) a removed entry keeps its name
+    /// until its last handle closes, which would block removing the parent.
+    pub(crate) fn remove_owned_file(&self, name: &str, owned: File) -> Result<()> {
+        self.require_owned_file(name, &owned)?;
         self.0.remove_file(name)?;
         Ok(())
     }
@@ -208,8 +211,9 @@ impl Directory {
         Ok(())
     }
 
-    pub(crate) fn remove_owned_empty_directory(&self, name: &str, owned: &Directory) -> Result<()> {
-        self.require_owned_directory(name, owned)?;
+    /// Takes the handle for the reason [`Directory::remove_owned_file`] does.
+    pub(crate) fn remove_owned_empty_directory(&self, name: &str, owned: Directory) -> Result<()> {
+        self.require_owned_directory(name, &owned)?;
         self.0.remove_dir(name)?;
         Ok(())
     }

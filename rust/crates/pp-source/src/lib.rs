@@ -175,6 +175,17 @@ impl SourcePath {
         &self.0
     }
 
+    /// Refuses segments that Windows absolute-path readers reinterpret (see
+    /// [`pp_os::is_windows_alias`]). New publications are checked on every OS,
+    /// so a snapshot made anywhere opens on Windows. Persisted paths are not
+    /// re-checked, so earlier Unix revisions stay readable.
+    pub(crate) fn require_portable(&self) -> Result<()> {
+        if self.0.split('/').any(pp_os::is_windows_alias) {
+            return Err(Error::UnsafePath);
+        }
+        Ok(())
+    }
+
     /// A path stored before the Unicode 17 pin. Unicode 17 NFC is still
     /// accepted. A Unicode 16 NFC spelling is accepted only here, so a new
     /// `SnapshotRequest` cannot persist it.
@@ -563,6 +574,9 @@ fn validate_request_policy(
     for file in &request.files {
         if file.size_hint_bytes.is_some_and(|n| n > MAX_SAFE_INTEGER) {
             return Err(Error::Limit);
+        }
+        if !persisted_unicode16 {
+            file.path.require_portable()?;
         }
         if selected_collisions {
             paths.insert(&file.path, false)?;

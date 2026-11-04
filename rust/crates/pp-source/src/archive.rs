@@ -973,7 +973,9 @@ fn archive_path(raw_label: &str, label_policy: ArchiveLabelPolicy) -> Result<Sou
         #[cfg(feature = "desktop_rebuild")]
         ArchiveLabelPolicy::NfcAtAcquisition => raw_label.nfc().collect(),
     };
-    SourcePath::try_from(label).map_err(|_| ArchiveError::UnsafeEntry)
+    SourcePath::try_from(label)
+        .and_then(|path| path.require_portable().map(|()| path))
+        .map_err(|_| ArchiveError::UnsafeEntry)
 }
 
 fn read_zip64_directory(

@@ -787,6 +787,29 @@ fn write_legacy_revision_with_omissions(
 }
 
 #[test]
+fn new_publications_refuse_names_windows_readers_reinterpret_on_every_os() {
+    let fixture = Fixture::new();
+    let repos = fixture.repos();
+    for path in [
+        "NUL.stl",
+        "parts/con/part.stl",
+        "COM1.stl",
+        "part.stl.",
+        "parts /a.stl",
+    ] {
+        let mut req = request();
+        req.files[0].path = SourcePath::try_from(path.to_owned()).unwrap();
+        let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
+        let error = repos
+            .source(42)
+            .and_then(|mut source| source.materialize(req, &input, budget()))
+            .unwrap_err();
+        assert_eq!(error.category(), "unsafe-path", "{path:?}");
+    }
+    assert!(revisions_empty(&fixture));
+}
+
+#[test]
 fn legacy_ambiguous_revision_reports_permanent_migration_error_and_is_retained() {
     let fixture = Fixture::new();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
@@ -806,12 +829,25 @@ fn legacy_ambiguous_revision_reports_permanent_migration_error_and_is_retained()
             entries
         };
         let before = inventory();
+        // Case-insensitive volumes (NTFS by default) fold some pairs, such as
+        // Σ and ς, into one entry: the second write replaces the first. That
+        // revision no longer matches its manifest, so load reports corruption.
+        let distinct = names
+            .iter()
+            .all(|name| fs::read(revision.join(name)).unwrap() == name.as_bytes());
         let mut retry = request();
         retry.upstream_revision_key = "legacy-ambiguous".into();
         for _ in 0..2 {
             let error = source
                 .materialize(retry.clone(), &input, budget())
                 .unwrap_err();
+            if !distinct {
+                assert!(
+                    matches!(error, pp_source::Error::CorruptSnapshot),
+                    "{names:?}: {error:?}"
+                );
+                continue;
+            }
             assert!(
                 matches!(&error, pp_source::Error::AmbiguousRevision(key) if key == "legacy-ambiguous"),
                 "{names:?}: {error:?}"

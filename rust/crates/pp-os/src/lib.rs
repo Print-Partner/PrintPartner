@@ -44,10 +44,11 @@
 //!
 //! Entry names are matched without case, as Win32 paths are. `NtCreateFile`
 //! does not strip trailing dots and spaces the way Win32 path parsing does, so
-//! `name.` and `name` are different entries; callers should not use such
-//! names. Every [`Dir`] entry operation, creating, renaming and removing
-//! directories included, refuses `.`, `..`, separators and drive prefixes
-//! before it reaches the system.
+//! `name.` and `name` would be different entries, so every Windows entry
+//! operation refuses such names and reserved device names; see
+//! [`is_windows_alias`]. Every [`Dir`] entry operation, creating, renaming and
+//! removing directories included, refuses `.`, `..`, separators and drive
+//! prefixes before it reaches the system.
 //!
 //! # Durability on Windows
 //!
@@ -130,7 +131,7 @@ impl PosixAccess {
 
 /// The effective user ID, or `None` on Windows, which has no POSIX owner.
 pub fn effective_uid() -> Option<u32> {
-    cfg!(unix).then(platform::effective_uid)
+    platform::optional_uid()
 }
 
 /// What one inspection of an entry saw.
@@ -245,6 +246,15 @@ pub fn try_lock(file: &File) -> Result<(), TryLockError> {
         Ok(()) => Ok(()),
         Err(fs4::TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
         Err(fs4::TryLockError::Error(error)) => Err(TryLockError::Io(error)),
+    }
+}
+
+/// [`try_lock`] as an `io::Result`, reporting a held lock as `blocked()`.
+fn try_lock_or(file: &File, blocked: fn() -> io::Error) -> io::Result<()> {
+    match try_lock(file) {
+        Ok(()) => Ok(()),
+        Err(TryLockError::WouldBlock) => Err(blocked()),
+        Err(TryLockError::Io(error)) => Err(error),
     }
 }
 
@@ -449,12 +459,47 @@ impl Iterator for Entries {
     }
 }
 
+/// True for a name Win32 path parsing reinterprets: a reserved device name
+/// (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9` with ASCII or
+/// superscript digits, `CONIN$`, `CONOUT$`) with or without an extension, in
+/// any case, or a name ending in a dot or space. Handle-relative opens create
+/// such names literally, but an absolute-path reader then opens the device or
+/// the trimmed name instead.
+pub fn is_windows_alias(name: &str) -> bool {
+    if name.ends_with(['.', ' ']) {
+        return true;
+    }
+    let stem = name.find('.').map_or(name, |dot| &name[..dot]);
+    let stem = stem.trim_end_matches(' ').to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    let digit = |tail: &str| {
+        let mut chars = tail.chars();
+        matches!(
+            (chars.next(), chars.next()),
+            (Some('0'..='9' | '¹' | '²' | '³'), None)
+        )
+    };
+    ["COM", "LPT"]
+        .iter()
+        .any(|prefix| stem.strip_prefix(prefix).is_some_and(digit))
+}
+
 /// Refuse anything but one normal path component, so an entry operation
-/// cannot leave its directory.
+/// cannot leave its directory. Windows also refuses
+/// [aliases](is_windows_alias), which Unix stores as ordinary names.
 fn checked_name(name: &str) -> io::Result<&str> {
     let mut components = Path::new(name).components();
     match (components.next(), components.next()) {
-        (Some(Component::Normal(part)), None) if part == OsStr::new(name) => Ok(name),
+        (Some(Component::Normal(part)), None)
+            if part == OsStr::new(name) && !platform::refuses_alias(name) =>
+        {
+            Ok(name)
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("not a single directory entry name: {name:?}"),

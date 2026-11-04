@@ -18,6 +18,15 @@ pub(crate) fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+pub(crate) fn optional_uid() -> Option<u32> {
+    Some(effective_uid())
+}
+
+/// Unix names have no device aliases.
+pub(crate) fn refuses_alias(_name: &str) -> bool {
+    false
+}
+
 fn from_metadata(metadata: &Metadata) -> Status {
     let file_type = metadata.file_type();
     let kind = if file_type.is_symlink() {
@@ -207,23 +216,20 @@ impl Dir {
         }
         Ok(())
     }
-    fn locked(&self, operation: libc::c_int) -> io::Result<()> {
-        if unsafe { libc::flock(self.directory.as_raw_fd(), operation) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
+    /// `flock(LOCK_EX | LOCK_NB)` on the directory. A held lock reports
+    /// `EWOULDBLOCK`, the error `fs2` returned before.
     pub(crate) fn try_lock(&self) -> io::Result<()> {
-        self.locked(libc::LOCK_EX | libc::LOCK_NB)
+        crate::try_lock_or(&self.directory, || {
+            io::Error::from_raw_os_error(libc::EWOULDBLOCK)
+        })
     }
 
     pub(crate) fn lock(&self) -> io::Result<()> {
-        self.locked(libc::LOCK_EX)
+        fs4::FileExt::lock(&self.directory)
     }
 
     pub(crate) fn unlock(&self) -> io::Result<()> {
-        self.locked(libc::LOCK_UN)
+        crate::unlock(&self.directory)
     }
 
     pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {

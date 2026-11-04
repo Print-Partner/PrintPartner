@@ -19,11 +19,12 @@ use windows_sys::{
             FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
             FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
             FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
-            FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-            FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_SYNCHRONOUS_IO_NONALERT,
-            FILE_WRITE_THROUGH, FileDispositionInformation, FileDispositionInformationEx,
-            FileRenameInformation, FileRenameInformationEx, NTCREATEFILE_CREATE_DISPOSITION,
-            NTCREATEFILE_CREATE_OPTIONS, NtCreateFile, NtSetInformationFile,
+            FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
+            FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
+            FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, FileDispositionInformation,
+            FileDispositionInformationEx, FileRenameInformation, FileRenameInformationEx,
+            NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile,
+            NtSetInformationFile,
         },
     },
     Win32::{
@@ -48,6 +49,14 @@ use windows_sys::{
 /// Windows has no POSIX owner; [`crate::PosixAccess`] is never constructed.
 pub(crate) fn effective_uid() -> u32 {
     u32::MAX
+}
+
+pub(crate) fn optional_uid() -> Option<u32> {
+    None
+}
+
+pub(crate) fn refuses_alias(name: &str) -> bool {
+    crate::is_windows_alias(name)
 }
 
 fn information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
@@ -380,6 +389,17 @@ impl Dir {
         disposition: NTCREATEFILE_CREATE_DISPOSITION,
         options: NTCREATEFILE_CREATE_OPTIONS,
     ) -> io::Result<File> {
+        self.open_entry_shared(name, access, disposition, options, SHARE_ALL)
+    }
+
+    fn open_entry_shared(
+        &self,
+        name: &str,
+        access: FILE_ACCESS_RIGHTS,
+        disposition: NTCREATEFILE_CREATE_DISPOSITION,
+        options: NTCREATEFILE_CREATE_OPTIONS,
+        share: FILE_SHARE_MODE,
+    ) -> io::Result<File> {
         let mut wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
         let bytes = u16::try_from(wide.len() * 2)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "entry name is too long"))?;
@@ -408,7 +428,7 @@ impl Dir {
                 &mut status_block,
                 std::ptr::null(),
                 FILE_ATTRIBUTE_NORMAL,
-                SHARE_ALL,
+                share,
                 disposition,
                 options | FILE_SYNCHRONOUS_IO_NONALERT,
                 std::ptr::null(),
@@ -601,34 +621,30 @@ impl Dir {
     }
 
     /// Open or create the lock file once and keep it for this `Dir`.
+    /// Opens or creates the lock file without delete sharing, so while any
+    /// `Dir` holds it nobody can delete, rename or replace the name: every
+    /// holder keeps locking the same file.
     fn lock_file(&self) -> io::Result<&File> {
-        let name = crate::DIR_LOCK_FILE;
         if let Some(file) = self.lock.get() {
             return Ok(file);
         }
-        let file = match self.open_write_nofollow(name) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match self.create_new_nofollow(name) {
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        self.open_write_nofollow(name)
-                    }
-                    created => created,
-                }
-            }
-            opened => opened,
-        }?;
+        let file = refuse_link(self.open_entry_shared(
+            crate::DIR_LOCK_FILE,
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            FILE_OPEN_IF,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+        )?)?;
         Ok(self.lock.get_or_init(|| file))
     }
 
     pub(crate) fn try_lock(&self) -> io::Result<()> {
-        match crate::try_lock(self.lock_file()?) {
-            Ok(()) => Ok(()),
-            Err(crate::TryLockError::WouldBlock) => Err(io::Error::new(
+        crate::try_lock_or(self.lock_file()?, || {
+            io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "another handle holds the directory lock",
-            )),
-            Err(crate::TryLockError::Io(error)) => Err(error),
-        }
+            )
+        })
     }
 
     pub(crate) fn lock(&self) -> io::Result<()> {

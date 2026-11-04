@@ -333,8 +333,12 @@ npm --prefix web run test:browser --workspace @print-partner/ui
 profile in Chromium (through `playwright-core`) and in the system WebKitGTK
 (through PyGObject, under `xvfb-run` when there is no display). It fails on any
 request to another origin, on a bundled face that did not load, and when the
-figure cells are not Plex Mono with tabular figures. A missing engine prints
-`SKIP <engine>` and the script exits 77. The step declares 77 as its
+figure cells are not Plex Mono with tabular figures. `frame.browser.mjs` then
+runs in WebKitGTK: axe at WCAG 2.2 AA on every frame page, screen state and
+dialog in all three themes, and a sideways-scroll check at 200% text and 400%
+zoom. Set `PP_UI_EVIDENCE_DIR` to save its screenshots. A missing engine prints
+`SKIP <engine>`. `test/browser/all.mjs` runs both checks even when one skips or
+fails, and exits with the worst status: a failure, then 77, then 0. The step declares 77 as its
 `skip_status`, so the summary shows `SKIP ui-package` and `--fail-on-skip`
 fails.
 
@@ -449,8 +453,8 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
-| `pp-storage` | GRE-653 | Its file mechanics now go through `pp-os`, and it type-checks for `x86_64-pc-windows-msvc`. The exclusion stays until a hosted Windows run passes its tests. Its Unix-only tests (POSIX modes, symbolic links, Node child probes) carry `#[cfg(unix)]`. |
-| `pp-source` | GRE-653 | Source directory reads use Unix file modes and no-follow opens. |
+| `pp-storage` | GRE-653 | Its file mechanics go through `pp-os` and it type-checks for `x86_64-pc-windows-msvc`, but a hosted Windows run fails 42 of its tests: byte-range locks block reads of lease files, open files cause sharing violations, SQLite rejects `file:\\?\` URIs, and some tests compare path spellings or run Node fixture scripts. |
+| `pp-source` | GRE-653 | Its file mechanics go through `pp-os`, but NTFS refuses to rename a directory while handles to entries inside it are open, and snapshot publication and retained capture rename under such handles. |
 | `pp-compat` | GRE-654 | The Node child supervisor uses Unix sockets, process groups, signals and file modes. |
 | `pp-core` | GRE-654 | It depends on `pp-compat` and `pp-storage`. |
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
@@ -459,7 +463,8 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 `pp-os` is not excluded. The Windows job builds and tests it, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
-tests for symbolic links, junctions and directory locks.
+tests for symbolic links, junctions, directory locks, write-through renames,
+device-name refusal and the FAT fallbacks.
 
 `rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.
 

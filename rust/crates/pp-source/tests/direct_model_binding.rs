@@ -8,7 +8,7 @@ use pp_source::{
     archive::{ArchiveLimits, ZipInput},
 };
 use serde_json::Value;
-use std::{fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio, sync::atomic::AtomicBool};
+use std::{fs, io::Write, process::Stdio, sync::atomic::AtomicBool};
 
 #[path = "support/process.rs"]
 mod support;
@@ -29,7 +29,7 @@ impl Fixture {
         fs::create_dir(path.join("repos")).unwrap();
         fs::create_dir(path.join("input")).unwrap();
         for directory in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+            modes::pin_mode(directory, 0o755);
         }
         Self(path)
     }
@@ -335,3 +335,6 @@ fn direct_model_redirect_is_rejected_before_publish_and_valid_models_still_conve
     assert!(read_bytes < 200_000, "{read_bytes}");
     assert_eq!(fs::read(&sibling_model).unwrap(), package);
 }
+
+#[path = "support/modes.rs"]
+mod modes;

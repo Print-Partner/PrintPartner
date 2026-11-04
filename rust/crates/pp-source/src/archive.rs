@@ -6,9 +6,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
-    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -653,12 +652,7 @@ impl BoundCopy {
             std::process::id(),
             BOUND_COPIES.fetch_add(1, Ordering::Relaxed)
         ));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
+        let file = pp_os::create_new_private_file(&path)?;
         Ok(Self {
             path,
             file: Some(file),
@@ -979,7 +973,9 @@ fn archive_path(raw_label: &str, label_policy: ArchiveLabelPolicy) -> Result<Sou
         #[cfg(feature = "desktop_rebuild")]
         ArchiveLabelPolicy::NfcAtAcquisition => raw_label.nfc().collect(),
     };
-    SourcePath::try_from(label).map_err(|_| ArchiveError::UnsafeEntry)
+    SourcePath::try_from(label)
+        .and_then(|path| path.require_portable().map(|()| path))
+        .map_err(|_| ArchiveError::UnsafeEntry)
 }
 
 fn read_zip64_directory(

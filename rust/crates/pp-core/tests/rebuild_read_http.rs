@@ -375,6 +375,21 @@ mod with_feature {
                 "{path}"
             );
         }
+        // An id that cannot name a Build still checks the credential first.
+        for path in ["/plans/0/history", "/plans/0x1/history"] {
+            assert_eq!(
+                server
+                    .json(
+                        Method::GET,
+                        path,
+                        &[("Cookie", "pp_session=not-a-session")],
+                        None
+                    )
+                    .await,
+                (401, json!({"detail": "Authentication required"})),
+                "{path}"
+            );
+        }
         // The same router answers Part assembled reads, which an empty Plan
         // has none of.
         for path in ["/parts/1/assembled", "/api/v1/parts/1/assembled"] {

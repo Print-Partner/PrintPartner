@@ -74,7 +74,7 @@ impl Fixture {
             .read(
                 Credential::Session(Secret::new("read-fixture-secret".into())),
                 Request {
-                    build: PositiveId::new(build).unwrap(),
+                    build: Some(PositiveId::new(build).unwrap()),
                     cursor: cursor.map(|raw| Cursor::parse(raw).unwrap()),
                     limit,
                 },

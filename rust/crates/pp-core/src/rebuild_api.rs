@@ -8,7 +8,7 @@ use pp_api::{
     builds::{BuildHttpConfig, build_router},
     catalog::{CatalogHttpConfig, admit_catalog_routes},
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
-    history::{HistoryHttpConfig, history_router},
+    history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpHttpConfig, mcp_router},
 };
@@ -224,7 +224,7 @@ pub fn read_router(
         accepted_client,
     );
     let history = history_router(
-        HistoryHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         history_client,
     );
     let mcp = mcp_router(

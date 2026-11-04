@@ -29,7 +29,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `drafts` | `draft_router(DraftHttpConfig, WorkingDraftClient, RebuildAuthClient)` and `admit_draft_routes`. |
 | `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. |
 | `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. |
-| `history` | `history_router(HistoryHttpConfig, HistoryClient)`: paged Build history at `/plans/{id}/history` and `/api/v2/plans/{id}/history`. |
+| `history` | `history_router(AcceptedHttpConfig, HistoryClient)`: paged Build history at `/plans/{id}/history` and `/api/v2/plans/{id}/history`. |
 | `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
 | `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient)`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. |

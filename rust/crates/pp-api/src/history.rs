@@ -24,9 +24,6 @@ use pp_storage::{
 };
 use std::sync::{Arc, atomic::AtomicBool};
 
-/// History admits requests exactly as the Accepted Plan reads do.
-pub type HistoryHttpConfig = AcceptedHttpConfig;
-
 #[derive(Clone)]
 struct App {
     gate: Gate,
@@ -35,7 +32,8 @@ struct App {
 
 /// Mounts `GET /plans/{id}/history` at `/` and `/api/v2` when
 /// `PP_DESKTOP_REBUILD` was exactly `1` or `true`; otherwise nothing.
-pub fn history_router(config: HistoryHttpConfig, client: HistoryClient) -> Router {
+/// Admission is the Accepted Plan reads' (`AcceptedHttpConfig`).
+pub fn history_router(config: AcceptedHttpConfig, client: HistoryClient) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
     };
@@ -82,13 +80,11 @@ async fn history(
         Ok(page) => page,
         Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
     };
-    // Only a decimal positive safe integer can name a Build.
-    let Some(build) = (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+    // Only a decimal positive safe integer can name a Build. Any other id
+    // still authenticates, then answers not found.
+    let build = (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
         .then(|| id.parse().ok().and_then(|id| PositiveId::new(id).ok()))
-        .flatten()
-    else {
-        return failure(StatusCode::NOT_FOUND, "Profile not found");
-    };
+        .flatten();
     let request = Request {
         build,
         cursor,

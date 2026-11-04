@@ -192,7 +192,9 @@ impl Cursor {
 
 #[derive(Debug, Clone)]
 pub struct Request {
-    pub build: PositiveId,
+    /// `None` names no Build: the read still checks the credential, then
+    /// answers `MissingBuild`.
+    pub build: Option<PositiveId>,
     pub cursor: Option<Cursor>,
     pub limit: u16,
 }
@@ -260,13 +262,16 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<O
             secret,
         } => auth::read_key_tenant(&tx, routed_tenant, secret)?,
     };
-    let build = i64::try_from(command.request.build.get())?;
+    let build = match command.request.build {
+        Some(build) => i64::try_from(build.get())?,
+        None => 0,
+    };
     let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id=?1 AND id=?2)",
         params![tenant, build],
         |row| row.get(0),
     )?;
-    if !exists {
+    if build == 0 || !exists {
         tx.commit()?;
         return Ok(Outcome::MissingBuild);
     }

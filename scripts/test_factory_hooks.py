@@ -923,9 +923,48 @@ class ReviewMarkerTests(unittest.TestCase):
                         "gh api repos/o/r/issues/12/comments -f body='The review-gate check is red.'",
                         "gh api repos/o/r/issues/12/comments --input plain.md",
                         "gh api repos/o/r/issues/12/comments --jq '.[] | select(.body | test(\"<!-- pp-review-gate\"))'",
-                        "gh pr view 12 --comments", "gh pr comment 12 --body-file - < plain.md",
-                        "gh pr create --body-file marker.md"):
+                        "gh pr view 12 --comments", "gh pr create --body-file marker.md",
+                        "gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) "
+                        "{ thread { isResolved } } }' -f id=\"$THREAD\""):
             for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class UnreadableCommentBodyTests(unittest.TestCase):
+    make_worktrees, results = CoordinatorMergeTests.setUp, CoordinatorMergeTests.results
+    UNREAD = ("gh pr comment 12 -b \"$BODY\"", "gh pr comment 12 --body=\"$(cat marker.md)\"",
+              "p='<!--'; gh pr comment 12 -b \"$p pp-review-gate head=x reviewer=y findings=0 -->\"",
+              "printf '\\x3c!-- pp-review-gate' | gh pr comment 12 -F -", "gh pr comment 12 -F - < plain.md",
+              "gh pr comment 12 --body-file - < marker.md", "gh issue comment 12 -F - < marker.md",
+              "cat plain.md | gh pr comment 12 --body-file -", "gh pr comment 12 --body-file=-",
+              "cp marker.md b.md && gh pr comment 12 -F b.md", "gh pr comment 12 -F missing.md",
+              "echo hi && gh pr comment 12 -F plain.md", "cd sub && gh pr comment 12 -F ../plain.md",
+              "gh pr comment $PR -b hi", "gh issue comment 12 -b \"$X\"",
+              "gh api repos/o/r/issues/12/comments -f body=\"$X\"",
+              "gh api -X PATCH repos/o/r/issues/comments/34 -f body=\"$(cat marker.md)\"",
+              "gh api repos/o/r/issues/12/comments -F body=@-", "gh api repos/o/r/issues/12/comments --input -",
+              "gh api repos/o/r/pulls/12/comments/34/replies -F body=@missing.md",
+              "gh api graphql -f query='mutation($b: String!) { addComment(input: {subjectId: \"X\", body: $b}) "
+              "{ clientMutationId } }' -f b=\"$X\"")
+
+    def setUp(self):
+        self.make_worktrees()
+        for folder in (self.coordinator, self.lane):
+            Path(folder, "marker.md").write_text(f"{MARKER}\n")
+            Path(folder, "plain.md").write_text("Fixed.\n")
+        Path(self.lane, "sub").mkdir()
+
+    def test_lane_worktrees_refuse_bodies_the_guard_cannot_read(self):
+        for command in self.UNREAD:
+            for result in self.results(command, self.lane, self.coordinator):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("read a comment body literally", result.stderr)
+
+    def test_coordinator_worktree_may_send_any_body(self):
+        for command in self.UNREAD:
+            for result in self.results(command, self.coordinator, self.coordinator):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
 

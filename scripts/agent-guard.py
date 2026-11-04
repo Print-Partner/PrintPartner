@@ -70,6 +70,12 @@ REVIEW_MARKER = re.compile(r"<!--\s*pp-review-gate", re.I)
 MARKER = ("Only the coordinator worktree posts pp-review-gate review markers; "
           "report readiness to the coordinator instead.")
 COMMENT_COMMANDS = (["pr", "comment"], ["issue", "comment"])
+# GraphQL mutations that write comment text, which could carry a marker.
+COMMENT_MUTATIONS = {"addComment", "addPullRequestReviewComment", "addPullRequestReviewThreadReply",
+                     "updateIssueComment", "updatePullRequestReviewComment"}
+UNREAD_BODY = ("The guard must read a comment body literally to check it for a pp-review-gate marker. "
+               "Write the body as a literal argument, or to a file passed with --body-file in a command "
+               "of its own; no variables, substitutions, or stdin.")
 VARIABLE = "GitHub Actions variables are owner-maintained; ask the maintainer to change them."
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
@@ -786,13 +792,20 @@ def review_events(fields, body, cwd):
     return events or {""}
 
 
-def has_marker(name, cwd):
-    """Whether a file gh will send holds a review marker. Stdin and unreadable files count as none;
-    check_command searches the whole command text, which covers heredocs and here-strings."""
+def marker_reason(texts, files, cwd, alone):
+    """Return why a comment write is refused, or None. texts are the literal arguments gh sends and
+    files the files it reads. Outside the coordinator worktree, a body the guard cannot read literally
+    is refused like a marker: an expansion, stdin, an unreadable file, or a file another command in
+    the same line could change first."""
+    if coordinator_worktree(cwd):
+        return None
+    if any(EXPANDED in text for text in texts) or files and not alone:
+        return UNREAD_BODY
     try:
-        return bool(REVIEW_MARKER.search(read_input(name, cwd)))
+        bodies = [read_input(name, cwd) for name in files]
     except Unclear:
-        return False
+        return UNREAD_BODY
+    return MARKER if any(REVIEW_MARKER.search(text) for text in texts + bodies) else None
 
 
 def body_files(args):
@@ -869,8 +882,9 @@ def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
             return None
         return VARIABLE
     if args[:2] in COMMENT_COMMANDS:
-        posts_marker = marker or any(has_marker(name, cwd) for name in body_files(args[2:]))
-        return MARKER if posts_marker and not coordinator_worktree(cwd) else None
+        if marker and not coordinator_worktree(cwd):
+            return MARKER
+        return marker_reason(args[2:], body_files(args[2:]), cwd, alone)
     if args[:1] != ["api"]:
         return None
     method, endpoint, fields, body, i = None, None, [], None, 1
@@ -914,10 +928,7 @@ def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
     method = (method or ("POST" if fields or body is not None else "GET")).upper()
     if method in ("GET", "HEAD"):
         return None
-    sent_files = [value.partition("=")[2][1:] for flag, value in fields
-                  if flag in ("-F", "--field") and value.partition("=")[2].startswith("@")]
-    sent_files += [] if body is None else [body]
-    if (marker or any(has_marker(name, cwd) for name in sent_files)) and not coordinator_worktree(cwd):
+    if marker and not coordinator_worktree(cwd):
         return MARKER
     # The hook reads request files before the command runs. Any other command, such as a
     # checkout, redirect, or directory change, could replace what gh reads.
@@ -926,6 +937,18 @@ def gh_reason(args, cwd, alone=True, marker=False):  # noqa: C901
     if reads_file and not alone:
         return STALE_INPUT
     path = urlsplit(endpoint).path.strip("/")
+    if path == "graphql" or path.endswith("/graphql"):
+        names = [mutation_fields(document) for document in graphql_documents(fields, body, cwd)]
+        comment_write = any(found is None or COMMENT_MUTATIONS & set(found) for found in names)
+    else:
+        comment_write = bool(COMMENT_WRITES.search(path) or REVIEW_WRITES.search(path))
+    if comment_write:
+        sent_files = [value.partition("=")[2][1:] for flag, value in fields
+                      if flag in ("-F", "--field") and value.partition("=")[2].startswith("@")]
+        reason = marker_reason([value for _, value in fields], sent_files + ([] if body is None else [body]),
+                               cwd, alone)
+        if reason:
+            return reason
     if path == "graphql" or path.endswith("/graphql"):
         for document in graphql_documents(fields, body, cwd):
             names = mutation_fields(document)

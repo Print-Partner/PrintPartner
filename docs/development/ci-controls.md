@@ -119,6 +119,7 @@ The ruleset has these protections:
 - Require GitHub Actions checks `actionlint`, `zizmor`, `rust (linux)`, `rust (windows)`,
   `Lint Evidence block`, and `review-gate`.
 - Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
+- `review-gate` runs on `pull_request_target` from the default branch and only reads the API; see [Code review](definition-of-done.md#code-review) for what it checks and its remaining risk.
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 

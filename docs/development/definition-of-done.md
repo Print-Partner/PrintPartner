@@ -53,15 +53,21 @@ Scorer seats, in order. Use the first available seat whose vendor differs from t
 
 The required `review-gate` check (`.github/workflows/review-gate.yml`) passes on a PR head when any of these holds for that exact head SHA:
 
-1. **Factory Droid.** The `droid-review` job succeeded.
-2. **Claude.** The `claude-code-review` job succeeded, and `claude-security-review` succeeded or was neutral.
+1. **Factory Droid.** The `droid-review` job of `.github/workflows/droid-review.yml` succeeded.
+2. **Claude.** The `claude-code-review` job of `.github/workflows/claude-review.yml` succeeded, and `claude-security-review` succeeded or was neutral.
 3. **Coordinator record.** A comment by the repository owner account, `poitee`, carries a `pp-review-gate` marker for that head. See [Coordinator review record](#coordinator-review-record).
 
-Every push starts a new `review-gate` run, which fails until one of these holds for the new head. `.github/workflows/review-gate-rerun.yml` reruns the gate when a Droid or Claude review run finishes and when the owner creates, edits, or deletes a marker comment. If the check stays red after a review finished, rerun the `review-gate` job from the PR's Checks tab. The job reads the GitHub API only and never checks out PR code.
+Every push starts a new `review-gate` run, which fails until one of these holds for the new head. `.github/workflows/review-gate-rerun.yml` reruns the gate when a Droid or Claude review run finishes and when the owner creates, edits, or deletes a marker comment. A rerun repeats the default branch's gate, so a fork workflow that borrows a review workflow's name can trigger a rerun but cannot make it pass. If the check stays red after a review finished, rerun the `review-gate` job from the PR's Checks tab.
+
+The gate runs on `pull_request_target`, so GitHub runs the default branch's copy of `review-gate.yml`, never the PR's. The job reads the GitHub API only, with read permissions and no secrets, and never checks out or runs PR code. It applies these checks before any path counts:
+
+- **Result origin.** A `droid-review` or Claude result counts only when its check suite comes from the GitHub Actions app, from the expected workflow path, on `pull_request`, and GitHub ran the default branch's copy of that file. That holds when the file's blob at the head equals the default branch's blob, or the PR does not change the file, so the merge commit carries the base's copy.
+- **Same-named checks.** The gate fails when any check run on the head named `review-gate`, `droid-review`, `claude-code-review`, or `claude-security-review` comes from another app, another workflow file, or another event.
+- **Protected files.** The gate fails when a PR author other than the owner account changes a file under `.github/workflows/`, `.github/zizmor.yml`, or `scripts/agent-guard.py`.
 
 Every reviewer posts findings as review threads, and the ruleset requires every thread to be resolved, whichever path passed the gate. Fix the finding, or reply with the reason it does not apply and resolve the thread.
 
-The gate trusts the workflow files. A PR that edits a workflow could change what the gate accepts, so CODEOWNERS assigns `.github/workflows/` to the owner, and the owner merges workflow changes.
+Remaining risk: a PR can still add a `pull_request` workflow with a job named `review-gate`. The real gate detects that check and fails, but GitHub may still show the spoofed check as passing next to it, and the ruleset matches required checks by name and app. Lanes also push with the owner's account, so the protected-files rule does not stop a lane from editing a workflow. Merges therefore stay with the owner and the coordinator, who score every head under the [merge gate](#merge-gate) and read the `review-gate` run itself. The ruleset does not require code-owner review, so CODEOWNERS only requests the owner's review. A future hardening step is a dedicated GitHub App that posts `review-gate` as its own check run, with the ruleset pinned to that app's `integration_id`, so no workflow job can produce a matching check.
 
 ### Factory Droid
 
@@ -74,7 +80,7 @@ Mention `@droid` in a PR or issue comment to ask Droid a question or request ano
 `.github/workflows/claude-review.yml` runs two `anthropics/claude-code-action` jobs with Claude Opus 5.5 (`claude-opus-5-5`) on every ready PR head. `claude-code-review` looks for correctness bugs and breaks of the AGENTS.md rules. `claude-security-review` looks for injection, missing authentication or admission checks, secrets in logs or responses, path traversal, unsafe file operations, unconfirmed printer sends, and unsafe CI changes. Both post findings as inline review comments.
 
 - **Trusted authors only.** The action is not hardened against prompt injection, so both jobs run only on PRs from this repository authored by the owner account. PRs from forks, Dependabot, or any other account skip both jobs and need Droid or a coordinator record.
-- **No PR code runs.** Claude may read files and run only `gh pr diff`, `gh pr view`, and `gh pr comment`. The action replaces `.claude/`, `.mcp.json`, `CLAUDE.md`, and the other files Claude Code reads at startup with the base branch's copies.
+- **No shell, no gh, no PR code.** A workflow step writes the PR diff to `.pp-review/pr.diff`. Claude's only allowed tools are `Read(./**)`, which keeps reads inside the checked-out workspace, and the action's inline-comment tool. An explicit `--disallowedTools` list blocks Bash, edits, web access, subagents, `.git/`, and the runner paths that hold credentials (`/proc`, `/tmp`, home dotfiles, `~/work/_temp`). The inline-comment server receives only `GITHUB_TOKEN` and repo details, never the Claude credential, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` scrubs secrets from any subprocess. Claude never sees PR comments, so another account's comment cannot inject instructions. The action replaces `.claude/`, `.mcp.json`, `CLAUDE.md`, and the other files Claude Code reads at startup with the base branch's copies.
 - **Subscription, not per-call billing.** The jobs sign in with the owner's Claude subscription through the `CLAUDE_CODE_OAUTH_TOKEN` repository secret, which the owner creates with `claude setup-token`. If only `ANTHROPIC_API_KEY` is set, the jobs use it instead, and that key bills per call. With neither secret, both jobs fail with an error naming them.
 - **Usage limits.** Each push to a ready PR runs both jobs, and each review draws on the subscription's usage limits. When the limit runs out the jobs fail, which is why `review-gate` keeps the Droid and coordinator-record paths. Drafts skip both jobs, so keep a PR in draft while pushing work in progress.
 
@@ -91,7 +97,7 @@ When no automatic review passes the gate, for example while Droid is out of usag
    gh pr comment <n> --body '<!-- pp-review-gate head=<40-character sha> reviewer=<model id> findings=<count> -->'
    ```
 
-The gate counts a marker only when the comment's author is the repository owner account, `head=` equals the PR's current head SHA in full lowercase, `reviewer=` is not empty, and `findings=` is a whole number. A marker for an older head never counts. The safety guard refuses `gh pr comment`, `gh issue comment`, and `gh api` writes that contain `<!-- pp-review-gate` unless they run from the [coordinator worktree](agent-workflow.md#coordinator-merges), the same rule as merges.
+The gate counts a marker only when the comment's author is the repository owner account, `head=` equals the PR's current head SHA in full lowercase, `reviewer=` is not empty, and `findings=` is a whole number. A marker for an older head never counts. The safety guard refuses `gh pr comment`, `gh issue comment`, and `gh api` comment writes that contain `<!-- pp-review-gate` unless they run from the [coordinator worktree](agent-workflow.md#coordinator-merges), the same rule as merges. Outside that worktree it also refuses a comment body it cannot read literally: a variable, a command substitution, stdin, a missing file, or a body file in a command line with other commands.
 
 ### Copilot
 

@@ -9,7 +9,7 @@ import { buildWorkflowQuery, openDecisionCount } from "../core/workflow";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
-import { ModuleOff, ScreenTemplate } from "../screen/ScreenTemplate";
+import { LoadedAt, ModuleOff, ScreenTemplate } from "../screen/ScreenTemplate";
 import { dateText, freshnessText, progressText } from "./format";
 
 /** The Build workspace tabs from docs/product/ui-ux-target.md. The Machine tab is parked. */
@@ -76,6 +76,15 @@ function BuildTabs({ id }: { id: number }) {
 function WorkflowFacts({ id }: { id: number }) {
   const query = useQuery(buildWorkflowQuery(id));
   const workflow = query.data;
+  const refreshFailed = query.isError && (
+    <span className="pp-fact-detail">
+      Could not refresh: {query.error.message}.{" "}
+      <LoadedAt prefix="Showing data from" at={query.dataUpdatedAt} />{" "}
+      <button type="button" className="pp-button" onClick={() => void query.refetch()}>
+        Retry
+      </button>
+    </span>
+  );
   if (!workflow) {
     const detail = query.isError ? (
       <>
@@ -94,6 +103,7 @@ function WorkflowFacts({ id }: { id: number }) {
       <Fact term="Next action">
         {workflow.next_action.label}
         <span className="pp-fact-detail">{workflow.next_action.reason}</span>
+        {refreshFailed}
       </Fact>
       <Fact term="Open decisions">
         <span className="num">{openDecisionCount(workflow)}</span>

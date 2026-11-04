@@ -218,6 +218,18 @@ describe("UI2-01 Builds list", () => {
     await act(() => queryClient.refetchQueries({ queryKey: ["core", "builds"] }));
     expect(document.activeElement).toBe(link);
   });
+
+  it("keeps the focused Build focused when a refresh fails", async () => {
+    let fail = false;
+    const { queryClient } = renderAt("/builds", core((p) => (fail ? json({}, 500) : plans(p))));
+    const link = await screen.findByRole("link", { name: "Synthetic Build 04" });
+    link.focus();
+    fail = true;
+    await act(() => queryClient.refetchQueries({ queryKey: ["core", "builds"] }).catch(() => {}));
+    await screen.findByText(/Could not refresh Builds/);
+    expect(link.isConnected).toBe(true);
+    expect(document.activeElement).toBe(link);
+  });
 });
 
 describe("UI2-03 Builds list states", () => {
@@ -299,14 +311,16 @@ describe("UI2-03 Builds list states", () => {
     });
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderAt("/builds", fetchMock as unknown as ReturnType<typeof core>);
-    await screen.findByRole("link", { name: "Synthetic Build 01" });
+    const link = await screen.findByRole("link", { name: "Synthetic Build 01" });
+    link.focus();
     down = true;
     await act(() => vi.advanceTimersByTimeAsync(31_000));
     await waitFor(() => expect(screen.getByText("Offline")).toBeTruthy());
     const section = screen.getByRole("heading", { level: 1, name: "Builds" }).closest("section")!;
     expect(section.dataset.state).toBe("offline");
     expect(within(section).getByRole("status").textContent).toContain(OFFLINE_REASON);
-    expect(screen.getByRole("link", { name: "Synthetic Build 01" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Synthetic Build 01" })).toBe(link);
+    expect(document.activeElement).toBe(link);
   });
 });
 
@@ -353,6 +367,23 @@ describe("UI2-02 Build Overview", () => {
     await screen.findByText(/Could not load: Rust core answered 500/);
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Layers" })).toBeTruthy();
+  });
+
+  it("says when the Build's workflow could not refresh, keeping its time and a Retry", async () => {
+    let fail = false;
+    const { queryClient } = renderAt(
+      "/builds/2",
+      core((p) => (fail && p.endsWith("/workflow") ? json({}, 500) : plans(p))),
+    );
+    await screen.findByText("Open decisions", { selector: "dt" });
+    fail = true;
+    await act(() => queryClient.refetchQueries({ queryKey: ["core", "workflow", 2] }).catch(() => {}));
+    const detail = (await screen.findByText(/Could not refresh: Rust core answered 500/)).closest("span")!;
+    expect(detail.querySelector("time")).toBeTruthy();
+    expect(screen.getByText("Verify prints")).toBeTruthy();
+    fail = false;
+    fireEvent.click(within(detail).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByText(/Could not refresh/)).toBeNull());
   });
 
   it("lists stale reasons in words", async () => {

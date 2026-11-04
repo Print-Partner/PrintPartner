@@ -106,7 +106,8 @@ which slice brings them. Nothing here changes data.
   the next action and reason, and the count of open decisions, the sum of the
   stages' `task_count` (a next action such as Prepare Production is not a
   decision, so the count can be 0 beside it). If the feed or the workflow read fails, the Builds stay
-  readable and that part says it could not load, with a Retry.
+  readable and that part says it could not load, or could not refresh and
+  keeps the last next action with its time, with a Retry.
 - **States.** Both screens map their query through `queryScreenState`
   (`src/screen/queryState.ts`): loading, empty, error with the last-known data,
   its time and Retry, and offline with what was loaded. A Build ID that is not a

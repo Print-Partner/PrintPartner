@@ -4,7 +4,7 @@ import { CommandPalette, type Command } from "./CommandPalette";
 import { ConnectionProvider, useConnection } from "./connection";
 import { DESTINATIONS, shortcutLabel } from "./destinations";
 import { Dialog } from "./Dialog";
-import { useShortcuts } from "./useShortcuts";
+import { useCharacterShortcuts, useShortcuts } from "./useShortcuts";
 
 const GLOBAL_SHORTCUTS: readonly { keys: string; action: string }[] = [
   ...DESTINATIONS.map((d) => ({ keys: shortcutLabel(d), action: `Go to ${d.label}` })),
@@ -13,9 +13,25 @@ const GLOBAL_SHORTCUTS: readonly { keys: string; action: string }[] = [
   { keys: "Esc", action: "Close the open dialog" },
 ];
 
-function ShortcutList({ onClose }: { onClose: () => void }) {
+function ShortcutList({
+  onClose,
+  characterKeys,
+  setCharacterKeys,
+}: {
+  onClose: () => void;
+  characterKeys: boolean;
+  setCharacterKeys: (on: boolean) => void;
+}) {
   return (
     <Dialog title="Keyboard shortcuts" onClose={onClose}>
+      <label className="pp-setting">
+        <input
+          type="checkbox"
+          checked={characterKeys}
+          onChange={(e) => setCharacterKeys(e.target.checked)}
+        />
+        Single-key shortcuts (G sequences and ?)
+      </label>
       <table className="pp-shortcut-table">
         <thead>
           <tr>
@@ -34,7 +50,7 @@ function ShortcutList({ onClose }: { onClose: () => void }) {
           ))}
         </tbody>
       </table>
-      <button type="button" data-autofocus className="pp-button" onClick={onClose}>
+      <button type="button" className="pp-button" onClick={onClose}>
         Close
       </button>
     </Dialog>
@@ -68,9 +84,11 @@ type Overlay = "palette" | "help" | null;
 function FrameBody() {
   const navigate = useNavigate();
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const [characterKeys, setCharacterKeys] = useCharacterShortcuts();
   const close = () => setOverlay(null);
 
   useShortcuts({
+    characterKeys,
     dialogOpen: overlay !== null,
     togglePalette: () => setOverlay((o) => (o === "palette" ? null : "palette")),
     openHelp: () => setOverlay("help"),
@@ -89,6 +107,11 @@ function FrameBody() {
       label: "Show keyboard shortcuts",
       shortcut: "?",
       run: () => setOverlay("help"),
+    },
+    {
+      id: "character-keys",
+      label: characterKeys ? "Turn off single-key shortcuts" : "Turn on single-key shortcuts",
+      run: () => setCharacterKeys(!characterKeys),
     },
   ];
 
@@ -116,9 +139,11 @@ function FrameBody() {
             <li key={d.path}>
               <NavLink to={d.path} className="pp-rail-link">
                 <span>{d.label}</span>
-                <kbd className="pp-kbd" aria-hidden="true">
-                  {shortcutLabel(d)}
-                </kbd>
+                {characterKeys && (
+                  <kbd className="pp-kbd" aria-hidden="true">
+                    {shortcutLabel(d)}
+                  </kbd>
+                )}
               </NavLink>
             </li>
           ))}
@@ -128,7 +153,13 @@ function FrameBody() {
         <Outlet />
       </main>
       {overlay === "palette" && <CommandPalette commands={commands} onClose={close} />}
-      {overlay === "help" && <ShortcutList onClose={close} />}
+      {overlay === "help" && (
+        <ShortcutList
+          onClose={close}
+          characterKeys={characterKeys}
+          setCharacterKeys={setCharacterKeys}
+        />
+      )}
     </div>
   );
 }

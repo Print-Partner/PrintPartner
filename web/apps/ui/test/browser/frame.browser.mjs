@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { DESTINATIONS } from "../../src/frame/destinations.ts";
 import { THEMES } from "../../src/theme/tokenGate.ts";
 import { runWebKitGtk, serveDist } from "./harness.mjs";
 
@@ -21,7 +22,7 @@ const key = (init) =>
 const STATES = ["loading", "empty", "error", "module-off", "offline", "ready"];
 // [name, path, setup]. "?core=down" makes /health fail for that page, so the frame is offline.
 const PAGES = [
-  ...["today", "builds", "farm", "library", "settings"].map((p) => [p, `/${p}`, ""]),
+  ...DESTINATIONS.map((d) => [d.path.slice(1), d.path, ""]),
   ...STATES.map((s) => [`states-${s}`, `/states/${s}`, ""]),
   ["offline-frame", "/builds?core=down", ""],
   ["palette", "/today", key({ key: "k", ctrlKey: true })],

@@ -1,72 +1,45 @@
-import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
-
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+import * as RadixDialog from "@radix-ui/react-dialog";
+import { useState, type ReactNode } from "react";
 
 /**
- * A modal dialog that keeps focus inside itself, closes on Escape and returns focus
- * to the element that had it before opening. Clicking the backdrop also closes it.
+ * A modal dialog on Radix Dialog (docs/architecture.md): it traps focus, hides the page
+ * behind it from assistive technology, closes on Escape or a backdrop click and returns
+ * focus to the element that opened it. The content sits inside the overlay so a tall
+ * dialog scrolls at 400% zoom.
  */
 export function Dialog({
   title,
   onClose,
   children,
-  className,
+  className = "",
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   className?: string;
 }) {
-  const titleId = useId();
-  const panel = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    const first = panel.current?.querySelector<HTMLElement>("[data-autofocus]");
-    (first ?? panel.current)?.focus();
-    return () => opener?.focus();
-  }, []);
-
-  function onKeyDown(event: KeyboardEvent) {
-    // Escape during IME composition cancels the composition, not the dialog.
-    if (event.key === "Escape" && !event.nativeEvent.isComposing) {
-      event.stopPropagation();
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab" || !panel.current) return;
-    const items = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    if (items.length === 0) {
-      event.preventDefault();
-      return;
-    }
-    const [first, last] = [items[0], items[items.length - 1]];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
+  // Radix returns focus to a Dialog.Trigger; these dialogs open from shortcuts too, so
+  // remember whatever had focus when this one opened.
+  const [opener] = useState(() => document.activeElement as HTMLElement | null);
   return (
-    <div className="pp-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div
-        ref={panel}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        tabIndex={-1}
-        className={`pp-dialog ${className ?? ""}`}
-        onKeyDown={onKeyDown}
-      >
-        <h2 id={titleId} className="pp-dialog-title">
-          {title}
-        </h2>
-        {children}
-      </div>
-    </div>
+    <RadixDialog.Root open onOpenChange={(open) => !open && onClose()}>
+      <RadixDialog.Portal>
+        <RadixDialog.Overlay className="pp-backdrop">
+          <RadixDialog.Content
+            className={`pp-dialog ${className}`}
+            aria-describedby={undefined}
+            // Escape during IME composition cancels the composition, not the dialog.
+            onEscapeKeyDown={(event) => event.isComposing && event.preventDefault()}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              opener?.focus();
+            }}
+          >
+            <RadixDialog.Title className="pp-dialog-title">{title}</RadixDialog.Title>
+            {children}
+          </RadixDialog.Content>
+        </RadixDialog.Overlay>
+      </RadixDialog.Portal>
+    </RadixDialog.Root>
   );
 }

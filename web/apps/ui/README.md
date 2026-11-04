@@ -35,8 +35,14 @@ shortcuts, the palette and the shortcut list read it. `/` redirects to `/today`.
 - `G` then `T`, `B`, `F`, `L` or `,` within 1.5 s goes to a destination, and `?`
   opens the shortcut list; both are ignored in text fields and behind a dialog.
   `Cmd/Ctrl+K` toggles the palette from anywhere (`src/frame/useShortcuts.ts`).
-- The palette is a combobox over a listbox: type to filter, Up and Down, Enter,
-  Escape. Dialogs trap Tab and return focus to the element that opened them.
+- Single-key shortcuts (the `G` sequences and `?`) can be turned off, as WCAG
+  2.1.4 requires: a checkbox in the shortcut list and a palette command. The
+  choice is saved in `localStorage` (`pp.characterShortcuts`); if storage throws,
+  they stay on. `Cmd/Ctrl+K` always works.
+- Dialogs use Radix Dialog and the palette uses cmdk, as `docs/architecture.md`
+  asks. Type to filter, Up and Down, Enter, Escape; keys that belong to an IME
+  composition are left alone. Focus stays in the dialog and returns to the
+  element that opened it.
 - The "Printer pulse" header region says "Printer counts not loaded" until the
   Farm slice feeds it, never zeros.
 - `src/frame/connection.tsx` polls `GET /health` every 30 s, or 5 s while it

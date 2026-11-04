@@ -83,7 +83,7 @@ def main() -> int:
         except GLib.Error as error:
             fail(f"{job['url']}: script failed: {error.message}")
             return
-        results.append({"url": job["url"], "result": result})
+        results.append({"result": result})
         if not job.get("png"):
             next_job()
             return

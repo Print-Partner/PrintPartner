@@ -11,11 +11,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:browser": "node test/browser/font-requests.browser.mjs && node test/browser/frame.browser.mjs"
+    "test:browser": "node test/browser/all.mjs"
   },
   "dependencies": {
     "@print-partner/rust-client": "*",
+    "@radix-ui/react-dialog": "^1.3.1",
     "@tanstack/react-query": "^5.104.3",
+    "cmdk": "^1.1.1",
     "lucide-react": "^1.59.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

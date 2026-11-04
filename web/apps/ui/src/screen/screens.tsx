@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useParams } from "react-router";
-import { ConnectionOverride, useConnection } from "../frame/connection";
+import { useConnection, useSimulatedConnection } from "../frame/connection";
 import type { Destination } from "../frame/destinations";
 import { MutationButton, ScreenTemplate, type ScreenState } from "./ScreenTemplate";
 
@@ -55,9 +55,11 @@ const SAMPLE_STATES: Record<string, ScreenState<Sample>> = {
 /** `/states/<kind>` for each key of SAMPLE_STATES: that state on sample data. Other kinds 404. */
 export function StatesSpecimen() {
   const { kind = "" } = useParams();
-  if (!Object.hasOwn(SAMPLE_STATES, kind)) return <NotFound />;
+  const known = Object.hasOwn(SAMPLE_STATES, kind);
+  useSimulatedConnection(kind === "offline" ? "offline" : null);
+  if (!known) return <NotFound />;
   return (
-    <ConnectionOverride status={kind === "offline" ? "offline" : "online"}>
+    <>
       <ScreenTemplate
         key={kind}
         title="Sample Builds"
@@ -84,7 +86,7 @@ export function StatesSpecimen() {
           action: <MutationButton onClick={() => {}}>New Build</MutationButton>,
         }}
       />
-    </ConnectionOverride>
+    </>
   );
 }
 

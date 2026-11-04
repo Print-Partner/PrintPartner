@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { onlineManager } from "@tanstack/react-query";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ afterEach(() => {
   cleanup();
   onlineManager.setOnline(true);
   vi.restoreAllMocks();
+  localStorage.clear();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -120,8 +121,7 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
   );
 
   it("filters, moves with arrows, scrolls the active option into view and runs with Enter", () => {
-    const scroll = vi.fn();
-    Element.prototype.scrollIntoView = scroll;
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
     const { path } = renderAt("/today");
     press("k", { ctrlKey: true });
     const input = screen.getByRole("combobox");
@@ -133,12 +133,17 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     expect(active?.textContent).toBe("Go to FarmG F");
     expect(active?.getAttribute("aria-selected")).toBe("true");
     expect(scroll.mock.contexts.at(-1)).toBe(active);
+    // Keys that commit an IME composition stay with the IME.
+    press("ArrowDown", { isComposing: true }, input);
+    press("Enter", { isComposing: true }, input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(active?.id);
+    expect(path()).toBe("/today");
     press("Enter", {}, input);
     expect(path()).toBe("/farm");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("closes on Escape and returns focus to where it was", () => {
+  it("closes on Escape and returns focus to where it was", async () => {
     renderAt("/today");
     const opener = screen.getByRole("button", { name: /Commands/ });
     opener.focus();
@@ -148,11 +153,11 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
     press("Escape", {}, screen.getByRole("combobox"));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(document.activeElement).toBe(opener);
+    await waitFor(() => expect(document.activeElement).toBe(opener));
   });
 
-  it("? lists every shortcut, keeps Tab inside, and blocks shortcuts behind it", () => {
-    renderAt("/today");
+  it("? lists every shortcut and blocks shortcuts behind it", () => {
+    const { path } = renderAt("/today");
     press("?");
     const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
     const keys = within(dialog)
@@ -160,15 +165,74 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
       .slice(1)
       .map((r) => r.querySelector("kbd")?.textContent);
     expect(keys).toEqual(["G T", "G B", "G F", "G L", "G ,", "Cmd/Ctrl K", "?", "Esc"]);
-    const close = within(dialog).getByRole("button", { name: "Close" });
-    expect(document.activeElement).toBe(close);
-    press("Tab", {}, close);
-    expect(document.activeElement).toBe(close);
-    press("g", {}, close);
-    press("b", {}, close);
-    expect(heading()).toBe("Today");
-    fireEvent.click(close);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    press("g", {}, document.activeElement!);
+    press("b", {}, document.activeElement!);
+    expect(path()).toBe("/today");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("pulls focus back when it leaves the dialog, as Shift+Tab from the panel does", () => {
+    renderAt("/today");
+    press("?");
+    const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    act(() => dialog.focus());
+    press("Tab", { shiftKey: true }, dialog);
+    // jsdom does not move focus on Tab; move it outside the way the browser would.
+    act(() => document.querySelector<HTMLElement>(".pp-rail-link")!.focus());
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+});
+
+describe("FRM-05 single-key shortcuts can be turned off (WCAG 2.1.4)", () => {
+  it("turns them off from the palette, keeps Cmd/Ctrl+K, and remembers the choice", () => {
+    const { path } = renderAt("/today");
+    press("k", { ctrlKey: true });
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: "single-key" } });
+    press("Enter", {}, input);
+    expect(localStorage.getItem("pp.characterShortcuts")).toBe("off");
+    press("g");
+    press("b");
+    press("?");
+    expect(path()).toBe("/today");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelector(".pp-rail kbd")).toBeNull();
+    press("k", { ctrlKey: true });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeTruthy();
+    cleanup();
+    renderAt("/today");
+    press("g");
+    press("b");
+    expect(heading()).toBe("Today");
+  });
+
+  it("turns them back on from the shortcut list", () => {
+    localStorage.setItem("pp.characterShortcuts", "off");
+    const { path } = renderAt("/today");
+    fireEvent.click(screen.getByRole("button", { name: /Commands/ }));
+    const input = screen.getByRole("combobox");
+    fireEvent.change(input, { target: { value: "show keyboard" } });
+    press("Enter", {}, input);
+    const toggle = screen.getByRole("checkbox", { name: /Single-key shortcuts/ });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    press("g");
+    press("b");
+    expect(path()).toBe("/builds");
+    expect(localStorage.getItem("pp.characterShortcuts")).toBe("on");
+  });
+
+  it("stays on when storage throws", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    const { path } = renderAt("/today");
+    press("g");
+    press("b");
+    expect(path()).toBe("/builds");
   });
 });
 
@@ -182,6 +246,17 @@ describe("FRM-04 offline frame", () => {
     press("g"); // navigation keeps working offline
     press("l");
     expect(heading()).toBe("Library");
+  });
+
+  it("the offline sample state takes the header with it, and leaving it restores the probe", async () => {
+    const { router } = renderAt("/states/offline");
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(screen.queryByText("Core reachable")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Record a print" }).getAttribute("aria-disabled"),
+    ).toBe("true");
+    await act(() => router.navigate("/today"));
+    expect(await screen.findByText("Core reachable")).toBeTruthy();
   });
 
   it("keeps probing while the browser reports no network", async () => {

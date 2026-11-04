@@ -5,9 +5,11 @@ builds toward is [UI and UX target](../../../docs/product/ui-ux-target.md);
 [ADR 0008](../../../docs/adr/0008-replace-the-old-screens.md) says why it is a new
 package instead of a port of `apps/web`.
 
-Today it is a placeholder shell: an app frame, a core reachability line, a list
-of the printer states, a type specimen at `/type`, and a Not found route. Product
-screens arrive in their own slices.
+Today it has the app frame (rail, pulse line slot, command palette, shortcut
+list), the shared five-state screen template, an empty screen for each of the
+five destinations, a type specimen at `/type`, the screen states on sample data
+at `/states/:kind`, and a Not found route. Product data screens arrive in their
+own slices.
 
 ## Commands
 
@@ -24,6 +26,44 @@ npm --prefix web run test --workspace @print-partner/ui
 `just ci --only ui-package` runs typecheck, lint, test, build and the
 `test:browser` font request check. The legacy root
 `build`, `typecheck` and `test` scripts do not include this package.
+
+## App frame
+
+`src/frame/destinations.ts` lists the five destinations once; the rail, the
+shortcuts, the palette and the shortcut list read it. `/` redirects to `/today`.
+
+- `G` then `T`, `B`, `F`, `L` or `,` within 1.5 s goes to a destination, and `?`
+  opens the shortcut list; both are ignored in text fields and behind a dialog.
+  `Cmd/Ctrl+K` toggles the palette from anywhere (`src/frame/useShortcuts.ts`).
+- Single-key shortcuts (the `G` sequences and `?`) can be turned off, as WCAG
+  2.1.4 requires: a checkbox in the shortcut list and a palette command. The
+  choice is saved in `localStorage` (`pp.characterShortcuts`); if storage throws,
+  they stay on. `Cmd/Ctrl+K` always works.
+- Dialogs use Radix Dialog and the palette uses cmdk, as `docs/architecture.md`
+  asks. Type to filter, Up and Down, Enter, Escape; keys that belong to an IME
+  composition are left alone. Focus stays in the dialog and returns to the
+  element that opened it.
+- The "Printer pulse" header region says "Printer counts not loaded" until the
+  Farm slice feeds it, never zeros.
+- `src/frame/connection.tsx` polls `GET /health` every 30 s, or 5 s while it
+  fails, and shares `checking`, `online` or `offline`. Each probe gives up after
+  4 s, and it keeps running while the browser reports no network.
+
+Every screen renders through `ScreenTemplate` (`src/screen/ScreenTemplate.tsx`).
+Loading reserves its
+rows and shows skeletons after 150 ms with no numbers; error keeps last-known
+data with its time and a Retry; module off links to Settings; offline keeps
+loaded data and says changes are off. `MutationButton` is the button for any
+change: offline it keeps focus, does nothing, and shows the reason beside it as
+its `aria-describedby`. `/states/<kind>` renders each state on sample data; any
+other kind is Not found.
+
+`test/browser/frame.browser.mjs`, part of `npm run test:browser`, runs axe at
+WCAG 2.2 AA in WebKitGTK on every frame page, state and dialog in all three
+themes, and fails on sideways scrolling at 200% text and 400% zoom. With
+`PP_UI_EVIDENCE_DIR=<dir>` it saves a screenshot of each load there. Its themes
+come from `THEMES` in `src/theme/tokenGate.ts`. `test/browser/harness.mjs` holds
+the loopback server and WebKitGTK launcher that both browser checks use.
 
 ## Talking to the Rust core
 

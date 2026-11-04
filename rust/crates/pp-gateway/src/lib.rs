@@ -10,7 +10,7 @@ use http_body_util::BodyExt;
 use pp_compat::CompatHandle;
 use pp_drivers::moonraker::{Host, Route, Watchers};
 use pp_net::target;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -29,6 +29,19 @@ pub mod ownership;
 mod rate_limit;
 
 use ownership::{Owner, cutover::OperationOwners};
+
+/// The status of a runtime with no Node child, where the Rust writer owns the
+/// data directory. `pp-core` owns the sender; the gateway reads it for
+/// `/__runtime`. It has no child `generation` or `pid` because there is no child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RustStatus {
+    Starting,
+    /// The writer holds the data directory and the gateway is serving.
+    Ready,
+    Stopping,
+    Stopped,
+}
 
 pub const MUTATION_DRAIN: Duration = Duration::from_secs(5);
 
@@ -185,6 +198,9 @@ struct GatewayState {
     /// admitted request that is not a gateway or asset path goes here, and
     /// none reaches the compatibility proxy. Logout goes here first too.
     product: Mutex<Option<axum::Router>>,
+    /// Set only for a Rust-only runtime: `/__runtime` reports it and marks the
+    /// compatibility backend `not_used`.
+    rust_status: Option<tokio::sync::watch::Receiver<RustStatus>>,
     /// Proxy attempts: requests that missed every gateway, asset and product
     /// route and entered the compatibility branch.
     compat_forwards: AtomicU64,
@@ -232,6 +248,35 @@ impl Gateway {
         compat: CompatHandle,
         owners: &OperationOwners,
         product: Option<axum::Router>,
+    ) -> Result<Self> {
+        Self::start_inner(listener, assets, compat, owners, product, None)
+    }
+
+    /// Start a runtime with no Node child: `product` answers admitted
+    /// requests, nothing is forwarded, and `/__runtime` reports `status`.
+    pub fn start_rust_only(
+        listener: TcpListener,
+        assets: PathBuf,
+        product: axum::Router,
+        status: tokio::sync::watch::Receiver<RustStatus>,
+    ) -> Result<Self> {
+        Self::start_inner(
+            listener,
+            assets,
+            CompatHandle::unpublished(),
+            &OperationOwners::node_only(),
+            Some(product),
+            Some(status),
+        )
+    }
+
+    fn start_inner(
+        listener: TcpListener,
+        assets: PathBuf,
+        compat: CompatHandle,
+        owners: &OperationOwners,
+        product: Option<axum::Router>,
+        rust_status: Option<tokio::sync::watch::Receiver<RustStatus>>,
     ) -> Result<Self> {
         let address = listener.local_addr()?;
         anyhow::ensure!(
@@ -300,6 +345,7 @@ impl Gateway {
             cancelled: CancellationToken::new(),
             shutdown_requested: CancellationToken::new(),
             product: Mutex::new(product),
+            rust_status,
             compat_forwards: AtomicU64::new(0),
         });
         let monitoring = state.clone();
@@ -771,7 +817,16 @@ async fn handle(
         Err(_) => return error(StatusCode::UNAUTHORIZED, "Desktop session required"),
     };
     if path == "/__runtime" && request.method() == "GET" {
-        return axum::Json(serde_json::json!({"proof_class":"headless_unsigned","compat":*state.compat.status.borrow(),"gateway":{"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len()}})).into_response();
+        let gateway = serde_json::json!({"active_requests":state.access.lock().expect("Session mutex poisoned").active.saturating_sub(1),"active_upgrades":state.relays.len()});
+        let body = match &state.rust_status {
+            Some(rust) => {
+                serde_json::json!({"proof_class":"headless_unsigned","rust":*rust.borrow(),"compat":{"state":"not_used"},"gateway":gateway})
+            }
+            None => {
+                serde_json::json!({"proof_class":"headless_unsigned","compat":*state.compat.status.borrow(),"gateway":gateway})
+            }
+        };
+        return axum::Json(body).into_response();
     }
     if path == "/auth/logout" && request.method() == "POST" {
         // Rust revokes its own session before the gateway ends the desktop one.

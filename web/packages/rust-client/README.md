@@ -13,7 +13,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 - Rust DTOs and route registration: `pp-api-types` and `pp-api`. Change those and regenerate.
 - The hand-maintained Node API types: `@print-partner/contracts` ([README](../contracts/README.md)).
-- Error bodies, `/api/v1` mounts, and routes outside `CLIENT_ROUTES`.
+- `/api/v1` mounts and routes outside `CLIENT_ROUTES`.
 
 ## Interface
 
@@ -43,7 +43,9 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 
 `PrinterState` (execution, bed-clear and display state as separate fields) and `PrinterDisplayDescriptor` are DTOs without a route yet.
 
-Every route except `/health` needs a session cookie or API key. Only 200 bodies are typed; error bodies are not yet. The `/api/v1` mounts answer with the legacy Plan summary and are not covered.
+`Problem` is the body of every error any covered route returns, served as `application/problem+json`. Its `type` is a `z.enum` of the stable problem URNs and `errors` holds at most 16 field errors. Route-specific extension members, such as a draft conflict's `workspace`, are stripped by `z.object`. See [Problem responses](../../../docs/problem-responses.md).
+
+Every route except `/health` needs a session cookie or API key. 200 bodies are typed per route; every error body is `Problem`. The `/api/v1` mounts answer with the legacy Plan summary and are not covered.
 
 `pp-core`'s `client_routes_match_registrations` test sends each route to the composed routers. It checks that the route is registered, refuses anonymous requests when it needs a credential, and reaches its handler.
 
@@ -69,7 +71,7 @@ npm --prefix web run typecheck --workspace @print-partner/rust-client
 ## Wire rules
 
 - **Unknown keys.** Request DTOs use `#[serde(deny_unknown_fields)]`, so their schemas are `z.strictObject` and reject unknown keys. Response DTOs use `z.object`, which strips unknown keys.
-- **Omitted versus null.** Every covered field is required. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, through `schemars(with = "RequiredNullable<T>")`.
+- **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors`, which Rust omits when empty as RFC 9457 allows. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, through `schemars(with = "RequiredNullable<T>")`.
 - **Integers.** Bounded Rust wire integers keep their bounds. `i64`, `u64` and `usize` are limited to the JavaScript safe range, so a larger value fails to parse instead of losing precision.
 - **Tagged unions.** Internally tagged enums become `z.discriminatedUnion` on their tag (`kind` or `status`).
 - **Not expressed.** JSON Schema cannot state the one-edit-per-Part-field rule for `EditDraftPartsRequest`; the server refuses such a request with 400.

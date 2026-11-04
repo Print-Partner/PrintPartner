@@ -71,6 +71,9 @@ test("a descriptor table missing a key value is refused", () => {
   assert.throws(() => generate(changed), /must list every/);
 });
 
+// RFC 9457 problem members Rust omits when empty; the only optional fields.
+const optionalMembers = { Problem: new Set(["code", "detail", "errors"]) };
+
 for (const fixture of document.fixtures) {
   test(`${fixture.dto} ${fixture.name}: agrees with Rust and round-trips`, () => {
     const schema = dtoSchemas[fixture.dto];
@@ -89,7 +92,8 @@ for (const fixture of document.fixtures) {
         if (strict) assert.equal(extended.success, false, `${where}: request must reject unknown keys`);
         else assert.deepEqual(extended.data, fixture.value, `${where}: response must strip unknown keys`);
       }
-      if (path.length > 0 && !/^\d+$/.test(path.at(-1))) {
+      const optional = path.length === 1 && optionalMembers[fixture.dto]?.has(path[0]);
+      if (path.length > 0 && !/^\d+$/.test(path.at(-1)) && !optional) {
         // Every covered field is required: omitted is never the same as null.
         rejects(() => undefined, "omitted field accepted");
       }

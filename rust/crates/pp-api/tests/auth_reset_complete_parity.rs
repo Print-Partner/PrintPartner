@@ -233,7 +233,7 @@ async fn replay(restore_consumed_before: Option<&str>) -> Vec<Value> {
                 })
                 .find(|value| !value.is_empty())
                 .map(str::to_owned);
-            let mut body: Value = response.json().await.unwrap();
+            let mut body: Value = pp_api::problem::without_envelope(response.json().await.unwrap());
             if body["user"]["user_id"].is_string() {
                 body["user"]["user_id"] = json!("<user_id>");
             }

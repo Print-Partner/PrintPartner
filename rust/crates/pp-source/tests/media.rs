@@ -1,11 +1,10 @@
 use pp_source::{
-    ArtifactBudget, LocalFiles, Selection, SnapshotRequest, SourcePath, TenantRepos,
+    ArtifactBudget, LocalFiles, SelectedFile, Selection, SnapshotRequest, SourcePath, TenantRepos,
     media::{MediaError, MediaLimits, discover_import_rules},
 };
 use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     sync::{
         Arc,
@@ -26,18 +25,21 @@ impl Fixture {
         let root = Scratch::new("pp-source-media-");
         // Pin modes so source roots accept them under a permissive umask.
         for dir in ["repos", "input"] {
-            fs::DirBuilder::new()
-                .mode(0o700)
-                .create(root.join(dir))
-                .unwrap();
+            let builder = &mut fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
+            builder.create(root.join(dir)).unwrap();
         }
         Self(root)
     }
     fn model(&self, triangles: usize) {
+        self.model_named("part", triangles);
+    }
+    fn model_named(&self, name: &str, triangles: usize) {
         let mut zip = ZipWriter::new(File::create(self.0.join("input/model.3mf")).unwrap());
         zip.start_file("3D/main.model", SimpleFileOptions::default())
             .unwrap();
-        zip.write_all(b"<model><object name='part'><mesh><vertex x='0' y='0' z='0'/><vertex x='1' y='0' z='0'/><vertex x='0' y='1' z='0'/>").unwrap();
+        zip.write_all(format!("<model><object name='{name}'><mesh><vertex x='0' y='0' z='0'/><vertex x='1' y='0' z='0'/><vertex x='0' y='1' z='0'/>").as_bytes()).unwrap();
         for _ in 0..triangles {
             zip.write_all(b"<triangle v1='0' v2='1' v3='2'/>").unwrap();
         }
@@ -110,14 +112,11 @@ impl Fixture {
 fn path(value: &str) -> SourcePath {
     SourcePath::try_from(value.to_owned()).unwrap()
 }
-#[test]
-fn conversion_owns_candidate_and_published_original_and_derived_bytes_survive_reuse() {
-    let f = Fixture::new();
-    f.model(1);
-    let original = fs::read(f.0.join("input/model.3mf")).unwrap();
-    let tenant = f.tenant();
-    let mut source = tenant.source(42).unwrap();
-    let prepared = source
+fn prepare_model(
+    f: &Fixture,
+    source: &mut pp_source::SourceRoot,
+) -> pp_source::media::PreparedMedia {
+    source
         .prepare_media(
             &f.local(),
             &[path("model.3mf")],
@@ -125,7 +124,28 @@ fn conversion_owns_candidate_and_published_original_and_derived_bytes_survive_re
             MediaLimits::default(),
             &AtomicBool::new(false),
         )
-        .unwrap();
+        .unwrap()
+}
+fn media_request(key: &str, files: Vec<SelectedFile>) -> SnapshotRequest {
+    SnapshotRequest {
+        upstream_revision_key: key.into(),
+        files,
+        selection: Selection {
+            max_stl_files: 500,
+            max_documentation_bytes: 10000,
+            omitted_files: vec![],
+        },
+    }
+}
+
+#[test]
+fn conversion_owns_candidate_and_published_original_and_derived_bytes_survive_reuse() {
+    let f = Fixture::new();
+    f.model(1);
+    let original = fs::read(f.0.join("input/model.3mf")).unwrap();
+    let tenant = f.tenant();
+    let mut source = tenant.source(42).unwrap();
+    let prepared = prepare_model(&f, &mut source);
     assert_eq!(prepared.receipt().conversions[0].result.object_count, 1);
     let mut second = tenant.source(42).unwrap();
     assert!(matches!(
@@ -139,15 +159,7 @@ fn conversion_owns_candidate_and_published_original_and_derived_bytes_survive_re
         Err(MediaError::Busy)
     ));
     assert!(f.candidate().join("_3mf/model/part.stl").is_file());
-    let request = SnapshotRequest {
-        upstream_revision_key: "revision".into(),
-        files: prepared.receipt().selected_files.clone(),
-        selection: Selection {
-            max_stl_files: 500,
-            max_documentation_bytes: 10000,
-            omitted_files: vec![],
-        },
-    };
+    let request = media_request("revision", prepared.receipt().selected_files.clone());
     let snapshot = source
         .materialize(
             request.clone(),
@@ -202,6 +214,36 @@ fn conversion_owns_candidate_and_published_original_and_derived_bytes_survive_re
     );
     drop(prepared);
     assert!(!f.candidate().exists());
+}
+
+/// A mesh named after a Windows device converts as before on Unix. Windows
+/// appends `_` to the generated stem, because pp-source picks that name.
+#[test]
+fn device_named_mesh_imports_with_a_portable_name_only_on_windows() {
+    let f = Fixture::new();
+    f.model_named("CON", 1);
+    let mut source = f.tenant().source(42).unwrap();
+    let prepared = prepare_model(&f, &mut source);
+    let derived = if cfg!(windows) {
+        "_3mf/model/con_.stl"
+    } else {
+        "_3mf/model/con.stl"
+    };
+    let selected = &prepared.receipt().selected_files;
+    assert!(
+        selected.iter().any(|file| file.path.as_str() == derived),
+        "{selected:?}"
+    );
+    let snapshot = source
+        .materialize(
+            media_request("device-mesh", selected.clone()),
+            prepared.files(),
+            ArtifactBudget::new(100000, 10000).unwrap(),
+        )
+        .unwrap();
+    let published = f.0.join("repos").join(&snapshot.snapshot_locator);
+    assert!(published.join(derived).is_file());
+    prepared.discard().unwrap();
 }
 
 #[test]
@@ -304,6 +346,7 @@ fn cancelled_live_conversion_cleans_derived_files_and_retries() {
         .discard()
         .unwrap();
 }
+#[cfg(unix)]
 #[test]
 fn original_capability_survives_path_replacement_and_output_symlinks_are_confined() {
     let f = Fixture::new();

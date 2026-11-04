@@ -22,7 +22,11 @@ describe("type specimen", () => {
       expect(cells).toHaveLength(2);
       for (const cell of cells) expect(cell.className).toBe("num");
     }
-    expect(screen.getAllByRole("listitem").map((item) => item.textContent?.split(":")[0])).toEqual([
+    expect(
+      within(screen.getByRole("main"))
+        .getAllByRole("listitem")
+        .map((item) => item.textContent?.split(":")[0]),
+    ).toEqual([
       "Plex Sans 400",
       "Plex Sans 500",
       "Plex Sans 600",

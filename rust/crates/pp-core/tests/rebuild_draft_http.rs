@@ -11,6 +11,7 @@ mod without_feature {
 
 #[cfg(feature = "desktop_rebuild")]
 mod with_feature {
+    use pp_api::problem::without_envelope;
     use pp_core::DesktopRebuild;
     use pp_core::rebuild_api::{RebuildDraftOwner, draft_router};
     use pp_storage::{
@@ -164,7 +165,7 @@ mod with_feature {
             let response = request.send().await.unwrap();
             (
                 response.status().as_u16(),
-                response.json().await.unwrap_or(Value::Null),
+                without_envelope(response.json().await.unwrap_or(Value::Null)),
             )
         }
 

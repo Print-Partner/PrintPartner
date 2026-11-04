@@ -1,25 +1,305 @@
+/* Frame and screen-template layout. Colours, type sizes and motion come from
+   theme/tokens.css only: the contrast gate (theme/tokenGate.ts, run by
+   test/tokens.test.ts) checks tokens, so a literal colour here would escape it.
+   Breakpoints are in em so they follow text zoom. */
 body {
   margin: 0;
+  background: var(--surface-base);
 }
 
-.shell-header {
+.pp-frame {
+  display: grid;
+  grid-template: "header header" auto "rail main" 1fr / 12rem minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.pp-skip {
+  position: absolute;
+  left: 8px;
+  top: -100px;
+  padding: 8px 12px;
+  background: var(--surface-overlay);
+  color: var(--interaction-text);
+}
+
+.pp-skip:focus {
+  top: 8px;
+}
+
+.pp-header {
+  grid-area: header;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
+  gap: 8px 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--line);
+  background: var(--surface-raised);
 }
 
-.shell-name {
-  font-weight: 600;
+.pp-name {
+  font-weight: var(--font-weight-semibold);
 }
 
-.core-status {
+.pp-pulse {
+  flex: 1 1 12rem;
+}
+
+.pp-pulse,
+.pp-connection,
+.pp-kbd,
+.pp-mutation-reason,
+.pp-banner-detail,
+.pp-palette-empty {
+  margin: 0;
   color: var(--text-muted);
 }
 
-.shell-main {
+.pp-connection[data-status="offline"] {
+  color: var(--status-attention);
+  font-weight: var(--font-weight-semibold);
+}
+
+.pp-rail {
+  grid-area: rail;
+  border-right: 1px solid var(--line);
+  background: var(--surface-sunken);
+}
+
+.pp-rail ul {
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+}
+
+.pp-rail-link,
+.pp-palette-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--touch-target-min);
+  padding: 0 12px;
+  border-radius: 4px;
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.pp-rail-link,
+.pp-palette-option {
+  border-left: 3px solid transparent;
+}
+
+.pp-rail-link[aria-current="page"],
+.pp-palette-option[aria-selected="true"] {
+  border-left: 3px solid var(--interaction-accent);
+  background: var(--interaction-selection);
+  color: var(--interaction-on-selection);
+  font-weight: var(--font-weight-semibold);
+}
+
+.pp-main {
+  grid-area: main;
+  min-width: 0;
+  padding: 16px 24px;
+}
+
+.pp-main:focus {
+  outline: none;
+}
+
+.pp-kbd {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.pp-button,
+.pp-header-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--touch-target-min);
+  padding: 0 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pp-button-primary {
+  border-color: var(--interaction-accent);
+  background: var(--interaction-accent);
+  color: var(--interaction-on-accent);
+}
+
+/* docs/product/ui-tokens.md: an accent-filled control opts out of the forced-colors
+   backplate, so its HighlightText label stays on its Highlight fill. */
+@media (forced-colors: active) {
+  .pp-button-primary {
+    forced-color-adjust: none;
+  }
+}
+
+/* Offline mutations stay focusable so the reason can be read, and never look filled. */
+.pp-button[aria-disabled="true"] {
+  border: 1px dashed var(--line-strong);
+  background: var(--surface-base);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.pp-mutation {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.pp-link {
+  color: var(--interaction-text);
+}
+
+.pp-banner {
+  margin: 0 0 16px;
+  padding: 8px 16px;
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid var(--status-attention);
+  background: var(--surface-raised);
+}
+
+.pp-banner[data-kind="error"] {
+  border-left-color: var(--status-danger);
+}
+
+.pp-loading,
+.pp-sample-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-skeleton-row {
+  height: var(--row-height);
+  border-radius: 4px;
+  background: var(--surface-overlay);
+}
+
+.pp-loading[data-skeleton="reserved"] .pp-skeleton-row {
+  visibility: hidden;
+}
+
+.pp-sample-list li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.pp-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 10vh 16px 16px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--surface-sunken) 70%, transparent);
+}
+
+.pp-dialog {
+  box-sizing: border-box;
+  width: min(36rem, 100%);
   padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-overlay);
+  color: var(--text);
+}
+
+.pp-dialog-title {
+  margin: 0 0 12px;
+  font-size: var(--text-lg);
+}
+
+.pp-palette-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--touch-target-min);
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-base);
+  color: var(--text);
+  font: inherit;
+}
+
+.pp-palette-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-setting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--touch-target-min);
+  margin-bottom: 8px;
+}
+
+.pp-setting input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--interaction-accent);
+}
+
+.pp-shortcut-table {
+  width: 100%;
+  margin-bottom: 16px;
+  border-collapse: collapse;
+}
+
+.pp-shortcut-table :is(th, td) {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+/* At 400% zoom about 20em of width is left: the rail becomes a wrapping row. */
+@media (max-width: 40em) {
+  .pp-frame {
+    grid-template: "header" auto "rail" auto "main" 1fr / minmax(0, 1fr);
+  }
+
+  .pp-rail {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .pp-rail ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .pp-rail-link .pp-kbd {
+    display: none;
+  }
+
+  .pp-main {
+    padding: 16px;
+  }
 }
 
 .printer-states {

@@ -137,27 +137,6 @@ pub(crate) struct LockedDirectory {
     lock_created: bool,
 }
 
-impl LockedDirectory {
-    /// Give up a lock that failed before it became a [`StorageLease`], leaving
-    /// the lease files as found: `.desktop-lease` and `printpartner.lock` are
-    /// removed only if this lock created them, while the lock is still held.
-    fn abandon(self) {
-        let LockedDirectory {
-            admitted,
-            mut compatibility,
-            lock,
-            lock_created,
-        } = self;
-        if !compatibility.created {
-            compatibility.held = false;
-        }
-        drop(compatibility);
-        if lock_created {
-            remove_created_lease(&admitted.directory, "printpartner.lock", &lock, true);
-        }
-    }
-}
-
 /// Remove the lease file `name` that this process created, after a failed
 /// acquisition. The removal runs only while this process holds the file's lock:
 /// `held` says it already does, otherwise it takes the lock now and leaves the
@@ -178,6 +157,37 @@ fn remove_created_lease(directory: &Dir, name: &str, file: &File, held: bool) {
 impl LockedDirectory {
     pub(crate) fn preflight(&self) -> Result<()> {
         self.admitted.preflight()
+    }
+
+    /// The canonical data directory this lock holds.
+    pub(crate) fn path(&self) -> &Path {
+        &self.admitted.path
+    }
+
+    /// The open handle of that directory.
+    pub(crate) fn dir(&self) -> &Dir {
+        &self.admitted.directory
+    }
+
+    /// Give up a lock that failed or refused before it became a
+    /// [`StorageLease`], leaving the lease files as found: `.desktop-lease` and
+    /// `printpartner.lock` are removed only if this lock created them, while
+    /// the lock is still held and only when the name still refers to the file
+    /// this lock opened.
+    pub(crate) fn abandon(self) {
+        let LockedDirectory {
+            admitted,
+            mut compatibility,
+            lock,
+            lock_created,
+        } = self;
+        if !compatibility.created {
+            compatibility.held = false;
+        }
+        drop(compatibility);
+        if lock_created {
+            remove_created_lease(&admitted.directory, "printpartner.lock", &lock, true);
+        }
     }
 }
 
@@ -257,6 +267,18 @@ impl AdmittedDirectory {
     pub(crate) fn lock(self) -> Result<LockedDirectory> {
         self.validate_identity()?;
         validate_resolved_ancestors(&self.path, false)?;
+        // A standalone Node lease is a directory. Refuse it before creating
+        // printpartner.lock, so Rust writes nothing while Node holds the lease.
+        // The reservation below still refuses a lease published after this check.
+        if self
+            .directory
+            .status_nofollow(".desktop-lease")
+            .is_ok_and(|status| status.is_dir())
+        {
+            anyhow::bail!(
+                "Data directory already owned by standalone Node; stop it before starting Rust"
+            );
+        }
         let path = self.path.join("printpartner.lock");
         let (lock, lock_created) = self.open_lock(c"printpartner.lock")?;
         let mut held = false;

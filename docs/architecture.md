@@ -107,8 +107,8 @@ Keep the existing operation crates and deepen their private family modules.
 Do not require a blanket split, consolidation or rename, or freeze the crate
 count. Keep `pp-services`, `pp-source`, `pp-contracts`, and `pp-perf` initially.
 The narrow `pp-os` filesystem crate, specified in ADR 0015, exists with
-`pp-storage` as its first consumer. This is not a move of all platform code
-into one crate.
+`pp-storage` and `pp-source` as its consumers. This is not a move of all
+platform code into one crate.
 
 The following allowed workspace dependencies reflect
 [`check-boundaries.py`](../rust/scripts/check-boundaries.py) at the baseline.
@@ -124,7 +124,7 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-drivers`](../rust/crates/pp-drivers/README.md) | Printer/provider protocol adapters, not send authority | `pp-net`, `pp-api-types` |
 | [`pp-services`](../rust/crates/pp-services/README.md) | Sync policy through `GithubPort`, slicer discovery/profile/handoff modules, operation policy through injected ports | none |
 | [`pp-storage`](../rust/crates/pp-storage/README.md) | Typed family handles; SQL, transactions, writer/read pool, migrations, durable jobs, lease, backups | `pp-os`; `pp-domain`, `pp-contracts`, both gated |
-| [`pp-source`](../rust/crates/pp-source/README.md) | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | none |
+| [`pp-source`](../rust/crates/pp-source/README.md) | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | `pp-os` |
 | [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
 | [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | none |
@@ -132,15 +132,16 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
-| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows, no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
+| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows (open, inspect, enumerate, create, rename, remove), no-follow opens and inspection, file identity, advisory locks, durable rename; no policy | none |
 | [`pp-testkit`](../rust/crates/pp-testkit/README.md) | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented graph, not a manifest for the amendment.
 `pp-os` has no `pp-*`, SQL, HTTP, Tauri or Tokio dependencies. `pp-storage`
 uses it for the data-directory lease's file mechanics, preflight opens, backup
-reads and durable backup publication. `pp-source` and `pp-core` are the next
-consumers; add each consumer edge to the checker and manifests only with that
-consumer's migration. It supplies directory-relative handle access,
+reads and durable backup publication. `pp-source` uses it for every Source
+directory operation: the pinned root walk, staging, enumeration, publication by
+no-replace rename and its directory locks. `pp-core` is the next consumer; add
+its edge to the checker and manifests only with its migration. It supplies directory-relative handle access,
 identity/no-follow checks, lock primitives and durable file publication. The
 crate documentation in `rust/crates/pp-os/src/lib.rs` lists where the Unix and
 Windows guarantees differ; on Windows it reports no POSIX owner or mode, so
@@ -258,7 +259,9 @@ joins workers before releasing the directory lock.
 Keep axum family routers over typed operation handles. Parse bounded inputs at
 the HTTP seam, enforce state/cross-field rules in the operation, and map safe
 typed errors to RFC 9457 problem responses. Preserve required MCP JSON-RPC errors.
-Never expose SQL, raw error chains, secrets or arbitrary paths.
+Never expose SQL, raw error chains, secrets or arbitrary paths. `pp_api::problem`
+is the one builder for those responses; [Problem responses](problem-responses.md)
+lists the stable types and the leak canary.
 
 Rust owns new wire contracts. Keep the working Rust schemars-to-JSON-Schema-to-Zod
 generation path first, including runtime validation and drift checks. Move
@@ -420,8 +423,15 @@ needs informed owner approval. A restore cannot undo a printer action or
 Spoolman effect. Unknown sends still require reconciliation.
 
 The baseline Rust schema ceilings are 35 without the Cargo feature and 41 with
-it. Opening with the rebuild build can migrate data even though the runtime
-switch is process-local. Turning the switch off is not a downgrade. Preflight
+it. In a rebuild build, the Rust storage writer opens only with the runtime
+switch on, and only a directory that carries the durable ownership marker
+`.pp-rust-owned.json` or is empty, in which case it writes the marker before
+any schema. It refuses a non-empty unmarked directory unchanged. The Node-backed
+runtime refuses any marked directory. Rust-only startup makes this decision
+before release verification, cutover recovery and source-sync admission, so a
+refused directory sees none of them. See [Storage](storage.md#ownership-marker-decision).
+Opening a marked directory with the rebuild build can migrate data even though
+the runtime switch is process-local. Turning the switch off is not a downgrade. Preflight
 must reject unsupported/newer schemas without modifying the original. Prove the
 actual Node input versions and older-binary refusal on copies.
 

@@ -105,15 +105,13 @@ pub fn admin_router(config: AdminHttpConfig, client: ReadClient, files: AdminFil
         .merge(routes.clone())
         .nest("/api/v1", routes)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .route_layer(middleware::map_response(crate::problem::layer))
         .with_state(app)
 }
 
 async fn guard(State(app): State<App>, request: axum::extract::Request, next: Next) -> Response {
     let Ok(_permit) = app.admission.try_acquire() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Service temporarily unavailable");
     };
     if request.uri().to_string().len() > 16_384 {
         return failure(StatusCode::URI_TOO_LONG, "Request target too long");
@@ -165,13 +163,10 @@ async fn custom_filaments(State(app): State<App>) -> Response {
         Ok(CustomFilaments::Body(body)) => {
             response(StatusCode::OK, "application/json; charset=utf-8", body)
         }
-        // Fastify's default error body for the handler's TypeError.
-        Ok(CustomFilaments::NullStore) => response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "application/json; charset=utf-8",
-            r#"{"statusCode":500,"error":"Internal Server Error","message":"Cannot read properties of null (reading 'filaments')"}"#.into(),
-        ),
-        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        // Node answers Fastify's TypeError text here; Rust keeps it out.
+        Ok(CustomFilaments::NullStore) | Err(_) => {
+            failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        }
     }
 }
 

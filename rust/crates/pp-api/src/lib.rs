@@ -1,4 +1,14 @@
 pub mod auth;
+#[cfg(feature = "desktop_rebuild")]
+pub mod problem;
+/// With `desktop_rebuild` off, pp-api errors keep their legacy JSON bodies.
+#[cfg(not(feature = "desktop_rebuild"))]
+pub mod problem {
+    /// A legacy body has no problem envelope, so it comes back unchanged.
+    pub fn without_envelope(body: serde_json::Value) -> serde_json::Value {
+        body
+    }
+}
 
 #[cfg(feature = "desktop_rebuild")]
 pub mod accepted;

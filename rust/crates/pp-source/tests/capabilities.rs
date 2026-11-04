@@ -2,7 +2,7 @@ use pp_source::{
     ArtifactBudget, FileKind, LocalFiles, Publication, SelectedFile, Selection, SnapshotRequest,
     SourcePath, TenantRepos,
 };
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
@@ -18,13 +18,19 @@ impl Fixture {
         fs::write(path.join("input/part.stl"), b"solid bytes").unwrap();
         // Pin modes so root ancestor checks do not depend on the caller's umask.
         for dir in [path.to_path_buf(), path.join("repos"), path.join("input")] {
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+            modes::pin_mode(dir, 0o755);
         }
         Self(path)
     }
     fn repos(&self) -> TenantRepos {
         TenantRepos::open("tenant-fixture".into(), &self.0.join("repos")).unwrap()
     }
+}
+/// Windows leaves the Source lock file in the revisions directory.
+fn revisions_empty(fixture: &Fixture) -> bool {
+    fs::read_dir(fixture.0.join("repos/42/revisions"))
+        .unwrap()
+        .all(|entry| entry.unwrap().file_name() == pp_os::DIR_LOCK_FILE)
 }
 fn request() -> SnapshotRequest {
     SnapshotRequest {
@@ -66,6 +72,7 @@ fn configured_repository_roots_reject_non_normalized_spellings() {
 
 #[test]
 fn configured_repository_roots_accept_normalized_utf8_and_filesystem_root() {
+    #[cfg(unix)]
     TenantRepos::open("tenant-fixture".into(), std::path::Path::new("/")).unwrap();
     let fixture = Fixture::new();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
@@ -73,7 +80,7 @@ fn configured_repository_roots_accept_normalized_utf8_and_filesystem_root() {
         let root = fixture.0.join(name);
         if name != "repos" {
             fs::create_dir(&root).unwrap();
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            modes::pin_mode(&root, 0o755);
         }
         let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
         let mut source = repos.source(42).unwrap();
@@ -91,8 +98,10 @@ fn configured_repository_roots_accept_normalized_utf8_and_filesystem_root() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn searchable_ancestor_without_read_access_allows_publication_and_reuse() {
+    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
     struct RestorePermissions<'a>(&'a std::path::Path, fs::Permissions);
     impl Drop for RestorePermissions<'_> {
@@ -133,6 +142,7 @@ fn searchable_ancestor_without_read_access_allows_publication_and_reuse() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn root_walk_rejects_symlink_ancestors_and_selected_roots() {
     use std::os::unix::fs::symlink;
@@ -210,12 +220,7 @@ fn zero_source_and_unsafe_revision_do_not_publish() {
             .materialize(invalid, &input, budget())
             .is_err()
     );
-    assert!(
-        fs::read_dir(fixture.0.join("repos/42/revisions"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(revisions_empty(&fixture));
 }
 
 #[test]
@@ -278,12 +283,7 @@ fn filename_case_collisions_are_rejected_before_copying_in_either_order() {
                 .materialize(selected, &input, budget())
                 .unwrap_err();
             assert_eq!(error.category(), "duplicate-path");
-            assert_eq!(
-                fs::read_dir(fixture.0.join("repos/42/revisions"))
-                    .unwrap()
-                    .count(),
-                0
-            );
+            assert!(revisions_empty(&fixture));
         }
     }
 }
@@ -308,12 +308,7 @@ fn conflicting_directory_case_is_rejected_before_copying() {
         .materialize(selected, &input, budget())
         .unwrap_err();
     assert_eq!(error.category(), "duplicate-path");
-    assert!(
-        fs::read_dir(fixture.0.join("repos/42/revisions"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(revisions_empty(&fixture));
 }
 
 #[test]
@@ -348,6 +343,8 @@ fn max_flat_snapshot_publishes_and_retries_cleanly() {
     assert_eq!(second.publication, Publication::Reused);
 }
 
+/// `PATH_MAX` and these `/`-joined byte counts are Unix rules.
+#[cfg(unix)]
 #[test]
 fn published_paths_stop_one_byte_short_of_path_max() {
     let path_max = if cfg!(target_os = "macos") {
@@ -403,6 +400,30 @@ fn published_paths_stop_one_byte_short_of_path_max() {
     assert_eq!(fs::read(prefix.join(&label)).unwrap(), b"solid long");
 }
 
+/// Rust readers on Windows open long paths through `std`, so pp-source's
+/// limit there is the 32,767-unit extended-length maximum, not 4096 bytes.
+#[cfg(windows)]
+#[test]
+fn windows_publishes_paths_longer_than_unix_path_max() {
+    let fixture = Fixture::new();
+    let mut root = fixture.0.join("repos");
+    while root.as_os_str().len() <= 4096 {
+        root.push("d".repeat(200));
+    }
+    fs::create_dir_all(&root).unwrap();
+    let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
+    let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
+    let mut source = repos.source(42).unwrap();
+    let published = source.materialize(request(), &input, budget()).unwrap();
+    assert_eq!(published.publication, Publication::Created);
+    let stored = ["42", "revisions", "caller-uuid", "part.stl"]
+        .iter()
+        .fold(root, |path, part| path.join(part));
+    assert_eq!(fs::read(stored).unwrap(), b"solid bytes");
+}
+
+/// `PATH_MAX` and these `/`-joined byte counts are Unix rules.
+#[cfg(unix)]
 #[test]
 fn published_manifest_also_stops_one_byte_short_of_path_max() {
     let path_max = if cfg!(target_os = "macos") {
@@ -418,11 +439,11 @@ fn published_manifest_also_stops_one_byte_short_of_path_max() {
     while root_bytes - root.as_os_str().len() > 101 {
         root.push("d".repeat(99));
         fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        modes::pin_mode(&root, 0o755);
     }
     root.push("e".repeat(root_bytes - root.as_os_str().len() - 1));
     fs::create_dir(&root).unwrap();
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+    modes::pin_mode(&root, 0o755);
     assert_eq!(root.as_os_str().len(), root_bytes);
     let repos = TenantRepos::open("tenant-fixture".into(), &root).unwrap();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
@@ -761,16 +782,74 @@ fn write_legacy_revision_with_omissions(
     revision
 }
 
+/// Device names and trailing dots or spaces are refused only on Windows,
+/// where absolute-path readers would reinterpret them. Unix publishes them
+/// exactly as before.
+#[test]
+fn device_names_are_refused_only_on_windows() {
+    let fixture = Fixture::new();
+    let repos = fixture.repos();
+    let materialize = |req: SnapshotRequest| {
+        let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
+        repos
+            .source(42)
+            .and_then(|mut source| source.materialize(req, &input, budget()))
+    };
+    let cases = [
+        "NUL.stl",
+        "parts/con/part.stl",
+        "COM1.stl",
+        "part.stl.",
+        "parts /a.stl",
+    ];
+    for (index, path) in cases.iter().enumerate() {
+        #[cfg(unix)]
+        {
+            let stored = fixture.0.join("input").join(path);
+            fs::create_dir_all(stored.parent().unwrap()).unwrap();
+            fs::write(stored, b"solid bytes").unwrap();
+        }
+        let mut req = request();
+        req.upstream_revision_key = format!("device-{index}");
+        req.files[0].path = SourcePath::try_from((*path).to_owned()).unwrap();
+        let result = materialize(req);
+        if cfg!(windows) {
+            assert_eq!(result.unwrap_err().category(), "unsafe-path", "{path:?}");
+        } else {
+            assert_eq!(
+                result.unwrap().publication,
+                Publication::Created,
+                "{path:?}"
+            );
+        }
+    }
+    let mut req = request();
+    req.upstream_revision_key = "CON".into();
+    let result = materialize(req);
+    if cfg!(windows) {
+        assert_eq!(result.unwrap_err().category(), "invalid-identity");
+    } else {
+        assert_eq!(result.unwrap().publication, Publication::Created);
+    }
+}
+
 #[test]
 fn legacy_ambiguous_revision_reports_permanent_migration_error_and_is_retained() {
     let fixture = Fixture::new();
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
     let mut source = fixture.repos().source(42).unwrap();
+    // Device names are refused only for new Windows names, so an intact Unix
+    // legacy revision holding one keeps this classification. Windows cannot
+    // store it: `NUL.stl` names the device there.
+    let device = cfg!(unix).then_some(&["NUL.stl", "Straße.stl", "STRASSE.stl"][..]);
     for names in [
         &["Straße.stl", "STRASSE.stl"][..],
         &["Straße/a.stl", "STRASSE/b.stl"][..],
         &["Σ.stl", "ς.stl"][..],
-    ] {
+    ]
+    .into_iter()
+    .chain(device)
+    {
         let revision = write_legacy_revision(&fixture, "legacy-ambiguous", names);
         let inventory = || {
             let mut entries: Vec<_> = names
@@ -781,12 +860,25 @@ fn legacy_ambiguous_revision_reports_permanent_migration_error_and_is_retained()
             entries
         };
         let before = inventory();
+        // Case-insensitive volumes (NTFS by default) fold some pairs, such as
+        // Σ and ς, into one entry: the second write replaces the first. That
+        // revision no longer matches its manifest, so load reports corruption.
+        let distinct = names
+            .iter()
+            .all(|name| fs::read(revision.join(name)).unwrap() == name.as_bytes());
         let mut retry = request();
         retry.upstream_revision_key = "legacy-ambiguous".into();
         for _ in 0..2 {
             let error = source
                 .materialize(retry.clone(), &input, budget())
                 .unwrap_err();
+            if !distinct {
+                assert!(
+                    matches!(error, pp_source::Error::CorruptSnapshot),
+                    "{names:?}: {error:?}"
+                );
+                continue;
+            }
             assert!(
                 matches!(&error, pp_source::Error::AmbiguousRevision(key) if key == "legacy-ambiguous"),
                 "{names:?}: {error:?}"
@@ -865,3 +957,6 @@ mod cleanup;
 fn scratch_root_is_empty_after_tests() {
     cleanup::assert_test_run_clean(&["--skip", "scratch_root_is_empty_after_tests"]);
 }
+
+#[path = "support/modes.rs"]
+mod modes;

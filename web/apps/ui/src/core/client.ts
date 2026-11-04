@@ -33,8 +33,8 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
  * Resolves when the Rust core answers GET /health with JSON. A static server or
  * SPA fallback answers that path with index.html, which must not count.
  */
-export async function checkCoreHealth(): Promise<void> {
-  const response = await fetchCore("/health", { headers: { accept: "application/json" } });
+export async function checkCoreHealth(signal?: AbortSignal): Promise<void> {
+  const response = await fetchCore("/health", { headers: { accept: "application/json" }, signal });
   if (!response.headers.get("content-type")?.includes("application/json")) {
     throw new CoreError(response.status, "/health");
   }

@@ -275,7 +275,7 @@ impl Server {
             .await
             .unwrap();
         let status = response.status().as_u16();
-        let body = response.json().await.unwrap();
+        let body = pp_api::problem::without_envelope(response.json().await.unwrap());
         (status, body)
     }
     fn reset_tokens(&self) -> i64 {

@@ -258,8 +258,7 @@ async fn fake_request(
     } else if bytes.is_empty() {
         BTreeMap::new()
     } else {
-        serde_json::from_slice::<Value>(&bytes)
-            .unwrap()
+        pp_api::problem::without_envelope(serde_json::from_slice::<Value>(&bytes).unwrap())
             .as_object()
             .cloned()
             .unwrap_or_default()
@@ -522,7 +521,7 @@ impl Server {
         let body = if bytes.is_empty() {
             Value::Null
         } else {
-            serde_json::from_slice(&bytes).unwrap()
+            pp_api::problem::without_envelope(serde_json::from_slice(&bytes).unwrap())
         };
         Observation {
             status,

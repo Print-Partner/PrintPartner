@@ -23,6 +23,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `Fixture` | Named cases: `Empty`, `EmptyWithLeaseLeftovers`, `NodeSchema34`, `RustMarked`, `MarkedCorrupt`. Converts into a `Spec`. |
 | `Spec`, `LeaseForm`, `MarkerState` | Custom contents: lease leftovers (`RustFile` or `NodeDirectory`), a Node database, and a marker state. |
 | `Marker` | `new`, `to_bytes`, `parse` (refuses unknown keys, versions, owners, and timestamp shapes; errors are `MarkerError`). |
+| `snapshot(root)`, `Snapshot` | Recursive listing of a directory with every file's bytes, for byte-for-byte unchanged checks. |
 | `allowed_in_empty`, `allowed_in_node_lease` | Entry names that still count as an empty data directory. |
 | `MARKER_FILE`, `MARKER_VERSION`, `MARKER_OWNER`, `FIXTURE_CREATED_AT`, `DATABASE_FILE` | Format constants. |
 | `node_schema` | `write_schema_34_database`, `schema_34_statements`, `parse_schema_migrations`, `execute`, `stamp_schema_version`, `SCHEMA_34_COMMIT`, `SCHEMA_34_SHA256`. |

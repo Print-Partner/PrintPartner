@@ -1,5 +1,4 @@
 use crate::directory::Directory;
-use rustix::fs;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -97,14 +96,14 @@ fn walk<B: ReadBudget>(
     ambiguous: &mut HashSet<String>,
     budget: &mut B,
 ) -> Result<(), Failure<B::Error>> {
-    let Ok(entries) = fs::Dir::read_from(&dir.0) else {
+    let Ok(entries) = dir.0.entries() else {
         return Ok(());
     };
     let mut names = Vec::new();
     for entry in entries {
         let Ok(entry) = entry else { continue };
-        let name = entry.file_name().to_string_lossy();
-        if name == "." || name == ".." || (prefix.is_empty() && name == crate::MANIFEST) {
+        let name = entry.to_string_lossy();
+        if prefix.is_empty() && name == crate::MANIFEST {
             continue;
         }
         let len = prefix.len() + usize::from(!prefix.is_empty()) + name.len();
@@ -123,17 +122,15 @@ fn walk<B: ReadBudget>(
         if !seen.insert(key.clone()) {
             ambiguous.insert(key);
         }
-        let Ok(stat) = fs::statat(&dir.0, name.as_str(), fs::AtFlags::SYMLINK_NOFOLLOW) else {
+        let Ok(status) = dir.0.status_nofollow(&name) else {
             continue;
         };
-        match fs::FileType::from_raw_mode(stat.st_mode) {
-            fs::FileType::Directory => {
-                if let Ok(child) = dir.child(&name, false) {
-                    walk(&child, &path, depth + 1, out, ambiguous, budget)?;
-                }
+        if status.is_dir() {
+            if let Ok(child) = dir.child(&name, false) {
+                walk(&child, &path, depth + 1, out, ambiguous, budget)?;
             }
-            fs::FileType::RegularFile if name.to_lowercase().ends_with(".stl") => out.push(path),
-            _ => {}
+        } else if status.is_file() && name.to_lowercase().ends_with(".stl") {
+            out.push(path);
         }
     }
     Ok(())

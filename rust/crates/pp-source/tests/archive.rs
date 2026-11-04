@@ -6,7 +6,6 @@ use pp_source::{
 use std::{
     fs::{self, File},
     io::Write,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -28,7 +27,9 @@ impl Fixture {
         let root = Scratch::new("pp-source-archive-");
         fs::create_dir(root.join("repos")).unwrap();
         fs::create_dir(root.join("input")).unwrap();
+        #[cfg(unix)]
         for dir in [root.to_path_buf(), root.join("repos"), root.join("input")] {
+            use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
         }
         Self(root)
@@ -219,6 +220,7 @@ fn input_file_and_source_roots_remain_pinned_after_path_replacement() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn symlinked_archive_parent_cannot_redirect_output() {
     let fixture = Fixture::new();
@@ -245,6 +247,7 @@ fn symlinked_archive_parent_cannot_redirect_output() {
     assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
 }
 
+#[cfg(unix)]
 #[test]
 fn abandoned_candidate_symlink_is_unlinked_without_following_it() {
     let fixture = Fixture::new();
@@ -321,6 +324,7 @@ fn dropping_unused_readiness_cleans_and_releases_the_stage() {
         .unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn input_symlink_is_rejected_before_extraction() {
     let fixture = Fixture::new();
@@ -465,7 +469,6 @@ fn decomposed_archive_names_reject_without_normalizing_published_paths() {
 mod acquisition_labels {
     use super::*;
     use pp_source::archive::ArchiveLabelPolicy;
-    use rustix::fs::{Mode, OFlags, openat};
     use sha2::{Digest, Sha256};
     use std::io::Read;
     use unicode_normalization::UnicodeNormalization;
@@ -535,19 +538,15 @@ mod acquisition_labels {
     // The contracted paths are longer than macOS PATH_MAX (1024 bytes), so open them one
     // component at a time, as the extractor writes them, instead of by absolute path.
     fn open_beneath(root: &Path, relative: &str) -> File {
-        relative
+        let (parents, name) = relative.rsplit_once('/').unwrap_or(("", relative));
+        parents
             .split('/')
-            .fold(File::open(root).unwrap(), |dir, name| {
-                File::from(
-                    openat(
-                        &dir,
-                        name,
-                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                        Mode::empty(),
-                    )
-                    .unwrap(),
-                )
+            .filter(|segment| !segment.is_empty())
+            .fold(pp_os::Dir::open(root).unwrap(), |dir, segment| {
+                dir.open_dir_nofollow(segment).unwrap()
             })
+            .open_file(name, pp_os::FileOpen::Read)
+            .unwrap()
     }
 
     #[test]
@@ -1066,14 +1065,12 @@ fn peer_materialize_waits_until_live_archive_readiness_is_discarded() {
 
 #[test]
 fn extraction_is_busy_while_a_peer_holds_the_source_revisions_lock() {
-    use fs2::FileExt;
-
     let fixture = Fixture::new();
     fixture.zip(1);
     let mut source = fixture.tenant().source(42).unwrap();
     // A peer process mid-materialize holds this lock on its own descriptor.
-    let peer = File::open(fixture.0.join("repos/42/revisions")).unwrap();
-    peer.lock_exclusive().unwrap();
+    let peer = pp_os::Dir::open(&fixture.0.join("repos/42/revisions")).unwrap();
+    peer.lock().unwrap();
     assert!(matches!(
         source.extract_zip(
             fixture.input(),
@@ -1083,7 +1080,7 @@ fn extraction_is_busy_while_a_peer_holds_the_source_revisions_lock() {
         Err(ArchiveError::Busy)
     ));
     assert!(!fixture.candidate().exists());
-    FileExt::unlock(&peer).unwrap();
+    peer.unlock().unwrap();
     let extracted = source
         .extract_zip(
             fixture.input(),
@@ -1091,10 +1088,10 @@ fn extraction_is_busy_while_a_peer_holds_the_source_revisions_lock() {
             &AtomicBool::new(false),
         )
         .unwrap();
-    assert!(peer.try_lock_exclusive().is_err());
+    assert!(peer.try_lock().is_err());
     drop(extracted);
     assert!(!fixture.candidate().exists());
-    peer.try_lock_exclusive().unwrap();
+    peer.try_lock().unwrap();
 }
 
 fn deflated_zip(fixture: &Fixture, data: &[u8]) {
@@ -1641,8 +1638,6 @@ fn truncated_or_overrunning_extra_records_are_rejected() {
 
 #[test]
 fn discarding_readiness_keeps_the_lock_for_a_running_owner_materialization() {
-    use fs2::FileExt;
-
     let fixture = Fixture::new();
     fixture.zip(1);
     // Large enough that copying and syncing outlasts the discard below.
@@ -1680,14 +1675,14 @@ fn discarding_readiness_keeps_the_lock_for_a_running_owner_materialization() {
         thread::sleep(Duration::from_micros(200));
     }
     extracted.discard().unwrap();
-    let peer = File::open(&revisions).unwrap();
-    let acquired = peer.try_lock_exclusive().is_ok();
+    let peer = pp_os::Dir::open(&revisions).unwrap();
+    let acquired = peer.try_lock().is_ok();
     let running = !finished.load(Ordering::Acquire);
     assert!(running, "materialization finished before the check");
     assert!(!acquired, "a peer took the lock during the owner's copy");
     let snapshot = worker.join().unwrap().unwrap();
     assert_eq!(snapshot.files[0].size_bytes, 256 * 1024 * 1024);
-    peer.try_lock_exclusive().unwrap();
+    peer.try_lock().unwrap();
 }
 
 #[path = "../../pp-storage/tests/common/cleanup.rs"]

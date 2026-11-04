@@ -78,7 +78,17 @@ pub(super) async fn read_builder(
     .await
 }
 
-pub(super) fn present(method: &Method, outcome: ManifestOptionsOutcome) -> Response {
+/// A `ReadFailure` variant name such as `Io(NotFound)`: at most 64 bytes of
+/// letters, digits, `_` and parentheses. Anything else is not sent, so a path
+/// or message can never ride along as the `reason` extension.
+fn is_failure_name(detail: &str) -> bool {
+    detail.len() <= 64
+        && detail
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '(' | ')'))
+}
+
+pub(crate) fn present(method: &Method, outcome: ManifestOptionsOutcome) -> Response {
     let head = *method == Method::HEAD;
     match outcome {
         success @ (ManifestOptionsOutcome::Kit { .. }
@@ -91,29 +101,32 @@ pub(super) fn present(method: &Method, outcome: ManifestOptionsOutcome) -> Respo
             ),
         },
         ManifestOptionsOutcome::MissingBuild => failure(StatusCode::NOT_FOUND, "Profile not found"),
-        ManifestOptionsOutcome::InvalidInput { detail } => bytes_response(
-            StatusCode::BAD_REQUEST,
-            detail.into_body().into_bytes(),
-            false,
-        ),
-        ManifestOptionsOutcome::StaleObservation => bytes_response(
+        // A detail that is not valid UTF-8 JSON (a lone surrogate) gets a fixed one.
+        ManifestOptionsOutcome::InvalidInput { detail } => {
+            let bytes = detail.into_body().into_bytes();
+            let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+            let detail = parsed.as_ref().and_then(|body| body["detail"].as_str());
+            failure(
+                StatusCode::BAD_REQUEST,
+                detail.unwrap_or("Request is invalid"),
+            )
+        }
+        ManifestOptionsOutcome::StaleObservation => crate::problem::coded(
             StatusCode::CONFLICT,
-            serde_json::to_vec(&json!({
-                "detail": "Build inputs changed during manifest observation",
-                "code": "stale_observation",
-            }))
-            .unwrap_or_else(|_| br#"{"detail":"Build service unavailable"}"#.to_vec()),
-            false,
+            "Build inputs changed during manifest observation",
+            "stale_observation",
         ),
-        ManifestOptionsOutcome::ObservationFailed { detail } => bytes_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::to_vec(&json!({
-                "detail": "Manifest source observation failed",
-                "code": "source_observation_failed",
-                "reason": detail,
-            }))
-            .unwrap_or_else(|_| br#"{"detail":"Build service unavailable"}"#.to_vec()),
-            false,
-        ),
+        ManifestOptionsOutcome::ObservationFailed { detail } => {
+            let problem = crate::problem::problem(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Manifest source observation failed",
+                Some("source_observation_failed"),
+            );
+            let mut reason = serde_json::Map::new();
+            if is_failure_name(&detail) {
+                reason.insert("reason".into(), json!(detail));
+            }
+            crate::problem::build(problem, reason)
+        }
     }
 }

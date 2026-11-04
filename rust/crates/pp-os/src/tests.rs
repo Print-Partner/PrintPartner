@@ -212,6 +212,61 @@ fn publish_new_refuses_an_existing_destination() {
     assert!(sync_file(&root.path().join("missing")).is_err());
 }
 
+#[test]
+fn entry_operations_follow_the_handle_after_the_directory_is_renamed() {
+    let root = scratch();
+    let path = root.path().join("store");
+    let retired = root.path().join("retired");
+    std::fs::create_dir(&path).unwrap();
+    let dir = Dir::open(&path).unwrap();
+    let clone = dir.try_clone().unwrap();
+    let opened = dir.status().unwrap().identity();
+    drop(dir.create_new_nofollow("before").unwrap());
+    std::fs::rename(&path, &retired).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert_eq!(status_nofollow(&retired).unwrap().identity(), opened);
+    assert_ne!(status_nofollow(&path).unwrap().identity(), opened);
+    assert_eq!(dir.status().unwrap().identity(), opened);
+
+    let mut created = clone.create_new_nofollow("after").unwrap();
+    created.write_all(b"moved").unwrap();
+    drop(created);
+    assert!(retired.join("after").is_file());
+    assert!(!path.join("after").exists());
+    assert!(dir.status_nofollow("before").unwrap().is_file());
+    let mut read = String::new();
+    dir.open_read_nofollow("after")
+        .unwrap()
+        .read_to_string(&mut read)
+        .unwrap();
+    assert_eq!(read, "moved");
+    drop(dir.open_write_nofollow("after").unwrap());
+
+    std::fs::write(path.join("before"), b"other").unwrap();
+    dir.remove_file("before").unwrap();
+    assert!(!retired.join("before").exists());
+    assert!(path.join("before").is_file());
+    assert_eq!(
+        dir.status_nofollow("before").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
+#[test]
+fn open_directory_can_be_removed() {
+    let root = scratch();
+    let path = root.path().join("store");
+    std::fs::create_dir(&path).unwrap();
+    let dir = Dir::open(&path).unwrap();
+    let clone = dir.try_clone().unwrap();
+    std::fs::remove_dir(&path).unwrap();
+    assert!(dir.create_new_nofollow("entry").is_err());
+    assert!(clone.create_new_nofollow("entry").is_err());
+    drop(dir);
+    drop(clone);
+    assert!(!path.exists());
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -377,22 +432,112 @@ mod windows {
         assert!(!root.path().join("first").join("entry").exists());
     }
 
+    /// Junctions need no privilege, so tests that use them run on any host.
+    fn junction(target: &Path, link: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J {}", link.display());
+    }
+
     #[test]
-    fn open_directory_cannot_be_renamed_or_removed() {
+    fn junctions_are_reported_and_never_followed() {
+        let root = scratch();
+        let target = root.path().join("target-dir");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("inside"), b"secret").unwrap();
+        junction(&target, &root.path().join("junction"));
+        let dir = Dir::open(root.path()).unwrap();
+        assert_eq!(dir.status_nofollow("junction").unwrap().kind(), Kind::Link);
+        assert!(dir.open_read_nofollow("junction").is_err());
+        assert!(dir.open_write_nofollow("junction").is_err());
+        assert_eq!(
+            dir.create_new_nofollow("junction").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert!(dir.remove_file("junction").is_err());
+        assert_eq!(
+            dir.inner.remove_dir("junction").unwrap_err().kind(),
+            io::ErrorKind::NotADirectory
+        );
+        dir.inner.rename("junction", "moved", false).unwrap();
+        assert_eq!(dir.status_nofollow("moved").unwrap().kind(), Kind::Link);
+        assert_eq!(std::fs::read(target.join("inside")).unwrap(), b"secret");
+        assert!(dir.status_nofollow("target-dir").unwrap().is_dir());
+    }
+
+    #[test]
+    fn entries_are_created_renamed_and_removed_relative_to_the_handle() {
         let root = scratch();
         let path = root.path().join("store");
+        let retired = root.path().join("retired");
         std::fs::create_dir(&path).unwrap();
         let dir = Dir::open(&path).unwrap();
-        let clone = dir.try_clone().unwrap();
-        assert!(std::fs::rename(&path, root.path().join("retired")).is_err());
-        assert!(std::fs::remove_dir(&path).is_err());
-        drop(dir.create_new_nofollow("entry").unwrap());
-        assert!(path.join("entry").is_file());
-        dir.remove_file("entry").unwrap();
-        drop(dir);
-        assert!(std::fs::rename(&path, root.path().join("retired")).is_err());
-        drop(clone);
-        std::fs::rename(&path, root.path().join("retired")).unwrap();
+        std::fs::rename(&path, &retired).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let inner = &dir.inner;
+
+        inner.create_dir("child").unwrap();
+        assert_eq!(
+            inner.create_dir("child").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert!(retired.join("child").is_dir());
+        assert!(!path.join("child").exists());
+
+        let child = Dir::open(&retired.join("child")).unwrap();
+        inner.rename("child", "renamed", false).unwrap();
+        drop(child.create_new_nofollow("entry").unwrap());
+        assert!(retired.join("renamed").join("entry").is_file());
+        assert_eq!(
+            inner.remove_dir("renamed").unwrap_err().kind(),
+            io::ErrorKind::DirectoryNotEmpty
+        );
+        child.remove_file("entry").unwrap();
+        inner.remove_dir("renamed").unwrap();
+        assert!(!retired.join("renamed").exists());
+        assert!(child.create_new_nofollow("late").is_err());
+        drop(child);
+
+        drop(dir.create_new_nofollow("first").unwrap());
+        drop(dir.create_new_nofollow("second").unwrap());
+        let first = dir.status_nofollow("first").unwrap().identity();
+        assert_eq!(
+            inner.rename("first", "second", false).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let held = dir.open_read_nofollow("second").unwrap();
+        inner.rename("first", "second", true).unwrap();
+        assert_eq!(dir.status_nofollow("second").unwrap().identity(), first);
+        assert_ne!(status_of(&held).unwrap().identity(), first);
+        assert_eq!(
+            dir.status_nofollow("first").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(inner.remove_dir("second").is_err());
+        assert!(retired.join("second").is_file());
+        assert!(!path.join("second").exists());
+    }
+
+    #[test]
+    fn directories_cannot_be_locked_so_callers_lock_a_file_inside() {
+        let root = scratch();
+        let directory = open_read_nofollow(root.path()).unwrap();
+        assert!(status_of(&directory).unwrap().is_dir());
+        assert!(matches!(try_lock(&directory), Err(TryLockError::Io(_))));
+
+        let first = Dir::open(root.path()).unwrap();
+        let second = Dir::open(root.path()).unwrap();
+        let held = first.create_new_nofollow("lock").unwrap();
+        let other = second.open_write_nofollow("lock").unwrap();
+        try_lock(&held).unwrap();
+        assert!(matches!(try_lock(&other), Err(TryLockError::WouldBlock)));
+        unlock(&held).unwrap();
+        try_lock(&other).unwrap();
     }
 
     #[test]

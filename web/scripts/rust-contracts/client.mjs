@@ -190,7 +190,7 @@ function enumValues(schema, named) {
 }
 
 /**
- * Emits each pp_api::client_contract::DESCRIPTOR_TABLES entry as a record keyed
+ * Emits each entry of the document's `descriptors` list as a record keyed
  * by its key field. Rows must cover the key's Rust enum exactly, in order, and
  * `satisfies Record<...>` makes TypeScript refuse a missing or extra key.
  */
@@ -204,7 +204,7 @@ function descriptorTables(document, named, dtoNames) {
     const keys = table.values.map((row) => row[table.key]);
     assert.deepEqual(keys, enumValues(keySchema, named), `Descriptor table ${table.name} must list every ${table.dto}.${table.key} value once, in Rust order`);
     const rows = table.values.map((row) => `  ${quote(row[table.key])}: ${JSON.stringify(row)},`);
-    return `/** Rows of ${table.dto}, keyed by \`${table.key}\`, from pp_api::client_contract::DESCRIPTOR_TABLES. */
+    return `/** Rows of ${table.dto}, keyed by \`${table.key}\`, from pp_api::client_contract. */
 export const ${table.name} = {
 ${rows.join("\n")}
 } as const satisfies Record<dto.${table.dto}[${quote(table.key)}], dto.${table.dto}>;`;

@@ -5,8 +5,8 @@
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
-//! [`DESCRIPTOR_TABLES`] names constant tables that the generator writes out as
-//! data, such as the printer display descriptors.
+//! The document's `descriptors` list holds constant tables the generator writes
+//! out as data: today only the printer display descriptors.
 
 /// What a request must present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,30 +111,12 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
     },
 ];
 
-/// A constant table the generator emits as a TypeScript record keyed by one
-/// field of its DTO.
-#[derive(Debug, Clone, Copy)]
-pub struct DescriptorTable {
-    /// The generated TypeScript constant name.
-    pub name: &'static str,
-    /// DTO name of each row.
-    pub dto: &'static str,
-    /// The row field that keys the record.
-    pub key: &'static str,
-}
-
-pub const DESCRIPTOR_TABLES: &[DescriptorTable] = &[DescriptorTable {
-    name: "printerDisplayDescriptors",
-    dto: "PrinterDisplayDescriptor",
-    key: "state",
-}];
-
 #[cfg(feature = "codegen")]
 pub use codegen::{document, document_bytes};
 
 #[cfg(feature = "codegen")]
 mod codegen {
-    use super::{CLIENT_ROUTES, DESCRIPTOR_TABLES};
+    use super::CLIENT_ROUTES;
     use pp_storage::printer_display_state::{
         BedClearState, PrinterDisplayDescriptor, PrinterDisplayState, PrinterExecutionState,
         PrinterStateView,
@@ -188,15 +170,10 @@ mod codegen {
                     "auth": route.auth.as_str(), "request": route.request, "response": route.response})
             })
             .collect();
-        let descriptors = DESCRIPTOR_TABLES
-            .iter()
-            .map(|table| {
-                Ok(
-                    json!({"name": table.name, "dto": table.dto, "key": table.key,
-                    "values": descriptor_rows(table.dto)?}),
-                )
-            })
-            .collect::<Result<Vec<Value>, serde_json::Error>>()?;
+        // Emitted as a TypeScript record keyed by `key`; rows in Rust order.
+        let descriptors = json!([{"name": "printerDisplayDescriptors",
+            "dto": "PrinterDisplayDescriptor", "key": "state",
+            "values": printer_display_descriptors()}]);
         Ok(json!({
             "generator": "rust-client-zod/1",
             "schemars": "0.8.22",
@@ -208,19 +185,11 @@ mod codegen {
         }))
     }
 
-    /// Rows of a [`super::DescriptorTable`], in Rust declaration order.
-    fn descriptor_rows(dto: &str) -> Result<Value, serde_json::Error> {
-        match dto {
-            "PrinterDisplayDescriptor" => serde_json::to_value(
-                PrinterDisplayState::ALL
-                    .iter()
-                    .map(|state| state.descriptor())
-                    .collect::<Vec<_>>(),
-            ),
-            _ => Err(serde::ser::Error::custom(format!(
-                "no descriptor rows for {dto}"
-            ))),
-        }
+    fn printer_display_descriptors() -> Vec<PrinterDisplayDescriptor> {
+        PrinterDisplayState::ALL
+            .iter()
+            .map(|state| state.descriptor())
+            .collect()
     }
 
     /// One printer state per display summary.

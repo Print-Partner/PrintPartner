@@ -83,18 +83,6 @@ pub enum StatusColor {
     Neutral,
 }
 
-impl StatusColor {
-    pub const fn token(self) -> &'static str {
-        match self {
-            Self::Active => "status-active",
-            Self::Positive => "status-positive",
-            Self::Attention => "status-attention",
-            Self::Danger => "status-danger",
-            Self::Neutral => "status-neutral",
-        }
-    }
-}
-
 /// How the UI renders one [`PrinterDisplayState`]: always an icon plus a word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
@@ -209,10 +197,6 @@ impl PrinterStateView {
     pub const fn bed_clear(&self) -> BedClearState {
         self.bed_clear
     }
-
-    pub const fn display(&self) -> PrinterDisplayState {
-        self.display
-    }
 }
 
 #[cfg(test)]
@@ -289,13 +273,12 @@ mod tests {
     #[test]
     fn printer_display_state_colors_never_use_interaction_cyan() {
         for state in PrinterDisplayState::ALL {
-            let token = state.descriptor().color.token();
+            let wire = serde_json::to_value(state.descriptor().color).unwrap();
+            let token = wire.as_str().unwrap();
             assert!(token.starts_with("status-"), "{state:?} uses {token}");
             for reserved in ["interaction", "cyan", "accent", "focus", "primary"] {
                 assert!(!token.contains(reserved), "{state:?} uses {token}");
             }
-            let wire = serde_json::to_value(state.descriptor().color).unwrap();
-            assert_eq!(wire, token);
         }
     }
 
@@ -338,7 +321,10 @@ mod tests {
         let mut reached = HashSet::new();
         for execution in EXECUTION {
             for bed_clear in BED {
-                let display = PrinterStateView::new(execution, bed_clear).display();
+                let display = PrinterDisplayState::summarize(execution, bed_clear);
+                let view =
+                    serde_json::to_value(PrinterStateView::new(execution, bed_clear)).unwrap();
+                assert_eq!(view["display"], serde_json::to_value(display).unwrap());
                 reached.insert(display);
                 let ready =
                     execution == PrinterExecutionState::Idle && bed_clear == BedClearState::Clear;

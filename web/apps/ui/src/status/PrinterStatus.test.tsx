@@ -54,7 +54,7 @@ describe("PrinterStatus", () => {
 
   it.each(PRINTER_DISPLAY_STATES)("renders %s with an icon and a word", (state) => {
     const { container } = render(<PrinterStatus state={state} />);
-    const status = container.querySelector(`[data-state="${state}"]`);
+    const status = container.querySelector(".printer-status");
     expect(status).not.toBeNull();
     expect(status?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
     expect(status?.textContent?.trim()).toBe(printerDisplayDescriptors[state].label);
@@ -67,18 +67,14 @@ describe("PrinterStatus", () => {
       ready: { ...printerDisplayDescriptors.ready, label: " " },
     };
     expect(() => printerStatusPresentation("ready", table)).toThrow("Printer state ready has no label");
-    expect(() => render(<PrinterStatus state="ready" table={table} />)).toThrow(/no label/);
   });
 
-  it("colours every state with a status token, never interaction cyan", () => {
-    const interaction = declared.get("interaction");
-    expect(interaction).toBeDefined();
+  it("colours every state with a status token, never cyan", () => {
     for (const state of PRINTER_DISPLAY_STATES) {
       const { color } = printerStatusPresentation(state);
       expect(color).toMatch(/^status-/);
       const value = declared.get(color);
       expect(value, `${color} is not defined in index.css`).toBeDefined();
-      expect(value).not.toBe(interaction);
       const { hue: degrees, saturation } = hue(value!);
       const cyan = saturation > 0.2 && degrees >= 170 && degrees <= 200;
       expect(cyan, `${color} ${value} is cyan`).toBe(false);

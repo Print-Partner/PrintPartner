@@ -37,7 +37,8 @@ export const PRINTER_DISPLAY_STATES = Object.keys(printerDisplayDescriptors) as 
 
 /**
  * The word, icon and colour token for a state. Throws instead of rendering a
- * blank or icon-only status.
+ * blank or icon-only status. `table` exists so the test can prove a missing
+ * label is refused.
  */
 export function printerStatusPresentation(
   state: PrinterDisplayState,
@@ -52,17 +53,11 @@ export function printerStatusPresentation(
 }
 
 /** A printer status: always an icon plus a word, coloured by a status token. */
-export function PrinterStatus({
-  state,
-  table,
-}: {
-  state: PrinterDisplayState;
-  table?: PrinterDisplayTable;
-}) {
-  const { label, Icon, color } = printerStatusPresentation(state, table);
+export function PrinterStatus({ state }: { state: PrinterDisplayState }) {
+  const { label, Icon, color } = printerStatusPresentation(state);
   const style = { "--status-color": `var(--${color})` } as CSSProperties;
   return (
-    <span className="printer-status" data-state={state} data-color={color} style={style}>
+    <span className="printer-status" style={style}>
       <Icon className="printer-status-icon" aria-hidden="true" focusable="false" />
       <span>{label}</span>
     </span>

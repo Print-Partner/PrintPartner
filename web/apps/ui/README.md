@@ -76,7 +76,6 @@ colour here; change the Rust enum and regenerate.
   `typecheck` until it has a component.
 - `printerStatusPresentation` throws on an empty label instead of rendering an
   icon-only or blank status.
-- Each descriptor names a `--status-*` token defined in `src/index.css`.
-  `--interaction` is cyan and is for focus, selection and the primary button
-  only; `PrinterStatus.test.tsx` fails if a status token uses it or any other
-  cyan.
+- Each descriptor names a `--status-*` token defined in `src/index.css`. Cyan
+  is reserved for focus, selection and the primary button, so
+  `PrinterStatus.test.tsx` fails if a status token is a cyan hue.

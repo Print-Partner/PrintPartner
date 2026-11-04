@@ -7,7 +7,7 @@ Typed requests, responses and Zod runtime schemas for the Rust core's HTTP route
 | File | Contents |
 | --- | --- |
 | `src/schemas.generated.ts` | One Zod schema and output type per DTO, plus `dtoSchemas` keyed by Rust contract name |
-| `src/descriptors.generated.ts` | Constant tables from `DESCRIPTOR_TABLES`, such as `printerDisplayDescriptors`: one row per printer display state with its label, Lucide icon name and `--status-*` colour token |
+| `src/descriptors.generated.ts` | Constant tables from the contract's `descriptors` list. Today only `printerDisplayDescriptors`: one row per printer display state with its label, Lucide icon name and `--status-*` colour token |
 | `src/routes.generated.ts` | `routes` (method, path, path params, auth, request and response schema), `RouteRequest`, `RouteResponse`, `routePath` |
 | `src/index.ts` | Re-exports both files |
 
@@ -63,5 +63,5 @@ The emitter (`web/scripts/rust-contracts/client.mjs`, `rust-client-zod/1`) refus
 
 ## Add a descriptor table
 
-1. Add a `DescriptorTable` to `DESCRIPTOR_TABLES` and its rows to `descriptor_rows` in `client_contract.rs`. The key field must be a Rust string enum.
+1. Add an entry (`name`, `dto`, `key`, `values`) to the `descriptors` list in `document()` in `client_contract.rs`, with the rows from a typed helper. The key field must be a Rust string enum.
 2. Run `generate`. The generator refuses rows that do not list every key value once, in Rust order, and the output's `satisfies Record<...>` makes TypeScript refuse a missing key.

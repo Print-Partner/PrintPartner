@@ -12,7 +12,6 @@
   --status-attention: #fbbf24;
   --status-danger: #f87171;
   --status-neutral: #9aa3ad;
-  font-family: system-ui, sans-serif;
   background: var(--surface);
   color: var(--text);
 }

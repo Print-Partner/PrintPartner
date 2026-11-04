@@ -71,9 +71,12 @@ impl Server {
         let response = request.send().await.unwrap();
         let status = response.status().as_u16();
         if status != 404 {
-            assert_eq!(response.headers()["content-type"], "application/json");
+            assert_eq!(response.headers()["content-type"], media_type(status));
         }
-        (status, response.json().await.unwrap_or(Value::Null))
+        (
+            status,
+            crate::problem::without_envelope(response.json().await.unwrap_or(Value::Null)),
+        )
     }
     async fn raw(&self, head: &str) -> String {
         let mut stream = tokio::net::TcpStream::connect(self.host()).await.unwrap();
@@ -279,7 +282,10 @@ impl Server {
             .await
             .unwrap();
         let status = response.status().as_u16();
-        (status, response.json().await.unwrap_or(Value::Null))
+        (
+            status,
+            crate::problem::without_envelope(response.json().await.unwrap_or(Value::Null)),
+        )
     }
     /// Opens a PATCH that promises a body and never sends it.
     async fn stall(&self) -> tokio::net::TcpStream {
@@ -359,7 +365,7 @@ async fn bodies_are_bounded_by_method_and_patch_limit() {
     let response = response.unwrap();
     assert_eq!(response.status(), 414);
     assert_eq!(
-        response.json::<Value>().await.unwrap(),
+        crate::problem::without_envelope(response.json::<Value>().await.unwrap()),
         json!({"detail":"Request target too long"})
     );
 }
@@ -528,11 +534,30 @@ impl ReadServer {
     }
 }
 
+/// An invalid-body problem without its field errors; an unknown field is named.
+fn invalid(mut problem: Value, body: &str) -> Value {
+    let errors = problem.as_object_mut().unwrap().remove("errors");
+    if body.contains("\"extra\"") && body.contains("expected_lifecycle_version") {
+        let named = json!([{"pointer":"/extra","detail":"is not allowed"}]);
+        assert_eq!(errors, Some(named), "{body}");
+    }
+    problem
+}
+
+/// Errors are problem documents; successes are plain JSON.
+fn media_type(status: u16) -> &'static str {
+    if status >= 400 {
+        crate::problem::PROBLEM_CONTENT_TYPE
+    } else {
+        "application/json"
+    }
+}
+
 async fn json_reply(request: reqwest::RequestBuilder, status: u16) -> Value {
     let response = request.send().await.unwrap();
     assert_eq!(response.status().as_u16(), status);
-    assert_eq!(response.headers()["content-type"], "application/json");
-    response.json().await.unwrap()
+    assert_eq!(response.headers()["content-type"], media_type(status));
+    crate::problem::without_envelope(response.json().await.unwrap())
 }
 
 fn open_draft() -> Value {
@@ -928,7 +953,7 @@ async fn dropped_handler_keeps_read_capacity_until_the_worker_exits() {
     let blocked = blocked.unwrap();
     assert_eq!(blocked.status(), 503);
     assert_eq!(
-        blocked.json::<Value>().await.unwrap(),
+        crate::problem::without_envelope(blocked.json::<Value>().await.unwrap()),
         json!({"detail":"Draft service temporarily unavailable"})
     );
     assert_eq!(gate.entered(), 64);
@@ -941,7 +966,7 @@ async fn dropped_handler_keeps_read_capacity_until_the_worker_exits() {
                 .await
                 .unwrap();
             if response.status().as_u16() == 200 {
-                break response.json::<Value>().await.unwrap();
+                break crate::problem::without_envelope(response.json::<Value>().await.unwrap());
             }
             assert_eq!(response.status(), 503);
             tokio::task::yield_now().await;
@@ -1235,13 +1260,16 @@ async fn edit_bounds_and_typed_bodies_reject_before_mutation() {
         "{\"expected_snapshot_digest\":null,\"extra\":true}",
     ] {
         assert_eq!(
-            json_reply(
-                server
-                    .request(Method::PATCH, "/plans/1/drafts/2/parts")
-                    .body(body.to_owned()),
-                400
-            )
-            .await,
+            invalid(
+                json_reply(
+                    server
+                        .request(Method::PATCH, "/plans/1/drafts/2/parts")
+                        .body(body.to_owned()),
+                    400
+                )
+                .await,
+                body
+            ),
             json!({"detail":"Request is invalid","code":"invalid_request"})
         );
     }
@@ -1340,20 +1368,23 @@ async fn present_edit_matches_node_conflict_and_domain_shapes() {
     use pp_storage::required_units::{DomainCode, Outcome as WorkspaceOutcome};
     let conflict = present_edit(WorkspaceOutcome::DraftChanged { workspace: None });
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
-    let conflict_body: Value =
-        serde_json::from_slice(&to_bytes(conflict.into_body(), 4096).await.unwrap()).unwrap();
+    let conflict_body: Value = crate::problem::without_envelope(
+        serde_json::from_slice(&to_bytes(conflict.into_body(), 4096).await.unwrap()).unwrap(),
+    );
     assert_eq!(conflict_body, json!({"code":"draft_changed"}));
     let domain = present_edit(WorkspaceOutcome::DomainError {
         code: DomainCode::RequiredUnitSetUnavailable,
     });
     assert_eq!(domain.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let domain_body: Value =
-        serde_json::from_slice(&to_bytes(domain.into_body(), 4096).await.unwrap()).unwrap();
+    let domain_body: Value = crate::problem::without_envelope(
+        serde_json::from_slice(&to_bytes(domain.into_body(), 4096).await.unwrap()).unwrap(),
+    );
     assert_eq!(domain_body, json!({"code":"required_unit_set_unavailable"}));
     let baseline = present_edit(WorkspaceOutcome::AcceptedBaselineRequired);
     assert_eq!(baseline.status(), StatusCode::CONFLICT);
-    let baseline_body: Value =
-        serde_json::from_slice(&to_bytes(baseline.into_body(), 4096).await.unwrap()).unwrap();
+    let baseline_body: Value = crate::problem::without_envelope(
+        serde_json::from_slice(&to_bytes(baseline.into_body(), 4096).await.unwrap()).unwrap(),
+    );
     assert_eq!(baseline_body, json!({"code":"accepted_baseline_required"}));
 }
 
@@ -1450,13 +1481,16 @@ async fn abandon_bounds_and_typed_bodies_reject_before_mutation() {
         "{\"expected_lifecycle_version\":null}",
     ] {
         assert_eq!(
-            json_reply(
-                server
-                    .request(Method::POST, "/plans/1/drafts/2/abandon")
-                    .body(body.to_owned()),
-                400
-            )
-            .await,
+            invalid(
+                json_reply(
+                    server
+                        .request(Method::POST, "/plans/1/drafts/2/abandon")
+                        .body(body.to_owned()),
+                    400
+                )
+                .await,
+                body
+            ),
             json!({"detail":"Request is invalid","code":"invalid_request"})
         );
     }
@@ -1499,8 +1533,9 @@ async fn present_abandon_matches_node_conflict_shapes() {
     );
     let missing = present_abandon(AbandonOutcome::DraftNotFound);
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-    let missing_body: Value =
-        serde_json::from_slice(&to_bytes(missing.into_body(), 4096).await.unwrap()).unwrap();
+    let missing_body: Value = crate::problem::without_envelope(
+        serde_json::from_slice(&to_bytes(missing.into_body(), 4096).await.unwrap()).unwrap(),
+    );
     assert_eq!(
         missing_body,
         json!({"detail":"Plan draft not found","code":"draft_not_found"})

@@ -191,6 +191,7 @@ pub fn auth_router(
     }
     router
         .layer(DefaultBodyLimit::max(16384))
+        .route_layer(middleware::map_response(crate::problem::layer))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -656,12 +657,7 @@ async fn rotate_key(
     .await?
     {
         outcome @ Outcome::KeyCreated { .. } => created(outcome),
-        // Node's regenerate route answers foreign and missing IDs with its full problem body.
-        _ => Ok((
-            StatusCode::NOT_FOUND,
-            Json(json!({"detail":"API key not found","title":"Not Found","status":404})),
-        )
-            .into_response()),
+        _ => Err(Failure(StatusCode::NOT_FOUND, "API key not found")),
     }
 }
 async fn revoke_key(

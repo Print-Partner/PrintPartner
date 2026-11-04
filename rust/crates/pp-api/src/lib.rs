@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod problem;
 
 #[cfg(feature = "desktop_rebuild")]
 pub mod accepted;

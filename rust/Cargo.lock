@@ -3315,11 +3315,13 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2",
  "tempfile",
  "time",
  "tokio",
  "tokio-rustls",
+ "tower",
 ]
 
 [[package]]

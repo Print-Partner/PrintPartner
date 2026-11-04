@@ -132,7 +132,7 @@ impl Server {
         let response = request.send().await.unwrap();
         (
             response.status().as_u16(),
-            response.json().await.unwrap_or(Value::Null),
+            pp_api::problem::without_envelope(response.json().await.unwrap_or(Value::Null)),
         )
     }
 
@@ -681,7 +681,7 @@ async fn build_reads_are_authenticated_and_tenant_scoped() {
         .await
         .unwrap();
     assert_eq!(key.status(), 201);
-    let key: Value = key.json().await.unwrap();
+    let key: Value = pp_api::problem::without_envelope(key.json().await.unwrap());
     let bearer = format!("Bearer {}", key["key"].as_str().unwrap());
     let (status, body) = server
         .send(Method::GET, "/plans", &[("Authorization", bearer.as_str())])

@@ -172,7 +172,7 @@ async fn registration_race_and_owner_policy_are_transactional() {
     assert_eq!(statuses, vec![200, 403]);
     let success = if a.status().is_success() { a } else { b };
     let cookie = cookie(&success);
-    let user: Value = success.json().await.unwrap();
+    let user: Value = pp_api::problem::without_envelope(success.json().await.unwrap());
     assert_eq!(user["user"]["is_admin"], true);
     assert_eq!(user["user"]["user_id"].as_str().unwrap().len(), 36);
     assert!(user["user"].get("tenant_id").is_none());
@@ -275,7 +275,7 @@ async fn health_propagates_invalid_stored_session_provider() {
         .await;
     assert_eq!(response.status(), 500);
     assert_eq!(
-        response.json::<Value>().await.unwrap()["detail"],
+        pp_api::problem::without_envelope(response.json::<Value>().await.unwrap())["detail"],
         "Authentication unavailable"
     );
     server.close().await;
@@ -412,7 +412,7 @@ async fn keys_are_flattened_one_time_and_rotate_revoke_persist() {
         )
         .await;
     assert_eq!(created.status(), 201);
-    let key: Value = created.json().await.unwrap();
+    let key: Value = pp_api::problem::without_envelope(created.json().await.unwrap());
     let raw = key["key"].as_str().unwrap();
     let id = key["id"].as_str().unwrap();
     assert!(key.get("info").is_none());
@@ -443,7 +443,7 @@ async fn keys_are_flattened_one_time_and_rotate_revoke_persist() {
         )
         .await;
     assert_eq!(rotated.status(), 201);
-    let rotated: Value = rotated.json().await.unwrap();
+    let rotated: Value = pp_api::problem::without_envelope(rotated.json().await.unwrap());
     assert!(matches!(
         call(
             &server.auth,
@@ -497,7 +497,7 @@ async fn keys_are_flattened_one_time_and_rotate_revoke_persist() {
         .await;
     assert_eq!(response.status(), 200);
     assert_eq!(
-        response.json::<Value>().await.unwrap(),
+        pp_api::problem::without_envelope(response.json::<Value>().await.unwrap()),
         json!({"success":true})
     );
     let directory = server.stop().await;
@@ -577,7 +577,7 @@ async fn oauth_only_reset_preserves_identity_and_ordinary_no_enumeration() {
         .await;
     assert_eq!(change.status(), 400);
     assert_eq!(
-        change.json::<Value>().await.unwrap()["detail"],
+        pp_api::problem::without_envelope(change.json::<Value>().await.unwrap())["detail"],
         "This account uses OAuth sign-in only"
     );
     let forgot: Value = server
@@ -608,7 +608,7 @@ async fn oauth_only_reset_preserves_identity_and_ordinary_no_enumeration() {
         .await;
     assert_eq!(reset.status(), 200);
     assert_eq!(
-        reset.json::<Value>().await.unwrap()["user"]["user_id"],
+        pp_api::problem::without_envelope(reset.json::<Value>().await.unwrap())["user"]["user_id"],
         user.user_id
     );
     assert_eq!(
@@ -715,7 +715,7 @@ async fn old_default_keys_expiry_session_expiry_and_storage_errors_are_safe() {
         .request(Method::GET, "/settings/api-keys", None, Some(&cookie))
         .await;
     assert_eq!(list.status(), 200);
-    let list: Value = list.json().await.unwrap();
+    let list: Value = pp_api::problem::without_envelope(list.json().await.unwrap());
     assert_eq!(list["total"], 2);
     assert!(!list.to_string().contains("token"));
     for (tenant, key, valid) in [
@@ -964,7 +964,7 @@ async fn stopped_writer_is_service_unavailable() {
         .unwrap();
     assert_eq!(response.status(), 503);
     assert_eq!(
-        response.json::<Value>().await.unwrap()["detail"],
+        pp_api::problem::without_envelope(response.json::<Value>().await.unwrap())["detail"],
         "Authentication temporarily unavailable"
     );
     shutdown.send(()).unwrap();
@@ -1093,7 +1093,7 @@ async fn public_cookie_catalog_and_accepted_reads_share_default_tenant() {
     let server = domain_server().await;
     let registered = server.register("domain@example.test").await;
     assert_eq!(registered.status(), 200);
-    let registered: Value = registered.json().await.unwrap();
+    let registered: Value = pp_api::problem::without_envelope(registered.json().await.unwrap());
     let account = registered["user"]["user_id"].as_str().unwrap();
     assert_eq!(account.len(), 36);
     assert_ne!(account, "default");
@@ -1187,7 +1187,7 @@ async fn public_cookie_catalog_and_accepted_reads_share_default_tenant() {
         )
         .await;
     assert_eq!(key.status(), 201);
-    let key: Value = key.json().await.unwrap();
+    let key: Value = pp_api::problem::without_envelope(key.json().await.unwrap());
     let raw = key["key"].as_str().unwrap();
     let key_catalog = domain_key_catalog(&server.owner, "default", raw);
     assert_eq!(
@@ -1467,7 +1467,7 @@ async fn me_reports_password_presence_independent_of_session_provider() {
             .request(Method::GET, "/auth/me", None, Some(&cookie))
             .await;
         assert_eq!(response.status(), 200);
-        let body: Value = response.json().await.unwrap();
+        let body: Value = pp_api::problem::without_envelope(response.json().await.unwrap());
         assert_eq!(body["user"]["provider"], provider);
         assert_eq!(body["user"]["hasPassword"], has_password);
         assert!(body["user"].get("hash").is_none());

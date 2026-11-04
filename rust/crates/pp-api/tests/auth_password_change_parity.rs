@@ -152,7 +152,7 @@ impl Server {
         assert!(matches!(status, 200 | 400 | 401), "login status {status}");
         if status == 200 {
             assert!(!session_cookie(&response).is_empty());
-            let body: Value = response.json().await.unwrap();
+            let body: Value = pp_api::problem::without_envelope(response.json().await.unwrap());
             assert_eq!(body["user"]["email"], email);
         }
         status == 200
@@ -227,7 +227,7 @@ async fn password_change_matches_node_response_and_login_outcomes() {
             .await;
         let change = Change {
             status: response.status().as_u16(),
-            body: response.json().await.unwrap(),
+            body: pp_api::problem::without_envelope(response.json().await.unwrap()),
         };
         let observed = Observation {
             before,

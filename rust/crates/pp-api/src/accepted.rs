@@ -85,6 +85,7 @@ pub fn accepted_router(config: AcceptedHttpConfig, client: ReadClient) -> Router
         .nest("/api/v1", parts)
         .nest("/api/v2", plans)
         .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .route_layer(middleware::map_response(crate::problem::layer))
         .with_state(app)
 }
 
@@ -94,10 +95,7 @@ async fn guard(
     next: Next,
 ) -> Response {
     let Ok(_permit) = app.admission.try_acquire() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Service temporarily unavailable");
     };
     if request.uri().to_string().len() > 16_384 {
         return failure(StatusCode::URI_TOO_LONG, "Request target too long");
@@ -258,13 +256,10 @@ fn present(view: Value, head: bool, missing: &str) -> Response {
             StatusCode::INTERNAL_SERVER_ERROR,
             "Accepted Plan data is inconsistent",
         ),
-        Some("filament_lookup_unavailable") => json_response(
+        Some("filament_lookup_unavailable") => crate::problem::coded(
             StatusCode::SERVICE_UNAVAILABLE,
-            &json!({
-                "detail": "Custom and Spoolman filament details are not available on this server yet",
-                "code": "filament_lookup_unavailable",
-            }),
-            false,
+            "Custom and Spoolman filament details are not available on this server yet",
+            "filament_lookup_unavailable",
         ),
         _ => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
     }
@@ -318,7 +313,7 @@ fn json_response(status: StatusCode, value: &Value, head: bool) -> Response {
 }
 
 pub(crate) fn failure(status: StatusCode, detail: &str) -> Response {
-    json_response(status, &json!({"detail": detail}), false)
+    crate::problem::response(status, detail)
 }
 
 #[cfg(test)]
@@ -330,7 +325,8 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
             .await
             .unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        let body = serde_json::from_slice(&bytes).unwrap();
+        (status, crate::problem::without_envelope(body))
     }
 
     #[tokio::test]

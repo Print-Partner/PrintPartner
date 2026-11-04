@@ -8,18 +8,13 @@ use pp_storage::auth::{AuthFailure, Secret, User};
 use serde_json::{Value, json};
 
 #[derive(Debug)]
-pub(super) struct Failure(pub StatusCode, pub &'static str);
+pub(crate) struct Failure(pub StatusCode, pub &'static str);
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
-        let mut body = json!({"detail": self.1});
-        if self.0 == StatusCode::NOT_FOUND && self.1 == "API key not found" {
-            body["title"] = json!("Not Found");
-            body["status"] = json!(404);
-        }
         if self.0 == StatusCode::UNAUTHORIZED && self.1 == "Current password is incorrect" {
-            body["code"] = json!("current_password_rejected");
+            return crate::problem::coded(self.0, self.1, "current_password_rejected");
         }
-        (self.0, Json(body)).into_response()
+        crate::problem::response(self.0, self.1)
     }
 }
 impl From<anyhow::Error> for Failure {
@@ -137,41 +132,27 @@ mod tests {
     use axum::body::to_bytes;
 
     #[tokio::test]
-    async fn failure_response_contracts() {
-        for (status, detail, expected) in [
-            (
-                StatusCode::NOT_FOUND,
-                "API key not found",
-                json!({"detail": "API key not found", "title": "Not Found", "status": 404}),
-            ),
-            (
-                StatusCode::NOT_FOUND,
-                "User not found",
-                json!({"detail": "User not found"}),
-            ),
-            (
-                StatusCode::BAD_REQUEST,
-                "API key not found",
-                json!({"detail": "API key not found"}),
-            ),
-            (
-                StatusCode::UNAUTHORIZED,
-                "Current password is incorrect",
-                json!({"detail": "Current password is incorrect", "code": "current_password_rejected"}),
-            ),
-            (
-                StatusCode::UNAUTHORIZED,
-                "Authentication required",
-                json!({"detail": "Authentication required"}),
-            ),
-            (
-                StatusCode::BAD_REQUEST,
-                "Current password is incorrect",
-                json!({"detail": "Current password is incorrect"}),
-            ),
-        ] {
+    async fn problem_response_auth_failures() {
+        #[rustfmt::skip]
+        let cases = [
+            (StatusCode::NOT_FOUND, "API key not found", "not-found", "Not Found", None),
+            (StatusCode::BAD_REQUEST, "API key not found", "validation", "Validation Failed", None),
+            (StatusCode::UNAUTHORIZED, "Current password is incorrect", "unauthenticated",
+                "Authentication Required", Some("current_password_rejected")),
+            (StatusCode::BAD_REQUEST, "Invalid JSON body", "malformed-request", "Malformed Request", None),
+        ];
+        for (status, detail, kind, title, code) in cases {
+            let mut expected = json!({"type": format!("urn:print-partner:problem:{kind}"),
+                "title": title, "status": status.as_u16(), "detail": detail});
+            if let Some(code) = code {
+                expected["code"] = json!(code);
+            }
             let response = Failure(status, detail).into_response();
             assert_eq!(response.status(), status, "{detail}");
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "application/problem+json"
+            );
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
             let body: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(body, expected, "{status} {detail}");

@@ -298,7 +298,7 @@ async fn run_case(case: &Value, mutate: bool) {
             .next()
             .unwrap()
             .to_owned();
-        let body: Value = response.json().await.unwrap();
+        let body: Value = node_view(response.json().await.unwrap());
         let user = body["user"]["user_id"].as_str().unwrap().to_owned();
         names.bind(&user, &format!("{actor}-user"));
         let token = cookie.strip_prefix("pp_session=").expect("session cookie");
@@ -320,7 +320,7 @@ async fn run_case(case: &Value, mutate: bool) {
             .post("/settings/api-keys", json!({}), Some(&cookies[actor]))
             .await;
         assert_eq!(response.status(), 201, "key setup");
-        let key: Value = response.json().await.unwrap();
+        let key: Value = node_view(response.json().await.unwrap());
         names.key(
             &key,
             if actor == "owner" {
@@ -385,7 +385,7 @@ async fn run_case(case: &Value, mutate: bool) {
     let response = server.post(&path, json!({}), cookie).await;
     let status = response.status().as_u16();
     assert_eq!(json!(status), entry["status"], "rotation HTTP status");
-    let body: Value = response.json().await.unwrap();
+    let body: Value = node_view(response.json().await.unwrap());
     let new_key = if status == 201 {
         names.key(&body, "new-key");
         assert_eq!(
@@ -527,4 +527,16 @@ async fn node_regeneration_transcripts_match_rust_router_and_client() {
 async fn consumer_detects_old_key_left_usable() {
     let fixture = fixture();
     run_case(&fixture["cases"][0], true).await;
+}
+
+/// The Node view of a Rust body. Node sends `title` and `status` only on its
+/// key-not-found body, so those stay there and go everywhere else.
+fn node_view(body: Value) -> Value {
+    let key_not_found = body["status"] == 404 && body["detail"] == "API key not found";
+    let mut node = pp_api::problem::without_envelope(body);
+    if key_not_found {
+        node["title"] = serde_json::json!("Not Found");
+        node["status"] = serde_json::json!(404);
+    }
+    node
 }

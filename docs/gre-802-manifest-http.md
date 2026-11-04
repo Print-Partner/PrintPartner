@@ -18,7 +18,8 @@ bodies use storage `KitManifest::from_request` (`{ "kit": { ... } }`). Missing
 or cross-tenant ids answer 404 with `"Profile not found"`. Invalid kit input
 answers 400 with storage `ManifestInputDetail` JSON. A changed capture basis
 answers 409 with
-`{"detail":"Build inputs changed during manifest observation","code":"stale_observation"}`
+a [problem response](problem-responses.md) with
+`"detail":"Build inputs changed during manifest observation","code":"stale_observation"`
 and does not write the kit setting. Source observation failures answer 503 with
 `source_observation_failed`. Unauthenticated requests answer 401 with
 `"Authentication required"`.

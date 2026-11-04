@@ -176,10 +176,17 @@ impl Server {
                     .headers()
                     .get("content-type")
                     .and_then(|v| v.to_str().ok()),
-                Some("application/json")
+                Some(if status == 200 {
+                    "application/json"
+                } else {
+                    pp_api::problem::PROBLEM_CONTENT_TYPE
+                })
             );
         }
-        (status, response.json().await.unwrap_or(Value::Null))
+        (
+            status,
+            pp_api::problem::without_envelope(response.json().await.unwrap_or(Value::Null)),
+        )
     }
 
     async fn stop(&mut self) {
@@ -542,7 +549,7 @@ async fn catalog_reads_match_existing_source_metadata() {
         .await
         .unwrap();
     assert_eq!(key.status(), 201);
-    let key: Value = key.json().await.unwrap();
+    let key: Value = pp_api::problem::without_envelope(key.json().await.unwrap());
     let bearer = format!("Bearer {}", key["key"].as_str().unwrap());
     let (status, body) = server
         .send(Method::GET, "/sources", &[("Authorization", &bearer)])

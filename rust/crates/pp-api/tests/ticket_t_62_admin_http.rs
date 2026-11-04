@@ -161,8 +161,30 @@ async fn ticket_t_62_admin_routes_match_the_node_oracle() {
             replies.insert(key.into(), reply);
         }
         replies.insert("head".into(), fixture.head("/filaments/custom").await);
-        let actual = Value::Object(replies);
         let expected = &oracle["custom_filaments"][name];
+        // Node's error replies carry Fastify's TypeError text; Rust answers a
+        // problem for the same status and keeps the other headers.
+        for (key, reply) in &mut replies {
+            let node = &expected[key.as_str()];
+            if node["status"].as_u64().is_some_and(|status| status >= 400) {
+                assert_eq!(
+                    reply["content_type"], "application/problem+json",
+                    "{name} {key}"
+                );
+                let internal = r#""type":"urn:print-partner:problem:internal""#;
+                assert!(
+                    reply["body"]
+                        .as_str()
+                        .is_none_or(|body| body.contains(internal))
+                );
+                for field in ["content_type", "content_length", "body"] {
+                    if let Some(value) = node.get(field) {
+                        reply[field] = value.clone();
+                    }
+                }
+            }
+        }
+        let actual = Value::Object(replies);
         if name == DEEPER_THAN_SERDE {
             assert_ne!(
                 &actual, expected,
@@ -194,7 +216,10 @@ async fn ticket_t_62_admin_routes_require_a_valid_credential() {
         ] {
             let (reply, body) = fixture.send(Method::GET, path, headers).await;
             assert_eq!(reply["status"], 401, "{path} {headers:?}");
-            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), refused);
+            assert_eq!(
+                pp_api::problem::without_envelope(serde_json::from_slice::<Value>(&body).unwrap()),
+                refused
+            );
         }
     }
     // Node registers core routes at `/` and `/api/v1` only.

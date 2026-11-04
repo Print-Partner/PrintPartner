@@ -15,7 +15,6 @@ use pp_storage::{
     catalog::{CatalogFailure, Credentials, Outcome, Request as CatalogRequest},
 };
 use serde::Deserialize;
-use serde_json::json;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
@@ -127,6 +126,7 @@ pub fn admit_catalog_routes(config: CatalogHttpConfig, owner: Arc<Mutex<WriterOw
         .nest("/api/v1", routes)
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .route_layer(middleware::map_response(crate::problem::layer))
         .with_state(app)
 }
 
@@ -465,10 +465,8 @@ async fn naming(app: &App, principal: Principal, request: CatalogRequest) -> Res
     }
 }
 
-fn naming_error(error: anyhow::Error) -> Response {
-    let coded = |status, code, detail| {
-        (status, Json(json!({ "code": code, "detail": detail }))).into_response()
-    };
+pub(crate) fn naming_error(error: anyhow::Error) -> Response {
+    let coded = |status, code, detail| crate::problem::coded(status, detail, code);
     match error.downcast_ref::<CatalogFailure>() {
         Some(CatalogFailure::NotFound) => coded(
             StatusCode::NOT_FOUND,
@@ -491,11 +489,7 @@ fn naming_error(error: anyhow::Error) -> Response {
 }
 
 fn invalid_naming(detail: &str) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({ "code": "invalid_source_naming", "detail": detail })),
-    )
-        .into_response()
+    crate::problem::coded(StatusCode::BAD_REQUEST, detail, "invalid_source_naming")
 }
 
 /// Node's `sourceIdFromParams`: digits only, a safe integer above zero.
@@ -680,10 +674,11 @@ fn deletion_response(mapped: wire::DeletionHttp) -> Response {
     }
 }
 
-fn catalog_error(error: anyhow::Error) -> Response {
+pub(crate) fn catalog_error(error: anyhow::Error) -> Response {
     if let Some(failure) = error.downcast_ref::<AuthFailure>() {
         return match failure {
-            AuthFailure::QueueFull | AuthFailure::Stopped => reject(
+            AuthFailure::QueueFull => crate::problem::overloaded("Catalog temporarily unavailable"),
+            AuthFailure::Stopped => reject(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Catalog temporarily unavailable",
             ),
@@ -707,16 +702,14 @@ fn catalog_error(error: anyhow::Error) -> Response {
             ),
             CatalogFailure::Input(_)
             | CatalogFailure::DuplicateName(_)
-            | CatalogFailure::Referenced => (StatusCode::BAD_REQUEST, error.to_string()),
+            // The typed failure's own text, never an outer context's.
+            | CatalogFailure::Referenced => (StatusCode::BAD_REQUEST, failure.to_string()),
             CatalogFailure::Conflict => {
-                return (
+                return crate::problem::coded(
                     StatusCode::CONFLICT,
-                    Json(json!({
-                        "code": "catalog_metadata_conflict",
-                        "detail": failure.to_string(),
-                    })),
-                )
-                    .into_response();
+                    &failure.to_string(),
+                    "catalog_metadata_conflict",
+                );
             }
         };
         return reject(status, detail);
@@ -725,7 +718,10 @@ fn catalog_error(error: anyhow::Error) -> Response {
         "Authentication required" | "Invalid session" => {
             (StatusCode::UNAUTHORIZED, "Authentication required")
         }
-        "Writer queue full" | "Storage stopped" | "Cancelled before admission" => (
+        "Writer queue full" => {
+            return crate::problem::overloaded("Catalog temporarily unavailable");
+        }
+        "Storage stopped" | "Cancelled before admission" => (
             StatusCode::SERVICE_UNAVAILABLE,
             "Catalog temporarily unavailable",
         ),
@@ -736,5 +732,5 @@ fn catalog_error(error: anyhow::Error) -> Response {
 }
 
 fn reject(status: StatusCode, detail: impl AsRef<str>) -> Response {
-    (status, Json(json!({ "detail": detail.as_ref() }))).into_response()
+    crate::problem::response(status, detail.as_ref())
 }

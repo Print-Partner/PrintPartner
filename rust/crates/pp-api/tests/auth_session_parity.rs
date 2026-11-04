@@ -280,7 +280,7 @@ async fn node_session_transitions_match_real_auth_router() {
             .collect();
         let actual = Expected {
             status,
-            body: response.json().await.unwrap(),
+            body: pp_api::problem::without_envelope(response.json().await.unwrap()),
             clearing_cookies: clearing_cookies(&headers),
             session_rows: directory
                 .db()

@@ -22,7 +22,7 @@ use axum::{
     },
     http::{Method, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::Response,
     routing::get,
 };
 use pp_storage::{
@@ -126,6 +126,7 @@ pub fn jobs_router(config: JobsHttpConfig, client: AtomicJobClient) -> Router {
         .route("/api/v1/jobs/{id}", get(detail))
         .route("/ws/jobs/{id}", get(stream).head(stream_head))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .route_layer(middleware::map_response(crate::problem::layer))
         .with_state(app)
 }
 
@@ -135,10 +136,7 @@ async fn guard(
     next: Next,
 ) -> Response {
     let Ok(_permit) = app.admission.try_acquire() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Jobs service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Jobs service temporarily unavailable");
     };
     if request.uri().to_string().len() > 16_384 {
         return failure(StatusCode::URI_TOO_LONG, "Request target too long");
@@ -165,10 +163,7 @@ async fn list(State(app): State<App>, request: axum::extract::Request) -> Respon
     let filter = legacy_filter(request.uri().query());
     let head = *request.method() == Method::HEAD;
     let Ok(permit) = app.serializers.clone().try_acquire_owned() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Jobs service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Jobs service temporarily unavailable");
     };
     let client = app.client.clone();
     let wait = app.config.wait;
@@ -195,10 +190,7 @@ async fn detail(
     };
     let head = *request.method() == Method::HEAD;
     let Ok(permit) = app.serializers.clone().try_acquire_owned() else {
-        return failure(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Jobs service temporarily unavailable",
-        );
+        return crate::problem::overloaded("Jobs service temporarily unavailable");
     };
     let client = app.client.clone();
     let wait = app.config.wait;
@@ -585,13 +577,16 @@ fn parse_node_profile_id(value: &str) -> Option<u64> {
         .then_some(parsed as u64)
 }
 
-fn domain_error(error: anyhow::Error) -> Response {
+pub(crate) fn domain_error(error: anyhow::Error) -> Response {
     if let Some(access) = error.downcast_ref::<JobAccessFailure>() {
         return match access {
             JobAccessFailure::NotFound | JobAccessFailure::InternalOnly => {
                 failure(StatusCode::NOT_FOUND, "Job not found")
             }
-            JobAccessFailure::Capacity | JobAccessFailure::Stopped => failure(
+            JobAccessFailure::Capacity => {
+                crate::problem::overloaded("Jobs service temporarily unavailable")
+            }
+            JobAccessFailure::Stopped => failure(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Jobs service temporarily unavailable",
             ),
@@ -625,14 +620,7 @@ fn domain_error(error: anyhow::Error) -> Response {
 }
 
 fn failure(status: StatusCode, detail: &str) -> Response {
-    let body = serde_json::to_vec(&json!({ "detail": detail }))
-        .unwrap_or_else(|_| br#"{"detail":"Jobs service unavailable"}"#.to_vec());
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CONTENT_LENGTH, body.len())
-        .body(Body::from(body))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    crate::problem::response(status, detail)
 }
 
 #[cfg(test)]

@@ -123,7 +123,7 @@ impl Server {
         let response = request.send().await.unwrap();
         (
             response.status().as_u16(),
-            response.json().await.unwrap_or(Value::Null),
+            pp_api::problem::without_envelope(response.json().await.unwrap_or(Value::Null)),
         )
     }
 
@@ -305,7 +305,7 @@ async fn register_account(server: &Server, email: &str) -> (String, String) {
         .next()
         .unwrap()
         .to_owned();
-    let user: Value = registered.json().await.unwrap();
+    let user: Value = pp_api::problem::without_envelope(registered.json().await.unwrap());
     let tenant = user["user"]["user_id"].as_str().unwrap().to_owned();
     (cookie, tenant)
 }
@@ -327,7 +327,7 @@ async fn create_api_key(server: &Server, cookie: &str) -> String {
         .await
         .unwrap();
     assert_eq!(created.status(), 201);
-    let body: Value = created.json().await.unwrap();
+    let body: Value = pp_api::problem::without_envelope(created.json().await.unwrap());
     body["key"].as_str().unwrap().to_owned()
 }
 
@@ -1184,7 +1184,11 @@ async fn job_detail_mutations_unregistered() {
     for path in [format!("/jobs/{job_id}"), format!("/api/v1/jobs/{job_id}")] {
         let response = server.send_raw(Method::POST, &path, &headers).await;
         assert_eq!(response.status(), 405, "{path}");
-        assert_eq!(response.bytes().await.unwrap().len(), 0, "{path}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(
+            body["type"], "urn:print-partner:problem:method-not-allowed",
+            "{path}"
+        );
     }
 
     // No session is refused in the guard, before subscribe.
@@ -1201,7 +1205,7 @@ async fn job_detail_mutations_unregistered() {
         .unwrap();
     assert_eq!(ws.status(), 401);
     assert_eq!(
-        ws.json::<serde_json::Value>().await.unwrap(),
+        pp_api::problem::without_envelope(ws.json::<serde_json::Value>().await.unwrap()),
         serde_json::json!({"detail": "Authentication required"})
     );
 
@@ -1725,7 +1729,9 @@ async fn ws_exchange(
     let response = request.send().await.unwrap();
     let status = response.status().as_u16();
     let bytes = response.bytes().await.unwrap();
-    let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let body = pp_api::problem::without_envelope(
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    );
     (status, body)
 }
 

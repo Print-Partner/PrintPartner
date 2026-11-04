@@ -432,16 +432,67 @@ mod windows {
         assert!(!root.path().join("first").join("entry").exists());
     }
 
-    /// Junctions need no privilege, so tests that use them run on any host.
+    /// Create a junction (a mount-point reparse point) at `link`. Junctions
+    /// need no privilege, so tests that use them run on any host.
     fn junction(target: &Path, link: &Path) {
-        let status = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
-            .stdout(std::process::Stdio::null())
-            .status()
+        use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::{
+            Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT},
+            System::IO::DeviceIoControl,
+        };
+        const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+        const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+        let wide =
+            |text: &OsStr| -> Vec<u8> { text.encode_wide().flat_map(u16::to_le_bytes).collect() };
+        let mut substitute = OsStr::new(r"\??\").to_os_string();
+        substitute.push(target.as_os_str());
+        let (substitute, print) = (wide(&substitute), wide(target.as_os_str()));
+        let paths_length = substitute.len() + 2 + print.len() + 2;
+        let mut buffer = Vec::new();
+        buffer.extend(IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+        for field in [
+            8 + paths_length,
+            0,
+            0,
+            substitute.len(),
+            substitute.len() + 2,
+            print.len(),
+        ] {
+            buffer.extend(u16::try_from(field).unwrap().to_le_bytes());
+        }
+        buffer.extend(&substitute);
+        buffer.extend([0, 0]);
+        buffer.extend(&print);
+        buffer.extend([0, 0]);
+
+        std::fs::create_dir(link).unwrap();
+        let directory = File::options()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(link)
             .unwrap();
-        assert!(status.success(), "mklink /J {}", link.display());
+        let mut returned = 0;
+        // SAFETY: the handle is open, and `buffer` is a complete mount-point
+        // reparse buffer of the length passed.
+        let set = unsafe {
+            DeviceIoControl(
+                directory.as_raw_handle(),
+                FSCTL_SET_REPARSE_POINT,
+                buffer.as_ptr().cast(),
+                u32::try_from(buffer.len()).unwrap(),
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            set,
+            0,
+            "junction {}: {}",
+            link.display(),
+            io::Error::last_os_error()
+        );
     }
 
     #[test]

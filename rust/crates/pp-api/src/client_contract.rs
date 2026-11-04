@@ -501,7 +501,7 @@ mod codegen {
                 state.descriptor(),
             )?);
         }
-        for kind in ProblemType::ALL {
+        for &kind in ProblemType::ALL {
             let name = format!("{kind:?}");
             cases.push(served("Problem", &name, Problem::new(kind, 400, UNICODE))?);
             cases.push(served("ProblemType", &name, kind)?);

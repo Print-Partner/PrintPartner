@@ -108,22 +108,31 @@ async fn assert_clean(label: &str, response: Response) {
     assert_eq!(problem.title, problem.problem_type.title(), "{label}");
 }
 
+type Mapper = fn(anyhow::Error) -> Response;
+
+async fn problem_of(response: Response) -> Problem {
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// Every router's storage-error mapper.
+const MAPPERS: [(&str, Mapper); 7] = [
+    ("auth", |error| {
+        crate::auth::Failure::from(error).into_response()
+    }),
+    ("accepted", |error| crate::accepted::read_error(&error)),
+    ("builds", crate::builds::domain_error),
+    ("catalog", crate::catalog::catalog_error),
+    ("catalog-naming", crate::catalog::naming_error),
+    ("drafts", |error| {
+        crate::drafts::storage_failure_with(&error, "Plan draft update failed")
+    }),
+    ("jobs", crate::jobs::domain_error),
+];
+
 #[tokio::test]
 async fn problem_response_canary_never_leaks_sql_paths_or_urls() {
-    type Mapper = fn(anyhow::Error) -> Response;
-    let mappers: [(&str, Mapper); 7] = [
-        ("auth", |error| {
-            crate::auth::Failure::from(error).into_response()
-        }),
-        ("accepted", |error| crate::accepted::read_error(&error)),
-        ("builds", crate::builds::domain_error),
-        ("catalog", crate::catalog::catalog_error),
-        ("catalog-naming", crate::catalog::naming_error),
-        ("drafts", |error| {
-            crate::drafts::storage_failure_with(&error, "Plan draft update failed")
-        }),
-        ("jobs", crate::jobs::domain_error),
-    ];
+    let mappers = MAPPERS;
     let mut checked = 0;
     for (name, mapper) in mappers {
         for (index, error) in classes().await.into_iter().enumerate() {
@@ -137,4 +146,59 @@ async fn problem_response_canary_never_leaks_sql_paths_or_urls() {
     )
     .await;
     assert!(checked >= 7 * 48, "{checked}");
+}
+
+/// A full writer queue is retryable on every router; an unknown commit is
+/// never a plain 500 or 401 that a client might blindly retry.
+#[tokio::test]
+async fn problem_response_typed_storage_failures_keep_their_type_on_every_router() {
+    let cases: [(fn() -> anyhow::Error, ProblemType); 2] = [
+        (|| AuthFailure::QueueFull.into(), ProblemType::Overloaded),
+        (
+            || AuthFailure::CommitUnknown.into(),
+            ProblemType::OutcomeUnknown,
+        ),
+    ];
+    for (name, mapper) in MAPPERS {
+        for (error, kind) in cases {
+            let response = mapper(error().context(format!("query {SQL}")));
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{name} {kind:?}"
+            );
+            let problem = problem_of(response).await;
+            assert_eq!(problem.problem_type, kind, "{name}");
+        }
+    }
+    let queue = crate::accepted::read_error(&anyhow::anyhow!("Writer queue full"));
+    let problem = problem_of(queue).await;
+    assert_eq!(problem.problem_type, ProblemType::Overloaded);
+}
+
+/// Manifest observation failures send only a closed `ReadFailure` name as
+/// `reason`; a message carrying a path is dropped.
+#[tokio::test]
+async fn problem_response_canary_covers_manifest_failures() {
+    use pp_storage::build_graph::ManifestOptionsOutcome as Outcome;
+    let present = |outcome| crate::builds::present_manifest(&axum::http::Method::GET, outcome);
+    let leaked = Outcome::ObservationFailed {
+        detail: format!("Io(NotFound) {PATH}"),
+    };
+    assert_clean("manifest-observation", present(leaked)).await;
+    let named = present(Outcome::ObservationFailed {
+        detail: "Io(NotFound)".into(),
+    });
+    let bytes = to_bytes(named.into_body(), 1 << 20).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["reason"], "Io(NotFound)");
+
+    // An invalid-input detail is pp-storage text plus the request's own keys,
+    // so it carries no server secret; it is still bounded and decodable.
+    let long = pp_storage::manifest_options::ManifestInputDetail::from("k".repeat(4096));
+    let response = present(Outcome::InvalidInput { detail: long });
+    assert!(is_problem(&response));
+    let problem = problem_of(response).await;
+    assert_eq!(problem.problem_type, ProblemType::Validation);
+    assert!(problem.detail.unwrap().len() <= MAX_DETAIL_BYTES);
 }

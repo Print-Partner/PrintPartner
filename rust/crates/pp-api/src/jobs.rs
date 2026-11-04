@@ -603,7 +603,15 @@ pub(crate) fn domain_error(error: anyhow::Error) -> Response {
                 StatusCode::FORBIDDEN,
                 "Explicit account owner mapping is required",
             ),
-            AuthFailure::QueueFull | AuthFailure::Stopped => failure(
+            AuthFailure::QueueFull => {
+                crate::problem::overloaded("Jobs service temporarily unavailable")
+            }
+            AuthFailure::CommitUnknown => crate::problem::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Jobs service temporarily unavailable",
+                "outcome_unknown",
+            ),
+            AuthFailure::Stopped => failure(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Jobs service temporarily unavailable",
             ),

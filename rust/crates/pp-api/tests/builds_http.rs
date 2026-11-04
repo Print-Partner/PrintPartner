@@ -774,6 +774,39 @@ fn assert_created_shape(body: &Value, prefix: &str, name: &str) {
     assert!(body["layers"].as_array().is_some());
 }
 
+/// A create or layer body that is not a JSON object cannot be read at all, so
+/// it is a malformed request; Node's 400 detail is kept.
+#[cfg(feature = "desktop_rebuild")]
+#[tokio::test]
+async fn problem_response_unreadable_build_bodies_are_malformed() {
+    let (directory, owner) = open();
+    let (mut server, cookie, _) = spawn_builds_with_auth(&owner, "default").await;
+    for (path, body, kind) in [
+        ("/plans", "{", "malformed-request"),
+        ("/plans", "[]", "malformed-request"),
+        ("/plans/1/layers", "{", "malformed-request"),
+        ("/plans", r#"{"name":7}"#, "validation"),
+    ] {
+        let response = server
+            .client
+            .post(format!("{}{path}", server.origin))
+            .header("Origin", &server.origin)
+            .header("Cookie", cookie.as_str())
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{path} {body}");
+        let problem: Value = response.json().await.unwrap();
+        let expected = format!("urn:print-partner:problem:{kind}");
+        assert_eq!(problem["type"], expected, "{path} {body}");
+        assert_eq!(problem["detail"], "Request is invalid", "{path} {body}");
+    }
+    server.stop().await;
+    shutdown(owner, directory);
+}
+
 /// POST /plans matches Node: summary fields plus `layers`, duplicate/base refusals.
 #[cfg(feature = "desktop_rebuild")]
 #[tokio::test]

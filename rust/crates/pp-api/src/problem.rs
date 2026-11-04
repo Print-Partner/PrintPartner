@@ -159,6 +159,12 @@ pub fn without_envelope(mut body: Value) -> Value {
     body
 }
 
+/// True when `bytes` is a JSON object: a readable body, so a refusal of it is a
+/// validation problem, not a malformed request.
+pub fn is_json_object(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes).is_ok_and(|body| body.is_object())
+}
+
 /// Parses a JSON request body. On failure returns the field errors: one naming
 /// the failing field, or none when no field is to blame.
 pub fn parse_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Vec<FieldError>> {

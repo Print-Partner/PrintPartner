@@ -1,6 +1,6 @@
 # Problem responses
 
-Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop_rebuild` feature and `PP_DESKTOP_REBUILD=1|true`) is an RFC 9457 problem document served as `application/problem+json` with `Cache-Control: private, no-store`. The Node compatibility server is unchanged, and with the feature off `pp_api::problem` is not compiled and pp-api errors keep their legacy JSON bodies byte for byte. MCP keeps JSON-RPC errors.
+Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop_rebuild` feature and `PP_DESKTOP_REBUILD=1|true`) is an RFC 9457 problem document served as `application/problem+json` with `Cache-Control: private, no-store`. The Node compatibility server is unchanged, and with the feature off `pp_api::problem` is not compiled and pp-api errors keep their legacy JSON bodies byte for byte. MCP is out of scope and keeps its own errors: JSON-RPC errors inside the protocol, and plain `{"detail": ...}` `application/json` bodies for its guard refusals on `/mcp` and `/api/v1/mcp` (401, 403, 503, 500; `src/mcp.rs`).
 
 ```json
 {
@@ -17,7 +17,7 @@ Every error from the replacement Rust API (`pp-api`, mounted behind the `desktop
 - `detail` keeps the text the Node API sent, cut to 512 bytes. It is absent where Node sent none: draft conflicts and the draft 422.
 - `code` keeps Node's machine code where the route has one, cut to 64 bytes.
 - `errors` lists field errors as `{ "pointer": "/decision/value", "detail": "is invalid" }`: at most 16 entries, pointers up to 256 bytes, details up to 128 bytes. A field error names the field but never echoes its value. An overlong pointer is shortened to its longest whole-token ancestor, so an RFC 6901 escape or a UTF-8 character is never split; a field error whose pointer would be the whole document is dropped. Draft edits name the failing member even though their wire shape is untagged.
-- Routes may add extension members, such as a draft conflict's `workspace` or a manifest observation failure's `reason`. An extension never replaces a standard member.
+- Routes may add extension members, such as a draft conflict's `workspace` or a manifest observation failure's `reason`. An extension never replaces a standard member. `reason` is sent only when it is a closed failure name such as `Io(NotFound)` (letters, digits, `_` and parentheses, at most 64 bytes).
 
 ## Types
 

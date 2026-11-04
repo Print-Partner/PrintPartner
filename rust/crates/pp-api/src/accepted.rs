@@ -268,6 +268,8 @@ fn present(view: Value, head: bool, missing: &str) -> Response {
 /// `ReadClient` refuses credentials with `AuthFailure` (sessions) or the plain
 /// "Authentication required" message (API keys); admission refusals are plain
 /// messages too. Anything else is Node's opaque 500.
+const BUSY: &str = "Service temporarily unavailable";
+
 pub(crate) fn read_error(error: &anyhow::Error) -> Response {
     match error.downcast_ref::<AuthFailure>() {
         Some(
@@ -281,18 +283,19 @@ pub(crate) fn read_error(error: &anyhow::Error) -> Response {
                 "Explicit account owner mapping is required",
             );
         }
-        Some(AuthFailure::QueueFull | AuthFailure::Stopped | AuthFailure::Storage) => {
-            return failure(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Service temporarily unavailable",
-            );
+        Some(AuthFailure::QueueFull) => return crate::problem::overloaded(BUSY),
+        Some(AuthFailure::CommitUnknown) => {
+            return crate::problem::coded(StatusCode::SERVICE_UNAVAILABLE, BUSY, "outcome_unknown");
+        }
+        Some(AuthFailure::Stopped | AuthFailure::Storage) => {
+            return failure(StatusCode::SERVICE_UNAVAILABLE, BUSY);
         }
         _ => {}
     }
     match error.to_string().as_str() {
         "Authentication required" => failure(StatusCode::UNAUTHORIZED, "Authentication required"),
-        "Writer queue full"
-        | "Storage stopped"
+        "Writer queue full" => crate::problem::overloaded(BUSY),
+        "Storage stopped"
         | "Storage stopped without read result"
         | "Cancelled before admission" => failure(
             StatusCode::SERVICE_UNAVAILABLE,

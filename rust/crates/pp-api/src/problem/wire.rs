@@ -15,89 +15,71 @@ pub const MAX_POINTER_BYTES: usize = 256;
 /// Longest field error `detail`, in bytes.
 pub const MAX_FIELD_DETAIL_BYTES: usize = 128;
 
-/// Stable problem kinds. The serialized value is the problem `type` URN.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
-pub enum ProblemType {
+/// Declares [`ProblemType`] with each variant's `type` URN and fixed
+/// title, and [`ProblemType::ALL`] from the same list.
+macro_rules! problem_types {
+    ($($(#[$doc:meta])* $variant:ident = $urn:literal, $title:literal;)+) => {
+        /// Stable problem kinds. The serialized value is the problem `type` URN.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+        pub enum ProblemType {
+            $(
+                $(#[$doc])*
+                #[serde(rename = $urn)]
+                $variant,
+            )+
+        }
+
+        impl ProblemType {
+            /// Every variant, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)+];
+
+            /// The fixed `title` for this type.
+            pub fn title(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $title,)+
+                }
+            }
+        }
+    };
+}
+
+problem_types! {
     /// The request could not be read: unparsable JSON, a wrong media type, an
     /// oversized body or target, a bad path or query, or a body that timed out.
-    #[serde(rename = "urn:print-partner:problem:malformed-request")]
-    MalformedRequest,
+    MalformedRequest = "urn:print-partner:problem:malformed-request", "Malformed Request";
     /// The request was readable but a value is invalid.
-    #[serde(rename = "urn:print-partner:problem:validation")]
-    Validation,
+    Validation = "urn:print-partner:problem:validation", "Validation Failed";
     /// No valid session or API key.
-    #[serde(rename = "urn:print-partner:problem:unauthenticated")]
-    Unauthenticated,
+    Unauthenticated = "urn:print-partner:problem:unauthenticated", "Authentication Required";
     /// The caller is known but not allowed, or the transport is refused.
-    #[serde(rename = "urn:print-partner:problem:forbidden")]
-    Forbidden,
+    Forbidden = "urn:print-partner:problem:forbidden", "Forbidden";
     /// The target does not exist or belongs to another tenant.
-    #[serde(rename = "urn:print-partner:problem:not-found")]
-    NotFound,
+    NotFound = "urn:print-partner:problem:not-found", "Not Found";
     /// The route exists but not for this method.
-    #[serde(rename = "urn:print-partner:problem:method-not-allowed")]
-    MethodNotAllowed,
+    MethodNotAllowed = "urn:print-partner:problem:method-not-allowed", "Method Not Allowed";
     /// The target's state does not allow the operation.
-    #[serde(rename = "urn:print-partner:problem:conflict")]
-    Conflict,
+    Conflict = "urn:print-partner:problem:conflict", "Conflict";
     /// The version or digest the request expected is no longer current.
-    #[serde(rename = "urn:print-partner:problem:precondition-failed")]
-    PreconditionFailed,
+    PreconditionFailed = "urn:print-partner:problem:precondition-failed", "Precondition Failed";
     /// Admission or the writer queue is full. Retry later.
-    #[serde(rename = "urn:print-partner:problem:overloaded")]
-    Overloaded,
+    Overloaded = "urn:print-partner:problem:overloaded", "Service Overloaded";
     /// The request or an upstream call ran out of time.
-    #[serde(rename = "urn:print-partner:problem:timeout")]
-    Timeout,
+    Timeout = "urn:print-partner:problem:timeout", "Timed Out";
     /// The service is stopping, cancelled the request or is otherwise down.
-    #[serde(rename = "urn:print-partner:problem:unavailable")]
-    Unavailable,
+    Unavailable = "urn:print-partner:problem:unavailable", "Service Unavailable";
     /// A write may or may not have committed. Reload and reconcile; do not
     /// blindly retry.
-    #[serde(rename = "urn:print-partner:problem:outcome-unknown")]
-    OutcomeUnknown,
+    OutcomeUnknown = "urn:print-partner:problem:outcome-unknown", "Outcome Unknown";
     /// An upstream provider failed or answered badly.
-    #[serde(rename = "urn:print-partner:problem:upstream")]
-    Upstream,
+    Upstream = "urn:print-partner:problem:upstream", "Upstream Failure";
     /// The feature is not configured on this server.
-    #[serde(rename = "urn:print-partner:problem:not-implemented")]
-    NotImplemented,
+    NotImplemented = "urn:print-partner:problem:not-implemented", "Not Implemented";
     /// An unexpected server failure. The cause is logged, not sent.
-    #[serde(rename = "urn:print-partner:problem:internal")]
-    Internal,
+    Internal = "urn:print-partner:problem:internal", "Internal Error";
 }
 
 impl ProblemType {
-    #[rustfmt::skip]
-    pub const ALL: [Self; 15] = [
-        Self::MalformedRequest, Self::Validation, Self::Unauthenticated, Self::Forbidden,
-        Self::NotFound, Self::MethodNotAllowed, Self::Conflict, Self::PreconditionFailed,
-        Self::Overloaded, Self::Timeout, Self::Unavailable, Self::OutcomeUnknown, Self::Upstream,
-        Self::NotImplemented, Self::Internal,
-    ];
-
-    /// The fixed `title` for this type.
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::MalformedRequest => "Malformed Request",
-            Self::Validation => "Validation Failed",
-            Self::Unauthenticated => "Authentication Required",
-            Self::Forbidden => "Forbidden",
-            Self::NotFound => "Not Found",
-            Self::MethodNotAllowed => "Method Not Allowed",
-            Self::Conflict => "Conflict",
-            Self::PreconditionFailed => "Precondition Failed",
-            Self::Overloaded => "Service Overloaded",
-            Self::Timeout => "Timed Out",
-            Self::Unavailable => "Service Unavailable",
-            Self::OutcomeUnknown => "Outcome Unknown",
-            Self::Upstream => "Upstream Failure",
-            Self::NotImplemented => "Not Implemented",
-            Self::Internal => "Internal Error",
-        }
-    }
-
     /// The type for an error `status` and Node-compatible `code`. A code that
     /// names a precise cause wins over the status.
     pub fn classify(status: u16, code: Option<&str>) -> Self {
@@ -142,7 +124,7 @@ pub struct FieldError {
 impl FieldError {
     pub fn new(pointer: &str, detail: &str) -> Self {
         Self {
-            pointer: ancestor(pointer, MAX_POINTER_BYTES),
+            pointer: ancestor(pointer),
             detail: cut(detail, MAX_FIELD_DETAIL_BYTES),
         }
     }
@@ -201,15 +183,16 @@ impl Problem {
     }
 }
 
-/// The longest whole-token prefix of a JSON Pointer that fits `limit`, so an
+/// The longest whole-token prefix of a JSON Pointer that fits
+/// [`MAX_POINTER_BYTES`], so an
 /// RFC 6901 escape or a UTF-8 character is never split. `""` (the whole
 /// document) when even the first token is too long.
-fn ancestor(pointer: &str, limit: usize) -> String {
-    if pointer.len() <= limit {
+fn ancestor(pointer: &str) -> String {
+    if pointer.len() <= MAX_POINTER_BYTES {
         return pointer.to_owned();
     }
     // `/` is ASCII, so its byte offset is always a character boundary.
-    let bytes = &pointer.as_bytes()[..=limit];
+    let bytes = &pointer.as_bytes()[..=MAX_POINTER_BYTES];
     let end = bytes.iter().rposition(|byte| *byte == b'/').unwrap_or(0);
     pointer[..end].to_owned()
 }
@@ -231,7 +214,7 @@ mod tests {
 
     #[test]
     fn problem_response_types_are_stable_urns_with_fixed_titles() {
-        for kind in ProblemType::ALL {
+        for &kind in ProblemType::ALL {
             let value = serde_json::to_value(kind).unwrap();
             let urn = value.as_str().unwrap();
             assert!(urn.starts_with("urn:print-partner:problem:"), "{urn}");

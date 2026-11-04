@@ -220,6 +220,7 @@ async fn create(State(app): State<App>, request: axum::extract::Request) -> Resp
     };
     let body: CreateBuildRequest = match serde_json::from_slice(&bytes) {
         Ok(body) => body,
+        Err(_) if !crate::problem::is_json_object(&bytes) => return unreadable(),
         Err(error) => {
             let message = error.to_string();
             // Node reads `String(body.name ?? "")`, so an object without a
@@ -377,7 +378,7 @@ async fn attachment(
             .get("project_id")
             .and_then(source_id)
             .and_then(|id| PositiveId::new(id).ok()),
-        _ => return failure(StatusCode::BAD_REQUEST, "Request is invalid"),
+        _ => return unreadable(),
     };
     let contract = SummaryContract::Accepted;
     let Some(source) = source else {
@@ -476,11 +477,7 @@ async fn outcome(
     command: BuildCommand,
 ) -> Result<BuildOutcome, Box<Response>> {
     let Ok(permit) = app.waiters.clone().try_acquire_owned() else {
-        return Err(Box::new(crate::problem::coded(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Build service temporarily unavailable",
-            "writer_queue_full",
-        )));
+        return Err(Box::new(temporarily_unavailable("writer_queue_full")));
     };
     let client = app.client.clone();
     let wait = app.config.wait;
@@ -673,6 +670,9 @@ pub(crate) fn domain_error(error: anyhow::Error) -> Response {
                 StatusCode::FORBIDDEN,
                 "Explicit account owner mapping is required",
             ),
+            AuthFailure::QueueFull => temporarily_unavailable("writer_queue_full"),
+            AuthFailure::Stopped => temporarily_unavailable("writer_stopped"),
+            AuthFailure::CommitUnknown => temporarily_unavailable("outcome_unknown"),
             _ => failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Build service unavailable",
@@ -692,11 +692,7 @@ pub(crate) fn domain_error(error: anyhow::Error) -> Response {
                 );
             }
         };
-        return crate::problem::coded(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Build service temporarily unavailable",
-            code,
-        );
+        return temporarily_unavailable(code);
     }
     failure(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -735,6 +731,24 @@ fn encode_json_response(
         .header(header::CONTENT_LENGTH, length)
         .body(axum::body::Body::from(if head { Vec::new() } else { body }))
         .map_err(|_| ())
+}
+
+/// 400 for a body that is not a JSON object: malformed, not invalid.
+fn unreadable() -> Response {
+    crate::problem::typed(
+        crate::problem::ProblemType::MalformedRequest,
+        StatusCode::BAD_REQUEST,
+        "Request is invalid",
+    )
+}
+
+/// 503 whose `code` gives the cause: overloaded, stopped or outcome unknown.
+fn temporarily_unavailable(code: &str) -> Response {
+    crate::problem::coded(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Build service temporarily unavailable",
+        code,
+    )
 }
 
 fn encode_unavailable() -> Response {

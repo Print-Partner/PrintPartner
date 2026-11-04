@@ -814,8 +814,7 @@ fn invalid_request() -> Response {
 /// with a field error when one field is to blame.
 fn invalid_body(body: &[u8], errors: Vec<crate::problem::FieldError>) -> Response {
     use crate::problem::{Problem, ProblemType};
-    let object = serde_json::from_slice::<Value>(body).is_ok_and(|body| body.is_object());
-    let kind = if object || !errors.is_empty() {
+    let kind = if crate::problem::is_json_object(body) || !errors.is_empty() {
         ProblemType::Validation
     } else {
         ProblemType::MalformedRequest

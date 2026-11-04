@@ -160,6 +160,18 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
 
+    /// Status, media type and parsed body of a rendered failure.
+    async fn render(failure: Failure) -> (StatusCode, String, Value) {
+        let response = failure.into_response();
+        let status = response.status();
+        let media = response.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, media, serde_json::from_slice(&body).unwrap())
+    }
+
     #[cfg(feature = "desktop_rebuild")]
     #[tokio::test]
     async fn problem_response_auth_failures() {
@@ -177,15 +189,11 @@ mod tests {
             if let Some(code) = code {
                 expected["code"] = json!(code);
             }
-            let response = Failure(status, detail).into_response();
-            assert_eq!(response.status(), status, "{detail}");
+            let rendered = render(Failure(status, detail)).await;
             assert_eq!(
-                response.headers()[header::CONTENT_TYPE],
-                "application/problem+json"
+                rendered,
+                (status, "application/problem+json".into(), expected)
             );
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            let body: Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body, expected, "{status} {detail}");
         }
     }
 
@@ -208,18 +216,13 @@ mod tests {
             (SessionRequired, 401, "unauthenticated", None),
             (Storage, 500, "internal", None),
         ] {
-            let response = Failure::from(anyhow::Error::new(failure)).into_response();
-            assert_eq!(response.status().as_u16(), status, "{kind}");
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            let body: Value = serde_json::from_slice(&body).unwrap();
+            let (got, _, body) = render(Failure::from(anyhow::Error::new(failure))).await;
+            assert_eq!(got.as_u16(), status, "{kind}");
             assert_eq!(body["type"], format!("urn:print-partner:problem:{kind}"));
             assert_eq!(body.get("code").and_then(Value::as_str), code, "{kind}");
         }
         let timeout = Failure(StatusCode::GATEWAY_TIMEOUT, "OAuth provider timed out");
-        let body = to_bytes(timeout.into_response().into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&body).unwrap();
+        let (_, _, body) = render(timeout).await;
         assert_eq!(body["type"], "urn:print-partner:problem:timeout");
     }
 
@@ -258,12 +261,8 @@ mod tests {
                 json!({"detail": "Current password is incorrect"}),
             ),
         ] {
-            let response = Failure(status, detail).into_response();
-            assert_eq!(response.status(), status, "{detail}");
-            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            let body: Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body, expected, "{status} {detail}");
+            let rendered = render(Failure(status, detail)).await;
+            assert_eq!(rendered, (status, "application/json".into(), expected));
         }
     }
 }

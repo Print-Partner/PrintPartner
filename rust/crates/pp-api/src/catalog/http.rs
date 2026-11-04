@@ -678,6 +678,11 @@ pub(crate) fn catalog_error(error: anyhow::Error) -> Response {
     if let Some(failure) = error.downcast_ref::<AuthFailure>() {
         return match failure {
             AuthFailure::QueueFull => crate::problem::overloaded("Catalog temporarily unavailable"),
+            AuthFailure::CommitUnknown => crate::problem::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Catalog temporarily unavailable",
+                "outcome_unknown",
+            ),
             AuthFailure::Stopped => reject(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Catalog temporarily unavailable",

@@ -78,7 +78,17 @@ pub(super) async fn read_builder(
     .await
 }
 
-pub(super) fn present(method: &Method, outcome: ManifestOptionsOutcome) -> Response {
+/// A `ReadFailure` variant name such as `Io(NotFound)`: at most 64 bytes of
+/// letters, digits, `_` and parentheses. Anything else is not sent, so a path
+/// or message can never ride along as the `reason` extension.
+fn is_failure_name(detail: &str) -> bool {
+    detail.len() <= 64
+        && detail
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '(' | ')'))
+}
+
+pub(crate) fn present(method: &Method, outcome: ManifestOptionsOutcome) -> Response {
     let head = *method == Method::HEAD;
     match outcome {
         success @ (ManifestOptionsOutcome::Kit { .. }
@@ -106,7 +116,6 @@ pub(super) fn present(method: &Method, outcome: ManifestOptionsOutcome) -> Respo
             "Build inputs changed during manifest observation",
             "stale_observation",
         ),
-        // `detail` is a closed `ReadFailure` variant name, never a path.
         ManifestOptionsOutcome::ObservationFailed { detail } => {
             let problem = crate::problem::problem(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -114,7 +123,9 @@ pub(super) fn present(method: &Method, outcome: ManifestOptionsOutcome) -> Respo
                 Some("source_observation_failed"),
             );
             let mut reason = serde_json::Map::new();
-            reason.insert("reason".into(), json!(detail));
+            if is_failure_name(&detail) {
+                reason.insert("reason".into(), json!(detail));
+            }
             crate::problem::build(problem, reason)
         }
     }

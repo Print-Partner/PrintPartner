@@ -161,29 +161,7 @@ async fn ticket_t_62_admin_routes_match_the_node_oracle() {
             replies.insert(key.into(), reply);
         }
         replies.insert("head".into(), fixture.head("/filaments/custom").await);
-        let expected = &oracle["custom_filaments"][name];
-        // Node's error replies carry Fastify's TypeError text; Rust answers a
-        // problem for the same status and keeps the other headers.
-        for (key, reply) in &mut replies {
-            let node = &expected[key.as_str()];
-            if node["status"].as_u64().is_some_and(|status| status >= 400) {
-                assert_eq!(
-                    reply["content_type"], "application/problem+json",
-                    "{name} {key}"
-                );
-                let internal = r#""type":"urn:print-partner:problem:internal""#;
-                assert!(
-                    reply["body"]
-                        .as_str()
-                        .is_none_or(|body| body.contains(internal))
-                );
-                for field in ["content_type", "content_length", "body"] {
-                    if let Some(value) = node.get(field) {
-                        reply[field] = value.clone();
-                    }
-                }
-            }
-        }
+        let expected = &rust_expected(&oracle["custom_filaments"][name]);
         let actual = Value::Object(replies);
         if name == DEEPER_THAN_SERDE {
             assert_ne!(
@@ -238,4 +216,28 @@ async fn ticket_t_62_admin_routes_mount_only_with_the_rebuild_flag() {
         }
         fixture.stop().await;
     }
+}
+
+/// The one place Rust intentionally differs from the Node oracle: Node's
+/// 4xx/5xx custom-filament replies carry Fastify's `TypeError` text, while Rust
+/// answers this problem document. Everything else must match exactly.
+const INTERNAL_PROBLEM: &str = r#"{"type":"urn:print-partner:problem:internal","title":"Internal Error","status":500,"detail":"Internal Server Error"}"#;
+
+/// The Node oracle's replies with only the declared difference applied.
+fn rust_expected(node: &Value) -> Value {
+    let mut expected = node.clone();
+    for reply in expected
+        .as_object_mut()
+        .into_iter()
+        .flat_map(|replies| replies.values_mut())
+    {
+        if reply["status"].as_u64().is_some_and(|status| status >= 400) {
+            reply["content_type"] = json!("application/problem+json");
+            reply["content_length"] = json!(INTERNAL_PROBLEM.len().to_string());
+            if reply.get("body").is_some() {
+                reply["body"] = json!(INTERNAL_PROBLEM);
+            }
+        }
+    }
+    expected
 }

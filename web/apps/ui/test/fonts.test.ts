@@ -34,6 +34,15 @@ describe("bundled fonts", () => {
     );
   });
 
+  it("declares each latin-ext face before its latin face, so latin wins the overlap", () => {
+    // The later @font-face wins where unicode ranges overlap, such as U+0131 and U+0153.
+    for (const [index, face] of faces.entries()) {
+      const subset = index % 2 === 0 ? "latin-ext" : "latin";
+      expect(face.file).toMatch(new RegExp(`-${subset}-${face.weight}-normal\\.woff2$`));
+      if (index % 2 === 1) expect(faces[index - 1].family + faces[index - 1].weight).toBe(face.family + face.weight);
+    }
+  });
+
   it("points every face at a WOFF2 file in this package", () => {
     for (const face of faces) {
       expect(face.file).toMatch(/^\.\/[a-z0-9-]+\.woff2$/);

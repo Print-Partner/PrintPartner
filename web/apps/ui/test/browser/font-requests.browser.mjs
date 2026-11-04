@@ -3,7 +3,7 @@
 // bundled face did not load or the figure cells are not Plex Mono with tabular figures.
 // Engines: Chromium (Blink, as in WebView2) through playwright-core, and the system
 // WebKitGTK (WebKit, as in WKWebView) through webkitgtk-requests.py. A missing engine
-// prints SKIP; a SKIP is not a pass. Run `npm run build` in this package first.
+// prints SKIP and the run exits 77; a SKIP is not a pass. Run `npm run build` first.
 import { spawn } from "node:child_process";
 import { log } from "node:console";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -141,7 +141,8 @@ function check(engine, origin, controlUrl, { report, requests, control }) {
   const remote = requests.filter((request) => !request.startsWith(`${origin}/`) && !/^(data|blob):/.test(request));
   if (remote.length) problems.push(`requests to another origin: ${remote.join(", ")}`);
   const fonts = requests.filter((request) => request.endsWith(".woff2"));
-  if (fonts.length < EXPECTED_FACES.length) problems.push(`only ${fonts.length} font requests recorded`);
+  // One latin file per face: a latin-ext request on this latin-only page is a wasted download.
+  if (fonts.length !== EXPECTED_FACES.length) problems.push(`${fonts.length} font requests: ${fonts.join(", ")}`);
   if (JSON.stringify(report.loaded) !== JSON.stringify(EXPECTED_FACES)) {
     problems.push(`loaded faces ${JSON.stringify(report.loaded)}`);
   }
@@ -177,8 +178,13 @@ const controlUrl = `http://localhost:${port}/control.woff2`;
 try {
   for (const [engine, run] of [["chromium", runChromium], ["webkitgtk", runWebKitGtk]]) {
     const result = await run(`${origin}/type`, controlUrl);
-    if (result.skip) log(`SKIP ${engine}: ${result.skip}`);
-    else check(engine, origin, controlUrl, result);
+    if (result.skip) {
+      log(`SKIP ${engine}: ${result.skip}`);
+      // 77 tells scripts/local-ci.py to report the step as SKIP, not PASS.
+      process.exitCode = 77;
+    } else {
+      check(engine, origin, controlUrl, result);
+    }
   }
 } finally {
   server.close();

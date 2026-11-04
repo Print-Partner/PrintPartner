@@ -3,7 +3,6 @@ use pp_storage::{
     auth::{AuthClient, FirstUserTenant, Outcome, Provider, Request, Secret},
 };
 use rusqlite::{Connection, params};
-use std::os::unix::fs::DirBuilderExt;
 use std::{
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
@@ -15,11 +14,7 @@ fn directory() -> PathBuf {
         "pp-auth-{}",
         hex::encode(rand::random::<[u8; 16]>())
     ));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&path)
-        .unwrap();
+    pp_os::create_private_dir_all(&path).unwrap();
     path
 }
 fn open(path: &std::path::Path) -> WriterOwner {

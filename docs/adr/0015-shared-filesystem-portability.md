@@ -1,7 +1,8 @@
 # Share narrow filesystem portability mechanics
 
 Status: accepted design on 2026-11-03 under Chad's delegated research choice.
-Not implemented. This amends [ADR 0009](0009-keep-crates-and-deepen-modules.md)
+Partly implemented: `pp-os` exists and `pp-storage` is its first consumer.
+`pp-source` and `pp-core` are not migrated yet. This amends [ADR 0009](0009-keep-crates-and-deepen-modules.md)
 without changing [ADR 0010](0010-whole-runtime-cutover.md).
 Numbers 0011 through 0014 are reserved by the separate design proposal; this
 record does not adopt those decisions or change that PR's administrative state.

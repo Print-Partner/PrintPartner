@@ -358,11 +358,7 @@ fn walk(directory: &Path, name: String, items: &mut Vec<Item>, max_entries: u64)
 }
 
 fn open_no_follow(path: &Path) -> Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
-    let file = options.open(path)?;
+    let file = pp_os::open_read_nofollow(path)?;
     ensure!(
         file.metadata()?.is_file(),
         "Backup entry is no longer a regular file: {}",
@@ -503,7 +499,7 @@ pub(crate) fn write(connection: &Connection, job: &Job) -> Result<()> {
         tests::hold_freeze(&job.destination);
         validate(&temporary, limits)?;
         publish(&temporary, &job.destination)?;
-        File::open(parent)?.sync_all()?;
+        pp_os::sync_directory(parent)?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&temporary);
@@ -525,7 +521,7 @@ fn publish(temporary: &Path, destination: &Path) -> Result<()> {
                 destination.display()
             )
         })?;
-    std::fs::rename(temporary, destination).map_err(|error| {
+    pp_os::publish_rename(temporary, destination).map_err(|error| {
         let _ = std::fs::remove_file(destination);
         anyhow::Error::new(error).context(format!(
             "Publish backup archive to {}",
@@ -592,11 +588,7 @@ pub fn validate(archive: &Path, limits: Limits) -> Result<Metadata> {
         .with_context(|| format!("Open backup archive {}", archive.display()))?
         .len();
     let scratch = std::env::temp_dir().join(random_name("pp-backup-validate-"));
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
-        .create(&scratch)?;
-    #[cfg(not(unix))]
-    std::fs::create_dir(&scratch)?;
+    pp_os::create_private_dir(&scratch)?;
     let result = validate_into(archive, compressed, limits, &scratch);
     let _ = std::fs::remove_dir_all(&scratch);
     result

@@ -42,7 +42,7 @@ query, path, slurp = parse_qs(url.query), url.path, "--slurp" in sys.argv
 def out(value):
     print(json.dumps(value))
 if path.endswith("/pulls/7/files") and slurp:
-    out([[{"filename": name} for name in state["files"]]])
+    out([[{"filename": item, "status": "modified"} if isinstance(item, str) else item for item in state["files"]]])
 elif path.endswith("/pulls/7") and not slurp:
     out({"changed_files": state["changed_files"], "base": {"ref": state["pr_base"]}})
 elif path.endswith(f"/commits/{state['head']}/check-runs") and slurp and query["filter"] == ["all"]:
@@ -228,6 +228,26 @@ class ReviewGateStepTests(unittest.TestCase):
                 self.assertPasses(files=files, author="lane-bot", pages=[[marker()]])
         self.assertPasses(files=["docs/a.md"], author="lane-bot", checks=[run("droid-review")])
         self.assertPasses(files=[".github/workflows/new.yml"], checks=[run("droid-review")])
+
+    def test_renames_and_deletes_of_protected_files_count(self):
+        changes = {"rename out of the guard": {"filename": "scripts/old-guard.py", "status": "renamed",
+                                               "previous_filename": "scripts/agent-guard.py"},
+                   "rename a hook out of .claude": {"filename": "docs/guard.py", "status": "renamed",
+                                                    "previous_filename": ".claude/hooks/guard.py"},
+                   "rename a workflow away": {"filename": "docs/review-gate.yml.txt", "status": "renamed",
+                                              "previous_filename": ".github/workflows/review-gate.yml"},
+                   "rename into workflows": {"filename": ".github/workflows/new.yml", "status": "renamed",
+                                             "previous_filename": "docs/new.yml"},
+                   "delete the guard": {"filename": "scripts/agent-guard.py", "status": "removed"},
+                   "delete a workflow": {"filename": ".github/workflows/droid-review.yml", "status": "removed"}}
+        for label, change in changes.items():
+            with self.subTest(label):
+                self.assertFails("::error::lane-bot is not the repository owner and changes", files=[change],
+                                 author="lane-bot", checks=[run("droid-review"), run("claude-code-review"),
+                                                            run("claude-security-review")])
+                self.assertPasses(files=[change], author="lane-bot", pages=[[marker()]])
+        moved = {"filename": "docs/droid.yml", "status": "renamed", "previous_filename": DROID}
+        self.assertFails(checks=[run("droid-review")], files=[moved], blobs={f"{DROID}@main": "d1"})
 
     def test_dependabot_workflow_bump_passes_only_with_an_exact_head_owner_marker(self):
         bump = {"files": [".github/workflows/web-ci.yml"], "author": "dependabot[bot]"}

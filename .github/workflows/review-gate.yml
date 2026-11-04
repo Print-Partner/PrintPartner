@@ -90,8 +90,11 @@ jobs:
               return json.loads(result.stdout).get("sha") if result.returncode == 0 else None
 
 
-          listed = [item["filename"] for page in pages(f"repos/{REPO}/pulls/{PR}/files?per_page=100") for item in page]
-          files = set(listed)
+          listed = [item for page in pages(f"repos/{REPO}/pulls/{PR}/files?per_page=100") for item in page]
+          # Every path the PR touches: added, changed, removed (status "removed" keeps the old path in
+          # filename), and both sides of a rename, so moving a protected file away still counts.
+          files = {item["filename"] for item in listed} | {item["previous_filename"] for item in listed
+                                                           if item.get("previous_filename")}
           pull = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
                                            capture_output=True, text=True).stdout)
           changed, pr_base = pull["changed_files"], pull["base"]["ref"]

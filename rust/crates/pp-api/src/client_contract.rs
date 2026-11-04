@@ -4,6 +4,9 @@
 //! [`crate::drafts`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
+//!
+//! The document's `descriptors` list holds constant tables the generator writes
+//! out as data: today only the printer display descriptors.
 
 /// What a request must present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +117,10 @@ pub use codegen::{document, document_bytes};
 #[cfg(feature = "codegen")]
 mod codegen {
     use super::CLIENT_ROUTES;
+    use pp_storage::printer_display_state::{
+        BedClearState, PrinterDisplayDescriptor, PrinterDisplayState, PrinterExecutionState,
+        PrinterStateView,
+    };
     use pp_storage::{
         build_graph::wire::{
             AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
@@ -151,6 +158,11 @@ mod codegen {
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
+        schema(
+            "PrinterDisplayDescriptor",
+            schemars::schema_for!(PrinterDisplayDescriptor),
+        )?;
         let routes: Vec<Value> = CLIENT_ROUTES
             .iter()
             .map(|route| {
@@ -158,14 +170,47 @@ mod codegen {
                     "auth": route.auth.as_str(), "request": route.request, "response": route.response})
             })
             .collect();
+        // Emitted as a TypeScript record keyed by `key`; rows in Rust order.
+        let descriptors = json!([{"name": "printerDisplayDescriptors",
+            "dto": "PrinterDisplayDescriptor", "key": "state",
+            "values": printer_display_descriptors()}]);
         Ok(json!({
             "generator": "rust-client-zod/1",
             "schemars": "0.8.22",
             "dialect": "http://json-schema.org/draft-07/schema#",
             "dtos": dtos,
             "routes": routes,
+            "descriptors": descriptors,
             "fixtures": fixtures()?,
         }))
+    }
+
+    fn printer_display_descriptors() -> Vec<PrinterDisplayDescriptor> {
+        PrinterDisplayState::ALL
+            .iter()
+            .map(|state| state.descriptor())
+            .collect()
+    }
+
+    /// One printer state per display summary.
+    fn printer_states() -> Vec<PrinterStateView> {
+        use BedClearState as Bed;
+        use PrinterExecutionState as Execution;
+        [
+            (Execution::Printing, Bed::NeedsClearing),
+            (Execution::Idle, Bed::NeedsClearing),
+            (Execution::Idle, Bed::Clear),
+            (Execution::Idle, Bed::Unknown),
+            (Execution::Paused, Bed::Unknown),
+            (Execution::Failed, Bed::NeedsClearing),
+            (Execution::Unreachable, Bed::Unknown),
+            (Execution::NotSetUp, Bed::Unknown),
+            (Execution::Manual, Bed::Clear),
+            (Execution::Unknown, Bed::Unknown),
+        ]
+        .into_iter()
+        .map(|(execution, bed_clear)| PrinterStateView::new(execution, bed_clear))
+        .collect()
     }
 
     /// Sorted, pretty JSON with a trailing newline.
@@ -442,6 +487,17 @@ mod codegen {
                 health(Some("Authentication required")),
             )?,
         ];
+        for value in printer_states() {
+            let name = format!("{:?}-{:?}", value.execution(), value.bed_clear());
+            cases.push(served("PrinterState", &name, value)?);
+        }
+        for state in PrinterDisplayState::ALL {
+            cases.push(served(
+                "PrinterDisplayDescriptor",
+                &format!("{state:?}"),
+                state.descriptor(),
+            )?);
+        }
         for (index, value) in summaries.into_iter().enumerate() {
             cases.push(served(
                 "ProfileSummary",

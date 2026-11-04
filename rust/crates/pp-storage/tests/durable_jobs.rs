@@ -9,7 +9,6 @@ use pp_storage::{
     jobs::*,
 };
 use rusqlite::{Connection, ErrorCode, OpenFlags};
-use std::os::unix::fs::DirBuilderExt;
 use std::{
     path::PathBuf,
     sync::{Arc, Barrier, atomic::AtomicBool},
@@ -30,11 +29,7 @@ fn directory() -> PathBuf {
         "pp-durable-{}",
         hex::encode(rand::random::<[u8; 8]>())
     ));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)
-        .unwrap();
+    pp_os::create_private_dir_all(&dir).unwrap();
     dir
 }
 fn policy() -> AuthPolicy {

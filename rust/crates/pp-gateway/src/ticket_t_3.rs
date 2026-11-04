@@ -41,21 +41,7 @@ async fn ticket_t_3_drain_legal_body_retains_admission_until_consumed_or_dropped
                 &owners,
             )
             .unwrap();
-            let launch = gateway.take_launch_target().unwrap().into_url();
-            let bootstrap = Request::builder()
-                .uri(launch.strip_prefix(gateway.origin()).unwrap())
-                .header("host", &gateway.state.host)
-                .body(Body::empty())
-                .unwrap();
-            let response = handle(State(gateway.state.clone()), bootstrap).await;
-            assert_eq!(response.status(), StatusCode::SEE_OTHER);
-            let cookie = response.headers()["set-cookie"]
-                .to_str()
-                .unwrap()
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned();
+            let cookie = gateway.test_session().await;
             let request = || {
                 Request::builder()
                     .uri(path)

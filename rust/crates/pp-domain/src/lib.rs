@@ -3,6 +3,8 @@ pub mod build_identity;
 #[cfg(feature = "desktop_rebuild")]
 pub mod features;
 pub mod gcode_objects;
+#[cfg(feature = "desktop_rebuild")]
+pub mod printer_display_state;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::fmt;

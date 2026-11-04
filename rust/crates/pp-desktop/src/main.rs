@@ -157,7 +157,7 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
         .and_then(|layout| layout.into_launch(data.clone()))
         .context("Desktop resource verification failed")?;
     let probe_diagnostics = recovery::RecoveryUi::new(data.clone());
-    let mut core = match runtime.block_on(CoreRuntime::start(launch)) {
+    let mut core = match runtime.block_on(CoreRuntime::start_for_launcher(launch)) {
         Ok(core) => core,
         Err(error) => {
             let error = error.context("Desktop core startup failed");

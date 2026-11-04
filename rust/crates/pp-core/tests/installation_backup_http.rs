@@ -16,6 +16,9 @@ INSERT INTO plan_drafts(id, profile_id, base_plan_version, state, digest_format,
   VALUES (41, 29, 0, 'open', 'v1', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   'user:1', 'seed', '2026-10-01T00:00:00.000Z');";
 
+const STAGE: &str = "/api/v2/installation/restore/stage";
+const RESTORE: &str = "/api/v2/installation/restore";
+
 struct Server {
     origin: String,
     client: reqwest::Client,
@@ -60,6 +63,40 @@ impl Server {
     }
 }
 
+type Served = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+    Arc<Mutex<WriterOwner>>,
+);
+
+/// Serves `product_router` over a writer opened on `root` with the marker
+/// decision on.
+async fn serve(root: &std::path::Path) -> (Server, Served) {
+    let owner = WriterOwner::open_with_gate(root, Limits::default(), WriterGate::SwitchOn);
+    let owner = Arc::new(Mutex::new(owner.unwrap().0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let flag = DesktopRebuild::from_value(Some("1"));
+    let router = product_router(flag, Arc::clone(&owner), &origin, None).unwrap();
+    let service = router
+        .unwrap()
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let served = tokio::spawn(async move {
+        let stopped = async { drop(stopped.await) };
+        axum::serve(listener, service)
+            .with_graceful_shutdown(stopped)
+            .await
+            .unwrap();
+    });
+    let server = Server {
+        origin,
+        client: reqwest::Client::builder().no_proxy().build().unwrap(),
+        cookie: String::new(),
+    };
+    (server, (stop, served, owner))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn backup_and_confirmed_restore_round_trip_through_mounted_routes() {
     let spec = Spec {
@@ -77,47 +114,16 @@ async fn backup_and_confirmed_restore_round_trip_through_mounted_routes() {
     let part = root.join("repos/source-a/part.stl");
     std::fs::create_dir_all(part.parent().unwrap()).unwrap();
     std::fs::write(&part, b"solid a\n").unwrap();
-    let owner = WriterOwner::open_with_gate(&root, Limits::default(), WriterGate::SwitchOn);
-    let owner = Arc::new(Mutex::new(owner.unwrap().0));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
-    let flag = DesktopRebuild::from_value(Some("1"));
-    let router = product_router(flag, Arc::clone(&owner), &origin, None).unwrap();
-    let service = router
-        .unwrap()
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let served = tokio::spawn(async move {
-        let stopped = async { drop(stopped.await) };
-        axum::serve(listener, service)
-            .with_graceful_shutdown(stopped)
-            .await
-            .unwrap();
-    });
-    let mut server = Server {
-        origin,
-        client: reqwest::Client::builder().no_proxy().build().unwrap(),
-        cookie: String::new(),
-    };
+    let (mut server, (stop, served, owner)) = serve(&root).await;
     let backup = "/api/v2/installation/backup";
-    let (stage, restore) = (
-        "/api/v2/installation/restore/stage",
-        "/api/v2/installation/restore",
-    );
+    let (stage, restore) = (STAGE, RESTORE);
 
     // Every route refuses an anonymous request before any work.
     let archive_path = format!("{backup}/archive");
-    for (method, path) in [
-        ("POST", backup),
-        ("GET", &archive_path),
-        ("POST", stage),
-        ("POST", restore),
-    ] {
-        assert_eq!(
-            server.send(method, path, None).await.0,
-            401,
-            "{method} {path}"
-        );
+    let routes = [("POST", backup), ("GET", &archive_path), ("POST", stage)];
+    for (method, path) in routes.into_iter().chain([("POST", restore)]) {
+        let status = server.send(method, path, None).await.0;
+        assert_eq!(status, 401, "{method} {path}");
     }
     assert!(!root.join(".pp-restore").exists());
     let account = json!({"email": "owner@example.com", "password": "password-1234"});
@@ -189,24 +195,30 @@ async fn backup_and_confirmed_restore_round_trip_through_mounted_routes() {
         outcome["schema_version"]
     );
 
-    // The session in the backup still holds; IDs, drafts and files are back.
+    assert_restored(&server, &root).await;
+    stop.send(()).unwrap();
+    served.await.unwrap();
+    let owner = Arc::into_inner(owner).expect("routers dropped");
+    owner.into_inner().unwrap().shutdown().unwrap();
+}
+
+/// The session in the backup still holds; IDs, drafts, files and the
+/// ownership marker are back.
+async fn assert_restored(server: &Server, root: &std::path::Path) {
     assert_eq!(server.build_names().await, ["Seven", "Twenty-nine"]);
     let (status, build) = server.json("GET", "/api/v2/plans/29", None).await;
     assert_eq!((status, build["id"].as_i64()), (200, Some(29)), "{build}");
-    let drafts: String = (rusqlite::Connection::open(&db).unwrap())
+    let db = rusqlite::Connection::open(root.join("print-partner.db")).unwrap();
+    let drafts: String = db
         .query_row("SELECT group_concat(id) FROM plan_drafts", [], |row| {
             row.get(0)
         })
         .unwrap();
     assert_eq!(drafts, "41");
-    assert_eq!(std::fs::read(&part).unwrap(), b"solid a\n");
+    let part = std::fs::read(root.join("repos/source-a/part.stl")).unwrap();
+    assert_eq!(part, b"solid a\n");
     assert!(matches!(
-        pp_storage::ownership_marker::inspect(&root),
+        pp_storage::ownership_marker::inspect(root),
         pp_storage::ownership_marker::MarkerState::Valid(_)
     ));
-
-    stop.send(()).unwrap();
-    served.await.unwrap();
-    let owner = Arc::into_inner(owner).expect("routers dropped");
-    owner.into_inner().unwrap().shutdown().unwrap();
 }

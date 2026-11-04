@@ -28,7 +28,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `builds` | `build_router(BuildHttpConfig, BuildGraphClient)`: Plan list/detail/create/delete, layers, kit manifest. |
 | `drafts` | `draft_router(DraftHttpConfig, WorkingDraftClient, RebuildAuthClient)` and `admit_draft_routes`. |
 | `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. |
-| `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. |
+| `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. `AcceptedHttpConfig::with_stock(Arc<dyn InventoryReader>)` adds `/plans/{id}/filament-shortfalls`; the caller supplies the Spoolman reader. |
 | `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
 | `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient)`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. |

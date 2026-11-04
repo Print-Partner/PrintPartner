@@ -129,6 +129,20 @@ POST  /plans/:id/progress/import
 
 Printer completion does not mark units complete without review. The printer checkoff routes record the host result, then accept a confirm or reject decision.
 
+### Filament shortfalls (Rust-only)
+
+```text
+GET /plans/:id/filament-shortfalls     (also /api/v1 and /api/v2)
+```
+
+Served only by the Rust core with both rebuild gates on, behind a session or API key. The body is one of:
+
+- `module_off` with `module: "spoolman"` and the same `reason` that `/health` lists. No Spoolman request is made.
+- `no_accepted_plan`.
+- `ready` with one row per filament that has remaining units: the exact `filament_color_id`, Spoolman's `label`, `grams_needed`, `grams_available`, `status` (`sufficient`, `short` with `short_grams`, or `unknown`), and each Part's need.
+
+`grams_needed` is `measured` (with `grams` and the `job_count` used) or `unknown`. It comes from past prints: each completed job's `filament_consumed_g` divided by the units that job printed, averaged over the Part's five most recent such jobs, times the remaining units, rounded up. A Part never printed with measured grams is `unknown`. `grams_available` is `spoolman` (whole grams over unarchived spools, rounded down) or `unknown` with a reason (`not_spoolman`, `integration_missing`, `unreachable`, `filament_missing`, `spool_weight_missing`). Unknown never reads as zero, and an unknown on either side gives `status: unknown`, never `short`. The read never reserves or deducts stock. Errors are [problem responses](problem-responses.md).
+
 ### Plates and exports
 
 ```text

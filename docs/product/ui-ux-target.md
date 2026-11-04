@@ -146,6 +146,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Printer checkoff and unmatched | `GET /printer-checkoff`, `/unattributed` | Port (GRE-420) |
 | Send queue | `GET /printer-send-queue` | Port |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |
+| Spoolman shortfalls | `GET /plans/:id/filament-shortfalls` (Rust-only) | Exists; the workflow projection consumes it next |
 | Accept | `POST /plans/:id/drafts/:draftId/apply` | Port |
 | Verify one result | `POST /printer-checkoff/verify`, `/reconcile`, `/dismiss` | Port |
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |

@@ -243,6 +243,7 @@ Build caching and linking differ by OS:
 
 - Hosted jobs restore `Swatinem/rust-cache`; only `main` saves it. pp-local Linux jobs skip it and use the container's sccache instead.
 - Linux installs `mold` and links with it through `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold`. macOS and Windows keep their default linkers.
+- On GitHub-hosted Linux runners only, the first step after the input check deletes preinstalled toolchains the job never uses: `/usr/share/dotnet`, `/usr/local/lib/android`, `/opt/ghc`, `/usr/local/.ghcup` and CodeQL in the tool cache. It prints `df -h /` before and after. A PR builds the `desktop_rebuild` off and on test trees in one target directory, and on 2026-11-04 hosted runners ran out of disk three times in `nextest (desktop_rebuild on)`. Free space differs between hosted runners: on PR #1478 the step went from 88 GB to 110 GB free in under two minutes, and 85 GB was still free after `nextest (desktop_rebuild on)`. The same runners print `df -h /` after each nextest step, including after a failed one, so the next disk failure shows how much space was left. pp-local, macOS and Windows skip these steps.
 - All jobs set `CARGO_PROFILE_DEV_DEBUG` and `CARGO_PROFILE_TEST_DEBUG` to `line-tables-only`. Panic locations keep their file and line, and the build output is smaller.
 
 Each job runs these steps in order:
@@ -577,6 +578,14 @@ can leave the site half-published, and `release.yml` runs only on tags.
 The web validation job keeps its 45-minute limit on same-repository PRs; fork
 PRs and non-PR runs keep 20 minutes.
 
-## Reviewer fallback
+## Review checks
 
-When no reviewer from another vendor can score a pull request, follow [Reviewer fallback](definition-of-done.md#reviewer-fallback). That page holds the rule.
+| Hosted check | Workflow | Local command |
+| --- | --- | --- |
+| `review-gate` (required) | `review-gate.yml` on `pull_request_target`, rerun by `review-gate-rerun.yml` | `python3 -B -m unittest discover -s scripts -p test_review_gate.py -v` |
+| `droid-review` | `droid-review.yml` | none; needs the `FACTORY_API_KEY` secret |
+| `claude-code-review`, `claude-security-review` | `claude-review.yml` | none; needs the `CLAUDE_CODE_OAUTH_TOKEN` secret, or `ANTHROPIC_API_KEY` as a fallback |
+
+`scripts/test_review_gate.py` runs the gate's Python step unchanged against a fake `gh` and checks each pass and fail case: a Droid success, a Claude code review with its security review, an owner marker for the head, markers for another head or from another account, same-named checks from another workflow, event, or app, a review from a workflow file the PR changes, and a non-owner PR that changes workflows, `.github/zizmor.yml`, or the safety guard. It also checks that the gate runs on `pull_request_target` with no checkout or secrets, that its expected origins match the review workflows, and that the Claude jobs keep their author filter, permissions, and tool lists. The `changes` job in `actionlint.yml` runs it on every PR.
+
+[Code review](definition-of-done.md#code-review) describes the three ways to pass the gate, the coordinator's marker, and how the Claude jobs use the owner's subscription.

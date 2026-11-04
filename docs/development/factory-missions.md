@@ -62,7 +62,7 @@ service launch, logs, driving, assertions, and shutdown.
 
 In the approved Mission plan, name the operation owner, default-off flag modes,
 SQLite/ID/recovery invariants, and the evidence each milestone must produce.
-Every Mission PR stays under about 600 changed lines. Finish one PR's Droid review
+Every Mission PR stays under about 600 changed lines. Finish one PR's review (`review-gate`)
 and CI before opening the next. Mission workers never merge. The coordinator merges
 from its own worktree under the [merge gate](definition-of-done.md#merge-gate).
 

@@ -110,6 +110,18 @@ jobs:
         env:
           SELECTOR_RESULT: ${{ needs.changes.result }}
         run: test "$SELECTOR_RESULT" = success
+      # A PR builds the desktop_rebuild off and on test trees in one target dir,
+      # and hosted runners ran out of disk in nextest. Drop preinstalled
+      # toolchains this job never uses. Node comes from setup-node;
+      # Rust, mold, Python and the apt libraries stay.
+      - name: Free disk on hosted Linux
+        if: runner.environment == 'github-hosted' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            "${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}/CodeQL"
+          df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -211,9 +223,14 @@ jobs:
           python3 -B -m unittest discover -s rust/scripts -p test_clippy_limits.py -v
           python3 -B rust/scripts/check-clippy-limits.py
       - name: nextest (desktop_rebuild off)
+        id: nextest-off
         if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
         timeout-minutes: 45
         run: cargo nextest run --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
+      - name: Disk after nextest (desktop_rebuild off)
+        # Also runs after a failed nextest, so a disk failure shows how close it came.
+        if: ${{ !cancelled() && steps.nextest-off.outcome != 'skipped' && runner.environment == 'github-hosted' && runner.os == 'Linux' }}
+        run: df -h /
       - name: Archive nextest (desktop_rebuild on)
         # Main push / merge_group / workflow_dispatch: build once for slice partitions.
         # PRs never archive; they run the rebuild-on suite in-job.
@@ -222,6 +239,10 @@ jobs:
         if: ${{ !cancelled() && steps.assets.outcome == 'success' && env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') }}
         timeout-minutes: 45
         run: cargo nextest archive --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --features desktop_rebuild -E "$NEXTEST_FILTER" --archive-file nextest-archive-desktop-rebuild.tar.zst --zstd-level 11
+      - name: Disk after nextest (archive)
+        # Also runs after a failed nextest, so a disk failure shows how close it came.
+        if: ${{ !cancelled() && steps.archive-rebuild.outcome != 'skipped' && runner.environment == 'github-hosted' && runner.os == 'Linux' }}
+        run: df -h /
       - name: Upload nextest desktop_rebuild archive
         if: ${{ !cancelled() && steps.archive-rebuild.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -289,12 +310,17 @@ jobs:
           rm -f nextest-archive-desktop-rebuild.tar.zst \
             desktop-release-assets.tar.zst desktop-release-assets.list
       - name: nextest (desktop_rebuild on)
+        id: nextest-on
         # Linux and Windows PRs run it; macOS PRs still skip it. Linux main push /
         # merge_group / workflow_dispatch use the archived slice partitions instead.
         # Schedule keeps this in-job pass.
         if: ${{ !cancelled() && steps.assets.outcome == 'success' && (github.event_name != 'pull_request' || env.RUST_OS != 'macos') && !(env.RUST_OS == 'linux' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch')) }}
         timeout-minutes: 75
         run: cargo nextest run --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER" --features desktop_rebuild
+      - name: Disk after nextest (desktop_rebuild on)
+        # Also runs after a failed nextest, so a disk failure shows how close it came.
+        if: ${{ !cancelled() && steps.nextest-on.outcome != 'skipped' && runner.environment == 'github-hosted' && runner.os == 'Linux' }}
+        run: df -h /
       # nextest does not run doctests.
       - name: doctests (desktop_rebuild off)
         if: ${{ !cancelled() && steps.assets.outcome == 'success' }}

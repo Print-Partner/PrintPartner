@@ -1,0 +1,15 @@
+{
+  "generated_by": "PP_JOURNEY_REPORT=1 cargo nextest run (slice0_mount_server_binary_serves_rust_routes)",
+  "journey": "pp-server binary, desktop_rebuild feature on: health, register, Plan reads, two unrouted paths, logout",
+  "counted_at": "gateway route-miss path (Gateway::compat_forwards, /__runtime gateway.compat_forwards)",
+  "runs": [
+    {
+      "PP_DESKTOP_REBUILD": "1",
+      "proxy_attempts": 0
+    },
+    {
+      "PP_DESKTOP_REBUILD": "true",
+      "proxy_attempts": 0
+    }
+  ]
+}

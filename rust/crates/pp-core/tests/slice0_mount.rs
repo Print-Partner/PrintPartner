@@ -131,6 +131,30 @@ mod with_feature {
             )
         }
 
+        /// A desktop-admitted request with the given Host and Origin headers;
+        /// `None` keeps the client's Host or sends no Origin.
+        async fn send(
+            &self,
+            method: reqwest::Method,
+            path: &str,
+            host: Option<&str>,
+            origin: Option<&str>,
+        ) -> (u16, String) {
+            let mut request = self
+                .client
+                .request(method, format!("{}{path}", self.origin))
+                .header("cookie", &self.desktop)
+                .json(&json!({"email": "slice0@example.test", "password": "password-1234"}));
+            if let Some(host) = host {
+                request = request.header("host", host);
+            }
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
+            }
+            let response = request.send().await.unwrap();
+            (response.status().as_u16(), response.text().await.unwrap())
+        }
+
         async fn register(&self) -> String {
             let response = self
                 .client
@@ -206,6 +230,72 @@ mod with_feature {
                 Duration::from_secs(5),
             )
             .is_ok()
+    }
+
+    /// The mounted routes inherit the gateway's Host and Origin checks.
+    async fn refuses_foreign_host_and_origin(fixture: &Fixture, value: &str) {
+        use reqwest::Method;
+        let own = Some(fixture.origin.as_str());
+        let foreign = Some("http://evil.example");
+        for (method, path, host, origin, status, detail) in [
+            (
+                Method::GET,
+                "/api/v1/plans",
+                Some("evil.example"),
+                own,
+                400,
+                "Invalid Host",
+            ),
+            (
+                Method::POST,
+                "/auth/register",
+                Some("evil.example"),
+                own,
+                400,
+                "Invalid Host",
+            ),
+            (
+                Method::GET,
+                "/api/v1/plans",
+                None,
+                foreign,
+                403,
+                "Invalid Origin",
+            ),
+            (
+                Method::POST,
+                "/auth/register",
+                None,
+                foreign,
+                403,
+                "Invalid Origin",
+            ),
+            (
+                Method::POST,
+                "/auth/register",
+                None,
+                None,
+                403,
+                "Invalid Origin",
+            ),
+        ] {
+            let label = format!("{value} {method} {path} host={host:?} origin={origin:?}");
+            let (got, body) = fixture.send(method, path, host, origin).await;
+            assert_eq!(got, status, "{label}: {body}");
+            assert!(body.contains(detail), "{label}: {body}");
+        }
+    }
+
+    /// Accounts registered with the test email.
+    fn accounts(data: &Path) -> i64 {
+        let db = rusqlite::Connection::open(data.join("print-partner.db")).unwrap();
+        db.busy_timeout(Duration::from_secs(5)).unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM users WHERE email='slice0@example.test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     /// One Source layer with a checkout and the community slug, added to the
@@ -295,7 +385,12 @@ mod with_feature {
                 .unwrap();
             assert_eq!(response.status(), 401);
 
+            refuses_foreign_host_and_origin(&fixture, value).await;
+            // None of the refused registrations reached storage.
+            let data = fixture.root.join("data");
+            assert_eq!(accounts(&data), 0, "{value}");
             let session = fixture.register().await;
+            assert_eq!(accounts(&data), 1, "{value}");
             let token = session.strip_prefix("pp_session=").unwrap().to_owned();
             let plan = create_plan(&fixture.owner, &token);
             let (status, body) = fixture.get("/api/v1/plans", Some(&session)).await;

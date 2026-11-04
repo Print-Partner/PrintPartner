@@ -49,13 +49,35 @@ async fn text(response: Response<Body>) -> (StatusCode, String) {
     (status, String::from_utf8(body.to_vec()).unwrap())
 }
 
+/// `get` with one header replaced, or removed when `value` is `None`.
+fn with_header(
+    mut request: Request<Body>,
+    method: &str,
+    name: &'static str,
+    value: Option<&str>,
+) -> Request<Body> {
+    *request.method_mut() = method.parse().unwrap();
+    match value {
+        Some(value) => {
+            request
+                .headers_mut()
+                .insert(name, HeaderValue::from_str(value).unwrap());
+        }
+        None => {
+            request.headers_mut().remove(name);
+        }
+    }
+    request
+}
+
 fn stub() -> axum::Router {
     axum::Router::new()
         .route(
             "/api/v1/plans",
             axum::routing::get(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move {
                 format!("rust {}", peer.ip())
-            }),
+            })
+            .post(|| async { (StatusCode::CREATED, "created") }),
         )
         .route(
             "/auth/logout",
@@ -107,6 +129,35 @@ async fn slice0_mount_feature_off_route_table_is_unchanged() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert!(body.contains("Compatibility backend unavailable"), "{body}");
     assert_eq!(gateway.compat_forwards(), 1);
+
+    // The count is taken at the route miss, so a path the compatibility
+    // branch then refuses still counts as a proxy attempt.
+    let (status, _) = text(
+        handle(
+            State(gateway.state.clone()),
+            get(
+                &gateway,
+                "/api/v1/no-such-route",
+                Some(&cookie),
+                Some("127.0.0.1:9"),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(gateway.compat_forwards(), 2);
+    let (status, body) = text(
+        handle(
+            State(gateway.state.clone()),
+            get(&gateway, "/__runtime", Some(&cookie), Some("127.0.0.1:9")),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runtime: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(runtime["gateway"]["compat_forwards"], 2, "{body}");
     gateway.stop().await.unwrap();
 }
 
@@ -173,5 +224,64 @@ async fn slice0_mount_product_routes_answer_without_the_proxy() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    gateway.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn slice0_mount_product_routes_inherit_host_and_origin_checks() {
+    let (gateway, cookie, _root) = started(Some(stub())).await;
+    let state = || State(gateway.state.clone());
+    // The mounted routes inherit the gateway's Host and Origin checks: each
+    // refusal comes from the gateway, before the stub could answer.
+    let plans = || {
+        get(
+            &gateway,
+            "/api/v1/plans",
+            Some(&cookie),
+            Some("127.0.0.1:9"),
+        )
+    };
+    let foreign = "http://evil.example";
+    for (case, (request, expected)) in [
+        (
+            with_header(plans(), "GET", "host", Some("evil.example")),
+            (StatusCode::BAD_REQUEST, "Invalid Host"),
+        ),
+        (
+            with_header(plans(), "POST", "host", Some("evil.example")),
+            (StatusCode::BAD_REQUEST, "Invalid Host"),
+        ),
+        (
+            with_header(plans(), "GET", "origin", Some(foreign)),
+            (StatusCode::FORBIDDEN, "Invalid Origin"),
+        ),
+        (
+            with_header(plans(), "POST", "origin", Some(foreign)),
+            (StatusCode::FORBIDDEN, "Invalid Origin"),
+        ),
+        (
+            with_header(plans(), "POST", "origin", None),
+            (StatusCode::FORBIDDEN, "Invalid Origin"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (status, body) = text(handle(state(), request).await).await;
+        assert_eq!(status, expected.0, "case {case}: {body}");
+        assert!(body.contains(expected.1), "case {case}: {body}");
+    }
+    // The same write with the gateway's own Origin reaches the stub.
+    let (status, body) = text(
+        handle(
+            state(),
+            with_header(plans(), "POST", "origin", Some(&gateway.state.origin)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!((status, body.as_str()), (StatusCode::CREATED, "created"));
+
+    assert_eq!(gateway.compat_forwards(), 0);
     gateway.stop().await.unwrap();
 }

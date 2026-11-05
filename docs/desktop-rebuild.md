@@ -146,7 +146,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 - Printer-host reads (GRE-360, GRE-1044): `GET /printers/{id}/capabilities`,
   `/files` and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are
-  read-only on the printer: no upload, print start or retry. PrusaLink reports
+  read-only on the printer: no upload or print start, and only PrusaLink's
+  single Digest resend after a 401. PrusaLink reports
   no status capability because only Moonraker has a watcher; Bambu reads as
   having no capabilities. See
   [Printer-host reads](printer-host-reads.md).

@@ -1,8 +1,10 @@
 //! On-demand printer-host reads for the Rust-only runtime's printer-host
 //! routes: connection test, print-file browse and camera list, for Moonraker
-//! (GRE-360) and PrusaLink (GRE-1044). Each call makes the read-only requests
-//! its route needs, once, through one shared `HttpGuard`. Nothing here
-//! uploads, starts a print, retries or touches storage.
+//! (GRE-360) and PrusaLink (GRE-1044), through one shared `HttpGuard`.
+//! Moonraker reads send each GET once. PrusaLink reads with a password add a
+//! Digest probe before each GET and resend a GET once after a 401 with a
+//! fresh challenge, as Node's adapter does. Nothing here uploads, starts a
+//! print or touches storage.
 use anyhow::Result;
 use pp_drivers::{moonraker_driver, prusalink};
 use pp_net::outbound::{HttpGuard, MAX_BODY, SystemResolver};

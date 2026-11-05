@@ -244,15 +244,24 @@ describe("UI3-04 with the stream down the last-known state shows its time", () =
     expect(screen.queryByText(/Live printer updates are down/)).toBeNull();
   });
 
-  it("counts a quiet socket as down after two missed heartbeats", async () => {
+  it("counts a quiet socket as down after two missed heartbeats, without waiting for its close", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderAt("/farm");
     snapshot();
     await screen.findByRole("table", { name: "Printers" });
+    // An unreachable peer never completes the close handshake, so onclose never fires.
+    const stalled = socket();
+    stalled.close = () => {};
     await act(() => vi.advanceTimersByTimeAsync(34_000));
     expect(screen.queryByText(/Live printer updates are down/)).toBeNull();
     await act(() => vi.advanceTimersByTimeAsync(2_000));
     expect(screen.getByText(/Live printer updates are down/)).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(sockets).toHaveLength(2);
+    expect(socket().url).toContain("since=7");
+    // A late frame from the dropped socket changes nothing.
+    act(() => stalled.frame({ type: "removed", stream: "s1", seq: 8, id: "micron" }));
+    expect(document.querySelector('tr[data-printer="micron"]')).not.toBeNull();
   });
 
   it("drops the socket on a gap in seq or a frame outside the contract", async () => {

@@ -87,17 +87,33 @@ export function PrinterStreamProvider({ children }: { children: ReactNode }) {
     let heartbeatMs = 15_000;
     let stopped = false;
 
-    const watchQuiet = () => {
+    /**
+     * Stops trusting `current` at once: marks the stream down and schedules the reconnect
+     * without waiting for the close handshake, which an unreachable peer never finishes.
+     * Later callbacks from that socket are ignored.
+     */
+    const drop = (current: WebSocket) => {
+      if (socket !== current) return;
+      socket = null;
       clearTimeout(quietTimer);
-      quietTimer = setTimeout(() => socket?.close(), heartbeatMs * QUIET_HEARTBEATS + QUIET_SLACK_MS);
+      setView((v) => (v.status === "down" ? v : { ...v, status: "down" }));
+      current.close();
+      if (stopped) return;
+      const delay = RECONNECT_DELAYS_S[Math.min(attempt, RECONNECT_DELAYS_S.length - 1)]!;
+      attempt += 1;
+      retryTimer = setTimeout(connect, delay * 1000);
+    };
+
+    const watchQuiet = (current: WebSocket) => {
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => drop(current), heartbeatMs * QUIET_HEARTBEATS + QUIET_SLACK_MS);
     };
 
     function connect() {
       const current = new WebSocket(streamUrl(resume));
       socket = current;
       current.onopen = () => {
-        if (socket !== current) return;
-        watchQuiet();
+        if (socket === current) watchQuiet(current);
       };
       current.onmessage = (message) => {
         if (socket !== current) return;
@@ -110,13 +126,13 @@ export function PrinterStreamProvider({ children }: { children: ReactNode }) {
         const parsed = frameSchema.safeParse(raw);
         // A frame the contract does not describe, or a gap in `seq`, means this socket's
         // view can no longer be trusted: drop it and resume from the last good event.
-        if (!parsed.success) return void current.close();
+        if (!parsed.success) return drop(current);
         const frame = parsed.data;
         if (frame.type === "snapshot") heartbeatMs = frame.heartbeat_seconds * 1000;
-        else if (frame.seq !== expectedSeq(resume, frame)) return void current.close();
+        else if (frame.seq !== expectedSeq(resume, frame)) return drop(current);
         resume = { stream: frame.stream, seq: frame.seq };
         attempt = 0;
-        watchQuiet();
+        watchQuiet(current);
         const now = Date.now();
         setView((v) => {
           switch (frame.type) {
@@ -141,16 +157,7 @@ export function PrinterStreamProvider({ children }: { children: ReactNode }) {
           }
         });
       };
-      current.onclose = () => {
-        if (socket !== current) return;
-        socket = null;
-        clearTimeout(quietTimer);
-        setView((v) => (v.status === "down" ? v : { ...v, status: "down" }));
-        if (stopped) return;
-        const delay = RECONNECT_DELAYS_S[Math.min(attempt, RECONNECT_DELAYS_S.length - 1)]!;
-        attempt += 1;
-        retryTimer = setTimeout(connect, delay * 1000);
-      };
+      current.onclose = () => drop(current);
     }
 
     connect();

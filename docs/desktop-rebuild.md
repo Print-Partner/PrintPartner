@@ -120,6 +120,12 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   `Gateway::printer_observations()` is the read-only in-process port for later
   consumers such as farm reads and the filament writer; a host leaves it when
   its poller stops. As in Node, polling does not check the `farm` Module.
+- Farm reads (GRE-1125): `GET /api/v2/printers`, `/api/v2/printer-checkoff`,
+  `/api/v2/printer-checkoff/unattributed` and `/api/v2/printer-send-queue`
+  answer from storage and the watchers' observation port, with separate
+  execution and bed-clear facts, last-heard time and distinct not-set-up,
+  manual and unreachable reasons. They write nothing. See
+  [Farm reads](farm-reads.md).
 
   ```sh
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \

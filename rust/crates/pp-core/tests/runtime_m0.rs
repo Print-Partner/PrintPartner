@@ -26,6 +26,10 @@ mod slice0_mount;
 #[path = "runtime_m0/ticket_t_4_watcher_proof.rs"]
 mod ticket_t_4_watcher_proof;
 
+#[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/farm_reads.rs"]
+mod farm_reads;
+
 #[path = "support/process_tree.rs"]
 mod process_tree;
 

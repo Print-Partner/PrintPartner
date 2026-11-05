@@ -46,6 +46,7 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/printers` | | `FarmPrinterList` |
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
+| `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
 | `GET /api/v2/printer-send-queue` | | `SendQueue` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 

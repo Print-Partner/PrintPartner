@@ -5,6 +5,9 @@
 //!   display state, the reason a state is not live, and last-heard time.
 //! - `GET /api/v2/printer-checkoff`: printer Checkoff results.
 //! - `GET /api/v2/printer-checkoff/unattributed`: unmatched prints.
+//! - `GET /api/v2/printer-checkoff/unattributed/suggestions`: a proposed Build
+//!   and Plate per unmatched print with its confidence and evidence (GRE-1091).
+//!   It never confirms one.
 //! - `GET /api/v2/printer-send-queue`: the send queue.
 //!
 //! Every route writes nothing and never polls a printer: printer state comes
@@ -46,6 +49,10 @@ pub fn farm_router(
         .route("/printers", get(printers))
         .route("/printer-checkoff", get(checkoff))
         .route("/printer-checkoff/unattributed", get(unmatched))
+        .route(
+            "/printer-checkoff/unattributed/suggestions",
+            get(suggestions),
+        )
         .route("/printer-send-queue", get(send_queue));
     gate.guard(Router::new().nest("/api/v2", routes))
         .with_state(App {
@@ -80,6 +87,17 @@ async fn unmatched(
     read(app, presented, |farm| ok_json(&farm.unmatched())).await
 }
 
+async fn suggestions(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+) -> Response {
+    read_with(app, presented, true, |farm| {
+        farm.suggestions()
+            .map_or_else(internal, |suggestions| ok_json(&suggestions))
+    })
+    .await
+}
+
 async fn send_queue(
     State(app): State<App>,
     Extension(presented): Extension<PresentedCredential>,
@@ -92,11 +110,24 @@ async fn read(
     presented: PresentedCredential,
     respond: impl FnOnce(Farm) -> Response,
 ) -> Response {
+    read_with(app, presented, false, respond).await
+}
+
+async fn read_with(
+    app: App,
+    presented: PresentedCredential,
+    for_suggestions: bool,
+    respond: impl FnOnce(Farm) -> Response,
+) -> Response {
     let client = app.client;
     let farm = app
         .gate
         .read(presented, move |credential, cancelled, wait| {
-            client.read(credential, cancelled, wait)
+            if for_suggestions {
+                client.read_for_suggestions(credential, cancelled, wait)
+            } else {
+                client.read(credential, cancelled, wait)
+            }
         })
         .await;
     let Some(farm) = farm else {

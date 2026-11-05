@@ -51,12 +51,36 @@ pub(super) fn is_reason(value: &Value) -> bool {
     value.as_str().is_some_and(|s| REASONS.contains(&s))
 }
 
-/// `String.prototype.trim`.
+/// `String.prototype.trim`: JS whitespace and line terminators, which are
+/// Unicode White_Space without U+0085, plus U+FEFF.
 pub(super) fn js_trim(s: &str) -> &str {
-    s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+    s.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
 }
 
-/// `String.prototype.slice(0, len)`, counted in UTF-16 code units.
+/// `String(value)` for a JSON value.
+pub(super) fn js_string(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => ryu_js::Buffer::new()
+            .format(n.as_f64().unwrap_or(f64::NAN))
+            .into(),
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                if item.is_null() {
+                    String::new()
+                } else {
+                    js_string(item)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Object(_) => "[object Object]".into(),
+    }
+}
+
 /// `String.prototype.slice(0, len)`. A pair split at the limit leaves Node a
 /// lone surrogate; Rust strings cannot hold one, so it becomes U+FFFD, as
 /// [`js_json`] reads it back.
@@ -630,7 +654,26 @@ pub(super) fn add(current: &Value, added: usize) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{js_json, js_slice};
+    use super::{js_json, js_slice, js_string, js_trim};
+    use serde_json::json;
+
+    #[test]
+    fn js_trim_keeps_nel_like_string_trim() {
+        assert_eq!(js_trim("\u{feff} \t\u{a0}\u{2028}id\u{3000}\n"), "id");
+        assert_eq!(js_trim("id\u{85}"), "id\u{85}");
+    }
+
+    #[test]
+    fn js_string_converts_like_string() {
+        assert_eq!(js_string(&json!([" link-verify "])), " link-verify ");
+        assert_eq!(js_string(&json!([])), "");
+        assert_eq!(
+            js_string(&json!(["a", null, 1.0, [2, true]])),
+            "a,,1,2,true"
+        );
+        assert_eq!(js_string(&json!(1.5e21)), "1.5e+21");
+        assert_eq!(js_string(&json!({ "a": 1 })), "[object Object]");
+    }
 
     #[test]
     fn js_json_reads_lone_surrogates_as_replacement_and_keeps_pairs() {

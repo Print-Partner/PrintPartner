@@ -63,6 +63,10 @@ const calls = [
   { op: 'dismiss', body: { link_id: 'link-host-failed' } },
   { op: 'dismiss', body: { link_id: 'link-host-failed' } },
   { op: 'dismiss', body: { link_id: 'missing' } },
+  // The route reads String(link_id).trim(): an array joins, so these find a link or none.
+  { op: 'verify', body: { link_id: [' link-stale-file '], decisions: [confirm(1, 1)] } },
+  { op: 'dismiss', body: { link_id: [] } },
+  { op: 'dismiss', body: { link_id: 'link-host-failed\u0085' } },
   // Node writes Part 2 and then refuses Part 3, committing half of the burst. Kept last so the
   // Rust replay, which writes nothing here, matches every earlier step exactly.
   { op: 'verify', body: { link_id: 'link-burst', decisions: [confirm(2, 0), confirm(3, 1)] }, partialInNode: true },

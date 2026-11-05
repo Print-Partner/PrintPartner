@@ -1311,6 +1311,8 @@ mod tests {
             1,
             "a failing host keeps one worker"
         );
+        // Let the failures pile up to the 640 ms backoff (40+80+160+320+640 ms).
+        tokio::time::sleep(Duration::from_millis(1300)).await;
 
         // The printer comes back on the same address: the same worker reconnects.
         let listener = TcpListener::bind(address).await.unwrap();
@@ -1333,9 +1335,17 @@ mod tests {
         });
         next_state(&mut observations, "host", State::Printing).await;
         assert_eq!(live_workers(&watchers), 1);
-        // Recovery resets the backoff to the plain interval.
+        // After a success the worker polls at the plain 20 ms interval again,
+        // not at the 640 ms backoff the failures reached: three more polls at
+        // that backoff would take over 1.5 s.
         let recovered = calls.load(Ordering::SeqCst);
-        wait_calls(&calls, recovered + 3).await;
+        tokio::time::timeout(Duration::from_millis(400), async {
+            while calls.load(Ordering::SeqCst) < recovered + 3 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("polling stayed at the backed-off delay after recovery");
         watchers.stop().await;
         server.abort();
     }

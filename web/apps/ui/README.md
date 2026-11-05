@@ -134,7 +134,7 @@ what they will hold and that a later slice brings them. Nothing here changes dat
 
 `/today` (`src/today/TodayScreen.tsx`) reads `GET /api/v2/printer-checkoff`,
 `GET /api/v2/tasks` and, with the Farm module on, `GET /api/v2/printers` for
-printer names and link state. It rereads the results and printers every 30 s,
+printer names and link state. It rereads the results, tasks and printers every 30 s,
 so a print that ends or a link that drops shows up without a reload.
 
 - **Hero task.** When printer results wait in `awaiting_verify` with pending

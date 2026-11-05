@@ -374,7 +374,7 @@ export function TodayScreen() {
   const connection = useConnection();
   const farm = useModule("farm");
   const results = useQuery(checkoffQuery);
-  const tasks = useQuery(tasksQuery);
+  const tasks = useQuery({ ...tasksQuery, refetchInterval: REFRESH_MS });
   const printers = useQuery({ ...printersQuery, enabled: farm?.state === "on" });
   const checkoff = useCheckoff();
   const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));

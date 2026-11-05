@@ -17,6 +17,8 @@ pub mod catalog;
 #[cfg(feature = "desktop_rebuild")]
 pub mod checkoff_progress;
 #[cfg(feature = "desktop_rebuild")]
+pub mod domain_events;
+#[cfg(feature = "desktop_rebuild")]
 pub mod features;
 pub mod jobs;
 pub mod lease;
@@ -168,6 +170,11 @@ enum Envelope {
         reply: mpsc::Sender<Result<read_model::history::Outcome>>,
     },
     #[cfg(feature = "desktop_rebuild")]
+    DomainEvents {
+        command: domain_events::Command,
+        reply: mpsc::Sender<Result<domain_events::Read>>,
+    },
+    #[cfg(feature = "desktop_rebuild")]
     Planning {
         command: read_model::planning::Command,
         reply: mpsc::Sender<Result<read_model::planning::Facts>>,
@@ -236,6 +243,8 @@ struct Shared {
     import_epoch: std::sync::atomic::AtomicU64,
     #[cfg(feature = "desktop_rebuild")]
     import_quota: Mutex<Option<u64>>,
+    #[cfg(feature = "desktop_rebuild")]
+    domain_events: domain_events::Feed,
 }
 #[derive(Clone)]
 pub struct SettingsClient {
@@ -580,6 +589,8 @@ impl WriterOwner {
         }
         let (mut connection, ready) = schema::initialize(&path, version, seed_timestamp)?;
         jobs::recover(&mut connection)?;
+        #[cfg(feature = "desktop_rebuild")]
+        let event_feed = domain_events::Feed::open(&connection)?;
         let mut idle = Vec::new();
         for _ in 0..limits.readers {
             let reader = Connection::open_with_flags(
@@ -608,6 +619,8 @@ impl WriterOwner {
             }),
             changed: Condvar::new(),
             capacity: limits.queued_writes,
+            #[cfg(feature = "desktop_rebuild")]
+            domain_events: event_feed,
             job_admission: Mutex::new(None),
             #[cfg(feature = "desktop_rebuild")]
             orphaned_source_leases: Mutex::new(Vec::new()),
@@ -692,6 +705,7 @@ impl WriterOwner {
                             queue.auth_ready.push_back(retry);
                             worker.changed.notify_all();
                         }
+                        worker.domain_events.after_write(&connection, true);
                         continue;
                     }
                 };
@@ -702,6 +716,8 @@ impl WriterOwner {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner),
                 ));
+                #[cfg(feature = "desktop_rebuild")]
+                let authority_changed = matches!(envelope, Envelope::Auth { .. });
                 match envelope {
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::NativeSecrets { command, reply } => {
@@ -788,6 +804,14 @@ impl WriterOwner {
                         let _ = reply.send(read_model::history::execute(&mut connection, command));
                     }
                     #[cfg(feature = "desktop_rebuild")]
+                    Envelope::DomainEvents { command, reply } => {
+                        let _ = reply.send(domain_events::execute(
+                            &mut connection,
+                            &worker.domain_events,
+                            command,
+                        ));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
                     Envelope::Planning { command, reply } => {
                         let _ = reply.send(read_model::planning::execute(&mut connection, command));
                     }
@@ -863,8 +887,14 @@ impl WriterOwner {
                         let _ = reply.send(writer_control(&connection, control));
                     }
                 }
+                #[cfg(feature = "desktop_rebuild")]
+                worker
+                    .domain_events
+                    .after_write(&connection, authority_changed);
             }
             drop(connection);
+            #[cfg(feature = "desktop_rebuild")]
+            worker.domain_events.wake();
         });
         Ok((
             Self {

@@ -9,7 +9,20 @@ use std::{
 };
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 41;
+pub(crate) const CURRENT_VERSION: u64 = 42;
+/// The newest step that writes its own `pre-schema{N}.db` copy. Later steps
+/// only add tables, so the copy taken at open covers them.
+///
+/// An open from this version still takes an opening copy named for the next
+/// step, outside the names an interrupted upgrade can leave. That open may be
+/// the restart of an upgrade from below 38, so it skips retention: pruning
+/// there could delete that upgrade's untouched input copy.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) const LAST_COPIED_STEP: u64 = 41;
+// A second uncopied step would let a restart from an uncopied version name
+// another copy; it needs a run marker first.
+#[cfg(feature = "desktop_rebuild")]
+const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP + 1);
 #[cfg(not(feature = "desktop_rebuild"))]
 pub(crate) const CURRENT_VERSION: u64 = 35;
 
@@ -212,6 +225,8 @@ pub(crate) fn preflight(
     crate::source_scan::validate_schema(&conn, version)?;
     #[cfg(feature = "desktop_rebuild")]
     crate::source_sync::validate_schema(&conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    validate_domain_events(&conn, version)?;
     Ok(version)
 }
 
@@ -404,6 +419,7 @@ pub(crate) fn initialize(
         crate::uploads::validate_schema(&conn, CURRENT_VERSION)?;
         crate::source_scan::validate_schema(&conn, CURRENT_VERSION)?;
         crate::source_sync::validate_schema(&conn, CURRENT_VERSION)?;
+        validate_domain_events(&conn, CURRENT_VERSION)?;
     }
     // Node's fixture builder connects once to create the input and again to
     // create the expected database. The first Rust open must repeat that
@@ -456,9 +472,13 @@ pub(crate) fn initialize(
     // The upgrade has committed, so retention may now drop copies left by
     // earlier upgrades. This upgrade's copies all stay, including the
     // from-version copy, the only one the previous release opens.
+    #[cfg(feature = "desktop_rebuild")]
+    let retains = version < LAST_COPIED_STEP;
+    #[cfg(not(feature = "desktop_rebuild"))]
+    let retains = true;
     let pruned = match &backup_path {
-        Some(rollback) => crate::backup_retention::prune(rollback, &step_copies),
-        None => Default::default(),
+        Some(rollback) if retains => crate::backup_retention::prune(rollback, &step_copies),
+        _ => Default::default(),
     };
     Ok((
         conn,
@@ -489,13 +509,16 @@ fn install_steps(
         |connection| Ok(connection.execute_batch(include_str!("source_scan/schema.sql"))?);
     let install_sync: fn(&Connection) -> Result<()> =
         |connection| Ok(connection.execute_batch(include_str!("source_sync/schema.sql"))?);
-    for (step, install) in crate::uploads::SCHEMA_STEPS
-        .into_iter()
-        .chain([(40, install_scan), (41, install_sync)])
-    {
+    let install_events: fn(&Connection) -> Result<()> =
+        |connection| Ok(connection.execute_batch(include_str!("domain_events/schema.sql"))?);
+    for (step, install) in crate::uploads::SCHEMA_STEPS.into_iter().chain([
+        (40, install_scan),
+        (41, install_sync),
+        (crate::domain_events::SCHEMA_STEP, install_events),
+    ]) {
         if version < step {
-            let target =
-                populated.then(|| path.with_file_name(format!("backups/pre-schema{step}.db")));
+            let target = (populated && step <= LAST_COPIED_STEP)
+                .then(|| path.with_file_name(format!("backups/pre-schema{step}.db")));
             if let Some(target) = &target
                 && first.as_ref() != Some(target)
             {
@@ -507,6 +530,7 @@ fn install_steps(
             crate::uploads::validate_schema(&tx, step)?;
             crate::source_scan::validate_schema(&tx, step)?;
             crate::source_sync::validate_schema(&tx, step)?;
+            validate_domain_events(&tx, step)?;
             tx.execute(
                 "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='schema_version'",
                 [step.to_string()],
@@ -516,6 +540,32 @@ fn install_steps(
         }
     }
     Ok((first, written))
+}
+
+/// The domain event objects must match `domain_events/schema.sql` from step
+/// 42 and be absent before it.
+#[cfg(feature = "desktop_rebuild")]
+fn validate_domain_events(connection: &Connection, version: u64) -> Result<()> {
+    let catalog = |connection: &Connection| -> rusqlite::Result<Vec<(String, Option<String>)>> {
+        connection
+            .prepare(
+                "SELECT name,sql FROM sqlite_master WHERE name LIKE 'domain_event%' ORDER BY name",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    };
+    let actual = catalog(connection)?;
+    if version < crate::domain_events::SCHEMA_STEP {
+        ensure!(actual.is_empty(), "Unexpected domain event schema");
+        return Ok(());
+    }
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(include_str!("domain_events/schema.sql"))?;
+    ensure!(
+        actual == catalog(&expected)?,
+        "Domain event schema mismatch"
+    );
+    Ok(())
 }
 
 pub(crate) fn sql_identity(sql: &str) -> String {

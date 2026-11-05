@@ -10,6 +10,9 @@ mod without_feature {
 
     #[tokio::test]
     async fn rebuild_workflow_routes_and_mcp_agree() {}
+
+    #[tokio::test]
+    async fn rebuild_read_router_serves_the_domain_event_stream() {}
 }
 
 #[cfg(feature = "desktop_rebuild")]
@@ -217,14 +220,13 @@ mod with_feature {
             .to_owned()
     }
 
-    #[tokio::test]
-    async fn rebuild_read_aliases_use_one_owner() {
-        let (owner, directory) = open();
+    /// The flag-on read composition from `owner`, served on a fresh port.
+    async fn serve_reads(owner: &Arc<Mutex<WriterOwner>>) -> Server {
         let bound = bind().await;
         let origin = format!("http://{}", bound.local_addr().unwrap());
         let router = read_router(
             DesktopRebuild::from_value(Some("1")),
-            Arc::clone(&owner),
+            Arc::clone(owner),
             auth_routes(&origin),
             &origin,
             "default",
@@ -232,7 +234,13 @@ mod with_feature {
         )
         .unwrap()
         .expect("flag on mounts read routers");
-        let mut server = Server::spawn(bound, router).await;
+        Server::spawn(bound, router).await
+    }
+
+    #[tokio::test]
+    async fn rebuild_read_aliases_use_one_owner() {
+        let (owner, directory) = open();
+        let mut server = serve_reads(&owner).await;
         let cookie = cookie(&server, "reads@example.test").await;
         let token = cookie.strip_prefix("pp_session=").unwrap();
         let headers = [("Cookie", cookie.as_str())];
@@ -725,19 +733,7 @@ mod with_feature {
         }
         server.stop().await;
 
-        let bound = bind().await;
-        let origin = format!("http://{}", bound.local_addr().unwrap());
-        let router = read_router(
-            DesktopRebuild::from_value(Some("1")),
-            Arc::clone(&owner),
-            auth_routes(&origin),
-            &origin,
-            "default",
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        let mut server = Server::spawn(bound, router).await;
+        let mut server = serve_reads(&owner).await;
         let before = profiles(&directory);
         let snapshot = files(&directory);
         for (path, headers) in [
@@ -755,6 +751,46 @@ mod with_feature {
             assert_eq!(files(&directory), snapshot);
             assert_eq!(profiles(&directory), before);
         }
+        server.stop().await;
+        shutdown(owner, directory);
+    }
+    /// GRE-1162: the Rust-only read composition mounts `GET /api/v1/events`.
+    #[tokio::test]
+    async fn rebuild_read_router_serves_the_domain_event_stream() {
+        let (owner, directory) = open();
+        let mut server = serve_reads(&owner).await;
+        let url = format!("{}/api/v1/events", server.origin);
+        let refused = server
+            .client
+            .get(&url)
+            .header("Origin", &server.origin)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 401);
+        let cookie = cookie(&server, "events@example.test").await;
+        let mut stream = server
+            .client
+            .get(&url)
+            .header("Origin", &server.origin)
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), 200);
+        assert_eq!(stream.headers()["content-type"], "text/event-stream");
+        let first = tokio::time::timeout(Duration::from_secs(5), stream.chunk())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            std::str::from_utf8(&first)
+                .unwrap()
+                .starts_with("event: ready\nid: "),
+            "{first:?}"
+        );
+        drop(stream);
         server.stop().await;
         shutdown(owner, directory);
     }

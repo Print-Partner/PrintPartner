@@ -567,3 +567,33 @@ fn verify_batch_transaction_has_no_printer_or_spoolman_path() {
         );
     }
 }
+
+fn progress_events(fixture: &Fixture) -> i64 {
+    fixture
+        .sql()
+        .query_row(
+            "SELECT count(*) FROM domain_events WHERE event_type='checkoff.progress_changed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn verify_batch_and_undo_append_progress_events_and_a_replay_does_not() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let start = progress_events(&fixture);
+    let done = batch(&owner, two_beds("events"));
+    assert_eq!(done["status"], 200, "{done}");
+    let applied = progress_events(&fixture);
+    assert!(applied > start, "confirmed units commit an event");
+    assert_eq!(batch(&owner, two_beds("events")), done);
+    assert_eq!(
+        progress_events(&fixture),
+        applied,
+        "a replay writes no event"
+    );
+    assert_eq!(undo(&owner, &done["body"]["undo_token"])["status"], 200);
+    assert!(progress_events(&fixture) > applied, "undo commits an event");
+}

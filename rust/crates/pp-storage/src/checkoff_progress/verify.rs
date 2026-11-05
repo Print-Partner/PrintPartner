@@ -10,7 +10,7 @@
 use super::{
     Body, Outcome, Refusal, Response, archived, complete_rows,
     links::{self, Link, field},
-    read, set_completed,
+    progress_changed, read, set_completed,
 };
 use crate::read_model::{AcceptedRead, Part, Snapshot, graph::Unit};
 use rusqlite::Transaction;
@@ -207,9 +207,15 @@ fn mark_confirmed(
     }
     let mut newly = 0;
     for (&part_id, indices) in &confirmed {
+        let mut moved = false;
         for &index in indices {
-            newly += usize::from(unit(snapshot, part_id, index).is_some_and(|(_, u)| !u.completed));
+            let fresh = unit(snapshot, part_id, index).is_some_and(|(_, u)| !u.completed);
+            newly += usize::from(fresh);
+            moved |= fresh;
             set_completed(tx, tenant, part_id, index, true)?;
+        }
+        if moved {
+            progress_changed(tx, tenant, snapshot.profile.id, Some(part_id))?;
         }
     }
     Ok(Ok(newly))

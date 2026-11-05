@@ -9,6 +9,7 @@ use pp_api::{
     catalog::{CatalogHttpConfig, admit_catalog_routes},
     checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
+    events::{StreamLimits, events_router},
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpHttpConfig, mcp_router},
@@ -168,8 +169,8 @@ pub fn router(
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, Build history, Build planning and
-/// decisions, Build workflow and task feed, legal documents, custom filaments
-/// and key-only MCP) from one
+/// decisions, Build workflow and task feed, legal documents, custom filaments,
+/// the domain event stream and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
 /// is off. Does not cut over production gateway ownership (GRE-593).
@@ -199,6 +200,7 @@ pub fn read_router(
         planning_client,
         workflow_client,
         admin_files,
+        events_client,
         checkoff_client,
     ) = {
         let guard = owner
@@ -214,6 +216,7 @@ pub fn read_router(
             // GRE-1100/GRE-1095; shortfall PR #1479), so their inputs are pending.
             guard.build_workflow(policy, Arc::new(PendingInputs))?,
             guard.admin_files()?,
+            guard.domain_events_with_policy(policy)?,
             guard.checkoff_progress_with_policy(policy)?,
         )
     };
@@ -250,6 +253,11 @@ pub fn read_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         workflow_client.clone(),
     );
+    let events = events_router(
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        events_client,
+        StreamLimits::default(),
+    );
     let checkoff = checkoff_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         checkoff_client,
@@ -269,6 +277,7 @@ pub fn read_router(
             .merge(planning)
             .merge(workflow)
             .merge(admin)
+            .merge(events)
             .merge(checkoff)
             .merge(mcp),
     ))

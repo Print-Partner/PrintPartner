@@ -1850,7 +1850,7 @@ fn ticket_t_7_migrations_preserves_refused_inputs() {
         "Cannot upgrade database schema version 30",
     );
     let newer = if cfg!(feature = "desktop_rebuild") {
-        "42"
+        "43"
     } else {
         "40"
     };
@@ -3113,6 +3113,7 @@ fn omit_source_schema(graph: &mut SchemaGraph) {
                     || name.starts_with("sqlite_autoindex_source_scan_execution")
                     || name.starts_with("source_sync_")
                     || name.starts_with("sqlite_autoindex_source_sync_")
+                    || name.starts_with("domain_events")
             })
             .map(|(_, name)| name.clone()),
     );

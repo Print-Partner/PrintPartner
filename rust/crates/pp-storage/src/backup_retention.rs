@@ -14,8 +14,11 @@
 //! marker. That is safe while an interrupted run can leave at most
 //! [`KEEP_VERIFIED`] such copies: they are then the newest, assuming the
 //! clock does not go back between attempts, so the first one survives. A
-//! compile-time assert below holds that bound; a step past 41 needs a run
-//! marker or a larger [`KEEP_VERIFIED`] first.
+//! compile-time assert below holds that bound; a copied step past 41 needs a
+//! run marker or a larger [`KEEP_VERIFIED`] first. Step 42 writes no copy of
+//! its own, and an open from 41 skips retention because its opening
+//! `pre-schema42.db` would be a fifth name (`LAST_COPIED_STEP` in
+//! `schema.rs`).
 //!
 //! Only this crate's own files are candidates: Node's pre-update and manual
 //! `.tar.gz` archives, temporary `.backup-*.db` files and SQLite sidecars are
@@ -33,10 +36,10 @@ use std::{
 pub(crate) const KEEP_VERIFIED: usize = 3;
 
 // A step copy gets a new name only after the previous step commits, so the
-// interrupted attempts of one upgrade leave at most CURRENT_VERSION - 38
+// interrupted attempts of one upgrade leave at most LAST_COPIED_STEP - 38
 // copies before the run that commits.
 #[cfg(feature = "desktop_rebuild")]
-const _: () = assert!(crate::schema::CURRENT_VERSION - 38 <= KEEP_VERIFIED as u64);
+const _: () = assert!(crate::schema::LAST_COPIED_STEP - 38 <= KEEP_VERIFIED as u64);
 
 #[derive(Debug, Default)]
 pub(crate) struct Pruned {

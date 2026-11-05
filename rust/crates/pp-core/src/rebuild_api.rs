@@ -7,6 +7,7 @@ use pp_api::{
     auth::auth_router,
     builds::{BuildHttpConfig, build_router},
     catalog::{CatalogHttpConfig, admit_catalog_routes},
+    checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
@@ -198,6 +199,7 @@ pub fn read_router(
         planning_client,
         workflow_client,
         admin_files,
+        checkoff_client,
     ) = {
         let guard = owner
             .lock()
@@ -212,6 +214,7 @@ pub fn read_router(
             // GRE-1100/GRE-1095; shortfall PR #1479), so their inputs are pending.
             guard.build_workflow(policy, Arc::new(PendingInputs))?,
             guard.admin_files()?,
+            guard.checkoff_progress_with_policy(policy)?,
         )
     };
     // `_drafts` is opened with the bundle for GRE-818 parity; draft HTTP uses
@@ -247,6 +250,10 @@ pub fn read_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         workflow_client.clone(),
     );
+    let checkoff = checkoff_router(
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        checkoff_client,
+    );
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
@@ -262,6 +269,7 @@ pub fn read_router(
             .merge(planning)
             .merge(workflow)
             .merge(admin)
+            .merge(checkoff)
             .merge(mcp),
     ))
 }

@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod burst;
 mod links;
 mod verify;
 
@@ -164,6 +165,11 @@ pub enum Request {
     Verify { body: Value },
     /// `POST /printer-checkoff/dismiss` with its raw JSON body.
     Dismiss { body: Value },
+    /// `POST /printer-checkoff/verify-batch` with its raw JSON body: one
+    /// Checkoff burst over several beds, with an idempotency key.
+    VerifyBatch { body: Value },
+    /// `POST /printer-checkoff/verify-batch/undo` with its raw JSON body.
+    UndoBatch { body: Value },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -202,6 +208,8 @@ pub enum Body {
     Link {
         link: Value,
     },
+    /// A Checkoff burst receipt or undo result.
+    Receipt(Value),
     Failure {
         detail: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -304,6 +312,8 @@ enum Op {
     Import(Import),
     Verify { link_id: String, body: Value },
     Dismiss { link_id: String },
+    VerifyBatch(burst::Burst),
+    UndoBatch { token: String },
 }
 enum Target {
     Token { expected: Basis, token: String },
@@ -450,6 +460,10 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         Request::Dismiss { body } => {
             return link_id(&body).map(|link_id| Op::Dismiss { link_id });
         }
+        Request::VerifyBatch { body } => return burst::Burst::parse(&body).map(Op::VerifyBatch),
+        Request::UndoBatch { body } => {
+            return burst::undo_token(&body).map(|token| Op::UndoBatch { token });
+        }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -573,6 +587,8 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let (mut snapshot, token, change) = match op {
         Op::Verify { link_id, body } => return verify::verify(tx, tenant, &link_id, &body, repos),
         Op::Dismiss { link_id } => return verify::dismiss(tx, tenant, &link_id),
+        Op::VerifyBatch(burst) => return burst::verify_batch(tx, tenant, burst, repos),
+        Op::UndoBatch { token } => return burst::undo_batch(tx, tenant, &token, repos),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,

@@ -173,6 +173,46 @@ async fn verify_batch_http_replays_across_restart_and_undoes_once() {
 }
 
 #[tokio::test]
+async fn verify_batch_http_records_a_rejection_with_its_reason() {
+    let fixture = Fixture::new();
+    let printed = fixture.printed();
+    let (owner, router) = fixture.open("1");
+    let body = json!({
+        "idempotency_key": "reject-burst",
+        "beds": [{ "link_id": "link-burst", "decisions": [
+            { "part_id": 2, "unit_index": 0, "result": "rejected", "reason": "warping", "note": "lifted corner" },
+        ]}],
+    })
+    .to_string();
+    let request: VerifyBatchRequest = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::from_str::<Value>(&body).unwrap(),
+        "the generated client's request type carries the reason and note"
+    );
+    let (status, receipt) = post(&router, "/printer-checkoff/verify-batch", &body, true).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(
+        (
+            receipt["units_rejected"].as_u64(),
+            receipt["units_confirmed"].as_u64()
+        ),
+        (Some(1), Some(0))
+    );
+    assert_eq!(fixture.printed(), printed, "a rejection marks no Progress");
+    let missing = body.replace(r#","reason":"warping""#, "");
+    let (status, refused) = post(
+        &router,
+        "/printer-checkoff/verify-batch",
+        &missing.replace("reject-burst", "reject-again"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
 async fn verify_batch_http_refuses_before_storage_writes() {
     let fixture = Fixture::new();
     let printed = fixture.printed();

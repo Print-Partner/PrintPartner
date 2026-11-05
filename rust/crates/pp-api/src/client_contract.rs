@@ -1371,7 +1371,7 @@ mod codegen {
             (
                 "rejected-unit",
                 json!({"idempotency_key": "k", "beds": [{"link_id": "l1", "decisions": [
-                    {"part_id": 1, "unit_index": 4, "result": "rejected"}]}]}),
+                    {"part_id": 1, "unit_index": 4, "result": "rejected", "reason": "warping", "note": "lifted corner"}]}]}),
             ),
             (
                 "unknown-result",

@@ -6,7 +6,25 @@
 use crate::read_model::farm::UnitResult;
 use serde::{Deserialize, Serialize};
 
+/// Why a unit was rejected; the route refuses a rejection without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub enum RejectReason {
+    BedAdhesion,
+    LayerShift,
+    Warping,
+    Stringing,
+    UnderExtrusion,
+    OverExtrusion,
+    Dimensional,
+    Collision,
+    WrongFilament,
+    Other,
+}
+
 /// One unit decision in a burst bed, as `POST /printer-checkoff/verify` takes it.
+/// A rejected unit needs `reason`; `note` keeps its first 500 characters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -15,6 +33,10 @@ pub struct UnitDecision {
     pub part_id: i64,
     pub unit_index: u32,
     pub result: UnitResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<RejectReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One bed of a burst: a printer Checkoff result and its unit decisions.
@@ -71,4 +93,32 @@ pub struct UndoBatchRequest {
 pub struct UndoBatchReceipt {
     pub undo_token: String,
     pub undone_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RejectReason::*;
+
+    #[test]
+    fn every_reject_reason_is_one_the_route_accepts() {
+        let names: Vec<serde_json::Value> = [
+            BedAdhesion,
+            LayerShift,
+            Warping,
+            Stringing,
+            UnderExtrusion,
+            OverExtrusion,
+            Dimensional,
+            Collision,
+            WrongFilament,
+            Other,
+        ]
+        .iter()
+        .map(|r| serde_json::to_value(r).unwrap())
+        .collect();
+        assert_eq!(
+            names,
+            super::super::links::REASONS.map(serde_json::Value::from)
+        );
+    }
 }

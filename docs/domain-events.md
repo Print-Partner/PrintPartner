@@ -20,8 +20,8 @@ sequence number, so cursor order is commit order.
 
 An idempotent replay of an Accept (`Existing` or `AlreadyApplied`) writes no
 event. Refused Checkoff requests write none, and neither does a Checkoff
-request that changes no row, such as assembling an unprinted unit or
-repeating a completion.
+request that changes no row, such as assembling an unprinted unit,
+repeating a completion, or importing the counts already stored.
 
 Each event carries a cursor, type, schema version, aggregate type, ID and
 version (`null` when the aggregate has none), a random 32-hex operation ID,

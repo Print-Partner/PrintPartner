@@ -658,6 +658,8 @@ fn domain_events_checkoff_that_changes_no_row_writes_no_event() {
     let f = Fixture::new();
     let start = position(&f);
     assert_eq!(f.assemble(5, true)["status"], 200);
+    let unchanged = f.import(json!([{ "part_id": 1, "printed_count": 0 }]));
+    assert_eq!(unchanged["body"]["updated_parts"], 0);
     assert_eq!(
         read_events(&f, session(), Some(&start)).unwrap(),
         nothing_after(&start)

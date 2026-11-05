@@ -541,9 +541,8 @@ pub(super) fn load(tx: &Transaction<'_>, tenant: &str, now: &str) -> Result<Vec<
     Ok(items.iter().filter_map(|item| parse(item, now)).collect())
 }
 
-/// The end of `updatePrinterCheckoffLink`: the patched link moves to the end,
-/// then `trimPrinterCheckoffLinks` keeps every active link and the newest
-/// terminal ones, and the list is written back.
+/// The end of `updatePrinterCheckoffLink`: the patched link moves to the end
+/// before the list is saved.
 pub(super) fn save(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -552,6 +551,12 @@ pub(super) fn save(
 ) -> Result<()> {
     let link = links.remove(index);
     links.push(link);
+    save_all(tx, tenant, links)
+}
+
+/// `savePrinterCheckoffLinks`: `trimPrinterCheckoffLinks` keeps every active
+/// link and the newest terminal ones, then the list is written back.
+pub(super) fn save_all(tx: &Transaction<'_>, tenant: &str, links: Vec<Link>) -> Result<()> {
     let terminal = |link: &Link| {
         matches!(
             link["state"].as_str(),

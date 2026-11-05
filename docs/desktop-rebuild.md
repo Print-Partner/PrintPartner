@@ -2562,6 +2562,46 @@ cd web && node --conditions=development --import tsx ../fixtures/parity/printer-
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_61_checkoff)'
 ```
 
+### Checkoff bursts (GRE-1090)
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the gateway mounts
+`POST /printer-checkoff/verify-batch` and `POST /printer-checkoff/verify-batch/undo`
+at `/` and `/api/v2` (`pp-api/src/checkoff.rs`, admission through
+`accepted::Gate`: loopback, exact Host and Origin, session or API key). Node has
+no such route, so nothing moves off Node and nothing is written twice.
+
+A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
+"additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
+naming a different link and shaped like a `POST /printer-checkoff/verify` body.
+`pp-storage::checkoff_progress` runs every bed through the GRE-420 verify in one
+writer transaction. The first bed that refuses rolls the whole burst back and
+returns its status with the detail prefixed by `beds[i]: `. Success returns
+`undo_token` and one result per bed.
+
+The receipt is written in the same transaction under the
+`printer.checkoff_bursts` setting: the key, the SHA-256 of the request with
+object keys sorted, the response, and the link, progress and outcome rows undo
+needs. A repeat with the same key and request returns the stored response before
+any other check and writes nothing, also after a restart. The same key with a
+different request returns 409. The newest 100 receipts are kept; replaying an
+older key runs the verify again, which refuses because its units are no longer
+pending, so it cannot count twice.
+
+Undo takes `{ "undo_token" }` and is a compensating write: it restores each
+link at its original position, the progress rows and the outcome rows the burst
+wrote. It refuses with 409 and a reason when any of them changed since, and when
+the burst was already undone; an unknown token is 404. No printer, webhook or
+Spoolman call happens in either transaction.
+
+`web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the
+`P` (`plateBed`) and `F` (`partFillBeds`) helpers, which both produce this
+request shape.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'
+npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

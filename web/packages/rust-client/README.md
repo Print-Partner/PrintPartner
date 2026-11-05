@@ -43,9 +43,13 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/plans/{id}/filament-shortfalls` | | `FilamentShortfalls` |
 | `GET /api/v2/plans/{id}/build-planning` | | `BuildPlanningResponse` |
 | `GET /api/v2/plans/{id}/decisions` | | `PlanDecisionList` |
+| `GET /api/v2/printers` | | `FarmPrinterList` |
+| `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
+| `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
+| `GET /api/v2/printer-send-queue` | | `SendQueue` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 
-`PrinterState` (execution, bed-clear and display state as separate fields) and `PrinterDisplayDescriptor` are DTOs without a route yet.
+`PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md).
 
 `Problem` is the body of every error any covered route returns, served as `application/problem+json`. Its `type` is a `z.enum` of the stable problem URNs and `errors` holds at most 16 field errors. Route-specific extension members, such as a draft conflict's `workspace`, are stripped by `z.object`. See [Problem responses](../../../docs/problem-responses.md).
 

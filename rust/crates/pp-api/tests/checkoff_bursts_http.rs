@@ -15,6 +15,9 @@ use std::{net::SocketAddr, path::PathBuf};
 use tower::ServiceExt;
 
 const ORIGIN: &str = "http://127.0.0.1:4100";
+#[path = "../../pp-storage/tests/common/js_json.rs"]
+mod js_json;
+
 const NODE: &str = include_str!("../../../../fixtures/parity/printer-checkoff-verify/node.json");
 const DATABASE: &[u8] =
     include_bytes!("../../pp-storage/tests/fixtures/required-units/unchanged.db");
@@ -27,7 +30,7 @@ impl Fixture {
         std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
         std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
         let sql = rusqlite::Connection::open(path.join("print-partner.db")).unwrap();
-        let node: Value = serde_json::from_str(NODE).unwrap();
+        let node = js_json::parse(NODE);
         for statement in node["setup"].as_array().unwrap() {
             sql.execute_batch(statement.as_str().unwrap()).unwrap();
         }

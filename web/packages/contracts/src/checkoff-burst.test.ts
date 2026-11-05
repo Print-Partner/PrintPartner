@@ -5,7 +5,7 @@ import type { PrinterCheckoffLink } from "./index.js";
 const link = (id: string, state: PrinterCheckoffLink["state"], units: [number, number][]): PrinterCheckoffLink => ({
   id, profile_id: 1, integration_id: "sim-moonraker", printer_id: "sim-1", host_name: "Simulated Voron",
   filename: `${id}.gcode`, state, saw_active: false, created_at: "2020-01-01T00:00:00.000Z",
-  units: units.map(([part_id, unit_index]) => ({ part_id, unit_index })),
+  units: units.map(([partId, unitIndex]) => ({ part_id: partId, unit_index: unitIndex })),
 });
 // The synthetic beds of fixtures/parity/printer-checkoff-verify, as GET /printer-checkoff returns them.
 const links = [
@@ -13,7 +13,7 @@ const links = [
   link("link-burst", "awaiting_verify", [[2, 0], [3, 1]]),
   link("link-watching", "watching", [[1, 2]]),
 ];
-const confirmed = (part_id: number, unit_index: number) => ({ part_id, unit_index, result: "confirmed" });
+const confirmed = (partId: number, unitIndex: number) => ({ part_id: partId, unit_index: unitIndex, result: "confirmed" });
 
 describe("Checkoff burst contract", () => {
   it("maps P and F to the same request shape", () => {

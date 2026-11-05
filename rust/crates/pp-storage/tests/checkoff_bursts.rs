@@ -12,6 +12,8 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::AtomicBool, time::Duration};
 
+#[path = "common/js_json.rs"]
+mod js_json;
 #[path = "common/json_rows.rs"]
 mod json_rows;
 
@@ -29,7 +31,7 @@ impl Fixture {
         std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
         std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
         let fixture = Self(path);
-        let node: Value = serde_json::from_str(NODE).unwrap();
+        let node = js_json::parse(NODE);
         for sql in node["setup"].as_array().unwrap() {
             fixture.sql().execute_batch(sql.as_str().unwrap()).unwrap();
         }
@@ -210,7 +212,12 @@ fn verify_batch_undo_restores_the_prior_state_or_refuses_with_a_reason() {
     let fixture = Fixture::new();
     let owner = fixture.open();
     // Any link write stores the links as Node normalizes them; start from that.
-    let dismissed = apply(&owner, Request::Dismiss { body: json!({ "link_id": "link-host-failed" }) });
+    let dismissed = apply(
+        &owner,
+        Request::Dismiss {
+            body: json!({ "link_id": "link-host-failed" }),
+        },
+    );
     assert_eq!(dismissed["status"], 200);
     let before = fixture.checkoff();
     let done = batch(&owner, two_beds("undo-me"));

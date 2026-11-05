@@ -138,18 +138,23 @@ the Farm screen. No screen polls for printer state.
   `printerStream.tsx`. The printer's `display` and `reason` reuse the generated
   `PrinterState` and farm-read reason schemas. A frame that fails the schema, or
   a `seq` that does not follow the last one, drops the socket.
-- **Reconnect.** A closed socket, or one quiet for two heartbeats plus 5 s,
-  counts as down. The provider reconnects after 1, 2, 5, 10, then every 30 s, with
+- **Reconnect.** A closed socket, or one quiet for two heartbeats plus 5 s
+  (including one that never opens), counts as down. The provider reconnects after 1, 2, 5, 10, then every 30 s, with
   `?stream=&since=` so the server replays what was missed or sends a fresh
   snapshot ([Printer stream](../../../docs/printer-stream.md#resume)).
 - **Pulse line** (`src/farm/PulseLine.tsx`). One icon, word and count per display
-  state that has printers, in the order Rust declares the states, as a polite live
-  region. Before the first snapshot it says "Printer counts not loaded", never
+  state that has printers, in the order Rust declares the states. The whole line
+  is a polite live region, so a screen reader hears both new counts and the
+  switch to "Live updates down". Before the first snapshot it says "Printer counts not loaded", never
   zeros. While the stream is down it keeps the last counts and says "Live updates
   down. Last known" with the time of the last frame.
 - **Farm** (`/farm`, `src/farm/FarmScreen.tsx`). Reads `GET /api/v2/printers`
   once (no refetch) for each printer's model and integration. Once the stream has
-  sent a snapshot, it decides which printers exist and their state. Each row
+  sent a snapshot, it decides which printers exist, their state and their
+  last-heard time (a printer the stream no longer hears reads Never), and every
+  banner names the stream's last frame time. If the farm read fails, the
+  streamed rows still show, with an alert and a Retry for the missing models and
+  integrations. Each row
   shows the summary status (icon and word from `PrinterStatus`) and, in their own
   columns, the execution state with progress, the bed state and the last-heard
   time ([Farm reads](../../../docs/farm-reads.md#printers)). A printer that is not
@@ -210,8 +215,9 @@ fail it. Do not add `paths` or Vite aliases that point outside this package.
   it would add a runtime dependency for no current need.
 - **Server state:** TanStack Query 5 is the one cache. Routes and core calls
   must not keep a second copy.
-- Both were already in `web/package-lock.json`, so this package added no new
-  runtime library.
+- Both were already in `web/package-lock.json`. `zod` is a direct dependency
+  too, because the UI parses `/ws/printers` frames with the generated schemas;
+  it was already in the lockfile through `@print-partner/rust-client`.
 
 ## Generated Rust client
 

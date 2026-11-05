@@ -20,14 +20,14 @@ export function PulseLine() {
   const { status, printers, receivedAt } = usePrinterStream();
   const counts = printers && countByState(printers);
   return (
-    <section aria-label="Printer pulse" className="pp-pulse" data-stream={status}>
+    <section aria-label="Printer pulse" className="pp-pulse" data-stream={status} aria-live="polite">
       {!counts ? (
         <span className="pp-pulse-empty">
           {status === "down" ? "Printer counts not loaded: live updates are down" : "Printer counts not loaded"}
         </span>
       ) : (
         <>
-          <ul className="pp-pulse-counts" aria-live="polite">
+          <ul className="pp-pulse-counts">
             {counts.length === 0 ? (
               <li>No printers</li>
             ) : (

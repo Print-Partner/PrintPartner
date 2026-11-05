@@ -244,6 +244,25 @@ describe("UI3-04 with the stream down the last-known state shows its time", () =
     expect(screen.queryByText(/Live printer updates are down/)).toBeNull();
   });
 
+  it("announces that the pulse went stale", async () => {
+    renderAt("/builds");
+    snapshot();
+    act(() => socket().close());
+    const live = pulse().closest("[aria-live]");
+    expect(live?.getAttribute("aria-live")).toBe("polite");
+    expect(live?.textContent).toContain("Live updates down. Last known");
+  });
+
+  it("retries a socket that never opens", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderAt("/builds");
+    socket().close = () => {};
+    await act(() => vi.advanceTimersByTimeAsync(36_000));
+    expect(pulse().textContent).toBe("Printer counts not loaded: live updates are down");
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(sockets).toHaveLength(2);
+  });
+
   it("counts a quiet socket as down after two missed heartbeats, without waiting for its close", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderAt("/farm");
@@ -289,12 +308,47 @@ describe("UI3-05 Bambu H2D reads Manual or Not set up with a reason", () => {
     );
     expect(cells("Bambu H2D")[3]).toBe("Never");
   });
+
+  it("says Never once the stream stops hearing a printer, not the page-load time", async () => {
+    renderAt("/farm");
+    snapshot();
+    await screen.findByRole("table", { name: "Printers" });
+    expect(row("Annex K3").querySelector("time")).not.toBeNull();
+    const manual = { ...FLEET[3]!, reason: "monitoring_disabled" as const, last_heard_at: null };
+    act(() =>
+      socket().frame({
+        type: "printer",
+        stream: "s1",
+        seq: 8,
+        printer: streamed(manual, { execution: "manual", bed_clear: "unknown", display: "manual" }),
+      }),
+    );
+    expect(cells("Annex K3")[3]).toBe("Never");
+  });
 });
 
 describe("Farm screen states", () => {
   it("says the Farm module is off when the core says so", async () => {
     renderAt("/farm", core({ farm: "off" }));
     expect(await screen.findByText("The Farm module is off.")).toBeTruthy();
+  });
+
+  it("shows the streamed printers when the farm read fails", async () => {
+    const failing = vi.fn(async (path: string) =>
+      path === "/health" ? json(health("on")) : json({ title: "Internal Server Error" }, 500),
+    );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderAt("/farm", failing);
+    snapshot();
+    expect(await screen.findByRole("table", { name: "Printers" })).toBeTruthy();
+    await act(async () => {
+      for (let i = 0; i < 12; i++) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        socket().frame({ type: "heartbeat", stream: "s1", seq: 7, at: HEARD });
+      }
+    });
+    expect(cells("Trident").slice(0, 3)).toEqual(["Bed to clear", "Idle", "Needs clearing"]);
+    expect((await screen.findByRole("alert")).textContent).toContain("States are live from the printer stream.");
   });
 
   it("shows the empty state with no printers", async () => {

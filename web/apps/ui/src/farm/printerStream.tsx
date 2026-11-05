@@ -112,6 +112,8 @@ export function PrinterStreamProvider({ children }: { children: ReactNode }) {
     function connect() {
       const current = new WebSocket(streamUrl(resume));
       socket = current;
+      // A socket that never opens counts as quiet too.
+      watchQuiet(current);
       current.onopen = () => {
         if (socket === current) watchQuiet(current);
       };

@@ -1,5 +1,5 @@
 import type { FarmPrinterList } from "@print-partner/rust-client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
@@ -61,7 +61,7 @@ function farmRows(read: FarmPrinter[], stream: PrinterStreamView): Row[] {
       state: p.display,
       reason: p.reason ?? null,
       progress: p.progress_percent ?? null,
-      lastHeardAt: p.last_heard_at ?? detail?.last_heard_at ?? null,
+      lastHeardAt: p.last_heard_at ?? null,
     };
   });
 }
@@ -128,24 +128,66 @@ function PrintersTable({ rows }: { rows: Row[] }) {
   );
 }
 
+/** Says the farm read failed while the stream still shows printers, with a Retry. */
+function DetailsNotice({ query }: { query: UseQueryResult<unknown> }) {
+  if (!query.isError) return null;
+  return (
+    <div role="alert" className="pp-banner" data-kind="error">
+      <p>Could not load printer models and integrations. States are live from the printer stream.</p>
+      <p className="pp-banner-detail">{query.error.message}</p>
+      <button type="button" className="pp-button" onClick={() => void query.refetch()}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Once the stream has sent a snapshot, it is what the screen shows, and its last frame
+ * time is the time every banner names. Before that, the farm read alone decides.
+ */
+function farmState(
+  stream: PrinterStreamView,
+  printers: UseQueryResult<FarmPrinterList>,
+  connection: ReturnType<typeof useConnection>,
+): ScreenState<Row[]> {
+  if (stream.printers) {
+    const rows = farmRows(printers.data?.printers ?? [], stream);
+    if (connection === "offline") {
+      return { kind: "offline", lastData: rows, updatedAt: stream.receivedAt ?? undefined };
+    }
+    return rows.length === 0 ? { kind: "empty" } : { kind: "ready", data: rows };
+  }
+  const state = queryScreenState(printers, connection, (data) => data.printers.length === 0);
+  if (state.kind === "ready") return { kind: "ready", data: farmRows(state.data.printers, stream) };
+  if (state.kind === "error" || state.kind === "offline") {
+    const lastData = state.lastData && farmRows(state.lastData.printers, stream);
+    return { ...state, lastData };
+  }
+  return state;
+}
+
 /** Farm: every configured printer with one honest state, kept live by `/ws/printers`. */
 export function FarmScreen() {
   const connection = useConnection();
   const farm = useModule("farm");
   const stream = usePrinterStream();
   const printers = useQuery(printersQuery);
-  const state: ScreenState<FarmPrinterList> =
+  const state: ScreenState<Row[]> =
     farm?.state === "off"
       ? { kind: "module-off", module: "Farm", wouldShow: "every printer and its state" }
-      : queryScreenState(printers, connection, (data) => farmRows(data.printers, stream).length === 0);
+      : farmState(stream, printers, connection);
   return (
     <ScreenTemplate
       title="Farm"
       state={state}
-      renderData={(data) => (
+      renderData={(rows) => (
         <>
-          <StreamNotice stream={stream} readAt={printers.dataUpdatedAt || undefined} />
-          <PrintersTable rows={farmRows(data.printers, stream)} />
+          {state.kind !== "offline" && (
+            <StreamNotice stream={stream} readAt={printers.dataUpdatedAt || undefined} />
+          )}
+          {stream.printers && <DetailsNotice query={printers} />}
+          <PrintersTable rows={rows} />
         </>
       )}
       empty={{ message: "No printers yet. Printers you add in Settings appear here." }}

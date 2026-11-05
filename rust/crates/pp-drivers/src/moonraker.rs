@@ -5,11 +5,13 @@ use pp_net::outbound::{HttpGuard, SystemResolver};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
-use tokio::task::JoinHandle;
+use tokio::{sync::watch, task::JoinHandle};
+
+pub use pp_api_types::printer_status::{PrinterHostState, PrinterHostStatus};
 use tokio_util::sync::CancellationToken;
 
 pub const QUERY: &str =
@@ -26,6 +28,32 @@ pub struct Host {
     pub base_url: String,
     pub api_key: Option<String>,
     pub enabled: bool,
+}
+/// Shown for an HTTPS host when no Node runtime can serve it (until GRE-359).
+pub const HTTPS_UNAVAILABLE: &str = "HTTPS printer monitoring is not available yet";
+/// Shown when a host redirects and no Node runtime can follow it; polling stops.
+pub const REDIRECT_UNAVAILABLE: &str = "Moonraker redirected; printer monitoring stopped";
+/// The latest status of each watched host, keyed by integration id.
+pub type Observed = Arc<BTreeMap<String, Status>>;
+/// Read-only port over what the watchers observed. Pollers publish into a
+/// `watch` channel that keeps only the newest map, so a slow reader never
+/// holds a poller back. It carries status only: no send, retry or Checkoff API.
+/// A host leaves the map when its poller stops, so an absent id is not idle.
+#[derive(Clone)]
+pub struct PrinterObservations(watch::Receiver<Observed>);
+impl PrinterObservations {
+    pub fn latest(&self, id: &str) -> Option<Status> {
+        self.0.borrow().get(id).cloned()
+    }
+    pub fn all(&self) -> Observed {
+        self.0.borrow().clone()
+    }
+    /// Waits for a map newer than the last one this handle returned. `None`
+    /// once the watchers are gone.
+    pub async fn changed(&mut self) -> Option<Observed> {
+        self.0.changed().await.ok()?;
+        Some(self.0.borrow_and_update().clone())
+    }
 }
 /// `Node` hands the host back to Node's on-demand path (HTTPS/redirects) until GRE-359.
 #[derive(Clone)]
@@ -65,6 +93,10 @@ pub struct Watchers {
     stale_since: Option<tokio::time::Instant>,
     guard: HttpGuard,
     interval: Duration,
+    observed: watch::Sender<Observed>,
+    /// False in the Rust-only runtime: no Node serves HTTPS or redirecting
+    /// hosts, so they report offline instead of routing to Node.
+    node_fallback: bool,
 }
 impl Watchers {
     pub fn new() -> Result<Self> {
@@ -85,7 +117,18 @@ impl Watchers {
             stale_since: None,
             guard,
             interval,
+            observed: watch::channel(Observed::default()).0,
+            node_fallback: true,
         }
+    }
+    /// For a runtime with no Node child: HTTPS and redirecting Moonraker hosts
+    /// report a fixed offline status, and only non-Moonraker ids route to Node.
+    pub fn without_node_fallback(mut self) -> Self {
+        self.node_fallback = false;
+        self
+    }
+    pub fn observations(&self) -> PrinterObservations {
+        PrinterObservations(self.observed.subscribe())
     }
     pub fn status(&self, id: &str) -> Option<Status> {
         match self.route(id) {
@@ -122,12 +165,7 @@ impl Watchers {
             .map(|(id, _)| id.clone())
             .collect();
         for id in polled {
-            if let Some(mut poller) = self.hosts.remove(&id) {
-                poller.cancel.cancel();
-                if let Some(task) = poller.task.take() {
-                    let _ = task.await;
-                }
-            }
+            self.retire(&id).await;
         }
     }
     /// More hosts than the cap: start nothing new, but record every id as Moonraker so a
@@ -175,29 +213,35 @@ impl Watchers {
             .map(|(id, _)| id.clone())
             .collect();
         for id in removed {
-            if let Some(mut poller) = self.hosts.remove(&id) {
-                poller.cancel.cancel();
-                if let Some(task) = poller.task.take() {
-                    let _ = task.await;
-                }
-            }
+            self.retire(&id).await;
         }
         for (id, host) in wanted {
             if self.hosts.contains_key(&id) {
                 continue;
             }
             let cancel = CancellationToken::new();
-            let status = Arc::new(Mutex::new(if !host.enabled {
+            let fallback = |message: &str| {
+                if self.node_fallback {
+                    Slot::Node
+                } else {
+                    Slot::Status(Status::offline(message))
+                }
+            };
+            let initial = if !host.enabled {
                 Slot::Status(Status::offline("Integration disabled"))
             } else if needs_node(&host.base_url) {
-                Slot::Node
+                fallback(HTTPS_UNAVAILABLE)
             } else {
                 Slot::Status(Status::unknown("Awaiting status"))
-            }));
+            };
+            let redirected = fallback(REDIRECT_UNAVAILABLE);
+            let status = Arc::new(Mutex::new(Slot::Node));
+            publish(&status, &self.observed, &id, initial);
             let task = if host.enabled && !needs_node(&host.base_url) {
                 let config = host.clone();
                 let stopped = cancel.clone();
                 let current = status.clone();
+                let observed = self.observed.clone();
                 let guard = self.guard.clone();
                 let interval = self.interval;
                 Some(tokio::spawn(async move {
@@ -207,16 +251,17 @@ impl Watchers {
                         let delay = match response {
                             Ok(value) => {
                                 failures = 0;
-                                *lock(&current) = Slot::Status(value);
+                                publish(&current, &observed, &config.id, Slot::Status(value));
                                 interval
                             }
                             Err(Failure::Redirect) => {
-                                *lock(&current) = Slot::Node;
+                                publish(&current, &observed, &config.id, redirected);
                                 break;
                             }
                             Err(failure) => {
                                 failures = failures.saturating_add(1);
-                                *lock(&current) = Slot::Status(Status::offline(&failure.message()));
+                                let offline = Status::offline(&failure.message());
+                                publish(&current, &observed, &config.id, Slot::Status(offline));
                                 backoff(interval, failures)
                             }
                         };
@@ -240,13 +285,37 @@ impl Watchers {
     }
     /// Cancel and join every poller. The last valid id set is kept.
     pub async fn stop(&mut self) {
-        for (_, mut p) in self.hosts.drain() {
-            p.cancel.cancel();
-            if let Some(task) = p.task.take() {
+        let ids: Vec<_> = self.hosts.keys().cloned().collect();
+        for id in ids {
+            self.retire(&id).await;
+        }
+    }
+    /// Cancel and join one poller, then drop its observation: a stopped host
+    /// must not look live to observation readers.
+    async fn retire(&mut self, id: &str) {
+        if let Some(mut poller) = self.hosts.remove(id) {
+            poller.cancel.cancel();
+            if let Some(task) = poller.task.take() {
                 let _ = task.await;
             }
         }
+        self.observed.send_if_modified(|observed| {
+            observed.contains_key(id) && Arc::make_mut(observed).remove(id).is_some()
+        });
     }
+}
+/// Store a slot value and mirror it into the observation map. Node-routed
+/// hosts have no Rust observation.
+fn publish(slot: &Mutex<Slot>, observed: &watch::Sender<Observed>, id: &str, value: Slot) {
+    observed.send_if_modified(|map| match &value {
+        Slot::Status(status) if map.get(id) != Some(status) => {
+            Arc::make_mut(map).insert(id.to_owned(), status.clone());
+            true
+        }
+        Slot::Status(_) => false,
+        Slot::Node => map.contains_key(id) && Arc::make_mut(map).remove(id).is_some(),
+    });
+    *lock(slot) = value;
 }
 /// Non-empty, bounded and unique ids, or `None` when the snapshot is unusable.
 fn valid_ids(hosts: &[Host]) -> Option<HashSet<String>> {
@@ -395,6 +464,7 @@ mod tests {
         let hosts: Vec<Host> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(hosts.len(), MAX_HOSTS);
     }
+    use pp_testkit::moonraker::RecordedPrinter;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -692,6 +762,123 @@ mod tests {
         watchers.replace(vec![host(String::new())]).await.unwrap();
         assert_eq!(watchers.route("host"), Route::Unavailable);
         assert!(watchers.hosts.is_empty());
+    }
+
+    fn only_status_queries(printer: &RecordedPrinter) {
+        let lines = printer.request_lines();
+        assert!(!lines.is_empty());
+        assert!(
+            lines
+                .iter()
+                .all(|line| *line == format!("GET {QUERY} HTTP/1.1")),
+            "{lines:?}"
+        );
+    }
+    async fn next_state(observations: &mut PrinterObservations, id: &str, state: State) -> Status {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(status) = observations.latest(id).filter(|s| s.state == state) {
+                    return status;
+                }
+                observations.changed().await.expect("watchers dropped");
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{id} never reached {state:?}"))
+    }
+    fn fast_watchers() -> Watchers {
+        let guard = HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(1), 4096).unwrap();
+        Watchers::with_guard(guard, Duration::from_millis(20))
+    }
+    #[tokio::test]
+    async fn ticket_t_4_watcher_proof_observation_port_replays_recorded_responses() {
+        const ERROR: &[u8] =
+            include_bytes!("../../../../fixtures/drivers/moonraker/moonraker-error.json");
+        const OFFLINE: &[u8] =
+            include_bytes!("../../../../fixtures/drivers/moonraker/moonraker-offline.json");
+        let printer = RecordedPrinter::start(vec![
+            (200, SUCCESS),
+            (200, ERROR),
+            (503, OFFLINE),
+            (200, SUCCESS),
+        ])
+        .unwrap();
+        let mut watchers = fast_watchers();
+        let mut observations = watchers.observations();
+        assert!(observations.all().is_empty());
+        let config = host(printer.url().into());
+        watchers.replace(vec![config.clone()]).await.unwrap();
+        let printing = next_state(&mut observations, "host", State::Printing).await;
+        assert_eq!(watchers.status("host"), Some(printing.clone()));
+        assert_eq!(printing.filename.as_deref(), Some("bracket.gcode"));
+        next_state(&mut observations, "host", State::Error).await;
+        let offline = next_state(&mut observations, "host", State::Offline).await;
+        assert_eq!(
+            offline.message.as_deref(),
+            Some("Moonraker returned HTTP 503")
+        );
+        // Recovery after one failure resets the backoff and is observed too.
+        next_state(&mut observations, "host", State::Printing).await;
+        // Disabling replaces the poller; the port shows the disabled status.
+        let mut disabled = config.clone();
+        disabled.enabled = false;
+        watchers.replace(vec![disabled]).await.unwrap();
+        assert_eq!(
+            observations.latest("host"),
+            Some(Status::offline("Integration disabled"))
+        );
+        let before = printer.calls();
+        // Removal drops the observation, so a stopped host never looks live.
+        watchers.replace(vec![]).await.unwrap();
+        assert!(observations.all().is_empty());
+        watchers.replace(vec![config]).await.unwrap();
+        next_state(&mut observations, "host", State::Printing).await;
+        watchers.stop().await;
+        assert!(observations.all().is_empty());
+        let stopped = printer.calls();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(printer.calls(), stopped);
+        assert!(stopped > before);
+        only_status_queries(&printer);
+        // Dropping the watchers ends the port once unseen maps are read.
+        drop(watchers);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while observations.changed().await.is_some() {}
+        })
+        .await
+        .unwrap();
+    }
+    #[tokio::test]
+    async fn ticket_t_4_watcher_proof_without_node_https_and_redirect_report_offline() {
+        let printer = RecordedPrinter::start(vec![(302, b"")]).unwrap();
+        let mut watchers = fast_watchers().without_node_fallback();
+        let observations = watchers.observations();
+        let mut https = host(" HTTPS://printer.test".into());
+        https.id = "tls".into();
+        watchers
+            .replace(vec![https, host(printer.url().into())])
+            .await
+            .unwrap();
+        // No Node can serve HTTPS: a fixed offline status, and no request at all.
+        let https_offline = Status::offline(HTTPS_UNAVAILABLE);
+        assert_eq!(watchers.route("tls"), Route::Cached(https_offline.clone()));
+        assert_eq!(observations.latest("tls"), Some(https_offline));
+        let redirected = Route::Cached(Status::offline(REDIRECT_UNAVAILABLE));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while watchers.route("host") != redirected {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // The redirect is never followed or retried.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(printer.calls(), 1);
+        only_status_queries(&printer);
+        // Only ids outside the snapshot are someone else's.
+        assert_eq!(watchers.route("prusa"), Route::Node);
+        watchers.stop().await;
+        assert_eq!(watchers.route("tls"), Route::Unavailable);
     }
 
     #[tokio::test]

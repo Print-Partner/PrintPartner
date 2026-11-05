@@ -1,5 +1,16 @@
+import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { moonrakerHostSnapshot } from "./moonraker-host-snapshot.js";
+
+const corpusFile = new URL("../../../../fixtures/drivers/moonraker/host-snapshot-parity.json", import.meta.url);
+const { cases } = JSON.parse(readFileSync(corpusFile, "utf8")) as {
+  cases: Array<{ name: string; setting: string | null; expected: unknown }>;
+};
+// The Rust-only runtime projects the same setting in pp-storage::printer_hosts
+// and replays this corpus (GRE-449).
+it.each(cases)("ticket_t_4_watcher_proof host snapshot parity: $name", ({ setting, expected }) => {
+  expect(moonrakerHostSnapshot(setting)).toEqual(expected);
+});
 
 it("ticket_t_4 unrelated integrations do not disable a bounded Moonraker snapshot", () => {
   const other = Array.from({ length: 129 }, (_, id) => ({ id, type: "spoolman" }));

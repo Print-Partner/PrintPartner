@@ -1,0 +1,87 @@
+//! A loopback Moonraker that replays recorded responses, for status-watcher
+//! tests in several crates. It runs on its own OS thread, so it needs no async
+//! runtime, and it only ever answers: it never initiates a connection.
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread::JoinHandle,
+};
+
+/// Replays `replies` in request order and repeats the last one. A 3xx reply
+/// carries `Location: /moonraker/`.
+pub struct RecordedPrinter {
+    url: String,
+    calls: Arc<AtomicUsize>,
+    lines: Arc<Mutex<Vec<String>>>,
+    stopped: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RecordedPrinter {
+    pub fn start(replies: Vec<(u16, &'static [u8])>) -> std::io::Result<Self> {
+        assert!(!replies.is_empty(), "a recorded printer needs a reply");
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let url = format!("http://{}", listener.local_addr()?);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (seen, logged, stop) = (calls.clone(), lines.clone(), stopped.clone());
+        let thread = std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut socket) = socket else { continue };
+                let mut bytes = [0; 4096];
+                let len = socket.read(&mut bytes).unwrap_or(0);
+                let request = String::from_utf8_lossy(&bytes[..len]);
+                let line = request.lines().next().unwrap_or_default().to_owned();
+                logged.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+                let call = seen.fetch_add(1, Ordering::SeqCst);
+                let (status, body) = replies[call.min(replies.len() - 1)];
+                let head = format!(
+                    "HTTP/1.1 {status} Recorded\r\nLocation: /moonraker/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes());
+                let _ = socket.write_all(body);
+            }
+        });
+        Ok(Self {
+            url,
+            calls,
+            lines,
+            stopped,
+            thread: Some(thread),
+        })
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Requests answered so far.
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    /// The request line of every request so far, in order.
+    pub fn request_lines(&self) -> Vec<String> {
+        self.lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+impl Drop for RecordedPrinter {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        // Wake the blocking accept so the thread sees the stop flag.
+        let _ = TcpStream::connect(self.url.trim_start_matches("http://"));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}

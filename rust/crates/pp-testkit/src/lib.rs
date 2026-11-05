@@ -17,6 +17,7 @@
 //! assert_eq!(Marker::parse(&bytes).unwrap(), Marker::default());
 //! ```
 
+pub mod moonraker;
 pub mod node_schema;
 
 use std::{

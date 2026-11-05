@@ -25,7 +25,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | --- | --- |
 | `moonraker_driver` | `Driver::new(guard, base_url, api_key)`; `test_connection`, `status`, `filament_used`, `object_list`, `cameras`, `browse`, `upload_file(source, filename, start)`. `UploadSource`, `UploadResult`, `TestResult`, `StorageListing`, `Camera`. |
 | `prusalink` | `Driver::new(guard, base_url, username, password, storage)` with the same methods. Uploads go to the pinned storage, default `usb`; `start` sets the `print-after-upload` header. |
-| `moonraker` | `Watchers` (`new`, `with_guard`, `replace`, `status`, `route`, `stop`), `Host`, `Route`, `recorded_status`, limits `MAX_HOSTS` and `MAX_SNAPSHOT_BYTES`. No storage or send APIs. |
+| `moonraker` | `Watchers` (`new`, `with_guard`, `without_node_fallback`, `observations`, `replace`, `status`, `route`, `stop`), `Host`, `Route`, `recorded_status`, limits `MAX_HOSTS` and `MAX_SNAPSHOT_BYTES`. `PrinterObservations` is the read-only port over the latest status per host (`latest`, `all`, `changed`), backed by a `watch` channel so a slow reader never blocks a poller; a stopped host leaves it. `without_node_fallback` (Rust-only runtime) reports HTTPS and redirecting hosts offline (`HTTPS_UNAVAILABLE`, `REDIRECT_UNAVAILABLE`) instead of routing them to Node. No storage or send APIs. |
 | `digest` | `parse_www_authenticate`, `authorization`, `cnonce`: RFC 7616 MD5 and MD5-sess, `qop=auth`. |
 | `farm_filament` (`desktop_rebuild`) | `printer_filament_status`, `slot_filament_status`, `host_reports_filament_runout`, `SlotState`, `LOW_FILAMENT_THRESHOLD_G`. Pure; inventory comes through a `SpoolLookup` closure. |
 

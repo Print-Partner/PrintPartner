@@ -13,10 +13,11 @@ import { tasksQuery, type Task } from "../core/workflow";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
+import { bedsToClear, pickedPrinters, plural, unitKey, type Pick } from "./beds";
+import { ClearBeds } from "./ClearBeds";
 
 type CheckoffResult = CheckoffResultList["results"][number];
 type FarmPrinter = FarmPrinterList["printers"][number];
-type Unit = CheckoffResult["units"][number];
 
 /** Today rereads results and printer links this often, so a print that ends or a link that drops shows up. */
 const REFRESH_MS = 30_000;
@@ -41,62 +42,15 @@ const LINK_DOWN = new Set<FarmPrinter["state"]["execution"]>([
   "unknown",
 ]);
 
-/** A bed waiting for a person: an awaiting-verify result and the units it has not resolved. */
-interface Bed {
-  result: CheckoffResult;
-  printer: string;
-  pending: Unit[];
-}
-
-const unitKey = (u: { part_id: number; unit_index: number }) => `${u.part_id}:${u.unit_index}`;
-
-/** Results waiting for a person, oldest first, each with its pending units. */
-function bedsToClear(
-  results: readonly CheckoffResult[],
-  printerName: (id: string) => string,
-): Bed[] {
-  return results
-    .filter((r) => r.state === "awaiting_verify")
-    .map((result) => {
-      const resolved = new Set(result.resolved_units.map(unitKey));
-      return {
-        result,
-        printer: printerName(result.printer_id),
-        pending: result.units.filter((u) => !resolved.has(unitKey(u))),
-      };
-    })
-    .filter((bed) => bed.pending.length > 0)
-    .sort((a, b) => a.result.created_at.localeCompare(b.result.created_at));
-}
-
-/** "A", "A and B", "A, B and C". */
-const listWords = (words: readonly string[]) =>
-  words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
-
-const plural = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
-
-/** What confirming a bed marks, one line per Part: its file name, the count and the unit numbers. */
-function bedDiff(pending: readonly Unit[]) {
-  const parts = new Map<number, { name: string; units: number[] }>();
-  for (const unit of pending) {
-    const part = parts.get(unit.part_id) ?? {
-      name: unit.part_filename ?? `Part ${unit.part_id}`,
-      units: [],
-    };
-    part.units.push(unit.unit_index + 1);
-    parts.set(unit.part_id, part);
-  }
-  return [...parts.entries()].map(([id, { name, units }]) => ({
-    id,
-    text: `${name}: +${units.length} printed (${units.length === 1 ? "unit" : "units"} ${listWords(units.map(String))})`,
-  }));
-}
-
-/** A confirm in flight: the bed and the idempotency key every resend of it reuses. */
+/** A burst in flight: the picked units and the idempotency key every resend of it reuses. */
 interface Confirm {
-  bed: Bed;
+  picks: Pick[];
   key: string;
 }
+
+/** Names a burst by the units it confirms, so the same burst finds its unanswered key. */
+const burstId = (picks: readonly Pick[]) =>
+  picks.map((p) => `${p.bed.result.id}=${p.units.map(unitKey).join(",")}`).join("|");
 
 interface Undo {
   printer: string;
@@ -122,7 +76,7 @@ const ALREADY_UNDONE = "This Checkoff burst was already undone";
 function useCheckoff() {
   const client = useQueryClient();
   const [tally, setTally] = useState<Tally | null>(null);
-  // The key of each bed's confirm that has no answer yet. Confirming that bed again reuses
+  // The key of each burst that has no answer yet. Confirming the same units again reuses
   // it, so a write that landed while its answer was lost replays its receipt and Undo.
   const unanswered = useRef(new Map<string, string>());
   const refresh = () =>
@@ -156,43 +110,41 @@ function useCheckoff() {
     },
   });
   const confirm = useMutation({
-    mutationFn: ({ bed, key }: Confirm) =>
+    mutationFn: ({ picks, key }: Confirm) =>
       writeCore(
         "verifyCheckoffBurst",
         {},
         {
           idempotency_key: key,
-          beds: [
-            {
-              link_id: bed.result.id,
-              decisions: bed.pending.map((u) => ({
-                part_id: u.part_id,
-                unit_index: u.unit_index,
-                result: "confirmed" as const,
-              })),
-            },
-          ],
+          beds: picks.map(({ bed, units }) => ({
+            link_id: bed.result.id,
+            decisions: units.map((u) => ({
+              part_id: u.part_id,
+              unit_index: u.unit_index,
+              result: "confirmed" as const,
+            })),
+          })),
         },
       ),
     retry: retryLostSend,
     onMutate: () => undo.reset(),
-    onError: (error, { bed }) => {
+    onError: (error, { picks }) => {
       if (lostSend(error)) return;
-      unanswered.current.delete(bed.result.id);
+      unanswered.current.delete(burstId(picks));
       return refresh();
     },
-    onSuccess: (receipt, { bed }) => {
-      unanswered.current.delete(bed.result.id);
+    onSuccess: (receipt, { picks }) => {
+      unanswered.current.delete(burstId(picks));
       undo.reset();
-      setTally({ kind: "confirmed", undo: { printer: bed.printer, receipt } });
+      setTally({ kind: "confirmed", undo: { printer: pickedPrinters(picks), receipt } });
       return refresh();
     },
   });
-  const confirmBed = (bed: Bed) => {
-    if (confirm.isPending) return;
-    const key = unanswered.current.get(bed.result.id) ?? crypto.randomUUID();
-    unanswered.current.set(bed.result.id, key);
-    confirm.mutate({ bed, key });
+  const confirmPicks = (picks: Pick[]) => {
+    if (confirm.isPending || picks.length === 0) return;
+    const key = unanswered.current.get(burstId(picks)) ?? crypto.randomUUID();
+    unanswered.current.set(burstId(picks), key);
+    confirm.mutate({ picks, key });
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
   const undoBurst = (tallied: Undo) => {
@@ -200,7 +152,7 @@ function useCheckoff() {
     confirm.reset();
     undo.mutate(tallied);
   };
-  return { confirm, confirmBed, undo, undoBurst, tally };
+  return { confirm, confirmPicks, undo, undoBurst, tally };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
@@ -210,7 +162,7 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
   const { confirm, undo, undoBurst, tally } = checkoff;
   const failure = confirm.isError
     ? {
-        what: "Could not confirm the bed.",
+        what: "Could not confirm what came off.",
         error: confirm.error,
         resend: () => confirm.mutate(confirm.variables),
       }
@@ -243,44 +195,6 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
         </div>
       )}
     </>
-  );
-}
-
-/** The hero task: clear the beds waiting for a person, with the reason and what each confirm marks. */
-function ClearBeds({
-  beds,
-  linkNote,
-  checkoff,
-}: {
-  beds: Bed[];
-  linkNote: (printerId: string) => string | null;
-  checkoff: Checkoff;
-}) {
-  return (
-    <section className="pp-hero" aria-labelledby="pp-hero-title">
-      <h2 id="pp-hero-title">{`Clear ${plural(beds.length, "bed")} and confirm what came off`}</h2>
-      <p className="pp-hero-reason">{`Frees ${listWords([...new Set(beds.map((b) => b.printer))])}.`}</p>
-      <ul className="pp-beds">
-        {beds.map((bed) => (
-          <li key={bed.result.id} className="pp-bed" data-link={bed.result.id}>
-            <h3>{bed.printer}</h3>
-            <p className="pp-muted">
-              {bed.result.filename}
-              {linkNote(bed.result.printer_id) &&
-                `. ${linkNote(bed.result.printer_id)}, so confirm by hand what came off.`}
-            </p>
-            <ul aria-label={`What confirming ${bed.printer} marks`} className="pp-diff">
-              {bedDiff(bed.pending).map((line) => (
-                <li key={line.id}>{line.text}</li>
-              ))}
-            </ul>
-            <MutationButton primary onClick={() => checkoff.confirmBed(bed)}>
-              {`Confirm ${bed.printer} bed`}
-            </MutationButton>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
 
@@ -396,9 +310,10 @@ export function TodayScreen() {
   const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));
   const printerName = (id: string) => byId.get(id)?.name ?? id;
   // Why a printer's link cannot report a finished print, or null when it can. A failed or
-  // missing farm read says nothing about links, so it never counts as up or as down.
+  // pending farm read says nothing about links, so it never counts as up or as down.
   const linkNote = (id: string) => {
-    if (printers.isError || !printers.data) return "Printer links could not be read";
+    if (printers.isError) return "Printer links could not be read";
+    if (!printers.data) return "Printer links not read yet";
     const printer = byId.get(id);
     return !printer || LINK_DOWN.has(printer.state.execution) ? "Printer link down" : null;
   };
@@ -416,7 +331,7 @@ export function TodayScreen() {
           <>
             <CheckoffStatus checkoff={checkoff} />
             {beds.length > 0 ? (
-              <ClearBeds beds={beds} linkNote={linkNote} checkoff={checkoff} />
+              <ClearBeds beds={beds} linkNote={linkNote} confirm={checkoff.confirmPicks} />
             ) : (
               top && <TopTask task={top} />
             )}

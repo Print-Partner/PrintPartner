@@ -119,7 +119,7 @@ function fakeCore({
     receipts: new Map<string, unknown>(),
     undone: new Set<string>(),
   };
-  const before = new Map<string, Result>();
+  const before = new Map<string, { links: Result[]; units: number }>();
   const lose = { confirm: loseFirstAnswers, undo: loseUndoAnswers };
   const posts: { path: string; body: Record<string, unknown> }[] = [];
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
@@ -153,10 +153,14 @@ function fakeCore({
         link_id: string;
         decisions: { part_id: number; unit_index: number }[];
       }[];
+      const units = beds.reduce((n, b) => n + b.decisions.length, 0);
+      before.set(key, {
+        links: beds.map((b) => state.results.find((r) => r.id === b.link_id)!),
+        units,
+      });
       for (const bed of beds) {
         const index = state.results.findIndex((r) => r.id === bed.link_id);
         const link = state.results[index]!;
-        before.set(key, link);
         const resolved = [
           ...link.resolved_units,
           ...bed.decisions.map((d) => ({ ...d, result: "confirmed" as const })),
@@ -169,13 +173,12 @@ function fakeCore({
         };
         state.marked += bed.decisions.length;
       }
-      const units = beds.reduce((n, b) => n + b.decisions.length, 0);
       const receipt = {
         idempotency_key: key,
         undo_token: `undo-${key}`,
         units_confirmed: units,
         units_rejected: 0,
-        beds: [{ units_confirmed: units, units_rejected: 0 }],
+        beds: beds.map((b) => ({ units_confirmed: b.decisions.length, units_rejected: 0 })),
       };
       state.receipts.set(key, receipt);
       return json(receipt);
@@ -185,8 +188,8 @@ function fakeCore({
     if (state.undone.has(token))
       return json({ title: "Conflict", detail: "This Checkoff burst was already undone" }, 409);
     const prior = before.get(key)!;
-    state.results = state.results.map((r) => (r.id === prior.id ? prior : r));
-    state.marked -= prior.units.length - prior.resolved_units.length;
+    state.results = state.results.map((r) => prior.links.find((l) => l.id === r.id) ?? r);
+    state.marked -= prior.units;
     state.undone.add(token);
     return json({ undo_token: token, undone_at: "2026-11-05T21:00:00.000Z" });
   }
@@ -331,6 +334,36 @@ describe("UI4-02 one bed is one verify-batch request, with undo", () => {
   });
 });
 
+describe("a burst names the lower units Progress needs first", () => {
+  it("names a lower unit on another bed and picks it on request, sending one request", async () => {
+    const core = fakeCore({
+      results: [
+        result("link-voron", "voron", [[7, 1, "hinge.stl"]], { created_at: "2026-11-05T18:00:00.000Z" }),
+        result("link-trident", "trident", [[7, 0, "hinge.stl"]], { created_at: "2026-11-05T18:30:00.000Z" }),
+      ],
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(
+      within(bed("Voron 2.4")).getByText(
+        "Progress fills from the left, so confirm Trident: hinge.stl unit 1 first, or pick those units with this bed below.",
+      ),
+    ).toBeTruthy();
+    expect(within(bed("Trident")).queryByText(/Progress fills from the left/)).toBeNull();
+    fireEvent.click(within(bed("Voron 2.4")).getByRole("checkbox", { name: "hinge.stl unit 2" }));
+    expect(screen.getByText(/the core refuses this until these lower units are picked too: Trident: hinge.stl unit 1\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Pick them too" }));
+    expect(screen.queryByText(/lower units are picked too/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    expect(await screen.findByText(/^Confirmed 2 units from/)).toBeTruthy();
+    expect(core.posts).toHaveLength(1);
+    expect((core.posts[0]!.body.beds as { link_id: string }[]).map((b) => b.link_id)).toEqual([
+      "link-voron",
+      "link-trident",
+    ]);
+  });
+});
+
 describe("the newest failed write is the one shown", () => {
   it("shows a failed Undo even after a refused confirm of another bed", async () => {
     const core = fakeCore();
@@ -352,10 +385,10 @@ describe("the newest failed write is the one shown", () => {
         : real(path, init),
     );
     fireEvent.click(await screen.findByRole("button", { name: "Confirm Trident bed" }));
-    expect(await screen.findByText("Could not confirm the bed.")).toBeTruthy();
+    expect(await screen.findByText("Could not confirm what came off.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(await screen.findByText("Could not undo the confirmation.")).toBeTruthy();
-    expect(screen.queryByText("Could not confirm the bed.")).toBeNull();
+    expect(screen.queryByText("Could not confirm what came off.")).toBeNull();
     expect(screen.getByText(/A newer change to this Checkoff link exists/)).toBeTruthy();
   });
 });
@@ -380,7 +413,7 @@ describe("UI4-03 a retried confirm does not double count", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
     await act(() => vi.advanceTimersByTimeAsync(4_000));
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Could not confirm the bed.");
+    expect(alert.textContent).toContain("Could not confirm what came off.");
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
     expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
@@ -506,7 +539,8 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     expect(within(bed("Voron 2.4")).queryByText(/Printer link down/)).toBeNull();
   });
 
-  it("does not claim a link is up when the farm read fails", async () => {
+  it("does not claim a link is up while the farm read is pending or after it fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore();
     core.fetchMock.mockImplementation(async (path: string) =>
       path === "/api/v2/printers"
@@ -517,7 +551,10 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     );
     renderToday(core);
     expect(await screen.findByRole("heading", { level: 3, name: "voron" })).toBeTruthy();
-    expect(within(bed("voron")).getByText(/Printer links could not be read/)).toBeTruthy();
+    expect(within(bed("voron")).getByText(/Printer links not read yet/)).toBeTruthy();
+    // The read fails, then react-query's three backed-off retries (1 + 2 + 4 s).
+    await act(() => vi.advanceTimersByTimeAsync(8_000));
+    expect(await within(bed("voron")).findByText(/Printer links could not be read/)).toBeTruthy();
   });
 });
 
@@ -531,5 +568,141 @@ describe("UI4-05 tallies are announced in a live region", () => {
     await screen.findByText("Confirmed 3 units from Voron 2.4.");
     expect(status()).toBe(region);
     expect(region.textContent).toContain("Confirmed 3 units from Voron 2.4.");
+  });
+});
+
+const SHARED = (): Result[] => [
+  result("link-voron", "voron", [
+    [1, 1, "bracket.stl"],
+    [1, 2, "bracket.stl"],
+    [3, 0, "gear.stl"],
+  ]),
+  result(
+    "link-trident",
+    "trident",
+    [
+      [3, 1, "gear.stl"],
+      [2, 0, null],
+    ],
+    { created_at: "2026-11-05T18:30:00.000Z" },
+  ),
+];
+
+const unit = (name: string) => screen.getByRole("checkbox", { name });
+const preview = () => screen.getByText(/^(Will mark|Nothing picked)/).closest("div")!;
+const previewLines = () =>
+  within(preview())
+    .queryAllByRole("listitem")
+    .map((li) => li.textContent);
+
+describe("UI5-01 P, F, digits, Space and Shift pick units and preview them before commit", () => {
+  it("P picks the focused unit's plate and previews it without sending anything", async () => {
+    const core = fakeCore({ results: SHARED() });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(preview().textContent).toContain("Nothing picked.");
+    const gear = within(bed("Voron 2.4")).getByRole("checkbox", { name: "gear.stl unit 1" });
+    gear.focus();
+    fireEvent.keyDown(gear, { key: "p" });
+    expect(preview().textContent).toContain("Will mark 3 units on 1 bed (Voron 2.4):");
+    expect(previewLines()).toEqual([
+      "bracket.stl: +2 printed (units 2 and 3)",
+      "gear.stl: +1 printed (unit 1)",
+    ]);
+    expect(core.posts).toHaveLength(0);
+  });
+
+  it("F fills the focused unit's Part on every bed, and digits set its count from the lowest unit", async () => {
+    renderToday(fakeCore({ results: SHARED() }));
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    const gear = within(bed("Voron 2.4")).getByRole("checkbox", { name: "gear.stl unit 1" });
+    fireEvent.keyDown(gear, { key: "F" });
+    expect(preview().textContent).toContain("Will mark 2 units on 2 beds (Voron 2.4 and Trident):");
+    expect(previewLines()).toEqual(["gear.stl: +2 printed (units 1 and 2)"]);
+    const gear2 = within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" });
+    fireEvent.keyDown(gear2, { key: "1" });
+    expect(previewLines()).toEqual(["gear.stl: +1 printed (unit 1)"]);
+    expect((gear as HTMLInputElement).checked).toBe(true);
+    expect((gear2 as HTMLInputElement).checked).toBe(false);
+    fireEvent.keyDown(gear2, { key: "0" });
+    expect(preview().textContent).toContain("Nothing picked.");
+  });
+
+  it("Space ticks one unit and Shift picks a run from the last one ticked", async () => {
+    renderToday(fakeCore({ results: SHARED() }));
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    expect(previewLines()).toEqual(["bracket.stl: +1 printed (unit 2)"]);
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }), {
+      shiftKey: true,
+    });
+    expect(preview().textContent).toContain("Will mark 4 units on 2 beds");
+    expect(previewLines()).toEqual([
+      "bracket.stl: +2 printed (units 2 and 3)",
+      "gear.stl: +2 printed (units 1 and 2)",
+    ]);
+    fireEvent.click(unit("bracket.stl unit 3"));
+    expect(previewLines()).toEqual([
+      "bracket.stl: +1 printed (unit 2)",
+      "gear.stl: +2 printed (units 1 and 2)",
+    ]);
+  });
+
+  it("leaves the frame's shortcuts alone for keys it does not use", async () => {
+    renderToday(fakeCore({ results: SHARED() }));
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    const box = unit("bracket.stl unit 2");
+    fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+    fireEvent.keyDown(box, { key: "x" });
+    expect(preview().textContent).toContain("Nothing picked.");
+  });
+});
+
+describe("UI5-02 one burst is one request and one undo entry", () => {
+  it("confirms units from two beds in one request and undoes both with one token", async () => {
+    const core = fakeCore({ results: SHARED() });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.keyDown(within(bed("Voron 2.4")).getByRole("checkbox", { name: "gear.stl unit 1" }), {
+      key: "f",
+    });
+    fireEvent.keyDown(unit("bracket.stl unit 2"), { key: "2" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 4 picked units" }));
+    expect(await screen.findByText("Confirmed 4 units from Voron 2.4 and Trident.")).toBeTruthy();
+    expect(core.posts).toHaveLength(1);
+    expect(core.posts[0]!.body.beds).toEqual([
+      {
+        link_id: "link-voron",
+        decisions: [
+          { part_id: 1, unit_index: 1, result: "confirmed" },
+          { part_id: 1, unit_index: 2, result: "confirmed" },
+          { part_id: 3, unit_index: 0, result: "confirmed" },
+        ],
+      },
+      { link_id: "link-trident", decisions: [{ part_id: 3, unit_index: 1, result: "confirmed" }] },
+    ]);
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(1);
+    expect(core.state.marked).toBe(4);
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "Clear 1 bed and confirm what came off",
+      }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(
+      await screen.findByText(
+        "Undid the Voron 2.4 and Trident confirmation. 4 units are waiting again.",
+      ),
+    ).toBeTruthy();
+    expect(core.posts.filter((p) => p.path.endsWith("/undo"))).toHaveLength(1);
+    expect(core.state.marked).toBe(0);
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "Clear 2 beds and confirm what came off",
+      }),
+    ).toBeTruthy();
   });
 });

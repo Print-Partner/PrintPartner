@@ -146,8 +146,22 @@ so a print that ends or a link that drops shows up without a reload.
 - **Confirm one bed.** "Confirm <printer> bed" sends one
   `POST /api/v2/printer-checkoff/verify-batch` with one bed and a new
   `crypto.randomUUID()` idempotency key, confirming every pending unit of that
-  result. Rejecting units and multi-bed bursts are slice 5 and the Build
-  Checkoff tab (GRE-1121).
+  result.
+- **Clear beds burst** (`src/today/ClearBeds.tsx`, `src/today/beds.ts`). Each
+  bed lists its pending units as checkboxes. On a focused unit, `P` picks every
+  unit on its bed (the plate), `F` every unit of its Part on every bed, and `0`
+  to `9` that many of its Part, lowest unit first, dropping the rest of that
+  Part. `Space` or a click toggles one unit; with `Shift`, every unit from the
+  last one toggled takes the new state. The preview says how many units on how
+  many beds will be marked, and what each Part gains, before anything is sent.
+  "Confirm N picked units" sends every picked bed in one verify-batch request
+  with one key, and the tally carries one Undo for the whole burst. Rejecting
+  units stays in the Build Checkoff tab (GRE-1121).
+- **Progress fills from the left.** The core refuses a Part's unit while a lower
+  unit of that Part is still pending (400 "Confirm must include lower incomplete
+  units first"). When a pick or a bed's confirm skips a lower pending unit shown
+  on another bed, Today names those units before the send, and "Pick them too"
+  adds them to the burst. It never adds them on its own.
 - **Retry.** A send that fails without an answer from the core (a network error
   or a lost answer) is resent up to twice with the same key, and the alert's
   Retry resends it again with the same key. The core answers a repeated key
@@ -158,7 +172,7 @@ so a print that ends or a link that drops shows up without a reload.
   that landed while its answer was lost replays its receipt and Undo instead of
   being refused as already verified. A resent Undo whose first answer was lost
   gets 409 "already undone"; Today counts that as done and rereads.
-- **Undo.** The tally, "Confirmed N units from <printer>.", sits in a polite
+- **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo
   button. Undo sends the receipt's `undo_token` to
   `POST /api/v2/printer-checkoff/verify-batch/undo`; the core restores the

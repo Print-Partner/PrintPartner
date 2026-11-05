@@ -2702,8 +2702,8 @@ without that hash or its unit list (written before they existed) refuses with
 every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
-The replacement UI's Today screen confirms one bed per burst through the
-generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a
+The replacement UI's Today screen confirms one bed, or units picked on several
+beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a
 lost send with the same key; see `web/apps/ui/README.md` (Today).
 
 `web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the

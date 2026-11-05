@@ -20,7 +20,7 @@ Node's per-route budgets apply, one window per route per minute: capabilities 12
 - `pp_api::printer_host` owns the HTTP mapping, path validation and budgets. `pp-core` implements `PrinterHostPort` over the two, so `pp-core` keeps no `pp-drivers` edge.
 - Authentication and loopback admission are the admin routes' gate, as for `/api/v1/integrations/{id}/status`.
 
-Every route is read-only on the printer and sends only GETs. It never uploads, starts a print, deletes or changes Checkoff. A Moonraker read sends each GET once. A PrusaLink read with a password sends a bodyless `GET /api/v1/status` before each GET, to get the Digest challenge. Without a password, a files read or connection test fails before sending anything, and the cameras list sends its GET unauthenticated, with no probe. A files read also lists storage when no storage is pinned. A GET that gets a 401 with a fresh challenge is sent once more, as Node's adapter does. Nothing else is retried.
+Every route is read-only on the printer and sends only GETs. It never uploads, starts a print, deletes or changes Checkoff. A Moonraker read sends each GET once. A PrusaLink read with a password sends a bodyless `GET /api/v1/status` before each GET, to get the Digest challenge. Without a password, a files read or connection test fails before sending anything, and the cameras list sends its GET unauthenticated, with no probe. A files read also lists storage when no storage is pinned. A GET sent with a password that gets a 401 with a fresh challenge is sent once more, as Node's adapter does. Nothing else is retried.
 
 ## Not served here yet
 

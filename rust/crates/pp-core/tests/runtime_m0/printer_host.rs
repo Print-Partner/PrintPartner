@@ -1,8 +1,9 @@
-//! GRE-360: the Rust-only launcher serves the Moonraker printer-host reads
-//! (capabilities, print-file browse, cameras and the connection test) from
-//! stored settings through the gateway's driver, behind an account session.
-//! Results match the Node adapter's oracle for the same recorded traffic, and
-//! the printer sees only read-only GETs: no upload and no print start.
+//! GRE-360 and GRE-1044: the Rust-only launcher serves the Moonraker and
+//! PrusaLink printer-host reads (capabilities, print-file browse, cameras and
+//! the connection test) from stored settings through the gateway's drivers,
+//! behind an account session. Results match the Node adapters' oracles for
+//! the same recorded traffic, and the printers see only read-only GETs: no
+//! upload and no print start.
 use super::farm_reads::settings_rows;
 use super::ticket_t_4_watcher_proof::{
     production_rows, proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
@@ -17,12 +18,16 @@ const FIXTURES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../fixtures/drivers/moonraker/driver"
 );
+const PRUSALINK: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../fixtures/drivers/prusalink"
+);
 
 #[tokio::test]
-async fn ticket_t_21_rust_only_runtime_serves_moonraker_host_reads() {
+async fn ticket_t_21_ticket_t_22_rust_only_runtime_serves_host_reads() {
     let data = temporary("printer-host");
     run_in_child(
-        "printer_host::ticket_t_21_rust_only_runtime_host_reads_in_child",
+        "printer_host::ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child",
         &data,
     )
     .await;
@@ -50,7 +55,31 @@ fn recorded() -> (RoutedPrinter, Value) {
     )
 }
 
-fn seed(data: &Path, url: &str) {
+/// A recorded PrusaLink from its `routes.json` plus `/api/v1/info` and
+/// `/api/v1/status`, and the Node adapter's read results for that traffic.
+/// It answers without a Digest challenge, so the driver sends no credentials.
+fn recorded_prusalink() -> (RoutedPrinter, Value) {
+    let read = |name: &str| std::fs::read(Path::new(PRUSALINK).join(name)).unwrap();
+    let routes: Value = serde_json::from_slice(&read("driver/routes.json")).unwrap();
+    let mut routes: Vec<_> = routes["routes"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(target, name)| {
+            let body = read(&format!("driver/{}", name.as_str().unwrap()));
+            (target.clone(), 200, body)
+        })
+        .collect();
+    routes.push(("/api/v1/info".into(), 200, read("info.json")));
+    routes.push(("/api/v1/status".into(), 200, read("status-printing.json")));
+    let oracle: Value = serde_json::from_slice(&read("driver/node-oracle-reads.json")).unwrap();
+    (
+        RoutedPrinter::start(routes).unwrap(),
+        oracle["recorded"].clone(),
+    )
+}
+
+fn seed(data: &Path, url: &str, prusalink: &str) {
     seed_settings(
         data,
         &[
@@ -64,7 +93,9 @@ fn seed(data: &Path, url: &str) {
                     {"id": "down-1", "type": "moonraker",
                      "config": {"base_url": "http://127.0.0.1:9"}},
                     {"id": "prusa-1", "type": "prusalink",
-                     "config": {"base_url": "http://127.0.0.1:9"}},
+                     "config": {"base_url": prusalink, "username": "fixture-user",
+                                "password": "synthetic-fixture-password"}},
+                    {"id": "bambu-1", "type": "bambu", "config": {}},
                     {"id": "odd-1", "type": "mystery", "config": {}}
                 ]),
             ),
@@ -75,6 +106,7 @@ fn seed(data: &Path, url: &str) {
                     {"id": "p-off", "name": "Off", "integration_id": "off-1"},
                     {"id": "p-down", "name": "Down", "integration_id": "down-1"},
                     {"id": "p-prusa", "name": "MK4", "integration_id": "prusa-1"},
+                    {"id": "p-bambu", "name": "P1S", "integration_id": "bambu-1"},
                     {"id": "p-odd", "name": "Odd", "integration_id": "odd-1"},
                     {"id": "p-gone", "name": "Gone", "integration_id": "removed-1"},
                     {"id": 7, "name": "Annex K3"}
@@ -91,10 +123,11 @@ async fn call(origin: &str, cookie: Option<&str>, method: &str, path: &str) -> (
 
 #[tokio::test]
 #[ignore = "runs in an isolated subprocess with explicit environment"]
-async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
+async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
     let data = proof_data();
     let (printer, oracle) = recorded();
-    seed(&data, printer.url());
+    let (prusa, prusa_oracle) = recorded_prusalink();
+    seed(&data, printer.url(), prusa.url());
     let rows = production_rows(&data);
     let settings = settings_rows(&data);
     let (runtime, origin, desktop) = start_rust_only(&data).await;
@@ -116,11 +149,13 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
 
     let all = json!({"files": true, "cameras": true, "status": true});
     let none = json!({"files": false, "cameras": false, "status": false});
+    let unwatched = json!({"files": true, "cameras": true, "status": false});
     for (printer, expected) in [
         ("p-moon", &all),
         ("p-off", &none),
         ("p-down", &all),
-        ("p-prusa", &none),
+        ("p-prusa", &unwatched),
+        ("p-bambu", &none),
         ("p-odd", &none),
         ("p-gone", &none),
         ("7", &none),
@@ -151,7 +186,7 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
         ("p-off/files", 503, "Printer host is unavailable"),
         ("p-odd/files", 503, "Printer host is unavailable"),
         (
-            "p-prusa/files",
+            "p-bambu/files",
             501,
             "Printer host does not support file browsing",
         ),
@@ -175,8 +210,23 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
         cameras,
         (StatusCode::OK, json!({"cameras": oracle["cameras"]["ok"]}))
     );
-    let unported = get("/api/v1/printers/p-prusa/cameras".into()).await;
+    let unported = get("/api/v1/printers/p-bambu/cameras".into()).await;
     assert_eq!(unported, (StatusCode::OK, json!({"cameras": []})));
+
+    for path in ["", "SUB"] {
+        let listing = get(format!("/api/v1/printers/p-prusa/files?path={path}")).await;
+        let expected = prusa_oracle["browse"][path]["ok"].clone();
+        assert!(expected.is_object(), "{path}");
+        assert_eq!(listing, (StatusCode::OK, expected), "PrusaLink {path:?}");
+    }
+    let cameras = get("/api/v1/printers/p-prusa/cameras".into()).await;
+    assert_eq!(
+        cameras,
+        (
+            StatusCode::OK,
+            json!({"cameras": prusa_oracle["cameras"]["ok"]})
+        )
+    );
 
     let test = |id: &str| {
         let (origin, cookie, path) = (
@@ -195,7 +245,20 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
         (code, &problem["detail"]),
         (StatusCode::NOT_FOUND, &json!("Integration not found"))
     );
-    assert_eq!(test("prusa-1").await.0, StatusCode::NOT_IMPLEMENTED);
+    let (code, probe) = test("prusa-1").await;
+    assert_eq!(
+        (code, &probe["ok"]),
+        (StatusCode::OK, &json!(true)),
+        "{probe}"
+    );
+    assert!(
+        probe["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Connected ("),
+        "{probe}"
+    );
+    assert_eq!(test("bambu-1").await.0, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(
         test("odd-1").await,
         (
@@ -218,7 +281,14 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
             "{target}: {lines:?}"
         );
     }
-    for line in &lines {
+    let prusa_lines = prusa.request_lines();
+    assert!(
+        prusa_lines
+            .iter()
+            .any(|line| line.starts_with("GET /api/v1/files/usb/ ")),
+        "{prusa_lines:?}"
+    );
+    for line in lines.iter().chain(&prusa_lines) {
         assert!(line.starts_with("GET "), "the printer saw {line}");
         assert!(
             !line.contains("/print/") && !line.contains("/upload"),

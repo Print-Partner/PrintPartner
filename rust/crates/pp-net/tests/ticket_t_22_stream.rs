@@ -1,0 +1,126 @@
+//! GRE-1044: streamed replies and the 8 MiB listing limit on `HttpGuard`,
+//! against loopback servers only.
+use pp_net::outbound::{HttpGuard, IdleTimeout, MAX_BODY, MAX_LISTING_BODY, SystemResolver};
+use std::{sync::Arc, time::Duration};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+};
+
+fn guard() -> HttpGuard {
+    HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(5), MAX_BODY).unwrap()
+}
+
+/// Answers one request with `length` bytes of body, writing `sent` of them
+/// and then holding the connection open without writing more.
+async fn server(length: usize, sent: usize) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/file", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            let mut chunk = [0; 1024];
+            let n = socket.read(&mut chunk).await.unwrap();
+            head.extend_from_slice(&chunk[..n]);
+        }
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {length}\r\n\r\n"
+        );
+        socket.write_all(reply.as_bytes()).await.unwrap();
+        let body = vec![b'x'; sent];
+        for part in body.chunks(64 * 1024) {
+            if socket.write_all(part).await.is_err() {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+    url
+}
+
+#[tokio::test]
+async fn ticket_t_22_stream_reads_a_body_past_the_buffered_limit() {
+    let length = 3 * MAX_BODY;
+    let url = server(length, length).await;
+    let mut reply = guard()
+        .stream(&url, &[], Duration::from_secs(5), Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.content_length, Some(length as u64));
+    assert_eq!(
+        reply.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    let mut total = 0;
+    while let Some(chunk) = reply.body.chunk().await.unwrap() {
+        total += chunk.len();
+    }
+    assert_eq!(total, length);
+
+    let url = server(length, length).await;
+    assert!(
+        guard().get(&url, None).await.is_err(),
+        "buffered reads keep 2 MiB"
+    );
+}
+
+#[tokio::test]
+async fn ticket_t_22_stream_fails_after_the_idle_deadline() {
+    let url = server(1000, 10).await;
+    let mut reply = guard()
+        .stream(
+            &url,
+            &[],
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.body.chunk().await.unwrap().unwrap().len(), 10);
+    let stalled = reply.body.chunk().await.unwrap_err();
+    assert!(
+        stalled.downcast_ref::<IdleTimeout>().is_some(),
+        "{stalled:#}"
+    );
+}
+
+#[tokio::test]
+async fn ticket_t_22_prefix_stops_reading_at_its_limit() {
+    let url = server(4 * MAX_BODY, 4 * MAX_BODY).await;
+    let reply = guard()
+        .stream(&url, &[], Duration::from_secs(5), Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(reply.body.prefix(65_536).await.unwrap().len(), 65_536);
+}
+
+#[tokio::test]
+async fn ticket_t_22_listing_limit_allows_eight_mib_and_no_more() {
+    assert!(guard().with_body_limit(MAX_LISTING_BODY + 1).is_err());
+    assert!(guard().with_body_limit(0).is_err());
+    let listing = guard().with_body_limit(MAX_LISTING_BODY).unwrap();
+    let url = server(MAX_LISTING_BODY, MAX_LISTING_BODY).await;
+    assert_eq!(
+        listing.get(&url, None).await.unwrap().body.len(),
+        MAX_LISTING_BODY
+    );
+    let url = server(MAX_LISTING_BODY + 1, MAX_LISTING_BODY + 1).await;
+    assert!(listing.get(&url, None).await.is_err());
+}
+
+#[tokio::test]
+async fn ticket_t_22_stream_refuses_reserved_headers() {
+    let error = guard()
+        .stream(
+            "http://127.0.0.1:9/file",
+            &[("Host", "other.test")],
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.to_string(), "Reserved request header");
+}

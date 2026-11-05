@@ -1,13 +1,13 @@
-# Printer-host reads (GRE-360)
+# Printer-host reads (GRE-360, GRE-1044)
 
-With the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD` exactly `1` or `true`, the Rust-only runtime serves the Moonraker printer-host reads that Node's `routes/printers.ts` and `routes/integrations.ts` serve, at the same `/api/v1` paths:
+With the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD` exactly `1` or `true`, the Rust-only runtime serves the Moonraker and PrusaLink printer-host reads that Node's `routes/printers.ts` and `routes/integrations.ts` serve, at the same `/api/v1` paths:
 
 | Route | Answer |
 | --- | --- |
-| `GET /api/v1/printers/{id}/capabilities` | `{files, cameras, status}`. All three are `true` for a printer linked to an enabled Moonraker integration. A printer with no link, a missing or disabled integration, or a host type this runtime cannot read answers all `false`. An unknown printer answers 404 `Printer not found`. |
-| `GET /api/v1/printers/{id}/files?path=` | One directory of the Moonraker `gcodes` root as `{path, entries}`. An empty or missing `path` is the root. |
-| `GET /api/v1/printers/{id}/cameras` | `{cameras}` from `/server/webcams/list`. A host type without cameras in this runtime answers `{cameras: []}`. |
-| `POST /api/v1/integrations/{id}/test` | Node's `{ok, message}` from `/server/info`, for example `Connected (klippy: ready)`. An unknown integration answers 404 `Integration not found`. |
+| `GET /api/v1/printers/{id}/capabilities` | `{files, cameras, status}`. All three are `true` for a printer linked to an enabled Moonraker integration. An enabled PrusaLink integration has `files` and `cameras` but `status: false`, because only Moonraker has a status watcher here so far. A printer with no link, a missing or disabled integration, or a host type this runtime cannot read answers all `false`. An unknown printer answers 404 `Printer not found`. |
+| `GET /api/v1/printers/{id}/files?path=` | One directory as `{path, entries}`: of the Moonraker `gcodes` root, or of the PrusaLink pinned or first available storage. An empty or missing `path` is the root. PrusaLink listings may be up to 8 MiB, as in Node. |
+| `GET /api/v1/printers/{id}/cameras` | `{cameras}` from Moonraker's `/server/webcams/list` or PrusaLink's `/api/v1/cameras`. A host type without cameras in this runtime answers `{cameras: []}`. |
+| `POST /api/v1/integrations/{id}/test` | Node's `{ok, message}`: Moonraker's `/server/info`, for example `Connected (klippy: ready)`, or PrusaLink's `/api/v1/info` and status. An unknown integration answers 404 `Integration not found`. |
 
 The `files` and `cameras` routes return the same errors as Node: 400 for an invalid storage path, 404 for an unknown printer, 409 `Printer is not linked to a host`, 503 `Printer host is unavailable`, and 502 with the driver's message when the printer request fails. `files` answers 501 `Printer host does not support file browsing` for a host type this runtime cannot read. The connection test answers 501 for those types, and `{ok: false, message: "Unknown integration type: <type>"}` for a type Node has no adapter for. Storage that cannot answer within 500 ms gives 503 `Printer settings are unavailable`.
 
@@ -16,7 +16,7 @@ Node's per-route budgets apply, one window per route per minute: capabilities 12
 ## How it works
 
 - `pp_storage::printer_hosts::printer_link` resolves a fleet printer (`printer.fleet`, tenant `default`) to its linked integration the way Node's `printerHostCapability` does: the printer id compared as a string, a trimmed `integration_id`, and an integration that exists with `config.enabled` not `false`. `printer_hosts::integration` reads one integration for the connection test.
-- `pp_gateway::printer_host::MoonrakerReads` runs the `pp_drivers::moonraker_driver::Driver` through one `HttpGuard` with an 8 s deadline and a 2 MiB reply cap. HTTPS hosts and redirects fail as the driver documents until GRE-359.
+- `pp_gateway::printer_host::HostReads` runs `pp_drivers::moonraker_driver::Driver` or `pp_drivers::prusalink::Driver` through one `HttpGuard` with an 8 s deadline and a 2 MiB reply cap; PrusaLink listings use the same guard with Node's 8 MiB listing cap, and PrusaLink requests answer Digest challenges. HTTPS hosts and redirects fail as the drivers document until GRE-359.
 - `pp_api::printer_host` owns the HTTP mapping, path validation and budgets. `pp-core` implements `PrinterHostPort` over the two, so `pp-core` keeps no `pp-drivers` edge.
 - Authentication and loopback admission are the admin routes' gate, as for `/api/v1/integrations/{id}/status`.
 
@@ -24,16 +24,28 @@ Every route is read-only on the printer. It sends only the GETs it needs, once p
 
 ## Not served here yet
 
-- PrusaLink and Bambu reads (GRE-1044, GRE-362). Until then they read as having no capabilities.
-- `GET /printers/{id}/files/content` and `/cameras/view`, which stream past the 2 MiB guard limit and, for print files, write a snapshot.
+- PrusaLink status. The status route, farm reads and `/ws/printers` read only the Moonraker watchers, so PrusaLink printers read as Manual there.
+- Bambu reads (GRE-362). Bambu reads as having no capabilities.
+- `GET /printers/{id}/files/content` and `/cameras/view`. The PrusaLink driver can already stream both (`open_file`, `open_camera`, below); the routes, the Moonraker side and the print-file snapshot that Node writes for a Build are not built.
 - Uploads and the send queue (GRE-365). Uploading needs an explicit user send and durable effect records (GRE-354). No Rust route calls `upload_file`.
+
+## Streamed PrusaLink replies
+
+`pp_net::outbound::HttpGuard::stream` sends one checked GET and returns the reply head with an unread body. The head must arrive within a deadline, then each body chunk within an idle deadline (`IdleTimeout`). Dropping the body closes the connection. `ReplyBody::prefix` reads at most a given number of bytes. `HttpGuard::with_body_limit` raises the buffered limit up to `MAX_LISTING_BODY` (8 MiB).
+
+The PrusaLink driver uses these as Node's adapter does:
+
+- `open_file(path)` reads the file's metadata, follows its same-origin `refs.download`, and streams the download with a 120 s idle deadline. A cross-origin or missing `refs.download` fails. A metadata reply that is not 2xx comes back unread for the caller to map.
+- `open_camera(id)` streams `/api/v1/cameras/{id}/snap` for a connected camera whose stored `camera_id` equals `id`, within 30 s.
+- `object_list` reads only the first 64 KiB of the active print file, even when the printer ignores `Range`.
+- `browse` accepts listings up to 8 MiB.
 
 ## Verification
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
   --features pp-core/desktop_rebuild,pp-api/desktop_rebuild \
-  -E 'test(ticket_t_21)'
+  -E 'test(ticket_t_21) | test(ticket_t_22)'
 ```
 
-The runtime test (`pp-core` `printer_host::ticket_t_21_*`) starts the Rust-only launcher on a disposable data directory against a loopback Moonraker that replays `fixtures/drivers/moonraker/driver/routes.json`. It checks that each route answers 401 without a session, that browse, cameras and the connection test equal the Node adapter's results in `node-oracle.json`, that every request the printer saw was a GET with no upload or print path, and that Checkoff, queue, job and settings rows are unchanged.
+The runtime test (`pp-core` `printer_host::ticket_t_21_ticket_t_22_*`) starts the Rust-only launcher on a disposable data directory against a loopback Moonraker and PrusaLink that replay `fixtures/drivers/moonraker/driver/routes.json` and `fixtures/drivers/prusalink/driver/routes.json`. It checks that each route answers 401 without a session, that browse and cameras equal the Node adapters' results in `node-oracle.json` and `node-oracle-reads.json`, that the connection tests succeed, that every request the printers saw was a GET with no upload or print path, and that Checkoff, queue, job and settings rows are unchanged.

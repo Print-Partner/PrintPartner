@@ -1,15 +1,16 @@
 //! PrusaLink driver (T-22), ported from the Node adapter: HTTP Digest auth,
 //! connection test, status with the `/api/v1/job` fallback, filament used,
-//! upload, storage browse, the camera list and `object_list`. File download and
-//! camera snapshots follow with GRE-359, which streams replies above 2 MiB.
+//! upload, storage browse, the camera list, `object_list`, and streamed print
+//! file downloads and camera snapshots (GRE-1044).
 //!
 //! Every request first sends a bodyless GET `/api/v1/status` for a fresh
 //! Digest challenge, never a write. A GET answered 401 is retried once with
 //! that reply's challenge, as in Node. Unlike Node, a PUT answered 401 is not
 //! resent: the upload body goes out at most once.
-//! Until GRE-359, HTTPS is refused, redirects are not followed, and replies are
-//! bounded by the guard's 2 MiB limit (Node allows 8 MiB directory listings and
-//! reads only the first 64 KiB of a print file whose server ignores `Range`).
+//! Until GRE-359, HTTPS is refused and redirects are not followed. Buffered
+//! replies are bounded by the guard's 2 MiB limit, except directory listings,
+//! which allow 8 MiB as in Node. Downloads and snapshots stream; `object_list`
+//! reads only the first 64 KiB of a print file whose server ignores `Range`.
 use crate::digest;
 use crate::moonraker_driver::{
     Camera, CameraView, StorageEntry, StorageListing, TestResult, UploadResult, UploadSource,
@@ -17,7 +18,9 @@ use crate::moonraker_driver::{
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pp_api_types::printer_status::{PrinterHostState as State, PrinterHostStatus as Status};
-use pp_net::outbound::{HttpGuard, HttpReply, PostBody, PostError};
+use pp_net::outbound::{
+    HttpGuard, HttpReply, MAX_BODY, MAX_LISTING_BODY, PostBody, PostError, StreamReply,
+};
 use serde_json::{Map, Value};
 use std::{io::Cursor, pin::Pin, time::Duration};
 use tokio::io::AsyncRead;
@@ -28,6 +31,11 @@ const READ_DEADLINE: Duration = Duration::from_secs(8);
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(120);
 const STORAGE_DEADLINE: Duration = Duration::from_secs(10);
 const LISTING_DEADLINE: Duration = Duration::from_secs(15);
+const METADATA_DEADLINE: Duration = Duration::from_secs(15);
+/// Node aborts a print-file download after 120 s without data.
+pub const DOWNLOAD_IDLE: Duration = Duration::from_secs(120);
+/// Node allows a camera snapshot 30 s.
+const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(30);
 const ACCEPT_JSON: (&str, &str) = ("accept", "application/json");
 const INVALID_PATH: &str = "Invalid PrusaLink storage path";
 /// The print-file prefix `object_list` reads for `objects_info=`.
@@ -35,6 +43,8 @@ const OBJECTS_PREFIX: usize = 65_536;
 
 pub struct Driver {
     guard: HttpGuard,
+    /// The same guard with Node's 8 MiB directory listing limit.
+    listings: HttpGuard,
     base_url: String,
     username: String,
     password: Option<String>,
@@ -51,6 +61,9 @@ impl Driver {
         storage: Option<&str>,
     ) -> Self {
         Self {
+            listings: guard
+                .with_body_limit(MAX_LISTING_BODY)
+                .unwrap_or_else(|_| guard.clone()),
             guard,
             base_url: base_url.into(),
             username: js_trim(username).into(),
@@ -105,8 +118,6 @@ impl Driver {
         digest::authorization(&request, &challenge.params)
     }
 
-    /// One Digest-authorized request. Only a GET is retried after a 401.
-    /// Without a password the request goes out once, unauthenticated, as in Node.
     async fn send(
         &self,
         method: &str,
@@ -115,10 +126,24 @@ impl Driver {
         body: Option<PostBody>,
         deadline: Duration,
     ) -> Result<HttpReply, PostError> {
+        self.send_via(&self.guard, method, url, headers, body, deadline)
+            .await
+    }
+
+    /// One Digest-authorized request. Only a GET is retried after a 401.
+    /// Without a password the request goes out once, unauthenticated, as in Node.
+    async fn send_via(
+        &self,
+        guard: &HttpGuard,
+        method: &str,
+        url: &Url,
+        headers: &[(&str, &str)],
+        body: Option<PostBody>,
+        deadline: Duration,
+    ) -> Result<HttpReply, PostError> {
         let unsent = PostError::Unsent;
         if self.password.is_none() {
-            return self
-                .guard
+            return guard
                 .request(method, url.as_str(), headers, body, deadline)
                 .await;
         }
@@ -132,8 +157,7 @@ impl Driver {
         if let Some(value) = &authorization {
             all.push(("authorization", value));
         }
-        let reply = self
-            .guard
+        let reply = guard
             .request(method, url.as_str(), &all, body, deadline)
             .await?;
         if reply.status != 401 || method != "GET" {
@@ -145,7 +169,7 @@ impl Driver {
         let value = self.authorization(method, url, &retry).map_err(unsent)?;
         let mut all = headers.to_vec();
         all.push(("authorization", &value));
-        self.guard
+        guard
             .request(method, url.as_str(), &all, None, deadline)
             .await
     }
@@ -165,6 +189,117 @@ impl Driver {
         self.send("GET", url, headers, None, deadline)
             .await
             .map_err(|error| anyhow!("{error}"))
+    }
+
+    /// One Digest-authorized GET whose reply body streams: the head within
+    /// `deadline`, then each chunk within `idle`. A 401 with a fresh challenge
+    /// is retried once, as `send` does for buffered GETs.
+    async fn stream(
+        &self,
+        url: &Url,
+        headers: &[(&str, &str)],
+        deadline: Duration,
+        idle: Duration,
+    ) -> Result<StreamReply> {
+        if self.password.is_none() {
+            return self
+                .guard
+                .stream(url.as_str(), headers, deadline, idle)
+                .await;
+        }
+        let challenge = self
+            .challenge(url)
+            .await
+            .map_err(|error| anyhow!("{error}"))?;
+        let mut all = headers.to_vec();
+        let authorization = challenge
+            .as_ref()
+            .map(|c| self.authorization("GET", url, c))
+            .transpose()?;
+        if let Some(value) = &authorization {
+            all.push(("authorization", value));
+        }
+        let reply = self
+            .guard
+            .stream(url.as_str(), &all, deadline, idle)
+            .await?;
+        let Some(retry) = Challenge::from_parts(reply.status, reply.www_authenticate.as_deref())
+        else {
+            return Ok(reply);
+        };
+        drop(reply);
+        let value = self.authorization("GET", url, &retry)?;
+        let mut all = headers.to_vec();
+        all.push(("authorization", &value));
+        self.guard.stream(url.as_str(), &all, deadline, idle).await
+    }
+
+    /// Open one print file for download through the same-origin
+    /// `refs.download` URL its metadata advertises, as Node's `files.open`.
+    /// A metadata reply that is not 2xx comes back as is, body unread; so does
+    /// the download reply. The download fails after `DOWNLOAD_IDLE` without data.
+    pub async fn open_file(&self, path: &str) -> Result<StreamReply> {
+        let base = self.base()?.to_owned();
+        let relative = safe_storage_path(path).context("Invalid PrusaLink print-file path")?;
+        let root = self.storage_root().await?;
+        let encoded: Vec<_> = format!("{root}/{relative}")
+            .split('/')
+            .map(encode_uri_component)
+            .collect();
+        let url = self.url(&format!("/api/v1/files/{}", encoded.join("/")))?;
+        let metadata = self
+            .stream(&url, &[ACCEPT_JSON], METADATA_DEADLINE, METADATA_DEADLINE)
+            .await?;
+        if !(200..300).contains(&metadata.status) {
+            return Ok(metadata);
+        }
+        let body = metadata.body.prefix(MAX_BODY + 1).await?;
+        ensure!(body.len() <= MAX_BODY, "HTTP body unavailable or oversized");
+        let download = json(&body)?
+            .get("refs")
+            .and_then(Value::as_object)
+            .and_then(|refs| refs.get("download"))
+            .and_then(Value::as_str)
+            .map(js_trim)
+            .unwrap_or_default()
+            .to_owned();
+        ensure!(
+            !download.is_empty(),
+            "PrusaLink did not advertise a download URL"
+        );
+        let target = checked(&format!("{base}/"))?
+            .join(&download)
+            .map_err(|_| anyhow!("Invalid URL"))?;
+        ensure!(
+            target.origin() == checked(&base)?.origin(),
+            "PrusaLink advertised a cross-origin download URL"
+        );
+        self.stream(
+            &checked(target.as_str())?,
+            &[],
+            DOWNLOAD_IDLE,
+            DOWNLOAD_IDLE,
+        )
+        .await
+    }
+
+    /// Open one connected camera's `/snap` image, as Node's `cameras.open`.
+    /// The id must equal a listed `camera_id` exactly.
+    /// The reply comes back as is, body unread.
+    pub async fn open_camera(&self, camera_id: &str) -> Result<StreamReply> {
+        self.base()?;
+        // Node matches the stored id exactly, untrimmed.
+        let listed = self.camera_rows().await?.iter().any(|camera| {
+            camera.get("camera_id").and_then(Value::as_str) == Some(camera_id)
+                && camera.get("connected") != Some(&Value::Bool(false))
+        });
+        ensure!(listed, "Camera not found");
+        let url = self.url(&format!(
+            "/api/v1/cameras/{}/snap",
+            encode_uri_component(camera_id)
+        ))?;
+        self.stream(&url, &[], SNAPSHOT_DEADLINE, SNAPSHOT_DEADLINE)
+            .await
     }
 
     /// The pinned storage root, else the first storage the printer reports as
@@ -217,7 +352,17 @@ impl Driver {
         let suffix = if provider.contains('/') { "" } else { "/" };
         let encoded: Vec<_> = provider.split('/').map(encode_uri_component).collect();
         let url = self.url(&format!("/api/v1/files/{}{suffix}", encoded.join("/")))?;
-        let reply = self.fetch(&url, &[ACCEPT_JSON], LISTING_DEADLINE).await?;
+        let reply = self
+            .send_via(
+                &self.listings,
+                "GET",
+                &url,
+                &[ACCEPT_JSON],
+                None,
+                LISTING_DEADLINE,
+            )
+            .await
+            .map_err(|error| anyhow!("{error}"))?;
         ensure!(
             ok(&reply),
             "PrusaLink file listing returned HTTP {}",
@@ -274,8 +419,8 @@ impl Driver {
         })
     }
 
-    /// Connected cameras as snapshot views. A 403, 404 or 503 means none.
-    pub async fn cameras(&self) -> Result<Vec<Camera>> {
+    /// The camera list's object rows as stored. A 403, 404 or 503 means none.
+    async fn camera_rows(&self) -> Result<Vec<Map<String, Value>>> {
         let url = self.url("/api/v1/cameras")?;
         let reply = self.fetch(&url, &[ACCEPT_JSON], STORAGE_DEADLINE).await?;
         if !ok(&reply) {
@@ -285,12 +430,20 @@ impl Driver {
             bail!("PrusaLink camera list returned HTTP {}", reply.status);
         }
         let body: Value = serde_json::from_slice(&reply.body)?;
-        let rows = body
+        Ok(body
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(Value::as_object);
+            .filter_map(Value::as_object)
+            .cloned()
+            .collect())
+    }
+
+    /// Connected cameras as snapshot views.
+    pub async fn cameras(&self) -> Result<Vec<Camera>> {
+        let rows = self.camera_rows().await?;
         Ok(rows
+            .iter()
             .enumerate()
             .filter_map(|(index, camera)| {
                 let id = js_trim(camera.get("camera_id").and_then(Value::as_str)?);
@@ -354,13 +507,14 @@ impl Driver {
         };
         let range = [("range", "bytes=0-65535")];
         let reply = self
-            .fetch(&checked(&url)?, &range, LISTING_DEADLINE)
+            .stream(&checked(&url)?, &range, LISTING_DEADLINE, LISTING_DEADLINE)
             .await?;
-        if !ok(&reply) {
+        if !(200..300).contains(&reply.status) {
             return Ok(Vec::new());
         }
-        let prefix = &reply.body[..reply.body.len().min(OBJECTS_PREFIX)];
-        Ok(objects_info(&windows_1252(prefix)).unwrap_or_default())
+        // Some PrusaLink versions ignore Range, so cap the consumed prefix too.
+        let prefix = reply.body.prefix(OBJECTS_PREFIX).await?;
+        Ok(objects_info(&windows_1252(&prefix)).unwrap_or_default())
     }
 
     pub async fn test_connection(&self) -> TestResult {
@@ -639,10 +793,14 @@ struct Challenge {
 impl Challenge {
     /// A Digest challenge with a nonce from a 401 reply.
     fn from_reply(reply: &HttpReply) -> Option<Self> {
-        if reply.status != 401 {
+        Self::from_parts(reply.status, reply.www_authenticate.as_deref())
+    }
+
+    fn from_parts(status: u16, www_authenticate: Option<&str>) -> Option<Self> {
+        if status != 401 {
             return None;
         }
-        let params = digest::parse_www_authenticate(reply.www_authenticate.as_deref()?);
+        let params = digest::parse_www_authenticate(www_authenticate?);
         params
             .get("nonce")
             .is_some_and(|n| !n.is_empty())

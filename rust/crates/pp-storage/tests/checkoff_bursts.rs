@@ -347,36 +347,38 @@ fn verify_batch_counts_units_other_beds_confirm_toward_left_fill() {
 }
 
 #[test]
-fn verify_batch_refuses_undo_of_a_receipt_without_a_state() {
-    let fixture = Fixture::new();
-    let owner = fixture.open();
-    let done = batch(&owner, two_beds("old-format"));
-    assert_eq!(done["status"], 200);
-    owner.shutdown().unwrap();
-    let connection = fixture.sql();
-    let raw: String = connection
-        .query_row(
-            "SELECT value FROM app_settings WHERE key = 'printer.checkoff_bursts'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let mut receipts: Value = serde_json::from_str(&raw).unwrap();
-    receipts[0]["undo"].as_object_mut().unwrap().remove("units");
-    connection
-        .execute(
-            "UPDATE app_settings SET value=?1 WHERE key = 'printer.checkoff_bursts'",
-            [receipts.to_string()],
-        )
-        .unwrap();
-    let owner = fixture.open();
-    let rows = fixture.checkoff();
-    assert_eq!(
-        undo(&owner, &done["body"]["undo_token"]),
-        json!({ "status": 409, "body": { "detail": "This Checkoff burst predates the undo state check and cannot be undone" } })
-    );
-    assert_eq!(fixture.checkoff(), rows);
-    owner.shutdown().unwrap();
+fn verify_batch_refuses_undo_of_a_receipt_without_a_state_or_unit_list() {
+    for missing in ["state", "units"] {
+        let fixture = Fixture::new();
+        let owner = fixture.open();
+        let done = batch(&owner, two_beds("old-format"));
+        assert_eq!(done["status"], 200);
+        owner.shutdown().unwrap();
+        let connection = fixture.sql();
+        let raw: String = connection
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'printer.checkoff_bursts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut receipts: Value = serde_json::from_str(&raw).unwrap();
+        receipts[0]["undo"].as_object_mut().unwrap().remove(missing);
+        connection
+            .execute(
+                "UPDATE app_settings SET value=?1 WHERE key = 'printer.checkoff_bursts'",
+                [receipts.to_string()],
+            )
+            .unwrap();
+        let owner = fixture.open();
+        let rows = fixture.checkoff();
+        assert_eq!(
+            undo(&owner, &done["body"]["undo_token"]),
+            json!({ "status": 409, "body": { "detail": "This Checkoff burst predates the undo state check and cannot be undone" } })
+        );
+        assert_eq!(fixture.checkoff(), rows);
+        owner.shutdown().unwrap();
+    }
 }
 
 #[test]

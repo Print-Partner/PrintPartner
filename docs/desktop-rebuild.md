@@ -2919,7 +2919,9 @@ transaction on the single writer and nothing is sent to Node.
   another payload returns 409 `{ code: "idempotency_conflict" }`.
 - Edit's conflicts apply: 409 `draft_changed`, `base_changed`, `not_open` or
   `accepted_baseline_required`, 422 `domain_error`, and 404
-  `profile_not_found` or `draft_not_found`.
+  `profile_not_found` or `draft_not_found`. When another connection holds
+  the SQLite write lock past the writer's admission deadline, the route answers
+  503 `transaction_unavailable`, as edit does.
 - A decision that does not apply to the draft makes Node's service throw, so
   both routes answer 500 `Plan draft update failed`. The transaction rolls
   back every reconciliation, decision and assignment row and writes no event.

@@ -1066,6 +1066,25 @@ async fn failure_codes_map_without_private_detail() {
             Some("transaction_unavailable"),
         ),
         (
+            "wrapped locked",
+            anyhow::anyhow!("database is locked").context("Plan draft update failed"),
+            503,
+            Some("transaction_unavailable"),
+        ),
+        (
+            "wrapped deadline",
+            anyhow::anyhow!("Writer transaction admission deadline expired")
+                .context("Plan draft update failed"),
+            503,
+            Some("transaction_unavailable"),
+        ),
+        (
+            "wrapped private",
+            anyhow::anyhow!("private fixture detail").context("Plan draft update failed"),
+            500,
+            Some("internal_error"),
+        ),
+        (
             "writer full",
             anyhow::anyhow!("Writer queue full"),
             503,
@@ -2310,5 +2329,61 @@ async fn reconciliation_refuses_bad_keys_bodies_and_targets_without_writing() {
     assert_eq!(anonymous.status(), 401);
     assert_eq!(logical_database(&server.sql()), before);
     assert!(draft_events(&server).is_empty());
+    server.close().await;
+}
+
+#[tokio::test]
+async fn reconciliation_under_write_contention_is_transaction_unavailable() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let holder = server.sql();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
+    let problem = json_reply(
+        reconcile_request(
+            &server,
+            "/plans/1/drafts/2/reconciliation",
+            Some("contended"),
+        )
+        .json(&reconcile_body(DIGEST, json!([]))),
+        503,
+    )
+    .await;
+    assert_eq!(
+        problem,
+        json!({"detail":"Plan draft update is unavailable","code":"transaction_unavailable"})
+    );
+    assert!(started.elapsed() < Duration::from_secs(30));
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert!(draft_events(&server).is_empty());
+    server.close().await;
+}
+
+#[tokio::test]
+async fn reconciliation_without_a_key_is_refused_before_its_body_is_read() {
+    let server = ReadServer::start_limited(1024, "").await;
+    let oversized = vec![b'x'; 4096];
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, "/plans/1/drafts/2/reconciliation", None).body(oversized),
+            400
+        )
+        .await,
+        json!({"detail":"Request is invalid","code":"invalid_request"})
+    );
+    let mut stream = tokio::net::TcpStream::connect(server.host()).await.unwrap();
+    let head = format!(
+        "PUT /plans/1/drafts/2/reconciliation HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\n\
+         Cookie: {FIXTURE_COOKIE}\r\nIdempotency-Key:  \r\nContent-Length: 100\r\n\r\n{{",
+        server.host(),
+        server.origin
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut response = vec![0; 1024];
+    let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut response))
+        .await
+        .expect("answered before the body timeout")
+        .unwrap();
+    let response = String::from_utf8_lossy(&response[..read]);
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
     server.close().await;
 }

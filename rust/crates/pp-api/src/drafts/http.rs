@@ -131,6 +131,13 @@ async fn guard(
         return failure(StatusCode::UNAUTHORIZED, "Authentication required");
     };
     request.extensions_mut().insert(presented);
+    // A reconciliation without a usable key is refused before its body is read.
+    if request.method() == Method::PUT
+        && request.uri().path().ends_with("/reconciliation")
+        && idempotency_key(request.headers()).is_none()
+    {
+        return invalid_request();
+    }
     let limit = match *request.method() {
         Method::PATCH | Method::PUT => config.body_limit,
         _ => config.body_limit.min(READ_BODY_LIMIT),
@@ -583,6 +590,17 @@ fn edit_target(path: &str) -> Option<(PositiveId, PositiveId)> {
     write_target(path, "parts")
 }
 
+/// Node's `idempotencyKey`: the `Idempotency-Key` header trimmed, 1 to 160
+/// characters. A header value is visible ASCII, spaces and tabs, so trimming
+/// those two matches JavaScript's `trim`.
+fn idempotency_key(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim_matches([' ', '\t']))
+        .filter(|key| (1..=160).contains(&key.len()))
+}
+
 fn reconcile_target(path: &str) -> Option<(PositiveId, PositiveId)> {
     write_target(path, "reconciliation")
 }
@@ -645,12 +663,7 @@ async fn reconcile(
     let Some((profile, draft_id)) = reconcile_target(uri.path()) else {
         return invalid_request();
     };
-    let Some(key) = headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.trim_matches([' ', '\t']))
-        .filter(|key| (1..=160).contains(&key.len()))
-    else {
+    let Some(key) = idempotency_key(&headers) else {
         return invalid_request();
     };
     let request = match crate::problem::parse_body::<ReconciliationRequest>(&body) {
@@ -787,7 +800,22 @@ pub(crate) fn storage_failure_with(error: &anyhow::Error, detail: &str) -> Respo
             AdmissionFailure::OutcomeUnknown => "outcome_unknown",
         });
     }
-    match error.to_string().as_str() {
+    // Clients may wrap a storage error with their own detail; classify by the
+    // first message in the chain that names a known condition.
+    let known = error.chain().map(ToString::to_string).find(|message| {
+        matches!(
+            message.as_str(),
+            "Authentication required"
+                | "Cancelled before admission"
+                | "Writer queue full"
+                | "Storage stopped"
+                | "Storage stopped without read result"
+                | "Writer admission poisoned"
+                | "Writer transaction admission deadline expired"
+                | "database is locked"
+        )
+    });
+    match known.as_deref().unwrap_or_default() {
         "Authentication required" => failure(StatusCode::UNAUTHORIZED, "Authentication required"),
         "Cancelled before admission" => unavailable("request_cancelled"),
         "Writer queue full" => unavailable("writer_queue_full"),

@@ -5,7 +5,8 @@ printer Checkoff results, the unmatched prints and the send queue (GRE-1125).
 They are part of the replacement Rust API, which mounts only with the
 default-off `desktop_rebuild` feature compiled and `PP_DESKTOP_REBUILD` set to
 `1` or `true`. With the flag off the routes answer 404. The live printer
-stream, `GET /ws/printers`, is GRE-1014 and is not part of these routes.
+stream, `GET /ws/printers`, is GRE-1014 ([Printer stream](printer-stream.md))
+and sends the same projection.
 
 | Route | Body | Generated client |
 | --- | --- | --- |

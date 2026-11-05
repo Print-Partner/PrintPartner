@@ -294,6 +294,66 @@ pub struct SendQueue {
     pub items: Vec<QueuedSend>,
 }
 
+/// GRE-1002's printer vocabulary, as `/ws/printers` sends it. A printer no
+/// watcher reads (not set up, manual, awaiting status) is `unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamState {
+    Idle,
+    Printing,
+    Paused,
+    Complete,
+    Error,
+    Offline,
+    Unknown,
+}
+
+/// A loaded filament slot on the stream. Unknown fields are absent.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StreamFilament {
+    pub slot: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// One printer on `GET /ws/printers` (GRE-1014). Unknown fields are absent,
+/// never guessed, and no field carries a host address.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StreamPrinter {
+    pub id: String,
+    pub name: String,
+    pub state: StreamState,
+    /// The farm reads' execution, bed-clear and display facts.
+    pub display: PrinterStateView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<PrinterReason>,
+    /// The watching Checkoff result for the file the printer is running.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_percent: Option<u8>,
+    /// Absent while the bed state is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bed_needs_clearing: Option<bool>,
+    pub filaments: Vec<StreamFilament>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_heard_at: Option<String>,
+}
+
+impl StreamPrinter {
+    /// Equal apart from `last_heard_at`, which moves on every poll and is
+    /// not a transition.
+    pub fn same_state(&self, other: &Self) -> bool {
+        let heard = |printer: &Self| Self {
+            last_heard_at: None,
+            ..printer.clone()
+        };
+        heard(self) == heard(other)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct StoredPrinter {
     id: String,
@@ -383,6 +443,38 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
     Ok(farm)
 }
 
+/// The `default` tenant's farm settings without a caller credential, for the
+/// in-process `/ws/printers` producer. Each setting is one reader snapshot.
+pub fn read_settings(client: &crate::SettingsClient, wait: Duration) -> Result<Farm> {
+    let reader = client.reader(wait)?;
+    let list = |key: &str| -> Result<Vec<Value>> {
+        match reader.snapshot("default", key)? {
+            crate::SettingSnapshot::Missing => Ok(Vec::new()),
+            crate::SettingSnapshot::Stored { value } => {
+                ensure!(value.len() as i64 <= MAX_SETTING_BYTES, TooLarge);
+                Ok(json_list(Some(value)))
+            }
+        }
+    };
+    Ok(Farm::parse(
+        list("printer.fleet")?,
+        list("integrations")?,
+        list("printer.checkoff_links")?,
+        list("printer.unattributed_prints")?,
+        list("printer.send_queue")?,
+    ))
+}
+
+/// A JSON array, or empty when missing or unparseable, as Node reads it.
+fn json_list(raw: Option<String>) -> Vec<Value> {
+    raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| match value {
+            Value::Array(items) => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// A stored JSON array, or empty when missing or unparseable, as Node reads it.
 fn setting_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
     let row: Option<(i64, Option<String>)> = tx
@@ -399,13 +491,7 @@ fn setting_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Val
     if length > MAX_SETTING_BYTES {
         bail!(TooLarge);
     }
-    Ok(value
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|value| match value {
-            Value::Array(items) => Some(items),
-            _ => None,
-        })
-        .unwrap_or_default())
+    Ok(json_list(value))
 }
 
 fn text(value: &Value, key: &str) -> Option<String> {
@@ -565,8 +651,78 @@ impl Farm {
         &self,
         observe: impl Fn(&PrinterIntegration) -> Observation,
     ) -> FarmPrinterList {
-        let printers = self
-            .printers
+        FarmPrinterList {
+            printers: self
+                .project(observe)
+                .into_iter()
+                .map(|(printer, _)| printer)
+                .collect(),
+        }
+    }
+
+    /// Each configured printer as `/ws/printers` sends it.
+    pub fn stream_printers(
+        &self,
+        observe: impl Fn(&PrinterIntegration) -> Observation,
+    ) -> Vec<StreamPrinter> {
+        self.project(observe)
+            .into_iter()
+            .map(|(printer, host)| {
+                let (state, reported) = match host {
+                    Some((state, reported)) => (state, reported),
+                    None => (HostState::Unknown, None),
+                };
+                let running = matches!(state, HostState::Printing | HostState::Paused);
+                let result_id = self
+                    .results
+                    .iter()
+                    .find(|result| {
+                        running
+                            && result.printer_id == printer.id
+                            && result.state == CheckoffResultState::Watching
+                            && reported.as_deref().map(normalized_filename)
+                                == Some(normalized_filename(&result.filename))
+                    })
+                    .map(|result| result.id.clone());
+                StreamPrinter {
+                    state: match state {
+                        HostState::Idle => StreamState::Idle,
+                        HostState::Printing => StreamState::Printing,
+                        HostState::Paused => StreamState::Paused,
+                        HostState::Complete => StreamState::Complete,
+                        HostState::Error => StreamState::Error,
+                        HostState::Offline => StreamState::Offline,
+                        HostState::Unknown => StreamState::Unknown,
+                    },
+                    display: printer.state,
+                    reason: printer.reason,
+                    result_id,
+                    progress_percent: printer.progress_percent,
+                    bed_needs_clearing: match printer.state.bed_clear() {
+                        BedClearState::Clear => Some(false),
+                        BedClearState::NeedsClearing => Some(true),
+                        BedClearState::Unknown => None,
+                    },
+                    filaments: printer
+                        .loaded_filaments
+                        .into_iter()
+                        .map(|slot| StreamFilament {
+                            slot: slot.slot,
+                            color_id: slot.filament_color_id,
+                            label: Some(slot.label).filter(|label| !label.is_empty()),
+                        })
+                        .collect(),
+                    last_heard_at: printer.last_heard_at,
+                    id: printer.id,
+                    name: printer.name,
+                }
+            })
+            .collect()
+    }
+
+    /// Each printer with the host state and reported file it was observed in.
+    fn project(&self, observe: impl Fn(&PrinterIntegration) -> Observation) -> Vec<Projected> {
+        self.printers
             .iter()
             .map(|printer| {
                 let integration = printer.integration_id.as_ref().and_then(|id| {
@@ -610,7 +766,7 @@ impl Farm {
                     execution,
                     PrinterExecutionState::Printing | PrinterExecutionState::Paused
                 );
-                FarmPrinter {
+                let farm_printer = FarmPrinter {
                     id: printer.id.clone(),
                     name: printer.name.clone(),
                     model: printer.model.clone(),
@@ -623,10 +779,11 @@ impl Farm {
                     last_heard_at,
                     progress_percent: progress_percent.filter(|_| active),
                     loaded_filaments: printer.loaded_filaments.clone(),
-                }
+                };
+                let host = host.map(|host| (host.state, host.filename.map(str::to_owned)));
+                (farm_printer, host)
             })
-            .collect();
-        FarmPrinterList { printers }
+            .collect()
     }
 
     /// Only a verified result (an operator confirmation) makes a bed clear,
@@ -690,7 +847,11 @@ impl Farm {
     }
 }
 
+/// A farm printer with the host state and reported file it was observed in.
+type Projected = (FarmPrinter, Option<(HostState, Option<String>)>);
+
 /// One printer's observed host state, for [`Farm::bed_clear`].
+#[derive(Clone, Copy)]
 struct Host<'a> {
     state: HostState,
     filename: Option<&'a str>,

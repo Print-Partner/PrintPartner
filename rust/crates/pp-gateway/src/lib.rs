@@ -217,6 +217,22 @@ impl MoonrakerStatus {
     pub fn observations(&self) -> Option<PrinterObservations> {
         Some(self.0.upgrade()?.observations.clone())
     }
+    /// Runs `observer` on the watchers' task set, so gateway shutdown cancels
+    /// the token it gets and joins it. `false` once the gateway is gone.
+    pub fn spawn_observer<F>(
+        &self,
+        observer: impl FnOnce(PrinterObservations, CancellationToken) -> F,
+    ) -> bool
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let Some(state) = self.0.upgrade() else {
+            return false;
+        };
+        let observing = observer(state.observations.clone(), state.watcher_cancelled.clone());
+        state.watcher_tasks.spawn(observing);
+        true
+    }
     /// The cached status, after one shared snapshot refresh when the id is
     /// not known yet. Never polls the printer on demand.
     pub async fn lookup(&self, id: &str) -> StatusLookup {

@@ -126,6 +126,11 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   execution and bed-clear facts, last-heard time and distinct not-set-up,
   manual and unreachable reasons. They write nothing. See
   [Farm reads](farm-reads.md).
+- Printer stream (GRE-1014): `GET /ws/printers` sends a snapshot of every
+  configured printer, then each watcher transition in order with a strictly
+  increasing sequence, heartbeats every 15 seconds, and resume by sequence.
+  It writes nothing and never polls a printer. See
+  [Printer stream](printer-stream.md).
 
   ```sh
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \

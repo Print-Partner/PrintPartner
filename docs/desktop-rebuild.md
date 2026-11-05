@@ -100,6 +100,33 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
   session, then the gateway ends the desktop session and stops the runtime as
   it does today.
+- Moonraker status (GRE-335, GRE-449): the gateway's status watchers poll the
+  Moonraker hosts in the stored `integrations` setting (tenant `default`).
+  `pp_storage::printer_hosts` projects that setting the way Node's private
+  `/__desktop/moonraker-hosts` route does; both replay
+  `fixtures/drivers/moonraker/host-snapshot-parity.json`. The gateway rereads
+  the setting every second, so a changed, disabled or removed host replaces or
+  cancels its one poller. A malformed setting stops every poller and the route
+  answers 503 `Printer monitoring unavailable`.
+  `GET`/`HEAD /api/v1/integrations/{id}/status` is the `pp-api`
+  `printer_status` route. It authenticates like every Rust route, then answers
+  the cached `PrinterHostStatus`; it never polls a printer on demand. A
+  non-Moonraker id answers 404 `Integration not found`; nothing goes to Node.
+  An HTTPS host reports `offline` with `HTTPS printer monitoring is not
+  available yet` until GRE-359, and a host that redirects reports `offline`
+  and stops polling. Hiding the window keeps polling; `suspend_monitoring`
+  (sleep) stops every poller and `resume_monitoring` starts them again.
+  Monitoring only reads: no Checkoff, queue or job writes and no sends.
+  `Gateway::printer_observations()` is the read-only in-process port for later
+  consumers such as farm reads and the filament writer; a host leaves it when
+  its poller stops. As in Node, polling does not check the `farm` Module.
+
+  ```sh
+  cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
+    --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+    -E 'test(ticket_t_4_watcher_proof)'
+  ```
+
 - The gateway listener is loopback only and passes the peer address to the
   Rust routes as `ConnectInfo`; they refuse a non-loopback peer. LAN sharing is
   not part of this mode.

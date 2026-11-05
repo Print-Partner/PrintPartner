@@ -22,3 +22,6 @@ url = "=2.5.8"
 hex.workspace = true
 md5 = { package = "md-5", version = "=0.10.6" }
 rand.workspace = true
+
+[dev-dependencies]
+pp-testkit = { path = "../pp-testkit" }

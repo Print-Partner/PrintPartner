@@ -70,6 +70,17 @@ fn with_header(
     request
 }
 
+struct NoHosts;
+impl MoonrakerHosts for NoHosts {
+    fn read(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<MoonrakerHost>, HostReadError>> + Send>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
 fn stub() -> axum::Router {
     axum::Router::new()
         .route(
@@ -280,8 +291,14 @@ async fn slice0_mount_rust_only_runtime_reports_rust_status() {
     let root = Scratch::new("pp-slice0-mount-");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let mut gateway =
-        Gateway::start_rust_only(listener, root.to_path_buf(), stub(), receiver).unwrap();
+    let mut gateway = Gateway::start_rust_only(
+        listener,
+        root.to_path_buf(),
+        |_| stub(),
+        receiver,
+        Arc::new(NoHosts),
+    )
+    .unwrap();
     let cookie = gateway.test_session().await;
     let runtime = || async {
         let (code, body) = text(

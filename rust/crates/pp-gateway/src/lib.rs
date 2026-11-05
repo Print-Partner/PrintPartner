@@ -8,6 +8,9 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use pp_compat::CompatHandle;
+pub use pp_drivers::moonraker::{
+    Host as MoonrakerHost, PrinterHostState, PrinterHostStatus, PrinterObservations,
+};
 use pp_drivers::moonraker::{Host, Route, Watchers};
 use pp_net::target;
 use serde::{Deserialize, Serialize};
@@ -172,8 +175,73 @@ enum EffectClass {
     ExternalEffect,
 }
 
+/// Why a Rust-only host read produced no snapshot.
+#[derive(Debug, PartialEq)]
+pub enum HostReadError {
+    /// Storage was busy or stopping: valid pollers survive the grace period.
+    Unavailable,
+    /// The stored integrations setting is malformed: fail closed now.
+    Invalid,
+}
+
+/// The Moonraker hosts a runtime with no Node child polls. `pp-core` reads
+/// them from storage, so the gateway never depends on `pp-storage`. The
+/// rows follow Node's `/__desktop/moonraker-hosts` projection.
+pub trait MoonrakerHosts: Send + Sync + 'static {
+    fn read(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<MoonrakerHost>, HostReadError>> + Send>,
+    >;
+}
+
+/// What the watchers know about one integration id.
+#[derive(Debug, PartialEq)]
+pub enum StatusLookup {
+    Status(PrinterHostStatus),
+    /// Not a Moonraker id in the last valid snapshot.
+    NotWatched,
+    /// A Moonraker id with no current status: no valid snapshot, or its
+    /// poller is stopped (sleep, shutdown, malformed settings).
+    Unavailable,
+}
+
+/// The status lookup a Rust-only runtime's authenticated product route uses.
+/// It holds the gateway weakly, so the product router inside the gateway
+/// does not keep the gateway alive.
+#[derive(Clone)]
+pub struct MoonrakerStatus(std::sync::Weak<GatewayState>);
+impl MoonrakerStatus {
+    /// The cached status, after one shared snapshot refresh when the id is
+    /// not known yet. Never polls the printer on demand.
+    pub async fn lookup(&self, id: &str) -> StatusLookup {
+        let Some(state) = self.0.upgrade() else {
+            return StatusLookup::Unavailable;
+        };
+        let mut route = state.watchers.lock().await.route(id);
+        if route_needs_snapshot(&route) && !state.watcher_cancelled.is_cancelled() {
+            let refreshing = state.clone();
+            let _ = state
+                .watcher_tasks
+                .spawn(async move { refresh_watchers(&refreshing).await })
+                .await;
+            route = state.watchers.lock().await.route(id);
+        }
+        match route {
+            Route::Cached(status) => StatusLookup::Status(status),
+            Route::Node => StatusLookup::NotWatched,
+            Route::NoSnapshot | Route::Unavailable => StatusLookup::Unavailable,
+        }
+    }
+}
+
+type ProductRoutes = Box<dyn FnOnce(MoonrakerStatus) -> axum::Router>;
+
 struct GatewayState {
     watchers: tokio::sync::Mutex<Watchers>,
+    /// Set only for a Rust-only runtime: the snapshot source in place of Node.
+    hosts: Option<Arc<dyn MoonrakerHosts>>,
+    observations: PrinterObservations,
     snapshot_refresh: tokio::sync::Mutex<()>,
     snapshot_revision: AtomicU64,
     /// One in-flight Node snapshot. Concurrent status misses join it instead of
@@ -249,24 +317,28 @@ impl Gateway {
         owners: &OperationOwners,
         product: Option<axum::Router>,
     ) -> Result<Self> {
+        let product = product.map(|routes| Box::new(move |_| routes) as ProductRoutes);
         Self::start_inner(listener, assets, compat, owners, product, None)
     }
 
     /// Start a runtime with no Node child: `product` answers admitted
     /// requests, nothing is forwarded, and `/__runtime` reports `status`.
+    /// Moonraker watchers poll the hosts `hosts` reads; `product` receives
+    /// the status lookup so an authenticated route can answer from them.
     pub fn start_rust_only(
         listener: TcpListener,
         assets: PathBuf,
-        product: axum::Router,
+        product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<RustStatus>,
+        hosts: Arc<dyn MoonrakerHosts>,
     ) -> Result<Self> {
         Self::start_inner(
             listener,
             assets,
             CompatHandle::unpublished(),
             &OperationOwners::node_only(),
-            Some(product),
-            Some(status),
+            Some(Box::new(product)),
+            Some((status, hosts)),
         )
     }
 
@@ -275,9 +347,13 @@ impl Gateway {
         assets: PathBuf,
         compat: CompatHandle,
         owners: &OperationOwners,
-        product: Option<axum::Router>,
-        rust_status: Option<tokio::sync::watch::Receiver<RustStatus>>,
+        product: Option<ProductRoutes>,
+        rust_only: Option<(
+            tokio::sync::watch::Receiver<RustStatus>,
+            Arc<dyn MoonrakerHosts>,
+        )>,
     ) -> Result<Self> {
+        let (rust_status, hosts) = rust_only.unzip();
         let address = listener.local_addr()?;
         anyhow::ensure!(
             address.ip().is_loopback(),
@@ -323,8 +399,15 @@ impl Gateway {
         let launch = Some(LaunchTarget(format!(
             "{origin}/__desktop/bootstrap?token={token}"
         )));
+        let watchers = match hosts {
+            Some(_) => Watchers::new()?.without_node_fallback(),
+            None => Watchers::new()?,
+        };
+        let observations = watchers.observations();
         let state = Arc::new(GatewayState {
-            watchers: tokio::sync::Mutex::new(Watchers::new()?),
+            watchers: tokio::sync::Mutex::new(watchers),
+            hosts,
+            observations,
             snapshot_refresh: tokio::sync::Mutex::new(()),
             snapshot_revision: AtomicU64::new(0),
             snapshot_flight: SnapshotFlight::new(),
@@ -344,10 +427,17 @@ impl Gateway {
             relays: TaskTracker::new(),
             cancelled: CancellationToken::new(),
             shutdown_requested: CancellationToken::new(),
-            product: Mutex::new(product),
+            product: Mutex::new(None),
             rust_status,
             compat_forwards: AtomicU64::new(0),
         });
+        if let Some(product) = product {
+            let routes = product(MoonrakerStatus(Arc::downgrade(&state)));
+            *state
+                .product
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(routes);
+        }
         let monitoring = state.clone();
         state.watcher_tasks.spawn(async move {
             let mut suspension = monitoring.monitoring_suspended.subscribe();
@@ -428,6 +518,11 @@ impl Gateway {
     }
     pub fn monitoring_control(&self) -> MonitoringControl {
         MonitoringControl(self.state.clone())
+    }
+    /// Read-only port over the Moonraker statuses the watchers observe, for
+    /// in-process consumers. It cannot send, retry or change Checkoff.
+    pub fn printer_observations(&self) -> PrinterObservations {
+        self.state.observations.clone()
     }
     pub fn bootstrap_minter(&self) -> BootstrapMinter {
         BootstrapMinter {
@@ -1027,20 +1122,7 @@ async fn handle(
             }
         }
         if let Route::Cached(status) = route {
-            let mut response = axum::Json(status).into_response();
-            response
-                .headers_mut()
-                .insert("cache-control", HeaderValue::from_static("no-store"));
-            if request.method() == "HEAD" {
-                // Keep GET's representation length even though HEAD has no body.
-                if let Some(length) = http_body::Body::size_hint(response.body()).exact() {
-                    response
-                        .headers_mut()
-                        .insert("content-length", HeaderValue::from(length));
-                }
-                *response.body_mut() = Body::empty();
-            }
-            return response;
+            return status_response(status, request.method());
         }
     }
     let integrations_changed = matches!(request.method().as_str(), "POST" | "PATCH" | "DELETE")
@@ -1153,6 +1235,22 @@ fn moonraker_status_id(path: &str) -> Option<String> {
         return None;
     }
     pp_net::target::decode_segment(id).ok()
+}
+fn status_response(status: PrinterHostStatus, method: &axum::http::Method) -> Response<Body> {
+    let mut response = axum::Json(status).into_response();
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    if method == "HEAD" {
+        // Keep GET's representation length even though HEAD has no body.
+        if let Some(length) = http_body::Body::size_hint(response.body()).exact() {
+            response
+                .headers_mut()
+                .insert("content-length", HeaderValue::from(length));
+        }
+        *response.body_mut() = Body::empty();
+    }
+    response
 }
 fn route_needs_snapshot(route: &Route) -> bool {
     matches!(route, Route::NoSnapshot | Route::Unavailable)
@@ -1311,6 +1409,12 @@ async fn apply_snapshot(state: &GatewayState, cause: SnapshotCause) -> bool {
     let snapshot = tokio::select! { biased;
         _ = state.watcher_cancelled.cancelled() => return false,
         snapshot = tokio::time::timeout_at(read_deadline, async {
+            if let Some(hosts) = &state.hosts {
+                return hosts.read().await.map_err(|error| match error {
+                    HostReadError::Unavailable => SnapshotError::Unavailable,
+                    HostReadError::Invalid => SnapshotError::Invalid,
+                });
+            }
             let endpoint = state.compat.endpoint().ok_or(SnapshotError::Unavailable)?;
             let request = Request::builder()
                 .uri("/__desktop/moonraker-hosts")
@@ -1863,6 +1967,9 @@ impl http_body::Body for TrackedBody {
 
 #[cfg(test)]
 mod slice0_mount;
+
+#[cfg(test)]
+mod ticket_t_4_watcher_proof;
 
 #[cfg(test)]
 mod ticket_t_2;

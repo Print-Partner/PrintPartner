@@ -37,6 +37,9 @@ pub use preferences::{BrowserPreference, BrowserPreferences, PrinterPollInterval
 pub mod layout;
 
 #[cfg(feature = "desktop_rebuild")]
+pub mod printer_status;
+
+#[cfg(feature = "desktop_rebuild")]
 pub mod profile_interpreter;
 
 #[cfg(feature = "desktop_rebuild")]
@@ -514,6 +517,8 @@ async fn start_rust_resources(
     let (listener, origin_change) =
         bind_origin(writer.lease().context("Storage lease unavailable")?).await?;
     let origin = format!("http://{}", listener.local_addr()?);
+    let hosts = Arc::new(printer_status::StoredMoonrakerHosts::new(writer.client()));
+    let status_routes = printer_status::StatusRoutes::new(&writer, &origin)?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let product = rebuild_api::product_router(
         desktop_rebuild,
@@ -523,7 +528,13 @@ async fn start_rust_resources(
     )?
     .context("Rust product routes need the rebuild setting")?;
     let (status, receiver) = tokio::sync::watch::channel(RustStatus::Starting);
-    let gateway = Gateway::start_rust_only(listener, assets, product, receiver)?;
+    let gateway = Gateway::start_rust_only(
+        listener,
+        assets,
+        move |status| product.merge(status_routes.mount(status)),
+        receiver,
+        hosts,
+    )?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);
     Ok(Resources {

@@ -28,5 +28,6 @@ tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 libc.workspace = true
 
 [dev-dependencies]
+pp-testkit = { path = "../pp-testkit" }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "=3.27.0"

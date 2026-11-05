@@ -28,6 +28,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `builds` | `build_router(BuildHttpConfig, BuildGraphClient)`: Plan list/detail/create/delete, layers, kit manifest. |
 | `drafts` | `draft_router(DraftHttpConfig, WorkingDraftClient, RebuildAuthClient)` and `admit_draft_routes`. |
 | `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. |
+| `printer_status` | `printer_status_router(AdminHttpConfig, ReadClient, Arc<dyn PrinterStatusPort>)`: `GET`/`HEAD /api/v1/integrations/{id}/status` from the watchers' cached statuses after authentication; 404 for a non-Moonraker id, 503 while monitoring is unavailable. The caller supplies the port. |
 | `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. `AcceptedHttpConfig::with_stock(Arc<dyn InventoryReader>)` adds `/plans/{id}/filament-shortfalls`; the caller supplies the Spoolman reader. |
 | `history` | `history_router(AcceptedHttpConfig, HistoryClient)`: paged Build history at `/plans/{id}/history` and `/api/v2/plans/{id}/history`. |
 | `planning` | `planning_router(AcceptedHttpConfig, PlanningClient)`: `/plans/{id}/build-planning` and `/plans/{id}/decisions` at `/`, `/api/v1` and `/api/v2`, with Node's data ([Build planning and decisions](../../../docs/build-planning.md)). |

@@ -401,7 +401,7 @@ pub fn product_router(
 }
 
 /// API keys route to the default tenant under the single-account policy.
-const DESKTOP_TENANT: &str = "default";
+pub(crate) const DESKTOP_TENANT: &str = "default";
 
 #[cfg(test)]
 mod tests {

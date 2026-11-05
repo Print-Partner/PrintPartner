@@ -166,7 +166,7 @@ pub(super) struct Command {
     pub(super) observations: Observations,
     pub(super) cancelled: Arc<AtomicBool>,
 }
-fn copy_credential(credential: &Credential) -> Credential {
+pub(super) fn copy_credential(credential: &Credential) -> Credential {
     match credential {
         Credential::Session(secret) => {
             Credential::Session(auth::Secret::new(secret.expose().to_owned()))
@@ -277,7 +277,7 @@ fn normalized(value: &str) -> String {
         .trim_matches('/')
         .into()
 }
-fn choices(
+pub(super) fn choices(
     parts: &mut [crate::manifest_text::DraftPart],
     changes: &[PlanChoice],
     budget: &mut observation::PreparationBudget<'_>,
@@ -615,7 +615,7 @@ fn transact(
     Ok(TransactionResult::Saved(receipt))
 }
 
-fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
+pub(super) fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
     let mut inputs: Vec<_> = inputs
         .iter()
         .map(|input| model::project(input, model::INPUT_FIELDS))
@@ -624,7 +624,7 @@ fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
     inputs
 }
 
-fn load(
+pub(super) fn load(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,

@@ -2633,3 +2633,223 @@ async fn ticket_t_61_publication_accept_selects_an_unselected_draft_and_publishe
     assert_eq!(draft_events(&server), events);
     server.close().await;
 }
+
+fn autosave_body(draft: Value, value: u32) -> Value {
+    json!({
+        "expected_base": {"revision_id": 1, "plan_version": 1},
+        "expected_draft": draft,
+        "remap_checkoff_links": false,
+        "decisions": [{
+            "kind": "set_quantity_override",
+            "target": {"part_key": "bracket.stl", "relative_path": "bracket.stl", "source_layer": "base:Fixture Source"},
+            "value": value,
+        }],
+    })
+}
+
+fn observed(digest: &Value) -> Value {
+    json!({"draft_id": 2, "state": "open", "lifecycle_version": 0, "snapshot_digest": digest, "base": {"revision_id": 1, "plan_version": 1}})
+}
+
+/// Accepted Plan rows autosave must never write.
+fn accepted_rows(server: &ReadServer) -> Vec<(String, Vec<String>)> {
+    logical_database(&server.sql())
+        .into_iter()
+        .filter(|(table, _)| {
+            table == "build_profiles"
+                || table.starts_with("plan_revision")
+                || table == "plan_apply_requests"
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn ticket_t_61_autosave_writes_the_open_draft_once_per_key_and_never_publishes() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    let accepted = accepted_rows(&server);
+    let path = "/api/v2/plans/1/drafts/save";
+    let saved = json_reply(
+        keyed(&server, path, Some(" s-1 ")).json(&autosave_body(observed(&json!(DIGEST)), 4)),
+        200,
+    )
+    .await;
+    let receipt = &saved["receipt"];
+    assert_eq!(
+        (&receipt["profile_id"], &receipt["draft_id"]),
+        (&json!(1), &json!(2))
+    );
+    let workspace = &saved["workspace"];
+    assert_eq!(workspace["draft"]["draft_id"], 2);
+    assert_eq!(workspace["draft"]["state"], "open");
+    assert_eq!(workspace["draft"]["lifecycle_version"], 0);
+    assert_eq!(
+        workspace["draft"]["snapshot_digest"],
+        receipt["snapshot_digest"]
+    );
+    assert_eq!(workspace["reconciliation"]["kind"], "ready");
+    let bracket = workspace["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["part_key"] == "bracket.stl")
+        .unwrap();
+    assert_eq!(
+        (
+            &bracket["quantity_override"],
+            &bracket["quantity_effective"]
+        ),
+        (&json!(4), &json!(4))
+    );
+    assert_eq!(
+        json_reply(server.request(Method::GET, "/plans/1/drafts/2"), 200).await,
+        *workspace
+    );
+    assert_eq!(accepted_rows(&server), accepted);
+    let event = (
+        "plan.draft_changed".to_owned(),
+        "1".to_owned(),
+        "{\"draft_id\":2}".to_owned(),
+    );
+    let events = vec![event.clone(), event];
+    assert_eq!(draft_events(&server), events);
+
+    let after = logical_database(&server.sql());
+    // A committed retry replays from its receipt before the stale digest.
+    assert_eq!(
+        json_reply(
+            keyed(&server, "/plans/1/drafts/save", Some("s-1"))
+                .json(&autosave_body(observed(&json!(DIGEST)), 4)),
+            200
+        )
+        .await,
+        saved
+    );
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("s-1")).json(&autosave_body(observed(&json!(DIGEST)), 5)),
+            409
+        )
+        .await,
+        json!({"code": "idempotency_conflict"})
+    );
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("s-2")).json(&autosave_body(observed(&json!(DIGEST)), 5)),
+            409
+        )
+        .await,
+        json!({"code": "draft_changed"})
+    );
+    assert_eq!(logical_database(&server.sql()), after);
+    assert_eq!(draft_events(&server), events);
+
+    // The next save observes the saved draft and supersedes its selection.
+    let next = json_reply(
+        keyed(&server, path, Some("s-3"))
+            .json(&autosave_body(observed(&receipt["snapshot_digest"]), 5)),
+        200,
+    )
+    .await;
+    assert_eq!(next["receipt"]["draft_id"], 2);
+    assert_ne!(
+        next["receipt"]["reconciliation_id"],
+        receipt["reconciliation_id"]
+    );
+    assert_eq!(accepted_rows(&server), accepted);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn ticket_t_61_autosave_creates_a_final_state_draft_when_none_is_open() {
+    let server = ReadServer::start_limited(
+        8 * 1024 * 1024,
+        "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE state='open'",
+    )
+    .await;
+    with_source_revision(&server);
+    let accepted = accepted_rows(&server);
+    let saved = json_reply(
+        keyed(&server, "/plans/1/drafts/save", Some("first")).json(&autosave_body(Value::Null, 2)),
+        200,
+    )
+    .await;
+    let draft_id = saved["receipt"]["draft_id"].clone();
+    assert_eq!(saved["workspace"]["draft"]["draft_id"], draft_id);
+    assert_eq!(saved["workspace"]["draft"]["state"], "open");
+    let bracket = saved["workspace"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["part_key"] == "bracket.stl")
+        .unwrap();
+    assert_eq!(bracket["quantity_override"], 2);
+    assert_eq!(accepted_rows(&server), accepted);
+    let before = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(
+            keyed(&server, "/plans/1/drafts/save", Some("first"))
+                .json(&autosave_body(Value::Null, 2)),
+            200
+        )
+        .await,
+        saved
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn ticket_t_61_autosave_refusals_write_nothing() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    let before = logical_database(&server.sql());
+    let body = autosave_body(observed(&json!(DIGEST)), 4);
+    let invalid = json!({"detail": "Request is invalid", "code": "invalid_request"});
+    for key in [None, Some(" "), Some(&*"k".repeat(161))] {
+        assert_eq!(
+            json_reply(keyed(&server, "/plans/1/drafts/save", key).json(&body), 400).await,
+            invalid
+        );
+    }
+    let mut stale_base = body.clone();
+    stale_base["expected_base"]["plan_version"] = json!(2);
+    stale_base["expected_draft"]["base"]["plan_version"] = json!(2);
+    let mut missing_part = body.clone();
+    missing_part["decisions"][0]["target"] = json!({"part_key": "nope.stl", "relative_path": "nope.stl", "source_layer": "base:Fixture Source"});
+    for (path, body, status, expected) in [
+        (
+            "/plans/1/drafts/save",
+            stale_base,
+            409,
+            json!({"code": "base_changed"}),
+        ),
+        (
+            "/plans/1/drafts/save",
+            autosave_body(Value::Null, 4),
+            409,
+            json!({"code": "draft_changed"}),
+        ),
+        (
+            "/plans/1/drafts/save",
+            missing_part,
+            422,
+            json!({"code": "part_not_found"}),
+        ),
+        (
+            "/plans/7/drafts/save",
+            body.clone(),
+            404,
+            json!({"detail": "Plan not found", "code": "profile_not_found"}),
+        ),
+    ] {
+        assert_eq!(
+            json_reply(keyed(&server, path, Some("refused")).json(&body), status).await,
+            expected,
+            "{path}"
+        );
+    }
+    assert_eq!(logical_database(&server.sql()), before);
+    assert!(draft_events(&server).is_empty());
+    server.close().await;
+}

@@ -25,6 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod autosave;
 pub(crate) mod diff;
 pub mod observation;
 mod preparation;
@@ -584,6 +585,12 @@ enum Operation {
         observations: Observations,
         reply: RebaseReply,
     },
+    Autosave {
+        request: pp_contracts::autosave::SavePlanChoicesRequest,
+        key: String,
+        observations: Observations,
+        reply: mpsc::Sender<Result<autosave::AutosaveOutcome>>,
+    },
 }
 enum RecomputeReply {
     Draft(mpsc::Sender<Result<RecomputeOutcome>>),
@@ -991,6 +998,26 @@ pub(super) fn write(
                     cancelled,
                 },
                 tokens,
+                admission,
+            ));
+        }
+        Operation::Autosave {
+            request,
+            key,
+            observations,
+            reply,
+        } => {
+            let _ = reply.send(autosave::execute(
+                connection,
+                autosave::Args {
+                    credential: &credential,
+                    policy,
+                    profile,
+                    request: &request,
+                    key: &key,
+                    observations: &observations,
+                    cancelled: &cancelled,
+                },
                 admission,
             ));
         }

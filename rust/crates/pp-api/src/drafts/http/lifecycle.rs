@@ -6,6 +6,8 @@ use pp_storage::{
     working_drafts::{
         RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome, RecomputeOutcome,
         RecomputeRequest, RecomputeWorkspaceOutcome,
+        autosave::{AutosaveCommand, AutosaveOutcome, SavePlanChoicesRequest},
+        save::Refusal as SaveRefusal,
     },
 };
 
@@ -19,7 +21,7 @@ pub(super) async fn recompute(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(profile) = recompute_target(uri.path()) else {
+    let Some(profile) = drafts_target(uri.path(), "recompute") else {
         return invalid_request();
     };
     let apply_manifest = serde_json::from_slice::<Value>(&body)
@@ -351,8 +353,64 @@ impl Accept {
     }
 }
 
-fn recompute_target(path: &str) -> Option<PositiveId> {
+/// The Plan of `/plans/{id}/drafts/{action}`, at the root or under `/api/v2`.
+fn drafts_target(path: &str, action: &str) -> Option<PositiveId> {
     let path = path.strip_prefix("/api/v2").unwrap_or(path);
     let rest = path.strip_prefix("/plans/")?;
-    path_id(rest.strip_suffix("/drafts/recompute")?)
+    path_id(rest.strip_suffix(action)?.strip_suffix("/drafts/")?)
+}
+
+/// Draft-only autosave (GRE-418): `POST /plans/{id}/drafts/save` with Node's
+/// `SavePlanChoicesRequest` and an `Idempotency-Key`. The choices land in the
+/// observed open draft, or a new draft when none is open, with one
+/// Required-unit reconciliation as the durable receipt. It never publishes;
+/// Node's publishing `POST /plans/:id/save` is a different operation.
+pub(super) async fn autosave(
+    Extension(app): Extension<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(profile) = drafts_target(uri.path(), "save") else {
+        return invalid_request();
+    };
+    let Some(key) = idempotency_key(&headers) else {
+        return invalid_request();
+    };
+    let request = match crate::problem::parse_body::<SavePlanChoicesRequest>(&body) {
+        Ok(request) => request,
+        Err(errors) => return invalid_body(&body, errors),
+    };
+    let Ok(command) = AutosaveCommand::new(presented.into_credential(), profile, request, key)
+    else {
+        return invalid_request();
+    };
+    let work = move |client: &WorkingDraftClient, flag, wait| client.autosave(command, flag, wait);
+    match run_write(&app, work).await {
+        Ok(AutosaveOutcome::Saved { receipt, workspace }) => json_response(
+            StatusCode::OK,
+            json!({"receipt": receipt, "workspace": workspace}),
+        ),
+        Ok(AutosaveOutcome::Refused { reason }) => present_autosave(reason),
+        Err(error) => write_failure(error, "autosave", profile, None),
+    }
+}
+
+fn present_autosave(reason: SaveRefusal) -> Response {
+    match reason {
+        SaveRefusal::NotFound => profile_missing(),
+        SaveRefusal::BuildArchived => domain_error("build_archived"),
+        SaveRefusal::AcceptedBaselineRequired => conflict("accepted_baseline_required", None),
+        SaveRefusal::BaseChanged => conflict("base_changed", None),
+        SaveRefusal::DraftChanged => conflict("draft_changed", None),
+        SaveRefusal::InputsChanged => conflict("inputs_changed", None),
+        SaveRefusal::IdempotencyConflict => conflict("idempotency_conflict", None),
+        SaveRefusal::PartNotFound => domain_error("part_not_found"),
+        SaveRefusal::PartAmbiguous => domain_error("part_ambiguous"),
+        SaveRefusal::NoLayers => domain_error("no_layers"),
+        SaveRefusal::NoStls => domain_error("no_stls"),
+        SaveRefusal::Reconciliation { outcome } => present_edit(outcome),
+        SaveRefusal::Publication { .. } => edit_internal_error(),
+    }
 }

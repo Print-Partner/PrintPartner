@@ -8,8 +8,11 @@ use pp_storage::{
     checkoff_progress::{Basis, Import, Request, Response},
     read_model::Credential,
 };
-use rusqlite::{Connection, types::ValueRef};
-use serde_json::{Map, Value, json};
+use rusqlite::Connection;
+use serde_json::{Value, json};
+
+#[path = "common/json_rows.rs"]
+mod json_rows;
 use std::{path::PathBuf, sync::atomic::AtomicBool, time::Duration};
 
 const NODE: &str = include_str!("../../../../fixtures/parity/checkoff-transactions/node.json");
@@ -83,34 +86,7 @@ impl Fixture {
     }
 
     fn read(&self) -> Value {
-        let connection = self.sql();
-        let mut rows = Map::new();
-        for (table, sql) in node()["queries"].as_object().unwrap() {
-            let mut statement = connection.prepare(sql.as_str().unwrap()).unwrap();
-            let columns: Vec<String> = statement
-                .column_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
-            let table_rows = statement
-                .query_map([], |row| {
-                    let mut object = Map::new();
-                    for (i, column) in columns.iter().enumerate() {
-                        let value = match row.get_ref(i)? {
-                            ValueRef::Null => Value::Null,
-                            ValueRef::Integer(n) => json!(n),
-                            value => json!(value.as_str().unwrap()),
-                        };
-                        object.insert(column.clone(), value);
-                    }
-                    Ok(Value::Object(object))
-                })
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-            rows.insert(table.clone(), Value::from(table_rows));
-        }
-        Value::Object(rows)
+        json_rows::query_rows(&self.sql(), node()["queries"].as_object().unwrap())
     }
 }
 

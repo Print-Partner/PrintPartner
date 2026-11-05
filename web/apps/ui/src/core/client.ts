@@ -10,10 +10,18 @@ export class CoreError extends Error {
   constructor(
     readonly status: number,
     path: string,
+    detail?: string,
   ) {
-    super(`Rust core answered ${status} for ${path}`);
+    super(`Rust core answered ${status} for ${path}${detail ? `: ${detail}` : ""}`);
     this.name = "CoreError";
   }
+}
+
+/** The `detail` of a problem+json error body, when it has one. */
+async function problemDetail(response: Response): Promise<string | undefined> {
+  const body: unknown = await response.json().catch(() => undefined);
+  if (typeof body !== "object" || body === null || !("detail" in body)) return undefined;
+  return typeof body.detail === "string" ? body.detail : undefined;
 }
 
 // One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
@@ -28,7 +36,7 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
     );
   }
   const response = await fetch(path, { ...init, credentials: "same-origin" });
-  if (!response.ok) throw new CoreError(response.status, path);
+  if (!response.ok) throw new CoreError(response.status, path, await problemDetail(response));
   return response;
 }
 

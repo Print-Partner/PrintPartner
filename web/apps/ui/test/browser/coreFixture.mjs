@@ -1,5 +1,6 @@
-// A fake Rust core for the browser checks: GET /health with every Module listed, and the
-// Builds, task feed and workflow routes over `count` generated Builds. Bodies follow the generated client schemas.
+// A fake Rust core for the browser checks: GET /health with every Module listed, the
+// Builds, task feed and workflow routes over `count` generated Builds, and two printer
+// Checkoff results waiting on Today. Bodies follow the generated client schemas.
 const MODULES = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"];
 
 function build(id) {
@@ -17,6 +18,32 @@ function build(id) {
     last_used_at: "2026-10-03T12:00:00Z",
   };
 }
+
+const checkoffResult = (id, printer, units) => ({
+  id,
+  profile_id: 1,
+  printer_id: printer,
+  integration_id: "fixture-moonraker",
+  filename: `${id}.gcode`,
+  state: "awaiting_verify",
+  host_outcome: "success",
+  created_at: "2026-10-03T12:00:00Z",
+  completed_at: "2026-10-03T13:00:00Z",
+  applied_at: null,
+  unit_count: units.length,
+  units,
+  resolved_unit_count: 0,
+  resolved_units: [],
+});
+
+const CHECKOFF = [
+  checkoffResult("fixture-plate-a", "fixture-voron", [
+    { part_id: 1, unit_index: 0, part_filename: "fixture_bracket.stl" },
+    { part_id: 1, unit_index: 1, part_filename: "fixture_bracket.stl" },
+    { part_id: 2, unit_index: 0, part_filename: null },
+  ]),
+  checkoffResult("fixture-plate-b", "fixture-trident", [{ part_id: 3, unit_index: 4, part_filename: "fixture_gear.stl" }]),
+];
 
 const nextAction = (id) => ({
   kind: "verify_prints",
@@ -103,6 +130,7 @@ export function fakeCore(count, { orders = "on" } = {}) {
     }
     if (pathname === "/api/v2/plans") return { status: 200, body: { profiles: builds } };
     if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks, unavailable: [] } };
+    if (pathname === "/api/v2/printer-checkoff") return { status: 200, body: { results: CHECKOFF } };
     const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow)?$/.exec(pathname);
     const found = match && builds[Number(match[1]) - 1];
     if (!found) return undefined;

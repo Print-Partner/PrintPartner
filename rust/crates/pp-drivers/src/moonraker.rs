@@ -351,6 +351,7 @@ impl Watchers {
                                 backoff(interval, failures)
                             }
                         };
+                        let delay = jitter(delay, rand::random());
                         tokio::select! { biased; _=stopped.cancelled()=>break, _=tokio::time::sleep(delay)=>{} }
                     }
                 }))
@@ -480,6 +481,13 @@ impl Failure {
         }
     }
 }
+/// Up to a fifth shorter, so hosts started together (after a wake or a
+/// network change) spread out instead of polling in lockstep. Never longer:
+/// the interval and the 60 s backoff cap stay upper bounds.
+fn jitter(delay: Duration, unit: f64) -> Duration {
+    delay.mul_f64(1.0 - JITTER * unit.clamp(0.0, 1.0))
+}
+const JITTER: f64 = 0.2;
 fn backoff(interval: Duration, failures: u32) -> Duration {
     interval
         .saturating_mul(1u32 << failures.min(5))
@@ -1144,5 +1152,222 @@ mod tests {
         assert_eq!(watchers.route("key"), Route::Unavailable);
         assert_eq!(watchers.route("projected"), Route::Unavailable);
         assert_eq!(watchers.route("prusa"), Route::Node);
+    }
+
+    fn live_workers(watchers: &Watchers) -> usize {
+        watchers
+            .hosts
+            .values()
+            .filter(|p| p.task.as_ref().is_some_and(|task| !task.is_finished()))
+            .count()
+    }
+    async fn frozen(printer: &RecordedPrinter) -> bool {
+        let before = printer.calls();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        printer.calls() == before
+    }
+    async fn polled(printer: &RecordedPrinter) {
+        let before = printer.calls();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while printer.calls() <= before {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("printer was not polled");
+    }
+    fn named(id: &str, url: &str, enabled: bool) -> Host {
+        Host {
+            id: id.into(),
+            enabled,
+            ..host(url.into())
+        }
+    }
+    #[tokio::test]
+    async fn ticket_t_25_one_tracked_worker_per_enabled_host() {
+        let a = RecordedPrinter::start(vec![(200, SUCCESS)]).unwrap();
+        let b = RecordedPrinter::start(vec![(200, SUCCESS)]).unwrap();
+        let c = RecordedPrinter::start(vec![(200, SUCCESS)]).unwrap();
+        let moved = RecordedPrinter::start(vec![(200, SUCCESS)]).unwrap();
+        let mut watchers = watchers_every(Duration::from_millis(20));
+        let hosts = vec![
+            named("a", a.url(), true),
+            named("b", b.url(), true),
+            named("c", c.url(), false),
+        ];
+        for _ in 0..10 {
+            watchers.replace(hosts.clone()).await.unwrap();
+        }
+        assert_eq!(live_workers(&watchers), 2, "one worker per enabled host");
+        polled(&a).await;
+        polled(&b).await;
+        assert_eq!(c.calls(), 0, "a disabled host has no worker");
+
+        // Replacing b's endpoint joins the old worker before the new one starts.
+        watchers
+            .replace(vec![
+                named("a", a.url(), true),
+                named("b", moved.url(), true),
+                named("c", c.url(), false),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(live_workers(&watchers), 2);
+        assert!(frozen(&b).await, "the replaced worker kept polling");
+        polled(&moved).await;
+
+        // Removing a cancels and joins its worker.
+        watchers
+            .replace(vec![named("b", moved.url(), true)])
+            .await
+            .unwrap();
+        assert_eq!(live_workers(&watchers), 1);
+        assert!(frozen(&a).await, "the removed worker kept polling");
+        assert_eq!(watchers.hosts.len(), 1);
+
+        // Shutdown joins the last worker.
+        watchers.stop().await;
+        assert!(watchers.hosts.is_empty());
+        assert!(frozen(&moved).await);
+        for printer in [&a, &b, &moved] {
+            only_status_queries(printer);
+        }
+    }
+    #[test]
+    fn ticket_t_25_jitter_spreads_polls_without_exceeding_the_bounds() {
+        let interval = Duration::from_secs(2);
+        assert_eq!(jitter(interval, 0.0), interval);
+        assert_eq!(jitter(interval, 1.0), interval.mul_f64(0.8));
+        assert_eq!(jitter(interval, 7.0), interval.mul_f64(0.8));
+        let cap = backoff(interval, 100);
+        let samples: HashSet<_> = (0..200).map(|_| jitter(cap, rand::random())).collect();
+        assert!(samples.len() > 1, "jitter is not constant");
+        assert!(
+            samples
+                .iter()
+                .all(|delay| *delay <= cap && *delay >= cap.mul_f64(0.8)),
+            "jitter never lengthens a delay past the 60 s cap"
+        );
+    }
+    #[tokio::test]
+    async fn ticket_t_25_offline_idle_and_stopped_are_distinct() {
+        const STANDBY: &[u8] = br#"{"result":{"status":{"print_stats":{"state":"standby"}}}}"#;
+        let idle = RecordedPrinter::start(vec![(200, STANDBY)]).unwrap();
+        let unreachable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let refused = format!("http://{}", unreachable.local_addr().unwrap());
+        drop(unreachable);
+        let mut watchers = watchers_every(Duration::from_millis(20));
+        let mut observations = watchers.observations();
+        watchers
+            .replace(vec![
+                named("idle", idle.url(), true),
+                named("down", &refused, true),
+            ])
+            .await
+            .unwrap();
+        next_state(&mut observations, "idle", State::Idle).await;
+        let down = next_state(&mut observations, "down", State::Offline).await;
+        assert_eq!(
+            down.message.as_deref(),
+            Some("Moonraker status unavailable")
+        );
+
+        // A stopped (asleep) host is neither idle nor offline: it has no status
+        // and the route reports it unavailable, never a stale cached value.
+        watchers.stop().await;
+        assert_eq!(watchers.route("idle"), Route::Unavailable);
+        assert_eq!(watchers.route("down"), Route::Unavailable);
+        assert!(observations.latest("idle").is_none());
+        assert!(watchers.status("idle").is_none());
+        only_status_queries(&idle);
+    }
+    #[tokio::test]
+    async fn ticket_t_25_reconnect_after_refused_connections_recovers() {
+        let unreachable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = unreachable.local_addr().unwrap();
+        drop(unreachable);
+        let mut watchers = watchers_every(Duration::from_millis(20));
+        let mut observations = watchers.observations();
+        watchers
+            .replace(vec![host(format!("http://{address}"))])
+            .await
+            .unwrap();
+        next_state(&mut observations, "host", State::Offline).await;
+        assert_eq!(
+            live_workers(&watchers),
+            1,
+            "a failing host keeps one worker"
+        );
+
+        // The printer comes back on the same address: the same worker reconnects.
+        let listener = TcpListener::bind(address).await.unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut bytes = [0; 4096];
+                let len = socket.read(&mut bytes).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&bytes[..len]);
+                assert!(request.starts_with(&format!("GET {QUERY} HTTP/1.1")));
+                seen.fetch_add(1, Ordering::SeqCst);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                    SUCCESS.len()
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(SUCCESS).await;
+            }
+        });
+        next_state(&mut observations, "host", State::Printing).await;
+        assert_eq!(live_workers(&watchers), 1);
+        // Recovery resets the backoff to the plain interval.
+        let recovered = calls.load(Ordering::SeqCst);
+        wait_calls(&calls, recovered + 3).await;
+        watchers.stop().await;
+        server.abort();
+    }
+    #[tokio::test]
+    async fn ticket_t_25_lagging_subscribers_stay_bounded_and_never_block_publishing() {
+        let watchers = watchers_every(Duration::from_secs(60));
+        let mut observations = watchers.observations();
+        let mut lagging = observations.transitions();
+        let slot = Mutex::new(Slot::Node);
+        let changes = 3 * TRANSITION_CAPACITY as u64;
+        // Nobody reads while every change publishes: publish never waits.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for i in 0..changes {
+                publish(
+                    &slot,
+                    &watchers.port,
+                    "host",
+                    Slot::Status(Status::offline(&i.to_string())),
+                );
+            }
+        })
+        .await
+        .expect("publishing waited on a subscriber");
+        assert_eq!(lagging.len(), TRANSITION_CAPACITY, "the channel is bounded");
+        match lagging.try_recv() {
+            Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                assert_eq!(skipped, changes - TRANSITION_CAPACITY as u64)
+            }
+            other => panic!("expected Lagged, got {other:?}"),
+        }
+        let first = lagging.try_recv().unwrap();
+        assert_eq!(first.seq, changes - TRANSITION_CAPACITY as u64 + 1);
+        // The newest-only map coalesces every change into one wake-up.
+        let newest = observations.changed().await.unwrap();
+        assert_eq!(newest.len(), 1);
+        assert_eq!(
+            newest["host"].message.as_deref(),
+            Some((changes - 1).to_string().as_str())
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), observations.changed())
+                .await
+                .is_err(),
+            "a slow reader wakes once, not once per change"
+        );
+        assert_eq!(lock(&watchers.port.entered).len(), 1);
     }
 }

@@ -122,7 +122,8 @@ which slice brings them. Nothing here changes data.
   check and render of all rows) and moved focus to the next row by the next
   frame in a median of 17 to 38 ms (max 89 ms); headless Chromium took 1.2 to
   2.1 s and a median of 67 to 108 ms. There is no approved latency budget, so the check records the
-  numbers and fails only on a missing row or misplaced focus. Revisit
+  numbers and fails only on a missing row, next actions that never load, or
+  misplaced focus. Revisit
   virtualization if a measurement says otherwise.
 
 ## Fonts and type

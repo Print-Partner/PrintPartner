@@ -342,7 +342,8 @@ zoom. It serves the Builds routes from a three-Build fake core
 audited with data. Set `PP_UI_EVIDENCE_DIR` to save its screenshots.
 `builds.browser.mjs` serves 10,000 Builds and, in WebKitGTK and Chromium, records
 the time to the first and last row and from each Down or End key to the next
-frame. It fails when a row is missing or focus lands on the wrong row; the
+frame. It fails when a row is missing, next actions never load, or focus lands
+on the wrong row; the
 timings are recorded, not judged. Under `xvfb-run` the harness reads the
 script's stderr on its own descriptor, because `xvfb-run` merges stderr into
 stdout. A missing engine prints `SKIP <engine>`. `test/browser/all.mjs` runs

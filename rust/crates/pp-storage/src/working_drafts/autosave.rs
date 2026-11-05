@@ -5,9 +5,11 @@
 //! Accept (`POST .../drafts/:draftId/apply`) is the only publisher.
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
-use super::save::{Refusal, canonical_inputs, choices, copy_credential, load};
+use super::save::{
+    Checked, Refusal, accepted_base, canonical_inputs, changes, choices, copy_credential,
+    observed_draft, prepare_new,
+};
 use super::*;
-use pp_contracts::autosave::PlanChoice;
 pub use pp_contracts::autosave::SavePlanChoicesRequest;
 use serde::Serialize;
 
@@ -148,21 +150,7 @@ fn receipt_key(c: &Args<'_>, actor: &str) -> (String, String) {
     let draft = c.request.expected_draft().map(|d| {
         json!({"id":d.draft_id(),"snapshotDigest":d.snapshot_digest(),"lifecycleVersion":d.lifecycle_version()})
     });
-    let changes: Vec<_> = c
-        .request
-        .decisions()
-        .iter()
-        .map(|choice| {
-            let t = choice.target();
-            let (kind, value) = match choice {
-                PlanChoice::SetIncluded { value, .. } => ("set_included", json!(value)),
-                PlanChoice::SetQuantityOverride { value, .. } => {
-                    ("set_quantity_override", json!(value))
-                }
-            };
-            json!({"target":{"partKey":t.part_key(),"relativePath":t.relative_path(),"sourceLayer":t.source_layer()},"kind":kind,"value":value})
-        })
-        .collect();
+    let changes = changes(c.request.decisions());
     let payload = json!({"profileId":c.profile,"actorId":actor,"expectedBase":{"revisionId":base.revision_id(),"planVersion":base.plan_version()},"expectedDraft":draft,"remapCheckoffLinks":c.request.remap_checkoff_links(),"changes":changes});
     let full = format!("{prefix}{}", required_units::model::digest(&payload));
     (prefix, full)
@@ -217,103 +205,26 @@ fn transact(
         }
         return Ok(Ok(receipt(&prior)?));
     }
-    if !p["archivedAt"].is_null() {
-        return Ok(Err(Refusal::BuildArchived));
-    }
-    if baseline_required(tx, tenant, &p)? {
-        return Ok(Err(Refusal::AcceptedBaselineRequired));
-    }
-    let base = json!({"baseRevisionId":p["acceptedPlanRevisionId"],"basePlanVersion":p["acceptedPlanVersion"]});
-    if base["baseRevisionId"] != json!(request.expected_base().revision_id())
-        || base["basePlanVersion"] != json!(request.expected_base().plan_version())
-    {
-        return Ok(Err(Refusal::BaseChanged));
-    }
+    let base = match accepted_base(tx, tenant, &p, request)? {
+        Ok(base) => base,
+        Err(reason) => return Ok(Err(reason)),
+    };
     let mut budget = observation::PreparationBudget::new(c.cancelled, c.observations.limits)?;
     budget.check()?;
-    let (draft_id, decisions) = if let Some(expected) = request.expected_draft() {
-        let id = i64::try_from(expected.draft_id().get())?;
-        let Some(d) = load(tx, tenant, profile, id, &mut budget)? else {
-            return Ok(Err(Refusal::DraftChanged));
-        };
-        if d.header["state"] != "open"
-            || d.header["snapshotDigest"] != expected.snapshot_digest().as_str()
-            || d.header["lifecycleVersion"] != expected.lifecycle_version().get()
-        {
-            return Ok(Err(Refusal::DraftChanged));
-        }
-        if d.header["baseRevisionId"] != base["baseRevisionId"]
-            || d.header["basePlanVersion"] != base["basePlanVersion"]
-        {
-            return Ok(Err(Refusal::BaseChanged));
-        }
-        let current = preparation::capture(
-            tx,
-            tenant,
-            profile,
-            c.observations.reads.as_ref(),
-            &mut budget,
-        )?;
-        if canonical_inputs(&current.inputs) != canonical_inputs(&d.inputs) {
-            return Ok(Err(Refusal::InputsChanged));
-        }
-        let mut parts = d.parts.clone();
-        if let Some(reason) = choices(&mut parts, request.decisions(), &mut budget)? {
-            return Ok(Err(reason));
-        }
-        if parts != d.parts {
-            update_parts(tx, tenant, profile, &d, &parts)?;
-        }
-        let decisions = match &d.selected {
-            Some(selected) => carried_decisions(tx, tenant, selected, &mut budget)?,
-            None => Vec::new(),
-        };
-        (id, decisions)
-    } else {
-        if one(
-            tx,
-            "SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' LIMIT 1",
-            &[&tenant, &profile],
-        )?
-        .is_some()
-        {
-            return Ok(Err(Refusal::DraftChanged));
-        }
-        let options = preparation::PreparationOptions {
-            apply_manifest: false,
-            prefer_accepted: true,
-            ..Default::default()
-        };
-        let mut prepared = match preparation::prepare(
-            tx,
-            tenant,
-            profile,
-            base.clone(),
-            preparation::PreparationContext {
-                options: &options,
-                repos: &c.observations.repos,
-            },
-            c.observations.reads.as_ref(),
-            &mut budget,
-        ) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return match error.downcast_ref::<preparation::Failure>() {
-                    Some(preparation::Failure::NoLayers) => Ok(Err(Refusal::NoLayers)),
-                    Some(preparation::Failure::NoStls) => Ok(Err(Refusal::NoStls)),
-                    _ => Err(error),
-                };
-            }
-        };
-        if let Some(reason) = choices(&mut prepared.parts, request.decisions(), &mut budget)? {
-            return Ok(Err(reason));
-        }
-        prepared.digest = model::planning(&base, &prepared.capture.inputs, &prepared.parts)?;
-        budget.check()?;
-        (
-            insert_snapshot(tx, tenant, actor, profile, &key, &prepared, None)?,
-            Vec::new(),
-        )
+    let at = Target {
+        tenant,
+        actor,
+        profile,
+        base: &base,
+    };
+    let written = match observed_draft(tx, tenant, profile, &base, request, &mut budget)? {
+        Ok(Some(d)) => write_observed(tx, c, &at, &d, &mut budget)?,
+        Ok(None) => write_new(tx, c, &at, &key, &mut budget)?,
+        Err(reason) => Err(reason),
+    };
+    let (draft_id, decisions) = match written {
+        Ok(written) => written,
+        Err(reason) => return Ok(Err(reason)),
     };
     let current = storage::draft_checked(tx, tenant, profile, draft_id, &|| Ok(budget.check()?))?
         .ok_or_else(|| anyhow!("Autosave draft is missing"))?;
@@ -344,6 +255,71 @@ fn transact(
     )?
     .ok_or_else(|| anyhow!("Autosave receipt is missing"))?;
     Ok(Ok(receipt(&saved)?))
+}
+
+/// Where an autosave writes: the caller's tenant, actor, Plan and its base.
+struct Target<'a> {
+    tenant: &'a str,
+    actor: &'a str,
+    profile: i64,
+    base: &'a Value,
+}
+
+type Written = Checked<(i64, Vec<Value>)>;
+
+/// Applies the choices to the open draft the caller observed and carries its
+/// selection's decisions into the next reconciliation.
+fn write_observed(
+    tx: &Transaction<'_>,
+    c: &Args<'_>,
+    at: &Target<'_>,
+    d: &Draft,
+    budget: &mut observation::PreparationBudget<'_>,
+) -> Result<Written> {
+    let current = preparation::capture(
+        tx,
+        at.tenant,
+        at.profile,
+        c.observations.reads.as_ref(),
+        budget,
+    )?;
+    if canonical_inputs(&current.inputs) != canonical_inputs(&d.inputs) {
+        return Ok(Err(Refusal::InputsChanged));
+    }
+    let mut parts = d.parts.clone();
+    if let Some(reason) = choices(&mut parts, c.request.decisions(), budget)? {
+        return Ok(Err(reason));
+    }
+    if parts != d.parts {
+        update_parts(tx, at.tenant, at.profile, d, &parts)?;
+    }
+    let decisions = match &d.selected {
+        Some(selected) => carried_decisions(tx, at.tenant, selected, budget)?,
+        None => Vec::new(),
+    };
+    Ok(Ok((num(&d.header, "id")?, decisions)))
+}
+
+/// Prepares a final-state draft when the caller observed none and none is open.
+fn write_new(
+    tx: &mut Transaction<'_>,
+    c: &Args<'_>,
+    at: &Target<'_>,
+    key: &str,
+    budget: &mut observation::PreparationBudget<'_>,
+) -> Result<Written> {
+    let mut prepared =
+        match prepare_new(tx, at.tenant, at.profile, at.base, c.observations, budget)? {
+            Ok(prepared) => prepared,
+            Err(reason) => return Ok(Err(reason)),
+        };
+    if let Some(reason) = choices(&mut prepared.parts, c.request.decisions(), budget)? {
+        return Ok(Err(reason));
+    }
+    prepared.digest = model::planning(at.base, &prepared.capture.inputs, &prepared.parts)?;
+    budget.check()?;
+    let id = insert_snapshot(tx, at.tenant, at.actor, at.profile, key, &prepared, None)?;
+    Ok(Ok((id, Vec::new())))
 }
 
 /// Writes the chosen Parts into the open draft as an edit does: the

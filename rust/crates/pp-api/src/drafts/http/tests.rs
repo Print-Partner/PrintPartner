@@ -2768,18 +2768,6 @@ async fn ticket_t_61_autosave_writes_the_open_draft_once_per_key_and_never_publi
     assert_eq!(draft_events(&server), events);
     assert_eq!(part_identities(&server), identities);
 
-    // The receipt survives a restart: the same key replays and writes nothing.
-    let server = server.restart().await;
-    assert_eq!(
-        json_reply(
-            keyed(&server, path, Some("s-1")).json(&autosave_body(observed(&json!(DIGEST)), 4)),
-            200
-        )
-        .await,
-        saved
-    );
-    assert_eq!(logical_database(&server.sql()), after);
-
     // The next save observes the saved draft and supersedes its selection.
     let next = json_reply(
         keyed(&server, path, Some("s-3"))
@@ -2794,6 +2782,23 @@ async fn ticket_t_61_autosave_writes_the_open_draft_once_per_key_and_never_publi
     );
     assert_eq!(accepted_rows(&server), accepted);
     assert_eq!(part_identities(&server), identities);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn ticket_t_61_autosave_receipt_replays_after_restart() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    let body = autosave_body(observed(&json!(DIGEST)), 4);
+    let path = "/plans/1/drafts/save";
+    let saved = json_reply(keyed(&server, path, Some("r-1")).json(&body), 200).await;
+    let after = logical_database(&server.sql());
+    let server = server.restart().await;
+    assert_eq!(
+        json_reply(keyed(&server, path, Some("r-1")).json(&body), 200).await,
+        saved
+    );
+    assert_eq!(logical_database(&server.sql()), after);
     server.close().await;
 }
 

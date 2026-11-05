@@ -1136,6 +1136,7 @@ mod transaction {
                 replace_time(&mut replay, &at, &fixture["at"]);
                 assert_eq!(replay["kind"], "existing");
                 assert_eq!(replay["receipt"], actual["receipt"]);
+                assert_accept_event(&c, case, &actual);
                 assert!(
                     c.execute(
                         "UPDATE plan_apply_admissions SET request_digest='tampered'",

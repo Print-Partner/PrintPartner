@@ -310,3 +310,20 @@ fn domain_events_feed_wakes_on_new_events_and_authority_changes_only() {
     }
     assert!(feed.subscribe(&(Arc::new(|| {}) as Waker)).is_err());
 }
+
+#[test]
+fn domain_events_panicking_waker_is_unsubscribed_and_others_still_wake() {
+    let feed = Feed::new(0);
+    let woken = Arc::new(AtomicI64::new(0));
+    let counter = woken.clone();
+    let panics: Waker = Arc::new(|| panic!("waker probe"));
+    let counts: Waker = Arc::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    feed.subscribe(&panics).unwrap();
+    feed.subscribe(&counts).unwrap();
+    feed.wake();
+    feed.wake();
+    assert_eq!(woken.load(Ordering::SeqCst), 2);
+    assert_eq!(feed.wakers.lock().unwrap().len(), 1);
+}

@@ -546,16 +546,17 @@ fn install_steps(
 /// 42 and be absent before it.
 #[cfg(feature = "desktop_rebuild")]
 fn validate_domain_events(connection: &Connection, version: u64) -> Result<()> {
-    let catalog = |connection: &Connection| -> rusqlite::Result<Option<String>> {
-        connection.query_row(
-            "SELECT group_concat(name||char(10)||sql,char(10)) FROM (SELECT name,sql FROM sqlite_master WHERE name LIKE 'domain_event%' ORDER BY name)",
-            [],
-            |row| row.get(0),
-        )
+    let catalog = |connection: &Connection| -> rusqlite::Result<Vec<(String, Option<String>)>> {
+        connection
+            .prepare(
+                "SELECT name,sql FROM sqlite_master WHERE name LIKE 'domain_event%' ORDER BY name",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
     };
     let actual = catalog(connection)?;
     if version < crate::domain_events::SCHEMA_STEP {
-        ensure!(actual.is_none(), "Unexpected domain event schema");
+        ensure!(actual.is_empty(), "Unexpected domain event schema");
         return Ok(());
     }
     let expected = Connection::open_in_memory()?;

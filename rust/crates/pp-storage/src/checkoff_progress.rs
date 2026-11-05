@@ -581,6 +581,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let index = part.units[position].unit_index;
     match change {
         Change::Completed(completed) => {
+            let mut moved = false;
             for unit in &mut part.units {
                 let changes = if completed {
                     unit.unit_index <= index
@@ -589,11 +590,14 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                 };
                 if changes {
                     set_completed(tx, tenant, part_id, unit.unit_index, completed)?;
+                    moved |= unit.completed != completed || (unit.assembled && !completed);
                     unit.completed = completed;
                     unit.assembled &= completed;
                 }
             }
-            progress_changed(tx, tenant, profile, Some(part_id))?;
+            if moved {
+                progress_changed(tx, tenant, profile, Some(part_id))?;
+            }
             Ok(Ok(completion(part)))
         }
         Change::Assembled(assembled) => {
@@ -607,9 +611,11 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                     changed == 1,
                     "Progress update did not find exactly one current unit"
                 );
-                unit.assembled = assembled;
+                if unit.assembled != assembled {
+                    unit.assembled = assembled;
+                    progress_changed(tx, tenant, profile, Some(part_id))?;
+                }
             }
-            progress_changed(tx, tenant, profile, Some(part_id))?;
             Ok(Ok(assembly(part)))
         }
     }

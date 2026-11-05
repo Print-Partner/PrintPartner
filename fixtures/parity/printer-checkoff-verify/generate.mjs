@@ -26,14 +26,15 @@ const queries = {
 
 const base = { integration_id: 'sim-moonraker', printer_id: 'sim-1', host_name: 'Simulated Voron', created_at: '2020-01-01T00:00:00.000Z' };
 // Synthetic links, including stored shapes Node normalizes on its next write: a string part id,
-// padded text, a legacy applied state, an unknown field and an entry that cannot load.
+// padded text, a legacy applied state, an unknown field, a lone surrogate and an entry that cannot load.
 const links = [
   { ...base, id: 'link-verify', profile_id: 1, filename: 'plate-a.gcode', state: 'awaiting_verify', host_name: '  Simulated Voron  ',
     units: [{ part_id: '1', unit_index: 1, object_name: ' bracket__ppu_00000000000000000000000000000002 ' }, { part_id: 1, unit_index: 2 }, { part_id: 3, unit_index: 0 }, { part_id: 3, unit_index: 1 }],
     imported_inventory: { extras: [{ name: 'spare clip', kind: 'object', checkoff: { result: 'pending' } }] },
     remote_identity: { size_bytes: 1234.4, sha256: 'a'.repeat(64), ignored: true }, last_progress: 99.5, units_marked: 1, legacy_field: 'dropped' },
   { ...base, id: 'link-stale-file', profile_id: 1, filename: 'plate-a.gcode', state: 'awaiting_verify', units: [{ part_id: 1, unit_index: 1 }] },
-  { ...base, id: 'link-watching', profile_id: 1, filename: 'plate-b.gcode', state: 'watching', saw_active: 1, units: [{ part_id: 1, unit_index: 2 }] },
+  // A lone surrogate, as Node's .slice(0, n) leaves one; JSON.stringify stores it escaped.
+  { ...base, id: 'link-watching', profile_id: 1, filename: 'plate-b.gcode', state: 'watching', saw_active: 1, host_name: 'Simulated Voron \uD83D', units: [{ part_id: 1, unit_index: 2 }] },
   { ...base, id: 'link-host-failed', profile_id: 1, filename: 'plate-c.gcode', state: 'host_failed', units: [{ part_id: 3, unit_index: 0 }] },
   { ...base, id: 'link-legacy-applied', profile_id: 1, filename: 'plate-d.gcode', state: 'applied', applied_at: '2020-01-02T00:00:00.000Z', units: [] },
   { ...base, id: 'link-burst', profile_id: 1, filename: 'plate-f.gcode', state: 'awaiting_verify', units: [{ part_id: 2, unit_index: 0 }, { part_id: 3, unit_index: 1 }] },
@@ -44,6 +45,8 @@ const foreign = [{ ...base, id: 'link-foreign', profile_id: 1, filename: 'foreig
 
 const confirm = (part_id, unit_index, extra = {}) => ({ part_id, unit_index, result: 'confirmed', ...extra });
 const reject = (part_id, unit_index, reason, extra = {}) => ({ part_id, unit_index, result: 'rejected', reason, ...extra });
+// The long note splits a surrogate pair at 500 UTF-16 units, so Node stores a lone surrogate
+// escape that every later step has to load.
 const calls = [
   { op: 'verify', body: { link_id: 'link-verify', decisions: [confirm(1, 2)] } },
   { op: 'verify', body: { link_id: 'link-verify', decisions: [confirm(1, 1, { note: '  first layer clean  ', reason: '' }), reject(3, 0, 'warping', { note: '' })] } },
@@ -56,7 +59,7 @@ const calls = [
   { op: 'verify', body: { link_id: ' ', decisions: [confirm(1, 2)] } },
   { op: 'verify', body: { link_id: 'link-verify', decisions: [reject(1, 2, 'not-a-reason')] } },
   { op: 'verify', body: { link_id: 'link-verify', decisions: [confirm(1, 2)], additional_decisions: [{ index: 3, result: 'confirmed' }] } },
-  { op: 'verify', body: { link_id: 'link-verify', decisions: [confirm(1, 2), reject(3, 1, 'layer_shift', { note: 'x'.repeat(600) })], additional_decisions: [{ index: 0, result: 'rejected', reason: 'other', note: ' bent ' }] } },
+  { op: 'verify', body: { link_id: 'link-verify', decisions: [confirm(1, 2), reject(3, 1, 'layer_shift', { note: 'x'.repeat(499) + '\u{1F600}' + 'x'.repeat(100) })], additional_decisions: [{ index: 0, result: 'rejected', reason: 'other', note: ' bent ' }] } },
   { op: 'dismiss', body: { link_id: 'link-host-failed' } },
   { op: 'dismiss', body: { link_id: 'link-host-failed' } },
   { op: 'dismiss', body: { link_id: 'missing' } },

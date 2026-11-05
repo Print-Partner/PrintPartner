@@ -57,14 +57,62 @@ pub(super) fn js_trim(s: &str) -> &str {
 }
 
 /// `String.prototype.slice(0, len)`, counted in UTF-16 code units.
+/// `String.prototype.slice(0, len)`. A pair split at the limit leaves Node a
+/// lone surrogate; Rust strings cannot hold one, so it becomes U+FFFD, as
+/// [`js_json`] reads it back.
 pub(super) fn js_slice(s: &str, len: usize) -> String {
     let mut units = 0;
-    s.chars()
-        .take_while(|c| {
-            units += c.len_utf16();
-            units <= len
-        })
-        .collect()
+    let mut out = String::new();
+    for c in s.chars() {
+        units += c.len_utf16();
+        if units > len {
+            if units == len + 1 && c.len_utf16() == 2 {
+                out.push('\u{FFFD}');
+            }
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// JSON text as `JSON.stringify` writes it, with each lone surrogate escape
+/// replaced by U+FFFD so serde_json accepts what `JSON.parse` accepts.
+pub(super) fn js_json(raw: &str) -> String {
+    let surrogate = |hex: &str| {
+        u16::from_str_radix(hex, 16)
+            .ok()
+            .filter(|u| (0xD800..0xE000).contains(u))
+    };
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let escape = rest.get(..6).filter(|e| e.starts_with("\\u"));
+        let Some(high) = escape.and_then(|e| surrogate(&e[2..])) else {
+            let len = rest[1..].chars().next().map_or(1, |c| 1 + c.len_utf8());
+            out.push_str(&rest[..len]);
+            rest = &rest[len..];
+            continue;
+        };
+        let low = rest
+            .get(6..12)
+            .filter(|e| e.starts_with("\\u"))
+            .and_then(|e| surrogate(&e[2..]));
+        match low {
+            Some(low) if high < 0xDC00 && low >= 0xDC00 => {
+                out.push_str(&rest[..12]);
+                rest = &rest[12..];
+            }
+            _ => {
+                out.push_str("\\ufffd");
+                rest = &rest[6..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `Number(value)`; `None` is `NaN`.
@@ -462,7 +510,7 @@ pub(super) fn load(tx: &Transaction<'_>, tenant: &str, now: &str) -> Result<Vec<
         .optional()?;
     let Some(Ok(Value::Array(items))) = raw
         .filter(|raw| !js_trim(raw).is_empty())
-        .map(|raw| serde_json::from_str::<Value>(&raw))
+        .map(|raw| serde_json::from_str::<Value>(&js_json(&raw)))
     else {
         return Ok(Vec::new());
     };
@@ -577,5 +625,27 @@ pub(super) fn add(current: &Value, added: usize) -> Value {
         Value::Number(n) => Number::from_f64(n.as_f64().unwrap_or(0.0) + added as f64)
             .map_or(Value::Null, Value::Number),
         _ => Value::from(added),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{js_json, js_slice};
+
+    #[test]
+    fn js_json_reads_lone_surrogates_as_replacement_and_keeps_pairs() {
+        let raw = r#"["a\ud83d","\ud83d\ude00","\ude00x","\\ud83d","\"\u00e9"]"#;
+        let parsed: Vec<String> = serde_json::from_str(&js_json(raw)).unwrap();
+        assert_eq!(
+            parsed,
+            ["a\u{FFFD}", "\u{1F600}", "\u{FFFD}x", "\\ud83d", "\"é"]
+        );
+    }
+
+    #[test]
+    fn js_slice_marks_a_pair_split_at_the_limit() {
+        assert_eq!(js_slice("ab\u{1F600}", 3), "ab\u{FFFD}");
+        assert_eq!(js_slice("ab\u{1F600}", 4), "ab\u{1F600}");
+        assert_eq!(js_slice("ab\u{1F600}c", 2), "ab");
     }
 }

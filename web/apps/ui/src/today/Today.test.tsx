@@ -110,30 +110,33 @@ function fakeCore({
   results = BEDS(),
   printers = [printer("voron", "Voron 2.4"), printer("trident", "Trident")],
   loseFirstAnswers = 0,
+  loseUndoAnswers = 0,
 } = {}) {
   const state = {
     results,
+    printers,
     marked: 0,
     receipts: new Map<string, unknown>(),
     undone: new Set<string>(),
   };
   const before = new Map<string, Result>();
-  let lose = loseFirstAnswers;
+  const lose = { confirm: loseFirstAnswers, undo: loseUndoAnswers };
   const posts: { path: string; body: Record<string, unknown> }[] = [];
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       posts.push({ path, body });
       const answer = post(path, body);
-      if (lose > 0) {
-        lose -= 1;
+      const kind = path.endsWith("/undo") ? "undo" : "confirm";
+      if (lose[kind] > 0) {
+        lose[kind] -= 1;
         throw new TypeError("Failed to fetch");
       }
       return answer;
     }
     if (path === "/health") return json(health);
     if (path === "/api/v2/printer-checkoff") return json({ results: state.results });
-    if (path === "/api/v2/printers") return json({ printers });
+    if (path === "/api/v2/printers") return json({ printers: state.printers });
     if (path === "/api/v2/tasks")
       return json({
         tasks: [task(22, "Build 22", "Verify prints"), task(19, "Build 19", "Prepare production")],
@@ -327,6 +330,38 @@ describe("UI4-03 a retried confirm does not double count", () => {
   });
 });
 
+describe("an uncertain write is reconciled, not repeated", () => {
+  it("shows the undo as done when its answer was lost and the resend finds it undone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseUndoAnswers: 1 });
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    await act(() => vi.advanceTimersByTimeAsync(1_500));
+    expect(
+      await screen.findByText("Undid the Voron 2.4 confirmation. 3 units are waiting again."),
+    ).toBeTruthy();
+    expect(core.posts.filter((p) => p.path.endsWith("/undo"))).toHaveLength(2);
+    expect(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(core.state.marked).toBe(0);
+  });
+
+  it("reuses the unanswered key when the same bed is confirmed again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseFirstAnswers: 3 });
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
+    expect(core.state.marked).toBe(3);
+  });
+});
+
 describe("UI4-04 with printer links down Today offers manual checkoff and loses no job", () => {
   it("keeps every bed confirmable by hand and lists prints a down printer was watching", async () => {
     const watching = result("link-annex", "annex", [[4, 0, "clip.stl"]], {
@@ -361,6 +396,35 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     fireEvent.click(screen.getByRole("button", { name: "Confirm Trident bed" }));
     expect(await screen.findByText("Confirmed 1 unit from Trident.")).toBeTruthy();
     expect(core.state.marked).toBe(1);
+  });
+
+  it("notices a link that drops while Today is open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const watching = result("link-annex", "annex", [[4, 0, "clip.stl"]], {
+      state: "watching",
+      host_outcome: null,
+      completed_at: null,
+    });
+    const core = fakeCore({
+      results: [...BEDS(), watching],
+      printers: [
+        printer("voron", "Voron 2.4"),
+        printer("trident", "Trident"),
+        printer("annex", "Annex K3"),
+      ],
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(screen.queryByRole("region", { name: "Prints the app cannot see finish" })).toBeNull();
+    core.state.printers = [
+      printer("voron", "Voron 2.4"),
+      printer("trident", "Trident"),
+      printer("annex", "Annex K3", "unreachable"),
+    ];
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(
+      (await screen.findByRole("region", { name: "Prints the app cannot see finish" })).textContent,
+    ).toContain("Annex K3: link-annex.gcode");
   });
 
   it("does not claim a link is up when the farm read fails", async () => {

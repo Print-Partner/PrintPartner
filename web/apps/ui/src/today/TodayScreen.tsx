@@ -4,7 +4,7 @@ import type {
   VerifyBatchReceipt,
 } from "@print-partner/rust-client";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
@@ -18,15 +18,19 @@ type CheckoffResult = CheckoffResultList["results"][number];
 type FarmPrinter = FarmPrinterList["printers"][number];
 type Unit = CheckoffResult["units"][number];
 
+/** Today rereads results and printer links this often, so a print that ends or a link that drops shows up. */
+const REFRESH_MS = 30_000;
+
 const checkoffQuery = {
   queryKey: ["core", "checkoff"],
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinterCheckoff", {}, signal),
+  refetchInterval: REFRESH_MS,
 } as const;
 
 const printersQuery = {
   queryKey: ["core", "printers"],
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinters", {}, signal),
-  staleTime: Infinity,
+  refetchInterval: REFRESH_MS,
 } as const;
 
 /** Execution states in which a printer's link cannot report that a print ended. */
@@ -112,19 +116,36 @@ const tallyText = (t: Tally) =>
 const lostSend = (error: Error) => !(error instanceof CoreError);
 const retryLostSend = (failures: number, error: Error) => failures < 2 && lostSend(error);
 const resendable = (error: Error) => !(error instanceof CoreError && error.status < 500);
+// A resent undo whose first answer was lost finds the burst already undone.
+const ALREADY_UNDONE = "This Checkoff burst was already undone";
 
 function useCheckoff() {
   const client = useQueryClient();
   const [tally, setTally] = useState<Tally | null>(null);
+  // The key of each bed's confirm that has no answer yet. Confirming that bed again reuses
+  // it, so a write that landed while its answer was lost replays its receipt and Undo.
+  const unanswered = useRef(new Map<string, string>());
   const refresh = () =>
     Promise.all([
       client.invalidateQueries({ queryKey: checkoffQuery.queryKey }),
       client.invalidateQueries({ queryKey: tasksQuery.queryKey }),
     ]);
   const undo = useMutation({
-    mutationFn: ({ receipt }: Undo) =>
-      writeCore("undoCheckoffBurst", {}, { undo_token: receipt.undo_token }),
+    mutationFn: async ({ receipt }: Undo) => {
+      try {
+        await writeCore("undoCheckoffBurst", {}, { undo_token: receipt.undo_token });
+      } catch (error) {
+        if (!(
+          error instanceof CoreError &&
+          error.status === 409 &&
+          error.detail === ALREADY_UNDONE
+        )) {
+          throw error;
+        }
+      }
+    },
     retry: retryLostSend,
+    onError: () => refresh(),
     onSuccess: (_, { printer, receipt }) => {
       setTally({
         kind: "undone",
@@ -154,13 +175,25 @@ function useCheckoff() {
         },
       ),
     retry: retryLostSend,
+    onError: (error, { bed }) => {
+      if (lostSend(error)) return;
+      unanswered.current.delete(bed.result.id);
+      return refresh();
+    },
     onSuccess: (receipt, { bed }) => {
+      unanswered.current.delete(bed.result.id);
       undo.reset();
       setTally({ kind: "confirmed", undo: { printer: bed.printer, receipt } });
       return refresh();
     },
   });
-  return { confirm, undo, tally };
+  const confirmBed = (bed: Bed) => {
+    if (confirm.isPending) return;
+    const key = unanswered.current.get(bed.result.id) ?? crypto.randomUUID();
+    unanswered.current.set(bed.result.id, key);
+    confirm.mutate({ bed, key });
+  };
+  return { confirm, confirmBed, undo, tally };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
@@ -218,9 +251,6 @@ function ClearBeds({
   linkDown: (printerId: string) => boolean;
   checkoff: Checkoff;
 }) {
-  const confirm = (bed: Bed) => {
-    if (!checkoff.confirm.isPending) checkoff.confirm.mutate({ bed, key: crypto.randomUUID() });
-  };
   return (
     <section className="pp-hero" aria-labelledby="pp-hero-title">
       <h2 id="pp-hero-title">{`Clear ${plural(beds.length, "bed")} and confirm what came off`}</h2>
@@ -239,7 +269,7 @@ function ClearBeds({
                 <li key={line.id}>{line.text}</li>
               ))}
             </ul>
-            <MutationButton primary onClick={() => confirm(bed)}>
+            <MutationButton primary onClick={() => checkoff.confirmBed(bed)}>
               {`Confirm ${bed.printer} bed`}
             </MutationButton>
           </li>

@@ -134,7 +134,8 @@ what they will hold and that a later slice brings them. Nothing here changes dat
 
 `/today` (`src/today/TodayScreen.tsx`) reads `GET /api/v2/printer-checkoff`,
 `GET /api/v2/tasks` and, with the Farm module on, `GET /api/v2/printers` for
-printer names and link state.
+printer names and link state. It rereads the results and printers every 30 s,
+so a print that ends or a link that drops shows up without a reload.
 
 - **Hero task.** When printer results wait in `awaiting_verify` with pending
   units, the hero is "Clear N beds and confirm what came off", the reason names
@@ -152,7 +153,11 @@ printer names and link state.
   Retry resends it again with the same key. The core answers a repeated key
   with the first receipt and writes nothing, so a retry never counts twice
   ([Checkoff bursts](../../../docs/desktop-rebuild.md#checkoff-bursts-gre-1090)).
-  A refusal from the core (4xx) shows its detail and no Retry.
+  A refusal from the core (4xx) shows its detail and no Retry. Until a bed's
+  confirm gets an answer, confirming that bed again reuses its key, so a write
+  that landed while its answer was lost replays its receipt and Undo instead of
+  being refused as already verified. A resent Undo whose first answer was lost
+  gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printer>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo
   button. Undo sends the receipt's `undo_token` to

@@ -10,7 +10,7 @@ export class CoreError extends Error {
   constructor(
     readonly status: number,
     path: string,
-    detail?: string,
+    readonly detail?: string,
   ) {
     super(`Rust core answered ${status} for ${path}${detail ? `: ${detail}` : ""}`);
     this.name = "CoreError";

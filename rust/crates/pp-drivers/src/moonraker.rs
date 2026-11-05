@@ -305,9 +305,13 @@ impl Watchers {
     }
 }
 /// Store a slot value and mirror it into the observation map. Node-routed
-/// hosts have no Rust observation.
+/// hosts have no Rust observation. The slot is written first and stays locked
+/// until the map is published, so a reader woken by the port already sees the
+/// same value through `route`.
 fn publish(slot: &Mutex<Slot>, observed: &watch::Sender<Observed>, id: &str, value: Slot) {
-    observed.send_if_modified(|map| match &value {
+    let mut current = lock(slot);
+    *current = value;
+    observed.send_if_modified(|map| match &*current {
         Slot::Status(status) if map.get(id) != Some(status) => {
             Arc::make_mut(map).insert(id.to_owned(), status.clone());
             true
@@ -315,7 +319,6 @@ fn publish(slot: &Mutex<Slot>, observed: &watch::Sender<Observed>, id: &str, val
         Slot::Status(_) => false,
         Slot::Node => map.contains_key(id) && Arc::make_mut(map).remove(id).is_some(),
     });
-    *lock(slot) = value;
 }
 /// Non-empty, bounded and unique ids, or `None` when the snapshot is unusable.
 fn valid_ids(hosts: &[Host]) -> Option<HashSet<String>> {
@@ -811,7 +814,8 @@ mod tests {
         let config = host(printer.url().into());
         watchers.replace(vec![config.clone()]).await.unwrap();
         let printing = next_state(&mut observations, "host", State::Printing).await;
-        assert!(watchers.status("host").is_some());
+        // The slot is written before the port notifies, so both agree.
+        assert_eq!(watchers.status("host"), Some(printing.clone()));
         assert_eq!(printing.filename.as_deref(), Some("bracket.gcode"));
         next_state(&mut observations, "host", State::Error).await;
         let offline = next_state(&mut observations, "host", State::Offline).await;

@@ -282,7 +282,7 @@ function checkWorkflow(file, source = readFileSync(file, 'utf8')) {
 function checkDesktopExecution(workflow, file) {
   const requiredPaths = [
     'fixtures/http/routes-inventory.json', 'rust/**', 'rust-toolchain.toml',
-    'web/packages/contracts/**', 'web/packages/domain/**', 'web/apps/server/**',
+    'web/packages/contracts/**', 'web/packages/domain/**', 'web/packages/rust-client/**', 'web/apps/server/**',
     'web/apps/web/src/api/planReview.ts', 'web/scripts/desktop-parity/**',
     'web/scripts/desktop-contracts/**', 'web/scripts/rust-contracts/**',
     'web/package*.json', 'docs/adr/0006-autosave-text-contract.md',

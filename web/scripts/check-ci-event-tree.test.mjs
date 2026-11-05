@@ -149,6 +149,29 @@ for (const [name, change] of [
   });
 }
 
+for (const event of ['push', 'pull_request']) {
+  test(`event tree rejects ${event} paths without rust-client coverage`, t => {
+    const f = fixture(t, modify(w => { w.on[event].paths = w.on[event].paths.filter(p => p !== 'web/packages/rust-client/**'); }));
+    writeFileSync(join(f.directory, contracts), original);
+    const result = f.run();
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /INVALID_DESKTOP_TRIGGERS/);
+  });
+}
+
+const selects = (patterns, file) => patterns.some(pattern => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\0/g, '.*')}$`).test(file));
+
+for (const event of ['push', 'pull_request']) {
+  test(`desktop-contracts ${event} filter selects a rust-client-only change`, () => {
+    const { paths } = YAML.parse(original).on[event];
+    for (const file of ['web/packages/rust-client/src/schemas.generated.ts', 'web/packages/rust-client/package.json']) {
+      assert.equal(selects(paths, file), true, file);
+    }
+    assert.equal(selects(paths, 'web/packages/rust-client-docs/README.md'), false);
+    assert.equal(selects(paths, 'web/packages/unrelated/index.ts'), false);
+  });
+}
+
 test('event tree allows no runner-conditioned steps', t => {
   const workflow = YAML.parse(original);
   const conditioned = workflow.jobs.parity.steps.filter(s => s.if !== undefined && s.if !== 'always()');

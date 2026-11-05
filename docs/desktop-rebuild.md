@@ -2989,10 +2989,10 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 ```
 
 With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, the Rust-only start
-(`CoreRuntime::start_for_launcher`) serves all of these routes through
-`rebuild_api::product_router`, which merges the draft router into the read
-router that carries Checkoff. The flag-off default still serves them from
-Node. Making Rust the default is the gateway cutover (GRE-593).
+(`CoreRuntime::start_for_launcher`) serves recompute, rebase, Accept and
+progress import through `rebuild_api::product_router`, which merges the draft
+router into the read router that carries Checkoff. The flag-off default still
+serves those four from Node. Making Rust the default is the gateway cutover (GRE-593).
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one

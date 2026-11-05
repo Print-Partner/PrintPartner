@@ -167,6 +167,11 @@ enum Envelope {
         command: domain_events::Command,
         reply: mpsc::Sender<Result<domain_events::Read>>,
     },
+    #[cfg(feature = "desktop_rebuild")]
+    Planning {
+        command: read_model::planning::Command,
+        reply: mpsc::Sender<Result<read_model::planning::Facts>>,
+    },
     Read {
         command: read_model::Command,
         reply: mpsc::Sender<Result<read_model::Batch>>,
@@ -794,6 +799,10 @@ impl WriterOwner {
                             &worker.domain_events,
                             command,
                         ));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::Planning { command, reply } => {
+                        let _ = reply.send(read_model::planning::execute(&mut connection, command));
                     }
                     Envelope::Read { command, reply } => {
                         let _ = reply.send(read_model::execute(&mut connection, command));

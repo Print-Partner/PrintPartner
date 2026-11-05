@@ -31,6 +31,24 @@ function replaced(value, path, next) {
   else copy[path[0]] = result;
   return copy;
 }
+/** At path: whether the generated schema allows any JSON there (z.json()), whether the node is a record, and whether it is a record entry. */
+function shapeAt(schema, value, path) {
+  let [current, entry] = [schema, false];
+  const settle = () => {
+    for (let def = current._zod.def; ["nullable", "optional", "union"].includes(def.type); def = current._zod.def) {
+      current = def.type === "union" ? def.options.find((option) => option.safeParse(value).success) ?? def.options[0] : def.innerType;
+    }
+  };
+  for (const key of path) {
+    settle();
+    const def = current._zod.def;
+    if (def.type === "lazy") return { json: true, record: false, entry };
+    [current, entry] = def.type === "object" ? [def.shape[key], false] : def.type === "array" ? [def.element, false] : [def.valueType, true];
+    value = value?.[key];
+  }
+  settle();
+  return { json: current._zod.def.type === "lazy", record: current._zod.def.type === "record", entry };
+}
 const wrongType = (value) => (value === null ? false : typeof value === "string" ? 1 : typeof value === "number" ? String(value) : typeof value === "boolean" ? "true" : Array.isArray(value) ? {} : []);
 
 test("the package is the generator's output for this Rust contract", () => {
@@ -97,15 +115,18 @@ for (const fixture of document.fixtures) {
     const strict = requestDtos.has(fixture.dto);
     for (const [path, value] of nodes(fixture.value)) {
       const where = `${fixture.dto} ${fixture.name} at ${path.join(".") || "(root)"}`;
+      // Any JSON is valid under z.json(); a record keeps every key and may omit any.
+      const shape = shapeAt(schema, fixture.value, path);
+      if (shape.json) continue;
       const rejects = (next, why) => assert.equal(schema.safeParse(replaced(fixture.value, path, next)).success, false, `${where}: ${why}`);
-      if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (value && typeof value === "object" && !Array.isArray(value) && !shape.record) {
         // Requests reject unknown keys like serde's deny_unknown_fields; responses strip them.
         const extended = schema.safeParse(replaced(fixture.value, path, (object) => ({ ...object, unknown_key: 1 })));
         if (strict) assert.equal(extended.success, false, `${where}: request must reject unknown keys`);
         else assert.deepEqual(extended.data, fixture.value, `${where}: response must strip unknown keys`);
       }
       const optional = path.length === 1 && optionalMembers[fixture.dto]?.has(path[0]);
-      if (path.length > 0 && !/^\d+$/.test(path.at(-1)) && !optional) {
+      if (path.length > 0 && !/^\d+$/.test(path.at(-1)) && !optional && !shape.entry) {
         // Every covered field is required: omitted is never the same as null.
         rejects(() => undefined, "omitted field accepted");
       }

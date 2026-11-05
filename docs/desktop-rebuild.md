@@ -2540,6 +2540,13 @@ commits the earlier Parts. Rust checks every Part first, so a refused burst
 writes nothing. The parity fixture keeps this case as its last step and the test
 asserts the one progress row Node left behind.
 
+Text is cut at UTF-16 units like Node's `.slice`. When a cut splits a surrogate
+pair, Node stores a lone surrogate escape. Rust strings cannot hold one, so
+storage reads a lone surrogate in the stored links as U+FFFD and writes U+FFFD
+where its own cut splits a pair. The rest of the setting still loads; before
+this, one such string made every link in the tenant unreadable. The fixture
+seeds a lone surrogate and cuts a note across a pair to cover both directions.
+
 Not ported here: the route itself and its webhooks, unattributed-print claiming
 after verify, the Spoolman deduction Node runs after the response (and the
 storage-owned deduction intent GRE-411 adds), manual complete, unattributed claim

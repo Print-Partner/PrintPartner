@@ -148,7 +148,7 @@ struct Plate {
     plate_id: String,
     ordinal: i64,
     tokens: BTreeSet<String>,
-    /// Comparison keys of the units' object names without their token.
+    /// Comparison keys of the units' part file names.
     stems: Vec<String>,
 }
 
@@ -228,16 +228,23 @@ fn id_text(tx: &Transaction<'_>, sql: &str, tenant: &str) -> Result<Vec<(i64, St
 }
 
 /// Each open Build's Plates in its current accepted layout, with their placed
-/// units.
+/// units. A unit's stem comes from its accepted Plan part's file name, because
+/// the exported object name replaces non-ASCII characters; the object name
+/// without its token is the fallback.
 fn current_plates(tx: &Transaction<'_>, tenant: &str) -> Result<BTreeMap<i64, Vec<Plate>>> {
     let mut statement = tx.prepare(
-        "SELECT h.profile_id,p.plate_id,p.ordinal,u.required_unit_token,r.object_name
+        "SELECT h.profile_id,p.plate_id,p.ordinal,u.required_unit_token,
+           COALESCE(rp.filename,r.object_name)
          FROM accepted_plate_heads h
          JOIN build_profiles b ON b.id=h.profile_id AND b.tenant_id=h.tenant_id
+         JOIN accepted_plate_revisions ar ON ar.id=h.current_revision_id AND ar.tenant_id=h.tenant_id
          JOIN accepted_plates p ON p.tenant_id=h.tenant_id AND p.revision_id=h.current_revision_id
          LEFT JOIN accepted_plate_units u ON u.tenant_id=p.tenant_id AND u.revision_id=p.revision_id
            AND u.plate_id=p.plate_id AND u.placement<>'unplaced'
          LEFT JOIN required_units r ON r.tenant_id=u.tenant_id AND r.token=u.required_unit_token
+         LEFT JOIN plan_revision_required_units q ON q.tenant_id=u.tenant_id
+           AND q.revision_id=ar.plan_revision_id AND q.required_unit_token=u.required_unit_token
+         LEFT JOIN plan_revision_parts rp ON rp.id=q.revision_part_id AND rp.tenant_id=q.tenant_id
          WHERE h.tenant_id=?1 AND b.archived_at IS NULL
          ORDER BY h.profile_id,p.ordinal,p.plate_id,u.required_unit_token",
     )?;
@@ -254,16 +261,16 @@ fn current_plates(tx: &Transaction<'_>, tenant: &str) -> Result<BTreeMap<i64, Ve
                 stems: Vec::new(),
             });
         }
-        let (Some(plate), Some(token), Some(object_name)) = (
+        let (Some(plate), Some(token), Some(name)) = (
             list.last_mut(),
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
         ) else {
             continue;
         };
-        let stem = object_name
+        let stem = name
             .rsplit_once(&format!("__{TOKEN_PREFIX}"))
-            .map_or(object_name.as_str(), |(stem, _)| stem);
+            .map_or(name.as_str(), |(stem, _)| stem);
         plate.stems.push(object_key(stem));
         plate.tokens.insert(token);
     }

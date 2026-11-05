@@ -149,8 +149,11 @@ Each row has `print_id`, `printer_id`, `filename`, `completed_at`,
 | `none` | Tokens name more than one Build or none, objects match no Build, the evidence ties, or only the time window points anywhere |
 
 `plate` is set for `exact`, for `likely` when exactly one current Plate holds
-every token, and for a tokenless `likely` when exactly one current Plate has
-the same object names (without token or slicer suffix, counted with copies).
+every token, and for a tokenless `likely` when exactly one current Plate's
+units come from the same part files as the printed objects, compared without
+slicer suffix or extension and counted with copies. A unit's part file comes
+from the accepted Plan revision, not from its exported object name, which
+replaces non-ASCII characters.
 
 `starts_checked` is `true` only for `exact`. A Match prints review starts
 `likely` and `none` rows unchecked. Accuracy on the real 18-print backlog has

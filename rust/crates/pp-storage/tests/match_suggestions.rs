@@ -204,6 +204,31 @@ fn match_suggestions_on_disk_are_read_only_and_never_confirm() {
 }
 
 #[test]
+fn match_suggestions_plate_stems_keep_unicode_part_names() {
+    let mut fixture = Fixture::new(&json!([print("named", &["café.stl_id_0_copy_0"])]));
+    fixture.open();
+    let raw = fixture.raw();
+    let immutable: String = raw
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%revision Parts are immutable%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    raw.execute_batch(&format!(
+        "DROP TRIGGER \"{immutable}\";
+         UPDATE parts SET filename='café.stl' WHERE filename='included.stl';
+         UPDATE plan_revision_parts SET filename='café.stl' WHERE filename='included.stl';"
+    ))
+    .unwrap();
+    assert_eq!(
+        summary(&fixture.suggestions()),
+        vec![json!(["named", "likely", false, 1, "fixture-plate"])],
+        "the exported object name is caf___ppu_..., the part file is café.stl"
+    );
+}
+
+#[test]
 fn match_suggestions_skip_archived_builds() {
     let mut fixture = Fixture::new(&prints());
     fixture

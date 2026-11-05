@@ -19,7 +19,7 @@ Plan feature controls on the Plan page use the same capability gate. Each featur
 
 When `PP_DESKTOP_REBUILD` is exactly `1` or `true`, Node printer queue suggestions honor each queued item's Plan overrides. Plan choices override user choices, then default to false. Profileless items inherit user choices. The global `get_farm_status` operation through MCP and the assistant stays user-scoped. Authenticated `GET` and `PATCH /plans/:id/features` are available at the root, `/api/v1`, and `/api/v2` only with these exact flag values. A patch value of `null` clears the Plan override and restores inheritance. Optional modules gain Node admission guards in separate slices.
 
-With these exact flag values, Bambu and Spoolman inspection at `GET /api/v1/integrations/:id/status`, `GET /api/v1/integrations/:id/devices`, and `POST /api/v1/integrations/:id/test` requires the current tenant's matching `bambu` or `spoolman` choice to be enabled. Default or explicit opt-out returns 403 `FEATURE_DISABLED`. Malformed stored choices return 500 `FEATURE_TOGGLES_INVALID`. Admission runs after authentication and before status execution or adapter calls, including cached status reads. These tenant-global routes ignore Plan overrides. Saved connector metadata and editing remain available. Other integration types and flag-off inspection retain their existing behavior.
+With these exact flag values, Bambu and Spoolman inspection at `GET /api/v1/integrations/:id/status`, `GET /api/v1/integrations/:id/devices`, and `POST /api/v1/integrations/:id/test` requires the current tenant's matching `bambu` or `spoolman` choice to be enabled. Default or explicit opt-out returns 403 `FEATURE_DISABLED`. Malformed stored choices return 500 `FEATURE_TOGGLES_INVALID`. Admission runs after authentication and before status execution or adapter calls, including cached status reads. These tenant-global routes ignore Plan overrides. Saved connector metadata and editing remain available. Other integration types and flag-off inspection retain their existing behavior. This admission is Node's. The Rust-only runtime has no Bambu or Spoolman adapter yet: its `POST /api/v1/integrations/:id/test` answers 501 for those types without reading feature choices or contacting the host ([Printer-host reads](printer-host-reads.md)).
 
 With these exact flag values, `POST /printer-send-queue` and its `/api/v1` alias check Bambu feature access when the linked host is Bambu. The selected owned Plan override takes precedence over the tenant's Bambu choice, then defaults to off. Admission follows Plan ownership and fleet-host resolution. Default or explicit off returns 403 `FEATURE_DISABLED`; corrupt tenant or selected Plan choices return 500 `FEATURE_TOGGLES_INVALID` before enqueue. Enabled Bambu retains the existing 400 unsupported-host response. This adds no Bambu transport. Moonraker, PrusaLink, and flag-off admission retain their existing behavior.
 
@@ -131,8 +131,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   increasing sequence, heartbeats every 15 seconds, and resume by sequence.
   It writes nothing and never polls a printer. See
   [Printer stream](printer-stream.md).
-- Printer-host reads (GRE-360, GRE-1044): `GET /api/v1/printers/{id}/capabilities`,
-  `/files` and `/cameras`, and `POST /api/v1/integrations/{id}/test`, read a
+- Printer-host reads (GRE-360, GRE-1044): `GET /printers/{id}/capabilities`,
+  `/files` and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are
   read-only on the printer: no upload, print start or retry. PrusaLink reports
   no status capability because only Moonraker has a watcher; Bambu reads as

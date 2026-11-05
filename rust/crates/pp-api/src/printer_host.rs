@@ -1,10 +1,10 @@
-//! Printer-host reads for the Rust-only runtime (GRE-360), at the `/api/v1`
-//! paths Node's `routes/printers.ts` and `routes/integrations.ts` serve:
+//! Printer-host reads for the Rust-only runtime (GRE-360), at the paths Node's
+//! `routes/printers.ts` and `routes/integrations.ts` serve:
 //!
-//! - `GET /api/v1/printers/{id}/capabilities`
-//! - `GET /api/v1/printers/{id}/files?path=`
-//! - `GET /api/v1/printers/{id}/cameras`
-//! - `POST /api/v1/integrations/{id}/test`
+//! - `GET /printers/{id}/capabilities`, `/printers/{id}/files?path=` and
+//!   `/printers/{id}/cameras`, at the root and under `/api/v1`, where Node's
+//!   core routes are registered
+//! - `POST /api/v1/integrations/{id}/test`, under `/api/v1` only, as in Node
 //!
 //! Every route is read-only on the printer: it lists, describes or probes,
 //! once per request, and never uploads, starts, deletes, retries or touches
@@ -78,7 +78,8 @@ pub trait PrinterHostPort: Send + Sync + 'static {
     fn test(&self, integration: String) -> Answer<Value>;
 }
 
-/// Node's per-route `rateLimit` budgets, one window per route and key.
+/// Node's per-route `rateLimit` budgets, one window per route. Node keys them
+/// per client IP; the Rust-only runtime only admits loopback clients.
 const CAPABILITIES_LIMIT: u32 = 120;
 const FILES_LIMIT: u32 = 60;
 const CAMERAS_LIMIT: u32 = 60;
@@ -122,12 +123,14 @@ pub fn printer_host_router(
     let Some(gate) = Gate::new(config, client) else {
         return Router::new();
     };
-    let routes = Router::new()
+    let printers = Router::new()
         .route("/printers/{id}/capabilities", get(capabilities))
         .route("/printers/{id}/files", get(files))
-        .route("/printers/{id}/cameras", get(cameras))
+        .route("/printers/{id}/cameras", get(cameras));
+    let v1 = printers
+        .clone()
         .route("/integrations/{id}/test", post(test));
-    gate.guard(Router::new().nest("/api/v1", routes))
+    gate.guard(Router::new().merge(printers).nest("/api/v1", v1))
         .with_state(App {
             port,
             windows: Arc::default(),

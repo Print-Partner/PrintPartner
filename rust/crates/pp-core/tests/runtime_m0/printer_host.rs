@@ -137,6 +137,9 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
         ("GET", "/api/v1/printers/p-moon/files"),
         ("GET", "/api/v1/printers/p-moon/cameras"),
         ("POST", "/api/v1/integrations/moon-1/test"),
+        ("GET", "/printers/p-moon/capabilities"),
+        ("GET", "/printers/p-moon/files"),
+        ("GET", "/printers/p-moon/cameras"),
     ] {
         let (code, body) = call(&origin, Some(&desktop), method, path).await;
         assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}: {body}");
@@ -163,6 +166,9 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
         let read = get(format!("/api/v1/printers/{printer}/capabilities")).await;
         assert_eq!(read, (StatusCode::OK, expected.clone()), "{printer}");
     }
+    // The web client calls the printer routes at the root, as Node serves them.
+    let root = get("/printers/p-moon/capabilities".into()).await;
+    assert_eq!(root, (StatusCode::OK, all.clone()));
     let (code, problem) = get("/api/v1/printers/p-missing/capabilities".into()).await;
     assert_eq!(
         (code, &problem["detail"]),
@@ -171,7 +177,7 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
 
     let root = get("/api/v1/printers/p-moon/files".into()).await;
     assert_eq!(root, (StatusCode::OK, oracle["browse"][""]["ok"].clone()));
-    let plates = get("/api/v1/printers/p-moon/files?path=%2Fplates%2F".into()).await;
+    let plates = get("/printers/p-moon/files?path=%2Fplates%2F".into()).await;
     assert_eq!(
         plates,
         (StatusCode::OK, oracle["browse"]["/plates/"]["ok"].clone())
@@ -205,7 +211,7 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
         "an unreachable host is an upstream failure"
     );
 
-    let cameras = get("/api/v1/printers/p-moon/cameras".into()).await;
+    let cameras = get("/printers/p-moon/cameras".into()).await;
     assert_eq!(
         cameras,
         (StatusCode::OK, json!({"cameras": oracle["cameras"]["ok"]}))
@@ -239,6 +245,21 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
     assert_eq!(
         test("moon-1").await,
         (StatusCode::OK, oracle["test_connection"].clone())
+    );
+    let (code, _, _) = request(
+        &origin,
+        "/integrations/moon-1/test",
+        "POST",
+        Some(&cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        code,
+        StatusCode::NOT_FOUND,
+        "Node serves the test only under /api/v1"
     );
     let (code, problem) = test("removed-1").await;
     assert_eq!(

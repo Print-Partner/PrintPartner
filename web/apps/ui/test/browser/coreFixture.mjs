@@ -23,7 +23,11 @@ const nextAction = (id) => ({
   label: "Verify prints",
   reason: `${1 + (id % 4)} prints are waiting for verification`,
   stage_id: "checkoff",
-  target: { plan_id: id, tab: "checkoff" },
+  target: { plan_id: id, tab: "checkoff", draft_id: null },
+  draft_id: null,
+  issue_count: null,
+  item_count: null,
+  unit_count: null,
 });
 
 function workflow(found) {
@@ -31,7 +35,7 @@ function workflow(found) {
     id,
     group,
     label: id,
-    status: { kind: taskCount ? "needs_attention" : "ready", summary: "", task_count: taskCount },
+    status: { kind: taskCount ? "needs_attention" : "ready", summary: "", task_count: taskCount ?? null, active_count: null },
   });
   const { total_units, remaining_units } = found.accepted_progress;
   return {
@@ -98,7 +102,7 @@ export function fakeCore(count, { orders = "on" } = {}) {
       return (request.headers.referer ?? "").includes("core=down") ? { status: 503, body: {} } : { status: 200, body: health };
     }
     if (pathname === "/api/v2/plans") return { status: 200, body: { profiles: builds } };
-    if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks } };
+    if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks, unavailable: [] } };
     const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow)?$/.exec(pathname);
     const found = match && builds[Number(match[1]) - 1];
     if (!found) return undefined;

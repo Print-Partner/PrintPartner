@@ -56,7 +56,11 @@ const action = (planId: number, kind: string, label: string, reason: string) => 
   label,
   reason,
   stage_id: "checkoff",
-  target: { plan_id: planId, tab: "checkoff" },
+  target: { plan_id: planId, tab: "checkoff", draft_id: null },
+  draft_id: null,
+  issue_count: null,
+  item_count: null,
+  unit_count: null,
 });
 
 // The feed ranks Build 5 first, unlike the list's order, so a test can tell they differ.
@@ -79,13 +83,19 @@ const TASKS = {
       next_action: action(2, "verify_prints", "Verify prints", "2 prints are waiting for verification"),
     },
   ],
+  unavailable: [{ plan_id: 9, build_name: "Synthetic Build 08", reason: "Accepted Plan failed its integrity check" }],
 };
 
 const stage = (id: string, taskCount?: number) => ({
   id,
   group: id === "sources" || id === "plan" ? "prepare" : "make",
   label: id,
-  status: { kind: taskCount ? "needs_attention" : "ready", summary: "", task_count: taskCount },
+  status: {
+    kind: taskCount ? "needs_attention" : "ready",
+    summary: "",
+    task_count: taskCount ?? null,
+    active_count: null,
+  },
 });
 
 const workflow = (id: number) => ({
@@ -169,7 +179,12 @@ describe("UI2-01 Builds list", () => {
       ["Build", "Order", "Progress", "Next action"],
       ["Synthetic Build 01", "SO-1001", "12 of 40 units printed", "Verify printsNeeds you"],
       ["Synthetic Build 04", "None", "No accepted units", "Attach Sources"],
-      ["Synthetic Build 08Archived", "None", "Progress unavailable: not computed yet", "Nothing open"],
+      [
+        "Synthetic Build 08Archived",
+        "None",
+        "Progress unavailable: not computed yet",
+        "Not availableAccepted Plan failed its integrity check",
+      ],
     ]);
     expect(requested(fetchMock)).toContain("/api/v2/tasks");
     expect(screen.getByRole("link", { name: "Synthetic Build 01" }).getAttribute("href")).toBe("/builds/2");
@@ -179,6 +194,13 @@ describe("UI2-01 Builds list", () => {
         (p) => p === "/health" || p === "/api/v2/tasks" || p.startsWith("/api/v2/plans"),
       ),
     ).toBe(true);
+  });
+
+  it("says a Build missing from the feed has nothing open", async () => {
+    renderAt("/builds", core((p) => (p === "/api/v2/tasks" ? json({ ...TASKS, unavailable: [] }) : plans(p))));
+    await screen.findByText("Attach Sources");
+    const row = screen.getByRole("link", { name: "Synthetic Build 08" }).closest("tr")!;
+    expect(row.lastElementChild?.textContent).toBe("Nothing open");
   });
 
   it("keeps the Builds readable when next actions fail, and retries them", async () => {

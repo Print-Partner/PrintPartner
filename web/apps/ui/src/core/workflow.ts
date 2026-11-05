@@ -6,6 +6,8 @@ import { readCore } from "./rust";
  * (GRE-1123), the same read Today and MCP use, so this UI never ranks work itself.
  */
 export type Task = TaskFeed["tasks"][number];
+/** A Build whose stored data failed a check, so the feed could not resolve it. */
+export type UnavailableBuild = TaskFeed["unavailable"][number];
 
 /** `GET /api/v2/tasks`: each open Build's next action, most urgent first. */
 export const tasksQuery = {
@@ -24,7 +26,10 @@ export function openDecisionCount(workflow: BuildWorkflow): number {
   return workflow.stages.reduce((sum, stage) => sum + (stage.status.task_count ?? 0), 0);
 }
 
-/** The feed's task for each Build. A Build with no entry has nothing open. */
-export function tasksByBuild(feed: TaskFeed): ReadonlyMap<number, Task> {
-  return new Map(feed.tasks.map((task) => [task.plan_id, task]));
+/** The feed's entry for each Build: its task, or why it is unavailable. A Build with no entry has nothing open. */
+export function tasksByBuild(feed: TaskFeed): ReadonlyMap<number, Task | UnavailableBuild> {
+  return new Map<number, Task | UnavailableBuild>([
+    ...feed.tasks.map((task) => [task.plan_id, task] as const),
+    ...feed.unavailable.map((build) => [build.plan_id, build] as const),
+  ]);
 }

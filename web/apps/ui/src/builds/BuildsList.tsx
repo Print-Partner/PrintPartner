@@ -4,7 +4,9 @@ import type { KeyboardEvent } from "react";
 import { Link } from "react-router";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
-import { tasksByBuild, tasksQuery, type Task } from "../core/workflow";
+import { tasksByBuild, tasksQuery, type Task, type UnavailableBuild } from "../core/workflow";
+
+type FeedEntries = ReadonlyMap<number, Task | UnavailableBuild>;
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ModuleOff, ScreenTemplate } from "../screen/ScreenTemplate";
@@ -34,10 +36,18 @@ function moveRowFocus(event: KeyboardEvent<HTMLTableSectionElement>) {
 }
 
 /** The next-action cell: the projection's task for this Build, or why there is none. */
-function NextActionCell({ tasks, id }: { tasks: ReadonlyMap<number, Task> | undefined; id: number }) {
+function NextActionCell({ tasks, id }: { tasks: FeedEntries | undefined; id: number }) {
   if (!tasks) return <span className="pp-muted">Not loaded</span>;
   const task = tasks.get(id);
   if (!task) return <span className="pp-muted">Nothing open</span>;
+  if (!("next_action" in task)) {
+    return (
+      <>
+        <span className="pp-muted">Not available</span>
+        <span className="pp-fact-detail">{task.reason}</span>
+      </>
+    );
+  }
   return (
     <>
       {task.next_action.label}
@@ -72,7 +82,7 @@ function BuildsTable({
 }: {
   builds: ProfileSummary[];
   showOrder: boolean;
-  tasks: ReadonlyMap<number, Task> | undefined;
+  tasks: FeedEntries | undefined;
 }) {
   return (
     <table className="pp-builds-table" aria-label="Builds">

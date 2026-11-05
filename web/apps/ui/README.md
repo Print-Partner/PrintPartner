@@ -100,8 +100,9 @@ which slice brings them. Nothing here changes data.
 - **Open tasks and next action** come from the shared Rust workflow projection
   (GRE-1123), the read Today and MCP use (`src/core/workflow.ts`). The list reads
   `GET /api/v2/tasks` once: each open Build has one task, its next action, shown
-  with "Needs you" when the projection marks it for attention; a Build missing
-  from the feed shows "Nothing open". The list keeps the core's Build order and
+  with "Needs you" when the projection marks it for attention; a Build the feed
+  lists as unavailable (its stored data failed a check) shows "Not available"
+  with the reason; a Build missing from the feed shows "Nothing open". The list keeps the core's Build order and
   never re-ranks by the feed. Overview reads `GET /api/v2/plans/{id}/workflow`:
   the next action and reason, and the count of open decisions, the sum of the
   stages' `task_count` (a next action such as Prepare Production is not a
@@ -120,7 +121,7 @@ which slice brings them. Nothing here changes data.
   WebKitGTK showed the first row 2.0 to 3.5 s after navigation (fetch, schema
   check and render of all rows) and moved focus to the next row by the next
   frame in a median of 17 to 38 ms (max 89 ms); headless Chromium took 1.2 to
-  2.0 s and a median of 67 to 101 ms. There is no approved latency budget, so the check records the
+  2.1 s and a median of 67 to 108 ms. There is no approved latency budget, so the check records the
   numbers and fails only on a missing row or misplaced focus. Revisit
   virtualization if a measurement says otherwise.
 

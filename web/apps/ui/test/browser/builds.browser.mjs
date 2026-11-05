@@ -28,6 +28,10 @@ const PROBE = `
   while (!row(${COUNT - 1})) { if (Date.now() > deadline) throw new Error("rows missing"); await sleep(5); }
   const lastRow = performance.now();
   const rows = document.querySelectorAll(".pp-builds-table tbody tr").length;
+  while (!row(0).closest("tr").textContent.includes("Verify prints")) {
+    if (Date.now() > deadline) throw new Error("next actions missing");
+    await sleep(5);
+  }
   await frame();
   row(0).focus();
   const key = async (k) => {

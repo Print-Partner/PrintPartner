@@ -279,6 +279,30 @@ fn build_workflow_autosaved_draft_says_saved_not_accepted() {
 }
 
 #[test]
+fn build_workflow_unchanged_draft_keeps_the_build_next_action() {
+    let f = Fixture::new();
+    let before = f.workspace(Inputs::default(), 1);
+    let fields = "part_key,relative_path,filename,source_layer,status,role_inferred,role_override,filament_color_id,filament_custom_hex,spoolman_spool_id,quantity_inferred,quantity_override,quantity_effective,included,notes,github_blob_url,geometry_same,requirement,option_group_id,manifest_source,artifact_digest";
+    f.sql(&format!(
+        "INSERT INTO plan_drafts (tenant_id,profile_id,base_revision_id,base_plan_version,state,digest_format,snapshot_digest,created_by,idempotency_key,created_at)
+         VALUES ('default',1,1,1,'open','v1','{}','user','autosave-0','2026-11-04T12:00:00.000Z');
+         INSERT INTO plan_draft_parts (tenant_id,draft_id,base_revision_part_id,{fields})
+         SELECT tenant_id,last_insert_rowid(),id,{fields} FROM plan_revision_parts WHERE revision_id=1;",
+        "a".repeat(64)
+    ));
+    let after = f.workspace(Inputs::default(), 1);
+    assert!(matches!(
+        after.working_plan,
+        Working::Ready {
+            change_count: 0,
+            ..
+        }
+    ));
+    assert_eq!(after.next_action, before.next_action);
+    assert_eq!(after.stages[1].status, before.stages[1].status);
+}
+
+#[test]
 fn build_workflow_takes_stock_shortfall_from_its_adapter() {
     let f = Fixture::new();
     let stock = |stock| {

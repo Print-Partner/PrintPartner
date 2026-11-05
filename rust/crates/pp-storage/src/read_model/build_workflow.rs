@@ -272,9 +272,9 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
     }
     let mut facts = Vec::with_capacity(ids.len());
     let mut unavailable = Vec::new();
+    let mut budget = graph::Budget::default();
     for (id, name) in ids {
         ensure!(!cancelled(), "Cancelled before admission");
-        let mut budget = graph::Budget::default();
         let accepted = super::accepted_read(&tx, &tenant, id, &command.repos, &mut budget)?;
         match context::capture(&tx, &tenant, id, &accepted, &mut budget) {
             Ok(captured) => {

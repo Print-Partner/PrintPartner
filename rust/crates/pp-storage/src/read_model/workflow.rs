@@ -358,7 +358,7 @@ fn plan_status(f: &Facts) -> StageStatus {
     match &f.working_plan {
         Working::Ready {
             change_count: n, ..
-        } => status(
+        } if *n > 0 => status(
             Ready,
             format!("{n} Plan {} saved in a draft.", plural(*n, "change")),
         ),
@@ -372,7 +372,7 @@ fn plan_status(f: &Facts) -> StageStatus {
             "Open Plan to refresh its saved changes.",
             *issue_count,
         ),
-        Working::None => match &f.accepted_plan {
+        Working::None | Working::Ready { .. } => match &f.accepted_plan {
             Accepted::Ready { plan_version, .. } => {
                 status(Complete, format!("Plan revision {plan_version} saved."))
             }
@@ -623,7 +623,7 @@ fn next(f: &Facts) -> NextAction {
         Working::Ready {
             draft_id,
             change_count: n,
-        } => {
+        } if n > 0 => {
             return draft(
                 ReviewWorkingPlan,
                 "Review saved Plan changes",
@@ -636,7 +636,7 @@ fn next(f: &Facts) -> NextAction {
                 draft_id,
             );
         }
-        Working::None => {}
+        Working::None | Working::Ready { .. } => {}
     }
     let Accepted::Ready {
         remaining_units: remaining,

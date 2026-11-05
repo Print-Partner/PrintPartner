@@ -312,18 +312,30 @@ fn logged(entry: &Value) -> Option<FarmLogEntry> {
 
 fn sends(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<FarmLogEntry>> {
     let queue = setting_list(tx, tenant, "printer.send_queue")?;
+    let text = |value: &Value, key: &str| {
+        value[key]
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    let hosts: std::collections::HashMap<String, String> = queue
+        .iter()
+        .filter_map(|raw| Some((text(raw, "id")?, text(raw, "host_name")?)))
+        .collect();
     Ok(Farm::parse(vec![], vec![], vec![], vec![], queue)
         .send_queue()
         .items
         .into_iter()
         .filter_map(|item| {
             let file = &item.filename;
+            let printer = hosts.get(&item.id).unwrap_or(&item.printer_id);
             let summary = match item.state {
-                SendState::Queued => format!("Queued {file} for a printer"),
-                SendState::Sending => format!("Sending {file} to a printer"),
-                SendState::Done => format!("Sent {file} to a printer"),
-                SendState::Error => format!("Send of {file} to a printer failed"),
-                SendState::Cancelled => format!("Cancelled send of {file} to a printer"),
+                SendState::Queued => format!("Queued {file} for {printer}"),
+                SendState::Sending => format!("Sending {file} to {printer}"),
+                SendState::Done => format!("Sent {file} to {printer}"),
+                SendState::Error => format!("Send of {file} to {printer} failed"),
+                SendState::Cancelled => format!("Cancelled send of {file} to {printer}"),
             };
             Some(FarmLogEntry {
                 id: format!("{SEND}:{}", item.id),

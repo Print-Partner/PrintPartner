@@ -67,7 +67,7 @@ fn seed_sends(fixture: &Fixture) {
          "printer_id": "printer-1", "profile_id": 1, "state": "done",
          "created_at": "2020-01-01T00:00:00.000Z"},
         {"id": "send-2", "filename": "plate.gcode", "artifact_path": "/disposable/plate.gcode",
-         "printer_id": "printer-1", "profile_id": 1, "state": "cancelled",
+         "printer_id": "printer-1", "host_name": " Bench MK4 ", "profile_id": 1, "state": "cancelled",
          "created_at": "2020-01-01T00:01:00.000Z"}
     ]);
     seed_queue(fixture, &queue.to_string());
@@ -126,10 +126,10 @@ fn farm_log_sends_follow_their_state_and_refuse_undo() {
             .collect::<Vec<_>>(),
         vec![
             (
-                json!("Cancelled send of plate.gcode to a printer"),
+                json!("Cancelled send of plate.gcode to Bench MK4"),
                 json!("cancelled")
             ),
-            (json!("Sent plate.gcode to a printer"), json!("done")),
+            (json!("Sent plate.gcode to printer-1"), json!("done")),
         ],
         "a send's summary follows its state"
     );

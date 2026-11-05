@@ -30,7 +30,8 @@ number, time, undo token, Build and printer ids, unit counts and bed count; the
 burst receipt in `printer.checkoff_bursts` stays the only copy of what undo
 restores. A send entry is the queue item itself, so a cancelled send shows
 `send_state: "cancelled"` on its one entry rather than a second record. Its
-`summary` follows the state, using the same wording as History: `Queued`,
+`summary` follows the state, using History's wording and naming the printer
+by the item's `host_name`, or by its `printer_id` when it has none: `Queued`,
 `Sending`, `Sent`, `Send of … failed`, or `Cancelled send of …`.
 
 An idempotent replay of a burst returns its stored receipt before any write,

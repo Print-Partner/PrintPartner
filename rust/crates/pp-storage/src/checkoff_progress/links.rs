@@ -29,17 +29,7 @@ const REASONS: [&str; 10] = [
 pub(super) type Link = Map<String, Value>;
 
 pub(super) fn now() -> String {
-    let now = time::OffsetDateTime::now_utc();
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        now.year(),
-        u8::from(now.month()),
-        now.day(),
-        now.hour(),
-        now.minute(),
-        now.second(),
-        now.millisecond()
-    )
+    crate::auth::timestamp(0)
 }
 
 pub(super) fn uuid() -> String {
@@ -88,17 +78,14 @@ pub(super) fn js_number(value: &Value) -> Option<f64> {
             if s.is_empty() {
                 return Some(0.0);
             }
-            for (prefix, radix) in [
-                ("0x", 16),
-                ("0X", 16),
-                ("0o", 8),
-                ("0O", 8),
-                ("0b", 2),
-                ("0B", 2),
-            ] {
-                if let Some(digits) = s.strip_prefix(prefix) {
-                    return u64::from_str_radix(digits, radix).ok().map(|n| n as f64);
-                }
+            let radix = match s.get(..2).map(str::to_ascii_lowercase).as_deref() {
+                Some("0x") => 16,
+                Some("0o") => 8,
+                Some("0b") => 2,
+                _ => 10,
+            };
+            if radix != 10 {
+                return u64::from_str_radix(&s[2..], radix).ok().map(|n| n as f64);
             }
             match s.trim_start_matches(['+', '-']) {
                 "Infinity" if s.starts_with('-') => Some(f64::NEG_INFINITY),
@@ -326,6 +313,72 @@ pub(super) fn imported_inventory(raw: &Value) -> Value {
     json!({ "extras": extras })
 }
 
+fn finite(raw: &Value, key: &str) -> Option<f64> {
+    field(raw, key).as_f64().filter(|n| n.is_finite())
+}
+
+/// The print file fields of `parseLink`.
+fn file_fields(raw: &Value, now: &str) -> [(&'static str, Value); 5] {
+    let revision = finite(raw, "plan_revision_id")
+        .filter(|n| n.fract() == 0.0 && *n > 0.0 && *n <= MAX_SAFE)
+        .map_or(Value::Null, |n| Value::from(n as i64));
+    [
+        ("plan_revision_id", revision),
+        (
+            "remote_identity",
+            file_identity(field(raw, "remote_identity")),
+        ),
+        ("remote_drift", drift(field(raw, "remote_drift"), now)),
+        (
+            "classification",
+            classification(field(raw, "classification")),
+        ),
+        (
+            "imported_inventory",
+            imported_inventory(field(raw, "imported_inventory")),
+        ),
+    ]
+}
+
+/// The state and timing fields of `parseLink`.
+fn status_fields(raw: &Value, state: &str, now: &str) -> [(&'static str, Value); 9] {
+    let host_outcome = match (field(raw, "host_outcome").as_str(), state) {
+        (Some(o @ ("unknown" | "success" | "failed" | "cancelled")), _) => Value::from(o),
+        (_, "verified" | "awaiting_verify") => "success".into(),
+        (_, "host_failed") => "failed".into(),
+        _ => Value::Null,
+    };
+    let nonempty = |key: &str| {
+        field(raw, key)
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(Value::from)
+    };
+    let progress = finite(raw, "last_progress").map_or(Value::Null, |n| {
+        Value::from((n.clamp(0.0, 100.0) + 0.5).floor() as i64)
+    });
+    let marked = finite(raw, "units_marked").map_or(Value::Null, |_| raw["units_marked"].clone());
+    [
+        ("state", state.into()),
+        ("host_outcome", host_outcome),
+        ("saw_active", truthy(field(raw, "saw_active")).into()),
+        ("started", truthy(field(raw, "started")).into()),
+        ("last_progress", progress),
+        (
+            "created_at",
+            nonempty("created_at").unwrap_or_else(|| now.into()),
+        ),
+        (
+            "completed_at",
+            nonempty("completed_at")
+                .or_else(|| nonempty("applied_at"))
+                .unwrap_or_default(),
+        ),
+        ("applied_at", nonempty("applied_at").unwrap_or_default()),
+        ("units_marked", marked),
+    ]
+}
+
 /// `parseLink`, including the legacy `applied` state that now reads as verified.
 fn parse(raw: &Value, now: &str) -> Option<Link> {
     let state = match raw.get("state")?.as_str()? {
@@ -333,11 +386,6 @@ fn parse(raw: &Value, now: &str) -> Option<Link> {
         s @ ("watching" | "awaiting_verify" | "host_failed" | "dismissed" | "verified") => s,
         _ => return None,
     };
-    let id = text(field(raw, "id"), None)?;
-    let integration_id = text(field(raw, "integration_id"), None)?;
-    let printer_id = text(field(raw, "printer_id"), None)?;
-    let filename = text(field(raw, "filename"), None)?;
-    let profile_id = js_integer(raw.get("profile_id"), 1.0)?;
     let units: Vec<Value> = field(raw, "units")
         .as_array()
         .map(|units| units.iter().filter_map(unit).collect())
@@ -352,31 +400,16 @@ fn parse(raw: &Value, now: &str) -> Option<Link> {
                 .collect()
         })
         .unwrap_or_default();
-    let host_outcome = match field(raw, "host_outcome").as_str() {
-        Some(o @ ("unknown" | "success" | "failed" | "cancelled")) => Value::from(o),
-        _ => match state {
-            "verified" | "awaiting_verify" => "success".into(),
-            "host_failed" => "failed".into(),
-            _ => Value::Null,
-        },
-    };
-    let nonempty = |key: &str| {
-        field(raw, key)
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(Value::from)
-    };
-    let finite = |key: &str| field(raw, key).as_f64().filter(|n| n.is_finite());
-    let pairs = [
-        ("id", id),
-        ("profile_id", profile_id.into()),
-        ("integration_id", integration_id),
-        ("printer_id", printer_id),
+    let head = [
+        ("id", text(field(raw, "id"), None)?),
+        ("profile_id", js_integer(raw.get("profile_id"), 1.0)?.into()),
+        ("integration_id", text(field(raw, "integration_id"), None)?),
+        ("printer_id", text(field(raw, "printer_id"), None)?),
         (
             "host_name",
             text(field(raw, "host_name"), None).unwrap_or_else(|| "Printer".into()),
         ),
-        ("filename", filename),
+        ("filename", text(field(raw, "filename"), None)?),
         (
             "remote_path",
             text(field(raw, "remote_path"), None).unwrap_or_default(),
@@ -385,25 +418,8 @@ fn parse(raw: &Value, now: &str) -> Option<Link> {
             "upload_job_id",
             text(field(raw, "upload_job_id"), None).unwrap_or_default(),
         ),
-        (
-            "plan_revision_id",
-            finite("plan_revision_id")
-                .filter(|n| n.fract() == 0.0 && *n > 0.0 && *n <= MAX_SAFE)
-                .map_or(Value::Null, |n| Value::from(n as i64)),
-        ),
-        (
-            "remote_identity",
-            file_identity(field(raw, "remote_identity")),
-        ),
-        ("remote_drift", drift(field(raw, "remote_drift"), now)),
-        (
-            "classification",
-            classification(field(raw, "classification")),
-        ),
-        (
-            "imported_inventory",
-            imported_inventory(field(raw, "imported_inventory")),
-        ),
+    ];
+    let lists = [
         ("units", units.into()),
         (
             "unlabeled_names",
@@ -414,33 +430,15 @@ fn parse(raw: &Value, now: &str) -> Option<Link> {
             },
         ),
         ("resolved_units", resolved(field(raw, "resolved_units"))),
-        ("state", state.into()),
-        ("host_outcome", host_outcome),
-        ("saw_active", truthy(field(raw, "saw_active")).into()),
-        ("started", truthy(field(raw, "started")).into()),
-        (
-            "last_progress",
-            finite("last_progress").map_or(Value::Null, |n| {
-                Value::from((n.clamp(0.0, 100.0) + 0.5).floor() as i64)
-            }),
-        ),
-        (
-            "created_at",
-            nonempty("created_at").unwrap_or_else(|| now.into()),
-        ),
-        (
-            "completed_at",
-            nonempty("completed_at")
-                .or_else(|| nonempty("applied_at"))
-                .unwrap_or_default(),
-        ),
-        ("applied_at", nonempty("applied_at").unwrap_or_default()),
-        (
-            "units_marked",
-            finite("units_marked").map_or(Value::Null, |_| field(raw, "units_marked").clone()),
-        ),
     ];
-    Some(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    Some(
+        head.into_iter()
+            .chain(file_fields(raw, now))
+            .chain(lists)
+            .chain(status_fields(raw, state, now))
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect(),
+    )
 }
 
 /// The link as Node's JSON serializes it: no `undefined` fields.

@@ -9,8 +9,11 @@ use pp_storage::{
     checkoff_progress::{Request, Response},
     read_model::Credential,
 };
-use rusqlite::{Connection, types::ValueRef};
-use serde_json::{Map, Value, json};
+use rusqlite::Connection;
+use serde_json::{Value, json};
+
+#[path = "common/json_rows.rs"]
+mod json_rows;
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicBool, time::Duration};
 
 const NODE: &str = include_str!("../../../../fixtures/parity/printer-checkoff-verify/node.json");
@@ -95,42 +98,11 @@ impl Fixture {
     }
 
     fn rows(&self, normalizer: &mut Normalizer) -> Value {
-        let connection = self.sql();
-        let mut rows = Map::new();
-        for (name, sql) in node()["queries"].as_object().unwrap() {
-            let mut statement = connection.prepare(sql.as_str().unwrap()).unwrap();
-            let columns: Vec<String> = statement
-                .column_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
-            let table: Vec<Value> = statement
-                .query_map([], |row| {
-                    let mut object = Map::new();
-                    for (i, column) in columns.iter().enumerate() {
-                        let value = match row.get_ref(i)? {
-                            ValueRef::Null => Value::Null,
-                            ValueRef::Integer(n) => json!(n),
-                            ValueRef::Real(n) => json!(n),
-                            value => {
-                                let text = value.as_str().unwrap();
-                                if name == "links" && column == "value" {
-                                    serde_json::from_str(text).unwrap()
-                                } else {
-                                    json!(text)
-                                }
-                            }
-                        };
-                        object.insert(column.clone(), value);
-                    }
-                    Ok(Value::Object(object))
-                })
-                .unwrap()
-                .collect::<rusqlite::Result<_>>()
-                .unwrap();
-            rows.insert(name.clone(), table.into());
+        let mut rows = json_rows::query_rows(&self.sql(), node()["queries"].as_object().unwrap());
+        for link in rows["links"].as_array_mut().unwrap() {
+            link["value"] = serde_json::from_str(link["value"].as_str().unwrap()).unwrap();
         }
-        normalizer.walk(Value::Object(rows))
+        normalizer.walk(rows)
     }
 }
 
@@ -188,6 +160,13 @@ fn replay() -> (Fixture, Value, Vec<Value>) {
     }
     owner.shutdown().unwrap();
     (fixture, before, steps)
+}
+
+fn first_success(steps: &[Value]) -> usize {
+    steps
+        .iter()
+        .position(|s| s["receipt"]["status"] == 200)
+        .unwrap()
 }
 
 fn progress(rows: &Value) -> Vec<(i64, i64, i64)> {
@@ -290,10 +269,7 @@ fn ticket_t_61_checkoff_duplicate_and_stale_file_results_count_once() {
     let (_fixture, _before, observed) = replay();
     let expected = node();
     let steps = expected["steps"].as_array().unwrap();
-    let first = steps
-        .iter()
-        .position(|s| s["receipt"]["status"] == 200)
-        .unwrap();
+    let first = first_success(steps);
     assert_eq!(steps[first + 1]["body"], steps[first]["body"]);
     assert_eq!(
         observed[first + 1]["receipt"]["body"]["detail"],
@@ -365,10 +341,7 @@ fn ticket_t_61_checkoff_monitor_states_and_other_tenants_never_mark() {
 fn ticket_t_61_checkoff_fault_after_first_write_leaves_no_partial_record() {
     let expected = node();
     let steps = expected["steps"].as_array().unwrap();
-    let first = steps
-        .iter()
-        .position(|s| s["receipt"]["status"] == 200)
-        .unwrap();
+    let first = first_success(steps);
     let fixture = Fixture::new();
     let owner = fixture.open();
     for step in &steps[..first] {

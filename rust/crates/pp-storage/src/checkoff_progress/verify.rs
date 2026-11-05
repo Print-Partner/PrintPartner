@@ -12,7 +12,7 @@ use super::{
     links::{self, Link, field},
     read, set_completed,
 };
-use crate::read_model::AcceptedRead;
+use crate::read_model::{AcceptedRead, Part, Snapshot, graph::Unit};
 use rusqlite::Transaction;
 use serde_json::{Map, Value, json};
 use std::{
@@ -144,8 +144,106 @@ fn coordinates(units: &Value) -> Vec<(i64, i64)> {
         .unwrap_or_default()
 }
 
-fn find(links: &[Link], id: &str) -> Option<usize> {
-    links.iter().position(|link| link["id"] == id)
+/// Every link, the index of the requested one, and the time the load used.
+type Found = std::result::Result<(Vec<Link>, usize, String), Response>;
+
+fn unit(snapshot: &Snapshot, part_id: i64, unit_index: i64) -> Option<(&Part, &Unit)> {
+    let part = snapshot
+        .parts
+        .iter()
+        .find(|p| p.projection_part_id == part_id)?;
+    Some((
+        part,
+        part.units.iter().find(|u| u.unit_index == unit_index)?,
+    ))
+}
+
+/// Loads every link and finds `link_id`, refusing as Node does when it is
+/// missing or not in `state`.
+fn load_in_state(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    link_id: &str,
+    state: &str,
+    wrong_state: &str,
+) -> anyhow::Result<Found> {
+    let now = links::now();
+    let all = links::load(tx, tenant, &now)?;
+    Ok(match all.iter().position(|link| link["id"] == link_id) {
+        None => Err(Response::failure(404, "Checkoff link not found", None)),
+        Some(index) if all[index]["state"] != state => {
+            Err(Response::failure(409, wrong_state, None))
+        }
+        Some(index) => Ok((all, index, now)),
+    })
+}
+
+/// Checks the left-fill rule for every Part before marking any unit, then
+/// marks the confirmed units printed. Returns how many were not printed yet.
+fn mark_confirmed(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    snapshot: &Snapshot,
+    decisions: &[Decision],
+) -> anyhow::Result<std::result::Result<usize, Response>> {
+    let mut confirmed: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
+    for d in decisions.iter().filter(|d| d.reason.is_none()) {
+        confirmed.entry(d.part_id).or_default().insert(d.unit_index);
+    }
+    for (&part_id, indices) in &confirmed {
+        let max = indices.last().copied().unwrap_or_default();
+        let fills_left = unit(snapshot, part_id, max).is_some_and(|(part, _)| {
+            part.units
+                .iter()
+                .all(|u| u.unit_index > max || u.completed || indices.contains(&u.unit_index))
+        });
+        if !fills_left {
+            return Ok(Err(Response::failure(400, LEFT_FILL, None)));
+        }
+    }
+    let mut newly = 0;
+    for (&part_id, indices) in &confirmed {
+        for &index in indices {
+            newly += usize::from(unit(snapshot, part_id, index).is_some_and(|(_, u)| !u.completed));
+            set_completed(tx, tenant, part_id, index, true)?;
+        }
+    }
+    Ok(Ok(newly))
+}
+
+/// The link's `resolved_units` entries and the outcome rows for the decisions.
+fn record(snapshot: &Snapshot, decisions: &[Decision]) -> (Vec<Value>, Vec<links::Outcome>) {
+    decisions
+        .iter()
+        .filter_map(|d| {
+            let (part, _) = unit(snapshot, d.part_id, d.unit_index)?;
+            let result = if d.reason.is_some() {
+                "rejected"
+            } else {
+                "confirmed"
+            };
+            let mut row = Map::new();
+            row.insert("part_id".into(), d.part_id.into());
+            row.insert("unit_index".into(), d.unit_index.into());
+            row.insert("result".into(), result.into());
+            if let Some(reason) = &d.reason {
+                row.insert("reason".into(), reason.clone().into());
+            }
+            if let Some(note) = &d.note {
+                row.insert("note".into(), note.clone().into());
+            }
+            let outcome = links::Outcome {
+                part_id: d.part_id,
+                unit_index: d.unit_index,
+                result,
+                reason: d.reason.clone(),
+                note: d.note.clone(),
+                match_key: part.part_key.clone(),
+                role: part.effective_role.clone(),
+            };
+            Some((Value::Object(row), outcome))
+        })
+        .unzip()
 }
 
 pub(super) fn verify(
@@ -155,20 +253,20 @@ pub(super) fn verify(
     body: &Value,
     repos: &Path,
 ) -> Outcome {
-    let now = links::now();
-    let mut all = links::load(tx, tenant, &now)?;
-    let Some(index) = find(&all, link_id) else {
-        return refuse(404, "Checkoff link not found");
+    let (mut all, index, now) = match load_in_state(
+        tx,
+        tenant,
+        link_id,
+        "awaiting_verify",
+        "Link is not awaiting verify",
+    )? {
+        Ok(found) => found,
+        Err(response) => return Ok(Ok(response)),
     };
-    if all[index]["state"] != "awaiting_verify" {
-        return refuse(409, "Link is not awaiting verify");
-    }
-    let extra = match body.get("additional_decisions") {
+    let extra = match body.get("additional_decisions").map(additional) {
         None => Vec::new(),
-        Some(raw) => match additional(raw) {
-            Some(extra) => extra,
-            None => return refuse(400, "Invalid additional part decisions"),
-        },
+        Some(Some(extra)) => extra,
+        Some(None) => return refuse(400, "Invalid additional part decisions"),
     };
     let decisions = match decisions(field(body, "decisions"), !extra.is_empty()) {
         Ok(decisions) => decisions,
@@ -192,17 +290,7 @@ pub(super) fn verify(
         AcceptedRead::Missing => return Ok(Err(Refusal::Internal)),
         AcceptedRead::IntegrityFailure { .. } => return Ok(Err(Refusal::Integrity)),
     };
-    let unit = |part_id: i64, unit_index: i64| {
-        let part = snapshot
-            .parts
-            .iter()
-            .find(|p| p.projection_part_id == part_id)?;
-        Some((
-            part,
-            part.units.iter().find(|u| u.unit_index == unit_index)?,
-        ))
-    };
-    if units.iter().any(|&(p, u)| unit(p, u).is_none()) {
+    if units.iter().any(|&(p, u)| unit(&snapshot, p, u).is_none()) {
         return refuse(
             409,
             "Legacy Checkoff link no longer maps to the accepted Plan",
@@ -215,69 +303,16 @@ pub(super) fn verify(
         return Ok(Err(Refusal::Archived));
     }
     complete_rows(tx, tenant, &snapshot)?;
-
-    let mut confirmed: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
-    for d in decisions.iter().filter(|d| d.reason.is_none()) {
-        confirmed.entry(d.part_id).or_default().insert(d.unit_index);
-    }
-    for (&part_id, indices) in &confirmed {
-        let max = indices.last().copied().unwrap_or_default();
-        let Some((part, _)) = unit(part_id, max) else {
-            return refuse(400, LEFT_FILL);
-        };
-        if part
-            .units
-            .iter()
-            .any(|u| u.unit_index <= max && !u.completed && !indices.contains(&u.unit_index))
-        {
-            return refuse(400, LEFT_FILL);
-        }
-    }
-    let mut units_confirmed = 0;
-    for (&part_id, indices) in &confirmed {
-        for &index in indices {
-            if unit(part_id, index).is_some_and(|(_, u)| !u.completed) {
-                units_confirmed += 1;
-            }
-            set_completed(tx, tenant, part_id, index, true)?;
-        }
-    }
-
+    let units_confirmed = match mark_confirmed(tx, tenant, &snapshot, &decisions)? {
+        Ok(newly) => newly,
+        Err(response) => return Ok(Ok(response)),
+    };
+    let (rows, outcomes) = record(&snapshot, &decisions);
     let mut resolved_units = link["resolved_units"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let mut outcomes = Vec::with_capacity(decisions.len());
-    for d in &decisions {
-        let Some((part, _)) = unit(d.part_id, d.unit_index) else {
-            return refuse(400, LEFT_FILL);
-        };
-        let result = if d.reason.is_some() {
-            "rejected"
-        } else {
-            "confirmed"
-        };
-        let mut row = Map::new();
-        row.insert("part_id".into(), d.part_id.into());
-        row.insert("unit_index".into(), d.unit_index.into());
-        row.insert("result".into(), result.into());
-        if let Some(reason) = &d.reason {
-            row.insert("reason".into(), reason.clone().into());
-        }
-        if let Some(note) = &d.note {
-            row.insert("note".into(), note.clone().into());
-        }
-        resolved_units.push(Value::Object(row));
-        outcomes.push(links::Outcome {
-            part_id: d.part_id,
-            unit_index: d.unit_index,
-            result,
-            reason: d.reason.clone(),
-            note: d.note.clone(),
-            match_key: part.part_key.clone(),
-            role: part.effective_role.clone(),
-        });
-    }
+    resolved_units.extend(rows);
     let done: HashSet<(i64, i64)> = coordinates(&Value::from(resolved_units.clone()))
         .into_iter()
         .collect();
@@ -289,15 +324,12 @@ pub(super) fn verify(
     let units_marked = links::add(&link["units_marked"], units_confirmed);
     link.insert("resolved_units".into(), resolved_units.into());
     link.insert("imported_inventory".into(), inventory);
-    link.insert(
-        "state".into(),
-        if fully_done {
-            "verified"
-        } else {
-            "awaiting_verify"
-        }
-        .into(),
-    );
+    let state = if fully_done {
+        "verified"
+    } else {
+        "awaiting_verify"
+    };
+    link.insert("state".into(), state.into());
     if fully_done {
         link.insert("applied_at".into(), now.clone().into());
     }
@@ -314,14 +346,16 @@ pub(super) fn verify(
 }
 
 pub(super) fn dismiss(tx: &Transaction<'_>, tenant: &str, link_id: &str) -> Outcome {
-    let now = links::now();
-    let mut all = links::load(tx, tenant, &now)?;
-    let Some(index) = find(&all, link_id) else {
-        return refuse(404, "Checkoff link not found");
+    let (mut all, index, _) = match load_in_state(
+        tx,
+        tenant,
+        link_id,
+        "host_failed",
+        "Link is not host_failed",
+    )? {
+        Ok(found) => found,
+        Err(response) => return Ok(Ok(response)),
     };
-    if all[index]["state"] != "host_failed" {
-        return refuse(409, "Link is not host_failed");
-    }
     all[index].insert("state".into(), "dismissed".into());
     let link = links::public(&all[index]);
     links::save(tx, tenant, all, index)?;

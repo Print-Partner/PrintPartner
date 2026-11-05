@@ -10,7 +10,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Serves `apps/web/dist` with gzip negotiation (`src/assets.rs`) and forwards admitted routes through `pp_compat::Endpoint`.
 - Answers a few routes itself: `/__desktop/bootstrap`, `/__desktop/rate-limit`, `/__runtime`, `POST /auth/logout`, and `/legal/summary` once that route is Rust-owned. It refuses `/mcp`.
 - Defines `RustStatus`, which `/__runtime` reports for a runtime started with `Gateway::start_rust_only`. `pp-core` owns the sender.
-- Runs Moonraker status watchers from `pp_drivers::moonraker` and the request drain used at shutdown.
+- Runs Moonraker status watchers from `pp_drivers::moonraker` and the request drain used at shutdown. With Node, watchers take hosts from Node's `/__desktop/moonraker-hosts` and the gateway answers cached statuses itself. In a Rust-only runtime they take hosts from the caller's `MoonrakerHosts` source, and an authenticated product route answers through `MoonrakerStatus`.
 - Temporary ownership code (`ownership`): which runtime owns each operation participant, and the cutover record that moves one from Node to Rust.
 
 ## Not responsible for
@@ -24,7 +24,8 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | Item | What it does |
 | --- | --- |
 | `Gateway::start(listener, assets, compat, owners)` | Validates `operations.json` against `OperationOwners` and starts serving. |
-| `Gateway` methods | `origin`, `take_launch_target`, `bootstrap_minter`, `monitoring_control`, `shutdown_requested`, `begin_drain`, `wait_idle`, `finish_drain`, `stop`. |
+| `Gateway::start_rust_only(listener, assets, product, status, hosts)` | No Node child. `product` builds the Rust routes from a `MoonrakerStatus` lookup (`lookup(id)` returns `StatusLookup`: `Status`, `NotWatched`, `Unavailable`); `hosts` is the `MoonrakerHosts` snapshot source (`HostReadError::Unavailable` keeps pollers through the grace period, `Invalid` stops them). |
+| `Gateway` methods | `origin`, `take_launch_target`, `bootstrap_minter`, `monitoring_control`, `printer_observations`, `shutdown_requested`, `begin_drain`, `wait_idle`, `finish_drain`, `stop`. |
 | `LaunchTarget`, `BootstrapMinter`, `MonitoringControl`, `ShutdownRequested` | First sign-in URL, new browser links, watcher suspend/resume, logout-triggered shutdown. |
 | `MUTATION_DRAIN` | 5-second bound for in-flight mutations at shutdown. |
 | `ownership` | Source Sync admission: `admit_bundled_source_sync`, `boot_bundled_source_sync`, `Owner`, `AdmissionError`. |
@@ -55,7 +56,7 @@ python3 rust/scripts/gateway-operations.py fixtures/http/routes-inventory.json -
 
 ## Tests
 
-- Unit tests in `src/lib.rs`, `src/ticket_t_2.rs`, `src/ticket_t_3.rs`, and `src/ticket_t_11.rs`. They borrow scratch and cleanup helpers from `pp-storage/tests/common/`.
+- Unit tests in `src/lib.rs`, `src/ticket_t_2.rs`, `src/ticket_t_3.rs`, `src/ticket_t_11.rs`, and `src/ticket_t_4_watcher_proof.rs` (Rust-only watchers against recorded Moonraker bodies). They borrow scratch and cleanup helpers from `pp-storage/tests/common/`.
 - `tests/ticket_t_19.rs` (bootstrap links, logout) and `tests/ticket_t_68.rs` (`Host` and `Origin` rejections).
 - `tests/ticket_t_7_ownership*.rs`, `ticket_t_7_operation_resources.rs`, `ticket_t_7_live_formats.rs`, and `ticket_t_3_drain_cutover.rs` cover the manifests and cutover.
 

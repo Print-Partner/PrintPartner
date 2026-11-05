@@ -32,6 +32,8 @@ pub mod plan_publication;
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_domain::printer_display_state;
 #[cfg(feature = "desktop_rebuild")]
+pub mod printer_hosts;
+#[cfg(feature = "desktop_rebuild")]
 pub mod profiles;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]

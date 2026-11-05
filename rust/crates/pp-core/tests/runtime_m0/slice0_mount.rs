@@ -1,6 +1,6 @@
 //! The launcher start that `pp-server` and `pp-desktop` share, with each
 //! runtime value in a child process so the environment stays isolated.
-use super::{launch, process_tree::descendants, request, temporary};
+use super::{desktop_cookie, launch, process_tree::descendants, request, temporary};
 use axum::http::StatusCode;
 use pp_core::{CoreRuntime, CoreStatus, RuntimeStatus, RustStatus, StatusReceiver};
 use serde_json::{Value, json};
@@ -76,20 +76,7 @@ async fn slice0_mount_launcher_in_child() {
     };
     check_children();
     let origin = runtime.origin().to_owned();
-    // Redeem the bootstrap the way the desktop window does: follow no redirect.
-    let browser = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    let redeemed = browser
-        .get(runtime.take_launch_target().unwrap().into_url())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(redeemed.status(), 303);
-    let desktop = redeemed.headers()["set-cookie"].to_str().unwrap();
-    let desktop = desktop.split(';').next().unwrap().to_owned();
+    let desktop = desktop_cookie(&mut runtime).await;
     assert_runtime_json(&origin, &desktop, rust).await;
     if rust {
         let (status, _, body) = request(

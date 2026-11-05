@@ -663,6 +663,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         return Ok(Err(Refusal::Archived));
     }
     complete_rows(tx, tenant, &snapshot)?;
+    let profile = snapshot.profile.id;
     // The read model already refuses duplicate tokens.
     let Some((part, position)) = snapshot.parts.iter_mut().find_map(|part| {
         let position = part.units.iter().position(|u| u.token == token)?;
@@ -674,6 +675,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let index = part.units[position].unit_index;
     match change {
         Change::Completed(completed) => {
+            let mut moved = false;
             for unit in &mut part.units {
                 let changes = if completed {
                     unit.unit_index <= index
@@ -682,9 +684,13 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                 };
                 if changes {
                     set_completed(tx, tenant, part_id, unit.unit_index, completed)?;
+                    moved |= unit.completed != completed || (unit.assembled && !completed);
                     unit.completed = completed;
                     unit.assembled &= completed;
                 }
+            }
+            if moved {
+                progress_changed(tx, tenant, profile, Some(part_id))?;
             }
             Ok(Ok(completion(part)))
         }
@@ -699,11 +705,37 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                     changed == 1,
                     "Progress update did not find exactly one current unit"
                 );
-                unit.assembled = assembled;
+                if unit.assembled != assembled {
+                    unit.assembled = assembled;
+                    progress_changed(tx, tenant, profile, Some(part_id))?;
+                }
             }
             Ok(Ok(assembly(part)))
         }
     }
+}
+
+/// Records the change in the domain event log inside the Checkoff transaction.
+fn progress_changed(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    part: Option<i64>,
+) -> Result<()> {
+    crate::domain_events::append(
+        tx,
+        tenant,
+        crate::domain_events::Change {
+            kind: crate::domain_events::PROGRESS_CHANGED,
+            aggregate_type: "build",
+            aggregate_id: profile.to_string(),
+            aggregate_version: None,
+            payload: match part {
+                Some(part) => serde_json::json!({ "part_id": part }),
+                None => serde_json::json!({ "import": true }),
+            },
+        },
+    )
 }
 
 /// Resolves `/parts/:id` and a unit index to the current snapshot and unit
@@ -821,6 +853,7 @@ fn import_counts(
         targets.push((part, row.printed_count));
     }
     let mut updated_parts = 0;
+    let mut moved = false;
     for (part, printed) in targets {
         if part
             .units
@@ -829,6 +862,9 @@ fn import_counts(
         {
             updated_parts += 1;
         }
+        moved |= part.units.iter().any(|u| {
+            u.completed != (u.unit_index < printed) || (u.assembled && u.unit_index >= printed)
+        });
         for unit in &part.units {
             set_completed(
                 tx,
@@ -838,6 +874,9 @@ fn import_counts(
                 unit.unit_index < printed,
             )?;
         }
+    }
+    if moved {
+        progress_changed(tx, tenant, snapshot.profile.id, None)?;
     }
     Ok(Ok(Response::ok(Body::Imported { updated_parts })))
 }

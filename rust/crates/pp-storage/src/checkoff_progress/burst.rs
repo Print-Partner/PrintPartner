@@ -13,7 +13,7 @@
 use super::{
     Basis, Body, Outcome, Refusal, Response, archived,
     links::{self, Link, field},
-    read, verify,
+    progress_changed, read, verify,
 };
 use crate::read_model::AcceptedRead;
 use anyhow::Result;
@@ -560,11 +560,23 @@ pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos:
         }
     }
     links::save_all(tx, tenant, all)?;
+    let mut moved = BTreeSet::new();
     for row in undo["progress"].as_array().into_iter().flatten() {
-        tx.execute(
-            "UPDATE print_progress SET completed=?1, assembled=?2 WHERE tenant_id=?3 AND part_id=?4 AND unit_index=?5",
+        let changed = tx.execute(
+            "UPDATE print_progress SET completed=?1, assembled=?2 WHERE tenant_id=?3 AND part_id=?4 AND unit_index=?5 AND (completed IS NOT ?1 OR assembled IS NOT ?2)",
             params![row["completed"].as_bool(), row["assembled"].as_bool(), tenant, row["part_id"].as_i64(), row["unit_index"].as_i64()],
         )?;
+        if changed > 0 {
+            moved.extend(row["part_id"].as_i64());
+        }
+    }
+    for part in moved {
+        let profile: i64 = tx.query_row(
+            "SELECT profile_id FROM parts WHERE tenant_id=?1 AND id=?2",
+            params![tenant, part],
+            |r| r.get(0),
+        )?;
+        progress_changed(tx, tenant, profile, Some(part))?;
     }
     for id in undo["outcomes"].as_array().into_iter().flatten() {
         let job: Option<String> = tx.query_row(

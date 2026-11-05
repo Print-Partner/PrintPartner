@@ -84,6 +84,18 @@ fn seed_queue(fixture: &Fixture, raw: &str) {
         .unwrap();
 }
 
+fn progress_events(fixture: &Fixture) -> i64 {
+    fixture
+        .sql()
+        .query_row(
+            "SELECT count(*) FROM domain_events WHERE event_type='checkoff.progress_changed'
+             AND payload_json='{\"part_id\":2}'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
 #[test]
 fn farm_log_reads_an_unparseable_send_queue_as_empty() {
     let fixture = Fixture::new();
@@ -100,6 +112,31 @@ fn farm_log_reads_an_unparseable_send_queue_as_empty() {
         "bursts still list when the send queue does not parse"
     );
     assert_eq!(undo_entry(&owner, "send:send-1")["status"], 404);
+}
+
+#[test]
+fn farm_log_sends_follow_their_state_and_refuse_undo() {
+    let fixture = Fixture::new();
+    seed_sends(&fixture);
+    let owner = fixture.open();
+    assert_eq!(
+        entries(&owner)
+            .iter()
+            .map(|e| (e["summary"].clone(), e["send_state"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                json!("Cancelled send of plate.gcode to a printer"),
+                json!("cancelled")
+            ),
+            (json!("Sent plate.gcode to a printer"), json!("done")),
+        ],
+        "a send's summary follows its state"
+    );
+    assert_eq!(
+        undo_entry(&owner, "send:send-1"),
+        json!({"status": 409, "body": {"detail": "A printer command cannot be undone"}})
+    );
 }
 
 #[test]
@@ -123,24 +160,6 @@ fn farm_log_records_bursts_and_undo_once_and_survives_restart() {
             ),
         ],
         "dispatch and cancel are listed without undo"
-    );
-    assert_eq!(
-        entries(&owner)
-            .iter()
-            .map(|e| (e["summary"].clone(), e["send_state"].clone()))
-            .collect::<Vec<_>>(),
-        vec![
-            (
-                json!("Cancelled send of plate.gcode to a printer"),
-                json!("cancelled")
-            ),
-            (json!("Sent plate.gcode to a printer"), json!("done")),
-        ],
-        "a send's summary follows its state"
-    );
-    assert_eq!(
-        undo_entry(&owner, "send:send-1"),
-        json!({"status": 409, "body": {"detail": "A printer command cannot be undone"}})
     );
 
     let bed = json!({ "link_id": "link-burst", "decisions": [confirm(2, 0)] });
@@ -170,8 +189,14 @@ fn farm_log_records_bursts_and_undo_once_and_survives_restart() {
         "the log reads the same after a restart"
     );
 
+    let before = progress_events(&fixture);
     let undone = undo_entry(&owner, "checkoff_burst:1");
     assert_eq!(undone["status"], 200, "{undone}");
+    assert_eq!(
+        progress_events(&fixture),
+        before + 1,
+        "the undo by entry records the Part change in the domain event log"
+    );
     assert_eq!(undone["body"]["id"], "checkoff_burst_undo:2");
     assert_eq!(undone["body"]["undoes"], "checkoff_burst:1");
     assert_eq!(undone["body"]["undo"]["reason"], "undo_entry");

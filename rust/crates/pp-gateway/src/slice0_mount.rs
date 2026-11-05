@@ -346,3 +346,52 @@ async fn slice0_mount_node_runtime_json_has_no_rust_status() {
     );
     gateway.stop().await.unwrap();
 }
+
+/// A body that never yields, standing in for an open stream.
+struct Open;
+
+impl http_body::Body for Open {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        std::task::Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn slice0_mount_drain_ends_event_streams_but_not_other_responses() {
+    let open = |content_type: &'static str| {
+        axum::routing::get(move || async move {
+            (
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                Body::new(Open),
+            )
+        })
+    };
+    let product = axum::Router::new()
+        .route("/api/v1/events", open("text/event-stream"))
+        .route("/api/v1/slow", open("application/json"));
+    let (gateway, cookie, _root) = started(Some(product)).await;
+    let mut bodies = Vec::new();
+    for path in ["/api/v1/events", "/api/v1/slow"] {
+        let request = get(&gateway, path, Some(&cookie), Some("127.0.0.1:9"));
+        let response = handle(State(gateway.state.clone()), request).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        bodies.push(response.into_body());
+    }
+    let mut slow = bodies.pop().unwrap();
+    let mut events = bodies.pop().unwrap();
+    gateway.begin_drain();
+    let pending = tokio::time::timeout(Duration::from_millis(100), slow.frame()).await;
+    assert!(pending.is_err(), "other responses keep running");
+    assert!(!gateway.wait_idle(Duration::from_millis(100)).await);
+    drop(slow);
+    assert!(gateway.wait_idle(Duration::from_secs(1)).await);
+    let ended = tokio::time::timeout(Duration::from_secs(1), events.frame()).await;
+    assert!(matches!(ended, Ok(Some(Err(_)))), "the event stream ends");
+    drop(events);
+    gateway.stop().await.unwrap();
+}

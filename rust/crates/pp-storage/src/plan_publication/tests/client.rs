@@ -29,6 +29,7 @@ fn client(capacity: usize) -> PublicationClient {
             job_subscriptions: crate::jobs::JobSubscriptions::new(),
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             import_quota: Mutex::new(None),
+            domain_events: crate::domain_events::Feed::new(0),
         }),
         policy: policy(),
     }
@@ -570,7 +571,7 @@ fn owner_installs_schema_dispatches_random_tokens_and_drains_before_stop() {
     let case = &data["clients"][0];
     let c = database(&data);
     seed_session(&c, "default");
-    c.execute_batch("DROP TABLE plan_apply_admissions; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
+    c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
     let dir = crate::tests::directory("publication-owner");
     c.backup("main", dir.join("print-partner.db"), None)
         .unwrap();
@@ -578,7 +579,7 @@ fn owner_installs_schema_dispatches_random_tokens_and_drains_before_stop() {
     let (owner, ready) = WriterOwner::open(&dir, crate::Limits::default()).unwrap();
     assert_eq!(ready.version, crate::schema::CURRENT_VERSION);
     assert_eq!(ready.previous_version, 35);
-    let backup = dir.join("backups/pre-schema35-to-41.db");
+    let backup = dir.join("backups/pre-schema35-to-42.db");
     assert_eq!(ready.backup.as_ref(), Some(&backup));
     assert_eq!(std::fs::read(&backup).unwrap(), before);
     let saved =

@@ -55,6 +55,7 @@ Modules behind `#[cfg(feature = "desktop_rebuild")]`:
 | `plan_publication` | `publication_with_policy` (`PublicationClient`): the acceptance transaction. |
 | `required_units` | `required_units_with_policy` (`ReconciliationClient`). |
 | `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). |
+| `domain_events` | `domain_events`, `domain_events_with_policy` (`DomainEventsClient`): the transactional domain event log, cursor reads and live wake-ups ([Domain events](../../../docs/domain-events.md)). |
 | `features` | `features_with_policy` (`FeatureClient`), `View`, `Scope`. |
 | `uploads` | `imports` (`ImportClient`), `import_repos_root`. |
 | `source_scan`, `source_sync` | Local scan and sync job state, driven through `ServerWorkerClient` (`observe_local_scan`, `open_source_sync`, ...). |
@@ -77,7 +78,7 @@ Binaries are test fixtures that the parity and process tests run: `storage-fixtu
 
 Cargo features:
 
-- `desktop_rebuild` (default off): enables the gated modules, the optional `pp-domain`, `pp-contracts` and `saphyr-parser` dependencies, and schema version 41 instead of 35. Runtime callers must also check `PP_DESKTOP_REBUILD`.
+- `desktop_rebuild` (default off): enables the gated modules, the optional `pp-domain`, `pp-contracts` and `saphyr-parser` dependencies, and schema version 42 instead of 35. Runtime callers must also check `PP_DESKTOP_REBUILD`.
 - `codegen`: adds `schemars` schemas for the TypeScript generator without turning on the gated edges.
 
 ## Tests

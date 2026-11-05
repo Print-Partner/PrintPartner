@@ -72,6 +72,12 @@ for an id that is not in the tenant's log or send queue, whatever its prefix. A 
 undo's 404 `Checkoff burst not found`. No printer, webhook or Spoolman call
 happens.
 
+The burst and its undo run through `checkoff_progress`, so they write the
+`checkoff.progress_changed` domain events it already writes, one per changed
+Part, in the same transaction as the farm log entry (see
+[Domain events](domain-events.md)). The farm log adds no event type of its
+own, so a client reloads the log on those events.
+
 ## Paging
 
 | Query | Meaning |

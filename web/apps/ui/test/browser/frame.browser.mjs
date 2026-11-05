@@ -11,6 +11,7 @@ import path from "node:path";
 import process from "node:process";
 import { DESTINATIONS } from "../../src/frame/destinations.ts";
 import { THEMES } from "../../src/theme/tokenGate.ts";
+import { fakeCore } from "./coreFixture.mjs";
 import { runWebKitGtk, serveDist } from "./harness.mjs";
 
 const EVIDENCE = process.env.PP_UI_EVIDENCE_DIR;
@@ -25,6 +26,8 @@ const PAGES = [
   ...DESTINATIONS.map((d) => [d.path.slice(1), d.path, ""]),
   ...STATES.map((s) => [`states-${s}`, `/states/${s}`, ""]),
   ["offline-frame", "/builds?core=down", ""],
+  ["build-overview", "/builds/3", ""],
+  ["build-tab", "/builds/3/checkoff", ""],
   ["palette", "/today", key({ key: "k", ctrlKey: true })],
   ["shortcuts", "/today", key({ key: "?" })],
 ];
@@ -33,7 +36,11 @@ const PAGES = [
 const body = ({ setup = "", audit = false, theme = "dark" }) => `
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const deadline = Date.now() + 15000;
-  while (!document.querySelector("h1") || !document.querySelector(".pp-connection:not([data-status=checking])")) {
+  const ready = () => document.querySelector("h1") &&
+    document.querySelector(".pp-connection:not([data-status=checking])") &&
+    // A data screen is audited once its read settles; the loading specimen stays loading.
+    (location.pathname.startsWith("/states/") || !document.querySelector("[data-state=loading]"));
+  while (!ready()) {
     if (Date.now() > deadline) throw new Error("the frame did not render");
     await sleep(50);
   }
@@ -94,9 +101,8 @@ async function run(list) {
   }
 }
 
-const server = await serveDist({
-  health: (request) => ((request.headers.referer ?? "").includes("core=down") ? 503 : 200),
-});
+// Three Builds, so the Builds list and a Build's Overview are audited with data.
+const server = await serveDist({ core: fakeCore(3) });
 const list = jobs(`http://127.0.0.1:${server.address().port}`);
 let outcome;
 try {

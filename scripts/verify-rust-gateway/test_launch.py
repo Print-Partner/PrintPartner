@@ -370,6 +370,91 @@ class PrebuiltBinaryTest(unittest.TestCase):
         self.assertIn("--binary is not an executable file", result.stderr)
 
 
+class SeedTest(unittest.TestCase):
+    def launch_with_seed(self, temp, seed, env):
+        root = make_fixture_repo(temp / "repo")
+        (root / "rust/bundle-manifest.json").write_text(json.dumps({"commit": "f" * 40}))
+        binary = temp / "server"
+        seen = temp / "seen.json"
+        # Records the data directory it was given, then exits before printing an origin.
+        write_executable(binary, f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
+                                 "data = Path(sys.argv[sys.argv.index('--data') + 1])\n"
+                                 "marker = data / '.pp-rust-owned.json'\n"
+                                 f"Path({str(seen)!r}).write_text(json.dumps({{'files': sorted(os.listdir(data)), "
+                                 "'marker': json.loads(marker.read_text()) if marker.exists() else None, "
+                                 "'raw': marker.read_text() if marker.exists() else None}))\n")
+        result = subprocess.run([sys.executable, str(HELPER), "launch", "--repo", str(root), "--binary",
+                                 str(binary), "--seed", str(seed)],
+                                capture_output=True, text=True, timeout=60, env={**os.environ, **env})
+        return result, json.loads(seen.read_text()) if seen.exists() else None
+
+    def make_seed(self, temp):
+        seed = temp / "seed"
+        seed.mkdir()
+        (seed / "SYNTHETIC-DATASET.json").write_text("{}")
+        (seed / "print-partner.db").write_text("db")
+        return seed
+
+    def test_seed_is_copied_and_marked_only_for_a_rust_only_start(self):
+        for flag, marked in (("1", True), ("true", True), ("0", False)):
+            with self.subTest(PP_DESKTOP_REBUILD=flag), \
+                    tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:
+                temp = Path(temporary)
+                seed = self.make_seed(temp)
+                result, seen = self.launch_with_seed(temp, seed, {"PP_DESKTOP_REBUILD": flag})
+                self.assertIsNotNone(seen, result.stdout + result.stderr)
+                self.assertIn("print-partner.db", seen["files"])
+                self.assertEqual(seen["marker"] is not None, marked)
+                if marked:
+                    self.assertRegex(seen["raw"], r'^\{"version":1,"owner":"rust","created_at":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"\}\n$')
+                    self.assertEqual(sorted(seen["marker"]), ["created_at", "owner", "version"])
+                    self.assertEqual((seen["marker"]["version"], seen["marker"]["owner"]), (1, "rust"))
+                # The seed itself is never changed.
+                self.assertEqual(sorted(p.name for p in seed.iterdir()),
+                                 ["SYNTHETIC-DATASET.json", "print-partner.db"])
+
+    def test_rust_only_seed_without_a_prebuilt_binary_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:
+            temp = Path(temporary)
+            seed = self.make_seed(temp)
+            root = make_fixture_repo(temp / "repo")
+            result = subprocess.run([sys.executable, str(HELPER), "launch", "--repo", str(root), "--seed", str(seed)],
+                                    capture_output=True, text=True, timeout=60,
+                                    env={**os.environ, "PP_DESKTOP_REBUILD": "1"})
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("needs --binary built with --features desktop_rebuild", result.stderr)
+
+    def test_seed_without_synthetic_manifest_is_refused_before_start(self):
+        with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:
+            temp = Path(temporary)
+            seed = temp / "seed"
+            seed.mkdir()
+            (seed / "print-partner.db").write_text("db")
+            result, seen = self.launch_with_seed(temp, seed, {})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--seed must be a synthetic dataset", result.stderr)
+            self.assertIsNone(seen)
+
+    def test_seed_with_a_symlink_is_refused_and_its_target_untouched(self):
+        with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:
+            temp = Path(temporary)
+            seed = self.make_seed(temp)
+            outside = temp / "outside.txt"
+            outside.write_text("keep")
+            (seed / ".pp-rust-owned.json").symlink_to(outside)
+            result, seen = self.launch_with_seed(temp, seed, {"PP_DESKTOP_REBUILD": "1"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--seed must not contain symlinks", result.stderr)
+            self.assertIsNone(seen)
+            self.assertEqual(outside.read_text(), "keep")
+
+    def test_seed_is_launch_only(self):
+        result = subprocess.run([sys.executable, str(HELPER), "verify", "--seed", "."],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--seed applies only to launch", result.stderr)
+
+
 class StopAfterOriginTest(unittest.TestCase):
     def test_stop_after_origin_runs_shutdown_checks(self):
         self.assertIn("data lock reacquired", self.launch_stopped_after_origin(exit_status=0))

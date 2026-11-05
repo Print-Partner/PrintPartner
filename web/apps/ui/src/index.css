@@ -300,6 +300,124 @@ body {
   .pp-main {
     padding: 16px;
   }
+
+  .pp-builds-table :is(th, td) {
+    padding: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  .pp-tag {
+    display: inline-block;
+    margin-left: 0;
+  }
+}
+
+.pp-muted,
+.pp-tag {
+  color: var(--text-muted);
+}
+
+.pp-tag {
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-regular);
+}
+
+.pp-module-off {
+  margin: 0 0 16px;
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+
+.pp-module-off p {
+  margin: 0 0 4px;
+}
+
+.pp-builds-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pp-builds-table :is(th, td) {
+  height: var(--row-height);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-weight: var(--font-weight-regular);
+}
+
+.pp-builds-table thead th {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Rows off screen skip layout and paint, sized like a row, so a long list stays cheap. */
+.pp-builds-table tbody tr {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--row-height);
+}
+
+.pp-tabs ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 16px;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+  list-style: none;
+}
+
+.pp-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-target-min);
+  padding: 0 12px;
+  border-bottom: 3px solid transparent;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.pp-tab[aria-current="page"] {
+  border-bottom-color: var(--interaction-accent);
+  font-weight: var(--font-weight-semibold);
+}
+
+.pp-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 16px 24px;
+  margin: 0 0 24px;
+}
+
+.pp-fact dt {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.pp-fact dd {
+  margin: 4px 0 0;
+}
+
+.pp-fact-detail {
+  display: block;
+  color: var(--text-muted);
+}
+
+.pp-reasons {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.pp-layers {
+  display: grid;
+  gap: 4px;
+  padding-left: 24px;
 }
 
 .printer-states {

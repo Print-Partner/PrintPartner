@@ -3,11 +3,14 @@
  * origin: the Rust core serves this UI in the desktop app and Docker, and the
  * Vite dev server forwards core paths to PP_UI_CORE_URL.
  *
- * Seam: the generated Rust client package replaces hand-written calls built on
- * this function. Do not add typed endpoint wrappers here before it lands.
+ * Typed reads go through `readCore` in ./rust.ts, which builds on this function
+ * with the generated client's routes and schemas.
  */
 export class CoreError extends Error {
-  constructor(status: number, path: string) {
+  constructor(
+    readonly status: number,
+    path: string,
+  ) {
     super(`Rust core answered ${status} for ${path}`);
     this.name = "CoreError";
   }

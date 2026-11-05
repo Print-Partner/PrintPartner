@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 
-const checks = ["font-requests.browser.mjs", "frame.browser.mjs"];
+const checks = ["font-requests.browser.mjs", "frame.browser.mjs", "builds.browser.mjs"];
 const statuses = checks.map((check) => {
   const script = fileURLToPath(new URL(check, import.meta.url));
   const { status, signal } = spawnSync(process.execPath, [script], { stdio: "inherit" });

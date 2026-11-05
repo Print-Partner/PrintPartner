@@ -598,7 +598,36 @@ def unpublish_credential(target, handle):
         handle.close()
 
 
-def launch(root, credentials, binary=None):
+SEED_MANIFEST = "SYNTHETIC-DATASET.json"
+RUST_OWNERSHIP_MARKER = ".pp-rust-owned.json"
+
+
+def check_seed(seed):
+    # Only a synthetic dataset may seed a launch, so no customer data directory is copied.
+    if not (seed / SEED_MANIFEST).is_file():
+        raise SystemExit(f"--seed must be a synthetic dataset holding {SEED_MANIFEST}: {seed}")
+    # A copied symlink would let the launch write through it, outside the disposable copy.
+    for directory, names, files in os.walk(seed):
+        for name in names + files:
+            if (Path(directory) / name).is_symlink():
+                raise SystemExit(f"--seed must not contain symlinks: {Path(directory) / name}")
+
+
+def copy_seed(seed, data):
+    # The copy lives in the launch's private temporary directory and is removed with it. A
+    # Rust-only start refuses a non-empty unmarked directory, so that start gets the marker.
+    shutil.copytree(seed, data, symlinks=True)
+    if os.environ.get("PP_DESKTOP_REBUILD") in ("1", "true"):
+        created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        marker = data / RUST_OWNERSHIP_MARKER
+        if marker.is_symlink() or marker.exists():
+            marker.unlink()
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps({"version": 1, "owner": "rust", "created_at": created}, separators=(",", ":")) + "\n")
+
+
+def launch(root, credentials, binary=None, seed=None):
     # Fast refusal before a long build; publish_credential() is the authoritative check.
     if credentials is not None and (credentials.exists() or credentials.is_symlink()):
         raise SystemExit(f"credential file already exists: {credentials}")
@@ -611,14 +640,16 @@ def launch(root, credentials, binary=None):
             # pp-server verifies its bundle against the manifest it was built with, so a
             # prebuilt server needs that manifest's commit, not the current checkout's.
             commit = json.loads((root / "rust/bundle-manifest.json").read_text())["commit"]
-        serve(binary, root, node, commit, credentials)
+        serve(binary, root, node, commit, credentials, seed=seed)
     except Stop as stop:
         print(f"STOP: {stop} received before pp-server started", flush=True)
 
 
-def serve(binary, root, node, commit, credentials):
+def serve(binary, root, node, commit, credentials, seed=None):
     with tempfile.TemporaryDirectory(prefix="pp-launch-rust-") as temporary:
         fixture = Path(temporary)
+        if seed is not None:
+            copy_seed(seed, fixture / "data")
         runtime_dir = None
         published = None
         origin = None
@@ -699,6 +730,9 @@ def main():
                         help="launch only: pp-server writes the one-use bootstrap credential here")
     parser.add_argument("--binary", type=Path,
                         help="launch only: start this prebuilt pp-server instead of building one")
+    parser.add_argument("--seed", type=Path,
+                        help=f"launch only: copy this synthetic dataset (it must hold {SEED_MANIFEST}) "
+                             "into the temporary data directory before start")
     args = parser.parse_args()
     if args.credential_file is not None and args.mode != "launch":
         parser.error("--credential-file applies only to launch")
@@ -706,11 +740,20 @@ def main():
         parser.error("--binary applies only to launch")
     if args.binary is not None and not (args.binary.is_file() and os.access(args.binary, os.X_OK)):
         parser.error(f"--binary is not an executable file: {args.binary}")
+    if args.seed is not None and args.mode != "launch":
+        parser.error("--seed applies only to launch")
+    if args.seed is not None and args.binary is None and os.environ.get("PP_DESKTOP_REBUILD") in ("1", "true"):
+        # The marker is only right for a Rust-only start, which needs a desktop_rebuild binary;
+        # build() compiles without that feature, and its server would refuse the marked copy.
+        parser.error("--seed with PP_DESKTOP_REBUILD needs --binary built with --features desktop_rebuild")
+    if args.seed is not None:
+        check_seed(args.seed)
     root = args.repo.resolve() if args.repo is not None else default_repo_root()
     if args.mode == "launch":
         # Resolve the directory only: a symlink at the final component is an existing entry to refuse.
         credentials = args.credential_file.parent.resolve() / args.credential_file.name if args.credential_file else None
-        launch(root, credentials, args.binary.resolve() if args.binary else None)
+        launch(root, credentials, args.binary.resolve() if args.binary else None,
+               args.seed.resolve() if args.seed else None)
     else:
         # Cancelled proofs remain nonzero, after their owned processes have been cleaned up.
         install_stop_handlers()

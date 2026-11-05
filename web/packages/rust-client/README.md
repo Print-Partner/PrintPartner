@@ -7,7 +7,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 ## Purpose
 
 - Owns the generated TypeScript view of the Rust routes listed in `CLIENT_ROUTES` in `rust/crates/pp-api/src/client_contract.rs`: one Zod schema per DTO and one entry per route.
-- Nothing in `web/apps` imports it yet.
+- `web/apps/ui` imports it for its core reads and printer status descriptors; no other app does.
 
 ## Not responsible for
 

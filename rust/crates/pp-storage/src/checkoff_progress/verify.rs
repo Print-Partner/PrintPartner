@@ -185,6 +185,7 @@ fn mark_confirmed(
     tenant: &str,
     snapshot: &Snapshot,
     decisions: &[Decision],
+    burst: &BTreeSet<(i64, i64)>,
 ) -> anyhow::Result<std::result::Result<usize, Response>> {
     let mut confirmed: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
     for d in decisions.iter().filter(|d| d.reason.is_none()) {
@@ -193,9 +194,12 @@ fn mark_confirmed(
     for (&part_id, indices) in &confirmed {
         let max = indices.last().copied().unwrap_or_default();
         let fills_left = unit(snapshot, part_id, max).is_some_and(|(part, _)| {
-            part.units
-                .iter()
-                .all(|u| u.unit_index > max || u.completed || indices.contains(&u.unit_index))
+            part.units.iter().all(|u| {
+                u.unit_index > max
+                    || u.completed
+                    || indices.contains(&u.unit_index)
+                    || burst.contains(&(part_id, u.unit_index))
+            })
         });
         if !fills_left {
             return Ok(Err(Response::failure(400, LEFT_FILL, None)));
@@ -246,12 +250,15 @@ fn record(snapshot: &Snapshot, decisions: &[Decision]) -> (Vec<Value>, Vec<links
         .unzip()
 }
 
+/// `burst` holds the units other beds of the same Checkoff burst confirm; the
+/// left-fill rule counts them as included. A single verify passes none.
 pub(super) fn verify(
     tx: &Transaction<'_>,
     tenant: &str,
     link_id: &str,
     body: &Value,
     repos: &Path,
+    burst: &BTreeSet<(i64, i64)>,
 ) -> Outcome {
     let (mut all, index, now) = match load_in_state(
         tx,
@@ -303,7 +310,7 @@ pub(super) fn verify(
         return Ok(Err(Refusal::Archived));
     }
     complete_rows(tx, tenant, &snapshot)?;
-    let units_confirmed = match mark_confirmed(tx, tenant, &snapshot, &decisions)? {
+    let units_confirmed = match mark_confirmed(tx, tenant, &snapshot, &decisions, burst)? {
         Ok(newly) => newly,
         Err(response) => return Ok(Ok(response)),
     };

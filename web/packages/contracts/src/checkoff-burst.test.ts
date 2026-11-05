@@ -37,6 +37,15 @@ describe("Checkoff burst contract", () => {
     expect(plateBed(resolved).decisions.map((d) => `${d.part_id}:${d.unit_index}`)).toEqual(["1:2", "3:0", "3:1"]);
   });
 
+  it("keeps imported-extra decisions when beds merge", () => {
+    const extrasOnly = { link_id: "link-verify", decisions: [], additional_decisions: [{ index: 0, result: "confirmed" }] };
+    expect(verifyBatchRequest("extras", [extrasOnly]).beds).toEqual([extrasOnly]);
+    const withExtra = { ...plateBed(links[0]!), additional_decisions: [{ index: 0, result: "rejected", reason: "other" }] };
+    const merged = verifyBatchRequest("merged", [withExtra, extrasOnly]).beds[0]!;
+    expect(merged.decisions).toEqual(plateBed(links[0]!).decisions);
+    expect(merged.additional_decisions).toEqual([{ index: 0, result: "rejected", reason: "other" }]);
+  });
+
   it("refuses requests the Rust route refuses", () => {
     const bed = plateBed(links[0]!);
     expect(() => parseVerifyBatchRequest({ idempotency_key: " ", beds: [bed] })).toThrow();

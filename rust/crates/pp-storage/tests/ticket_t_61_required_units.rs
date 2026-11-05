@@ -13,7 +13,10 @@ use pp_storage::{
     required_units::ReconciliationCommand,
     working_drafts::PositiveId,
 };
-use rusqlite::{Connection, types::ValueRef};
+use rusqlite::Connection;
+
+#[path = "common/json_rows.rs"]
+mod json_rows;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -244,35 +247,7 @@ impl Fixture {
     }
 
     fn read(&self, group: &str) -> Value {
-        let connection = self.sql();
-        let tables = CORPUS["queries"][group].as_object().unwrap();
-        let mut result = Map::new();
-        for (table, sql) in tables {
-            let mut statement = connection.prepare(sql.as_str().unwrap()).unwrap();
-            let columns: Vec<String> = statement
-                .column_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
-            let rows = statement
-                .query_map([], |row| {
-                    let mut object = Map::new();
-                    for (i, column) in columns.iter().enumerate() {
-                        let value = match row.get_ref(i)? {
-                            ValueRef::Null => Value::Null,
-                            ValueRef::Integer(n) => json!(n),
-                            value => json!(value.as_str().unwrap()),
-                        };
-                        object.insert(column.clone(), value);
-                    }
-                    Ok(Value::Object(object))
-                })
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-            result.insert(table.clone(), Value::from(rows));
-        }
-        Value::Object(result)
+        json_rows::query_rows(&self.sql(), CORPUS["queries"][group].as_object().unwrap())
     }
 }
 

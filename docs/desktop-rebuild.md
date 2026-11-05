@@ -2594,14 +2594,21 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --featu
 With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the gateway mounts
 `POST /printer-checkoff/verify-batch` and `POST /printer-checkoff/verify-batch/undo`
 at `/` and `/api/v2` (`pp-api/src/checkoff.rs`, admission through
-`accepted::Gate`: loopback, exact Host and Origin, session or API key). Node has
-no such route, so nothing moves off Node and nothing is written twice.
+`accepted::Gate`: loopback, exact Host and Origin, session or API key). These
+routes exist only in the Rust-owned runtime: with the flag on, Rust holds the
+ownership marker and `.desktop-lease` for the data directory and standalone Node
+is refused (see Writer admission above), so no Node verify, monitor or claim
+writes `printer.checkoff_links`, progress or outcomes beside a burst. A burst
+does not run Node's unattributed-print claim or Spoolman deduction after verify;
+those are GRE-1169 and GRE-411 (deduction intent).
 
 A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
 "additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
 naming a different link and shaped like a `POST /printer-checkoff/verify` body.
 `pp-storage::checkoff_progress` runs every bed through the GRE-420 verify in one
-writer transaction. The first bed that refuses rolls the whole burst back and
+writer transaction. The left-fill rule counts units that any bed of the burst
+confirms, so a Part's units spread over several beds may come in any bed order.
+The first bed that refuses rolls the whole burst back and
 returns its status with the detail prefixed by `beds[i]: `. Success returns
 `undo_token` and one result per bed.
 
@@ -2610,19 +2617,28 @@ The receipt is written in the same transaction under the
 object keys sorted, the response, and the link, progress and outcome rows undo
 needs. A repeat with the same key and request returns the stored response before
 any other check and writes nothing, also after a restart. The same key with a
-different request returns 409. The newest 100 receipts are kept; replaying an
-older key runs the verify again, which refuses because its units are no longer
-pending, so it cannot count twice.
+different request returns 409. The newest 100 receipts are kept. A dropped
+receipt leaves the SHA-256 of its key in `printer.checkoff_bursts_retired` (the
+newest 5,000), and replaying that key returns 409 instead of running again, so an
+undone burst cannot be counted again by a late retry. A replay of an undone burst
+that still has its receipt returns the original receipt and writes nothing.
 
 Undo takes `{ "undo_token" }` and is a compensating write: it restores each
 link at its original position, the progress rows and the outcome rows the burst
-wrote. It refuses with 409 and a reason when any of them changed since, and when
-the burst was already undone; an unknown token is 404. No printer, webhook or
+wrote. It refuses with 409 and a reason when any of them changed since, when
+the burst was already undone, and when anything else in the tenant's Checkoff
+changed after the burst: the burst stores the SHA-256 of the links setting, every
+progress row and every outcome and job id, and undo compares it. A later verify
+of another link that records a unit the burst printed, a later unit that filled
+from the burst's unit, or a dismiss elsewhere therefore blocks undo. A receipt
+without that hash (written before it existed) refuses with 409 instead of
+undoing on weaker checks. An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
 `web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the
 `P` (`plateBed`) and `F` (`partFillBeds`) helpers, which both produce this
-request shape.
+request shape. `verifyBatchRequest` merges beds for the same link, keeping both
+unit decisions and imported-extra `additional_decisions`.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'

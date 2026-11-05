@@ -4,22 +4,22 @@
 //! through the public checkoff progress client on a copy of the same fixture,
 //! then checks refusal, fault, restart and authentication behavior.
 use pp_storage::{
-    Limits, WriterOwner,
+    WriterOwner,
     auth::Secret,
     checkoff_progress::{Request, Response},
     read_model::Credential,
 };
-use rusqlite::Connection;
 use serde_json::{Value, json};
 
+#[path = "common/checkoff_fixture.rs"]
+mod checkoff_fixture;
 #[path = "common/js_json.rs"]
 mod js_json;
 #[path = "common/json_rows.rs"]
 mod json_rows;
-use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicBool, time::Duration};
+use checkoff_fixture::{Fixture, NODE};
+use std::{collections::HashMap, sync::atomic::AtomicBool, time::Duration};
 
-const NODE: &str = include_str!("../../../../fixtures/parity/printer-checkoff-verify/node.json");
-const DATABASE: &[u8] = include_bytes!("fixtures/required-units/unchanged.db");
 const WAIT: Duration = Duration::from_secs(5);
 
 fn node() -> Value {
@@ -72,45 +72,13 @@ impl Normalizer {
     }
 }
 
-struct Fixture {
-    path: PathBuf,
-}
-
 impl Fixture {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "pp-printer-checkoff-verify-{}",
-            hex::encode(rand::random::<[u8; 16]>())
-        ));
-        std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
-        std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
-        let fixture = Self { path };
-        for sql in node()["setup"].as_array().unwrap() {
-            fixture.sql().execute_batch(sql.as_str().unwrap()).unwrap();
-        }
-        fixture
-    }
-
-    fn sql(&self) -> Connection {
-        Connection::open(self.path.join("print-partner.db")).unwrap()
-    }
-
-    fn open(&self) -> WriterOwner {
-        WriterOwner::open(&self.path, Limits::default()).unwrap().0
-    }
-
     fn rows(&self, normalizer: &mut Normalizer) -> Value {
         let mut rows = json_rows::query_rows(&self.sql(), node()["queries"].as_object().unwrap());
         for link in rows["links"].as_array_mut().unwrap() {
             link["value"] = js_json::parse(link["value"].as_str().unwrap());
         }
         normalizer.walk(rows)
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 

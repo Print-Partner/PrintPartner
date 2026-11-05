@@ -63,13 +63,19 @@ export function partFillBeds(links: readonly CheckoffLinkUnits[], partId: number
   });
 }
 
-/** One request from any mix of `P` and `F` beds; decisions for the same bed merge. */
+/** One request from any mix of beds; decisions and imported-extra decisions for the same bed merge. */
 export function verifyBatchRequest(idempotencyKey: string, beds: readonly VerifyBatchBed[]): VerifyBatchRequest {
   const merged = new Map<string, VerifyBatchBed>();
   for (const next of beds) {
     const current = merged.get(next.link_id) ?? { link_id: next.link_id, decisions: [] };
     const seen = new Set(current.decisions.map((d) => `${d.part_id}:${d.unit_index}`));
     current.decisions.push(...next.decisions.filter((d) => !seen.has(`${d.part_id}:${d.unit_index}`)));
+    if (next.additional_decisions?.length) {
+      const extras = current.additional_decisions ?? [];
+      const indexes = new Set(extras.map((d) => d.index));
+      extras.push(...next.additional_decisions.filter((d) => !indexes.has(d.index)));
+      current.additional_decisions = extras;
+    }
     merged.set(next.link_id, current);
   }
   return parseVerifyBatchRequest({ idempotency_key: idempotencyKey, beds: [...merged.values()] });

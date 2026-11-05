@@ -583,7 +583,9 @@ fn archived(snapshot: &Snapshot) -> bool {
 
 fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let (mut snapshot, token, change) = match op {
-        Op::Verify { link_id, body } => return verify::verify(tx, tenant, &link_id, &body, repos),
+        Op::Verify { link_id, body } => {
+            return verify::verify(tx, tenant, &link_id, &body, repos, &Default::default());
+        }
         Op::Dismiss { link_id } => return verify::dismiss(tx, tenant, &link_id),
         Op::VerifyBatch(burst) => return burst::verify_batch(tx, tenant, burst, repos),
         Op::UndoBatch { token } => return burst::undo_batch(tx, tenant, &token, repos),

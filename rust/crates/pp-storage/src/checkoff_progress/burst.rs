@@ -23,7 +23,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, path::Path};
 
 const KEY: &str = "printer.checkoff_bursts";
+const RETIRED_KEY: &str = "printer.checkoff_bursts_retired";
 const MAX_RECEIPTS: usize = 100;
+const MAX_RETIRED: usize = 5000;
 pub(super) const MAX_BEDS: usize = 50;
 
 fn refuse(status: u16, detail: &str) -> Outcome {
@@ -71,17 +73,17 @@ impl Burst {
         let mut seen = BTreeSet::new();
         let mut parsed = Vec::with_capacity(beds.len());
         for (i, bed) in beds.iter().enumerate() {
-            let id = field(bed, "link_id")
-                .as_str()
-                .map(links::js_trim)
-                .unwrap_or_default();
+            let id = match field(bed, "link_id") {
+                Value::Null => String::new(),
+                other => links::js_trim(&links::js_string(other)).to_owned(),
+            };
             if !bed.is_object() || id.is_empty() {
                 return Err(bad(&format!("beds[{i}].link_id is required")));
             }
-            if !seen.insert(id.to_owned()) {
+            if !seen.insert(id.clone()) {
                 return Err(bad(&format!("beds[{i}] repeats a link")));
             }
-            parsed.push((id.to_owned(), bed.clone()));
+            parsed.push((id, bed.clone()));
         }
         let hash = hex::encode(Sha256::digest(canonical(body).to_string()));
         Ok(Self {
@@ -102,30 +104,85 @@ pub(super) fn undo_token(body: &Value) -> std::result::Result<String, Response> 
         .ok_or_else(|| Response::failure(400, "undo_token is required", None))
 }
 
-fn load_receipts(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value>> {
-    let raw: Option<String> = tx
+fn setting(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Option<String>> {
+    Ok(tx
         .query_row(
             "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
-            params![tenant, KEY],
+            params![tenant, key],
             |r| r.get(0),
         )
-        .optional()?;
+        .optional()?)
+}
+
+fn load_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
     Ok(
-        match raw.map(|raw| serde_json::from_str(&raw)).transpose()? {
-            Some(Value::Array(receipts)) => receipts,
+        match setting(tx, tenant, key)?
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()?
+        {
+            Some(Value::Array(items)) => items,
             _ => Vec::new(),
         },
     )
 }
 
-fn save_receipts(tx: &Transaction<'_>, tenant: &str, receipts: &[Value]) -> Result<()> {
-    let kept = &receipts[receipts.len().saturating_sub(MAX_RECEIPTS)..];
+fn save_list(tx: &Transaction<'_>, tenant: &str, key: &str, items: &[Value]) -> Result<()> {
     tx.execute(
         "INSERT INTO app_settings (tenant_id, key, value) VALUES (?1, ?2, ?3)
          ON CONFLICT (tenant_id, key) DO UPDATE SET value=excluded.value",
-        params![tenant, KEY, serde_json::to_string(kept)?],
+        params![tenant, key, serde_json::to_string(items)?],
     )?;
     Ok(())
+}
+
+fn load_receipts(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value>> {
+    load_list(tx, tenant, KEY)
+}
+
+fn key_hash(key: &str) -> String {
+    hex::encode(Sha256::digest(key.as_bytes()))
+}
+
+/// Keeps the newest receipts. A dropped receipt leaves the hash of its key
+/// behind, so replaying that key is refused instead of running again.
+fn save_receipts(tx: &Transaction<'_>, tenant: &str, receipts: &[Value]) -> Result<()> {
+    let (dropped, kept) = receipts.split_at(receipts.len().saturating_sub(MAX_RECEIPTS));
+    if !dropped.is_empty() {
+        let mut retired = load_list(tx, tenant, RETIRED_KEY)?;
+        retired.extend(
+            dropped
+                .iter()
+                .map(|r| Value::from(key_hash(r["idempotency_key"].as_str().unwrap_or_default()))),
+        );
+        save_list(
+            tx,
+            tenant,
+            RETIRED_KEY,
+            &retired[retired.len().saturating_sub(MAX_RETIRED)..],
+        )?;
+    }
+    save_list(tx, tenant, KEY, kept)
+}
+
+/// SHA-256 of everything a Checkoff can change: the stored links, every
+/// progress row and every print outcome and job id of the tenant. Undo
+/// compares it with the value the burst left.
+fn state_hash(tx: &Transaction<'_>, tenant: &str) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(setting(tx, tenant, links::KEY)?.unwrap_or_default());
+    for sql in [
+        "SELECT part_id || ':' || unit_index || ':' || completed || ':' || assembled FROM print_progress WHERE tenant_id=?1 ORDER BY part_id, unit_index",
+        "SELECT CAST(id AS TEXT) FROM print_job_parts WHERE tenant_id=?1 ORDER BY id",
+        "SELECT CAST(id AS TEXT) FROM print_jobs WHERE tenant_id=?1 ORDER BY id",
+    ] {
+        hasher.update([0]);
+        let mut statement = tx.prepare(sql)?;
+        for row in statement.query_map(params![tenant], |r| r.get::<_, String>(0))? {
+            hasher.update(row?);
+            hasher.update([1]);
+        }
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn progress_row(
@@ -189,8 +246,15 @@ pub(super) fn verify_batch(
         }
         return Ok(Ok(Response::ok(Body::Receipt(receipt["response"].clone()))));
     }
+    if load_list(tx, tenant, RETIRED_KEY)?.contains(&Value::from(key_hash(&burst.key))) {
+        return refuse(
+            409,
+            "idempotency_key belongs to a Checkoff burst too old to replay",
+        );
+    }
     let before = public_links(tx, tenant)?;
     let mut touched = Vec::new();
+    let mut confirmed = BTreeSet::new();
     for (_, bed) in &burst.beds {
         for d in field(bed, "decisions").as_array().into_iter().flatten() {
             let (Some(part), Some(index)) = (
@@ -199,6 +263,9 @@ pub(super) fn verify_batch(
             ) else {
                 continue;
             };
+            if d.get("result").and_then(Value::as_str) == Some("confirmed") {
+                confirmed.insert((part, index));
+            }
             if let Some(row) = progress_row(tx, tenant, part, index)? {
                 touched.push((part, index, row));
             }
@@ -208,7 +275,7 @@ pub(super) fn verify_batch(
     touched.dedup();
     let mut results = Vec::with_capacity(burst.beds.len());
     for (i, (id, bed)) in burst.beds.iter().enumerate() {
-        match verify::verify(tx, tenant, id, bed, repos)? {
+        match verify::verify(tx, tenant, id, bed, repos, &confirmed)? {
             Ok(Response {
                 status: 200,
                 body:
@@ -277,6 +344,10 @@ pub(super) fn verify_batch(
             "bases": bases(tx, tenant, &profiles, repos)?,
         },
     }));
+    let state = state_hash(tx, tenant)?;
+    if let Some(Value::Object(undo)) = receipts.last_mut().and_then(|r| r.get_mut("undo")) {
+        undo.insert("state".into(), state.into());
+    }
     save_receipts(tx, tenant, &receipts)?;
     Ok(Ok(Response::ok(Body::Receipt(response))))
 }
@@ -334,6 +405,16 @@ fn undo_conflict(
                 "A print outcome this burst recorded was removed".into(),
             ));
         }
+    }
+    if undo.get("state").is_none() {
+        return Ok(Some(
+            "This Checkoff burst predates the undo state check and cannot be undone".into(),
+        ));
+    }
+    if undo["state"] != state_hash(tx, tenant)?.as_str() {
+        return Ok(Some(
+            "Checkoff changed since this burst: a later verify, dismiss or progress change depends on it".into(),
+        ));
     }
     Ok(None)
 }

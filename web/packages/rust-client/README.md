@@ -40,6 +40,7 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | | `DraftAcceptPreview` |
 | `PATCH /api/v2/plans/{id}/drafts/{draft_id}/parts` | `EditDraftPartsRequest` | `DraftWorkspace` |
 | `POST /api/v2/plans/{id}/drafts/{draft_id}/abandon` | `AbandonDraftRequest` | `DraftIdentity` |
+| `GET /api/v2/plans/{id}/filament-shortfalls` | | `FilamentShortfalls` |
 | `GET /api/v2/plans/{id}/build-planning` | | `BuildPlanningResponse` |
 | `GET /api/v2/plans/{id}/decisions` | | `PlanDecisionList` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |

@@ -6,7 +6,7 @@
 //! `next_cursor`). The route writes nothing. Admission is `accepted::Gate`.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Gate, blocking_read, failure, json_response, read_error},
+    accepted::{AcceptedHttpConfig, Gate, failure, json_response, read_error},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -90,21 +90,24 @@ async fn history(
         limit,
     };
     let client = app.client;
-    let read = blocking_read(app.gate.wait(), move |cancelled, wait| {
-        client.read(presented.into_credential(), request, cancelled, wait)
-    });
-    match read.await {
-        Some(Ok(Outcome::Page(page))) => match serde_json::to_value(&page) {
+    let read = app
+        .gate
+        .blocking(move |cancelled, wait| {
+            client.read(presented.into_credential(), request, cancelled, wait)
+        })
+        .await;
+    match read {
+        Ok(Ok(Outcome::Page(page))) => match serde_json::to_value(&page) {
             Ok(body) => json_response(StatusCode::OK, &body, false),
             Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         },
-        Some(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
-        Some(Err(error)) if error.downcast_ref::<Failure>().is_some() => failure(
+        Ok(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
+        Ok(Err(error)) if error.downcast_ref::<Failure>().is_some() => failure(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Build history exceeds the read limit",
         ),
-        Some(Err(error)) => read_error(&error),
-        None => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        Ok(Err(error)) => read_error(&error),
+        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
     }
 }
 

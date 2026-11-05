@@ -4,9 +4,7 @@
 //! `accepted::Gate`; the id is read with Node's `Number()`.
 
 use crate::{
-    accepted::{
-        AcceptedHttpConfig, Gate, blocking_read, failure, json_response, node_id, read_error,
-    },
+    accepted::{AcceptedHttpConfig, Gate, failure, json_response, node_id, read_error},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -128,10 +126,12 @@ async fn read(
         query,
     };
     let client = app.client;
-    blocking_read(app.gate.wait(), move |cancelled, wait| {
-        client.read(presented.into_credential(), request, cancelled, wait)
-    })
-    .await
+    app.gate
+        .blocking(move |cancelled, wait| {
+            client.read(presented.into_credential(), request, cancelled, wait)
+        })
+        .await
+        .ok()
 }
 
 #[cfg(test)]

@@ -250,6 +250,36 @@ describe("UI4-01 the hero task shows the reason and the diff inline", () => {
   });
 });
 
+describe("ranked tasks stay current", () => {
+  it("rereads the task feed every 30 s and keeps the last list when a reread fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore();
+    const feed = { tasks: [task(22, "Build 22", "Verify prints")], unavailable: [] as never[] };
+    let failTasks = false;
+    const base = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path !== "/api/v2/tasks") return base(path, init);
+      return failTasks ? json({}, 500) : json(feed);
+    });
+    renderToday(core);
+    const ranked = await screen.findByRole("list", { name: "Ranked tasks" });
+    expect(within(ranked).getAllByRole("listitem")).toHaveLength(1);
+    feed.tasks.push(task(19, "Build 19", "Prepare production"));
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(
+      within(screen.getByRole("list", { name: "Ranked tasks" })).getAllByRole("listitem"),
+    ).toHaveLength(2);
+    failTasks = true;
+    await act(() => vi.advanceTimersByTimeAsync(40_000));
+    expect((await screen.findByText(/Could not refresh ranked tasks/)).textContent).toContain(
+      "Showing the last list.",
+    );
+    expect(
+      within(screen.getByRole("list", { name: "Ranked tasks" })).getAllByRole("listitem"),
+    ).toHaveLength(2);
+  });
+});
+
 describe("UI4-02 one bed is one verify-batch request, with undo", () => {
   it("confirms one bed in one request, then undo restores it", async () => {
     const core = fakeCore();

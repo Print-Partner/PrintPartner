@@ -328,6 +328,7 @@ function UnseenPrints({
   );
 }
 
+/** The ranked list. A failed reread keeps the last list beside the error and its Retry. */
 function RankedTasks({
   query,
   skipTop,
@@ -335,33 +336,41 @@ function RankedTasks({
   query: UseQueryResult<{ tasks: Task[] }>;
   skipTop: boolean;
 }) {
-  if (query.isError) {
-    return (
-      <div role="alert" className="pp-banner" data-kind="error">
-        <p>Could not load ranked tasks.</p>
-        <p className="pp-banner-detail">{query.error.message}</p>
-        <button type="button" className="pp-button" onClick={() => void query.refetch()}>
-          Retry
-        </button>
-      </div>
-    );
-  }
-  if (!query.data) return <p className="pp-muted">Loading ranked tasks.</p>;
+  const notice = query.isError && (
+    <div role="alert" className="pp-banner" data-kind="error">
+      <p>
+        {query.data
+          ? "Could not refresh ranked tasks. Showing the last list."
+          : "Could not load ranked tasks."}
+      </p>
+      <p className="pp-banner-detail">{query.error.message}</p>
+      <button type="button" className="pp-button" onClick={() => void query.refetch()}>
+        Retry
+      </button>
+    </div>
+  );
+  if (!query.data) return notice || <p className="pp-muted">Loading ranked tasks.</p>;
   const tasks = skipTop ? query.data.tasks.slice(1) : query.data.tasks;
-  if (tasks.length === 0) return <p className="pp-muted">No other open tasks.</p>;
   return (
-    <ol className="pp-tasks" aria-label="Ranked tasks">
-      {tasks.map((task) => (
-        <li key={task.plan_id}>
-          <Link to={`/builds/${task.plan_id}`} className="pp-link">
-            {task.build_name}
-          </Link>{" "}
-          {task.next_action.label}
-          {task.attention && <span className="pp-tag">Needs you</span>}
-          <span className="pp-fact-detail">{task.rank_reason}</span>
-        </li>
-      ))}
-    </ol>
+    <>
+      {notice}
+      {tasks.length === 0 ? (
+        <p className="pp-muted">No other open tasks.</p>
+      ) : (
+        <ol className="pp-tasks" aria-label="Ranked tasks">
+          {tasks.map((task) => (
+            <li key={task.plan_id}>
+              <Link to={`/builds/${task.plan_id}`} className="pp-link">
+                {task.build_name}
+              </Link>{" "}
+              {task.next_action.label}
+              {task.attention && <span className="pp-tag">Needs you</span>}
+              <span className="pp-fact-detail">{task.rank_reason}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </>
   );
 }
 

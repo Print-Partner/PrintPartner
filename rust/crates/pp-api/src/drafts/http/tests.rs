@@ -640,6 +640,7 @@ async fn listing_and_workspace_have_literal_wire_contracts() {
     for path in [
         "/plans/1/drafts/2/reconciliation",
         "/plans/1/save",
+        "/api/v2/plans/1/save",
         "/plans/1/review",
         "/api/v1/plans/1/review",
     ] {

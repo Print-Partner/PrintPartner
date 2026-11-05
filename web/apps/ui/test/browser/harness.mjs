@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
+import { chromium } from "playwright-core";
 
 export const UI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const DIST = path.join(UI_ROOT, "dist");
@@ -19,15 +20,24 @@ const MIME = {
 
 /**
  * Serves dist on a free 127.0.0.1 port. Client routes get index.html; anything with an
- * extension that is not in dist gets 404. `/health` gets 404 unless `health(request)`
- * returns a status code, which is answered with an empty JSON object.
+ * extension that is not in dist gets 404. `core(pathname, request)` may answer any path
+ * first with `{ status, body }`, sent as JSON. Otherwise `/api/*` gets 404, and
+ * `/health` gets 404 unless `health(request)` returns a status code, which is answered
+ * with an empty JSON object.
  */
-export function serveDist({ health } = {}) {
+export function serveDist({ health, core } = {}) {
   if (!existsSync(path.join(DIST, "index.html"))) {
     throw new Error(`${DIST}/index.html is missing; run the package build first`);
   }
   const server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url, "http://x").pathname);
+    const answer = core?.(pathname, request);
+    if (answer) {
+      response.writeHead(answer.status, { "content-type": "application/json" });
+      response.end(JSON.stringify(answer.body));
+      return;
+    }
+    if (pathname.startsWith("/api/")) return void response.writeHead(404).end();
     if (pathname === "/health") {
       const status = health?.(request);
       if (status) response.writeHead(status, { "content-type": "application/json" }).end("{}");
@@ -45,24 +55,46 @@ export function serveDist({ health } = {}) {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
 }
 
+/** A Chromium executable for playwright-core, or undefined when none is installed. */
+export function chromiumExecutable() {
+  const candidates = [process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE];
+  try {
+    candidates.push(chromium.executablePath());
+  } catch {
+    // No Playwright-managed browser; fall through to system installs.
+  }
+  candidates.push("/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+  return candidates.find((candidate) => candidate && existsSync(candidate));
+}
+
 /**
  * Runs a WebKitGTK script from this folder with `python3 -I`, under `xvfb-run` when there
  * is no display. Resolves `{ stdout }`, or `{ skip }` when python3, xvfb-run or WebKitGTK
  * is missing (the script exits 3). Async on purpose: the server above runs in this
  * process, so a blocking spawn would leave every request unanswered.
+ *
+ * xvfb-run sends its command's stderr to stdout, which would put GTK and EGL warnings in
+ * front of the JSON result. Under xvfb-run the script's stderr goes to file descriptor 3
+ * instead, read here as stderr.
  */
 export function runWebKitGtk(script, args, timeout = 0) {
   const argv = ["-I", path.join(UI_ROOT, "test/browser", script), ...args];
   const hasDisplay = process.env.DISPLAY || process.env.WAYLAND_DISPLAY;
   const [command, commandArgs] = hasDisplay
     ? ["python3", argv]
-    : ["xvfb-run", ["-a", "python3", ...argv]];
+    : ["xvfb-run", ["-a", "sh", "-c", 'exec python3 "$@" 2>&3', "sh", ...argv]];
   return new Promise((resolve, reject) => {
     const env = { ...process.env, WEBKIT_DISABLE_DMABUF_RENDERER: "1" };
-    const child = spawn(command, commandArgs, { env, timeout });
+    const child = spawn(command, commandArgs, {
+      env,
+      timeout,
+      stdio: ["ignore", "pipe", "pipe", "pipe"],
+    });
     let [stdout, stderr] = ["", ""];
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.stdio[3].on("data", (chunk) => (stderr += chunk));
     child.on("error", (error) =>
       error.code === "ENOENT" ? resolve({ skip: `${command} not found` }) : reject(error),
     );

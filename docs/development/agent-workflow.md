@@ -293,6 +293,29 @@ Open the screenshot and confirm it shows the Builds page and the dialog, not a l
 
 [The launch test](../../scripts/verify-rust-gateway/test_launch.py) holds the bootstrap and shutdown contract.
 
+#### Replacement UI on a Rust-only core
+
+`verify.py` builds `pp-server` without the `desktop_rebuild` feature, so its own build always runs the Node-backed runtime. For the replacement UI (`web/apps/ui`), build the server with the feature, then start it Rust-only on a copy of a synthetic dataset:
+
+```sh
+cargo build --locked --manifest-path rust/Cargo.toml -p pp-server --features desktop_rebuild
+(cd web && npm run fixture:synthetic -- --seed 1138 "$SEED_DIR")
+PP_DESKTOP_REBUILD=1 python3 scripts/verify-rust-gateway/verify.py launch \
+  --binary rust/target/debug/pp-server --seed "$SEED_DIR" \
+  --credential-file "$PRIVATE_DIR/credential.json" >"$LOG" 2>&1 &
+```
+
+`--binary` needs the `rust/bundle-manifest.json` and web build that the binary was built against; see `build()` in `verify.py`. `--seed` refuses a directory without `SYNTHETIC-DATASET.json`, copies it into the launcher's private temporary data directory, and, when `PP_DESKTOP_REBUILD` is `1` or `true`, writes the Rust [ownership marker](../storage.md#ownership-marker-format) into that copy in the compact form. Rust-only startup refuses a non-empty directory without one. That start also needs a `desktop_rebuild` binary, and the helper's own build has no such feature, so `--seed` with `PP_DESKTOP_REBUILD` set requires `--binary` built with `--features desktop_rebuild`. The seed is never changed, and the copy is removed at shutdown.
+
+The gateway serves the old `apps/web` build, not `apps/ui`. Serve the built replacement UI with Vite's preview server, which forwards `/api`, `/ws` and `/health` to the core:
+
+```sh
+npm --prefix web run build --workspace @print-partner/ui
+(cd web/apps/ui && PP_UI_CORE_URL="$PP_SERVER_URL" npx vite preview)   # http://127.0.0.1:4174
+```
+
+The Rust routes need a Rust session as well as the desktop cookie. After the bootstrap redirect, the capture program registers the single account on the disposable data with a `POST /auth/register` from `page.request`, sending `Origin` equal to `PP_SERVER_URL` and a JSON body with an email and a random password it never prints. Cookies are scoped to the host, not the port, so the same browser context then reads `http://127.0.0.1:4174/builds` with both cookies.
+
 ### Desktop app
 
 Desktop evidence comes from the native app built at the PR head, on a real display. Follow [Desktop and tray capture](../contributing/gate-evidence.md#desktop-and-tray-capture) for the lifecycle checks: close to tray, restore the same window, and quit with cleanup. Any native recorder works, such as macOS Screenshot (Shift-Command-5) or `screencapture`, Windows Snipping Tool, OBS, or the Homelab `evidence` CLI on Linux. The recorder changes nothing else: on Linux, disclose D-Bus tray activations as that section says.

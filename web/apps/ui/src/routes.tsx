@@ -1,4 +1,6 @@
 import { Navigate, type RouteObject } from "react-router";
+import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
+import { BuildsList } from "./builds/BuildsList";
 import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
 import { DestinationScreen, NotFound, StatesSpecimen } from "./screen/screens";
@@ -28,12 +30,26 @@ export const routes: RouteObject[] = [
       { index: true, element: <Navigate to="/today" replace /> },
       ...DESTINATIONS.map((d) => ({
         path: d.path.slice(1),
-        element: (
-          <DestinationScreen destination={d}>
-            {d.path === "/farm" && <PrinterStates />}
-          </DestinationScreen>
-        ),
+        element:
+          d.path === "/builds" ? (
+            <BuildsList />
+          ) : (
+            <DestinationScreen destination={d}>
+              {d.path === "/farm" && <PrinterStates />}
+            </DestinationScreen>
+          ),
       })),
+      {
+        path: "builds/:id",
+        element: <BuildWorkspace />,
+        children: [
+          { index: true, element: <BuildOverview /> },
+          ...BUILD_TABS.filter((t) => t.path).map((t) => ({
+            path: t.path,
+            element: <LaterTab label={t.label} holds={t.holds} />,
+          })),
+        ],
+      },
       { path: "states/:kind", element: <StatesSpecimen /> },
       { path: "type", element: <TypeSpecimen /> },
       { path: "*", element: <NotFound /> },

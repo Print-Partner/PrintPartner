@@ -5,11 +5,11 @@
 // WebKitGTK (WebKit, as in WKWebView) through webkitgtk-requests.py. A missing engine
 // prints SKIP and the run exits 77; a SKIP is not a pass. Run `npm run build` first.
 import { log } from "node:console";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { chromium } from "playwright-core";
-import { DIST, runWebKitGtk as launchWebKitGtk, serveDist } from "./harness.mjs";
+import { chromiumExecutable, DIST, runWebKitGtk as launchWebKitGtk, serveDist } from "./harness.mjs";
 
 const EXPECTED_FACES = [
   "IBM Plex Mono 400",
@@ -46,18 +46,6 @@ const controlBody = (url) => `
   await new FontFace("pp-control", "url(${url})").load().catch(() => {});
   return "done";
 `;
-
-function chromiumExecutable() {
-  const candidates = [process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE];
-  try {
-    candidates.push(chromium.executablePath());
-  } catch {
-    // No Playwright-managed browser; fall through to system installs.
-  }
-  candidates.push("/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
-  return candidates.find((candidate) => candidate && existsSync(candidate));
-}
 
 async function runChromium(url, controlUrl) {
   const executablePath = chromiumExecutable();

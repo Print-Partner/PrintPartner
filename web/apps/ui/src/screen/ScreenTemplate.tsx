@@ -34,7 +34,7 @@ function Loading({ title }: { title: string }) {
   );
 }
 
-function LoadedAt({ prefix, at }: { prefix: string; at?: number }) {
+export function LoadedAt({ prefix, at }: { prefix: string; at?: number }) {
   if (at === undefined) return null;
   const date = new Date(at);
   const text = new Intl.DateTimeFormat(undefined, {
@@ -83,27 +83,56 @@ export function MutationButton({
   );
 }
 
+/**
+ * Says which Module is off, what would appear, and links to Settings. The module-off
+ * screen state uses it, and so does a screen that shows one Module's part inline.
+ */
+export function ModuleOff({
+  module,
+  wouldShow,
+  where = "this screen",
+}: {
+  module: string;
+  wouldShow: string;
+  where?: string;
+}) {
+  return (
+    <div className="pp-module-off">
+      <p>The {module} module is off.</p>
+      <p>
+        When it is on, {where} shows {wouldShow}.
+      </p>
+      <Link to="/settings" className="pp-link">
+        Turn it on in Settings
+      </Link>
+    </div>
+  );
+}
+
 export function ScreenTemplate<T>({
   title,
   state,
   renderData,
   empty,
+  subnav,
 }: {
   title: string;
+  /** Navigation that belongs under the heading in every state, such as a tab bar. */
+  subnav?: ReactNode;
   state: ScreenState<T>;
   renderData: (data: T) => ReactNode;
   /** The empty state's message and its next useful action. */
   empty: { message: string; action?: ReactNode };
 }) {
   const headingId = useId();
-  const last = (s: { lastData?: T }) => s.lastData !== undefined && renderData(s.lastData);
-  let body: ReactNode;
+  let banner: ReactNode = null;
+  let content: ReactNode;
   switch (state.kind) {
     case "loading":
-      body = <Loading title={title} />;
+      content = <Loading title={title} />;
       break;
     case "empty":
-      body = (
+      content = (
         <>
           <p>{empty.message}</p>
           {empty.action}
@@ -111,62 +140,52 @@ export function ScreenTemplate<T>({
       );
       break;
     case "ready":
-      body = renderData(state.data);
+      content = renderData(state.data);
       break;
     case "error":
-      body = (
-        <>
-          <div role="alert" className="pp-banner" data-kind="error">
-            <p>
-              {state.lastData === undefined
-                ? `Could not load ${title}.`
-                : `Could not refresh ${title}.`}{" "}
-              {state.lastData !== undefined && (
-                <LoadedAt prefix="Showing data from" at={state.updatedAt} />
-              )}
-            </p>
-            <p className="pp-banner-detail">{state.message}</p>
-            <button type="button" className="pp-button" onClick={state.retry}>
-              Retry
-            </button>
-          </div>
-          {last(state)}
-        </>
+      banner = (
+        <div role="alert" className="pp-banner" data-kind="error">
+          <p>
+            {state.lastData === undefined
+              ? `Could not load ${title}.`
+              : `Could not refresh ${title}.`}{" "}
+            {state.lastData !== undefined && (
+              <LoadedAt prefix="Showing data from" at={state.updatedAt} />
+            )}
+          </p>
+          <p className="pp-banner-detail">{state.message}</p>
+          <button type="button" className="pp-button" onClick={state.retry}>
+            Retry
+          </button>
+        </div>
       );
+      content = state.lastData !== undefined && renderData(state.lastData);
       break;
     case "module-off":
-      body = (
-        <>
-          <p>The {state.module} module is off.</p>
-          <p>When it is on, this screen shows {state.wouldShow}.</p>
-          <Link to="/settings" className="pp-link">
-            Turn it on in Settings
-          </Link>
-        </>
-      );
+      content = <ModuleOff module={state.module} wouldShow={state.wouldShow} />;
       break;
     case "offline":
-      body = (
-        <>
-          <div role="status" className="pp-banner" data-kind="offline">
-            <p>
-              {OFFLINE_REASON}{" "}
-              {state.lastData === undefined ? (
-                `${title} has not loaded yet.`
-              ) : (
-                <LoadedAt prefix="Showing what was loaded at" at={state.updatedAt} />
-              )}
-            </p>
-          </div>
-          {last(state)}
-        </>
+      banner = (
+        <div role="status" className="pp-banner" data-kind="offline">
+          <p>
+            {OFFLINE_REASON}{" "}
+            {state.lastData === undefined ? (
+              `${title} has not loaded yet.`
+            ) : (
+              <LoadedAt prefix="Showing what was loaded at" at={state.updatedAt} />
+            )}
+          </p>
+        </div>
       );
+      content = state.lastData !== undefined && renderData(state.lastData);
       break;
   }
   return (
     <section aria-labelledby={headingId} className="pp-screen" data-state={state.kind}>
       <h1 id={headingId}>{title}</h1>
-      {body}
+      {subnav}
+      {banner}
+      {content}
     </section>
   );
 }

@@ -137,13 +137,23 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   entry is `{"state":"on","module":…}` or
   `{"state":"off","module":…,"reason":…}`. The reason codes are `default_off`
   (nobody turned it on), `turned_off` (the user chose off) and
-  `setting_unreadable` (the stored choice does not parse, so the module stays
-  off). `pp-storage::features::modules` reads the `default` tenant's
+  `setting_unreadable` (the stored choice does not parse, or could not be
+  read in time, so the module stays off). `pp-storage::features::modules` reads the `default` tenant's
   `feature_toggles` and `build_tracking_assembly` settings on every request,
   so a change shows on the next `/health` without a restart. The body carries
   only these fixed keys and codes, never a stored value or parse error, so it
-  holds no secrets, URLs or customer data. A storage read failure answers 503
-  `Module settings temporarily unavailable`. Plan overrides do not change
+  holds no secrets, URLs or customer data. The read waits at most 100 ms for one of
+  the 4 pooled readers. When it times out or fails, `/health` still answers
+  200 with every other field and lists all five modules as
+  `{"state":"off","module":…,"reason":"setting_unreadable"}`, so liveness
+  never depends on settings storage and the UI's 8-second poll keeps showing
+  the server as reachable. Treat `setting_unreadable` as "unknown, try
+  again", not as the user's choice; the next request reads storage again.
+  `modules` is optional in the generated `healthSchema`, as are the six
+  members Node's `/health` never sends (`degraded_detail`, `single_user_auth`,
+  `single_user_setup_required`, `owner_mapping_required`,
+  `github_oauth_configured`, `discord_oauth_configured`), so one schema decodes
+  both Node's body and the Rust-only body. Plan overrides do not change
   this list. Other Rust auth routers omit `modules`, so their body still
   matches Node's, and Node-mode `/health` comes from Node unchanged.
 

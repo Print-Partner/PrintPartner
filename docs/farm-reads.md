@@ -146,7 +146,7 @@ Each row has `print_id`, `printer_id`, `filename`, `completed_at`,
 | Confidence | Rule |
 | --- | --- |
 | `exact` | Every object carries a token, every token belongs to the same open Build, and the tokens are exactly the units of one Plate in that Build's current accepted layout |
-| `likely` | Tokens name one open Build but do not make a whole Plate; or, with no tokens, the object list matches exactly one Build's part files; or, with no objects, the file name names exactly one Build. When the object list matches several Builds, the file name and then the time window may leave one |
+| `likely` | Tokens name one open Build but do not make a whole Plate; or, with no tokens, the object list matches exactly one Build's part files; or, with no objects, the file name names exactly one Build. When the object list matches several Builds, the file name and then the time window may leave one; when the file name of a print with no objects names several Builds, the time window may leave one |
 | `none` | Tokens name more than one Build or none, objects match no Build, the evidence ties, or only the time window points anywhere |
 
 `plate` is set for `exact`, for `likely` when exactly one current Plate holds

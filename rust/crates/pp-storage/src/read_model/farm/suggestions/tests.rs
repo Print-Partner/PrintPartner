@@ -222,6 +222,37 @@ fn match_suggestions_without_objects_use_the_file_name_only() {
             .all(|row| row.confidence == MatchConfidence::Likely && !row.starts_checked)
     );
 
+    let file_tie =
+        |sends: Value| suggest(json!([print("t", "old.gcode", &[])]), json!([]), sends).remove(0);
+    let broken = file_tie(json!([sent(
+        "s",
+        1,
+        "old.gcode",
+        "2026-11-05T11:00:00.000Z"
+    )]));
+    assert_eq!(
+        broken.build.unwrap().id,
+        1,
+        "the window leaves Build 1 of the file-name tie"
+    );
+    assert_eq!(broken.confidence, MatchConfidence::Likely);
+    assert_eq!(
+        broken.evidence.basis,
+        vec![MatchBasis::FileName, MatchBasis::TimeWindow]
+    );
+    let tied = file_tie(json!([sent(
+        "s",
+        1,
+        "old.gcode",
+        "2026-10-01T11:00:00.000Z"
+    )]));
+    assert_eq!(tied.evidence.file_name.build_ids, vec![1, 2]);
+    assert_eq!(
+        tied.confidence,
+        MatchConfidence::None,
+        "no window: the tie stays"
+    );
+
     let window_alone = suggest(
         json!([print("c", "c.gcode", &[])]),
         json!([]),

@@ -331,6 +331,29 @@ describe("UI4-02 one bed is one verify-batch request, with undo", () => {
   });
 });
 
+describe("the newest failed write is the one shown", () => {
+  it("shows a failed Undo even after a refused confirm of another bed", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      init?.method === "POST"
+        ? path.endsWith("/undo")
+          ? json({ title: "Conflict", detail: "A newer change to this Checkoff link exists" }, 409)
+          : json({ title: "Bad Request", detail: "beds[0]: Confirm must include lower incomplete units first" }, 400)
+        : real(path, init),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Trident bed" }));
+    expect(await screen.findByText("Could not confirm the bed.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Could not undo the confirmation.")).toBeTruthy();
+    expect(screen.queryByText("Could not confirm the bed.")).toBeNull();
+    expect(screen.getByText(/A newer change to this Checkoff link exists/)).toBeTruthy();
+  });
+});
+
 describe("UI4-03 a retried confirm does not double count", () => {
   it("resends a lost answer with the same key and counts the units once", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -455,6 +478,21 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     expect(
       (await screen.findByRole("region", { name: "Prints the app cannot see finish" })).textContent,
     ).toContain("Annex K3: link-annex.gcode");
+  });
+
+  it("stops claiming a link is up when a farm reread fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(within(bed("Voron 2.4")).queryByText(/Printer link down/)).toBeNull();
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/api/v2/printers" ? json({}, 500) : real(path, init),
+    );
+    // The reread at 30 s fails, then react-query's three backed-off retries (1 + 2 + 4 s).
+    await act(() => vi.advanceTimersByTimeAsync(38_000));
+    expect(await within(bed("Voron 2.4")).findByText(/Printer link down/)).toBeTruthy();
   });
 
   it("does not claim a link is up when the farm read fails", async () => {

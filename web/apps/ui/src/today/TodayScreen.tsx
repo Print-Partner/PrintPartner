@@ -175,6 +175,7 @@ function useCheckoff() {
         },
       ),
     retry: retryLostSend,
+    onMutate: () => undo.reset(),
     onError: (error, { bed }) => {
       if (lostSend(error)) return;
       unanswered.current.delete(bed.result.id);
@@ -193,14 +194,20 @@ function useCheckoff() {
     unanswered.current.set(bed.result.id, key);
     confirm.mutate({ bed, key });
   };
-  return { confirm, confirmBed, undo, tally };
+  // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
+  const undoBurst = (tallied: Undo) => {
+    if (undo.isPending) return;
+    confirm.reset();
+    undo.mutate(tallied);
+  };
+  return { confirm, confirmBed, undo, undoBurst, tally };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
 
 /** The live tally, Undo, and a Retry that resends the same request with the same key. */
 function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
-  const { confirm, undo, tally } = checkoff;
+  const { confirm, undo, undoBurst, tally } = checkoff;
   const failure = confirm.isError
     ? {
         what: "Could not confirm the bed.",
@@ -221,7 +228,7 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
           <p>
             {tallyText(tally)}{" "}
             {tally.kind === "confirmed" && (
-              <MutationButton onClick={() => !undo.isPending && undo.mutate(tally.undo)}>
+              <MutationButton onClick={() => undoBurst(tally.undo)}>
                 Undo
               </MutationButton>
             )}
@@ -388,10 +395,10 @@ export function TodayScreen() {
   const checkoff = useCheckoff();
   const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));
   const printerName = (id: string) => byId.get(id)?.name ?? id;
-  // Without a farm read that names the printer, nothing shows its link is up.
+  // Without a current farm read that names the printer, nothing shows its link is up.
   const linkDown = (id: string) => {
     const printer = byId.get(id);
-    return !printer || LINK_DOWN.has(printer.state.execution);
+    return printers.isError || !printer || LINK_DOWN.has(printer.state.execution);
   };
   return (
     <ScreenTemplate

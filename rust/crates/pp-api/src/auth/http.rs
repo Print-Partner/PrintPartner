@@ -615,10 +615,7 @@ async fn health(State(app): State<App>, headers: HeaderMap) -> Result<Response, 
             .await
             .ok()
             .and_then(Result::ok)
-            .ok_or(Failure(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Module settings temporarily unavailable",
-            ))?,
+            .unwrap_or_else(pp_storage::features::modules::unreadable),
         ),
         None => None,
     };

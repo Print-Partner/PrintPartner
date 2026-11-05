@@ -73,7 +73,7 @@ npm --prefix web run typecheck --workspace @print-partner/rust-client
 ## Wire rules
 
 - **Unknown keys.** Request DTOs use `#[serde(deny_unknown_fields)]`, so their schemas are `z.strictObject` and reject unknown keys. Response DTOs use `z.object`, which strips unknown keys.
-- **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors`, which Rust omits when empty as RFC 9457 allows. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, through `schemars(with = "RequiredNullable<T>")`.
+- **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors` (omitted when empty, as RFC 9457 allows) and `Health`'s `modules` and the six members Node's `/health` does not send (`degraded_detail`, `single_user_auth`, `single_user_setup_required`, `owner_mapping_required`, `github_oauth_configured`, `discord_oauth_configured`), so a client decodes both bodies. `Omittable<T>` marks such a member. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, through `schemars(with = "RequiredNullable<T>")`.
 - **Integers.** Bounded Rust wire integers keep their bounds. `i64`, `u64` and `usize` are limited to the JavaScript safe range, so a larger value fails to parse instead of losing precision.
 - **Tagged unions.** Internally tagged enums become `z.discriminatedUnion` on their tag (`kind` or `status`).
 - **Not expressed.** JSON Schema cannot state the one-edit-per-Part-field rule for `EditDraftPartsRequest`; the server refuses such a request with 400.

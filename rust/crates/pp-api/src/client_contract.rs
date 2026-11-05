@@ -605,7 +605,10 @@ mod codegen {
         ]
     }
 
-    fn health(degraded_detail: Option<&'static str>) -> crate::auth::Health {
+    fn health(
+        degraded_detail: Option<&'static str>,
+        modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
+    ) -> crate::auth::Health {
         let filled = degraded_detail.is_some();
         crate::auth::Health {
             ok: true,
@@ -624,30 +627,32 @@ mod codegen {
             owner_mapping_required: false,
             github_oauth_configured: !filled,
             discord_oauth_configured: !filled,
-            modules: Some({
-                use pp_storage::features::modules::ModuleStatus;
-                vec![
-                    ModuleStatus::On {
-                        module: Module::Farm,
-                    },
-                    ModuleStatus::Off {
-                        module: Module::Spoolman,
-                        reason: ModuleOffReason::DefaultOff,
-                    },
-                    ModuleStatus::Off {
-                        module: Module::Orders,
-                        reason: ModuleOffReason::TurnedOff,
-                    },
-                    ModuleStatus::Off {
-                        module: Module::Bambu,
-                        reason: ModuleOffReason::SettingUnreadable,
-                    },
-                    ModuleStatus::On {
-                        module: Module::AssemblyTracking,
-                    },
-                ]
-            }),
+            modules,
         }
+    }
+
+    fn mixed_modules() -> Vec<pp_storage::features::modules::ModuleStatus> {
+        use pp_storage::features::modules::ModuleStatus;
+        vec![
+            ModuleStatus::On {
+                module: Module::Farm,
+            },
+            ModuleStatus::Off {
+                module: Module::Spoolman,
+                reason: ModuleOffReason::DefaultOff,
+            },
+            ModuleStatus::Off {
+                module: Module::Orders,
+                reason: ModuleOffReason::TurnedOff,
+            },
+            ModuleStatus::Off {
+                module: Module::Bambu,
+                reason: ModuleOffReason::SettingUnreadable,
+            },
+            ModuleStatus::On {
+                module: Module::AssemblyTracking,
+            },
+        ]
     }
 
     /// Workflows resolved by the projection itself: a new Build, a saved
@@ -836,11 +841,17 @@ mod codegen {
             )?,
             served("DraftIdentity", "open", identity("open", Some(MAX_SAFE)))?,
             served("DraftIdentity", "nulls", identity("abandoned", None))?,
-            served("Health", "ready", health(None))?,
+            served("Health", "ready", health(None, Some(mixed_modules())))?,
             served(
                 "Health",
                 "degraded",
-                health(Some("Authentication required")),
+                health(Some("Authentication required"), Some(mixed_modules())),
+            )?,
+            served("Health", "node-mode-no-modules", health(None, None))?,
+            served(
+                "Health",
+                "modules-unreadable",
+                health(None, Some(pp_storage::features::modules::unreadable())),
             )?,
         ];
         for (index, value) in shortfalls().into_iter().enumerate() {

@@ -248,6 +248,23 @@ describe("FRM-04 offline frame", () => {
     expect(heading()).toBe("Library");
   });
 
+  it("treats a /health answer with every module unreadable as online", async () => {
+    const modules = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"].map((module) => ({
+      state: "off",
+      module,
+      reason: "setting_unreadable",
+    }));
+    const degraded = new Response(JSON.stringify({ ok: true, modules }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    renderAt("/builds", vi.fn().mockResolvedValue(degraded));
+    expect(await screen.findByText("Core reachable")).toBeTruthy();
+    expect(screen.queryByText("Offline")).toBeNull();
+    const section = screen.getByRole("heading", { name: "Builds" }).closest("section")!;
+    expect(section.dataset.state).not.toBe("offline");
+  });
+
   it("the offline sample state takes the header with it, and leaving it restores the probe", async () => {
     const { router } = renderAt("/states/offline");
     expect(await screen.findByText("Offline")).toBeTruthy();

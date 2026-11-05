@@ -43,6 +43,15 @@ impl Module {
     ];
 }
 
+/// Every module as `GET /health` reports it when storage cannot be read in
+/// time: off with `setting_unreadable`, so no state is claimed that was not read.
+pub fn unreadable() -> Vec<ModuleStatus> {
+    Module::ALL
+        .into_iter()
+        .map(|module| off(module, ModuleOffReason::SettingUnreadable))
+        .collect()
+}
+
 /// Why a module is off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
@@ -52,7 +61,8 @@ pub enum ModuleOffReason {
     DefaultOff,
     /// The user turned it off.
     TurnedOff,
-    /// The stored setting could not be read, so the module stays off.
+    /// The stored setting could not be read in time or does not parse, so the
+    /// module stays off.
     SettingUnreadable,
 }
 
@@ -130,7 +140,7 @@ fn statuses(toggles: &SettingSnapshot, assembly: &SettingSnapshot) -> Vec<Module
             match (resolved.enabled, resolved.source) {
                 (true, _) => ModuleStatus::On { module },
                 (false, Source::Default) => off(module, ModuleOffReason::DefaultOff),
-                (false, Source::User | Source::Plan) => off(module, ModuleOffReason::TurnedOff),
+                (false, _) => off(module, ModuleOffReason::TurnedOff),
             }
         })
         .collect()

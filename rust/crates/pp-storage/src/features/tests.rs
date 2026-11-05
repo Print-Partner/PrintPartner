@@ -883,6 +883,23 @@ mod health_modules {
     }
 
     #[test]
+    fn a_saturated_reader_pool_fails_the_read_and_unreadable_lists_every_module() {
+        let f = Fixture::new();
+        let client = f.owner.as_ref().unwrap().client();
+        let held: Vec<_> = (0..4)
+            .map(|_| client.reader(std::time::Duration::ZERO).unwrap())
+            .collect();
+        let error = client.modules(TENANT, std::time::Duration::from_millis(100));
+        assert!(error.unwrap_err().to_string().contains("full"));
+        drop(held);
+        assert_eq!(modules(&f), all_off(ModuleOffReason::DefaultOff));
+        assert_eq!(
+            super::super::modules::unreadable(),
+            all_off(ModuleOffReason::SettingUnreadable)
+        );
+    }
+
+    #[test]
     fn fresh_install_lists_every_module_off_by_default() {
         let f = Fixture::new();
         assert_eq!(modules(&f), all_off(ModuleOffReason::DefaultOff));

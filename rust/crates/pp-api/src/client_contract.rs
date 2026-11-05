@@ -39,6 +39,8 @@ pub struct ClientRoute {
     pub request: Option<&'static str>,
     /// DTO name of the 200 response body.
     pub response: &'static str,
+    /// Path parameters that are opaque strings; the rest are positive integers.
+    pub text_params: &'static [&'static str],
 }
 
 const fn route(
@@ -55,6 +57,7 @@ const fn route(
         auth: ClientAuth::Credential,
         request,
         response,
+        text_params: &[],
     }
 }
 
@@ -166,13 +169,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "FarmLogPage",
     ),
-    route(
-        "undoFarmLogEntry",
-        "POST",
-        "/api/v2/farm-log/{id}/undo",
-        None,
-        "FarmLogEntry",
-    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "undoFarmLogEntry",
+            "POST",
+            "/api/v2/farm-log/{id}/undo",
+            None,
+            "FarmLogEntry",
+        )
+    },
     route(
         "readSendQueue",
         "GET",
@@ -187,6 +193,7 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         auth: ClientAuth::None,
         request: None,
         response: "Health",
+        text_params: &[],
     },
 ];
 
@@ -305,7 +312,8 @@ mod codegen {
             .iter()
             .map(|route| {
                 json!({"name": route.name, "method": route.method, "path": route.path,
-                    "auth": route.auth.as_str(), "request": route.request, "response": route.response})
+                    "auth": route.auth.as_str(), "request": route.request, "response": route.response,
+                    "text_params": route.text_params})
             })
             .collect();
         // Emitted as a TypeScript record keyed by `key`; rows in Rust order.

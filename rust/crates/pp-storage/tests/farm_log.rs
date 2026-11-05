@@ -156,7 +156,17 @@ fn farm_log_records_bursts_and_undo_once_and_survives_restart() {
         undo_entry(&owner, "checkoff_burst_undo:2"),
         json!({"status": 409, "body": {"detail": "An undo cannot be undone"}})
     );
-    assert_eq!(undo_entry(&owner, "checkoff_burst:99")["status"], 404);
+    for unknown in [
+        "checkoff_burst:99",
+        "checkoff_burst_undo:99",
+        "send:missing",
+    ] {
+        assert_eq!(
+            undo_entry(&owner, unknown)["status"],
+            404,
+            "{unknown} is not in the log"
+        );
+    }
     assert_eq!(entries(&owner).len(), 4, "refusals append nothing");
 }
 

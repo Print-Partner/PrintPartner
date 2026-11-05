@@ -414,16 +414,25 @@ pub(super) fn undo_entry(tx: &Transaction<'_>, tenant: &str, id: &str, repos: &P
         )))
     };
     if id.starts_with(&format!("{SEND}:")) {
-        return refuse(409, "A printer command cannot be undone");
-    }
-    if id.starts_with(&format!("{UNDO}:")) {
-        return refuse(409, "An undo cannot be undone");
+        if sends(tx, tenant)?.iter().any(|send| send.id == id) {
+            return refuse(409, "A printer command cannot be undone");
+        }
+        return missing();
     }
     let stored = burst::load_list(tx, tenant, KEY)?;
-    let Some(token) = stored
-        .iter()
-        .find(|e| e["kind"] == BURST && id == format!("{BURST}:{}", e["seq"]))
-        .and_then(|e| e["undo_token"].as_str())
+    let Some(entry) = stored.iter().find(|e| {
+        e["kind"]
+            .as_str()
+            .is_some_and(|kind| id == format!("{kind}:{}", e["seq"]))
+    }) else {
+        return missing();
+    };
+    if entry["kind"] == UNDO {
+        return refuse(409, "An undo cannot be undone");
+    }
+    let Some(token) = entry["undo_token"]
+        .as_str()
+        .filter(|_| entry["kind"] == BURST)
     else {
         return missing();
     };

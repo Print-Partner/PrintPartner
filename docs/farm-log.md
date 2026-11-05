@@ -9,7 +9,7 @@ the replacement Rust API, which mounts only with the default-off
 | Route | Body | Generated client |
 | --- | --- | --- |
 | `GET /api/v2/farm-log` | `FarmLogPage` | `listFarmLog` |
-| `POST /api/v2/farm-log/{id}/undo` | `FarmLogEntry` (the appended undo entry) | `undoFarmLogEntry` |
+| `POST /api/v2/farm-log/{id}/undo` | `FarmLogEntry` (the appended undo entry) | `undoFarmLogEntry` (`routePath` percent-encodes the string `id`) |
 
 Both routes are also served without the `/api/v2` prefix, like the burst
 routes beside them in `pp_api::checkoff::checkoff_router`. Admission is
@@ -66,7 +66,7 @@ and answers the `checkoff_burst_undo` entry it appended. It answers 409 with
 the reason when the burst was already undone or its touched state changed,
 409 `A printer command cannot be undone` for a send, 409 `An undo cannot be
 undone` for an undo entry, and 404 `Farm log entry not found` (code `farm_log_entry_not_found`)
-for an unknown id. A burst entry whose receipt is gone answers the burst
+for an id that is not in the tenant's log or send queue, whatever its prefix. A burst entry whose receipt is gone answers the burst
 undo's 404 `Checkoff burst not found`. No printer, webhook or Spoolman call
 happens.
 

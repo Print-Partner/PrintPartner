@@ -64,6 +64,10 @@ test("routes cover Builds, layers, v2 drafts and health, all generated from pp-a
   assert.equal(routePath("editDraftParts", { id: 7, draft_id: Number.MAX_SAFE_INTEGER }), "/api/v2/plans/7/drafts/9007199254740991/parts");
   assert.throws(() => routePath("readBuild", { id: UNSAFE }), RangeError);
   assert.throws(() => routePath("readBuild", { id: 0 }), RangeError);
+  assert.equal(routePath("undoFarmLogEntry", { id: "checkoff_burst:1" }), "/api/v2/farm-log/checkoff_burst%3A1/undo");
+  assert.throws(() => routePath("undoFarmLogEntry", { id: "" }), RangeError);
+  assert.throws(() => routePath("undoFarmLogEntry", { id: 1 }), RangeError);
+  assert.throws(() => routePath("readBuild", { id: "1" }), RangeError);
 });
 
 test("every DTO has accepted Rust fixtures", () => {

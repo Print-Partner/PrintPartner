@@ -158,8 +158,9 @@ the Farm screen. No screen polls for printer state.
   streamed rows still show, with an alert and a Retry for the missing models and
   integrations. The stream sends a printer only when its state changes, so a
   printer it reports as answering shows the time of the stream's last frame
-  (heartbeats included) as last heard; an unreachable, unwatched or unknown
-  printer keeps the stream's own last-heard time, or Never. Each row
+  (heartbeats included) as last heard; a printer with a reason (awaiting
+  status, unwatched, unreachable) keeps the stream's own last-heard time, or
+  Never. Each row
   shows the summary status (icon and word from `PrinterStatus`) and, in their own
   columns, the execution state with progress, the bed state and the last-heard
   time ([Farm reads](../../../docs/farm-reads.md#printers)). A printer that is not

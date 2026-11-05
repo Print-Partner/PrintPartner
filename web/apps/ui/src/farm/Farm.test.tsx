@@ -210,6 +210,25 @@ describe("UI3-03 the pulse line counts by state from /ws/printers", () => {
     expect(printerCalls(fetchMock)).toBe(0);
   });
 
+  it("moves last heard for an answering printer in an unknown state, not for one awaiting status", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const unknown = { execution: "unknown", bed_clear: "unknown", display: "unknown" } as const;
+    const fleet = [
+      printer("odd", "Odd state", { state: unknown }),
+      printer("wait", "Awaiting", { state: unknown, reason: "awaiting_status" }),
+    ];
+    renderAt("/farm", core({ printers: fleet }));
+    snapshot(fleet);
+    await screen.findByRole("table", { name: "Printers" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+      socket().frame({ type: "heartbeat", stream: "s1", seq: 7, at: HEARD });
+    });
+    const heard = (id: string) => row(id).querySelector("time")?.getAttribute("dateTime");
+    expect(Date.parse(heard("odd")!)).toBeGreaterThan(Date.parse(HEARD) + 50_000);
+    expect(heard("wait")).toBe("2026-11-05T20:00:00.000Z");
+  });
+
   it("drops a printer the stream removes", async () => {
     renderAt("/farm");
     snapshot();

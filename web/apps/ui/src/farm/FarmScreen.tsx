@@ -34,14 +34,15 @@ type Row = {
 };
 
 /** Execution states in which the core is not hearing from the printer. */
-const NOT_HEARD = new Set<FarmPrinter["state"]["execution"]>(["unreachable", "not_set_up", "manual", "unknown"]);
+const NOT_HEARD = new Set<FarmPrinter["state"]["execution"]>(["unreachable", "not_set_up", "manual"]);
 
 /**
  * The stream sends a printer only when its state changes, so a printer that keeps
  * answering was last heard as of the stream's last frame, not at its last change.
  */
 function heardAt(p: StreamPrinter, receivedAt: number | null): string | null {
-  if (NOT_HEARD.has(p.display.execution) || receivedAt === null || !p.last_heard_at) {
+  // A reason means the printer is not answering (awaiting status, unwatched, unreachable).
+  if (p.reason || NOT_HEARD.has(p.display.execution) || receivedAt === null || !p.last_heard_at) {
     return p.last_heard_at ?? null;
   }
   return new Date(Math.max(Date.parse(p.last_heard_at) || 0, receivedAt)).toISOString();

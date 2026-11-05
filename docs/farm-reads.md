@@ -59,7 +59,7 @@ the two.
 | No `integration_id` | `not_set_up` | `not_set_up` |
 | `integration_id` names no integration, or a non-printer one such as Spoolman | `not_set_up` | `integration_missing` |
 | Integration disabled | `manual` | `monitoring_disabled` |
-| PrusaLink or Bambu (no Rust watcher yet), or an HTTPS or redirecting Moonraker host | `manual` | `monitoring_not_supported` |
+| PrusaLink or Bambu (no Rust watcher yet), an HTTPS or redirecting Moonraker host, or a Moonraker host the watchers never poll (no address, or past the 128-host cap) | `manual` | `monitoring_not_supported` |
 | Moonraker with no status yet, or monitoring stopped | `unknown` | `awaiting_status` |
 | Moonraker that did not answer its last poll | `unreachable` | `unreachable` |
 | Moonraker `printing`, `paused` | `printing`, `paused` | `null` |
@@ -95,7 +95,10 @@ read as cleared. Otherwise it is
   `filename`, `state` (`watching`, `awaiting_verify`, `host_failed`,
   `dismissed`, `verified`; Node's legacy `applied` reads as `verified`),
   `host_outcome`, `unit_count`, `resolved_unit_count`, `created_at`,
-  `completed_at`, `applied_at`. Every stored result, in stored order.
+  `completed_at`, `applied_at`. Every stored result, in stored order. As in
+  Node, a missing `host_outcome` reads `success` for verified and awaiting
+  results and `failed` for `host_failed`, and a missing `completed_at` reads
+  `applied_at`.
 - `UnmatchedPrint`: open prints only (not claimed, not dismissed) that no
   watching, awaiting or verified result matches by integration and
   case-insensitive basename, as Node's `filterLinkedUnattributedPrints`

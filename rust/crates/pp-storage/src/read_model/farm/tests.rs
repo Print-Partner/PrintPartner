@@ -17,7 +17,7 @@ fn farm(links: Value, unmatched: Value) -> Farm {
         list(json!([
             {"id": "off", "type": "moonraker", "config": {"enabled": false}},
             {"id": "prusa", "type": "prusalink", "config": {}},
-            {"id": "moon", "type": "moonraker"},
+            {"id": "moon", "type": "moonraker", "config": {"base_url": "http://printer.test"}},
             {"id": "spool", "type": "spoolman"}
         ])),
         list(links),
@@ -93,6 +93,19 @@ fn farm_printer_reasons_are_distinct_and_only_enabled_printers_are_observed() {
     assert_eq!(
         unavailable.printers[4].reason,
         Some(PrinterReason::AwaitingStatus)
+    );
+    let unwatched = Farm::parse(
+        vec![json!({"id": "p-blank", "name": "Blank", "integration_id": "blank"})],
+        vec![json!({"id": "blank", "type": "moonraker", "config": {"base_url": " "}})],
+        vec![],
+        vec![],
+        vec![],
+    )
+    .printers(|_| panic!("a host no watcher polls is not observed"));
+    assert_eq!(
+        unwatched.printers[0].reason,
+        Some(PrinterReason::MonitoringNotSupported),
+        "an address-less Moonraker host never waits on a status"
     );
     let unsupported = farm.printers(observe(Observation::NotSupported));
     assert_eq!(
@@ -207,7 +220,7 @@ fn farm_lists_skip_unusable_rows_and_hide_paths_and_error_text() {
         results,
         json!({"results": [{"id": "l-applied", "profile_id": 3, "printer_id": "p-moon",
             "integration_id": "moon", "filename": "dir/Plate.gcode", "state": "verified",
-            "host_outcome": null, "unit_count": 2, "resolved_unit_count": 1,
+            "host_outcome": "success", "unit_count": 2, "resolved_unit_count": 1,
             "created_at": "2026-11-05T00:00:00.000Z", "completed_at": null, "applied_at": null}]})
     );
     assert_eq!(
@@ -237,4 +250,22 @@ fn farm_lists_skip_unusable_rows_and_hide_paths_and_error_text() {
     );
     let text = queue.to_string();
     assert!(!text.contains("/data/exports") && !text.contains("secret detail"));
+}
+
+#[test]
+fn farm_results_fill_outcome_and_completion_as_node_does() {
+    let farm = farm(
+        json!([
+            link("host_failed", None, Some("2026-11-05T03:00:00.000Z")),
+            link("watching", None, None)
+        ]),
+        json!([]),
+    );
+    let results = serde_json::to_value(farm.checkoff()).unwrap();
+    assert_eq!(results["results"][0]["host_outcome"], "failed");
+    assert_eq!(
+        results["results"][0]["completed_at"], "2026-11-05T03:00:00.000Z",
+        "a missing completion falls back to applied_at"
+    );
+    assert_eq!(results["results"][1]["host_outcome"], Value::Null);
 }

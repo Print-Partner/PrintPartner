@@ -307,6 +307,9 @@ struct StoredPrinter {
 struct StoredIntegration {
     kind: Option<IntegrationKind>,
     enabled: bool,
+    /// False for a Moonraker host the watchers never poll: no usable address,
+    /// or past their host cap.
+    monitorable: bool,
 }
 
 /// The tenant's farm settings, parsed once per request.
@@ -496,6 +499,15 @@ impl Farm {
             })
             .collect();
         open.drain(..open.len().saturating_sub(MAX_UNMATCHED));
+        let polled: Option<Vec<String>> =
+            crate::printer_hosts::project(Some(&Value::Array(integrations.clone()).to_string()))
+                .map(|hosts| {
+                    hosts
+                        .into_iter()
+                        .filter(|host| !host.base_url.trim().is_empty())
+                        .map(|host| host.id)
+                        .collect()
+                });
         Self {
             printers: fleet.iter().filter_map(printer).collect(),
             integrations: integrations
@@ -509,7 +521,18 @@ impl Farm {
                         _ => None,
                     };
                     let enabled = item["config"]["enabled"] != Value::Bool(false);
-                    Some((id.to_owned(), StoredIntegration { kind, enabled }))
+                    let monitorable = kind != Some(IntegrationKind::Moonraker)
+                        || polled
+                            .as_ref()
+                            .is_none_or(|ids| ids.iter().any(|known| known == id));
+                    Some((
+                        id.to_owned(),
+                        StoredIntegration {
+                            kind,
+                            enabled,
+                            monitorable,
+                        },
+                    ))
                 })
                 .collect(),
             results,
@@ -555,8 +578,15 @@ impl Farm {
                 });
                 let observation = integration
                     .as_ref()
-                    .filter(|known| self.integrations[&known.id].enabled)
-                    .map(&observe);
+                    .map(|known| (known, &self.integrations[&known.id]))
+                    .filter(|(_, stored)| stored.enabled)
+                    .map(|(known, stored)| {
+                        if stored.monitorable {
+                            observe(known)
+                        } else {
+                            Observation::NotSupported
+                        }
+                    });
                 let (execution, reason) = execution(printer, &integration, observation.as_ref());
                 let (host, progress_percent, last_heard_at) = match &observation {
                     Some(Observation::Seen {
@@ -746,11 +776,15 @@ fn result(value: &Value) -> Option<CheckoffResult> {
         "verified" | "applied" => CheckoffResultState::Verified,
         _ => return None,
     };
-    let host_outcome = match value["host_outcome"].as_str() {
-        Some("unknown") => Some(HostOutcome::Unknown),
-        Some("success") => Some(HostOutcome::Success),
-        Some("failed") => Some(HostOutcome::Failed),
-        Some("cancelled") => Some(HostOutcome::Cancelled),
+    let host_outcome = match (value["host_outcome"].as_str(), state) {
+        (Some("unknown"), _) => Some(HostOutcome::Unknown),
+        (Some("success"), _) => Some(HostOutcome::Success),
+        (Some("failed"), _) => Some(HostOutcome::Failed),
+        (Some("cancelled"), _) => Some(HostOutcome::Cancelled),
+        (_, CheckoffResultState::Verified | CheckoffResultState::AwaitingVerify) => {
+            Some(HostOutcome::Success)
+        }
+        (_, CheckoffResultState::HostFailed) => Some(HostOutcome::Failed),
         _ => None,
     };
     Some(CheckoffResult {
@@ -764,7 +798,7 @@ fn result(value: &Value) -> Option<CheckoffResult> {
         unit_count: count(&value["units"]),
         resolved_unit_count: count(&value["resolved_units"]),
         created_at: text(value, "created_at")?,
-        completed_at: text(value, "completed_at"),
+        completed_at: text(value, "completed_at").or_else(|| text(value, "applied_at")),
         applied_at: text(value, "applied_at"),
     })
 }

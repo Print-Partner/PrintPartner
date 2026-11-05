@@ -19,6 +19,13 @@ pending at GRE-335.
   - `rust/crates/pp-drivers/tests/ticket_t_4_watcher_proof_parity.rs` runs every
     case through `recorded_status`.
 
+- `host-snapshot-parity.json` (GRE-449): stored `integrations` settings and
+  the Moonraker host list each projects to (`null` for a setting that fails
+  closed). `web/apps/server/src/moonraker-host-snapshot.test.ts` runs every
+  case through Node's `moonrakerHostSnapshot`, and
+  `pp-storage` `printer_hosts` tests run them through `project`, which feeds
+  the Rust-only runtime's watchers.
+
 A case with `rust_rejects` names a deliberate Rust difference: `recorded_status`
 refuses the body and the poller reports offline instead. The Node test still
 asserts `expected`.

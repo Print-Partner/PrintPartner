@@ -69,12 +69,36 @@ impl AdminHttpConfig {
     }
 }
 
+/// Loopback admission and credential proof shared by the routes that
+/// authenticate with an empty `ReadClient` batch.
 #[derive(Clone)]
-struct App {
+pub(crate) struct Gate {
     config: AdminHttpConfig,
     client: ReadClient,
-    files: AdminFiles,
     admission: Arc<tokio::sync::Semaphore>,
+}
+
+impl Gate {
+    /// `None` when `PP_DESKTOP_REBUILD` was not exactly `1` or `true`.
+    pub(crate) fn new(config: AdminHttpConfig, client: ReadClient) -> Option<Self> {
+        config.enabled.then(|| Self {
+            config,
+            client,
+            admission: Arc::new(tokio::sync::Semaphore::new(64)),
+        })
+    }
+
+    /// Run `routes` behind this gate, with problem responses for refusals.
+    pub(crate) fn guard<S: Clone + Send + Sync + 'static>(self, routes: Router<S>) -> Router<S> {
+        routes
+            .layer(middleware::from_fn_with_state(self, guard))
+            .route_layer(middleware::map_response(crate::problem::layer))
+    }
+}
+
+#[derive(Clone)]
+struct App {
+    files: AdminFiles,
 }
 
 /// Mounts `GET`/`HEAD` `/legal/{summary,license,attribution,third-party}` and
@@ -83,15 +107,10 @@ struct App {
 /// nothing. Every route first proves the credential with an empty
 /// `ReadClient` batch, as Node's auth hook runs before each handler.
 pub fn admin_router(config: AdminHttpConfig, client: ReadClient, files: AdminFiles) -> Router {
-    if !config.enabled {
+    let Some(gate) = Gate::new(config, client) else {
         return Router::new();
-    }
-    let app = App {
-        config,
-        client,
-        files,
-        admission: Arc::new(tokio::sync::Semaphore::new(64)),
     };
+    let app = App { files };
     let mut routes = Router::new().route("/filaments/custom", get(custom_filaments));
     for (path, text) in LEGAL {
         routes = routes.route(
@@ -101,15 +120,11 @@ pub fn admin_router(config: AdminHttpConfig, client: ReadClient, files: AdminFil
             }),
         );
     }
-    Router::new()
-        .merge(routes.clone())
-        .nest("/api/v1", routes)
-        .layer(middleware::from_fn_with_state(app.clone(), guard))
-        .route_layer(middleware::map_response(crate::problem::layer))
+    gate.guard(Router::new().merge(routes.clone()).nest("/api/v1", routes))
         .with_state(app)
 }
 
-async fn guard(State(app): State<App>, request: axum::extract::Request, next: Next) -> Response {
+async fn guard(State(app): State<Gate>, request: axum::extract::Request, next: Next) -> Response {
     let Ok(_permit) = app.admission.try_acquire() else {
         return crate::problem::overloaded("Service temporarily unavailable");
     };
@@ -135,7 +150,7 @@ async fn guard(State(app): State<App>, request: axum::extract::Request, next: Ne
 
 /// An empty batch reads no Plan; it only resolves the credential's tenant.
 /// Returns the refusal when the credential does not hold.
-async fn authenticate(app: &App, presented: PresentedCredential) -> Option<Response> {
+async fn authenticate(app: &Gate, presented: PresentedCredential) -> Option<Response> {
     let client = app.client.clone();
     let wait = app.config.wait;
     let proof = tokio::task::spawn_blocking(move || {

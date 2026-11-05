@@ -22,6 +22,10 @@ mod drain;
 #[path = "runtime_m0/slice0_mount.rs"]
 mod slice0_mount;
 
+#[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/ticket_t_4_watcher_proof.rs"]
+mod ticket_t_4_watcher_proof;
+
 #[path = "support/process_tree.rs"]
 mod process_tree;
 
@@ -817,6 +821,24 @@ async fn crash_guard_stops_after_five_failures_and_recovers_explicitly() {
         "{}",
         serde_json::json!({"case":"crash_guard", "cycle_secs":cycle_secs, "deadline_secs":CRASH_CYCLE_DEADLINE.as_secs()})
     );
+}
+
+/// Redeem the launch bootstrap the way the desktop window does, following no
+/// redirect, and return the desktop session cookie.
+async fn desktop_cookie(runtime: &mut CoreRuntime) -> String {
+    let browser = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let redeemed = browser
+        .get(runtime.take_launch_target().unwrap().into_url())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redeemed.status(), 303);
+    let desktop = redeemed.headers()["set-cookie"].to_str().unwrap();
+    desktop.split(';').next().unwrap().to_owned()
 }
 
 fn temporary(case: &str) -> PathBuf {

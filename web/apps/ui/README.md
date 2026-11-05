@@ -88,7 +88,7 @@ Overview reads `GET /api/v2/plans/{id}`, `/layers` and `/workflow` and shows
 progress, part count, the Plan's freshness with its reasons in words, the next
 action with its reason, the count of open decisions, the order number and customer
 request, last use, and the layers in layer order. The other tabs say
-which slice brings them. Nothing here changes data.
+what they will hold and that a later slice brings them. Nothing here changes data.
 
 - **Order fields follow the Orders Module.** `useModule` (`src/core/modules.ts`)
   reads the Module list from `GET /health`. Orders on shows the Order column and

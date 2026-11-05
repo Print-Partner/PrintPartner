@@ -463,7 +463,7 @@ describe("UI2-02 Build Overview", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Layers" })).toBeTruthy();
   });
 
-  it("other tabs say which slice brings them and keep the tab bar", async () => {
+  it("other tabs say what they will hold in a later slice and keep the tab bar", async () => {
     renderAt("/builds/2/checkoff", core(plans));
     expect(screen.getByRole("heading", { level: 1, name: "Checkoff" })).toBeTruthy();
     expect(screen.getByText(/This tab arrives in a later slice/)).toBeTruthy();

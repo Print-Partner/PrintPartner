@@ -16,7 +16,7 @@ Node's per-route budgets apply, one window per route per minute: capabilities 12
 ## How it works
 
 - `pp_storage::printer_hosts::printer_link` resolves a fleet printer (`printer.fleet`, tenant `default`) to its linked integration the way Node's `printerHostCapability` does: the printer id compared as a string, a trimmed `integration_id`, and an integration that exists with `config.enabled` not `false`. `printer_hosts::integration` reads one integration for the connection test.
-- `pp_gateway::printer_host::HostReads` runs `pp_drivers::moonraker_driver::Driver` or `pp_drivers::prusalink::Driver` through one `HttpGuard` with an 8 s deadline and a 2 MiB reply cap; PrusaLink listings use the same guard with Node's 8 MiB listing cap, and PrusaLink requests answer Digest challenges. HTTPS hosts and redirects fail as the drivers document until GRE-359.
+- `pp_gateway::printer_host::HostReads` runs `pp_drivers::moonraker_driver::Driver` or `pp_drivers::prusalink::Driver` through one `HttpGuard` with a 2 MiB reply cap. Moonraker reads use its 8 s deadline. The PrusaLink driver sets a deadline on each request as Node does: 15 s for listings and the `object_list` prefix, 10 s for storage and the camera list, 8 s for status and info. PrusaLink listings use Node's 8 MiB cap. PrusaLink requests answer Digest challenges, and for a streamed read the deadline also covers the challenge probe. HTTPS hosts and redirects fail as the drivers document until GRE-359.
 - `pp_api::printer_host` owns the HTTP mapping, path validation and budgets. `pp-core` implements `PrinterHostPort` over the two, so `pp-core` keeps no `pp-drivers` edge.
 - Authentication and loopback admission are the admin routes' gate, as for `/api/v1/integrations/{id}/status`.
 

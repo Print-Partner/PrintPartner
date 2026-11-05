@@ -2915,7 +2915,9 @@ transaction on the single writer and nothing is sent to Node.
   selection commits with one `plan.draft_changed` domain event
   ([Domain events](domain-events.md)).
 - A retry with the same actor, key and payload returns the stored selection and
-  writes nothing, before the snapshot digest is checked. The same key with
+  writes nothing, before the snapshot digest is checked. The one exception is
+  Node's repair: an open v1 draft whose selection was detached gets that
+  selection back, and the repair still writes no domain event. The same key with
   another payload returns 409 `{ code: "idempotency_conflict" }`.
 - Edit's conflicts apply: 409 `draft_changed`, `base_changed`, `not_open` or
   `accepted_baseline_required`, 422 `domain_error`, and 404

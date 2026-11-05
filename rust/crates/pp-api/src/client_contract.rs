@@ -1,8 +1,8 @@
 //! Routes and DTOs that `web/packages/rust-client` is generated from.
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
-//! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`] or
-//! [`crate::auth`]. `pp-core`'s
+//! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
+//! [`crate::farm`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -138,6 +138,34 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "PlanDecisionList",
     ),
+    route(
+        "listPrinters",
+        "GET",
+        "/api/v2/printers",
+        None,
+        "FarmPrinterList",
+    ),
+    route(
+        "listPrinterCheckoff",
+        "GET",
+        "/api/v2/printer-checkoff",
+        None,
+        "CheckoffResultList",
+    ),
+    route(
+        "listUnmatchedPrints",
+        "GET",
+        "/api/v2/printer-checkoff/unattributed",
+        None,
+        "UnmatchedPrintList",
+    ),
+    route(
+        "readSendQueue",
+        "GET",
+        "/api/v2/printer-send-queue",
+        None,
+        "SendQueue",
+    ),
     ClientRoute {
         name: "readHealth",
         method: "GET",
@@ -172,6 +200,12 @@ mod codegen {
         },
         read_model::{
             build_workflow::{TaskFeed, UnavailableBuild, rank},
+            farm::{
+                CheckoffResult, CheckoffResultList, CheckoffResultState, FarmPrinter,
+                FarmPrinterList, HostOutcome, IntegrationKind, LoadedFilament, PrinterIntegration,
+                PrinterReason, QueuedSend, SendQueue, SendState, UnmatchedPrint,
+                UnmatchedPrintList,
+            },
             planning::{
                 BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, BuildPlanningReadiness,
                 BuildPlanningResponse, PlanDecision, PlanDecisionList, ReadinessBlocker,
@@ -232,6 +266,16 @@ mod codegen {
         )?;
         schema("PlanDecisionList", schemars::schema_for!(PlanDecisionList))?;
         schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
+        schema("FarmPrinterList", schemars::schema_for!(FarmPrinterList))?;
+        schema(
+            "CheckoffResultList",
+            schemars::schema_for!(CheckoffResultList),
+        )?;
+        schema(
+            "UnmatchedPrintList",
+            schemars::schema_for!(UnmatchedPrintList),
+        )?;
+        schema("SendQueue", schemars::schema_for!(SendQueue))?;
         schema(
             "PrinterDisplayDescriptor",
             schemars::schema_for!(PrinterDisplayDescriptor),
@@ -286,6 +330,136 @@ mod codegen {
         .into_iter()
         .map(|(execution, bed_clear)| PrinterStateView::new(execution, bed_clear))
         .collect()
+    }
+
+    /// Farm read bodies covering every enum variant, filled and null.
+    fn farm_bodies() -> (
+        FarmPrinterList,
+        CheckoffResultList,
+        UnmatchedPrintList,
+        SendQueue,
+    ) {
+        use PrinterReason as R;
+        let reasons = [
+            None,
+            Some(R::NotSetUp),
+            Some(R::IntegrationMissing),
+            Some(R::MonitoringDisabled),
+            Some(R::MonitoringNotSupported),
+            Some(R::AwaitingStatus),
+            Some(R::Unreachable),
+        ];
+        let kinds = [
+            IntegrationKind::Moonraker,
+            IntegrationKind::Prusalink,
+            IntegrationKind::Bambu,
+        ];
+        let printers = reasons
+            .into_iter()
+            .zip(printer_states().into_iter().cycle())
+            .enumerate()
+            .map(|(index, (reason, state))| {
+                let filled = index % 2 == 0;
+                FarmPrinter {
+                    id: format!("printer-{index}"),
+                    name: format!("Printer {UNICODE}"),
+                    model: "Voron Micron".into(),
+                    integration: filled.then(|| PrinterIntegration {
+                        id: format!("integration-{index}"),
+                        kind: kinds[index % kinds.len()],
+                    }),
+                    state,
+                    reason,
+                    last_heard_at: filled.then(|| "2026-11-05T02:00:00.000Z".into()),
+                    progress_percent: filled.then_some(100),
+                    loaded_filaments: vec![LoadedFilament {
+                        slot: 1,
+                        filament_color_id: filled.then(|| "pla-red".into()),
+                        label: if filled {
+                            UNICODE.into()
+                        } else {
+                            String::new()
+                        },
+                    }],
+                }
+            })
+            .collect();
+        use CheckoffResultState as S;
+        let outcomes = [
+            None,
+            Some(HostOutcome::Unknown),
+            Some(HostOutcome::Success),
+            Some(HostOutcome::Failed),
+            Some(HostOutcome::Cancelled),
+        ];
+        let results = [
+            S::Watching,
+            S::AwaitingVerify,
+            S::HostFailed,
+            S::Dismissed,
+            S::Verified,
+        ]
+        .into_iter()
+        .zip(outcomes)
+        .enumerate()
+        .map(|(index, (state, host_outcome))| {
+            let filled = index % 2 == 0;
+            CheckoffResult {
+                id: format!("link-{index}"),
+                profile_id: MAX_SAFE,
+                printer_id: "printer-0".into(),
+                integration_id: "integration-0".into(),
+                filename: format!("{UNICODE}.gcode"),
+                state,
+                host_outcome,
+                unit_count: u32::MAX,
+                resolved_unit_count: 0,
+                created_at: "2026-11-05T00:00:00.000Z".into(),
+                completed_at: filled.then(|| "2026-11-05T01:00:00.000Z".into()),
+                applied_at: filled.then(|| "2026-11-05T01:30:00.000Z".into()),
+            }
+        })
+        .collect();
+        let prints = vec![UnmatchedPrint {
+            id: "print-0".into(),
+            printer_id: "printer-0".into(),
+            integration_id: "integration-0".into(),
+            filename: format!("{UNICODE}.gcode"),
+            completed_at: "2026-11-05T01:00:00.000Z".into(),
+            object_count: 3,
+            candidate_count: 0,
+        }];
+        let items = [
+            SendState::Queued,
+            SendState::Sending,
+            SendState::Done,
+            SendState::Error,
+            SendState::Cancelled,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, state)| {
+            let filled = index % 2 == 0;
+            QueuedSend {
+                id: format!("send-{index}"),
+                filename: format!("{UNICODE}.gcode"),
+                printer_id: "printer-0".into(),
+                profile_id: filled.then_some(MAX_SAFE),
+                state,
+                start: filled,
+                wait_for_idle: !filled,
+                unit_count: 2,
+                created_at: filled.then(|| "2026-11-05T00:00:00.000Z".into()),
+                updated_at: filled.then(|| "2026-11-05T00:10:00.000Z".into()),
+            }
+        })
+        .collect();
+        (
+            FarmPrinterList { printers },
+            CheckoffResultList { results },
+            UnmatchedPrintList { prints },
+            SendQueue { items },
+        )
     }
 
     /// Sorted, pretty JSON with a trailing newline.
@@ -889,6 +1063,16 @@ mod codegen {
             let name = format!("{:?}-{:?}", value.execution(), value.bed_clear());
             cases.push(served("PrinterState", &name, value)?);
         }
+        let (printers, results, prints, queue) = farm_bodies();
+        cases.push(served("FarmPrinterList", "every-reason", printers)?);
+        cases.push(served(
+            "FarmPrinterList",
+            "empty",
+            FarmPrinterList { printers: vec![] },
+        )?);
+        cases.push(served("CheckoffResultList", "every-state", results)?);
+        cases.push(served("UnmatchedPrintList", "one", prints)?);
+        cases.push(served("SendQueue", "every-state", queue)?);
         for state in PrinterDisplayState::ALL {
             cases.push(served(
                 "PrinterDisplayDescriptor",

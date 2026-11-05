@@ -1,6 +1,8 @@
 #[cfg(feature = "desktop_rebuild")]
 pub mod build_workflow;
 mod context;
+#[cfg(feature = "desktop_rebuild")]
+pub mod farm;
 pub(crate) mod graph;
 #[cfg(feature = "desktop_rebuild")]
 pub mod history;

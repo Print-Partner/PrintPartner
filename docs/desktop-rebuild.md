@@ -2866,7 +2866,7 @@ With both gates on, `draft_router` serves these paths at the root and
 default, and applies the guard's limits: 16 KiB request target, 1 MiB for
 reads, 8 MiB for PATCH and PUT, 5 s body timeout, 64 admission permits. Loopback
 transport is required. Host must match the configured listener; forwarded and
-`x-forwarded-*` headers are refused. Session-cookie writes (PATCH/POST) need a matching
+`x-forwarded-*` headers are refused. Session-cookie writes (PATCH/PUT/POST) need a matching
 Origin; GETs and API-key writes may omit it, but any Origin sent must match.
 A foreign or `null` Origin, or `sec-fetch-site: cross-site`, returns 403.
 Ambiguous credentials return 401, or 403 on an Origin-less write. Exactly one

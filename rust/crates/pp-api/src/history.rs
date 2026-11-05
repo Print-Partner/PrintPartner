@@ -6,7 +6,7 @@
 //! `next_cursor`). The route writes nothing. Admission is `accepted::Gate`.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Gate, failure, json_response, read_error},
+    accepted::{AcceptedHttpConfig, Gate, build_id, failure, internal, ok_json, read_error},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -16,11 +16,8 @@ use axum::{
     response::Response,
     routing::get,
 };
-use pp_storage::{
-    build_graph::PositiveId,
-    read_model::history::{
-        Cursor, DEFAULT_LIMIT, Failure, HistoryClient, MAX_LIMIT, Outcome, Request,
-    },
+use pp_storage::read_model::history::{
+    Cursor, DEFAULT_LIMIT, Failure, HistoryClient, MAX_LIMIT, Outcome, Request,
 };
 
 #[derive(Clone)]
@@ -79,35 +76,27 @@ async fn history(
         Ok(page) => page,
         Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
     };
-    // Only a decimal positive safe integer can name a Build. Any other id
-    // still authenticates, then answers not found.
-    let build = (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| id.parse().ok().and_then(|id| PositiveId::new(id).ok()))
-        .flatten();
     let request = Request {
-        build,
+        build: build_id(&id),
         cursor,
         limit,
     };
     let client = app.client;
     let read = app
         .gate
-        .blocking(move |cancelled, wait| {
-            client.read(presented.into_credential(), request, cancelled, wait)
+        .read(presented, move |credential, cancelled, wait| {
+            client.read(credential, request, cancelled, wait)
         })
         .await;
     match read {
-        Ok(Ok(Outcome::Page(page))) => match serde_json::to_value(&page) {
-            Ok(body) => json_response(StatusCode::OK, &body, false),
-            Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
-        },
-        Ok(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
-        Ok(Err(error)) if error.downcast_ref::<Failure>().is_some() => failure(
+        Some(Ok(Outcome::Page(page))) => ok_json(&page),
+        Some(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
+        Some(Err(error)) if error.downcast_ref::<Failure>().is_some() => failure(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Build history exceeds the read limit",
         ),
-        Ok(Err(error)) => read_error(&error),
-        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        Some(Err(error)) => read_error(&error),
+        None => internal(),
     }
 }
 

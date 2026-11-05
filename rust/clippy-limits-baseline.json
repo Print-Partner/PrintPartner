@@ -1,7 +1,7 @@
 {
   "off": {
     "clippy::cognitive_complexity": 12,
-    "clippy::too_many_lines": 99,
+    "clippy::too_many_lines": 98,
     "clippy::match_same_arms": 3
   },
   "on": {

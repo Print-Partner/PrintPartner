@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { URL } from "node:url";
 import { compare, exportDocument, generate, packageSource, verifyIntegrity } from "./client.mjs";
 import * as client from "../../packages/rust-client/src/index.ts";
+import { parseBuildWorkflowWorkspace } from "../../packages/contracts/src/build-workflow.ts";
 
 const { dtoSchemas, routePath, routes } = client;
 
@@ -50,6 +51,12 @@ test("routes cover Builds, layers, v2 drafts and health, all generated from pp-a
 test("every DTO has accepted Rust fixtures", () => {
   assert.deepEqual(Object.keys(dtoSchemas).sort(), Object.keys(document.dtos).sort());
   for (const name of Object.keys(dtoSchemas)) assert(document.fixtures.some((fixture) => fixture.dto === name && fixture.rust_accepts), name);
+});
+
+test("the web UI's workflow contract parses every Rust BuildWorkflow fixture", () => {
+  const workflows = document.fixtures.filter((fixture) => fixture.dto === "BuildWorkflow" && fixture.rust_accepts);
+  assert(workflows.length > 0);
+  for (const fixture of workflows) assert.deepEqual(parseBuildWorkflowWorkspace(fixture.value), fixture.value, fixture.name);
 });
 
 test("descriptor tables hold Rust's rows, parse with their DTO and cover the key enum", () => {

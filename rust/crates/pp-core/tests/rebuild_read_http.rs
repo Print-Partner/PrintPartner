@@ -7,6 +7,9 @@ mod without_feature {
 
     #[tokio::test]
     async fn unknown_read_owner_is_refused_before_execution() {}
+
+    #[tokio::test]
+    async fn rebuild_workflow_routes_and_mcp_agree() {}
 }
 
 #[cfg(feature = "desktop_rebuild")]
@@ -443,6 +446,241 @@ mod with_feature {
 
         server.stop().await;
         shutdown(owner, directory);
+    }
+
+    /// GRE-1123: the mounted workflow route, the task feed and MCP
+    /// `get_build_workflow` answer from one storage projection, so they agree
+    /// on the next action, its reason and its target.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rebuild_workflow_routes_and_mcp_agree() {
+        const SESSION: &str = "read-fixture-secret";
+        let directory = tempfile::tempdir().unwrap().keep();
+        std::fs::create_dir_all(directory.join("repos/1/revisions/accepted")).unwrap();
+        std::fs::write(
+            directory.join("print-partner.db"),
+            include_bytes!("../../pp-storage/tests/fixtures/accepted-plan-node.db"),
+        )
+        .unwrap();
+        let owner = Arc::new(Mutex::new(
+            WriterOwner::open(&directory, Limits::default()).unwrap().0,
+        ));
+        let bound = bind().await;
+        let origin = format!("http://{}", bound.local_addr().unwrap());
+        // The fixture's session belongs to an account tenant.
+        let policy = AuthPolicy {
+            registration: RegistrationPolicy::Open,
+            first_user: FirstUserTenant::NewUser,
+            session_tenant: SessionTenantPolicy::AccountTenant,
+        };
+        let routes = AuthRoutes {
+            policy,
+            ..auth_routes(&origin)
+        };
+        let lifetimes = routes.lifetimes;
+        let router = read_router(
+            DesktopRebuild::from_value(Some("1")),
+            Arc::clone(&owner),
+            routes,
+            &origin,
+            "default",
+            None,
+        )
+        .unwrap()
+        .expect("flag on mounts read routers");
+        let mut server = Server::spawn(bound, router).await;
+        let cookie = format!("pp_session={SESSION}");
+        let session = [("Cookie", cookie.as_str())];
+
+        let mut workflows = Vec::new();
+        for path in [
+            "/plans/1/workflow",
+            "/api/v1/plans/1/workflow",
+            "/api/v2/plans/1/workflow",
+        ] {
+            let (status, body) = server.json(Method::GET, path, &session, None).await;
+            assert_eq!(status, 200, "{path} {body}");
+            workflows.push(body);
+        }
+        assert!(workflows.iter().all(|body| *body == workflows[0]));
+        let workflow = workflows.remove(0);
+        assert_eq!(
+            workflow["next_action"]["kind"], "check_off_manually",
+            "{workflow}"
+        );
+
+        let (status, feed) = server
+            .json(Method::GET, "/api/v1/tasks", &session, None)
+            .await;
+        assert_eq!(status, 200, "{feed}");
+        assert_eq!(
+            server
+                .json(Method::GET, "/api/v2/tasks", &session, None)
+                .await,
+            (200, feed.clone())
+        );
+        let task = feed["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["plan_id"] == 1)
+            .unwrap();
+
+        let key = {
+            let auth = owner
+                .lock()
+                .unwrap()
+                .rebuild_auth_with_policy(policy, lifetimes)
+                .unwrap();
+            let session = Secret::new(SESSION.into());
+            let create = pp_storage::auth::Request::CreateKey { session };
+            let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let stop = Arc::new(AtomicBool::new(false));
+                auth.submit(create, stop, Duration::from_secs(2))?.recv()?
+            });
+            let outcome = outcome.await.unwrap().unwrap();
+            let pp_storage::auth::Outcome::KeyCreated { key, .. } = outcome else {
+                panic!("API key creation");
+            };
+            key.expose().to_owned()
+        };
+        let bearer = format!("Bearer {key}");
+        let (status, by_key) = server
+            .json(
+                Method::GET,
+                "/plans/1/workflow",
+                &[("Authorization", bearer.as_str())],
+                None,
+            )
+            .await;
+        assert_eq!((status, &by_key), (200, &workflow));
+        let mcp = mcp_workflow(&server, &bearer, json!(1)).await;
+        assert_eq!(mcp_workflow(&server, &bearer, json!(1.0)).await, mcp);
+
+        // Compare the three answers to each other, not to written copies.
+        for field in ["kind", "reason", "target"] {
+            assert_eq!(
+                task["next_action"][field], workflow["next_action"][field],
+                "{field}"
+            );
+            assert_eq!(
+                mcp["next_action"][field], workflow["next_action"][field],
+                "{field}"
+            );
+        }
+        assert_eq!(task["next_action"], workflow["next_action"]);
+        assert_eq!(mcp, workflow);
+
+        for (path, headers) in [
+            ("/plans/1/workflow", &[] as &[(&str, &str)]),
+            ("/api/v1/tasks", &[]),
+            (
+                "/api/v2/plans/1/workflow",
+                &[("Cookie", "pp_session=not-a-session")],
+            ),
+            ("/api/v1/tasks", &[("Cookie", "pp_session=not-a-session")]),
+            (
+                "/plans/0x1/workflow",
+                &[("Cookie", "pp_session=not-a-session")],
+            ),
+        ] {
+            assert_eq!(
+                server.json(Method::GET, path, headers, None).await,
+                (401, json!({"detail": "Authentication required"})),
+                "{path}"
+            );
+        }
+        for path in ["/plans/999999/workflow", "/plans/0x1/workflow"] {
+            assert_eq!(
+                server.json(Method::GET, path, &session, None).await,
+                (404, json!({"detail": "Profile not found"})),
+                "{path}"
+            );
+        }
+
+        server.stop().await;
+        // Connection and MCP session tasks release their router clones shortly
+        // after the server stops; a router that never lets go still fails.
+        for _ in 0..200 {
+            if Arc::strong_count(&owner) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        shutdown(owner, directory);
+    }
+
+    /// Calls MCP `get_build_workflow` for Build `plan_id` with an API key and
+    /// returns the workflow it answered.
+    async fn mcp_workflow(server: &Server, bearer: &str, plan_id: Value) -> Value {
+        let post = |body: Value, session: Option<String>| {
+            let mut request = server
+                .client
+                .post(format!("{}/mcp", server.origin))
+                .header("Origin", &server.origin)
+                .header("Authorization", bearer)
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .body(body.to_string());
+            if let Some(session) = session {
+                request = request.header("mcp-session-id", session);
+            }
+            request.send()
+        };
+        let response = post(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "gre-1123", "version": "0.0.1"}}}),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), 200);
+        let session = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        response.text().await.unwrap();
+        let initialized = post(
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            Some(session.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(initialized.status().is_success());
+        initialized.text().await.unwrap();
+        let body = post(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "get_build_workflow", "arguments": {"plan_id": plan_id}}}),
+            Some(session.clone()),
+        )
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+        let data = body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .find(|data| !data.is_empty())
+            .unwrap_or(&body);
+        let rpc: Value = serde_json::from_str(data).unwrap();
+        // Close the session so no session task outlives the server.
+        server
+            .client
+            .delete(format!("{}/mcp", server.origin))
+            .header("Origin", &server.origin)
+            .header("Authorization", bearer)
+            .header("mcp-session-id", session)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let result = &rpc["result"];
+        assert_ne!(result["isError"], true, "{rpc}");
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
     }
 
     #[tokio::test]

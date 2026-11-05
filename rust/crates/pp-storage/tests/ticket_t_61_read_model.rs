@@ -573,7 +573,9 @@ fn ticket_t_61_read_model_workflow_rejects_unsafe_numbers() {
         checkoff: Checkoff {
             awaiting_verification: 0,
             failed_verifications: 0,
+            printer_links: 0,
         },
+        stock: Default::default(),
     };
     assert!(workflow::resolve(&facts).is_err());
     facts.accepted_plan = Accepted::None;

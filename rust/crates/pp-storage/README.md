@@ -41,7 +41,7 @@ Modules available in every build:
 | `auth` | `WriterOwner::auth`, `auth_with_policy` return `AuthClient`. `AuthPolicy` and its parts select registration and tenant rules. Users, sessions and API keys. `auth::rebuild` is gated. |
 | `jobs` | `WriterOwner::jobs` (`AtomicJobClient`), `job_worker` (`ServerWorkerClient`), `job_physical_owner`, `retain_jobs`. `WorkerAdmission` caps concurrent claims per kind and resource and sets the lease length; a claim carries an `AttemptLease`. |
 | `catalog` | `source_catalog`, `source_catalog_with_policy`, `local_source_catalog` return `SourceCatalogClient`. |
-| `printer_hosts` (`desktop_rebuild`) | `read(client, wait)` and `project(raw)`: the Moonraker hosts in the `integrations` setting, projected as Node's `/__desktop/moonraker-hosts`. Read-only. |
+| `printer_hosts` (`desktop_rebuild`) | `read(client, wait)` and `project(raw)`: the Moonraker hosts in the `integrations` setting, projected as Node's `/__desktop/moonraker-hosts`. `printer_link(client, wait, printer_id)` and `integration(client, wait, id)` resolve a fleet printer or an integration id as Node's printer-host routes do. Read-only. |
 | `read_model` | `accepted_reads`, `accepted_reads_with_policy` return `ReadClient`. Submodules `views`, `workflow`, and `stock` (`ReadClient::read_stock`, `shortfalls`: Spoolman shortfalls from measured past prints, read-only). With `desktop_rebuild`, `build_history(policy)` returns `history::HistoryClient`, a paged read-only Build history ([Build history](../../../docs/build-history.md)). `build_workflow(policy, inputs)` returns `build_workflow::WorkflowClient`, the Build workflow and task feed ([Build workflow](../../../docs/build-workflow.md)). `build_planning(policy, SourceReads)` returns `planning::PlanningClient`, the read-only Build planning and decisions reads ([Build planning and decisions](../../../docs/build-planning.md)). `farm_reads(policy)` returns `farm::FarmClient`, the read-only printers, Checkoff results, unmatched prints, match suggestions (`read_for_suggestions`, `Farm::suggestions`) and send queue ([Farm reads](../../../docs/farm-reads.md)). |
 | `archive` | `Request`, `Metadata`, `Scope`, `Limits`, and `validate` for Node's tar.gz backup format. |
 | `lease` | `StorageLease`, `LeaseRelease`, `prepare_directory`. |
@@ -54,7 +54,7 @@ Modules behind `#[cfg(feature = "desktop_rebuild")]`:
 | `build_graph` | `build_graph_with_policy`, `build_graph_with_observations` (`BuildGraphClient`); `wire`, `manifest_options`. |
 | `plan_publication` | `publication_with_policy` (`PublicationClient`): the acceptance transaction. |
 | `required_units` | `required_units_with_policy` (`ReconciliationClient`). |
-| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). |
+| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). |
 | `domain_events` | `domain_events`, `domain_events_with_policy` (`DomainEventsClient`): the transactional domain event log, cursor reads and live wake-ups ([Domain events](../../../docs/domain-events.md)). |
 | `features` | `features_with_policy` (`FeatureClient`), `View`, `Scope`. |
 | `uploads` | `imports` (`ImportClient`), `import_repos_root`. |

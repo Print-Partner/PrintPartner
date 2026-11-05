@@ -787,6 +787,7 @@ mod tests {
             // handlers answer their own 404 with a detail.
             let handler_not_found = status == 404
                 && (body["code"] == "draft_not_found"
+                    || body["code"] == "farm_log_entry_not_found"
                     || body["detail"] == "beds[0]: Checkoff link not found"
                     || body["detail"] == "Checkoff burst not found");
             assert!(

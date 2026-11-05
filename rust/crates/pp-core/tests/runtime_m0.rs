@@ -34,6 +34,10 @@ mod farm_reads;
 #[path = "runtime_m0/printer_stream.rs"]
 mod printer_stream;
 
+#[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/printer_host.rs"]
+mod printer_host;
+
 #[path = "support/process_tree.rs"]
 mod process_tree;
 

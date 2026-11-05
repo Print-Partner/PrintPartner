@@ -12,6 +12,7 @@ struct Fixture {
     root: PathBuf,
     owner: Option<WriterOwner>,
     origin: String,
+    http: reqwest::Client,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -21,17 +22,16 @@ impl Fixture {
         let root = dir.path().to_owned();
         let owner = WriterOwner::open(&root, Limits::default()).unwrap().0;
         let db = Connection::open(root.join("print-partner.db")).unwrap();
-        db.execute_batch(
-            "INSERT INTO users(id,display_name,is_admin,created_at) VALUES('default','Events',1,'2026-11-05T00:00:00.000Z')",
-        )
+        let session = hex::encode(Sha256::digest(SECRET));
+        db.execute_batch(&format!(
+            "INSERT INTO users(id,display_name,is_admin,created_at) VALUES('default','Events',1,'0'); INSERT INTO sessions VALUES('{session}','default','2099-01-01T00:00:00.000Z','email')"
+        ))
         .unwrap();
-        db.execute(
-            "INSERT INTO sessions(id,user_id,expires_at,provider) VALUES(?1,'default','2099-01-01T00:00:00.000Z','email')",
-            [hex::encode(Sha256::digest(SECRET))],
-        )
-        .unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = format!("http://{address}");
         let router = events_router(
             AcceptedHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             owner.domain_events().unwrap(),
@@ -50,6 +50,7 @@ impl Fixture {
             root,
             owner: Some(owner),
             origin,
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
             task,
         }
     }
@@ -61,15 +62,17 @@ impl Fixture {
     /// Stores events directly, then runs one writer command so the writer
     /// notices the new head and wakes streams.
     fn record(&self, ids: std::ops::Range<i64>, payload_bytes: usize) {
-        let db = self.database();
+        let mut db = self.database();
+        let tx = db.transaction().unwrap();
         let payload = json!({ "pad": "x".repeat(payload_bytes) }).to_string();
         for id in ids {
-            db.execute(
+            tx.execute(
                 "INSERT INTO domain_events(tenant,event_type,schema_version,aggregate_type,aggregate_id,aggregate_version,operation_id,payload_json,occurred_at) VALUES('default','checkoff.progress_changed',1,'build',?1,NULL,?2,?3,0)",
                 rusqlite::params![id.to_string(), format!("{id:032x}"), payload],
             )
             .unwrap();
         }
+        tx.commit().unwrap();
         self.poke();
     }
 
@@ -96,10 +99,8 @@ impl Fixture {
     }
 
     async fn connect(&self, headers: &[(&str, &str)], query: &str) -> reqwest::Response {
-        let mut request = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .unwrap()
+        let mut request = self
+            .http
             .get(format!("{}/api/v1/events{query}", self.origin))
             .header("Origin", &self.origin);
         for (name, value) in headers {
@@ -273,6 +274,18 @@ async fn domain_events_unreplayable_cursor_gets_resync_required() {
         fixture.record(1..2, 10);
         assert_eq!(frames.next().await.unwrap().event, "domain_event");
     }
+    let replay_window = pp_storage::domain_events::RETAINED_EVENTS;
+    fixture.record(0..replay_window + 1, 10);
+    let mut frames = fixture.open(&[("Last-Event-ID", &position)]).await;
+    let marker = frames.next().await.unwrap();
+    assert_eq!(marker.event, "resync_required");
+    assert_eq!(marker.data["reason"], "expired");
+    assert_eq!(
+        marker.id,
+        format!("{generation}.{}", head + 2 + replay_window + 1)
+    );
+    fixture.record(1..2, 10);
+    assert_eq!(frames.next().await.unwrap().event, "domain_event");
 }
 
 #[tokio::test]
@@ -341,5 +354,12 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
         slowest < Duration::from_secs(1),
         "writers waited {slowest:?}"
     );
-    drop(slow);
+    let mut delivered = Vec::new();
+    let drained =
+        tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut delivered)).await;
+    assert!(drained.is_ok(), "the server kept the slow connection open");
+    let events = String::from_utf8_lossy(&delivered)
+        .matches("event: domain_event")
+        .count();
+    assert!(events < 3999, "the slow client got every event");
 }

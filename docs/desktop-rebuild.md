@@ -2514,6 +2514,18 @@ writes and Accept append an event in their own transaction. The step writes no
 step copy of its own; the copy taken at open covers it. See
 [Domain events](domain-events.md).
 
+### Domain event stream, GRE-1162
+
+`GET /api/v1/events` serves the log as Server-Sent Events from `read_router`,
+so the Rust-only runtime mounts it. It resumes from `Last-Event-ID`, answers
+401 without a credential, ends the stream when the session is revoked, and
+disconnects a client whose bounded queue stays full for 10 seconds. See
+[Domain events](domain-events.md#http-stream).
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --lib events::
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

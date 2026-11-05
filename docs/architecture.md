@@ -300,8 +300,8 @@ Initial state and cursor come from one consistent snapshot; replay-to-live
 handoff must close the race. Include a database-generation identifier so backup
 restore cannot silently reuse a cursor. Bound replay/storage/queued bytes and
 slow-client deadlines; gaps or expired cursors require resnapshot.
-The gated storage log and its bounds are described in
-[Domain events](domain-events.md).
+The gated storage log, its SSE route `GET /api/v1/events` and their bounds
+are described in [Domain events](domain-events.md).
 
 One client event/cache adapter invalidates affected queries and coalesces
 refreshes. Apply direct deltas only when versioned and complete. Printer samples

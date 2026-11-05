@@ -2,8 +2,8 @@
 
 GRE-1088 adds one bounded change feed so the replacement UI can invalidate
 queries instead of polling. This page covers the storage half,
-`pp_storage::domain_events`, compiled only with `desktop_rebuild`. The HTTP
-stream that serves it is GRE-1162. Printer telemetry stays on `/ws/printers` and
+`pp_storage::domain_events`, and the SSE route that serves it (GRE-1162),
+both compiled only with `desktop_rebuild`. Printer telemetry stays on `/ws/printers` and
 job progress on the job WebSockets.
 
 ## What is recorded
@@ -91,6 +91,47 @@ a revoked session at once, and when storage stops. Reads never wake anyone.
 Writers never wait on readers: a wake is a callback that must only signal a
 task. Subscribe before the first read so no commit between them is missed.
 
+## HTTP stream
+
+`pp_api::events::events_router` serves `GET /api/v1/events` as Server-Sent
+Events. `rebuild_api::read_router` mounts it, so the Rust-only runtime
+(`product_router`) serves it when `PP_DESKTOP_REBUILD` is `1` or `true`.
+There is no Node route and no fallback.
+
+Admission is the Accepted Plan reads' gate: loopback Host and Origin checks,
+then a session cookie or API key. The first read runs before the response
+starts, so a missing or refused credential is a 401 problem (RFC 9457) and a
+malformed cursor is a 400. Errors after the stream starts end it.
+
+The resume cursor is the `Last-Event-ID` header, which a browser
+`EventSource` sends on reconnect, or the `cursor` query parameter for a first
+connect. `Last-Event-ID` wins when both are present; a repeated value is a 400.
+
+| Event | `id` | `data` |
+| --- | --- | --- |
+| `ready` | the current position | `{"position"}`; sent first when the connect has no cursor. Load state after it. |
+| `domain_event` | the event's cursor | the event: `cursor`, `type`, `schema_version`, `aggregate_*`, `operation_id`, `occurred_at`, `payload` |
+| `resync_required` | the position to continue from | `{"reason", "position"}` with a reason from [Cursors and reads](#cursors-and-reads). Reload state; the stream continues. |
+
+Each stream subscribes to storage wake-ups before its first read, re-reads
+after every wake, and sends a `: keep-alive` comment every 15 seconds, which
+also re-reads. A read that fails, such as after the session is revoked or
+storage stops, ends the stream.
+
+| Stream bound (`StreamLimits::default`) | Value |
+| --- | --- |
+| Concurrent streams per router | 8; another connect gets a 503 problem |
+| Frames queued per client | 64, about 160 KiB at the payload limit |
+| Slow-client deadline | 10 s with the queue full, then the stream ends |
+| Heartbeat | 15 s |
+
+A slow client never blocks storage: the writer only signals a stream's task,
+and the task waits on the client's queue. When the queue stays full past the
+deadline, the task releases its stream slot and subscription, and the response
+body fails, so the server closes the connection without sending the queued
+frames. A client that stops reading entirely holds only its socket buffers
+and the queue until it reads again or disconnects.
+
 ## Tests
 
 ```sh
@@ -101,7 +142,15 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features des
 ```
 
 Unit tests live in `pp-storage/src/domain_events/tests.rs`; the Checkoff,
-restart and wake-up tests are in `pp-storage/tests/checkoff_progress.rs`.
+restart and wake-up tests are in `pp-storage/tests/checkoff_progress.rs`. The
+SSE tests are in `pp-api/src/events/tests.rs`, and the mount test is
+`rebuild_read_router_serves_the_domain_event_stream` in
+`pp-core/tests/rebuild_read_http.rs`:
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --lib events::
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild --test rebuild_read_http
+```
 
 | Item | Tests |
 | --- | --- |
@@ -109,4 +158,7 @@ restart and wake-up tests are in `pp-storage/tests/checkoff_progress.rs`.
 | EVT-02 replay or resync | `domain_events_replay_returns_missed_events_in_commit_order`, `domain_events_read_pages_at_the_limit`, `domain_events_cursor_past_retention_requires_resync`, `domain_events_other_generation_or_future_cursor_requires_resync`, `domain_events_restart_starts_a_new_generation` |
 | EVT-03 authentication (storage side) | `domain_events_unauthenticated_read_is_refused`, `domain_events_reads_only_the_callers_tenant` |
 | EVT-04 versioned events | `domain_events_unknown_version_requires_resync_instead_of_skipping`, `domain_events_append_refuses_oversized_payload_and_unknown_kind` |
+| EVT-02 over HTTP | `domain_events_reconnect_replays_every_missed_event_in_order`, `domain_events_unreplayable_cursor_gets_resync_required` (other generation, ahead of the log, past the replay window), `domain_events_resume_cursor_prefers_last_event_id_and_refuses_malformed_values` |
+| EVT-03 over HTTP | `domain_events_unauthenticated_connects_get_401`, `domain_events_revoked_session_closes_the_stream` |
+| EVT-05 slow consumer | `domain_events_slow_consumer_is_disconnected_without_stalling_writers`, `domain_events_stream_count_is_bounded` |
 | Wake-ups | `domain_events_feed_wakes_on_new_events_and_authority_changes_only`, `domain_events_subscriber_is_woken_by_commits_not_by_reads` |

@@ -14,9 +14,11 @@
 //! position.
 //!
 //! Each stream re-reads after every storage wake and every heartbeat. A read
-//! that fails, such as for a revoked session, ends the stream. A client that
-//! leaves the bounded frame queue full past the slow-client deadline is
-//! disconnected; storage writers never wait on a stream.
+//! that fails, such as for a revoked session, ends the stream. When a client
+//! leaves the bounded frame queue full past the slow-client deadline, its
+//! producer stops and the connection closes at the server's next write; a
+//! client that never reads again keeps its connection and stream slot until it
+//! disconnects. Storage writers never wait on a stream.
 
 use crate::accepted::{AcceptedHttpConfig, Gate, failure, read_error};
 use crate::loopback::PresentedCredential;
@@ -50,7 +52,8 @@ pub struct StreamLimits {
     /// Frames queued for one client. One frame is at most one event, about
     /// 2.5 KiB, so 64 frames bound the queue near 160 KiB.
     pub queued_frames: usize,
-    /// How long the queue may stay full before the client is disconnected.
+    /// How long the queue may stay full before the producer stops; the
+    /// connection then closes at the server's next write.
     pub slow_client_deadline: Duration,
     /// Keep-alive comment interval. Each heartbeat also rechecks the
     /// credential.

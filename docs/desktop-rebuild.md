@@ -2546,7 +2546,9 @@ step copy of its own; the copy taken at open covers it. See
 `GET /api/v1/events` serves the log as Server-Sent Events from `read_router`,
 so the Rust-only runtime mounts it. It resumes from `Last-Event-ID`, answers
 401 without a credential, ends the stream when the session is revoked, and
-disconnects a client whose bounded queue stays full for 10 seconds. See
+stops feeding a client whose bounded queue stays full for 10 seconds; that
+connection closes at the server's next write. Shutdown draining ends open
+streams. See
 [Domain events](domain-events.md#http-stream).
 
 ```sh

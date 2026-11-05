@@ -317,11 +317,19 @@ fn sends(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<FarmLogEntry>> {
         .items
         .into_iter()
         .filter_map(|item| {
+            let file = &item.filename;
+            let summary = match item.state {
+                SendState::Queued => format!("Queued {file} for a printer"),
+                SendState::Sending => format!("Sending {file} to a printer"),
+                SendState::Done => format!("Sent {file} to a printer"),
+                SendState::Error => format!("Send of {file} to a printer failed"),
+                SendState::Cancelled => format!("Cancelled send of {file} to a printer"),
+            };
             Some(FarmLogEntry {
                 id: format!("{SEND}:{}", item.id),
                 kind: FarmLogKind::Send,
                 at: item.created_at?,
-                summary: format!("Sent {} to a printer", item.filename),
+                summary,
                 build_ids: item.profile_id.into_iter().collect(),
                 printer_ids: vec![item.printer_id],
                 units_confirmed: None,

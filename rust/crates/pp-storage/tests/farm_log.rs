@@ -103,6 +103,20 @@ fn farm_log_records_bursts_and_undo_once_and_survives_restart() {
         "dispatch and cancel are listed without undo"
     );
     assert_eq!(
+        entries(&owner)
+            .iter()
+            .map(|e| (e["summary"].clone(), e["send_state"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                json!("Cancelled send of plate.gcode to a printer"),
+                json!("cancelled")
+            ),
+            (json!("Sent plate.gcode to a printer"), json!("done")),
+        ],
+        "a send's summary follows its state"
+    );
+    assert_eq!(
         undo_entry(&owner, "send:send-1"),
         json!({"status": 409, "body": {"detail": "A printer command cannot be undone"}})
     );

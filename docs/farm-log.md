@@ -29,7 +29,9 @@ The log copies nothing it can reuse. A burst entry stores its sequence
 number, time, undo token, Build and printer ids, unit counts and bed count; the
 burst receipt in `printer.checkoff_bursts` stays the only copy of what undo
 restores. A send entry is the queue item itself, so a cancelled send shows
-`send_state: "cancelled"` on its one entry rather than a second record.
+`send_state: "cancelled"` on its one entry rather than a second record. Its
+`summary` follows the state, using the same wording as History: `Queued`,
+`Sending`, `Sent`, `Send of … failed`, or `Cancelled send of …`.
 
 An idempotent replay of a burst returns its stored receipt before any write,
 so it appends nothing. A refused burst or refused undo rolls its transaction

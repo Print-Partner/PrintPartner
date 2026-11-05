@@ -153,7 +153,9 @@ export function generate(document) {
     assert(["none", "credential"].includes(route.auth), `Unsupported auth ${route.auth}`);
     for (const dto of [route.request, route.response].filter(Boolean)) assert(dtoNames.includes(dto), `Route ${route.name} names unknown DTO ${dto}`);
     const params = [...route.path.matchAll(/\{([a-z_]+)\}/g)].map((match) => match[1]);
-    return `  ${route.name}: {method: ${quote(route.method)}, path: ${quote(route.path)}, params: ${quote(params)}, auth: ${quote(route.auth)}, request: ${route.request ? `dto.${identifier(route.request)}` : "null"}, response: dto.${identifier(route.response)}},`;
+    const textParams = route.text_params ?? [];
+    for (const param of textParams) assert(params.includes(param), `Route ${route.name} names unknown text parameter ${param}`);
+    return `  ${route.name}: {method: ${quote(route.method)}, path: ${quote(route.path)}, params: ${quote(params)}, textParams: ${quote(textParams)}, auth: ${quote(route.auth)}, request: ${route.request ? `dto.${identifier(route.request)}` : "null"}, response: dto.${identifier(route.response)}},`;
   });
   const routes = `import type { z } from "zod";
 import * as dto from "./schemas.generated.js";
@@ -165,16 +167,23 @@ ${routeLines.join("\n")}
 
 export type RouteName = keyof typeof routes;
 type Route<N extends RouteName> = (typeof routes)[N];
-export type RouteParams<N extends RouteName> = Record<Route<N>["params"][number], number>;
+export type RouteParams<N extends RouteName> = {
+  [K in Route<N>["params"][number]]: K extends Route<N>["textParams"][number] ? string : number;
+};
 export type RouteRequest<N extends RouteName> = Route<N>["request"] extends z.ZodType ? z.input<Route<N>["request"]> : never;
 export type RouteResponse<N extends RouteName> = z.output<Route<N>["response"]>;
 
-/** Fills a route's path parameters with positive safe-integer IDs. */
+/** Fills a route's path parameters: positive safe-integer IDs, or encoded non-empty strings for text parameters. */
 export function routePath<N extends RouteName>(name: N, params: RouteParams<N>): string {
-  const values: Record<string, number> = params;
+  const values: Record<string, number | string> = params;
+  const textParams: readonly string[] = routes[name].textParams;
   return routes[name].path.replace(/\\{([a-z_]+)\\}/g, (_, key: string) => {
     const value = values[key];
-    if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(\`\${key} must be a positive safe integer\`);
+    if (textParams.includes(key)) {
+      if (typeof value !== "string" || value === "") throw new RangeError(\`\${key} must be a non-empty string\`);
+      return encodeURIComponent(value);
+    }
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new RangeError(\`\${key} must be a positive safe integer\`);
     return String(value);
   });
 }

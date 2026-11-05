@@ -142,6 +142,17 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
     --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
     -E 'test(ticket_t_4_watcher_proof)'
   ```
+- Farm log (GRE-1126): `GET /api/v2/farm-log` pages the fleet's Checkoff
+  bursts, burst undos and sends, newest first, and
+  `POST /api/v2/farm-log/{id}/undo` undoes a logged burst through the burst
+  undo. Storage appends an entry in the burst's and the undo's transaction;
+  sends never offer undo. See [Farm log](farm-log.md).
+
+  ```sh
+  cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
+    --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+    -E 'binary(farm_log) | test(farm_log)'
+  ```
 
 - The gateway listener is loopback only and passes the peer address to the
   Rust routes as `ConnectInfo`; they refuse a non-loopback peer. LAN sharing is

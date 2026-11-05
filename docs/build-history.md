@@ -49,7 +49,7 @@ Not listed:
   stores no time for them.
 - Sends that Node has trimmed from the queue. It keeps a bounded tail of
   finished items.
-- The farm command log.
+- The fleet-wide farm log, which has its own route ([Farm log](farm-log.md)).
 
 ## Paging
 

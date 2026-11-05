@@ -114,7 +114,7 @@ fn setting(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Option<Strin
         .optional()?)
 }
 
-fn load_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
+pub(super) fn load_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
     Ok(
         match setting(tx, tenant, key)?
             .map(|raw| serde_json::from_str(&raw))
@@ -126,7 +126,12 @@ fn load_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>
     )
 }
 
-fn save_list(tx: &Transaction<'_>, tenant: &str, key: &str, items: &[Value]) -> Result<()> {
+pub(super) fn save_list(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    key: &str,
+    items: &[Value],
+) -> Result<()> {
     tx.execute(
         "INSERT INTO app_settings (tenant_id, key, value) VALUES (?1, ?2, ?3)
          ON CONFLICT (tenant_id, key) DO UPDATE SET value=excluded.value",
@@ -135,7 +140,7 @@ fn save_list(tx: &Transaction<'_>, tenant: &str, key: &str, items: &[Value]) -> 
     Ok(())
 }
 
-fn load_receipts(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value>> {
+pub(super) fn load_receipts(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value>> {
     load_list(tx, tenant, KEY)
 }
 
@@ -410,6 +415,8 @@ pub(super) fn verify_batch(
         },
     }));
     save_receipts(tx, tenant, &receipts)?;
+    #[cfg(feature = "desktop_rebuild")]
+    super::farm_log::append_burst(tx, tenant, &response)?;
     Ok(Ok(Response::ok(Body::Receipt(response))))
 }
 
@@ -486,28 +493,58 @@ fn undo_conflict(
     Ok(None)
 }
 
-pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos: &Path) -> Outcome {
-    let mut receipts = load_receipts(tx, tenant)?;
-    let Some(position) = receipts.iter().position(|r| r["undo_token"] == token) else {
-        return refuse(404, "Checkoff burst not found");
+/// Why the burst with an undo token cannot be undone now.
+pub(super) enum Blocked {
+    NotFound,
+    Undone,
+    Archived,
+    Changed(String),
+}
+
+/// The undo checks, without writing: `None` when undo would succeed.
+pub(super) fn undo_blocked(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    receipts: &[Value],
+    token: &str,
+    repos: &Path,
+) -> Result<Option<Blocked>> {
+    let Some(receipt) = receipts.iter().find(|r| r["undo_token"] == token) else {
+        return Ok(Some(Blocked::NotFound));
     };
-    if receipts[position].get("undone_at").is_some() {
-        return refuse(409, "This Checkoff burst was already undone");
+    if receipt.get("undone_at").is_some() {
+        return Ok(Some(Blocked::Undone));
     }
-    let undo = receipts[position]["undo"].clone();
+    let undo = &receipt["undo"];
     for basis in undo["bases"].as_array().into_iter().flatten() {
         let profile = basis["profile_id"].as_i64().unwrap_or_default();
         if let AcceptedRead::Ready { snapshot } = read(tx, tenant, profile, repos)?
             && archived(&snapshot)
         {
-            return Ok(Err(Refusal::Archived));
+            return Ok(Some(Blocked::Archived));
         }
     }
-    let mut all = links::load(tx, tenant, &links::now())?;
-    let current: Vec<Value> = all.iter().map(links::public).collect();
-    if let Some(reason) = undo_conflict(tx, tenant, &undo, &current, repos)? {
-        return refuse(409, &reason);
+    let current: Vec<Value> = links::load(tx, tenant, &links::now())?
+        .iter()
+        .map(links::public)
+        .collect();
+    Ok(undo_conflict(tx, tenant, undo, &current, repos)?.map(Blocked::Changed))
+}
+
+pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos: &Path) -> Outcome {
+    let mut receipts = load_receipts(tx, tenant)?;
+    match undo_blocked(tx, tenant, &receipts, token, repos)? {
+        None => {}
+        Some(Blocked::NotFound) => return refuse(404, "Checkoff burst not found"),
+        Some(Blocked::Undone) => return refuse(409, "This Checkoff burst was already undone"),
+        Some(Blocked::Archived) => return Ok(Err(Refusal::Archived)),
+        Some(Blocked::Changed(reason)) => return refuse(409, &reason),
     }
+    let Some(position) = receipts.iter().position(|r| r["undo_token"] == token) else {
+        return refuse(404, "Checkoff burst not found");
+    };
+    let undo = receipts[position]["undo"].clone();
+    let mut all = links::load(tx, tenant, &links::now())?;
     // Each touched link goes back to its content and place before the burst.
     let mut touched: Vec<&Value> = undo["links"].as_array().into_iter().flatten().collect();
     touched.sort_by_key(|link| link["index"].as_u64());
@@ -558,6 +595,8 @@ pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos:
         receipt.insert("undone_at".into(), undone_at.clone().into());
     }
     save_receipts(tx, tenant, &receipts)?;
+    #[cfg(feature = "desktop_rebuild")]
+    super::farm_log::append_undo(tx, tenant, token, &receipts[position]["response"])?;
     let mut body = Map::new();
     body.insert("undo_token".into(), token.into());
     body.insert("undone_at".into(), undone_at.into());

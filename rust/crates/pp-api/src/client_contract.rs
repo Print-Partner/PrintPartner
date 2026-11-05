@@ -39,6 +39,8 @@ pub struct ClientRoute {
     pub request: Option<&'static str>,
     /// DTO name of the 200 response body.
     pub response: &'static str,
+    /// Path parameters that are opaque strings; the rest are positive integers.
+    pub text_params: &'static [&'static str],
 }
 
 const fn route(
@@ -55,6 +57,7 @@ const fn route(
         auth: ClientAuth::Credential,
         request,
         response,
+        text_params: &[],
     }
 }
 
@@ -160,6 +163,23 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "UnmatchedPrintList",
     ),
     route(
+        "listFarmLog",
+        "GET",
+        "/api/v2/farm-log",
+        None,
+        "FarmLogPage",
+    ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "undoFarmLogEntry",
+            "POST",
+            "/api/v2/farm-log/{id}/undo",
+            None,
+            "FarmLogEntry",
+        )
+    },
+    route(
         "listMatchSuggestions",
         "GET",
         "/api/v2/printer-checkoff/unattributed/suggestions",
@@ -194,6 +214,7 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         auth: ClientAuth::None,
         request: None,
         response: "Health",
+        text_params: &[],
     },
 ];
 
@@ -204,6 +225,9 @@ pub use codegen::{document, document_bytes};
 mod codegen {
     use super::CLIENT_ROUTES;
     use crate::problem::{FieldError, MAX_FIELD_ERRORS, Problem, ProblemType};
+    use pp_storage::checkoff_progress::farm_log::{
+        FarmLogEntry, FarmLogKind, FarmLogPage, FarmLogUndo, FarmUndoReason,
+    };
     use pp_storage::printer_display_state::{
         BedClearState, PrinterDisplayDescriptor, PrinterDisplayState, PrinterExecutionState,
         PrinterStateView,
@@ -307,6 +331,8 @@ mod codegen {
             schemars::schema_for!(MatchSuggestionList),
         )?;
         schema("SendQueue", schemars::schema_for!(SendQueue))?;
+        schema("FarmLogPage", schemars::schema_for!(FarmLogPage))?;
+        schema("FarmLogEntry", schemars::schema_for!(FarmLogEntry))?;
         schema(
             "VerifyBatchRequest",
             schemars::schema_for!(VerifyBatchRequest),
@@ -327,7 +353,8 @@ mod codegen {
             .iter()
             .map(|route| {
                 json!({"name": route.name, "method": route.method, "path": route.path,
-                    "auth": route.auth.as_str(), "request": route.request, "response": route.response})
+                    "auth": route.auth.as_str(), "request": route.request, "response": route.response,
+                    "text_params": route.text_params})
             })
             .collect();
         // Emitted as a TypeScript record keyed by `key`; rows in Rust order.
@@ -522,6 +549,57 @@ mod codegen {
             UnmatchedPrintList { prints },
             SendQueue { items },
         )
+    }
+
+    /// One entry per kind and undo reason, filled and null.
+    fn farm_log() -> FarmLogPage {
+        let refused = |reason| FarmLogUndo {
+            undoable: false,
+            reason: Some(reason),
+            detail: Some(UNICODE.into()),
+        };
+        let undos = [
+            FarmLogUndo {
+                undoable: true,
+                reason: None,
+                detail: None,
+            },
+            refused(FarmUndoReason::AlreadyUndone),
+            refused(FarmUndoReason::ReceiptExpired),
+            refused(FarmUndoReason::StateChanged),
+            refused(FarmUndoReason::Archived),
+            refused(FarmUndoReason::PrinterCommand),
+            refused(FarmUndoReason::UndoEntry),
+        ];
+        let entries = undos
+            .into_iter()
+            .enumerate()
+            .map(|(index, undo)| {
+                let kind = match undo.reason {
+                    Some(FarmUndoReason::PrinterCommand) => FarmLogKind::Send,
+                    Some(FarmUndoReason::UndoEntry) => FarmLogKind::CheckoffBurstUndo,
+                    _ => FarmLogKind::CheckoffBurst,
+                };
+                let filled = index % 2 == 0;
+                FarmLogEntry {
+                    id: format!("entry:{index}"),
+                    kind,
+                    at: "2026-11-05T01:00:00.000Z".into(),
+                    summary: UNICODE.into(),
+                    build_ids: vec![MAX_SAFE],
+                    printer_ids: vec!["printer-0".into()],
+                    units_confirmed: filled.then_some(u32::MAX),
+                    units_rejected: filled.then_some(0),
+                    undoes: (kind == FarmLogKind::CheckoffBurstUndo).then(|| "entry:0".into()),
+                    send_state: (kind == FarmLogKind::Send).then_some(SendState::Cancelled),
+                    undo,
+                }
+            })
+            .collect();
+        FarmLogPage {
+            entries,
+            next_cursor: Some("76310a310a78".into()),
+        }
     }
 
     /// One suggestion per confidence, with every basis, filled and null.
@@ -1202,6 +1280,19 @@ mod codegen {
             },
         )?);
         cases.push(served("SendQueue", "every-state", queue)?);
+        let log = farm_log();
+        for entry in &log.entries {
+            cases.push(served("FarmLogEntry", &entry.id, entry)?);
+        }
+        cases.push(served("FarmLogPage", "every-undo", log)?);
+        cases.push(served(
+            "FarmLogPage",
+            "last",
+            FarmLogPage {
+                entries: vec![],
+                next_cursor: None,
+            },
+        )?);
         for state in PrinterDisplayState::ALL {
             cases.push(served(
                 "PrinterDisplayDescriptor",

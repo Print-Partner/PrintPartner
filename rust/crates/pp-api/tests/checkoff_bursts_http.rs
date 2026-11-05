@@ -68,7 +68,19 @@ impl Drop for Fixture {
 }
 
 async fn post(router: &Router, path: &str, body: &str, cookie: bool) -> (StatusCode, Value) {
-    let mut request = Request::post(path)
+    send(router, "POST", path, body, cookie).await
+}
+
+async fn send(
+    router: &Router,
+    method: &str,
+    path: &str,
+    body: &str,
+    cookie: bool,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
         .header("host", "127.0.0.1:4100")
         .header("origin", ORIGIN)
         .header("content-type", "application/json");
@@ -259,5 +271,54 @@ async fn verify_batch_http_refuses_before_storage_writes() {
         StatusCode::NOT_FOUND,
         "the routes are not mounted with the flag off"
     );
+    owner.shutdown().unwrap();
+}
+
+/// GRE-1126: the farm log through the mounted routes, across a restart.
+#[tokio::test]
+async fn farm_log_http_pages_across_restart_and_undoes_by_entry() {
+    let fixture = Fixture::new();
+    let printed = fixture.printed();
+    let (owner, router) = fixture.open("1");
+    let (status, _) = send(&router, "GET", "/api/v2/farm-log", "", false).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = post(
+        &router,
+        "/printer-checkoff/verify-batch",
+        &contract_request(),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, log) = send(&router, "GET", "/api/v2/farm-log?limit=10", "", true).await;
+    assert_eq!(status, StatusCode::OK, "{log}");
+    assert_eq!(log["entries"][0]["id"], "checkoff_burst:1");
+    assert_eq!(log["entries"][0]["undo"]["undoable"], true);
+    assert_eq!(log["next_cursor"], Value::Null);
+    owner.shutdown().unwrap();
+
+    let (owner, router) = fixture.open("true");
+    let (status, reread) = send(&router, "GET", "/api/v2/farm-log?limit=10", "", true).await;
+    assert_eq!(
+        (status, &reread),
+        (StatusCode::OK, &log),
+        "stable after restart"
+    );
+    let (status, undone) = post(&router, "/api/v2/farm-log/checkoff_burst:1/undo", "", true).await;
+    assert_eq!(status, StatusCode::OK, "{undone}");
+    assert_eq!(undone["kind"], "checkoff_burst_undo");
+    assert_eq!(fixture.printed(), printed);
+    let (status, again) = post(&router, "/api/v2/farm-log/checkoff_burst:1/undo", "", true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(again["detail"], "This Checkoff burst was already undone");
+    let (_, log) = send(&router, "GET", "/api/v2/farm-log", "", true).await;
+    assert_eq!(log["entries"].as_array().unwrap().len(), 2);
+    let (status, _) = send(&router, "GET", "/api/v2/farm-log?limit=1&limit=2", "", true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    owner.shutdown().unwrap();
+
+    let (owner, router) = fixture.open("0");
+    let (status, _) = send(&router, "GET", "/api/v2/farm-log", "", true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "the flag off mounts nothing");
     owner.shutdown().unwrap();
 }

@@ -23,7 +23,7 @@ One entry point, `.` (`src/index.ts`). `src/` holds only generated files. Do not
 | --- | --- |
 | `src/schemas.generated.ts` | One Zod schema and output type per DTO, plus `dtoSchemas` keyed by Rust contract name |
 | `src/descriptors.generated.ts` | Constant tables from the contract's `descriptors` list. Today only `printerDisplayDescriptors`: one row per printer display state with its label, Lucide icon name and `--status-*` colour token |
-| `src/routes.generated.ts` | `routes` (method, path, path params, auth, request and response schema), `RouteRequest`, `RouteResponse`, `routePath` |
+| `src/routes.generated.ts` | `routes` (method, path, path params, text params, auth, request and response schema), `RouteRequest`, `RouteResponse`, `routePath` (positive integer IDs, or a percent-encoded non-empty string for a text param such as `undoFarmLogEntry`'s `id`) |
 | `src/index.ts` | Re-exports both files |
 
 Each file starts with a `Content SHA256` header over the rest of the file.
@@ -50,6 +50,8 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `POST /api/v2/printer-checkoff/verify-batch` | `VerifyBatchRequest` | `VerifyBatchReceipt` |
 | `POST /api/v2/printer-checkoff/verify-batch/undo` | `UndoBatchRequest` | `UndoBatchReceipt` |
 | `GET /api/v2/printer-send-queue` | | `SendQueue` |
+| `GET /api/v2/farm-log` (query `cursor`, `limit`) | | `FarmLogPage` |
+| `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 
 `PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md).

@@ -152,6 +152,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |
 | Ranked task feed | `GET /api/v1/tasks` | Exists (GRE-1123), a view over the workflow projection |
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
+| Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md) |
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
 | Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
 | Accept preview with checks | `POST /plans/:id/drafts/:draftId/preview` | New |

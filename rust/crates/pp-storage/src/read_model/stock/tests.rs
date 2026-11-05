@@ -280,7 +280,7 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
              {"id":"broken","type":"spoolman","config":{}}]')"#,
     );
     store.job("default", "old", 1, "completed", "90", &[2, 2, 2]);
-    store.job("default", "new", 3, "completed", "50", &[2, 1]);
+    store.job("default", "new", 3, "completed", "50.5", &[2, 1]);
     // Ignored: not completed, no grams, another tenant.
     store.job("default", "sent", 4, "sent", "999", &[2]);
     store.job("default", "none", 5, "completed", "NULL", &[2]);
@@ -318,14 +318,15 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
     assert_eq!(integrations, [local, alt]);
     let debug = format!("{:?}", integrations[0]);
     assert!(!debug.contains("\"k\""), "Debug hides the key");
-    // (50 / 2 + 90 / 3) / 2: a job's grams split over all of its units.
+    // (50.5 / 2 + 90 / 3) / 2: a job's grams, fractional ones included, split
+    // over all of its units.
     let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
     let part_2 = Measured {
-        grams_per_unit: 27.5,
+        grams_per_unit: 27.625,
         job_ids: ids(&["new", "old"]),
     };
     assert_eq!(measured[&2], part_2);
-    assert_eq!(measured[&1].grams_per_unit, 25.0);
+    assert_eq!(measured[&1].grams_per_unit, 25.25);
     // The five most recent of seven jobs: 70, 60, 50, 40, 30.
     let part_3 = Measured {
         grams_per_unit: 50.0,

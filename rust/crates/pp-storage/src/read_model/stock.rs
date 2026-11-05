@@ -277,7 +277,7 @@ fn read_measured(
              FROM print_jobs j
              JOIN print_job_parts p ON p.tenant_id=j.tenant_id AND p.job_id=j.id
             WHERE j.tenant_id=?1 AND j.profile_id=?2 AND j.status='completed'
-              AND typeof(j.filament_consumed_g)='integer' AND j.filament_consumed_g>0
+              AND typeof(j.filament_consumed_g) IN ('integer','real') AND j.filament_consumed_g>0
             GROUP BY p.part_id, j.id)
           WHERE recency<=?3
           ORDER BY part_id, recency",
@@ -285,11 +285,11 @@ fn read_measured(
     let mut rows = statement.query(rusqlite::params![tenant, profile_id, MEASURED_JOBS as i64])?;
     let mut per_unit = BTreeMap::<i64, Vec<(String, f64)>>::new();
     while let Some(row) = rows.next()? {
-        let (part, job, grams, units): (i64, String, i64, i64) =
+        let (part, job, grams, units): (i64, String, f64, i64) =
             (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
         let jobs = per_unit.entry(part).or_default();
         if units > 0 && jobs.len() < MEASURED_JOBS {
-            jobs.push((job, grams as f64 / units as f64));
+            jobs.push((job, grams / units as f64));
         }
     }
     Ok(per_unit

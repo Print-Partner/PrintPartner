@@ -229,3 +229,40 @@ async fn ticket_t_21_connection_test_keeps_nodes_five_per_minute_budget() {
         200
     );
 }
+
+#[tokio::test]
+async fn ticket_t_21_root_and_api_v1_mounts_keep_separate_budgets() {
+    use tower::ServiceExt;
+    let fake = Arc::new(Fake::default());
+    let router = routes(fake.clone());
+    let get = |uri: &str| {
+        axum::extract::Request::get(uri)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    for _ in 0..CAMERAS_LIMIT {
+        let response = router
+            .clone()
+            .oneshot(get("/printers/moon/cameras"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+    let throttled = router
+        .clone()
+        .oneshot(get("/printers/moon/cameras"))
+        .await
+        .unwrap();
+    assert_eq!(throttled.status(), 429);
+    let aliased = router
+        .clone()
+        .oneshot(get("/api/v1/printers/moon/cameras"))
+        .await
+        .unwrap();
+    assert_eq!(
+        aliased.status(),
+        200,
+        "the /api/v1 alias has its own window"
+    );
+    assert_eq!(fake.calls.lock().unwrap().len(), CAMERAS_LIMIT as usize + 1);
+}

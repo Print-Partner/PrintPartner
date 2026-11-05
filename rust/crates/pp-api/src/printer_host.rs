@@ -123,18 +123,29 @@ pub fn printer_host_router(
     let Some(gate) = Gate::new(config, client) else {
         return Router::new();
     };
+    gate.guard(routes(port))
+}
+
+/// Node registers the core routes at the root and again in the `/api/v1`
+/// plugin, and each registration gets its own rate-limit store, so each
+/// mount keeps its own windows.
+fn routes(port: Arc<dyn PrinterHostPort>) -> Router {
     let printers = Router::new()
         .route("/printers/{id}/capabilities", get(capabilities))
         .route("/printers/{id}/files", get(files))
         .route("/printers/{id}/cameras", get(cameras));
-    let v1 = printers
-        .clone()
-        .route("/integrations/{id}/test", post(test));
-    gate.guard(Router::new().merge(printers).nest("/api/v1", v1))
-        .with_state(App {
+    let mount = |routes: Router<App>, port| {
+        routes.with_state(App {
             port,
             windows: Arc::default(),
         })
+    };
+    let v1 = printers
+        .clone()
+        .route("/integrations/{id}/test", post(test));
+    Router::new()
+        .merge(mount(printers, port.clone()))
+        .nest("/api/v1", mount(v1, port))
 }
 
 fn throttled(seconds: u64) -> Response {

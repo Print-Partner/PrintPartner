@@ -1154,6 +1154,19 @@ mod tests {
         assert_eq!(watchers.route("prusa"), Route::Node);
     }
 
+    /// Every request sent was a status query. A poll cancelled after its
+    /// connection opened but before it wrote anything (replace, remove or
+    /// stop) leaves an empty line in the log: nothing was sent on it.
+    fn sent_only_status_queries(printer: &RecordedPrinter) {
+        let lines = printer.request_lines();
+        let sent: Vec<_> = lines.iter().filter(|line| !line.is_empty()).collect();
+        assert!(!sent.is_empty());
+        assert!(
+            sent.iter()
+                .all(|line| **line == format!("GET {QUERY} HTTP/1.1")),
+            "{lines:?}"
+        );
+    }
     fn live_workers(watchers: &Watchers) -> usize {
         watchers
             .hosts
@@ -1230,7 +1243,7 @@ mod tests {
         assert!(watchers.hosts.is_empty());
         assert!(frozen(&moved).await);
         for printer in [&a, &b, &moved] {
-            only_status_queries(printer);
+            sent_only_status_queries(printer);
         }
     }
     #[test]
@@ -1279,7 +1292,7 @@ mod tests {
         assert_eq!(watchers.route("down"), Route::Unavailable);
         assert!(observations.latest("idle").is_none());
         assert!(watchers.status("idle").is_none());
-        only_status_queries(&idle);
+        sent_only_status_queries(&idle);
     }
     #[tokio::test]
     async fn ticket_t_25_reconnect_after_refused_connections_recovers() {

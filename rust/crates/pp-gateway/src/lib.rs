@@ -20,7 +20,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -30,6 +30,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 mod assets;
 pub mod ownership;
 mod rate_limit;
+mod stall;
 
 use ownership::{Owner, cutover::OperationOwners};
 
@@ -489,7 +490,10 @@ impl Gateway {
                     let mut http = hyper::server::conn::http1::Builder::new();
                     http.max_buf_size(32 * 1024);
                     let connection = http
-                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                        .serve_connection(
+                            hyper_util::rt::TokioIo::new(stall::StallGuard::new(stream)),
+                            service,
+                        )
                         .with_upgrades();
                     tokio::select! {
                         biased;
@@ -638,8 +642,26 @@ impl Gateway {
 
 struct Admission {
     access: Arc<Mutex<Sessions>>,
+    released: Arc<AtomicBool>,
+    _ended: Option<tokio::sync::oneshot::Sender<()>>,
 }
 impl Admission {
+    /// Stops counting this request once `drain` is cancelled, even if its
+    /// body is never polled again. Only for read-only streams, which must not
+    /// hold the shutdown drain open.
+    fn release_at(&mut self, drain: CancellationToken) {
+        let (ended, done) = tokio::sync::oneshot::channel::<()>();
+        self._ended = Some(ended);
+        let access = self.access.clone();
+        let released = self.released.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = drain.cancelled() => release(&access, &released),
+                _ = done => {}
+            }
+        });
+    }
+
     fn acquire(access: &Arc<Mutex<Sessions>>, cookie: Option<&str>) -> Result<Self, StatusCode> {
         let mut state = access.lock().expect("Session mutex poisoned");
         if state.draining {
@@ -651,13 +673,19 @@ impl Admission {
         state.active += 1;
         Ok(Self {
             access: access.clone(),
+            released: Arc::new(AtomicBool::new(false)),
+            _ended: None,
         })
     }
 }
 impl Drop for Admission {
     fn drop(&mut self) {
-        let mut state = self.access.lock().expect("Session mutex poisoned");
-        state.active -= 1;
+        release(&self.access, &self.released);
+    }
+}
+fn release(access: &Mutex<Sessions>, released: &AtomicBool) {
+    if !released.swap(true, Ordering::AcqRel) {
+        access.lock().expect("Session mutex poisoned").active -= 1;
     }
 }
 
@@ -1907,13 +1935,14 @@ fn product_router(state: &GatewayState) -> Option<axum::Router> {
 
 /// Answer from the Rust product routes. They see the peer as `ConnectInfo`
 /// and refuse a non-loopback one themselves. A `text/event-stream` body only
-/// reads, so it ends when draining begins instead of holding the drain open;
-/// other bodies end when the drain finishes.
+/// reads, so when draining begins it stops counting as active and ends at its
+/// next poll, even if its client has stopped reading; other bodies end when
+/// the drain finishes.
 async fn product_response(
     state: &GatewayState,
     product: axum::Router,
     request: Request<Body>,
-    admission: Admission,
+    mut admission: Admission,
 ) -> Response<Body> {
     let Ok(mut response) = tower::ServiceExt::oneshot(product, request).await;
     // Same dynamic-response policy as the compatibility branch: account and
@@ -1926,6 +1955,7 @@ async fn product_response(
         .get(axum::http::header::CONTENT_TYPE)
         .is_some_and(|value| value == "text/event-stream")
     {
+        admission.release_at(state.watcher_cancelled.clone());
         state.watcher_cancelled.clone()
     } else {
         state.cancelled.clone()

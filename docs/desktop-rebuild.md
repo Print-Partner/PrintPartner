@@ -2547,8 +2547,9 @@ step copy of its own; the copy taken at open covers it. See
 so the Rust-only runtime mounts it. It resumes from `Last-Event-ID`, answers
 401 without a credential, ends the stream when the session is revoked, and
 stops feeding a client whose bounded queue stays full for 10 seconds; that
-connection closes at the server's next write. Shutdown draining ends open
-streams. See
+connection closes at the server's next write, or after 30 seconds in which the
+client accepts no bytes. Shutdown draining ends open streams and does not wait
+for them. See
 [Domain events](domain-events.md#http-stream).
 
 ```sh

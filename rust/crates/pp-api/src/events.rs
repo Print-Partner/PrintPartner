@@ -16,9 +16,9 @@
 //! Each stream re-reads after every storage wake and every heartbeat. A read
 //! that fails, such as for a revoked session, ends the stream. When a client
 //! leaves the bounded frame queue full past the slow-client deadline, its
-//! producer stops and the connection closes at the server's next write; a
+//! producer stops and the connection closes at the server's next write. A
 //! client that never reads again keeps its connection and stream slot until it
-//! disconnects. Storage writers never wait on a stream.
+//! disconnects or the desktop gateway closes the stalled connection. Storage writers never wait on a stream.
 
 use crate::accepted::{AcceptedHttpConfig, Gate, failure, read_error};
 use crate::loopback::PresentedCredential;

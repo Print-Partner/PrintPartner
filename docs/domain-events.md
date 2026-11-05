@@ -126,7 +126,7 @@ storage stops, ends the stream.
 | --- | --- |
 | Concurrent streams per router | 8; another connect gets a 503 problem |
 | Frames queued per client | 64, about 160 KiB at the payload limit |
-| Slow-client deadline | 10 s with the queue full, then the producer stops and the connection closes on the next write |
+| Slow-client deadline | 10 s with the queue full, then the producer stops; the connection closes at the next write, or after 30 s with no bytes accepted |
 | Heartbeat | 15 s |
 
 A slow client never blocks storage: the writer only signals a stream's task,
@@ -135,12 +135,16 @@ deadline, the task stops and drops its storage subscription, and the response
 body fails on its next poll, so the server closes the connection without
 sending the queued frames. The server polls the body only when the socket can
 take more data, so a client that stops reading entirely keeps its connection
-and its stream slot until it reads again or disconnects. Memory stays bounded:
-at most 8 such connections, each holding its queue and its socket buffers.
+and its stream slot. The desktop gateway closes any connection whose peer
+accepts no bytes for 30 seconds (`WRITE_STALL`), which frees that slot. A
+stalled client can therefore hold one of the 8 slots for at most about 40
+seconds (the 10 s deadline plus the 30 s stall), with its queue and socket
+buffers.
 
-The gateway ends `text/event-stream` responses when shutdown draining begins,
-so an open stream never holds the drain open. Other in-flight responses keep
-running until the drain finishes.
+When shutdown draining begins, the gateway stops counting
+`text/event-stream` responses as active and ends each one at its next poll,
+so an open or stalled stream never holds the drain open. Other in-flight
+responses keep running until the drain finishes.
 
 ## Tests
 

@@ -385,13 +385,13 @@ async fn slice0_mount_drain_ends_event_streams_but_not_other_responses() {
     let mut slow = bodies.pop().unwrap();
     let mut events = bodies.pop().unwrap();
     gateway.begin_drain();
+    let pending = tokio::time::timeout(Duration::from_millis(100), slow.frame()).await;
+    assert!(pending.is_err(), "other responses keep running");
+    assert!(!gateway.wait_idle(Duration::from_millis(100)).await);
+    drop(slow);
+    assert!(gateway.wait_idle(Duration::from_secs(1)).await);
     let ended = tokio::time::timeout(Duration::from_secs(1), events.frame()).await;
     assert!(matches!(ended, Ok(Some(Err(_)))), "the event stream ends");
     drop(events);
-    let pending = tokio::time::timeout(Duration::from_millis(100), slow.frame()).await;
-    assert!(pending.is_err(), "other responses keep running");
-    assert!(!gateway.wait_idle(Duration::ZERO).await);
-    drop(slow);
-    assert!(gateway.wait_idle(Duration::ZERO).await);
     gateway.stop().await.unwrap();
 }

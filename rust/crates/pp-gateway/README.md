@@ -10,6 +10,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Serves `apps/web/dist` with gzip negotiation (`src/assets.rs`) and forwards admitted routes through `pp_compat::Endpoint`.
 - Answers a few routes itself: `/__desktop/bootstrap`, `/__desktop/rate-limit`, `/__runtime`, `POST /auth/logout`, and `/legal/summary` once that route is Rust-owned. It refuses `/mcp`.
 - Defines `RustStatus`, which `/__runtime` reports for a runtime started with `Gateway::start_rust_only`. `pp-core` owns the sender.
+- Closes a connection whose peer accepts no bytes for 30 seconds (`stall::WRITE_STALL`), so a client that stops reading cannot hold a response open. At shutdown, `text/event-stream` product responses stop counting toward the drain as soon as draining begins.
 - Runs Moonraker status watchers from `pp_drivers::moonraker` and the request drain used at shutdown. With Node, watchers take hosts from Node's `/__desktop/moonraker-hosts` and the gateway answers cached statuses itself. In a Rust-only runtime they take hosts from the caller's `MoonrakerHosts` source, and an authenticated product route answers through `MoonrakerStatus`.
 - Temporary ownership code (`ownership`): which runtime owns each operation participant, and the cutover record that moves one from Node to Rust.
 

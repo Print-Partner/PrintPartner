@@ -540,11 +540,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
             if archived(&snapshot) {
                 return Ok(Err(Refusal::Archived));
             }
-            let outcome = import_counts(tx, tenant, &snapshot, import)?;
-            if matches!(&outcome, Ok(response) if response.status == 200) {
-                progress_changed(tx, tenant, snapshot.profile.id, None)?;
-            }
-            return Ok(outcome);
+            return import_counts(tx, tenant, &snapshot, import);
         }
         Op::Unit {
             target: Target::Token { expected, token },
@@ -759,6 +755,7 @@ fn import_counts(
         targets.push((part, row.printed_count));
     }
     let mut updated_parts = 0;
+    let mut moved = false;
     for (part, printed) in targets {
         if part
             .units
@@ -767,6 +764,9 @@ fn import_counts(
         {
             updated_parts += 1;
         }
+        moved |= part.units.iter().any(|u| {
+            u.completed != (u.unit_index < printed) || (u.assembled && u.unit_index >= printed)
+        });
         for unit in &part.units {
             set_completed(
                 tx,
@@ -776,6 +776,9 @@ fn import_counts(
                 unit.unit_index < printed,
             )?;
         }
+    }
+    if moved {
+        progress_changed(tx, tenant, snapshot.profile.id, None)?;
     }
     Ok(Ok(Response::ok(Body::Imported { updated_parts })))
 }

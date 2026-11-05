@@ -48,6 +48,7 @@ fn seen(state: HostState) -> Observation {
         progress_percent: Some(42),
         filename: Some("dir/Plate.gcode".into()),
         last_heard_at: Some("2026-11-05T02:00:00.000Z".into()),
+        state_since: Some("2026-11-05T01:00:00.000Z".into()),
     }
 }
 
@@ -137,6 +138,7 @@ fn farm_bed_is_clear_only_after_a_verified_result_with_nothing_newer() {
         progress_percent: None,
         filename: Some("direct.gcode".into()),
         last_heard_at: None,
+        state_since: Some("2026-11-05T01:00:00.000Z".into()),
     };
     let direct = farm(json!([verified]), json!([])).printers(observe(direct));
     assert_eq!(
@@ -144,6 +146,21 @@ fn farm_bed_is_clear_only_after_a_verified_result_with_nothing_newer() {
         BedClearState::NeedsClearing,
         "a job run outside Print Partner is not covered by an older verification"
     );
+    for since in [Some("2026-11-05T01:45:00.000Z"), None] {
+        let reprint = Observation::Seen {
+            state: HostState::Complete,
+            progress_percent: None,
+            filename: Some("Plate.gcode".into()),
+            last_heard_at: None,
+            state_since: since.map(Into::into),
+        };
+        let reprint = farm(json!([verified]), json!([])).printers(observe(reprint));
+        assert_eq!(
+            reprint.printers[4].state.bed_clear(),
+            BedClearState::NeedsClearing,
+            "the verified file completing again after its confirmation ({since:?}) is a new part"
+        );
+    }
     let awaiting = link("awaiting_verify", Some("2026-11-05T01:45:00.000Z"), None);
     assert_eq!(
         bed(json!([verified, awaiting]), json!([]), HostState::Idle)["display"],

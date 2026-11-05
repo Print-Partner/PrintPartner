@@ -120,6 +120,7 @@ impl FarmObservations for WatchedFarm {
                 .map(|progress| progress.clamp(0.0, 100.0).round() as u8),
             filename: status.filename,
             last_heard_at: last_heard.map(iso_time),
+            state_since: observations.state_since(&integration.id).map(iso_time),
         }
     }
 }

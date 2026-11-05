@@ -77,8 +77,12 @@ It is `needs_clearing` while printing or paused, when Moonraker reports
 `error`, when an awaiting or failed result or an open unmatched print on that
 printer is newer than the last verification, and when Moonraker reports
 `complete` for a file other than the latest verified result's (including a job
-run outside Print Partner, which has no result). Otherwise it is `unknown`,
-which displays as Bed to clear.
+run outside Print Partner, which has no result) or for that file but entered
+`complete` after the verification was applied (a direct reprint of the same
+file). The watcher records when each host entered its current state in this
+process only, so after a restart a printer still reporting `complete` reads
+`needs_clearing` until the operator confirms again. Otherwise it is
+`unknown`, which displays as Bed to clear.
 
 ## Checkoff results, unmatched prints and the send queue
 

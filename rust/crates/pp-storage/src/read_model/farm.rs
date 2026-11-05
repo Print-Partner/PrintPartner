@@ -63,6 +63,10 @@ pub enum Observation {
         filename: Option<String>,
         /// The last successful response, RFC 3339.
         last_heard_at: Option<String>,
+        /// When the host entered `state` as this process saw it, RFC 3339.
+        /// It binds a `complete` report to one completion: a confirmation
+        /// clears it only if applied after this.
+        state_since: Option<String>,
     },
 }
 
@@ -560,8 +564,13 @@ impl Farm {
                         progress_percent,
                         filename,
                         last_heard_at,
+                        state_since,
                     }) => (
-                        Some((*state, filename.as_deref())),
+                        Some(Host {
+                            state: *state,
+                            filename: filename.as_deref(),
+                            since: instant(state_since.as_deref()),
+                        }),
                         *progress_percent,
                         last_heard_at.clone(),
                     ),
@@ -593,14 +602,16 @@ impl Farm {
     /// Only a verified result (an operator confirmation) makes a bed clear,
     /// and only when no later finished print is waiting on it. A printer that
     /// reports `complete` is clear only when its latest verified result is for
-    /// the file it reports; a job run outside Print Partner has no result.
+    /// the file it reports and was applied after the host entered `complete`:
+    /// a job run outside Print Partner has no result, and a direct reprint of
+    /// the verified file completes after that confirmation.
     fn bed_clear(
         &self,
         printer: &str,
         execution: PrinterExecutionState,
-        host: Option<(HostState, Option<&str>)>,
+        host: Option<Host<'_>>,
     ) -> BedClearState {
-        let state = host.map(|(state, _)| state);
+        let state = host.as_ref().map(|host| host.state);
         if matches!(
             execution,
             PrinterExecutionState::Printing | PrinterExecutionState::Paused
@@ -634,8 +645,9 @@ impl Farm {
         for print in self.unmatched.iter().filter(|p| p.printer_id == printer) {
             finished = finished.max(instant(Some(&print.completed_at)).or(Some(i128::MAX)));
         }
-        if let Some((HostState::Complete, reported)) = host
-            && confirmed.is_none_or(|file| reported.map(normalized_filename) != Some(file))
+        if let Some(host) = host.filter(|host| host.state == HostState::Complete)
+            && (confirmed.is_none_or(|file| host.filename.map(normalized_filename) != Some(file))
+                || host.since.is_none_or(|since| cleared < Some(since)))
         {
             return BedClearState::NeedsClearing;
         }
@@ -646,6 +658,13 @@ impl Farm {
             (None, None) => BedClearState::Unknown,
         }
     }
+}
+
+/// One printer's observed host state, for [`Farm::bed_clear`].
+struct Host<'a> {
+    state: HostState,
+    filename: Option<&'a str>,
+    since: Option<i128>,
 }
 
 fn execution(

@@ -5,11 +5,12 @@ builds toward is [UI and UX target](../../../docs/product/ui-ux-target.md);
 [ADR 0008](../../../docs/adr/0008-replace-the-old-screens.md) says why it is a new
 package instead of a port of `apps/web`.
 
-Today it has the app frame (rail, pulse line slot, command palette, shortcut
+Today it has the app frame (rail, live pulse line, command palette, shortcut
 list), the shared five-state screen template, the read-only Builds list and Build
-Overview, an empty screen for each other destination, a type specimen at
-`/type`, the screen states on sample data at `/states/:kind`, and a Not found
-route. Other product data screens arrive in their own slices.
+Overview, the Farm printer list, an empty screen for each other destination, a
+type specimen at `/type`, the screen states on sample data at `/states/:kind`,
+every printer status at `/states/printers`, and a Not found route. Other product
+data screens arrive in their own slices.
 
 ## Commands
 
@@ -43,8 +44,8 @@ shortcuts, the palette and the shortcut list read it. `/` redirects to `/today`.
   asks. Type to filter, Up and Down, Enter, Escape; keys that belong to an IME
   composition are left alone. Focus stays in the dialog and returns to the
   element that opened it.
-- The "Printer pulse" header region says "Printer counts not loaded" until the
-  Farm slice feeds it, never zeros.
+- The "Printer pulse" header region counts printers by state from
+  `/ws/printers`; see [Farm and the pulse line](#farm-and-the-pulse-line).
 - `src/frame/connection.tsx` polls `GET /health` every 30 s, or 5 s while it
   fails, and shares `checking`, `online` or `offline`. Each probe gives up after
   4 s, and it keeps running while the browser reports no network.
@@ -126,6 +127,54 @@ what they will hold and that a later slice brings them. Nothing here changes dat
   misplaced focus. Revisit
   virtualization if a measurement says otherwise.
 
+## Farm and the pulse line
+
+One `/ws/printers` socket, opened by `PrinterStreamProvider`
+(`src/farm/printerStream.tsx`) for the whole frame, feeds both the pulse line and
+the Farm screen. No screen polls for printer state.
+
+- **Frames.** The generated client covers HTTP routes only, so the frame envelope
+  (`snapshot`, `printer`, `removed`, `heartbeat`) is a Zod schema in
+  `printerStream.tsx`. The printer's `display` and `reason` reuse the generated
+  `PrinterState` and farm-read reason schemas. A frame that fails the schema, or
+  a `seq` that does not follow the last one, drops the socket.
+- **Reconnect.** A closed socket, or one quiet for two heartbeats plus 5 s
+  (including one that never opens), counts as down. A resumed socket counts as
+  live once it opens, because a resume that missed nothing gets no frame until
+  the next heartbeat. The provider reconnects after 1, 2, 5, 10, then every 30 s, with
+  `?stream=&since=` so the server replays what was missed or sends a fresh
+  snapshot ([Printer stream](../../../docs/printer-stream.md#resume)).
+- **Pulse line** (`src/farm/PulseLine.tsx`). One icon, word and count per display
+  state that has printers, in the order Rust declares the states. The whole line
+  is a polite live region, so a screen reader hears both new counts and the
+  switch to "Live updates down". Before the first snapshot it says "Printer counts not loaded", never
+  zeros. While the stream is down it keeps the last counts and says "Live updates
+  down. Last known" with the time of the last frame.
+- **Farm** (`/farm`, `src/farm/FarmScreen.tsx`). Reads `GET /api/v2/printers`
+  once for each printer's model and integration, and again only when the stream
+  names a printer that read does not contain (one read per added printer, never
+  polling). Once the stream has
+  sent a snapshot, it decides which printers exist, their state and their
+  last-heard time, and every
+  banner names the stream's last frame time. If the farm read fails, the
+  streamed rows still show, with an alert and a Retry for the missing models and
+  integrations. The stream sends a printer only when its state changes, so a
+  printer it reports as answering shows the time of the stream's last frame
+  (heartbeats included) as last heard; a printer with a reason (awaiting
+  status, unwatched, unreachable) keeps the stream's own last-heard time, or
+  Never. Each row
+  shows the summary status (icon and word from `PrinterStatus`) and, in their own
+  columns, the execution state with progress, the bed state and the last-heard
+  time ([Farm reads](../../../docs/farm-reads.md#printers)). A printer that is not
+  watched live says why in words, naming the integration: a Bambu printer reads
+  Manual, "Print Partner cannot watch Bambu printers yet", and a printer with no
+  integration reads Not set up. While the stream is down a banner says the
+  states are the last known, with that time, and each row keeps its last-heard
+  time. Farm module off (from `GET /health`) shows the Module-off state.
+- **Tests.** `src/farm/Farm.test.tsx` drives a fake socket (`src/testSockets.ts`,
+  installed for every test by `src/testSetup.ts`) and counts requests: ten
+  minutes of heartbeats and one state change make no second printer read.
+
 ## Fonts and type
 
 The UI bundles IBM Plex Sans 400/500/600 and IBM Plex Mono 400/500 as WOFF2 files
@@ -174,8 +223,9 @@ fail it. Do not add `paths` or Vite aliases that point outside this package.
   it would add a runtime dependency for no current need.
 - **Server state:** TanStack Query 5 is the one cache. Routes and core calls
   must not keep a second copy.
-- Both were already in `web/package-lock.json`, so this package added no new
-  runtime library.
+- Both were already in `web/package-lock.json`. `zod` is a direct dependency
+  too, because the UI parses `/ws/printers` frames with the generated schemas;
+  it was already in the lockfile through `@print-partner/rust-client`.
 
 ## Generated Rust client
 

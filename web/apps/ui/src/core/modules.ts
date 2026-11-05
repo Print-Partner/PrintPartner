@@ -4,8 +4,8 @@ import { readCore } from "./rust";
 
 const MODULE_RETRY_MS = 5_000;
 
-export type ModuleName = Health["modules"][number]["module"];
-export type ModuleStatus = Health["modules"][number];
+export type ModuleStatus = NonNullable<Health["modules"]>[number];
+export type ModuleName = ModuleStatus["module"];
 
 /**
  * A Module's state as the core reports it in GET /health, or undefined while that
@@ -21,5 +21,5 @@ export function useModule(name: ModuleName): ModuleStatus | undefined {
     // state returns with the core instead of staying unknown.
     refetchInterval: (query) => (query.state.status === "error" ? MODULE_RETRY_MS : false),
   });
-  return health.data?.modules.find((m) => m.module === name);
+  return health.data?.modules?.find((m) => m.module === name);
 }

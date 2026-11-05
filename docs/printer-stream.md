@@ -70,6 +70,12 @@ fresh `snapshot` instead. Both parameters or neither; anything else answers 400.
 A client more than 1,024 events behind is closed with 1013 and resumes the same
 way.
 
+## Client
+
+The replacement UI holds one socket per window and feeds the pulse line and the
+Farm screen from it. Its frame schema, reconnect and resume rules are in the
+[ui package README](../web/apps/ui/README.md#farm-and-the-pulse-line).
+
 ## Proof
 
 ```sh

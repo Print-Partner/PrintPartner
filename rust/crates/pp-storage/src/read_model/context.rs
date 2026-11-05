@@ -2,7 +2,9 @@ use super::{
     AcceptedRead,
     graph::{Budget, Row, check, one, owned, required, rows, sha},
     views,
-    workflow::{self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Working},
+    workflow::{
+        self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Stock, Working,
+    },
 };
 use anyhow::Result;
 use rusqlite::Transaction;
@@ -96,6 +98,10 @@ pub struct CapturedContext {
     pub history: Vec<RevisionRef>,
     pub required_units: Vec<UnitHistory>,
     pub plate_revisions: Vec<PlateRef>,
+    /// The facts `workflow` was resolved from, for the workflow read.
+    #[cfg(feature = "desktop_rebuild")]
+    #[serde(skip)]
+    pub(crate) facts: Facts,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -822,6 +828,7 @@ fn jobs(
     let mut c = Checkoff {
         awaiting_verification: 0,
         failed_verifications: 0,
+        printer_links: 0,
     };
     for (key, link) in [
         ("printer.send_queue", false),
@@ -846,7 +853,11 @@ fn jobs(
             {
                 continue;
             }
-            match (link, v["state"].as_str().unwrap_or("")) {
+            let state = v["state"].as_str().unwrap_or("");
+            if link && state != "dismissed" {
+                c.printer_links += 1;
+            }
+            match (link, state) {
                 (false, "queued") => p.queued_jobs += 1,
                 (false, "sending") => p.sending_jobs += 1,
                 (false, "error") => p.failed_jobs += 1,
@@ -1062,6 +1073,7 @@ pub(super) fn capture(
         working_plan: work,
         production,
         checkoff,
+        stock: Stock::NotReady,
     };
     let (accepted_progress, legacy) = match accepted {
         AcceptedRead::Ready { .. } => (
@@ -1106,6 +1118,8 @@ pub(super) fn capture(
         profile_summary_v2,
         profile_summary: json!({"kind":"found","summary":{"header":header,"progress":progress}}),
         workflow: json!({"kind":"ready","workspace":workflow::resolve(&f)?}),
+        #[cfg(feature = "desktop_rebuild")]
+        facts: f,
         history,
         required_units: units,
         plate_revisions: plates,

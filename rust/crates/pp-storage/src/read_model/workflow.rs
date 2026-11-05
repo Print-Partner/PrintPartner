@@ -339,7 +339,7 @@ fn source_status(f: &Facts) -> StageStatus {
         } if finished(f) => status(
             Complete,
             format!(
-                "{n} {} attached. They changed after every unit was checked off.",
+                "{n} {} attached. They have changed, and every required unit is checked off.",
                 plural(n, "Source")
             ),
         ),

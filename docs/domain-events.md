@@ -47,7 +47,8 @@ restart, or from a restored copy, is refused instead of matching unrelated
 events. Opening writes nothing. Replay therefore covers dropped connections
 within one run; after a restart the client reloads its state.
 
-`WriterOwner::domain_events(policy)` returns `DomainEventsClient`.
+`WriterOwner::domain_events()` and `domain_events_with_policy(policy)` return
+`DomainEventsClient`.
 `read(credential, after, ...)` authenticates the credential on the writer
 queue (an auth failure is an `Err`) and returns only that tenant's events:
 
@@ -89,6 +90,9 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild \
   --lib plan_publication::tests::transaction::transaction_replays_node_outcomes_receipts_and_persisted_rows
 ```
+
+Unit tests live in `pp-storage/src/domain_events/tests.rs`; the Checkoff,
+restart and wake-up tests are in `pp-storage/tests/checkoff_progress.rs`.
 
 | Item | Tests |
 | --- | --- |

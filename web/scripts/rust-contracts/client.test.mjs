@@ -7,6 +7,7 @@ import test from "node:test";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { URL } from "node:url";
 import { compare, exportDocument, generate, packageSource, verifyIntegrity } from "./client.mjs";
 import * as client from "../../packages/rust-client/src/index.ts";
 

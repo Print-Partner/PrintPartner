@@ -37,8 +37,18 @@ pub const REDIRECT_UNAVAILABLE: &str = "Moonraker redirected; printer monitoring
 pub type Observed = Arc<BTreeMap<String, Status>>;
 /// When each watched host last answered a status poll.
 type Heard = Arc<Mutex<HashMap<String, SystemTime>>>;
-/// Each watched host's last answered state and when it entered it.
-type Entered = Arc<Mutex<HashMap<String, (State, SystemTime)>>>;
+/// An unanswered spell shorter than this that ends in the same state is a
+/// missed poll, not a new job: no plate prints in five minutes.
+const OUTAGE_GRACE: Duration = Duration::from_secs(300);
+/// Each watched host's last answered state, when it entered it, and when its
+/// current unanswered spell began.
+type Entered = Arc<Mutex<HashMap<String, Spell>>>;
+#[derive(Clone)]
+struct Spell {
+    state: State,
+    since: SystemTime,
+    unanswered: Option<SystemTime>,
+}
 /// The senders behind [`PrinterObservations`]: the newest map, and when
 /// each host entered its current state.
 #[derive(Clone)]
@@ -71,10 +81,11 @@ impl PrinterObservations {
     }
     /// When the host entered its last answered state, as this process saw it.
     /// A changed temperature or progress at the same state does not move it,
-    /// and neither does a spell `offline` or `unknown` that ends in the
-    /// same state: a missed poll is not a new job.
+    /// and neither does an `offline` or `unknown` spell shorter than
+    /// [`OUTAGE_GRACE`] that ends in the same state: a missed poll is not a
+    /// new job. A longer outage could hide one, so it starts the state afresh.
     pub fn state_since(&self, id: &str) -> Option<SystemTime> {
-        lock(&self.entered).get(id).map(|(_, since)| *since)
+        lock(&self.entered).get(id).map(|spell| spell.since)
     }
     /// Waits for a map newer than the last one this handle returned. `None`
     /// once the watchers are gone.
@@ -363,14 +374,32 @@ fn publish(slot: &Mutex<Slot>, port: &Port, id: &str, value: Slot) {
     });
 }
 /// Records `state` for `id` at `now` unless the host is already in it. An
-/// `offline` or `unknown` report only fills in a host never answered.
+/// `offline` or `unknown` report only marks when the unanswered spell began,
+/// or fills in a host never answered; see [`PrinterObservations::state_since`].
 fn enter(entered: &Entered, id: &str, state: State, now: SystemTime) {
     let mut entered = lock(entered);
     let passing = matches!(state, State::Offline | State::Unknown);
-    match entered.get(id) {
-        Some((known, _)) if *known == state || passing => {}
+    match entered.get_mut(id) {
+        Some(spell) if passing => {
+            spell.unanswered.get_or_insert(now);
+        }
+        Some(spell)
+            if spell.state == state
+                && spell.unanswered.is_none_or(|began| {
+                    now.duration_since(began).unwrap_or_default() < OUTAGE_GRACE
+                }) =>
+        {
+            spell.unanswered = None;
+        }
         _ => {
-            entered.insert(id.to_owned(), (state, now));
+            entered.insert(
+                id.to_owned(),
+                Spell {
+                    state,
+                    since: now,
+                    unanswered: None,
+                },
+            );
         }
     }
 }
@@ -912,7 +941,7 @@ mod tests {
     fn farm_reads_state_since_survives_a_missed_poll_but_not_a_new_state() {
         let entered = Entered::default();
         let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
-        let since = || lock(&entered).get("host").map(|(_, since)| *since);
+        let since = || lock(&entered).get("host").map(|spell| spell.since);
         enter(&entered, "host", State::Offline, at(1));
         assert_eq!(
             since(),
@@ -931,6 +960,13 @@ mod tests {
         enter(&entered, "host", State::Printing, at(6));
         enter(&entered, "host", State::Complete, at(7));
         assert_eq!(since(), Some(at(7)), "a new job completes again");
+        enter(&entered, "host", State::Offline, at(8));
+        enter(&entered, "host", State::Complete, at(8 + 300));
+        assert_eq!(
+            since(),
+            Some(at(308)),
+            "an outage long enough to hide a reprint starts complete afresh"
+        );
     }
     #[tokio::test]
     async fn farm_reads_last_heard_survives_offline_and_leaves_with_the_poller() {

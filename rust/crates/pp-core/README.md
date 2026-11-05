@@ -42,7 +42,7 @@ Gated by `#[cfg(feature = "desktop_rebuild")]`:
 
 - `rebuild_api`: `clients`, `router`, `read_router`, `draft_router`, `job_router`.
 - `uploads` (`SourceImports`) and `source_acquisition` (`SourceAcquisitions`).
-- `profile_interpreter` (`interpret_profile`), `review_observations` (`SnapshotReviewObserver`).
+- `profile_interpreter` (`interpret_profile`), `review_observations` (`SnapshotReviewObserver`), `spoolman` (`SpoolmanInventory`, the shortfall route's inventory reader).
 - `production::geometry` (`parse_accepted_stl`, `dimensions_um`), `layout` (`DirectoryLayout::resolve`).
 
 Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --name --artifact --out` are required; `--package --runs --idle-secs --ready-timeout-secs --noise-pct --printers --rustc --node` are optional; the command follows `--`.
@@ -54,7 +54,7 @@ Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --n
 - Files in the data directory: `desktop.toml`, `browser-preferences.json`, `desktop-settings.json`, plus what `pp-storage`, `pp-compat`, and `pp-gateway` write.
 - Child processes: the Node child through `pp-compat`. `perf_launch` spawns the measured command and reads `/proc`; `perf_seed` runs loopback Moonraker simulators on threads.
 - Env: `PP_DESKTOP_REBUILD` turns the rebuild on only when it is exactly `1` or `true` and the crate is built with `desktop_rebuild`. `layout` reads `PP_PORTABLE_DIR`, `APPDATA`, `LOCALAPPDATA`, and `XDG_*_HOME`. Desktop settings pass `PP_EXCHANGE_DIR`, `PP_COMPOSE_FILE`, and other paths to the Node child.
-- With the rebuild on: admits `ownership-manifest.json`, and `review_observations` makes outbound HTTP checked by `pp_net::outbound`.
+- With the rebuild on: admits `ownership-manifest.json`, and `review_observations` makes outbound HTTP checked by `pp_net::outbound`, and `spoolman` makes Spoolman GETs through `pp_net::outbound::HttpGuard`.
 - Cargo feature `desktop_rebuild` (default off): enables the gated modules, the optional `pp-api`, `pp-source`, `pp-net`, `reqwest`, and `axum` dependencies, and `desktop_rebuild` in `pp-compat`, `pp-storage`, `pp-source`, and `pp-api`. See [Desktop rebuild flag](../../../docs/desktop-rebuild.md).
 
 ## Tests

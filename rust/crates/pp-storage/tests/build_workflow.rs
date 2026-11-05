@@ -10,15 +10,20 @@ use pp_storage::{
     read_model::{
         Credential,
         build_workflow::{BuildInputs, Outcome, Request, TaskFeed, WorkflowInputs},
-        workflow::{ActionKind, StageId, StatusKind, Stock, Target, Workspace},
+        workflow::{
+            self, Accepted, ActionKind, Build, Checkoff, Facts, PlateState, Production, Sources,
+            StageId, StatusKind, Stock, Target, Working, Workspace,
+        },
     },
 };
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+
+#[path = "common/scratch.rs"]
+mod scratch;
 
 const SESSION: &str = "read-fixture-secret";
 
@@ -35,29 +40,21 @@ fn due(day: u8) -> Option<time::Date> {
     Some(time::Date::from_calendar_date(2026, time::Month::November, day).unwrap())
 }
 
+/// Build 1 of the Node fixture in a scratch directory. `owner` drops before
+/// `root` removes the directory.
 struct Fixture {
-    root: PathBuf,
     owner: Option<WriterOwner>,
+    root: scratch::Scratch,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pp-build-workflow-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+        let root = scratch::Scratch::new("pp-build-workflow-");
+        let database = include_bytes!("fixtures/accepted-plan-node.db");
+        std::fs::write(root.join("print-partner.db"), database).unwrap();
         pp_os::create_private_dir_all(&root.join("repos/1/revisions/accepted")).unwrap();
-        std::fs::write(
-            root.join("print-partner.db"),
-            include_bytes!("fixtures/accepted-plan-node.db"),
-        )
-        .unwrap();
-        let (owner, _) = WriterOwner::open(&root, Limits::default()).unwrap();
-        Self {
-            root,
-            owner: Some(owner),
-        }
+        let owner = Some(WriterOwner::open(&root, Limits::default()).unwrap().0);
+        Self { owner, root }
     }
 
     fn owner(&self) -> &WriterOwner {
@@ -114,10 +111,11 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.take() {
-            owner.shutdown().unwrap();
-        }
-        std::fs::remove_dir_all(&self.root).unwrap();
+        self.owner
+            .take()
+            .map(WriterOwner::shutdown)
+            .transpose()
+            .unwrap();
     }
 }
 
@@ -203,6 +201,12 @@ fn build_workflow_confirmed_bed_is_not_attention() {
     }
     assert_eq!(workspace.stages[0].status.kind, StatusKind::Complete);
     assert!(f.tasks(Inputs::default()).tasks.is_empty());
+    // An autosaved draft without changes leaves the Build finished.
+    unchanged_draft(&f);
+    let with_draft = f.workspace(Inputs::default(), 1);
+    assert_eq!(with_draft.next_action, workspace.next_action);
+    assert_eq!(with_draft.stages, workspace.stages);
+    assert!(f.tasks(Inputs::default()).tasks.is_empty());
 
     // The same bed still waiting for confirmation is attention.
     f.links("awaiting_verify");
@@ -280,6 +284,35 @@ fn build_workflow_autosaved_draft_says_saved_not_accepted() {
     }
 }
 
+/// Opens an autosaved draft whose parts equal the Accepted Plan's.
+fn unchanged_draft(f: &Fixture) {
+    let fields = "part_key,relative_path,filename,source_layer,status,role_inferred,role_override,filament_color_id,filament_custom_hex,spoolman_spool_id,quantity_inferred,quantity_override,quantity_effective,included,notes,github_blob_url,geometry_same,requirement,option_group_id,manifest_source,artifact_digest";
+    f.sql(&format!(
+        "INSERT INTO plan_drafts (tenant_id,profile_id,base_revision_id,base_plan_version,state,digest_format,snapshot_digest,created_by,idempotency_key,created_at)
+         VALUES ('default',1,1,1,'open','v1','{}','user','autosave-0','2026-11-04T12:00:00.000Z');
+         INSERT INTO plan_draft_parts (tenant_id,draft_id,base_revision_part_id,{fields})
+         SELECT tenant_id,last_insert_rowid(),id,{fields} FROM plan_revision_parts WHERE revision_id=1;",
+        "a".repeat(64)
+    ));
+}
+
+#[test]
+fn build_workflow_unchanged_draft_keeps_the_build_next_action() {
+    let f = Fixture::new();
+    let before = f.workspace(Inputs::default(), 1);
+    unchanged_draft(&f);
+    let after = f.workspace(Inputs::default(), 1);
+    assert!(matches!(
+        after.working_plan,
+        Working::Ready {
+            change_count: 0,
+            ..
+        }
+    ));
+    assert_eq!(after.next_action, before.next_action);
+    assert_eq!(after.stages[1].status, before.stages[1].status);
+}
+
 #[test]
 fn build_workflow_takes_stock_shortfall_from_its_adapter() {
     let f = Fixture::new();
@@ -321,4 +354,82 @@ fn build_workflow_reads_authenticate_before_answering() {
             Outcome::MissingBuild
         ));
     }
+}
+
+#[test]
+fn build_workflow_task_feed_reports_an_unreadable_build() {
+    let f = Fixture::new();
+    f.sql("INSERT INTO build_profiles (tenant_id,name) VALUES ('default','Healthy order');");
+    let healthy = f.workspace(Inputs::default(), 2);
+    // Corrupt Build 1's Plan history past its immutability triggers.
+    let db = rusqlite::Connection::open(f.root.join("print-partner.db")).unwrap();
+    let drops: String = db
+        .query_row(
+            "SELECT group_concat('DROP TRIGGER \"' || name || '\";', '') FROM sqlite_master WHERE type='trigger' AND tbl_name='plan_revisions'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(db);
+    f.sql(&drops);
+    f.sql("UPDATE plan_revisions SET parent_revision_id=id WHERE profile_id=1");
+    let feed = f.tasks(Inputs::default());
+    assert_eq!(feed.tasks.len(), 1);
+    assert_eq!(feed.tasks[0].plan_id, 2);
+    assert_eq!(feed.tasks[0].next_action, healthy.next_action);
+    assert_eq!(feed.unavailable.len(), 1);
+    assert_eq!(feed.unavailable[0].plan_id, 1);
+    assert!(!feed.unavailable[0].reason.is_empty());
+    assert!(
+        f.read(
+            Inputs::default(),
+            SESSION,
+            Request::Build(PositiveId::new(1).ok())
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn build_workflow_prepared_plates_without_printer_link_are_manual_checkoff() {
+    let facts = |plate_state, printer_links| Facts {
+        build: Build {
+            id: 1,
+            name: "Order".into(),
+        },
+        sources: Sources::Ready { attached_count: 1 },
+        accepted_plan: Accepted::Ready {
+            revision_id: 1,
+            plan_version: 1,
+            total_units: 3,
+            remaining_units: 2,
+        },
+        working_plan: Working::None,
+        production: Production {
+            plate_state,
+            queued_jobs: 0,
+            sending_jobs: 0,
+            printing_jobs: 0,
+            failed_jobs: 0,
+        },
+        checkoff: Checkoff {
+            awaiting_verification: 0,
+            failed_verifications: 0,
+            printer_links,
+        },
+        stock: Stock::NotReady,
+    };
+    let kind = |plate_state, printer_links| {
+        workflow::resolve(&facts(plate_state, printer_links))
+            .unwrap()
+            .next_action
+            .kind
+    };
+    assert_eq!(kind(PlateState::Ready, 0), ActionKind::CheckOffManually);
+    assert_eq!(
+        kind(PlateState::NotStarted, 0),
+        ActionKind::CheckOffManually
+    );
+    assert_eq!(kind(PlateState::Ready, 1), ActionKind::PrepareProduction);
+    assert_eq!(kind(PlateState::Stale, 0), ActionKind::PrepareProduction);
 }

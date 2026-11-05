@@ -10,9 +10,14 @@ disagree about a Build's next action. The Rust API serves it only with the
 | Task feed | `GET /api/v1/tasks`, `/api/v2/tasks` | Every open Build's next action, most urgent first |
 | MCP | `get_build_workflow` with `{"plan_id": n}` | The same body as `GET /plans/{id}/workflow` |
 
-All three need a session cookie or an API key (MCP: API key only) and write
-nothing. An unknown or malformed Build id answers 404 after the credential
-check; a missing or bad credential answers 401.
+All three need a session cookie or an API key (MCP: API key only) and change
+no Build data. The HTTP routes check the credential inside the read
+transaction and write nothing. MCP is not fully read-only: the shared MCP
+guard resolves the API key before any tool runs, and that records the key's
+`last_used_at`. An unknown or
+malformed Build id answers 404 after the credential check; a missing or bad
+credential answers 401. MCP accepts `plan_id` as any positive safe integer,
+including `1.0`.
 
 ## One projection
 
@@ -36,11 +41,16 @@ Sources changes, first Plan) with these replacement-product changes:
   `review_working_plan`: "N Plan changes are saved in a draft and not used for
   Production yet." Autosave saves the draft; nothing in the copy says it was
   accepted.
-- **Manual Checkoff.** A Build with remaining units, no printer Checkoff link
-  (dismissed links do not count) and no plates started gets
-  `check_off_manually` in the Checkoff tab.
+- **Manual Checkoff.** A Build with remaining units and no printer Checkoff
+  link (dismissed links do not count) gets `check_off_manually` in the
+  Checkoff tab when its plates are not started or ready. Plates that are
+  preparing, stale or failed keep `prepare_production`.
 - **Finished Builds stay quiet.** When every required unit is checked off and
-  no draft is open, changed Sources show as complete history, not stale work.
+  no draft with changes is open, changed Sources show as complete history, not
+  stale work. An autosaved draft with no changes that is still current with
+  the Accepted Plan (`Working::Ready`) counts as no draft for the next action,
+  the Plan stage and the Sources stage. A zero-change draft that is stale or
+  has unresolved choices still asks for a refresh or a decision.
   A confirmed bed (link `verified` or `applied`) is never attention.
 - **Stock shortfall** comes only from the adapter. `Stock::Ready{shortfalls>0}`
   makes `resolve_stock_shortfall` the next action ahead of Production;
@@ -59,9 +69,25 @@ no task. The rest sort by:
 2. Earliest due date, then Builds with no due date.
 3. Build id.
 
-`rank_reason` says why: "Needs attention now.", "Due 2026-11-10." or "No due
-date." The feed reads at most 500 open Builds and answers 500 past that rather
+`rank_reason` says why: "Needs attention now.", "Needs attention now. Due
+2026-11-10." (attention with a due date), "Due 2026-11-10." or "No due date." The feed reads at most 500 open Builds and answers 500 past that rather
 than rank a partial list.
+
+A Build whose stored data fails a check (for example a corrupt Plan history)
+has no next action. The feed lists it under `unavailable` with `plan_id`,
+`build_name` and `reason`, and still ranks every other Build. This is the
+same per-Build rule Build reads use for `context_error`. Running out of the
+read budget still fails the whole read. `GET /plans/{id}/workflow` for that
+Build answers 500.
+
+## Web contract
+
+The web UI parses the workflow body with `parseBuildWorkflowWorkspace` in
+`@print-partner/contracts`. It accepts both the Node body and the Rust body:
+the Rust next action (with `target`, the replacement action kinds and null
+counts), the Rust stage status (null `task_count` and `active_count`) and the
+optional `stock` input. `web/scripts/rust-contracts/client.test.mjs` parses
+every Rust `BuildWorkflow` fixture with it.
 
 ## Adapter inputs
 
@@ -86,7 +112,8 @@ result rather than a second local stock authority.
   the Node accepted-Plan fixture: due-date ranking, a confirmed bed and a
   finished Build without attention, manual Checkoff without printer links,
   draft copy that says saved and never accepted, stock shortfall through the
-  adapter, and authentication before any answer.
+  adapter, authentication before any answer, and a corrupt Build listed as
+  unavailable while the feed still ranks the others.
 - `pp-core/tests/rebuild_read_http.rs`
   `rebuild_workflow_routes_and_mcp_agree` mounts `read_router` and compares the
   HTTP workflow, the task feed entry and the MCP answer to each other, then

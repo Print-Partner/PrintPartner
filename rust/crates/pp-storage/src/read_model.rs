@@ -9,6 +9,8 @@ mod json_body;
 pub use context::{CapturedContext, PlateRef, RevisionRef, UnitHistory};
 #[cfg(feature = "desktop_rebuild")]
 pub use json_body::{AcceptedBatchJsonBody, AcceptedReadJsonBody, AcceptedSnapshotJsonBody};
+#[cfg(feature = "desktop_rebuild")]
+pub mod stock;
 pub mod views;
 pub mod workflow;
 
@@ -70,6 +72,10 @@ pub struct BuildRead {
 #[derive(Debug, Serialize)]
 pub struct Batch {
     pub builds: Vec<BuildRead>,
+    /// Spoolman stock inputs, read only by [`ReadClient::read_stock`].
+    #[cfg(feature = "desktop_rebuild")]
+    #[serde(skip)]
+    pub stock: Option<stock::StockInputs>,
 }
 
 #[derive(Clone)]
@@ -89,6 +95,9 @@ enum Target {
     /// The Plan that owns this tenant's projection Part, resolved in the same
     /// transaction as the read. No Part reads no Plan.
     Part(i64),
+    /// One Plan plus its Spoolman stock inputs, in the same transaction.
+    #[cfg(feature = "desktop_rebuild")]
+    Stock(i64),
 }
 
 impl WriterOwner {
@@ -155,6 +164,23 @@ impl ReadClient {
         self.submit(credential, Target::Part(part_id), cancelled, wait)
     }
 
+    /// Reads one Accepted Plan and, when the Plan exists, its Spoolman stock
+    /// inputs in the same transaction. Reads only; never reserves stock.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn read_stock(
+        &self,
+        credential: Credential,
+        profile_id: i64,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Batch> {
+        ensure!(
+            profile_id > 0 && profile_id <= 9_007_199_254_740_991,
+            "Accepted Plan IDs must be positive safe integers"
+        );
+        self.submit(credential, Target::Stock(profile_id), cancelled, wait)
+    }
+
     fn submit(
         &self,
         credential: Credential,
@@ -214,15 +240,16 @@ pub(crate) fn submit_read<T>(
 }
 pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<Batch> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let tenant = match command.credential {
-        Credential::Session(secret) => auth::read_session_tenant(&tx, &secret, command.policy)?,
-        Credential::ApiKey {
-            routed_tenant,
-            secret,
-        } => auth::read_key_tenant(&tx, &routed_tenant, &secret)?,
+    let tenant = read_tenant(&tx, &command.credential, command.policy)?;
+    #[cfg(feature = "desktop_rebuild")]
+    let stock_profile = match command.target {
+        Target::Stock(id) => Some(id),
+        _ => None,
     };
     let profile_ids = match command.target {
         Target::Profiles(ids) => ids,
+        #[cfg(feature = "desktop_rebuild")]
+        Target::Stock(id) => vec![id],
         Target::Part(part) => tx
             .query_row(
                 "SELECT profile_id FROM parts WHERE tenant_id=?1 AND id=?2",
@@ -258,8 +285,39 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
             context_error,
         });
     }
+    #[cfg(feature = "desktop_rebuild")]
+    let stock = match stock_profile {
+        Some(id)
+            if builds
+                .iter()
+                .any(|b| !matches!(b.accepted, AcceptedRead::Missing)) =>
+        {
+            Some(stock::read_inputs(&tx, &tenant, id)?)
+        }
+        _ => None,
+    };
     tx.commit()?;
-    Ok(Batch { builds })
+    Ok(Batch {
+        builds,
+        #[cfg(feature = "desktop_rebuild")]
+        stock,
+    })
+}
+
+/// The tenant `credential` authenticates as, checked inside the read's own
+/// transaction.
+pub(crate) fn read_tenant(
+    tx: &rusqlite::Transaction<'_>,
+    credential: &Credential,
+    policy: auth::AuthPolicy,
+) -> Result<String> {
+    match credential {
+        Credential::Session(secret) => auth::read_session_tenant(tx, secret, policy),
+        Credential::ApiKey {
+            routed_tenant,
+            secret,
+        } => auth::read_key_tenant(tx, routed_tenant, secret),
+    }
 }
 
 /// The Accepted Plan of `profile`, with integrity failures as a read result.

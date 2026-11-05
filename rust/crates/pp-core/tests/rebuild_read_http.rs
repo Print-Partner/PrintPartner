@@ -531,21 +531,13 @@ mod with_feature {
                 .unwrap()
                 .rebuild_auth_with_policy(policy, lifetimes)
                 .unwrap();
-            let outcome = tokio::task::spawn_blocking(move || {
-                auth.submit(
-                    pp_storage::auth::Request::CreateKey {
-                        session: Secret::new(SESSION.into()),
-                    },
-                    Arc::new(AtomicBool::new(false)),
-                    Duration::from_secs(2),
-                )
-                .unwrap()
-                .recv()
-                .unwrap()
-                .unwrap()
-            })
-            .await
-            .unwrap();
+            let session = Secret::new(SESSION.into());
+            let create = pp_storage::auth::Request::CreateKey { session };
+            let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let stop = Arc::new(AtomicBool::new(false));
+                auth.submit(create, stop, Duration::from_secs(2))?.recv()?
+            });
+            let outcome = outcome.await.unwrap().unwrap();
             let pp_storage::auth::Outcome::KeyCreated { key, .. } = outcome else {
                 panic!("API key creation");
             };
@@ -561,7 +553,8 @@ mod with_feature {
             )
             .await;
         assert_eq!((status, &by_key), (200, &workflow));
-        let mcp = mcp_workflow(&server, &bearer).await;
+        let mcp = mcp_workflow(&server, &bearer, json!(1)).await;
+        assert_eq!(mcp_workflow(&server, &bearer, json!(1.0)).await, mcp);
 
         // Compare the three answers to each other, not to written copies.
         for field in ["kind", "reason", "target"] {
@@ -605,12 +598,20 @@ mod with_feature {
         }
 
         server.stop().await;
+        // Connection and MCP session tasks release their router clones shortly
+        // after the server stops; a router that never lets go still fails.
+        for _ in 0..200 {
+            if Arc::strong_count(&owner) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         shutdown(owner, directory);
     }
 
-    /// Calls MCP `get_build_workflow` for Build 1 with an API key and returns
-    /// the workflow it answered.
-    async fn mcp_workflow(server: &Server, bearer: &str) -> Value {
+    /// Calls MCP `get_build_workflow` for Build `plan_id` with an API key and
+    /// returns the workflow it answered.
+    async fn mcp_workflow(server: &Server, bearer: &str, plan_id: Value) -> Value {
         let post = |body: Value, session: Option<String>| {
             let mut request = server
                 .client
@@ -638,6 +639,7 @@ mod with_feature {
             .to_str()
             .unwrap()
             .to_owned();
+        response.text().await.unwrap();
         let initialized = post(
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             Some(session.clone()),
@@ -645,10 +647,11 @@ mod with_feature {
         .await
         .unwrap();
         assert!(initialized.status().is_success());
+        initialized.text().await.unwrap();
         let body = post(
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-                "name": "get_build_workflow", "arguments": {"plan_id": 1}}}),
-            Some(session),
+                "name": "get_build_workflow", "arguments": {"plan_id": plan_id}}}),
+            Some(session.clone()),
         )
         .await
         .unwrap()
@@ -662,6 +665,19 @@ mod with_feature {
             .find(|data| !data.is_empty())
             .unwrap_or(&body);
         let rpc: Value = serde_json::from_str(data).unwrap();
+        // Close the session so no session task outlives the server.
+        server
+            .client
+            .delete(format!("{}/mcp", server.origin))
+            .header("Origin", &server.origin)
+            .header("Authorization", bearer)
+            .header("mcp-session-id", session)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         let result = &rpc["result"];
         assert_ne!(result["isError"], true, "{rpc}");
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()

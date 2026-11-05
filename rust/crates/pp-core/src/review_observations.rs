@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow, ensure};
 use pp_source::observation::{Failure as SourceFailure, Inventory, ReadBudget};
 use pp_storage::read_model::{
     Artifact, Provenance, Snapshot,
+    stock::{Inventory as SpoolmanStock, InventoryFilament, InventorySpool},
     views::{
         FilamentLookup, MediaObservation, ResolvedFilament, ReviewObservations, SpoolSummary,
         catalog_color,
@@ -134,7 +135,11 @@ impl FilamentProviderConfig {
         Ok(self)
     }
 
-    fn endpoint(&self, resource: &str) -> Url {
+    pub(crate) fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
+    pub(crate) fn endpoint(&self, resource: &str) -> Url {
         let path = format!(
             "{}/api/v1/{resource}",
             self.base_url.path().trim_end_matches('/')
@@ -510,24 +515,10 @@ fn artifact_missing(
     }
 }
 
-#[derive(Clone)]
-struct ProviderFilament {
-    label: String,
-    hex: Option<String>,
-}
-
-#[derive(Clone)]
-struct ProviderSpool {
-    id: i64,
-    filament_id: i64,
-    remaining_g: f64,
-}
-
 #[derive(Default)]
 pub(super) struct SnapshotFilamentLookup {
     integration_id: String,
-    filaments: HashMap<i64, ProviderFilament>,
-    spools: Vec<ProviderSpool>,
+    inventory: SpoolmanStock,
 }
 
 impl FilamentLookup for SnapshotFilamentLookup {
@@ -546,7 +537,7 @@ impl FilamentLookup for SnapshotFilamentLookup {
         }) else {
             return Ok(None);
         };
-        let Some(filament) = self.filaments.get(&id) else {
+        let Some(filament) = self.inventory.filaments.get(&id) else {
             return Ok(None);
         };
         let selected = spool_id.and_then(|value| {
@@ -558,19 +549,22 @@ impl FilamentLookup for SnapshotFilamentLookup {
                 .filter(|id| *id > 0)
         });
         let spools = self
+            .inventory
             .spools
             .iter()
             .filter(|spool| {
                 spool.filament_id == id && selected.is_none_or(|selected| spool.id == selected)
             })
-            .map(|spool| SpoolSummary {
-                remaining_g: spool.remaining_g,
-                spool_id: spool.id,
+            .filter_map(|spool| {
+                Some(SpoolSummary {
+                    remaining_g: spool.remaining_g.filter(|grams| *grams > 0.0)?,
+                    spool_id: spool.id,
+                })
             })
             .collect();
         Ok(Some(ResolvedFilament {
             combo_label: filament.label.clone(),
-            hex: filament.hex.clone(),
+            hex: Some(filament.hex.clone().unwrap_or_else(|| "#888888".into())),
             spools,
         }))
     }
@@ -613,8 +607,7 @@ async fn load_filament(
     let spools = fetch_json(&client, config, "spool", cancelled).await?;
     Ok(SnapshotFilamentLookup {
         integration_id: config.integration_id.clone(),
-        filaments: parse_filaments(&filaments),
-        spools: parse_spools(&spools),
+        inventory: parse_inventory(&filaments, &spools),
     })
 }
 
@@ -688,8 +681,14 @@ async fn fetch_json(
 }
 
 fn rows(value: &Value) -> &[Value] {
+    list(value).unwrap_or(&[])
+}
+
+/// The rows of a Spoolman list response: a bare array, or an array under
+/// `items`, `results` or `data`. `None` for any other shape.
+pub(crate) fn list(value: &Value) -> Option<&[Value]> {
     if let Some(rows) = value.as_array() {
-        return rows;
+        return Some(rows);
     }
     value
         .as_object()
@@ -699,10 +698,18 @@ fn rows(value: &Value) -> &[Value] {
                 .find_map(|key| object.get(*key)?.as_array())
         })
         .map(Vec::as_slice)
-        .unwrap_or(&[])
 }
 
-fn parse_filaments(value: &Value) -> HashMap<i64, ProviderFilament> {
+/// Spoolman's filament and spool lists, shared with the shortfall reader.
+/// Archived spools are dropped; an unreadable remaining weight stays `None`.
+pub(crate) fn parse_inventory(filaments: &Value, spools: &Value) -> SpoolmanStock {
+    SpoolmanStock {
+        filaments: parse_filaments(filaments),
+        spools: parse_spools(spools),
+    }
+}
+
+fn parse_filaments(value: &Value) -> HashMap<i64, InventoryFilament> {
     rows(value)
         .iter()
         .take(100_000)
@@ -737,18 +744,12 @@ fn parse_filaments(value: &Value) -> HashMap<i64, ProviderFilament> {
                     && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 .then(|| format!("#{}", value.to_ascii_lowercase()))
             });
-            Some((
-                id,
-                ProviderFilament {
-                    label,
-                    hex: Some(hex.unwrap_or_else(|| "#888888".into())),
-                },
-            ))
+            Some((id, InventoryFilament { label, hex }))
         })
         .collect()
 }
 
-fn parse_spools(value: &Value) -> Vec<ProviderSpool> {
+fn parse_spools(value: &Value) -> Vec<InventorySpool> {
     rows(value)
         .iter()
         .take(100_000)
@@ -770,8 +771,8 @@ fn parse_spools(value: &Value) -> Vec<ProviderSpool> {
             let remaining_g = object
                 .get("remaining_weight")
                 .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()))
-                .unwrap_or(0.0);
-            (remaining_g.is_finite() && remaining_g > 0.0).then_some(ProviderSpool {
+                .filter(|grams: &f64| grams.is_finite());
+            Some(InventorySpool {
                 id,
                 filament_id,
                 remaining_g,

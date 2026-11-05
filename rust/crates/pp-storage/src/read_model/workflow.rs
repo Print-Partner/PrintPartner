@@ -166,10 +166,16 @@ pub struct StageStatus {
     pub kind: StatusKind,
     pub summary: String,
     /// Open decisions in this stage.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub task_count: Option<u64>,
     /// Work running in this stage.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub active_count: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -223,7 +229,10 @@ impl ActionKind {
 pub struct Target {
     pub plan_id: i64,
     pub tab: StageId,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub draft_id: Option<i64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -234,13 +243,25 @@ pub struct NextAction {
     pub label: String,
     pub reason: String,
     pub target: Target,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub item_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
     pub draft_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub issue_count: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        all(feature = "codegen", feature = "desktop_rebuild"),
+        schemars(with = "pp_contracts::RequiredNullable<u64>")
+    )]
     pub unit_count: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -295,8 +316,9 @@ fn active(kind: StatusKind, summary: impl Into<String>, n: u64) -> StageStatus {
         ..status(kind, summary)
     }
 }
-/// Every required unit of the Accepted Plan is checked off and no draft is
-/// open, so earlier Source changes are history rather than open work.
+/// Every required unit of the Accepted Plan is checked off and no draft with
+/// changes is open, so earlier Source changes are history rather than open
+/// work.
 fn finished(f: &Facts) -> bool {
     matches!(
         f.accepted_plan,
@@ -304,7 +326,14 @@ fn finished(f: &Facts) -> bool {
             remaining_units: 0,
             ..
         }
-    ) && matches!(f.working_plan, Working::None)
+    ) && matches!(
+        f.working_plan,
+        Working::None
+            | Working::Ready {
+                change_count: 0,
+                ..
+            }
+    )
 }
 fn source_status(f: &Facts) -> StageStatus {
     use StatusKind::*;
@@ -318,7 +347,7 @@ fn source_status(f: &Facts) -> StageStatus {
         } if finished(f) => status(
             Complete,
             format!(
-                "{n} {} attached. They changed after every unit was checked off.",
+                "{n} {} attached. They have changed, and every required unit is checked off.",
                 plural(n, "Source")
             ),
         ),
@@ -337,7 +366,7 @@ fn plan_status(f: &Facts) -> StageStatus {
     match &f.working_plan {
         Working::Ready {
             change_count: n, ..
-        } => status(
+        } if *n > 0 => status(
             Ready,
             format!("{n} Plan {} saved in a draft.", plural(*n, "change")),
         ),
@@ -351,7 +380,7 @@ fn plan_status(f: &Facts) -> StageStatus {
             "Open Plan to refresh its saved changes.",
             *issue_count,
         ),
-        Working::None => match &f.accepted_plan {
+        Working::None | Working::Ready { .. } => match &f.accepted_plan {
             Accepted::Ready { plan_version, .. } => {
                 status(Complete, format!("Plan revision {plan_version} saved."))
             }
@@ -602,7 +631,7 @@ fn next(f: &Facts) -> NextAction {
         Working::Ready {
             draft_id,
             change_count: n,
-        } => {
+        } if n > 0 => {
             return draft(
                 ReviewWorkingPlan,
                 "Review saved Plan changes",
@@ -615,7 +644,7 @@ fn next(f: &Facts) -> NextAction {
                 draft_id,
             );
         }
-        Working::None => {}
+        Working::None | Working::Ready { .. } => {}
     }
     let Accepted::Ready {
         remaining_units: remaining,
@@ -663,7 +692,9 @@ fn next(f: &Facts) -> NextAction {
             n,
         );
     }
-    let mut a = if c.printer_links == 0 && p.plate_state == PlateState::NotStarted {
+    let mut a = if c.printer_links == 0
+        && matches!(p.plate_state, PlateState::NotStarted | PlateState::Ready)
+    {
         action(
             CheckOffManually,
             StageId::Checkoff,

@@ -9,7 +9,7 @@ use pp_storage::{
     build_graph::PositiveId,
     read_model::{
         Credential,
-        build_workflow::{BuildInputs, Outcome, Request, TaskFeed, WorkflowInputs},
+        build_workflow::{BuildInputs, Outcome, Request, TaskFeed, WorkflowInputs, rank},
         workflow::{
             self, Accepted, ActionKind, Build, Checkoff, Facts, PlateState, Production, Sources,
             StageId, StatusKind, Stock, Target, Working, Workspace,
@@ -397,4 +397,159 @@ fn build_workflow_prepared_plates_without_printer_link_are_manual_checkoff() {
     );
     assert_eq!(kind(PlateState::Ready, 1), ActionKind::PrepareProduction);
     assert_eq!(kind(PlateState::Stale, 0), ActionKind::PrepareProduction);
+}
+
+// GRE-1089: the ranked task feed (TSK-01 to TSK-05). Each test reads the feed
+// through the same client as the Build workflow read.
+
+/// Every table's rows as quoted text, so two dumps compare the logical
+/// database rather than its pages.
+fn task_feed_logical_database(f: &Fixture) -> Vec<String> {
+    let db = rusqlite::Connection::open(f.root.join("print-partner.db")).unwrap();
+    let queries: Vec<String> = db
+        .prepare(
+            "SELECT 'SELECT ' || (SELECT group_concat('quote(\"' || name || '\")', '||''|''||') FROM pragma_table_info(m.name)) || ' FROM \"' || m.name || '\" ORDER BY rowid' FROM sqlite_master m WHERE m.type='table' ORDER BY m.name",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    queries
+        .iter()
+        .flat_map(|query| {
+            let mut rows: Vec<String> = db
+                .prepare(query)
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            rows.insert(0, query.clone());
+            rows
+        })
+        .collect()
+}
+
+/// Managed files under the data directory. SQLite's `-shm` index changes on
+/// every read lock, so it is left out; the database and WAL bytes are kept.
+fn task_feed_files(f: &Fixture) -> pp_testkit::Snapshot {
+    let mut files = pp_testkit::snapshot(&f.root).unwrap();
+    files.retain(|path, _| !path.to_string_lossy().ends_with("-shm"));
+    files
+}
+
+/// Builds 2 to 4 have no Sources, Build 5 is archived. Build 1 is short of
+/// stock, Build 3 is due first, Build 2 second and Build 4 has no due date.
+fn task_feed_farm(f: &Fixture) -> Inputs {
+    f.sql(
+        "INSERT INTO build_profiles (tenant_id,name) VALUES ('default','Later order'),('default','Sooner order'),('default','Undated order');
+         INSERT INTO build_profiles (tenant_id,name,archived_at) VALUES ('default','Archived order','2026-11-01T00:00:00.000Z');",
+    );
+    let inputs = |due_date, stock| BuildInputs { due_date, stock };
+    Inputs(HashMap::from([
+        (1, inputs(None, Stock::Ready { shortfalls: 2 })),
+        (2, inputs(due(20), Stock::NotReady)),
+        (3, inputs(due(10), Stock::NotReady)),
+        (5, inputs(due(1), Stock::NotReady)),
+    ]))
+}
+
+#[test]
+fn task_feed_tasks_name_build_kind_reason_and_target() {
+    let f = Fixture::new();
+    let inputs = task_feed_farm(&f);
+    let feed = f.tasks(Inputs(inputs.0.clone()));
+    assert_eq!(feed.tasks.len(), 4);
+    for task in &feed.tasks {
+        let workspace = f.workspace(Inputs(inputs.0.clone()), task.plan_id as u64);
+        let action = &task.next_action;
+        assert_eq!(task.build_name, workspace.build.name);
+        assert!(!task.build_name.is_empty());
+        assert_eq!(action.kind, workspace.next_action.kind);
+        assert!(!action.label.is_empty() && !action.reason.is_empty());
+        assert_eq!(action.reason, workspace.next_action.reason);
+        assert_eq!(action.target.plan_id, task.plan_id);
+        assert_eq!(action.target.tab, action.stage_id);
+    }
+    assert_eq!(
+        feed.tasks[0].next_action.kind,
+        ActionKind::ResolveStockShortfall
+    );
+    assert!(
+        feed.tasks[0]
+            .next_action
+            .reason
+            .starts_with("2 filaments are short"),
+        "{}",
+        feed.tasks[0].next_action.reason
+    );
+    assert_eq!(feed.tasks[1].next_action.kind, ActionKind::AttachSources);
+}
+
+#[test]
+fn task_feed_order_is_the_projection_order() {
+    let f = Fixture::new();
+    let inputs = task_feed_farm(&f);
+    let feed = f.tasks(Inputs(inputs.0.clone()));
+    let order: Vec<_> = feed.tasks.iter().map(|task| task.plan_id).collect();
+    assert_eq!(order, [1, 3, 2, 4]);
+    // The feed is the shared `rank` over each Build's own workflow read.
+    let resolved = (1..=4)
+        .map(|id| {
+            let due_date = inputs.inputs("default", id).due_date;
+            (f.workspace(Inputs(inputs.0.clone()), id as u64), due_date)
+        })
+        .collect();
+    assert_eq!(feed, rank(resolved, Vec::new()));
+    assert!(feed.unavailable.is_empty());
+}
+
+#[test]
+fn task_feed_stale_only_with_open_work_and_no_task_when_checked_off() {
+    let f = Fixture::new();
+    f.links("verified");
+    f.owner()
+        .local_source_catalog()
+        .execute(pp_storage::catalog::Request::SaveImportRules {
+            id: 1,
+            rules: vec!["STLs".into()],
+        })
+        .unwrap();
+    // Units remain: the changed Sources are a decision.
+    let open = f.workspace(Inputs::default(), 1);
+    assert_eq!(open.stages[0].status.kind, StatusKind::Stale);
+    assert_eq!(f.tasks(Inputs::default()).tasks.len(), 1);
+    // Every unit checked off: no stale stage and no task.
+    f.sql("UPDATE print_progress SET completed=1;");
+    let done = f.workspace(Inputs::default(), 1);
+    assert!(
+        done.stages
+            .iter()
+            .all(|stage| stage.status.kind != StatusKind::Stale)
+    );
+    assert!(f.tasks(Inputs::default()).tasks.is_empty());
+}
+
+#[test]
+fn task_feed_offers_manual_checkoff_without_printer_links() {
+    let f = Fixture::new();
+    let feed = f.tasks(Inputs::default());
+    assert_eq!(feed.tasks.len(), 1);
+    assert_eq!(feed.tasks[0].next_action.kind, ActionKind::CheckOffManually);
+    assert_eq!(feed.tasks[0].next_action.target.tab, StageId::Checkoff);
+}
+
+#[test]
+fn task_feed_writes_nothing() {
+    let f = Fixture::new();
+    let inputs = task_feed_farm(&f);
+    f.links("awaiting_verify");
+    let database = task_feed_logical_database(&f);
+    let files = task_feed_files(&f);
+    for _ in 0..3 {
+        assert_eq!(f.tasks(Inputs(inputs.0.clone())).tasks.len(), 4);
+    }
+    assert_eq!(task_feed_logical_database(&f), database);
+    assert_eq!(task_feed_files(&f), files);
 }

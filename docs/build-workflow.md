@@ -110,6 +110,24 @@ result rather than a second local stock authority.
   draft copy that says saved and never accepted, stock shortfall through the
   adapter, authentication before any answer, and a corrupt Build listed as
   unavailable while the feed still ranks the others.
+- GRE-1089's task-feed checks are the `task_feed_*` tests in the same file,
+  run with `cargo nextest run --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(task_feed)'`:
+  - TSK-01 `task_feed_tasks_name_build_kind_reason_and_target`: every task
+    has its Build's name, the workflow's kind, label and reason, and a target
+    on its own Build and stage.
+  - TSK-02 `task_feed_order_is_the_projection_order`: on a five-Build farm
+    (one short of stock, two with due dates, one undated, one archived) the
+    feed is `[1, 3, 2, 4]` and equals `rank` over each Build's own workflow
+    read.
+  - TSK-03 `task_feed_stale_only_with_open_work_and_no_task_when_checked_off`:
+    changed Sources are a stale stage and a task while units remain, and
+    neither once every unit is checked off.
+  - TSK-04 `task_feed_offers_manual_checkoff_without_printer_links`.
+  - TSK-05 `task_feed_writes_nothing`: three feed reads leave every table's
+    rows and every file under the data directory unchanged (SQLite's `-shm`
+    lock index is excluded).
+  The projection has no "clear beds" or "match" next action, so the feed has
+  no such tasks; adding them is a new rule outside this read.
 - `pp-core/tests/rebuild_read_http.rs`
   `rebuild_workflow_routes_and_mcp_agree` mounts `read_router` and compares the
   HTTP workflow, the task feed entry and the MCP answer to each other, then

@@ -9,7 +9,8 @@ use axum::{
 use http_body_util::BodyExt;
 use pp_compat::CompatHandle;
 pub use pp_drivers::moonraker::{
-    Host as MoonrakerHost, PrinterHostState, PrinterHostStatus, PrinterObservations,
+    HTTPS_UNAVAILABLE, Host as MoonrakerHost, PrinterHostState, PrinterHostStatus,
+    PrinterObservations, REDIRECT_UNAVAILABLE,
 };
 use pp_drivers::moonraker::{Host, Route, Watchers};
 use pp_net::target;
@@ -213,6 +214,10 @@ pub enum StatusLookup {
 #[derive(Clone)]
 pub struct MoonrakerStatus(std::sync::Weak<GatewayState>);
 impl MoonrakerStatus {
+    /// The watchers' read-only observation port, while the gateway lives.
+    pub fn observations(&self) -> Option<PrinterObservations> {
+        Some(self.0.upgrade()?.observations.clone())
+    }
     /// The cached status, after one shared snapshot refresh when the id is
     /// not known yet. Never polls the printer on demand.
     pub async fn lookup(&self, id: &str) -> StatusLookup {

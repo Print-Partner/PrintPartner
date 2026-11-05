@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -35,24 +35,63 @@ pub const HTTPS_UNAVAILABLE: &str = "HTTPS printer monitoring is not available y
 pub const REDIRECT_UNAVAILABLE: &str = "Moonraker redirected; printer monitoring stopped";
 /// The latest status of each watched host, keyed by integration id.
 pub type Observed = Arc<BTreeMap<String, Status>>;
+/// When each watched host last answered a status poll.
+type Heard = Arc<Mutex<HashMap<String, SystemTime>>>;
+/// An unanswered spell shorter than this that ends in the same state is a
+/// missed poll, not a new job: no plate prints in five minutes.
+const OUTAGE_GRACE: Duration = Duration::from_secs(300);
+/// Each watched host's last answered state, when it entered it, and when its
+/// current unanswered spell began.
+type Entered = Arc<Mutex<HashMap<String, Spell>>>;
+#[derive(Clone)]
+struct Spell {
+    state: State,
+    since: SystemTime,
+    unanswered: Option<SystemTime>,
+}
+/// The senders behind [`PrinterObservations`]: the newest map, and when
+/// each host entered its current state.
+#[derive(Clone)]
+struct Port {
+    observed: watch::Sender<Observed>,
+    entered: Entered,
+}
 /// Read-only port over what the watchers observed. Pollers publish into a
 /// `watch` channel that keeps only the newest map, so a slow reader never
 /// holds a poller back. It carries status only: no send, retry or Checkoff API.
 /// A host leaves the map when its poller stops, so an absent id is not idle.
 #[derive(Clone)]
-pub struct PrinterObservations(watch::Receiver<Observed>);
+pub struct PrinterObservations {
+    observed: watch::Receiver<Observed>,
+    heard: Heard,
+    entered: Entered,
+}
 impl PrinterObservations {
     pub fn latest(&self, id: &str) -> Option<Status> {
-        self.0.borrow().get(id).cloned()
+        self.observed.borrow().get(id).cloned()
     }
     pub fn all(&self) -> Observed {
-        self.0.borrow().clone()
+        self.observed.borrow().clone()
+    }
+    /// When the host last answered a status poll; kept while it is offline
+    /// and dropped with its poller. A repeated identical status changes this
+    /// time without waking `changed`.
+    pub fn last_heard(&self, id: &str) -> Option<SystemTime> {
+        lock(&self.heard).get(id).copied()
+    }
+    /// When the host entered its last answered state, as this process saw it.
+    /// A changed temperature or progress at the same state does not move it,
+    /// and neither does an `offline` or `unknown` spell shorter than
+    /// [`OUTAGE_GRACE`] that ends in the same state: a missed poll is not a
+    /// new job. A longer outage could hide one, so it starts the state afresh.
+    pub fn state_since(&self, id: &str) -> Option<SystemTime> {
+        lock(&self.entered).get(id).map(|spell| spell.since)
     }
     /// Waits for a map newer than the last one this handle returned. `None`
     /// once the watchers are gone.
     pub async fn changed(&mut self) -> Option<Observed> {
-        self.0.changed().await.ok()?;
-        Some(self.0.borrow_and_update().clone())
+        self.observed.changed().await.ok()?;
+        Some(self.observed.borrow_and_update().clone())
     }
 }
 /// `Node` hands the host back to Node's on-demand path (HTTPS/redirects) until GRE-359.
@@ -93,7 +132,8 @@ pub struct Watchers {
     stale_since: Option<tokio::time::Instant>,
     guard: HttpGuard,
     interval: Duration,
-    observed: watch::Sender<Observed>,
+    port: Port,
+    heard: Heard,
     /// False in the Rust-only runtime: no Node serves HTTPS or redirecting
     /// hosts, so they report offline instead of routing to Node.
     node_fallback: bool,
@@ -117,7 +157,11 @@ impl Watchers {
             stale_since: None,
             guard,
             interval,
-            observed: watch::channel(Observed::default()).0,
+            port: Port {
+                observed: watch::channel(Observed::default()).0,
+                entered: Entered::default(),
+            },
+            heard: Heard::default(),
             node_fallback: true,
         }
     }
@@ -128,7 +172,11 @@ impl Watchers {
         self
     }
     pub fn observations(&self) -> PrinterObservations {
-        PrinterObservations(self.observed.subscribe())
+        PrinterObservations {
+            observed: self.port.observed.subscribe(),
+            heard: self.heard.clone(),
+            entered: self.port.entered.clone(),
+        }
     }
     pub fn status(&self, id: &str) -> Option<Status> {
         match self.route(id) {
@@ -236,12 +284,13 @@ impl Watchers {
             };
             let redirected = fallback(REDIRECT_UNAVAILABLE);
             let status = Arc::new(Mutex::new(Slot::Node));
-            publish(&status, &self.observed, &id, initial);
+            publish(&status, &self.port, &id, initial);
             let task = if host.enabled && !needs_node(&host.base_url) {
                 let config = host.clone();
                 let stopped = cancel.clone();
                 let current = status.clone();
-                let observed = self.observed.clone();
+                let port = self.port.clone();
+                let heard = self.heard.clone();
                 let guard = self.guard.clone();
                 let interval = self.interval;
                 Some(tokio::spawn(async move {
@@ -251,17 +300,18 @@ impl Watchers {
                         let delay = match response {
                             Ok(value) => {
                                 failures = 0;
-                                publish(&current, &observed, &config.id, Slot::Status(value));
+                                lock(&heard).insert(config.id.clone(), SystemTime::now());
+                                publish(&current, &port, &config.id, Slot::Status(value));
                                 interval
                             }
                             Err(Failure::Redirect) => {
-                                publish(&current, &observed, &config.id, redirected);
+                                publish(&current, &port, &config.id, redirected);
                                 break;
                             }
                             Err(failure) => {
                                 failures = failures.saturating_add(1);
                                 let offline = Status::offline(&failure.message());
-                                publish(&current, &observed, &config.id, Slot::Status(offline));
+                                publish(&current, &port, &config.id, Slot::Status(offline));
                                 backoff(interval, failures)
                             }
                         };
@@ -299,7 +349,9 @@ impl Watchers {
                 let _ = task.await;
             }
         }
-        self.observed.send_if_modified(|observed| {
+        lock(&self.heard).remove(id);
+        lock(&self.port.entered).remove(id);
+        self.port.observed.send_if_modified(|observed| {
             observed.contains_key(id) && Arc::make_mut(observed).remove(id).is_some()
         });
     }
@@ -308,17 +360,48 @@ impl Watchers {
 /// hosts have no Rust observation. The slot is written first and stays locked
 /// until the map is published, so a reader woken by the port already sees the
 /// same value through `route`.
-fn publish(slot: &Mutex<Slot>, observed: &watch::Sender<Observed>, id: &str, value: Slot) {
+fn publish(slot: &Mutex<Slot>, port: &Port, id: &str, value: Slot) {
     let mut current = lock(slot);
     *current = value;
-    observed.send_if_modified(|map| match &*current {
+    port.observed.send_if_modified(|map| match &*current {
         Slot::Status(status) if map.get(id) != Some(status) => {
+            enter(&port.entered, id, status.state.clone(), SystemTime::now());
             Arc::make_mut(map).insert(id.to_owned(), status.clone());
             true
         }
         Slot::Status(_) => false,
         Slot::Node => map.contains_key(id) && Arc::make_mut(map).remove(id).is_some(),
     });
+}
+/// Records `state` for `id` at `now` unless the host is already in it. An
+/// `offline` or `unknown` report only marks when the unanswered spell began,
+/// or fills in a host never answered; see [`PrinterObservations::state_since`].
+fn enter(entered: &Entered, id: &str, state: State, now: SystemTime) {
+    let mut entered = lock(entered);
+    let passing = matches!(state, State::Offline | State::Unknown);
+    match entered.get_mut(id) {
+        Some(spell) if passing => {
+            spell.unanswered.get_or_insert(now);
+        }
+        Some(spell)
+            if spell.state == state
+                && spell.unanswered.is_none_or(|began| {
+                    now.duration_since(began).unwrap_or_default() < OUTAGE_GRACE
+                }) =>
+        {
+            spell.unanswered = None;
+        }
+        _ => {
+            entered.insert(
+                id.to_owned(),
+                Spell {
+                    state,
+                    since: now,
+                    unanswered: None,
+                },
+            );
+        }
+    }
 }
 /// Non-empty, bounded and unique ids, or `None` when the snapshot is unusable.
 fn valid_ids(hosts: &[Host]) -> Option<HashSet<String>> {
@@ -330,7 +413,7 @@ fn valid_ids(hosts: &[Host]) -> Option<HashSet<String>> {
     (ids.len() == hosts.len()).then_some(ids)
 }
 /// A slot only ever holds a whole value, so a poisoned lock is still consistent.
-fn lock(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
+fn lock<T>(slot: &Mutex<T>) -> MutexGuard<'_, T> {
     slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 /// The status guard is plain HTTP without redirects; Node's moonrakerFetch serves
@@ -853,6 +936,63 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    #[test]
+    fn farm_reads_state_since_survives_a_missed_poll_but_not_a_new_state() {
+        let entered = Entered::default();
+        let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let since = || lock(&entered).get("host").map(|spell| spell.since);
+        enter(&entered, "host", State::Offline, at(1));
+        assert_eq!(
+            since(),
+            Some(at(1)),
+            "a host never answered is offline since then"
+        );
+        enter(&entered, "host", State::Complete, at(2));
+        enter(&entered, "host", State::Offline, at(3));
+        enter(&entered, "host", State::Unknown, at(4));
+        enter(&entered, "host", State::Complete, at(5));
+        assert_eq!(
+            since(),
+            Some(at(2)),
+            "a missed poll is not a new completion"
+        );
+        enter(&entered, "host", State::Printing, at(6));
+        enter(&entered, "host", State::Complete, at(7));
+        assert_eq!(since(), Some(at(7)), "a new job completes again");
+        enter(&entered, "host", State::Offline, at(8));
+        enter(&entered, "host", State::Complete, at(8 + 300));
+        assert_eq!(
+            since(),
+            Some(at(308)),
+            "an outage long enough to hide a reprint starts complete afresh"
+        );
+    }
+    #[tokio::test]
+    async fn farm_reads_last_heard_survives_offline_and_leaves_with_the_poller() {
+        let printer = RecordedPrinter::start(vec![(200, SUCCESS), (503, b"{}")]).unwrap();
+        let mut watchers = watchers_every(Duration::from_millis(50));
+        let mut observations = watchers.observations();
+        watchers
+            .replace(vec![host(printer.url().into())])
+            .await
+            .unwrap();
+        next_state(&mut observations, "host", State::Printing).await;
+        let heard = observations
+            .last_heard("host")
+            .expect("heard after a reply");
+        let printing_since = observations.state_since("host").expect("entered printing");
+        next_state(&mut observations, "host", State::Offline).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(observations.last_heard("host"), Some(heard));
+        assert_eq!(
+            observations.state_since("host"),
+            Some(printing_since),
+            "offline does not move the answered state"
+        );
+        watchers.replace(vec![]).await.unwrap();
+        assert_eq!(observations.last_heard("host"), None);
+        assert_eq!(observations.state_since("host"), None);
     }
     #[tokio::test]
     async fn ticket_t_4_watcher_proof_without_node_https_and_redirect_report_offline() {

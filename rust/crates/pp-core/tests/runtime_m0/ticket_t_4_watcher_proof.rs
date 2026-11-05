@@ -10,34 +10,17 @@ use pp_testkit::moonraker::RecordedPrinter;
 use serde_json::{Value, json};
 use std::{path::Path, sync::atomic::AtomicBool, time::Duration};
 
-const SUCCESS: &[u8] =
+pub(super) const SUCCESS: &[u8] =
     include_bytes!("../../../../../fixtures/drivers/moonraker/moonraker-success.json");
 
 #[tokio::test]
 async fn ticket_t_4_watcher_proof_rust_only_runtime_polls_stored_hosts() {
     let data = temporary("watcher-proof");
-    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
-    child
-        .args([
-            "--ignored",
-            "--exact",
-            "ticket_t_4_watcher_proof::ticket_t_4_watcher_proof_rust_only_runtime_in_child",
-            "--nocapture",
-        ])
-        .env("PP_WATCHER_PROOF_DATA", &data)
-        .env("PP_DESKTOP_REBUILD", "1")
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(240), child.output())
-        .await
-        .expect("watcher proof exceeded four minutes")
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "{stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(stdout.contains("1 passed"), "the child ran no test");
+    let stdout = run_in_child(
+        "ticket_t_4_watcher_proof::ticket_t_4_watcher_proof_rust_only_runtime_in_child",
+        &data,
+    )
+    .await;
     for line in stdout
         .lines()
         .filter(|line| line.starts_with("ticket_t_4_watcher_proof"))
@@ -47,29 +30,80 @@ async fn ticket_t_4_watcher_proof_rust_only_runtime_polls_stored_hosts() {
     let _ = std::fs::remove_dir_all(data);
 }
 
-fn seed(data: &Path, integrations: &Value) {
+/// Runs the ignored test `test` in a child process with `PP_DESKTOP_REBUILD=1`
+/// and `PP_PROOF_DATA` naming `data`, and returns its standard output.
+pub(super) async fn run_in_child(test: &str, data: &Path) -> String {
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--ignored", "--exact", test, "--nocapture"])
+        .env("PP_PROOF_DATA", data)
+        .env("PP_DESKTOP_REBUILD", "1")
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(240), child.output())
+        .await
+        .expect("the proof exceeded four minutes")
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("1 passed"), "the child ran no test");
+    stdout
+}
+
+/// The data directory `run_in_child` passed to this child.
+pub(super) fn proof_data() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var_os("PP_PROOF_DATA").unwrap())
+}
+
+/// Stores each `(key, value)` setting for tenant `default` before any start.
+pub(super) fn seed_settings(data: &Path, settings: &[(&str, Value)]) {
     let data = pp_storage::lease::prepare_directory(data).unwrap();
     let (writer, _) =
         WriterOwner::open_with_job_feature_admission(&data, Limits::default()).unwrap();
-    let setting = Setting {
-        tenant: "default".into(),
-        key: "integrations".into(),
-        value: integrations.to_string(),
-    };
-    let reply = writer
-        .client()
-        .submit(
-            SettingCommand::Set(setting),
-            &AtomicBool::new(false),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-    assert!(reply.recv().unwrap().unwrap());
+    for (key, value) in settings {
+        let setting = Setting {
+            tenant: "default".into(),
+            key: (*key).into(),
+            value: value.to_string(),
+        };
+        let reply = writer
+            .client()
+            .submit(
+                SettingCommand::Set(setting),
+                &AtomicBool::new(false),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert!(reply.recv().unwrap().unwrap());
+    }
     writer.shutdown().unwrap();
 }
 
+/// Starts the Rust-only launcher on `data` and returns it with its origin and
+/// a desktop cookie.
+pub(super) async fn start_rust_only(data: &Path) -> (CoreRuntime, String, String) {
+    let mut runtime = CoreRuntime::start_for_launcher(launch(data.to_owned()))
+        .await
+        .unwrap();
+    assert!(runtime.rust_only());
+    let origin = runtime.origin().to_owned();
+    let desktop = desktop_cookie(&mut runtime).await;
+    (runtime, origin, desktop)
+}
+
+/// Shuts the runtime down within ten seconds and returns once it is complete.
+pub(super) async fn shut_down(runtime: CoreRuntime) {
+    let receipt = tokio::time::timeout(Duration::from_secs(10), runtime.shutdown())
+        .await
+        .expect("shutdown exceeded ten seconds");
+    assert!(receipt.complete(), "{receipt:?}");
+}
+
 /// Every row of the Checkoff, progress, job and queue tables that exist.
-fn production_rows(data: &Path) -> Vec<(String, Vec<String>)> {
+pub(super) fn production_rows(data: &Path) -> Vec<(String, Vec<String>)> {
     let connection = rusqlite::Connection::open_with_flags(
         data.join("print-partner.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -140,7 +174,7 @@ fn seed_print_job(data: &Path) {
 
 /// Sign in to the single desktop account: register on the first start, log
 /// in after a restart. Returns the desktop and account cookies together.
-async fn signed_in(origin: &str, desktop: &str, start: u32) -> String {
+pub(super) async fn signed_in(origin: &str, desktop: &str, start: u32) -> String {
     let path = if start == 1 {
         "/auth/register"
     } else {
@@ -189,19 +223,22 @@ async fn printing(origin: &str, cookie: &str) -> Value {
 #[tokio::test]
 #[ignore = "runs in an isolated subprocess with explicit environment"]
 async fn ticket_t_4_watcher_proof_rust_only_runtime_in_child() {
-    let data = std::path::PathBuf::from(std::env::var_os("PP_WATCHER_PROOF_DATA").unwrap());
+    let data = proof_data();
     let printer = RecordedPrinter::start(vec![(200, SUCCESS)]).unwrap();
     let url = printer.url();
-    seed(
+    seed_settings(
         &data,
-        &json!([
-            {"id": "moon-1", "name": "Recorded", "type": "moonraker",
-             "config": {"base_url": url, "api_key": "recorded-key"}},
-            {"id": "tls-1", "name": "TLS", "type": "moonraker",
-             "config": {"base_url": "https://printer.invalid"}},
-            {"id": "spool-1", "name": "Spools", "type": "spoolman",
-             "config": {"base_url": "http://127.0.0.1:9"}},
-        ]),
+        &[(
+            "integrations",
+            json!([
+                {"id": "moon-1", "name": "Recorded", "type": "moonraker",
+                 "config": {"base_url": url, "api_key": "recorded-key"}},
+                {"id": "tls-1", "name": "TLS", "type": "moonraker",
+                 "config": {"base_url": "https://printer.invalid"}},
+                {"id": "spool-1", "name": "Spools", "type": "spoolman",
+                 "config": {"base_url": "http://127.0.0.1:9"}},
+            ]),
+        )],
     );
     seed_print_job(&data);
     let before = production_rows(&data);
@@ -213,12 +250,7 @@ async fn ticket_t_4_watcher_proof_rust_only_runtime_in_child() {
     );
 
     for start in 1..=2u32 {
-        let mut runtime = CoreRuntime::start_for_launcher(launch(data.clone()))
-            .await
-            .unwrap();
-        assert!(runtime.rust_only());
-        let origin = runtime.origin().to_owned();
-        let desktop = desktop_cookie(&mut runtime).await;
+        let (runtime, origin, desktop) = start_rust_only(&data).await;
         // The route authenticates like every Rust route: a desktop session
         // alone is not an account session.
         let (code, body) = status(&origin, &desktop, "moon-1").await;
@@ -247,10 +279,7 @@ async fn ticket_t_4_watcher_proof_rust_only_runtime_in_child() {
         let seen = printer.calls();
         tokio::time::sleep(Duration::from_millis(4500)).await;
         assert!(printer.calls() > seen, "start {start}: polling stalled");
-        let receipt = tokio::time::timeout(Duration::from_secs(10), runtime.shutdown())
-            .await
-            .expect("shutdown exceeded ten seconds");
-        assert!(receipt.complete(), "{receipt:?}");
+        shut_down(runtime).await;
         let stopped = printer.calls();
         tokio::time::sleep(Duration::from_millis(2500)).await;
         assert_eq!(

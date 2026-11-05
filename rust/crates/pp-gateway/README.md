@@ -25,7 +25,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | Item | What it does |
 | --- | --- |
 | `Gateway::start(listener, assets, compat, owners)` | Validates `operations.json` against `OperationOwners` and starts serving. |
-| `Gateway::start_rust_only(listener, assets, product, status, hosts)` | No Node child. `product` builds the Rust routes from a `MoonrakerStatus` lookup (`lookup(id)` returns `StatusLookup`: `Status`, `NotWatched`, `Unavailable`); `hosts` is the `MoonrakerHosts` snapshot source (`HostReadError::Unavailable` keeps pollers through the grace period, `Invalid` stops them). |
+| `Gateway::start_rust_only(listener, assets, product, status, hosts)` | No Node child. `product` builds the Rust routes from a `MoonrakerStatus` lookup (`lookup(id)` returns `StatusLookup`: `Status`, `NotWatched`, `Unavailable`; `observations()` returns the `PrinterObservations` port while the gateway lives); `hosts` is the `MoonrakerHosts` snapshot source (`HostReadError::Unavailable` keeps pollers through the grace period, `Invalid` stops them). |
 | `Gateway` methods | `origin`, `take_launch_target`, `bootstrap_minter`, `monitoring_control`, `printer_observations`, `shutdown_requested`, `begin_drain`, `wait_idle`, `finish_drain`, `stop`. |
 | `LaunchTarget`, `BootstrapMinter`, `MonitoringControl`, `ShutdownRequested` | First sign-in URL, new browser links, watcher suspend/resume, logout-triggered shutdown. |
 | `MUTATION_DRAIN` | 5-second bound for in-flight mutations at shutdown. |

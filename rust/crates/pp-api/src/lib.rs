@@ -25,6 +25,8 @@ pub mod drafts;
 #[cfg(feature = "desktop_rebuild")]
 pub mod events;
 #[cfg(feature = "desktop_rebuild")]
+pub mod farm;
+#[cfg(feature = "desktop_rebuild")]
 pub mod fixtures;
 #[cfg(feature = "desktop_rebuild")]
 pub mod history;

@@ -672,6 +672,17 @@ mod tests {
     /// Every `pp_api::client_contract::CLIENT_ROUTES` entry, which generates
     /// `web/packages/rust-client`, is registered on the composed routers with
     /// its stated method and authentication.
+    struct NoObservations;
+
+    impl pp_api::farm::FarmObservations for NoObservations {
+        fn observe(
+            &self,
+            _: &pp_storage::read_model::farm::PrinterIntegration,
+        ) -> pp_storage::read_model::farm::Observation {
+            pp_storage::read_model::farm::Observation::Unavailable
+        }
+    }
+
     #[tokio::test]
     async fn client_routes_match_registrations() {
         use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
@@ -688,9 +699,19 @@ mod tests {
             "default",
             None,
         );
+        let farm = pp_api::farm::farm_router(
+            pp_api::accepted::AcceptedHttpConfig::from_startup(&origin, "default", Some("1"))
+                .unwrap(),
+            owner.lock().unwrap().farm_reads(policy).unwrap(),
+            Arc::new(NoObservations),
+        );
         let (stop, server) = serve(
             listener,
-            reads.unwrap().unwrap().merge(drafts.unwrap().unwrap()),
+            reads
+                .unwrap()
+                .unwrap()
+                .merge(drafts.unwrap().unwrap())
+                .merge(farm),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let send = |method: &str, path: &str, cookie: Option<&str>, body: Option<Value>| {

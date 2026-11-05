@@ -1,12 +1,12 @@
 # Printer-host reads (GRE-360)
 
-With the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD` exactly `1` or `true`, the Rust-only runtime serves the Moonraker printer-host reads that Node's `routes/printers.ts` and `routes/integrations.ts` serve, at the same `/api/v1` paths:
+With the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD` exactly `1` or `true`, the Rust-only runtime serves the Moonraker printer-host reads that Node's `routes/printers.ts` and `routes/integrations.ts` serve, at the same paths. The three printer routes answer at the root, where the web client calls them, and under `/api/v1`; the connection test is under `/api/v1` only, as in Node:
 
 | Route | Answer |
 | --- | --- |
-| `GET /api/v1/printers/{id}/capabilities` | `{files, cameras, status}`. All three are `true` for a printer linked to an enabled Moonraker integration. A printer with no link, a missing or disabled integration, or a host type this runtime cannot read answers all `false`. An unknown printer answers 404 `Printer not found`. |
-| `GET /api/v1/printers/{id}/files?path=` | One directory of the Moonraker `gcodes` root as `{path, entries}`. An empty or missing `path` is the root. |
-| `GET /api/v1/printers/{id}/cameras` | `{cameras}` from `/server/webcams/list`. A host type without cameras in this runtime answers `{cameras: []}`. |
+| `GET /printers/{id}/capabilities` | `{files, cameras, status}`. All three are `true` for a printer linked to an enabled Moonraker integration. A printer with no link, a missing or disabled integration, or a host type this runtime cannot read answers all `false`. An unknown printer answers 404 `Printer not found`. |
+| `GET /printers/{id}/files?path=` | One directory of the Moonraker `gcodes` root as `{path, entries}`. An empty or missing `path` is the root. |
+| `GET /printers/{id}/cameras` | `{cameras}` from `/server/webcams/list`. A host type without cameras in this runtime answers `{cameras: []}`. |
 | `POST /api/v1/integrations/{id}/test` | Node's `{ok, message}` from `/server/info`, for example `Connected (klippy: ready)`. An unknown integration answers 404 `Integration not found`. |
 
 The `files` and `cameras` routes return the same errors as Node: 400 for an invalid storage path, 404 for an unknown printer, 409 `Printer is not linked to a host`, 503 `Printer host is unavailable`, and 502 with the driver's message when the printer request fails. `files` answers 501 `Printer host does not support file browsing` for a host type this runtime cannot read. The connection test answers 501 for those types, and `{ok: false, message: "Unknown integration type: <type>"}` for a type Node has no adapter for. Storage that cannot answer within 500 ms gives 503 `Printer settings are unavailable`.

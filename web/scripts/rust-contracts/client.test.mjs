@@ -71,8 +71,9 @@ test("a descriptor table missing a key value is refused", () => {
   assert.throws(() => generate(changed), /must list every/);
 });
 
-// RFC 9457 problem members Rust omits when empty; the only optional fields.
-const optionalMembers = { Problem: new Set(["code", "detail", "errors"]) };
+// Members Rust omits when empty: RFC 9457 problem members, and Health's `modules`,
+// which Node and the other Rust routers do not send.
+const optionalMembers = { Problem: new Set(["code", "detail", "errors"]), Health: new Set(["modules"]) };
 
 for (const fixture of document.fixtures) {
   test(`${fixture.dto} ${fixture.name}: agrees with Rust and round-trips`, () => {

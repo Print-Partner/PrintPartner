@@ -142,15 +142,11 @@ pub(crate) struct Health {
     pub owner_mapping_required: bool,
     pub github_oauth_configured: bool,
     pub discord_oauth_configured: bool,
-    /// Each Module's effective state. The Rust-only runtime always sends it,
-    /// and the generated client covers only that runtime, so the schema marks
-    /// it required. Other Rust auth routers omit it to keep Node's body.
+    /// Each Module's effective state. The Rust-only runtime sends it, every
+    /// Module `setting_unreadable` when storage cannot be read in time. Node
+    /// and the other Rust auth routers omit it, so the schema marks it optional.
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "codegen",
-        schemars(with = "Vec<pp_storage::features::modules::ModuleStatus>")
-    )]
     pub modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
 }
 pub(super) fn json_response(value: Value) -> Response {

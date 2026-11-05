@@ -677,4 +677,32 @@ mod with_feature {
         assert!(!body.contains("canary"), "{body}");
         fixture.stop().await;
     }
+
+    /// A module read that cannot get a reader within its 100 ms wait must not
+    /// fail liveness: `/health` still answers 200 with its other fields and
+    /// every module `setting_unreadable`, and recovers when readers free up.
+    #[tokio::test]
+    async fn health_answers_200_with_modules_unreadable_when_the_reader_pool_is_saturated() {
+        let fixture = Fixture::start("1").await;
+        put(&fixture, "feature_toggles", r#"{"farm":true}"#);
+        let settings = fixture.owner.lock().unwrap().client();
+        let held: Vec<_> = (0..4)
+            .map(|_| settings.reader(Duration::ZERO).unwrap())
+            .collect();
+        let (status, body) = fixture.get("/health", None).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["authentication_required"], json!(true));
+        assert_eq!(body["authenticated"], json!(false));
+        assert_eq!(body["degraded_detail"], Value::Null);
+        let unreadable: Vec<Value> = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"]
+            .iter()
+            .map(|module| off(module, "setting_unreadable"))
+            .collect();
+        assert_eq!(body["modules"], json!(unreadable));
+        drop(held);
+        let (_, modules) = health_modules(&fixture, None).await;
+        assert_eq!(modules[0], on("farm"));
+        fixture.stop().await;
+    }
 }

@@ -305,7 +305,7 @@ PP_DESKTOP_REBUILD=1 python3 scripts/verify-rust-gateway/verify.py launch \
   --credential-file "$PRIVATE_DIR/credential.json" >"$LOG" 2>&1 &
 ```
 
-`--binary` needs the `rust/bundle-manifest.json` and web build that the binary was built against; see `build()` in `verify.py`. `--seed` refuses a directory without `SYNTHETIC-DATASET.json`, copies it into the launcher's private temporary data directory, and, when `PP_DESKTOP_REBUILD` is `1` or `true`, writes the Rust [ownership marker](../storage.md#ownership-marker-decision) into that copy. Rust-only startup refuses a non-empty directory without one. The seed is never changed, and the copy is removed at shutdown.
+`--binary` needs the `rust/bundle-manifest.json` and web build that the binary was built against; see `build()` in `verify.py`. `--seed` refuses a directory without `SYNTHETIC-DATASET.json`, copies it into the launcher's private temporary data directory, and, when `PP_DESKTOP_REBUILD` is `1` or `true`, writes the Rust [ownership marker](../storage.md#ownership-marker-format) into that copy in the compact form. Rust-only startup refuses a non-empty directory without one. That start also needs a `desktop_rebuild` binary, and the helper's own build has no such feature, so `--seed` with `PP_DESKTOP_REBUILD` set requires `--binary` built with `--features desktop_rebuild`. The seed is never changed, and the copy is removed at shutdown.
 
 The gateway serves the old `apps/web` build, not `apps/ui`. Serve the built replacement UI with Vite's preview server, which forwards `/api`, `/ws` and `/health` to the core:
 

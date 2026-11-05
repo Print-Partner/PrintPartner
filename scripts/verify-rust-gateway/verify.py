@@ -624,7 +624,7 @@ def copy_seed(seed, data):
             marker.unlink()
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as handle:
-            handle.write(json.dumps({"version": 1, "owner": "rust", "created_at": created}) + "\n")
+            handle.write(json.dumps({"version": 1, "owner": "rust", "created_at": created}, separators=(",", ":")) + "\n")
 
 
 def launch(root, credentials, binary=None, seed=None):
@@ -742,6 +742,10 @@ def main():
         parser.error(f"--binary is not an executable file: {args.binary}")
     if args.seed is not None and args.mode != "launch":
         parser.error("--seed applies only to launch")
+    if args.seed is not None and args.binary is None and os.environ.get("PP_DESKTOP_REBUILD") in ("1", "true"):
+        # The marker is only right for a Rust-only start, which needs a desktop_rebuild binary;
+        # build() compiles without that feature, and its server would refuse the marked copy.
+        parser.error("--seed with PP_DESKTOP_REBUILD needs --binary built with --features desktop_rebuild")
     if args.seed is not None:
         check_seed(args.seed)
     root = args.repo.resolve() if args.repo is not None else default_repo_root()

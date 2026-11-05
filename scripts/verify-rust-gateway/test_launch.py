@@ -381,7 +381,8 @@ class SeedTest(unittest.TestCase):
                                  "data = Path(sys.argv[sys.argv.index('--data') + 1])\n"
                                  "marker = data / '.pp-rust-owned.json'\n"
                                  f"Path({str(seen)!r}).write_text(json.dumps({{'files': sorted(os.listdir(data)), "
-                                 "'marker': json.loads(marker.read_text()) if marker.exists() else None}))\n")
+                                 "'marker': json.loads(marker.read_text()) if marker.exists() else None, "
+                                 "'raw': marker.read_text() if marker.exists() else None}))\n")
         result = subprocess.run([sys.executable, str(HELPER), "launch", "--repo", str(root), "--binary",
                                  str(binary), "--seed", str(seed)],
                                 capture_output=True, text=True, timeout=60, env={**os.environ, **env})
@@ -405,11 +406,23 @@ class SeedTest(unittest.TestCase):
                 self.assertIn("print-partner.db", seen["files"])
                 self.assertEqual(seen["marker"] is not None, marked)
                 if marked:
+                    self.assertRegex(seen["raw"], r'^\{"version":1,"owner":"rust","created_at":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"\}\n$')
                     self.assertEqual(sorted(seen["marker"]), ["created_at", "owner", "version"])
                     self.assertEqual((seen["marker"]["version"], seen["marker"]["owner"]), (1, "rust"))
                 # The seed itself is never changed.
                 self.assertEqual(sorted(p.name for p in seed.iterdir()),
                                  ["SYNTHETIC-DATASET.json", "print-partner.db"])
+
+    def test_rust_only_seed_without_a_prebuilt_binary_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:
+            temp = Path(temporary)
+            seed = self.make_seed(temp)
+            root = make_fixture_repo(temp / "repo")
+            result = subprocess.run([sys.executable, str(HELPER), "launch", "--repo", str(root), "--seed", str(seed)],
+                                    capture_output=True, text=True, timeout=60,
+                                    env={**os.environ, "PP_DESKTOP_REBUILD": "1"})
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("needs --binary built with --features desktop_rebuild", result.stderr)
 
     def test_seed_without_synthetic_manifest_is_refused_before_start(self):
         with tempfile.TemporaryDirectory(prefix="pp-seed-test-") as temporary:

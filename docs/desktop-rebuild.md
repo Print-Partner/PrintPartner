@@ -2633,14 +2633,15 @@ whose units or resolved units name them, and undo compares it. A later verify of
 another link that records a unit the burst printed, or a later unit that filled
 from the burst's unit, therefore blocks undo. Unrelated activity, such as a new
 print job, a new link, or a dismiss of a link without the burst's units, does not. A receipt
-without that hash (written before it existed) refuses with 409 instead of
-undoing on weaker checks. An unknown token is 404. No printer, webhook or
+without that hash or its unit list (written before they existed) refuses with
+409 instead of undoing on weaker checks. An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
 `web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the
 `P` (`plateBed`) and `F` (`partFillBeds`) helpers, which both produce this
 request shape. `verifyBatchRequest` merges beds for the same link, keeping both
-unit decisions and imported-extra `additional_decisions`.
+unit decisions and imported-extra `additional_decisions`, and leaves out beds with
+nothing to decide (a plate still `watching`), which the route would refuse.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'

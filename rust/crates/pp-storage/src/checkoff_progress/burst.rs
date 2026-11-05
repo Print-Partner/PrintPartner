@@ -437,7 +437,7 @@ fn undo_conflict(
             ));
         }
     }
-    if undo.get("state").is_none() {
+    if undo.get("state").is_none() || undo.get("units").is_none() {
         return Ok(Some(
             "This Checkoff burst predates the undo state check and cannot be undone".into(),
         ));

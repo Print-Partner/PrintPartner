@@ -9,11 +9,17 @@ const decisionSchema = z.strictObject({
   note: z.string().optional(),
 });
 
-const bedSchema = z.object({
-  link_id: z.string().trim().min(1),
-  decisions: z.array(decisionSchema),
-  additional_decisions: z.array(z.object({ index: z.number().int().nonnegative() }).loose()).optional(),
-});
+const bedSchema = z
+  .object({
+    link_id: z.string().trim().min(1),
+    decisions: z.array(decisionSchema),
+    additional_decisions: z
+      .array(z.object({ index: z.number().int().nonnegative() }).loose())
+      .optional(),
+  })
+  .refine((bed) => bed.decisions.length > 0 || Boolean(bed.additional_decisions?.length), {
+    message: "A bed needs at least one decision",
+  });
 
 /**
  * `POST /printer-checkoff/verify-batch`: one Checkoff burst over several beds.
@@ -24,9 +30,13 @@ export const verifyBatchRequestSchema = z
     idempotency_key: z.string().trim().min(1).max(200),
     beds: z.array(bedSchema).min(1).max(50),
   })
-  .refine((request) => new Set(request.beds.map((bed) => bed.link_id.trim())).size === request.beds.length, {
-    message: "Each bed names a different link",
-  });
+  .refine(
+    (request) =>
+      new Set(request.beds.map((bed) => bed.link_id.trim())).size === request.beds.length,
+    {
+      message: "Each bed names a different link",
+    },
+  );
 
 export type VerifyBatchRequest = z.infer<typeof verifyBatchRequestSchema>;
 export type VerifyBatchBed = VerifyBatchRequest["beds"][number];
@@ -39,14 +49,20 @@ type CheckoffLinkUnits = Pick<PrinterCheckoffLink, "id" | "state" | "units" | "r
 
 function pendingUnits(link: CheckoffLinkUnits) {
   if (link.state !== "awaiting_verify") return [];
-  const resolved = new Set((link.resolved_units ?? []).map((unit) => `${unit.part_id}:${unit.unit_index}`));
+  const resolved = new Set(
+    (link.resolved_units ?? []).map((unit) => `${unit.part_id}:${unit.unit_index}`),
+  );
   return link.units.filter((unit) => !resolved.has(`${unit.part_id}:${unit.unit_index}`));
 }
 
 function bed(link: CheckoffLinkUnits, units: ReturnType<typeof pendingUnits>): VerifyBatchBed {
   return {
     link_id: link.id,
-    decisions: units.map((unit) => ({ part_id: unit.part_id, unit_index: unit.unit_index, result: "confirmed" })),
+    decisions: units.map((unit) => ({
+      part_id: unit.part_id,
+      unit_index: unit.unit_index,
+      result: "confirmed",
+    })),
   };
 }
 
@@ -56,7 +72,10 @@ export function plateBed(link: CheckoffLinkUnits): VerifyBatchBed {
 }
 
 /** `F`: confirm one Part's pending units on every bed that holds them. */
-export function partFillBeds(links: readonly CheckoffLinkUnits[], partId: number): VerifyBatchBed[] {
+export function partFillBeds(
+  links: readonly CheckoffLinkUnits[],
+  partId: number,
+): VerifyBatchBed[] {
   return links.flatMap((link) => {
     const units = pendingUnits(link).filter((unit) => unit.part_id === partId);
     return units.length ? [bed(link, units)] : [];
@@ -64,12 +83,17 @@ export function partFillBeds(links: readonly CheckoffLinkUnits[], partId: number
 }
 
 /** One request from any mix of beds; decisions and imported-extra decisions for the same bed merge. */
-export function verifyBatchRequest(idempotencyKey: string, beds: readonly VerifyBatchBed[]): VerifyBatchRequest {
+export function verifyBatchRequest(
+  idempotencyKey: string,
+  beds: readonly VerifyBatchBed[],
+): VerifyBatchRequest {
   const merged = new Map<string, VerifyBatchBed>();
   for (const next of beds) {
     const current = merged.get(next.link_id) ?? { link_id: next.link_id, decisions: [] };
     const seen = new Set(current.decisions.map((d) => `${d.part_id}:${d.unit_index}`));
-    current.decisions.push(...next.decisions.filter((d) => !seen.has(`${d.part_id}:${d.unit_index}`)));
+    current.decisions.push(
+      ...next.decisions.filter((d) => !seen.has(`${d.part_id}:${d.unit_index}`)),
+    );
     if (next.additional_decisions?.length) {
       const extras = current.additional_decisions ?? [];
       const indexes = new Set(extras.map((d) => d.index));
@@ -78,5 +102,8 @@ export function verifyBatchRequest(idempotencyKey: string, beds: readonly Verify
     }
     merged.set(next.link_id, current);
   }
-  return parseVerifyBatchRequest({ idempotency_key: idempotencyKey, beds: [...merged.values()] });
+  const decided = [...merged.values()].filter(
+    (bed) => bed.decisions.length > 0 || bed.additional_decisions?.length,
+  );
+  return parseVerifyBatchRequest({ idempotency_key: idempotencyKey, beds: decided });
 }

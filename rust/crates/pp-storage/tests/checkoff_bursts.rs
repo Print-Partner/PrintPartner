@@ -362,7 +362,7 @@ fn verify_batch_refuses_undo_of_a_receipt_without_a_state() {
         )
         .unwrap();
     let mut receipts: Value = serde_json::from_str(&raw).unwrap();
-    receipts[0]["undo"].as_object_mut().unwrap().remove("state");
+    receipts[0]["undo"].as_object_mut().unwrap().remove("units");
     connection
         .execute(
             "UPDATE app_settings SET value=?1 WHERE key = 'printer.checkoff_bursts'",

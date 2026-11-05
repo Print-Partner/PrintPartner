@@ -100,19 +100,42 @@ fn production_rows(data: &Path) -> Vec<(String, Vec<String>)> {
     tables
         .into_iter()
         .map(|table| {
-            let rows = connection
-                .prepare(&format!(
-                    "SELECT quote(json_array(*)) FROM (SELECT * FROM \"{table}\")"
-                ))
-                .and_then(|mut statement| {
-                    statement
-                        .query_map([], |row| row.get::<_, String>(0))?
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+                .unwrap();
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|column| row.get_ref(column).map(|value| format!("{value:?}")))
                         .collect::<Result<Vec<_>, _>>()
+                        .map(|values| values.join(" | "))
                 })
-                .unwrap_or_else(|_| vec!["unreadable".into()]);
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
             (table, rows)
         })
         .collect()
+}
+
+/// A print job on the watched host, so the no-write proof compares real
+/// column values and not only empty tables.
+fn seed_print_job(data: &Path) {
+    let connection = rusqlite::Connection::open(data.join("print-partner.db")).unwrap();
+    connection
+        .execute(
+            "INSERT INTO build_profiles (id, tenant_id, name) VALUES (1, 'default', 'Watched Build')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO print_jobs (id, tenant_id, profile_id, host_integration_id, filename, at)
+             VALUES ('job-watched', 'default', 1, 'moon-1', 'bracket.gcode', '2026-11-05T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
 }
 
 /// Sign in to the single desktop account: register on the first start, log
@@ -180,7 +203,14 @@ async fn ticket_t_4_watcher_proof_rust_only_runtime_in_child() {
              "config": {"base_url": "http://127.0.0.1:9"}},
         ]),
     );
+    seed_print_job(&data);
     let before = production_rows(&data);
+    assert!(
+        before
+            .iter()
+            .any(|(table, rows)| table == "print_jobs" && rows.len() == 1),
+        "{before:?}"
+    );
 
     for start in 1..=2u32 {
         let mut runtime = CoreRuntime::start_for_launcher(launch(data.clone()))

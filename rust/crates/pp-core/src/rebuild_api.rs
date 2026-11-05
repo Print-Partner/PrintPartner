@@ -11,6 +11,7 @@ use pp_api::{
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpHttpConfig, mcp_router},
+    planning::planning_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
 // non-optional pp-api [dev-dependencies] edge (gated boundary check).
@@ -163,8 +164,8 @@ pub fn router(
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
-/// Plan Checkoff, Build history, legal documents, custom filaments and
-/// key-only MCP) from one
+/// Plan Checkoff, Build history, Build planning and decisions, legal
+/// documents, custom filaments and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
 /// is off. Does not cut over production gateway ownership (GRE-593).
@@ -191,6 +192,7 @@ pub fn read_router(
         },
         accepted_client,
         history_client,
+        planning_client,
         admin_files,
     ) = {
         let guard = owner
@@ -201,6 +203,7 @@ pub fn read_router(
                 .ok_or_else(|| anyhow!("flag on constructs clients"))?,
             guard.accepted_reads_with_policy(policy)?,
             guard.build_history(policy)?,
+            guard.build_planning(policy, source_reads(&guard, policy, None)?)?,
             guard.admin_files()?,
         )
     };
@@ -227,6 +230,10 @@ pub fn read_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         history_client,
     );
+    let planning = planning_router(
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        planning_client,
+    );
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
@@ -238,6 +245,7 @@ pub fn read_router(
             .merge(catalog)
             .merge(accepted)
             .merge(history)
+            .merge(planning)
             .merge(admin)
             .merge(mcp),
     ))

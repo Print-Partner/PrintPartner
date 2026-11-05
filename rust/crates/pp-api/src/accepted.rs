@@ -149,6 +149,19 @@ impl Drop for Cancellation {
     }
 }
 
+/// Runs one storage read on the blocking pool with the gate's queue wait,
+/// cancelling it if the request is dropped first. `None` when the read panicked.
+pub(crate) async fn blocking_read<T: Send + 'static>(
+    wait: Duration,
+    read: impl FnOnce(Arc<AtomicBool>, Duration) -> Result<T> + Send + 'static,
+) -> Option<Result<T>> {
+    let stop = Cancellation(Arc::new(AtomicBool::new(false)));
+    let cancelled = stop.0.clone();
+    let read = tokio::task::spawn_blocking(move || read(cancelled, wait)).await;
+    drop(stop);
+    read.ok()
+}
+
 /// The accepted projection a route answers with.
 #[derive(Clone, Copy)]
 enum View {
@@ -227,7 +240,7 @@ async fn project(app: App, id: &str, request: axum::extract::Request, view: View
 /// Node reads the id with `Number()`: JS whitespace is trimmed, and decimal,
 /// exponent and `0x`/`0o`/`0b` forms are numbers. Only a safe positive integer
 /// can name a Plan or Part.
-fn node_id(raw: &str) -> Option<i64> {
+pub(crate) fn node_id(raw: &str) -> Option<i64> {
     let text = views::js_trim(raw);
     let radix = |digits: &str, radix: u32| {
         (!digits.is_empty() && digits.chars().all(|c| c.is_digit(radix)))

@@ -32,6 +32,8 @@ pub mod jobs;
 mod loopback;
 #[cfg(feature = "desktop_rebuild")]
 pub mod mcp;
+#[cfg(feature = "desktop_rebuild")]
+pub mod planning;
 
 #[cfg(test)]
 #[path = "../../pp-storage/tests/common/cleanup.rs"]

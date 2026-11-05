@@ -99,7 +99,12 @@ export function generate(document) {
   }
   const emitters = {
     object(schema, visiting) {
-      assert(schema.additionalProperties === undefined || schema.additionalProperties === false, "Object passthrough/catchall unsupported");
+      // A Rust map (BTreeMap<String, T>, serde_json::Map) has no named properties.
+      if (schema.additionalProperties !== undefined && schema.additionalProperties !== false) {
+        assert(schema.properties === undefined && schema.required === undefined, "Object passthrough/catchall unsupported");
+        const values = schema.additionalProperties === true ? "z.json()" : emit(schema.additionalProperties, visiting);
+        return `z.record(z.string(), ${values})`;
+      }
       const required = new Set(schema.required ?? []);
       for (const key of required) assert(key in (schema.properties ?? {}), `Required property ${key} has no schema`);
       const fields = Object.entries(schema.properties ?? {}).map(([key, value]) => {

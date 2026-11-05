@@ -140,6 +140,18 @@ Build's accepted revisions, snapshots, checkoff bursts, sends and assistant
 decisions, newest first, one page at a time. [Build history](build-history.md)
 describes the entries and paging.
 
+### Build planning and decisions
+
+```text
+GET   /plans/:id/build-planning
+GET   /plans/:id/decisions
+```
+
+With `desktop_rebuild` on, the Rust API serves both reads with Node's data:
+the hydrated planning brief with its phase and readiness, and the latest 200
+assistant decisions. [Build planning and decisions](build-planning.md)
+describes the fields and the differences from Node.
+
 ### Plates and exports
 
 ```text

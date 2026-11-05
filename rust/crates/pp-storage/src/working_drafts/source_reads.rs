@@ -85,6 +85,28 @@ impl SourceReads {
     pub fn filesystem_policy(&self) -> SourceFilesystemPolicy {
         self.filesystem
     }
+    /// Node's `resolveSourceFilesystemRoot`, which Build planning hydration
+    /// uses for a stored `localPath`. Unlike `locate`, the trusted policy returns
+    /// the resolved path whether or not it exists, and `.` and `..` segments are
+    /// resolved as Node's `path.resolve` resolves them.
+    pub(crate) fn node_root(&self, source: i64, stored: Option<&str>) -> Option<PathBuf> {
+        let candidate = node_resolve(Path::new(stored.filter(|path| !path.is_empty())?));
+        if self.filesystem == SourceFilesystemPolicy::TrustedSingleUser {
+            return Some(candidate);
+        }
+        let workspace = node_resolve(&self.repos).join(source.to_string());
+        let configured = fs::canonicalize(&self.repos).ok()?.join(source.to_string());
+        if !candidate.starts_with(&workspace) && !candidate.starts_with(&configured) {
+            return None;
+        }
+        let meta = fs::symlink_metadata(&workspace).ok()?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return None;
+        }
+        let canonical_workspace = fs::canonicalize(&workspace).ok()?;
+        let canonical = fs::canonicalize(&candidate).ok()?;
+        (canonical.starts_with(&canonical_workspace) && canonical.is_dir()).then_some(canonical)
+    }
     /// The Source workspace for an untracked checkout path.
     fn locate(
         &self,
@@ -155,6 +177,23 @@ impl SourceReads {
             _ => Err(ReadFailure::UnsafeLocator),
         }
     }
+}
+/// Node's `path.resolve` for one path: absolute against the working directory,
+/// with `.` and `..` segments removed lexically.
+fn node_resolve(path: &Path) -> PathBuf {
+    let absolute =
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path));
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::CurDir => {}
+            other => resolved.push(other),
+        }
+    }
+    resolved
 }
 enum Located {
     /// The stored path leaves the Source workspace; nothing is read.

@@ -6,7 +6,7 @@
 //! `next_cursor`). The route writes nothing. Admission is `accepted::Gate`.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Cancellation, Gate, failure, json_response, read_error},
+    accepted::{AcceptedHttpConfig, Gate, blocking_read, failure, json_response, read_error},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -22,7 +22,6 @@ use pp_storage::{
         Cursor, DEFAULT_LIMIT, Failure, HistoryClient, MAX_LIMIT, Outcome, Request,
     },
 };
-use std::sync::{Arc, atomic::AtomicBool};
 
 #[derive(Clone)]
 struct App {
@@ -90,25 +89,22 @@ async fn history(
         cursor,
         limit,
     };
-    let stop = Cancellation(Arc::new(AtomicBool::new(false)));
-    let (client, wait, cancelled) = (app.client, app.gate.wait(), stop.0.clone());
-    let read = tokio::task::spawn_blocking(move || {
+    let client = app.client;
+    let read = blocking_read(app.gate.wait(), move |cancelled, wait| {
         client.read(presented.into_credential(), request, cancelled, wait)
-    })
-    .await;
-    drop(stop);
-    match read {
-        Ok(Ok(Outcome::Page(page))) => match serde_json::to_value(&page) {
+    });
+    match read.await {
+        Some(Ok(Outcome::Page(page))) => match serde_json::to_value(&page) {
             Ok(body) => json_response(StatusCode::OK, &body, false),
             Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         },
-        Ok(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
-        Ok(Err(error)) if error.downcast_ref::<Failure>().is_some() => failure(
+        Some(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),
+        Some(Err(error)) if error.downcast_ref::<Failure>().is_some() => failure(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Build history exceeds the read limit",
         ),
-        Ok(Err(error)) => read_error(&error),
-        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        Some(Err(error)) => read_error(&error),
+        None => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
     }
 }
 

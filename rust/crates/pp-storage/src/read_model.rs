@@ -4,6 +4,8 @@ pub(crate) mod graph;
 pub mod history;
 #[cfg(feature = "desktop_rebuild")]
 mod json_body;
+#[cfg(feature = "desktop_rebuild")]
+pub mod planning;
 pub use context::{CapturedContext, PlateRef, RevisionRef, UnitHistory};
 #[cfg(feature = "desktop_rebuild")]
 pub use json_body::{AcceptedBatchJsonBody, AcceptedReadJsonBody, AcceptedSnapshotJsonBody};
@@ -210,6 +212,42 @@ pub(crate) fn submit_read<T>(
         .recv()
         .map_err(|_| anyhow!("Storage stopped without read result"))?
 }
+/// Opens a deferred read transaction unless `cancelled` is set, then returns
+/// it with the caller's tenant and the Build `build` names, when that tenant
+/// has it. The credential is checked even when `build` is `None`. Shared by the
+/// History and planning reads.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn owned_build<'c>(
+    connection: &'c mut Connection,
+    cancelled: &AtomicBool,
+    credential: &Credential,
+    policy: auth::AuthPolicy,
+    build: Option<pp_domain::PositiveId>,
+) -> Result<(rusqlite::Transaction<'c>, Option<(String, i64)>)> {
+    ensure!(
+        !cancelled.load(Ordering::Acquire),
+        "Cancelled before admission"
+    );
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let tenant = match credential {
+        Credential::Session(secret) => auth::read_session_tenant(&tx, secret, policy)?,
+        Credential::ApiKey {
+            routed_tenant,
+            secret,
+        } => auth::read_key_tenant(&tx, routed_tenant, secret)?,
+    };
+    let Some(build) = build else {
+        return Ok((tx, None));
+    };
+    let build = i64::try_from(build.get())?;
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id=?1 AND id=?2)",
+        rusqlite::params![tenant, build],
+        |row| row.get(0),
+    )?;
+    Ok((tx, exists.then_some((tenant, build))))
+}
+
 pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<Batch> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let tenant = match command.credential {

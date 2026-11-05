@@ -1,7 +1,7 @@
 //! Routes and DTOs that `web/packages/rust-client` is generated from.
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
-//! [`crate::drafts`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::drafts`], [`crate::planning`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -108,6 +108,20 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("AbandonDraftRequest"),
         "DraftIdentity",
     ),
+    route(
+        "readBuildPlanning",
+        "GET",
+        "/api/v2/plans/{id}/build-planning",
+        None,
+        "BuildPlanningResponse",
+    ),
+    route(
+        "listPlanDecisions",
+        "GET",
+        "/api/v2/plans/{id}/decisions",
+        None,
+        "PlanDecisionList",
+    ),
     ClientRoute {
         name: "readHealth",
         method: "GET",
@@ -139,6 +153,10 @@ mod codegen {
             AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue, InputChange,
             PartRef, PlateChanges, PlateRef, PreviewChanges, PreviewRevision, ProductionCheck,
             SnapshotNote, SpoolImpact, StockImpact, UnitChanges, UnitRef, Unmappable,
+        },
+        read_model::planning::{
+            BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, BuildPlanningReadiness,
+            BuildPlanningResponse, PlanDecision, PlanDecisionList, ReadinessBlocker,
         },
         required_units::{
             AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
@@ -172,6 +190,11 @@ mod codegen {
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema(
+            "BuildPlanningResponse",
+            schemars::schema_for!(BuildPlanningResponse),
+        )?;
+        schema("PlanDecisionList", schemars::schema_for!(PlanDecisionList))?;
         schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
         schema(
             "PrinterDisplayDescriptor",
@@ -762,6 +785,130 @@ mod codegen {
                 value,
             ));
         }
+        cases.extend(planning_fixtures()?);
+        Ok(cases)
+    }
+
+    /// Every planning phase over a brief that sets every optional field, a
+    /// minimal brief, no brief, and decisions with and without results.
+    fn planning_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        let full: BuildPlanningBrief = serde_json::from_value(json!({
+            "version": 1, "build_id": MAX_SAFE, "special_request": UNICODE,
+            "requirements": [{"key": "size", "value": "350", "status": "unverified", "detail": UNICODE}],
+            "evidence": [{"id": "e1", "url": "https://example.com/a", "normalized_url": "https://example.com/a",
+                "kind": "canonical_design", "input_kind": "upload", "filenames": ["a.stl"],
+                "artifacts": [{"path": "a.stl", "format": "3mf", "printable": true, "byte_size": MAX_SAFE, "sha256": "e".repeat(64)}],
+                "upload_required": false, "derived_from_evidence_id": "e0", "source_id": MAX_SAFE,
+                "source_role": "structural_base", "title": UNICODE, "extract": UNICODE,
+                "retrieved_at": "2026-11-04T00:00:00.000Z", "content_hash": "f".repeat(64),
+                "sync_status": "synced", "pinned_revision": "abc"}],
+            "contributions": [{"id": "c1", "evidence_id": "e1", "slot": "probe", "responsibility": "printable_parts",
+                "path_scopes": ["probe/"], "confidence": "high", "evidence_text": UNICODE, "status": "proposed"}],
+            "compatibility_findings": [{"id": "f1", "subject": "probe", "status": "incompatible", "detail": UNICODE, "evidence_ids": ["e1"]}],
+            "differences": [{"id": "d1", "group_id": "g1", "family": "probe", "kind": "renamed", "source_a": "A", "source_b": "B",
+                "path_a": "a.stl", "path_b": "b.stl", "detail": UNICODE}],
+            "resolutions": {"g1": {"resolution": "custom", "rationale": UNICODE, "custom_resolution": UNICODE, "resolved_at": "2026-11-04T00:00:00.000Z"}},
+            "role_filaments": [{"role": "primary", "requested_brand": "B", "requested_name": "N", "inventory_kind": "substitute",
+                "inventory_id": "7", "color_hex": "#A0B1C2", "substitution_confirmed": false}],
+            "checklist_items": [{"id": "k1", "title": UNICODE, "detail": UNICODE, "category": "pre_print", "required": true, "completed": false}],
+            "managed_source_ids": [MAX_SAFE], "draft_source_revisions": {"1": "abc"}, "draft_id": MAX_SAFE,
+            "draft_review_blockers": [UNICODE],
+            "created_at": "2026-11-04T00:00:00.000Z", "updated_at": "2026-11-04T00:00:00.000Z"
+        }))?;
+        let minimal: BuildPlanningBrief = serde_json::from_value(json!({
+            "version": 1, "build_id": 1, "special_request": "", "requirements": [], "evidence": [],
+            "contributions": [], "differences": [], "resolutions": {}, "role_filaments": [],
+            "draft_review_blockers": [], "created_at": "2026-11-04T00:00:00.000Z", "updated_at": "2026-11-04T00:00:00.000Z"
+        }))?;
+        let readiness = BuildPlanningReadiness {
+            ready: false,
+            blockers: vec![ReadinessBlocker {
+                code: "draft_missing".into(),
+                detail: UNICODE.into(),
+            }],
+        };
+        let planning = |brief: &BuildPlanningBrief, planning_phase| BuildPlanningResponse {
+            planning: Some(BuildPlanning {
+                brief: brief.clone(),
+                planning_phase,
+                readiness: readiness.clone(),
+                grouped_difference_count: brief.differences.len(),
+                difference_count: brief.differences.len(),
+            }),
+        };
+        let mut cases = vec![served(
+            "BuildPlanningResponse",
+            "no-brief",
+            BuildPlanningResponse { planning: None },
+        )?];
+        for (name, phase) in [
+            ("preparing", BuildPlanningPhase::Preparing),
+            ("draft", BuildPlanningPhase::Draft { draft_id: MAX_SAFE }),
+            (
+                "applied",
+                BuildPlanningPhase::Applied {
+                    draft_id: 1,
+                    revision_id: Some(MAX_SAFE),
+                },
+            ),
+            (
+                "applied-no-revision",
+                BuildPlanningPhase::Applied {
+                    draft_id: 1,
+                    revision_id: None,
+                },
+            ),
+            ("abandoned", BuildPlanningPhase::Abandoned { draft_id: 1 }),
+            (
+                "missing-draft",
+                BuildPlanningPhase::MissingDraft { draft_id: 1 },
+            ),
+        ] {
+            cases.push(served(
+                "BuildPlanningResponse",
+                name,
+                planning(&full, phase),
+            )?);
+        }
+        cases.push(served(
+            "BuildPlanningResponse",
+            "minimal-brief",
+            planning(&minimal, BuildPlanningPhase::Preparing),
+        )?);
+        let object = |value: Value| match value {
+            Value::Object(object) => object,
+            _ => Map::new(),
+        };
+        let decision = |id: i64, result: Option<Map<String, Value>>| PlanDecision {
+            id,
+            plan_id: MAX_SAFE,
+            created_at: "2026-11-04T00:00:00.000Z".into(),
+            actor: "assistant".into(),
+            kind: "applied".into(),
+            action_type: result.as_ref().map(|_| "set_quantity".into()),
+            params: object(
+                json!({"part_id": MAX_SAFE, "nested": {"list": [1, 2.5, null, true, UNICODE]}}),
+            ),
+            label: UNICODE.into(),
+            summary: UNICODE.into(),
+            rationale: result.as_ref().map(|_| UNICODE.into()),
+            result,
+        };
+        cases.push(served(
+            "PlanDecisionList",
+            "with-and-without-results",
+            PlanDecisionList {
+                decisions: vec![
+                    decision(1, None),
+                    decision(MAX_SAFE, Some(object(json!({"ok": true})))),
+                ],
+            },
+        )?);
+        cases.push(served(
+            "PlanDecisionList",
+            "empty",
+            PlanDecisionList { decisions: vec![] },
+        )?);
         Ok(cases)
     }
 }

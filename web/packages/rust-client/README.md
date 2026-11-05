@@ -40,6 +40,8 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | | `DraftAcceptPreview` |
 | `PATCH /api/v2/plans/{id}/drafts/{draft_id}/parts` | `EditDraftPartsRequest` | `DraftWorkspace` |
 | `POST /api/v2/plans/{id}/drafts/{draft_id}/abandon` | `AbandonDraftRequest` | `DraftIdentity` |
+| `GET /api/v2/plans/{id}/build-planning` | | `BuildPlanningResponse` |
+| `GET /api/v2/plans/{id}/decisions` | | `PlanDecisionList` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 
 `PrinterState` (execution, bed-clear and display state as separate fields) and `PrinterDisplayDescriptor` are DTOs without a route yet.
@@ -74,6 +76,7 @@ npm --prefix web run typecheck --workspace @print-partner/rust-client
 - **Unknown keys.** Request DTOs use `#[serde(deny_unknown_fields)]`, so their schemas are `z.strictObject` and reject unknown keys. Response DTOs use `z.object`, which strips unknown keys.
 - **Omitted versus null.** Every covered field is required, except `Problem`'s `detail`, `code` and `errors`, which Rust omits when empty as RFC 9457 allows. A Rust `Option` field that is always serialized is `.nullable()`, not `.optional()`, through `schemars(with = "RequiredNullable<T>")`.
 - **Integers.** Bounded Rust wire integers keep their bounds. `i64`, `u64` and `usize` are limited to the JavaScript safe range, so a larger value fails to parse instead of losing precision.
+- **Maps and free JSON.** A Rust map (`BTreeMap<String, T>`) becomes `z.record(z.string(), T)`, and `serde_json::Value` inside a map becomes `z.json()`. Decision `params` and `result` are the only free JSON. The round-trip tests skip the unknown-key and omitted-field checks for record entries and every check under `z.json()`.
 - **Tagged unions.** Internally tagged enums become `z.discriminatedUnion` on their tag (`kind` or `status`).
 - **Not expressed.** JSON Schema cannot state the one-edit-per-Part-field rule for `EditDraftPartsRequest`; the server refuses such a request with 400.
 

@@ -47,6 +47,16 @@ CI runs every GRE-451 generator with `--check` in the Desktop contracts workflow
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test ticket_t_10_fixtures
 ```
 
+## planning-http/node.json (GRE-1119)
+
+`generate.mjs` builds Node's real app on a scratch data directory, creates ten Builds, then seeds them with SQL rows and Source files: briefs in every planning phase, a synced structural base and overlay whose trees differ, a stale brief, contradictory evidence, every readiness blocker, a malformed brief, a brief for another Build, a draft whose digest does not verify, and 205 decisions. It records 27 responses from `GET /plans/:id/build-planning` and `GET /plans/:id/decisions` on the flat, `/api/v1` and `/api/v2` mounts, with the tables each changed (none). The seed goes into `node.json` beside the responses, with `{data}` for the data directory, so Rust reads the same data. Every stored value is literal, so nothing is labelled.
+
+`pp-core`'s `build_planning_read` test replays the seed through `read_router` and requires Node's status and complete 200 body for every case (Rust serves absent optional brief fields as `null`, which the test removes from the brief before comparing), Node's `detail` for 400 and 404, a 401 without a session, and no changed table or file. See [Build planning and decisions](../../docs/build-planning.md).
+
+```sh
+node fixtures/parity/planning-http/generate.mjs --check
+```
+
 ## plans-http/node.json (GRE-451)
 
 `generate.mjs` builds Node's real app (`buildApp` over self-host ports, no API key) on a scratch data directory and sends 28 requests in order to the Plan routes Rust's `build_router` serves: create, list, read-one, layers, touch and delete, each on the flat, `/api/v1` and `/api/v2` mounts, plus duplicate, blank, unnamed and unknown-id refusals. Each case records the complete response and the database tables it changed. Plan ids are sequential on a fresh database and stay literal; timestamps become `time-N` labels.

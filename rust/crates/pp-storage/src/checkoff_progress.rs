@@ -22,6 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod burst;
+mod links;
+mod verify;
+
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_IMPORT: i64 = 10_000;
 
@@ -156,6 +160,16 @@ pub enum Request {
     CompletionCoordinate { part_id: i64, body: Value },
     /// `PATCH /parts/:id/assembled` with its raw JSON body.
     AssemblyCoordinate { part_id: i64, body: Value },
+    /// `POST /printer-checkoff/verify` with its raw JSON body: confirms or
+    /// rejects pending units of a printer Checkoff link awaiting verify.
+    Verify { body: Value },
+    /// `POST /printer-checkoff/dismiss` with its raw JSON body.
+    Dismiss { body: Value },
+    /// `POST /printer-checkoff/verify-batch` with its raw JSON body: one
+    /// Checkoff burst over several beds, with an idempotency key.
+    VerifyBatch { body: Value },
+    /// `POST /printer-checkoff/verify-batch/undo` with its raw JSON body.
+    UndoBatch { body: Value },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -185,6 +199,17 @@ pub enum Body {
     Imported {
         updated_parts: usize,
     },
+    Verified {
+        link: Value,
+        units_confirmed: usize,
+        units_rejected: usize,
+        outcomes: Vec<Value>,
+    },
+    Link {
+        link: Value,
+    },
+    /// A Checkoff burst receipt or undo result.
+    Receipt(Value),
     Failure {
         detail: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -285,6 +310,10 @@ pub struct ProgressClient {
 enum Op {
     Unit { target: Target, change: Change },
     Import(Import),
+    Verify { link_id: String, body: Value },
+    Dismiss { link_id: String },
+    VerifyBatch(burst::Burst),
+    UndoBatch { token: String },
 }
 enum Target {
     Token { expected: Basis, token: String },
@@ -409,8 +438,30 @@ fn coordinate(body: &Value, field: &str) -> std::result::Result<(i64, bool), Res
     }
 }
 
+/// `String(body.link_id ?? "").trim()`, required by the printer Checkoff routes.
+fn link_id(body: &Value) -> std::result::Result<String, Response> {
+    let id = match body.get("link_id").unwrap_or(&Value::Null) {
+        Value::Null => String::new(),
+        other => links::js_trim(&links::js_string(other)).to_owned(),
+    };
+    if id.is_empty() {
+        return Err(Response::failure(400, "link_id is required", None));
+    }
+    Ok(id)
+}
+
 fn validate(request: Request) -> std::result::Result<Op, Response> {
     let (target, change) = match request {
+        Request::Verify { body } => {
+            return link_id(&body).map(|link_id| Op::Verify { link_id, body });
+        }
+        Request::Dismiss { body } => {
+            return link_id(&body).map(|link_id| Op::Dismiss { link_id });
+        }
+        Request::VerifyBatch { body } => return burst::Burst::parse(&body).map(Op::VerifyBatch),
+        Request::UndoBatch { body } => {
+            return burst::undo_token(&body).map(|token| Op::UndoBatch { token });
+        }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -532,6 +583,12 @@ fn archived(snapshot: &Snapshot) -> bool {
 
 fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let (mut snapshot, token, change) = match op {
+        Op::Verify { link_id, body } => {
+            return verify::verify(tx, tenant, &link_id, &body, repos, &Default::default());
+        }
+        Op::Dismiss { link_id } => return verify::dismiss(tx, tenant, &link_id),
+        Op::VerifyBatch(burst) => return burst::verify_batch(tx, tenant, burst, repos),
+        Op::UndoBatch { token } => return burst::undo_batch(tx, tenant, &token, repos),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,
@@ -565,6 +622,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         return Ok(Err(Refusal::Archived));
     }
     complete_rows(tx, tenant, &snapshot)?;
+    let profile = snapshot.profile.id;
     // The read model already refuses duplicate tokens.
     let Some((part, position)) = snapshot.parts.iter_mut().find_map(|part| {
         let position = part.units.iter().position(|u| u.token == token)?;
@@ -576,6 +634,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let index = part.units[position].unit_index;
     match change {
         Change::Completed(completed) => {
+            let mut moved = false;
             for unit in &mut part.units {
                 let changes = if completed {
                     unit.unit_index <= index
@@ -584,9 +643,13 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                 };
                 if changes {
                     set_completed(tx, tenant, part_id, unit.unit_index, completed)?;
+                    moved |= unit.completed != completed || (unit.assembled && !completed);
                     unit.completed = completed;
                     unit.assembled &= completed;
                 }
+            }
+            if moved {
+                progress_changed(tx, tenant, profile, Some(part_id))?;
             }
             Ok(Ok(completion(part)))
         }
@@ -601,11 +664,37 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                     changed == 1,
                     "Progress update did not find exactly one current unit"
                 );
-                unit.assembled = assembled;
+                if unit.assembled != assembled {
+                    unit.assembled = assembled;
+                    progress_changed(tx, tenant, profile, Some(part_id))?;
+                }
             }
             Ok(Ok(assembly(part)))
         }
     }
+}
+
+/// Records the change in the domain event log inside the Checkoff transaction.
+fn progress_changed(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    part: Option<i64>,
+) -> Result<()> {
+    crate::domain_events::append(
+        tx,
+        tenant,
+        crate::domain_events::Change {
+            kind: crate::domain_events::PROGRESS_CHANGED,
+            aggregate_type: "build",
+            aggregate_id: profile.to_string(),
+            aggregate_version: None,
+            payload: match part {
+                Some(part) => serde_json::json!({ "part_id": part }),
+                None => serde_json::json!({ "import": true }),
+            },
+        },
+    )
 }
 
 /// Resolves `/parts/:id` and a unit index to the current snapshot and unit
@@ -723,6 +812,7 @@ fn import_counts(
         targets.push((part, row.printed_count));
     }
     let mut updated_parts = 0;
+    let mut moved = false;
     for (part, printed) in targets {
         if part
             .units
@@ -731,6 +821,9 @@ fn import_counts(
         {
             updated_parts += 1;
         }
+        moved |= part.units.iter().any(|u| {
+            u.completed != (u.unit_index < printed) || (u.assembled && u.unit_index >= printed)
+        });
         for unit in &part.units {
             set_completed(
                 tx,
@@ -740,6 +833,9 @@ fn import_counts(
                 unit.unit_index < printed,
             )?;
         }
+    }
+    if moved {
+        progress_changed(tx, tenant, snapshot.profile.id, None)?;
     }
     Ok(Ok(Response::ok(Body::Imported { updated_parts })))
 }

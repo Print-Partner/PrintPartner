@@ -300,6 +300,8 @@ Initial state and cursor come from one consistent snapshot; replay-to-live
 handoff must close the race. Include a database-generation identifier so backup
 restore cannot silently reuse a cursor. Bound replay/storage/queued bytes and
 slow-client deadlines; gaps or expired cursors require resnapshot.
+The gated storage log, its SSE route `GET /api/v1/events` and their bounds
+are described in [Domain events](domain-events.md).
 
 One client event/cache adapter invalidates affected queries and coalesces
 refreshes. Apply direct deltas only when versioned and complete. Printer samples
@@ -422,7 +424,7 @@ post-cutover changes. Prefer fix-forward after Rust writes; data-losing restore
 needs informed owner approval. A restore cannot undo a printer action or
 Spoolman effect. Unknown sends still require reconciliation.
 
-The baseline Rust schema ceilings are 35 without the Cargo feature and 41 with
+The baseline Rust schema ceilings are 35 without the Cargo feature and 42 with
 it. In a rebuild build, the Rust storage writer opens only with the runtime
 switch on, and only a directory that carries the durable ownership marker
 `.pp-rust-owned.json` or is empty, in which case it writes the marker before

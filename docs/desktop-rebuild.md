@@ -1509,9 +1509,10 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step writes `backups/pre-schema{N}.db`,
-where N is the step's target version, validates its objects and columns, and then
-commits them with its version stamp in one transaction. For a database at 37 the
+repair's writes to `source_revisions`. Each step through 41 (`LAST_COPIED_STEP`)
+writes `backups/pre-schema{N}.db`, where N is the step's target version; step 42
+only adds a table and writes no copy of its own. Each step validates its objects
+and columns, and then commits them with its version stamp in one transaction. For a database at 37 the
 first backup, `pre-schema38.db`, is the untouched input. `pre-schema39.db` is taken
 after step 2, so it can include that pass's repairs. An
 interrupted step leaves its input version intact, so each attempt takes a fresh copy
@@ -1520,7 +1521,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-41.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-42.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -2548,6 +2549,144 @@ does not serve.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_progress
+```
+
+### Domain event log, GRE-1088
+
+The 41 to 42 step installs `domain_events` and its index. Checkoff
+writes, including GRE-420 verify, bursts and burst undo, and Accept append an
+event in their own transaction when they change a row. The step writes no
+step copy of its own; the copy taken at open covers it. See
+[Domain events](domain-events.md).
+
+### Domain event stream, GRE-1162
+
+`GET /api/v1/events` serves the log as Server-Sent Events from `read_router`,
+so the Rust-only runtime mounts it. It resumes from `Last-Event-ID`, answers
+401 without a credential, ends the stream when the session is revoked, and
+stops feeding a client whose bounded queue stays full for 10 seconds; that
+connection closes at the server's next write, or after 30 seconds in which the
+client accepts no bytes. Shutdown draining ends open streams and does not wait
+for them. See
+[Domain events](domain-events.md#http-stream).
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --lib events::
+```
+
+### Printer Checkoff verify and dismiss (GRE-420)
+
+GRE-420 adds two `checkoff_progress::Request` variants, still compiled only with
+`desktop_rebuild` and still called by no route. Each runs in the same immediate
+writer transaction as the other Checkoff writes.
+
+- `Request::Verify { body }` takes the `POST /printer-checkoff/verify` body:
+  `link_id`, `decisions` and optional `additional_decisions`. It ports
+  `verifyPrinterCheckoff`, `verifyAcceptedPrint` and
+  `applyAcceptedUnitDecisionsInternal`. In one transaction it reads the link
+  from the `printer.checkoff_links` setting, checks the decisions against the
+  link's pending units and the current accepted snapshot, marks confirmed units
+  printed, records the resolved units, imported-extra results, state and
+  `units_marked` on the link, and appends one `print_jobs` row with one
+  `print_job_parts` row per decision. It returns Node's status, `detail`, and
+  `{ link, units_confirmed, units_rejected, outcomes }` body.
+- `Request::Dismiss { body }` ports `dismissHostFailedLink`: a `host_failed`
+  link becomes `dismissed`.
+
+Links are parsed, normalized, moved to the end and trimmed to 200 exactly as
+`services/printer-checkoff-store.ts` writes them, so the stored setting matches
+Node byte for byte after a write, except for lone surrogates (below). Only an explicit authenticated request can
+verify. A link that a status watcher still holds in `watching` refuses with 409,
+and a repeated decision or a second link for an already printed unit cannot
+count a unit twice: the first refuses because the unit is no longer pending, the
+second records the outcome with `units_confirmed: 0`.
+
+One correction differs from Node on purpose. Node writes each Part's confirmed
+units before it checks the next Part's left-fill rule, then returns 400 and
+commits the earlier Parts. Rust checks every Part first, so a refused burst
+writes nothing. The parity fixture keeps this case as its last step and the test
+asserts the one progress row Node left behind.
+
+Text is cut at UTF-16 units like Node's `.slice`. When a cut splits a surrogate
+pair, Node stores a lone surrogate escape. Rust strings cannot hold one, so
+storage reads a lone surrogate in the stored links as U+FFFD and writes U+FFFD
+where its own cut splits a pair. The rest of the setting still loads; before
+this, one such string made every link in the tenant unreadable. The fixture
+seeds a lone surrogate and cuts a note across a pair to cover both directions.
+
+Not ported here: the route itself and its webhooks, unattributed-print claiming
+after verify, the Spoolman deduction Node runs after the response (and the
+storage-owned deduction intent GRE-411 adds), manual complete, unattributed claim
+and dismiss, file assignments, remote-file recheck, and the monitor that moves
+links to `awaiting_verify`. Those stay on Node until their whole operation moves.
+
+The Node fixture replays the services on a copy of
+`rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db` with
+synthetic links; generated IDs and times are normalized.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/printer-checkoff-verify/generate.mjs --check
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_61_checkoff)'
+```
+
+### Checkoff bursts (GRE-1090)
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the gateway mounts
+`POST /printer-checkoff/verify-batch` and `POST /printer-checkoff/verify-batch/undo`
+at `/` and `/api/v2` (`pp-api/src/checkoff.rs`, admission through
+`accepted::Gate`: loopback, exact Host and Origin, session or API key). These
+routes exist only in the Rust-owned runtime: with the flag on, Rust holds the
+ownership marker and `.desktop-lease` for the data directory and standalone Node
+is refused (see Writer admission above), so no Node verify, monitor or claim
+writes `printer.checkoff_links`, progress or outcomes beside a burst. A burst
+does not run Node's unattributed-print claim or Spoolman deduction after verify;
+those are GRE-1169 and GRE-411 (deduction intent).
+
+A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
+"additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
+naming a different link and shaped like a `POST /printer-checkoff/verify` body.
+`pp-storage::checkoff_progress` runs every bed through the GRE-420 verify in one
+writer transaction. The left-fill rule counts units that any bed of the burst
+confirms, so a Part's units spread over several beds may come in any bed order.
+The first bed that refuses rolls the whole burst back and
+returns its status with the detail prefixed by `beds[i]: `. Success returns
+`undo_token` and one result per bed.
+
+The receipt is written in the same transaction under the
+`printer.checkoff_bursts` setting: the key, the SHA-256 of the request with
+object keys sorted, the response, and the link, progress and outcome rows undo
+needs. A repeat with the same key and request returns the stored response before
+any other check and writes nothing, also after a restart. The same key with a
+different request returns 409. The newest 100 receipts are kept. A dropped
+receipt leaves the SHA-256 of its key in `printer.checkoff_bursts_retired` (the
+newest 5,000), and replaying that key returns 409 instead of running again, so an
+undone burst cannot be counted again by a late retry. A replay of an undone burst
+that still has its receipt returns the original receipt and writes nothing.
+
+Undo takes `{ "undo_token" }` and is a compensating write: it restores each
+link at its original position, the progress rows and the outcome rows the burst
+wrote. It refuses with 409 and a reason when any of them changed since, when
+the burst was already undone, and when anything that can depend on the burst's
+units changed after it: the burst stores the SHA-256 of every progress row of
+the Parts it decided, the outcome rows that name its units, and every stored link
+whose units or resolved units name them, and undo compares it. A later verify of
+another link that records a unit the burst printed, or a later unit that filled
+from the burst's unit, therefore blocks undo. Unrelated activity, such as a new
+print job, a new link, or a dismiss of a link without the burst's units, does not. A receipt
+without that hash or its unit list (written before they existed) refuses with
+409 instead of undoing on weaker checks. Undo on a Build archived since the burst refuses like
+every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
+Spoolman call happens in either transaction.
+
+`web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the
+`P` (`plateBed`) and `F` (`partFillBeds`) helpers, which both produce this
+request shape. `verifyBatchRequest` merges beds for the same link, keeping both
+unit decisions and imported-extra `additional_decisions`, and leaves out beds with
+nothing to decide (a plate still `watching`), which the route would refuse.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'
+npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1

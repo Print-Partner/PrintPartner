@@ -1624,5 +1624,16 @@ pub(crate) fn publish_in_transaction(
             && final_profile["lastRecomputedAt"] == at,
         "Accepted Build mismatch"
     );
+    crate::domain_events::append(
+        tx,
+        tenant,
+        crate::domain_events::Change {
+            kind: crate::domain_events::REVISION_ACCEPTED,
+            aggregate_type: "build",
+            aggregate_id: profile.to_string(),
+            aggregate_version: Some(version + 1),
+            payload: json!({ "revision_id": revision }),
+        },
+    )?;
     Ok(Outcome::Applied { receipt })
 }

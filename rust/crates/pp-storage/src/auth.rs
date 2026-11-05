@@ -672,7 +672,7 @@ pub(super) enum Command {
         key: Secret,
     },
 }
-fn timestamp(after_seconds: i64) -> String {
+pub(crate) fn timestamp(after_seconds: i64) -> String {
     let now = time::OffsetDateTime::now_utc() + time::Duration::seconds(after_seconds);
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",

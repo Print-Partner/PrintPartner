@@ -14,13 +14,13 @@ Transitive packages are recorded in `web/package-lock.json` and remain subject t
 | @fastify/compress | 8.3.1 | MIT | https://github.com/fastify/fastify-compress#readme |
 | @fastify/cookie | 11.1.3 | MIT | https://github.com/fastify/fastify-cookie#readme |
 | @fastify/cors | 11.3.1 | MIT | https://github.com/fastify/fastify-cors#readme |
-| @fastify/multipart | 10.1.4 | MIT | https://github.com/fastify/fastify-multipart#readme |
+| @fastify/multipart | 10.1.6 | MIT | https://github.com/fastify/fastify-multipart#readme |
 | @fastify/rate-limit | 11.2.1 | MIT | https://github.com/fastify/fastify-rate-limit#readme |
-| @fastify/static | 10.1.6 | MIT | https://github.com/fastify/fastify-static |
+| @fastify/static | 10.1.7 | MIT | https://github.com/fastify/fastify-static |
 | @fastify/swagger | 9.9.2 | MIT | https://github.com/fastify/fastify-swagger#readme |
 | @fastify/swagger-ui | 6.1.2 | MIT | https://github.com/fastify/fastify-swagger-ui#readme |
 | @fastify/websocket | 11.3.4 | MIT | https://github.com/fastify/fastify-websocket#readme |
-| @modelcontextprotocol/sdk | 1.32.1 | MIT | https://modelcontextprotocol.io |
+| @modelcontextprotocol/sdk | 1.32.2 | MIT | https://modelcontextprotocol.io |
 | @octokit/rest | 22.0.1 | MIT | https://github.com/octokit/rest.js |
 | @radix-ui/react-alert-dialog | 1.2.1 | MIT | https://radix-ui.com/primitives |
 | @radix-ui/react-checkbox | 1.4.1 | MIT | https://radix-ui.com/primitives |
@@ -38,7 +38,7 @@ Transitive packages are recorded in `web/package-lock.json` and remain subject t
 | @radix-ui/react-tooltip | 1.4.1 | MIT | https://radix-ui.com/primitives |
 | @sentry/react | 10.76.2 | MIT | https://github.com/getsentry/sentry-javascript/tree/master/packages/react |
 | @tailwindcss/vite | 4.3.3 | MIT | https://tailwindcss.com |
-| @tanstack/react-query | 5.104.3 | MIT | https://tanstack.com/query |
+| @tanstack/react-query | 5.104.5 | MIT | https://tanstack.com/query |
 | adm-zip | 0.6.1 | MIT | https://github.com/cthackers/adm-zip |
 | better-sqlite3 | 13.0.3 | MIT | https://github.com/WiseLibs/better-sqlite3 |
 | chokidar | 4.0.3 | MIT | https://github.com/paulmillr/chokidar |
@@ -51,9 +51,9 @@ Transitive packages are recorded in `web/package-lock.json` and remain subject t
 | fflate | 0.8.3 | MIT | https://101arrowz.github.io/fflate |
 | js-yaml | 5.5.0 | MIT | https://github.com/nodeca/js-yaml |
 | jszip | 3.10.2 | (MIT OR GPL-3.0-or-later) | https://github.com/Stuk/jszip |
-| lucide-react | 1.59.0 | ISC | https://lucide.dev |
+| lucide-react | 1.61.0 | ISC | https://lucide.dev |
 | mqtt | 5.16.1 | MIT | https://github.com/mqttjs/MQTT.js |
-| nodemailer | 10.1.2 | MIT-0 | https://nodemailer.com/ |
+| nodemailer | 10.2.1 | MIT-0 | https://nodemailer.com/ |
 | pdf-parse | 2.4.5 | Apache-2.0 | https://mehmet-kozan.github.io/pdf-parse/ |
 | pg | 8.23.1 | MIT | https://github.com/brianc/node-postgres |
 | pino | 10.4.0 | MIT | https://getpino.io |

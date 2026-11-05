@@ -9,8 +9,11 @@ use pp_storage::{
     required_units::ReconciliationCommand,
     working_drafts::PositiveId,
 };
-use rusqlite::{Connection, types::ValueRef};
-use serde_json::{Map, Value, json};
+use rusqlite::Connection;
+use serde_json::{Value, json};
+
+#[path = "common/json_rows.rs"]
+mod json_rows;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -150,35 +153,7 @@ impl Fixture {
     }
 
     fn read(&self, group: &str) -> Value {
-        let connection = self.sql();
-        let tables = node()["queries"][group].as_object().unwrap().clone();
-        let mut result = Map::new();
-        for (table, sql) in tables {
-            let mut statement = connection.prepare(sql.as_str().unwrap()).unwrap();
-            let columns: Vec<String> = statement
-                .column_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
-            let rows = statement
-                .query_map([], |row| {
-                    let mut object = Map::new();
-                    for (i, column) in columns.iter().enumerate() {
-                        let value = match row.get_ref(i)? {
-                            ValueRef::Null => Value::Null,
-                            ValueRef::Integer(n) => json!(n),
-                            value => json!(value.as_str().unwrap()),
-                        };
-                        object.insert(column.clone(), value);
-                    }
-                    Ok(Value::Object(object))
-                })
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-            result.insert(table, Value::from(rows));
-        }
-        Value::Object(result)
+        json_rows::query_rows(&self.sql(), node()["queries"][group].as_object().unwrap())
     }
 }
 

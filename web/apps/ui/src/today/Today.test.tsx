@@ -342,7 +342,13 @@ describe("the newest failed write is the one shown", () => {
       init?.method === "POST"
         ? path.endsWith("/undo")
           ? json({ title: "Conflict", detail: "A newer change to this Checkoff link exists" }, 409)
-          : json({ title: "Bad Request", detail: "beds[0]: Confirm must include lower incomplete units first" }, 400)
+          : json(
+              {
+                title: "Bad Request",
+                detail: "beds[0]: Confirm must include lower incomplete units first",
+              },
+              400,
+            )
         : real(path, init),
     );
     fireEvent.click(await screen.findByRole("button", { name: "Confirm Trident bed" }));
@@ -442,7 +448,9 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
       within(bed("Voron 2.4")).getByText(/Printer link down, so confirm by hand what came off/),
     ).toBeTruthy();
     const unseen = screen.getByRole("region", { name: "Prints the app cannot see finish" });
-    expect(unseen.textContent).toContain("Annex K3: link-annex.gcode. Its printer link is down");
+    expect(unseen.textContent).toContain(
+      "Annex K3: link-annex.gcode. Printer link down, so check it off by hand",
+    );
     expect(
       within(unseen).getByRole("link", { name: "Build's Checkoff tab" }).getAttribute("href"),
     ).toBe("/builds/22/checkoff");
@@ -492,7 +500,10 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     );
     // The reread at 30 s fails, then react-query's three backed-off retries (1 + 2 + 4 s).
     await act(() => vi.advanceTimersByTimeAsync(38_000));
-    expect(await within(bed("Voron 2.4")).findByText(/Printer link down/)).toBeTruthy();
+    expect(
+      await within(bed("Voron 2.4")).findByText(/Printer links could not be read/),
+    ).toBeTruthy();
+    expect(within(bed("Voron 2.4")).queryByText(/Printer link down/)).toBeNull();
   });
 
   it("does not claim a link is up when the farm read fails", async () => {
@@ -506,7 +517,7 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     );
     renderToday(core);
     expect(await screen.findByRole("heading", { level: 3, name: "voron" })).toBeTruthy();
-    expect(within(bed("voron")).getByText(/Printer link down/)).toBeTruthy();
+    expect(within(bed("voron")).getByText(/Printer links could not be read/)).toBeTruthy();
   });
 });
 

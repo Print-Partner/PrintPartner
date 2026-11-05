@@ -228,9 +228,7 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
           <p>
             {tallyText(tally)}{" "}
             {tally.kind === "confirmed" && (
-              <MutationButton onClick={() => undoBurst(tally.undo)}>
-                Undo
-              </MutationButton>
+              <MutationButton onClick={() => undoBurst(tally.undo)}>Undo</MutationButton>
             )}
           </p>
         )}
@@ -251,11 +249,11 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
 /** The hero task: clear the beds waiting for a person, with the reason and what each confirm marks. */
 function ClearBeds({
   beds,
-  linkDown,
+  linkNote,
   checkoff,
 }: {
   beds: Bed[];
-  linkDown: (printerId: string) => boolean;
+  linkNote: (printerId: string) => string | null;
   checkoff: Checkoff;
 }) {
   return (
@@ -268,8 +266,8 @@ function ClearBeds({
             <h3>{bed.printer}</h3>
             <p className="pp-muted">
               {bed.result.filename}
-              {linkDown(bed.result.printer_id) &&
-                ". Printer link down, so confirm by hand what came off."}
+              {linkNote(bed.result.printer_id) &&
+                `. ${linkNote(bed.result.printer_id)}, so confirm by hand what came off.`}
             </p>
             <ul aria-label={`What confirming ${bed.printer} marks`} className="pp-diff">
               {bedDiff(bed.pending).map((line) => (
@@ -312,9 +310,11 @@ function TopTask({ task }: { task: Task }) {
 function UnseenPrints({
   results,
   printerName,
+  linkNote,
 }: {
   results: CheckoffResult[];
   printerName: (id: string) => string;
+  linkNote: (printerId: string) => string | null;
 }) {
   if (results.length === 0) return null;
   return (
@@ -323,7 +323,7 @@ function UnseenPrints({
       <ul className="pp-unseen">
         {results.map((r) => (
           <li key={r.id}>
-            {`${printerName(r.printer_id)}: ${r.filename}. Its printer link is down, so check it off by hand in the `}
+            {`${printerName(r.printer_id)}: ${r.filename}. ${linkNote(r.printer_id)}, so check it off by hand in the `}
             <Link to={`/builds/${r.profile_id}/checkoff`} className="pp-link">
               Build&apos;s Checkoff tab
             </Link>
@@ -395,10 +395,12 @@ export function TodayScreen() {
   const checkoff = useCheckoff();
   const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));
   const printerName = (id: string) => byId.get(id)?.name ?? id;
-  // Without a current farm read that names the printer, nothing shows its link is up.
-  const linkDown = (id: string) => {
+  // Why a printer's link cannot report a finished print, or null when it can. A failed or
+  // missing farm read says nothing about links, so it never counts as up or as down.
+  const linkNote = (id: string) => {
+    if (printers.isError || !printers.data) return "Printer links could not be read";
     const printer = byId.get(id);
-    return printers.isError || !printer || LINK_DOWN.has(printer.state.execution);
+    return !printer || LINK_DOWN.has(printer.state.execution) ? "Printer link down" : null;
   };
   return (
     <ScreenTemplate
@@ -406,17 +408,19 @@ export function TodayScreen() {
       state={queryScreenState(results, connection)}
       renderData={(data) => {
         const beds = bedsToClear(data.results, printerName);
-        const unseen = data.results.filter((r) => r.state === "watching" && linkDown(r.printer_id));
+        const unseen = data.results.filter(
+          (r) => r.state === "watching" && linkNote(r.printer_id) !== null,
+        );
         const top = tasks.data?.tasks[0];
         return (
           <>
             <CheckoffStatus checkoff={checkoff} />
             {beds.length > 0 ? (
-              <ClearBeds beds={beds} linkDown={linkDown} checkoff={checkoff} />
+              <ClearBeds beds={beds} linkNote={linkNote} checkoff={checkoff} />
             ) : (
               top && <TopTask task={top} />
             )}
-            <UnseenPrints results={unseen} printerName={printerName} />
+            <UnseenPrints results={unseen} printerName={printerName} linkNote={linkNote} />
             <h2>Ranked tasks</h2>
             <RankedTasks query={tasks} skipTop={beds.length === 0} />
           </>

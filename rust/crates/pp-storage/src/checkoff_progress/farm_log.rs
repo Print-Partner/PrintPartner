@@ -345,6 +345,15 @@ fn sends(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<FarmLogEntry>> {
         .collect())
 }
 
+/// Whether the log still holds the entry with this id.
+fn held(stored: &[Value], id: &str) -> bool {
+    stored.iter().any(|e| {
+        e["kind"]
+            .as_str()
+            .is_some_and(|kind| id == format!("{kind}:{}", e["seq"]))
+    })
+}
+
 /// One page, newest first. Only the page's bursts are checked for undo.
 pub(super) fn page(tx: &Transaction<'_>, tenant: &str, query: &Query, repos: &Path) -> Outcome {
     let stored = burst::load_list(tx, tenant, KEY)?;
@@ -370,6 +379,7 @@ pub(super) fn page(tx: &Transaction<'_>, tenant: &str, query: &Query, repos: &Pa
     let receipts = burst::load_receipts(tx, tenant)?;
     let mut out = Vec::with_capacity(page.len());
     for (_, mut entry) in page {
+        entry.undoes = entry.undoes.filter(|target| held(&stored, target));
         if entry.kind == FarmLogKind::CheckoffBurst {
             let token = stored
                 .iter()
@@ -448,13 +458,17 @@ pub(super) fn undo_entry(tx: &Transaction<'_>, tenant: &str, id: &str, repos: &P
         Ok(Response { status: 200, .. }) => {}
         other => return Ok(other),
     }
-    let entry = burst::load_list(tx, tenant, KEY)?
+    let stored = burst::load_list(tx, tenant, KEY)?;
+    let entry = stored
         .iter()
         .rev()
         .find(|e| e["kind"] == UNDO && e["undo_token"] == token.as_str())
         .and_then(logged);
     match entry {
-        Some(entry) => Ok(Ok(Response::ok(Body::FarmLogEntry(Box::new(entry))))),
+        Some(mut entry) => {
+            entry.undoes = entry.undoes.filter(|target| held(&stored, target));
+            Ok(Ok(Response::ok(Body::FarmLogEntry(Box::new(entry)))))
+        }
         None => Ok(Err(super::Refusal::Internal)),
     }
 }

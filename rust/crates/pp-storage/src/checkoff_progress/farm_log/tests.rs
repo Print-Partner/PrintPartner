@@ -45,3 +45,10 @@ fn farm_log_expired_receipt_detail_is_the_undo_routes_404_text() {
     assert_eq!(undo.reason, Some(FarmUndoReason::ReceiptExpired));
     assert_eq!(undo.detail.as_deref(), Some("Checkoff burst not found"));
 }
+
+#[test]
+fn farm_log_held_names_only_kept_entries() {
+    let stored = vec![json!({"kind": UNDO, "seq": 7, "undoes": "checkoff_burst:1"})];
+    assert!(held(&stored, "checkoff_burst_undo:7"));
+    assert!(!held(&stored, "checkoff_burst:1"));
+}

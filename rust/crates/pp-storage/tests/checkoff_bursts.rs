@@ -2,50 +2,24 @@
 //! GRE-1090: one Checkoff burst over several beds is one transaction with an
 //! idempotency key and an undo token. Runs on a copy of the required-units
 //! fixture with the synthetic beds of the printer Checkoff verify parity fixture.
+use checkoff_fixture::Fixture;
 use pp_storage::{
-    Limits, WriterOwner,
+    WriterOwner,
     auth::Secret,
     checkoff_progress::{Basis, Request, Response},
     read_model::Credential,
 };
-use rusqlite::Connection;
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::atomic::AtomicBool, time::Duration};
+use std::{sync::atomic::AtomicBool, time::Duration};
 
+#[path = "common/checkoff_fixture.rs"]
+mod checkoff_fixture;
 #[path = "common/js_json.rs"]
 mod js_json;
 #[path = "common/json_rows.rs"]
 mod json_rows;
 
-const NODE: &str = include_str!("../../../../fixtures/parity/printer-checkoff-verify/node.json");
-const DATABASE: &[u8] = include_bytes!("fixtures/required-units/unchanged.db");
-
-struct Fixture(PathBuf);
-
 impl Fixture {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "pp-checkoff-bursts-{}",
-            hex::encode(rand::random::<[u8; 16]>())
-        ));
-        std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
-        std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
-        let fixture = Self(path);
-        let node = js_json::parse(NODE);
-        for sql in node["setup"].as_array().unwrap() {
-            fixture.sql().execute_batch(sql.as_str().unwrap()).unwrap();
-        }
-        fixture
-    }
-
-    fn sql(&self) -> Connection {
-        Connection::open(self.0.join("print-partner.db")).unwrap()
-    }
-
-    fn open(&self) -> WriterOwner {
-        WriterOwner::open(&self.0, Limits::default()).unwrap().0
-    }
-
     /// Every row a burst can write, except its own receipt.
     fn checkoff(&self) -> Value {
         let queries = json!({
@@ -56,12 +30,6 @@ impl Fixture {
             "links": "SELECT tenant_id, value FROM app_settings WHERE key = 'printer.checkoff_links' ORDER BY tenant_id",
         });
         json_rows::query_rows(&self.sql(), queries.as_object().unwrap())
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -329,6 +297,55 @@ fn verify_batch_undo_refuses_after_a_later_checkoff_on_another_link() {
         );
         owner.shutdown().unwrap();
     }
+}
+
+#[test]
+fn verify_batch_counts_units_other_beds_confirm_toward_left_fill() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let done = batch(
+        &owner,
+        json!({ "idempotency_key": "f-part-3", "beds": [
+        { "link_id": "link-burst", "decisions": [confirm(3, 1)] },
+        { "link_id": "link-verify", "decisions": [confirm(3, 0)] },
+    ] }),
+    );
+    assert_eq!(done["status"], 200, "{done}");
+    assert!(printed(&fixture.checkoff()).ends_with(&[(3, 0), (3, 1)]));
+    owner.shutdown().unwrap();
+}
+
+#[test]
+fn verify_batch_refuses_undo_of_a_receipt_without_a_state() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let done = batch(&owner, two_beds("old-format"));
+    assert_eq!(done["status"], 200);
+    owner.shutdown().unwrap();
+    let connection = fixture.sql();
+    let raw: String = connection
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'printer.checkoff_bursts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut receipts: Value = serde_json::from_str(&raw).unwrap();
+    receipts[0]["undo"].as_object_mut().unwrap().remove("state");
+    connection
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE key = 'printer.checkoff_bursts'",
+            [receipts.to_string()],
+        )
+        .unwrap();
+    let owner = fixture.open();
+    let rows = fixture.checkoff();
+    assert_eq!(
+        undo(&owner, &done["body"]["undo_token"]),
+        json!({ "status": 409, "body": { "detail": "This Checkoff burst predates the undo state check and cannot be undone" } })
+    );
+    assert_eq!(fixture.checkoff(), rows);
+    owner.shutdown().unwrap();
 }
 
 #[test]

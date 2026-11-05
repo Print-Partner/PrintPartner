@@ -254,6 +254,7 @@ pub(super) fn verify_batch(
     }
     let before = public_links(tx, tenant)?;
     let mut touched = Vec::new();
+    let mut confirmed = BTreeSet::new();
     for (_, bed) in &burst.beds {
         for d in field(bed, "decisions").as_array().into_iter().flatten() {
             let (Some(part), Some(index)) = (
@@ -262,6 +263,9 @@ pub(super) fn verify_batch(
             ) else {
                 continue;
             };
+            if d.get("result").and_then(Value::as_str) == Some("confirmed") {
+                confirmed.insert((part, index));
+            }
             if let Some(row) = progress_row(tx, tenant, part, index)? {
                 touched.push((part, index, row));
             }
@@ -271,7 +275,7 @@ pub(super) fn verify_batch(
     touched.dedup();
     let mut results = Vec::with_capacity(burst.beds.len());
     for (i, (id, bed)) in burst.beds.iter().enumerate() {
-        match verify::verify(tx, tenant, id, bed, repos)? {
+        match verify::verify(tx, tenant, id, bed, repos, &confirmed)? {
             Ok(Response {
                 status: 200,
                 body:
@@ -401,6 +405,11 @@ fn undo_conflict(
                 "A print outcome this burst recorded was removed".into(),
             ));
         }
+    }
+    if undo.get("state").is_none() {
+        return Ok(Some(
+            "This Checkoff burst predates the undo state check and cannot be undone".into(),
+        ));
     }
     if undo["state"] != state_hash(tx, tenant)?.as_str() {
         return Ok(Some(

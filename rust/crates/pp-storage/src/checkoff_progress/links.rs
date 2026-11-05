@@ -60,11 +60,6 @@ pub(super) fn js_trim(s: &str) -> &str {
 /// `String(value)` for a JSON value.
 pub(super) fn js_string(value: &Value) -> String {
     match value {
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => ryu_js::Buffer::new()
-            .format(n.as_f64().unwrap_or(f64::NAN))
-            .into(),
         Value::String(s) => s.clone(),
         Value::Array(items) => items
             .iter()
@@ -78,6 +73,10 @@ pub(super) fn js_string(value: &Value) -> String {
             .collect::<Vec<_>>()
             .join(","),
         Value::Object(_) => "[object Object]".into(),
+        Value::Number(n) => ryu_js::Buffer::new()
+            .format(n.as_f64().unwrap_or(f64::NAN))
+            .into(),
+        other => other.to_string(),
     }
 }
 

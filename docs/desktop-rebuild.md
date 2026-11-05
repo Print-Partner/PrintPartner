@@ -2594,14 +2594,21 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --featu
 With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the gateway mounts
 `POST /printer-checkoff/verify-batch` and `POST /printer-checkoff/verify-batch/undo`
 at `/` and `/api/v2` (`pp-api/src/checkoff.rs`, admission through
-`accepted::Gate`: loopback, exact Host and Origin, session or API key). Node has
-no such route, so nothing moves off Node and nothing is written twice.
+`accepted::Gate`: loopback, exact Host and Origin, session or API key). These
+routes exist only in the Rust-owned runtime: with the flag on, Rust holds the
+ownership marker and `.desktop-lease` for the data directory and standalone Node
+is refused (see Writer admission above), so no Node verify, monitor or claim
+writes `printer.checkoff_links`, progress or outcomes beside a burst. A burst
+does not run Node's unattributed-print claim or Spoolman deduction after verify;
+those are GRE-1169 and GRE-411 (deduction intent).
 
 A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
 "additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
 naming a different link and shaped like a `POST /printer-checkoff/verify` body.
 `pp-storage::checkoff_progress` runs every bed through the GRE-420 verify in one
-writer transaction. The first bed that refuses rolls the whole burst back and
+writer transaction. The left-fill rule counts units that any bed of the burst
+confirms, so a Part's units spread over several beds may come in any bed order.
+The first bed that refuses rolls the whole burst back and
 returns its status with the detail prefixed by `beds[i]: `. Success returns
 `undo_token` and one result per bed.
 
@@ -2623,8 +2630,9 @@ the burst was already undone, and when anything else in the tenant's Checkoff
 changed after the burst: the burst stores the SHA-256 of the links setting, every
 progress row and every outcome and job id, and undo compares it. A later verify
 of another link that records a unit the burst printed, a later unit that filled
-from the burst's unit, or a dismiss elsewhere therefore blocks undo. An unknown
-token is 404. No printer, webhook or
+from the burst's unit, or a dismiss elsewhere therefore blocks undo. A receipt
+without that hash (written before it existed) refuses with 409 instead of
+undoing on weaker checks. An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
 `web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the

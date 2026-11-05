@@ -2507,6 +2507,54 @@ does not serve.
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_progress
 ```
 
+### Printer Checkoff verify and dismiss (GRE-420)
+
+GRE-420 adds two `checkoff_progress::Request` variants, still compiled only with
+`desktop_rebuild` and still called by no route. Each runs in the same immediate
+writer transaction as the other Checkoff writes.
+
+- `Request::Verify { body }` takes the `POST /printer-checkoff/verify` body:
+  `link_id`, `decisions` and optional `additional_decisions`. It ports
+  `verifyPrinterCheckoff`, `verifyAcceptedPrint` and
+  `applyAcceptedUnitDecisionsInternal`. In one transaction it reads the link
+  from the `printer.checkoff_links` setting, checks the decisions against the
+  link's pending units and the current accepted snapshot, marks confirmed units
+  printed, records the resolved units, imported-extra results, state and
+  `units_marked` on the link, and appends one `print_jobs` row with one
+  `print_job_parts` row per decision. It returns Node's status, `detail`, and
+  `{ link, units_confirmed, units_rejected, outcomes }` body.
+- `Request::Dismiss { body }` ports `dismissHostFailedLink`: a `host_failed`
+  link becomes `dismissed`.
+
+Links are parsed, normalized, moved to the end and trimmed to 200 exactly as
+`services/printer-checkoff-store.ts` writes them, so the stored setting matches
+Node byte for byte after a write. Only an explicit authenticated request can
+verify. A link that a status watcher still holds in `watching` refuses with 409,
+and a repeated decision or a second link for an already printed unit cannot
+count a unit twice: the first refuses because the unit is no longer pending, the
+second records the outcome with `units_confirmed: 0`.
+
+One correction differs from Node on purpose. Node writes each Part's confirmed
+units before it checks the next Part's left-fill rule, then returns 400 and
+commits the earlier Parts. Rust checks every Part first, so a refused burst
+writes nothing. The parity fixture keeps this case as its last step and the test
+asserts the one progress row Node left behind.
+
+Not ported here: the route itself and its webhooks, unattributed-print claiming
+after verify, the Spoolman deduction Node runs after the response (and the
+storage-owned deduction intent GRE-411 adds), manual complete, unattributed claim
+and dismiss, file assignments, remote-file recheck, and the monitor that moves
+links to `awaiting_verify`. Those stay on Node until their whole operation moves.
+
+The Node fixture replays the services on a copy of
+`rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db` with
+synthetic links; generated IDs and times are normalized.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/printer-checkoff-verify/generate.mjs --check
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_61_checkoff)'
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

@@ -22,6 +22,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod links;
+mod verify;
+
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_IMPORT: i64 = 10_000;
 
@@ -156,6 +159,11 @@ pub enum Request {
     CompletionCoordinate { part_id: i64, body: Value },
     /// `PATCH /parts/:id/assembled` with its raw JSON body.
     AssemblyCoordinate { part_id: i64, body: Value },
+    /// `POST /printer-checkoff/verify` with its raw JSON body: confirms or
+    /// rejects pending units of a printer Checkoff link awaiting verify.
+    Verify { body: Value },
+    /// `POST /printer-checkoff/dismiss` with its raw JSON body.
+    Dismiss { body: Value },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -184,6 +192,15 @@ pub enum Body {
     Assembly(AssemblyBody),
     Imported {
         updated_parts: usize,
+    },
+    Verified {
+        link: Value,
+        units_confirmed: usize,
+        units_rejected: usize,
+        outcomes: Vec<Value>,
+    },
+    Link {
+        link: Value,
     },
     Failure {
         detail: String,
@@ -285,6 +302,8 @@ pub struct ProgressClient {
 enum Op {
     Unit { target: Target, change: Change },
     Import(Import),
+    Verify { link_id: String, body: Value },
+    Dismiss { link_id: String },
 }
 enum Target {
     Token { expected: Basis, token: String },
@@ -409,8 +428,28 @@ fn coordinate(body: &Value, field: &str) -> std::result::Result<(i64, bool), Res
     }
 }
 
+/// `String(body.link_id ?? "").trim()`, required by the printer Checkoff routes.
+fn link_id(body: &Value) -> std::result::Result<String, Response> {
+    let id = match body.get("link_id").unwrap_or(&Value::Null) {
+        Value::Null => String::new(),
+        Value::String(s) => links::js_trim(s).to_owned(),
+        Value::Object(_) => "[object Object]".into(),
+        other => other.to_string(),
+    };
+    if id.is_empty() {
+        return Err(Response::failure(400, "link_id is required", None));
+    }
+    Ok(id)
+}
+
 fn validate(request: Request) -> std::result::Result<Op, Response> {
     let (target, change) = match request {
+        Request::Verify { body } => {
+            return link_id(&body).map(|link_id| Op::Verify { link_id, body });
+        }
+        Request::Dismiss { body } => {
+            return link_id(&body).map(|link_id| Op::Dismiss { link_id });
+        }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -532,6 +571,8 @@ fn archived(snapshot: &Snapshot) -> bool {
 
 fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let (mut snapshot, token, change) = match op {
+        Op::Verify { link_id, body } => return verify::verify(tx, tenant, &link_id, &body, repos),
+        Op::Dismiss { link_id } => return verify::dismiss(tx, tenant, &link_id),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,

@@ -160,6 +160,7 @@ describe("UI3-02 execution and bed are separate facts", () => {
 describe("UI3-03 the pulse line counts by state from /ws/printers", () => {
   it("counts the snapshot, follows events, and never polls for printers", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-05T21:00:00Z"));
     const { fetchMock } = renderAt("/farm");
     expect(pulse().textContent).toBe("Printer counts not loaded");
     expect(socket().url).toBe("ws://localhost:3000/ws/printers");
@@ -212,6 +213,7 @@ describe("UI3-03 the pulse line counts by state from /ws/printers", () => {
 
   it("moves last heard for an answering printer in an unknown state, not for one awaiting status", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-05T21:00:00Z"));
     const unknown = { execution: "unknown", bed_clear: "unknown", display: "unknown" } as const;
     const fleet = [
       printer("odd", "Odd state", { state: unknown }),

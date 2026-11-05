@@ -19,7 +19,9 @@ sequence number, so cursor order is commit order.
 | `plan.revision_accepted` | 1 | `plan_publication::publish_in_transaction`, used by Accept and draft save-and-accept | `build`, the Build ID, version = new accepted Plan version | `{"revision_id": N}` |
 
 An idempotent replay of an Accept (`Existing` or `AlreadyApplied`) writes no
-event. Refused Checkoff requests write none.
+event. Refused Checkoff requests write none, and neither does a Checkoff
+request that changes no row, such as assembling an unprinted unit or
+repeating a completion.
 
 Each event carries a cursor, type, schema version, aggregate type, ID and
 version (`null` when the aggregate has none), a random 32-hex operation ID,
@@ -89,7 +91,8 @@ the caller's `Waker` unsubscribes. The writer thread calls it after an envelope
 that moved the newest sequence, after every auth change so a stream can recheck
 a revoked session at once, and when storage stops. Reads never wake anyone.
 Writers never wait on readers: a wake is a callback that must only signal a
-task. Subscribe before the first read so no commit between them is missed.
+task, never block or call storage. A waker that panics is unsubscribed and the
+writer carries on. Subscribe before the first read so no commit between them is missed.
 
 ## Tests
 
@@ -105,8 +108,8 @@ restart and wake-up tests are in `pp-storage/tests/checkoff_progress.rs`.
 
 | Item | Tests |
 | --- | --- |
-| EVT-01 same transaction | `domain_events_rolled_back_change_leaves_no_event`, `domain_events_refused_or_failed_checkoff_writes_no_event`, `domain_events_checkoff_commits_one_event_with_its_change`, and the publication parity test (one event per applied Accept, none for replays and refusals) |
+| EVT-01 same transaction | `domain_events_rolled_back_change_leaves_no_event`, `domain_events_refused_or_failed_checkoff_writes_no_event`, `domain_events_checkoff_that_changes_no_row_writes_no_event`, `domain_events_checkoff_commits_one_event_with_its_change`, and the publication parity test (one event per applied Accept, none for replays and refusals) |
 | EVT-02 replay or resync | `domain_events_replay_returns_missed_events_in_commit_order`, `domain_events_read_pages_at_the_limit`, `domain_events_cursor_past_retention_requires_resync`, `domain_events_other_generation_or_future_cursor_requires_resync`, `domain_events_restart_starts_a_new_generation` |
 | EVT-03 authentication (storage side) | `domain_events_unauthenticated_read_is_refused`, `domain_events_reads_only_the_callers_tenant` |
 | EVT-04 versioned events | `domain_events_unknown_version_requires_resync_instead_of_skipping`, `domain_events_append_refuses_oversized_payload_and_unknown_kind` |
-| Wake-ups | `domain_events_feed_wakes_on_new_events_and_authority_changes_only`, `domain_events_subscriber_is_woken_by_commits_not_by_reads` |
+| Wake-ups | `domain_events_feed_wakes_on_new_events_and_authority_changes_only`, `domain_events_panicking_waker_is_unsubscribed_and_others_still_wake`, `domain_events_subscriber_is_woken_by_commits_not_by_reads` |

@@ -652,3 +652,21 @@ fn domain_events_subscriber_is_woken_by_commits_not_by_reads() {
     }
     assert!(woken.load(Ordering::SeqCst) >= 1);
 }
+
+#[test]
+fn domain_events_checkoff_that_changes_no_row_writes_no_event() {
+    let f = Fixture::new();
+    let start = position(&f);
+    assert_eq!(f.assemble(5, true)["status"], 200);
+    assert_eq!(
+        read_events(&f, session(), Some(&start)).unwrap(),
+        nothing_after(&start)
+    );
+    for _ in 0..2 {
+        assert_eq!(f.complete(2, true)["status"], 200);
+    }
+    let Read::Events { events, .. } = read_events(&f, session(), Some(&start)).unwrap() else {
+        panic!("expected events");
+    };
+    assert_eq!(events.len(), 1, "repeating a completion is not a change");
+}

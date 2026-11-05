@@ -281,7 +281,9 @@ pub(crate) fn execute(connection: &mut Connection, feed: &Feed, command: Command
 }
 
 /// A callback run on the writer thread after events commit or an auth change
-/// commits. It must not block; signal a task and return.
+/// commits. It must only signal a task and return: it must not block or call
+/// storage, because the writer waits for it. A waker that panics is
+/// unsubscribed and the writer continues.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// One storage open's view of the log: its generation, the newest sequence
@@ -320,6 +322,14 @@ impl Feed {
         Ok(())
     }
 
+    fn unsubscribe(&self, waker: &Waker) {
+        let gone = Arc::downgrade(waker);
+        self.wakers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|waker| !Weak::ptr_eq(waker, &gone));
+    }
+
     pub(crate) fn wake(&self) {
         let live: Vec<Waker> = {
             let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
@@ -327,7 +337,9 @@ impl Feed {
             wakers.iter().filter_map(Weak::upgrade).collect()
         };
         for waker in live {
-            waker();
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker())).is_err() {
+                self.unsubscribe(&waker);
+            }
         }
     }
 

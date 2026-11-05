@@ -1,7 +1,7 @@
 //! Routes and DTOs that `web/packages/rust-client` is generated from.
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
-//! [`crate::drafts`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::drafts`], [`crate::accepted`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -108,6 +108,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("AbandonDraftRequest"),
         "DraftIdentity",
     ),
+    route(
+        "readFilamentShortfalls",
+        "GET",
+        "/api/v2/plans/{id}/filament-shortfalls",
+        None,
+        "FilamentShortfalls",
+    ),
     ClientRoute {
         name: "readHealth",
         method: "GET",
@@ -146,6 +153,13 @@ mod codegen {
         },
         working_drafts::{AbandonRequest, EditRequest},
     };
+    use pp_storage::{
+        features::modules::{Module, ModuleOffReason},
+        read_model::stock::{
+            FilamentNeed, FilamentShortfalls, GramsAvailable, GramsNeeded, InventoryUnknown,
+            NeedUnknown, PartNeed, Sufficiency,
+        },
+    };
     use serde::{Serialize, de::DeserializeOwned};
     use serde_json::{Map, Value, json};
 
@@ -172,6 +186,10 @@ mod codegen {
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema(
+            "FilamentShortfalls",
+            schemars::schema_for!(FilamentShortfalls),
+        )?;
         schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
         schema(
             "PrinterDisplayDescriptor",
@@ -597,7 +615,7 @@ mod codegen {
     }
 
     fn mixed_modules() -> Vec<pp_storage::features::modules::ModuleStatus> {
-        use pp_storage::features::modules::{Module, ModuleOffReason, ModuleStatus};
+        use pp_storage::features::modules::ModuleStatus;
         vec![
             ModuleStatus::On {
                 module: Module::Farm,
@@ -616,6 +634,73 @@ mod codegen {
             },
             ModuleStatus::On {
                 module: Module::AssemblyTracking,
+            },
+        ]
+    }
+
+    /// Every need, stock and verdict variant.
+    fn shortfalls() -> Vec<FilamentShortfalls> {
+        let measured = |grams| GramsNeeded::Measured {
+            grams,
+            job_count: 5,
+        };
+        let need = |grams_needed: GramsNeeded, grams_available, status| FilamentNeed {
+            filament_color_id: "spoolman:local:filament:2".into(),
+            label: format!("Prusament PLA · {UNICODE}"),
+            grams_needed: grams_needed.clone(),
+            grams_available,
+            status,
+            parts: vec![PartNeed {
+                part_id: MAX_SAFE,
+                filename: format!("{UNICODE}.stl"),
+                remaining_units: 10_000,
+                grams_needed,
+            }],
+        };
+        let stock = |grams| GramsAvailable::Spoolman {
+            grams,
+            spool_ids: vec![7, MAX_SAFE],
+        };
+        let short = Sufficiency::Short {
+            short_grams: MAX_SAFE as u64,
+        };
+        let mut filaments = vec![
+            need(measured(40), stock(752), Sufficiency::Sufficient),
+            need(measured(MAX_SAFE as u64), stock(0), short),
+        ];
+        let estimated = GramsNeeded::Estimated {
+            grams: 12,
+            job_count: 1,
+        };
+        filaments.push(need(estimated, stock(12), Sufficiency::Sufficient));
+        for reason in [NeedUnknown::GramsNotRecorded, NeedUnknown::PartNotPrinted] {
+            let unknown = GramsNeeded::Unknown { reason };
+            filaments.push(need(unknown, stock(1), Sufficiency::Unknown));
+        }
+        for reason in [
+            InventoryUnknown::NotSpoolman,
+            InventoryUnknown::IntegrationMissing,
+            InventoryUnknown::IntegrationDisabled,
+            InventoryUnknown::Unreachable,
+            InventoryUnknown::FilamentMissing,
+            InventoryUnknown::SpoolWeightMissing,
+        ] {
+            let unknown = GramsAvailable::Unknown { reason };
+            filaments.push(need(measured(1), unknown, Sufficiency::Unknown));
+        }
+        let ready = |id, filaments| FilamentShortfalls::Ready {
+            profile_id: id,
+            revision_id: id,
+            plan_version: id,
+            filaments,
+        };
+        vec![
+            ready(MAX_SAFE, filaments),
+            ready(1, vec![]),
+            FilamentShortfalls::NoAcceptedPlan { profile_id: 1 },
+            FilamentShortfalls::ModuleOff {
+                module: Module::Spoolman,
+                reason: ModuleOffReason::DefaultOff,
             },
         ]
     }
@@ -673,6 +758,13 @@ mod codegen {
                 health(None, Some(pp_storage::features::modules::unreadable())),
             )?,
         ];
+        for (index, value) in shortfalls().into_iter().enumerate() {
+            cases.push(served(
+                "FilamentShortfalls",
+                &format!("variant-{index}"),
+                value,
+            )?);
+        }
         for value in printer_states() {
             let name = format!("{:?}-{:?}", value.execution(), value.bed_clear());
             cases.push(served("PrinterState", &name, value)?);

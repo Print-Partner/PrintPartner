@@ -80,6 +80,14 @@ pub enum ModuleStatus {
     },
 }
 
+impl ModuleStatus {
+    pub fn module(self) -> Module {
+        match self {
+            Self::On { module } | Self::Off { module, .. } => module,
+        }
+    }
+}
+
 impl SettingsClient {
     /// Read every module's effective state for `tenant` from the reader pool.
     /// Each call reads current storage, so a change shows on the next call.
@@ -90,6 +98,21 @@ impl SettingsClient {
         drop(reader);
         Ok(statuses(&toggles, &assembly))
     }
+}
+
+/// One module's effective state for `tenant`, read on `connection` so it
+/// shares the caller's transaction.
+pub(crate) fn status_in(
+    connection: &rusqlite::Connection,
+    tenant: &str,
+    module: Module,
+) -> Result<ModuleStatus> {
+    let toggles = crate::snapshot(connection, tenant, USER_KEY)?;
+    let assembly = crate::snapshot(connection, tenant, ASSEMBLY_TRACKING_KEY)?;
+    statuses(&toggles, &assembly)
+        .into_iter()
+        .find(|status| status.module() == module)
+        .ok_or_else(|| anyhow::anyhow!("Module status missing"))
 }
 
 fn statuses(toggles: &SettingSnapshot, assembly: &SettingSnapshot) -> Vec<ModuleStatus> {

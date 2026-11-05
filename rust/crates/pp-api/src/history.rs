@@ -6,7 +6,7 @@
 //! `next_cursor`). The route writes nothing. Admission is `accepted::Gate`.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Cancellation, Gate, failure, json_response, read_error},
+    accepted::{AcceptedHttpConfig, Gate, failure, json_response, read_error},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -22,7 +22,6 @@ use pp_storage::{
         Cursor, DEFAULT_LIMIT, Failure, HistoryClient, MAX_LIMIT, Outcome, Request,
     },
 };
-use std::sync::{Arc, atomic::AtomicBool};
 
 #[derive(Clone)]
 struct App {
@@ -90,13 +89,13 @@ async fn history(
         cursor,
         limit,
     };
-    let stop = Cancellation(Arc::new(AtomicBool::new(false)));
-    let (client, wait, cancelled) = (app.client, app.gate.wait(), stop.0.clone());
-    let read = tokio::task::spawn_blocking(move || {
-        client.read(presented.into_credential(), request, cancelled, wait)
-    })
-    .await;
-    drop(stop);
+    let client = app.client;
+    let read = app
+        .gate
+        .blocking(move |cancelled, wait| {
+            client.read(presented.into_credential(), request, cancelled, wait)
+        })
+        .await;
     match read {
         Ok(Ok(Outcome::Page(page))) => match serde_json::to_value(&page) {
             Ok(body) => json_response(StatusCode::OK, &body, false),

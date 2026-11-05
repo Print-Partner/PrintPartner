@@ -393,10 +393,9 @@ impl From<burst::Blocked> for FarmLogUndo {
     fn from(blocked: burst::Blocked) -> Self {
         use burst::Blocked as B;
         match blocked {
-            B::NotFound => Self::refused(
-                FarmUndoReason::ReceiptExpired,
-                "This burst's receipt is no longer kept",
-            ),
+            B::NotFound => {
+                Self::refused(FarmUndoReason::ReceiptExpired, "Checkoff burst not found")
+            }
             B::Undone => Self::refused(
                 FarmUndoReason::AlreadyUndone,
                 "This Checkoff burst was already undone",

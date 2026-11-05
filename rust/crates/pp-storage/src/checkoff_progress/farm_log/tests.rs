@@ -38,3 +38,10 @@ fn farm_log_stored_entries_need_a_seq_kind_and_time() {
         None
     );
 }
+
+#[test]
+fn farm_log_expired_receipt_detail_is_the_undo_routes_404_text() {
+    let undo = FarmLogUndo::from(burst::Blocked::NotFound);
+    assert_eq!(undo.reason, Some(FarmUndoReason::ReceiptExpired));
+    assert_eq!(undo.detail.as_deref(), Some("Checkoff burst not found"));
+}

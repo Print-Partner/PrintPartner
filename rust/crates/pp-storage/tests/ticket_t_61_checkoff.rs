@@ -12,6 +12,8 @@ use pp_storage::{
 use rusqlite::Connection;
 use serde_json::{Value, json};
 
+#[path = "common/js_json.rs"]
+mod js_json;
 #[path = "common/json_rows.rs"]
 mod json_rows;
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicBool, time::Duration};
@@ -21,27 +23,7 @@ const DATABASE: &[u8] = include_bytes!("fixtures/required-units/unchanged.db");
 const WAIT: Duration = Duration::from_secs(5);
 
 fn node() -> Value {
-    js_json(NODE)
-}
-
-/// `JSON.stringify` escapes only lone surrogates, which serde_json refuses;
-/// storage reads them as U+FFFD, so the test does too.
-fn js_json(raw: &str) -> Value {
-    let mut text = String::new();
-    let mut rest = raw;
-    while let Some(at) = rest.find('\\') {
-        text.push_str(&rest[..at]);
-        let lone = rest
-            .get(at + 1..at + 6)
-            .filter(|escape| escape.starts_with('u'))
-            .and_then(|escape| u16::from_str_radix(&escape[1..], 16).ok())
-            .is_some_and(|unit| (0xD800..0xE000).contains(&unit));
-        let end = if lone { at + 6 } else { at + 2 };
-        text.push_str(if lone { "\\ufffd" } else { &rest[at..end] });
-        rest = &rest[end..];
-    }
-    text.push_str(rest);
-    serde_json::from_str(&text).unwrap()
+    js_json::parse(NODE)
 }
 
 /// The Node generator's normalizer: generated UUIDs become `<uuid:n>` in order of
@@ -120,7 +102,7 @@ impl Fixture {
     fn rows(&self, normalizer: &mut Normalizer) -> Value {
         let mut rows = json_rows::query_rows(&self.sql(), node()["queries"].as_object().unwrap());
         for link in rows["links"].as_array_mut().unwrap() {
-            link["value"] = js_json(link["value"].as_str().unwrap());
+            link["value"] = js_json::parse(link["value"].as_str().unwrap());
         }
         normalizer.walk(rows)
     }

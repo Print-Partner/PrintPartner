@@ -2528,7 +2528,7 @@ writer transaction as the other Checkoff writes.
 
 Links are parsed, normalized, moved to the end and trimmed to 200 exactly as
 `services/printer-checkoff-store.ts` writes them, so the stored setting matches
-Node byte for byte after a write. Only an explicit authenticated request can
+Node byte for byte after a write, except for lone surrogates (below). Only an explicit authenticated request can
 verify. A link that a status watcher still holds in `watching` refuses with 409,
 and a repeated decision or a second link for an already printed unit cannot
 count a unit twice: the first refuses because the unit is no longer pending, the

@@ -11,11 +11,12 @@ use pp_testkit::moonraker::RecordedPrinter;
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 
-const ROUTES: [&str; 4] = [
+const ROUTES: [&str; 5] = [
     "/api/v2/printers",
     "/api/v2/printer-checkoff",
     "/api/v2/printer-checkoff/unattributed",
     "/api/v2/printer-send-queue",
+    "/api/v2/printer-checkoff/unattributed/suggestions",
 ];
 
 #[tokio::test]
@@ -202,6 +203,24 @@ async fn farm_reads_rust_only_runtime_in_child() {
     assert_eq!(code, StatusCode::OK);
     assert_eq!(queue["items"][0]["state"], "queued");
     assert!(!queue.to_string().contains("/disposable/exports"));
+    let (code, suggestions) = read(&origin, &cookie, ROUTES[4]).await;
+    assert_eq!(code, StatusCode::OK, "{suggestions}");
+    let row = &suggestions["suggestions"][0];
+    assert_eq!(
+        (
+            &row["print_id"],
+            &row["confidence"],
+            &row["starts_checked"],
+            &row["build"]
+        ),
+        (
+            &json!("print-1"),
+            &json!("none"),
+            &json!(false),
+            &Value::Null
+        ),
+        "{suggestions}"
+    );
 
     shut_down(runtime).await;
     for line in &printer.request_lines() {

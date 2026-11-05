@@ -453,6 +453,48 @@ pub(crate) fn json_response(status: StatusCode, value: &Value, head: bool) -> Re
         .unwrap_or_else(|_| Response::new(axum::body::Body::empty()))
 }
 
+impl Gate {
+    /// Runs `read` on a blocking thread with the request's credential and the
+    /// gate's queue wait. Dropping the request cancels a read still queued.
+    /// `None` when the blocking task did not finish.
+    pub(crate) async fn read<T: Send + 'static>(
+        &self,
+        presented: PresentedCredential,
+        read: impl FnOnce(
+            pp_storage::read_model::Credential,
+            Arc<AtomicBool>,
+            Duration,
+        ) -> anyhow::Result<T>
+        + Send
+        + 'static,
+    ) -> Option<anyhow::Result<T>> {
+        self.blocking(move |cancelled, wait| read(presented.into_credential(), cancelled, wait))
+            .await
+            .ok()
+    }
+}
+
+/// 200 with `value` as JSON.
+pub(crate) fn ok_json(value: &impl serde::Serialize) -> Response {
+    match serde_json::to_value(value) {
+        Ok(body) => json_response(StatusCode::OK, &body, false),
+        Err(_) => internal(),
+    }
+}
+
+pub(crate) fn internal() -> Response {
+    failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+}
+
+/// The Build a path segment names. Only a decimal positive safe integer names
+/// one; any other id still authenticates in storage, then answers not found.
+pub(crate) fn build_id(id: &str) -> Option<pp_storage::build_graph::PositiveId> {
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| id.parse().ok())
+        .flatten()
+        .and_then(|id| pp_storage::build_graph::PositiveId::new(id).ok())
+}
+
 pub(crate) fn failure(status: StatusCode, detail: &str) -> Response {
     crate::problem::response(status, detail)
 }

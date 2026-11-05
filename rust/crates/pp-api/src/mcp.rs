@@ -18,8 +18,12 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
-use pp_services::mcp_domain::{McpSession, UnportedDomain, server_info};
-use pp_storage::auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient};
+use pp_services::mcp_domain::{McpSession, ToolResult, UnportedDomain, server_info};
+use pp_storage::build_graph::PositiveId;
+use pp_storage::{
+    auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
+    read_model::build_workflow::{Outcome, Request, WorkflowClient},
+};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
@@ -71,9 +75,22 @@ struct Guard {
     admission: Arc<Semaphore>,
 }
 
+/// The read `get_build_workflow` answers from: the same client as
+/// `GET /plans/{id}/workflow`.
+#[derive(Clone)]
+struct Reads {
+    workflow: WorkflowClient,
+    wait: Duration,
+}
+
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
-/// was on at startup. Otherwise nothing is mounted.
-pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient) -> Router {
+/// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
+/// `workflow` with the request's API key.
+pub fn mcp_router(
+    config: McpHttpConfig,
+    auth: RebuildAuthClient,
+    workflow: WorkflowClient,
+) -> Router {
     if !config.enabled {
         return Router::new();
     }
@@ -82,8 +99,12 @@ pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient) -> Router {
     let transport = StreamableHttpServerConfig::default()
         .with_allowed_hosts([config.host.clone()])
         .with_allowed_origins([config.origin.clone()]);
+    let reads = Reads {
+        workflow,
+        wait: config.wait,
+    };
     let service = StreamableHttpService::new(
-        || Ok(ProductMcp::default()),
+        move || Ok(ProductMcp::new(reads.clone())),
         Arc::new(LocalSessionManager::default()),
         transport,
     );
@@ -122,6 +143,10 @@ async fn guard(
     else {
         return failure(StatusCode::UNAUTHORIZED, KEY_REQUIRED);
     };
+    let presented = PresentedCredential::ApiKey {
+        tenant: tenant.clone(),
+        secret: secret.clone(),
+    };
     let Ok(permit) = admission.try_acquire_owned() else {
         return failure(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -156,6 +181,7 @@ async fn guard(
         Ok(Some(Some(key))) => {
             // rmcp copies the request parts into each handler's context.
             request.extensions_mut().insert(key);
+            request.extensions_mut().insert(presented);
             next.run(request).await
         }
         Ok(Some(None)) => failure(StatusCode::UNAUTHORIZED, KEY_REQUIRED),
@@ -171,11 +197,66 @@ fn failure(status: StatusCode, detail: &str) -> Response {
 }
 
 /// One MCP session: its own pending proposals, product tools from the catalog.
-struct ProductMcp(McpSession<UnportedDomain>);
+struct ProductMcp {
+    session: McpSession<UnportedDomain>,
+    reads: Reads,
+}
 
-impl Default for ProductMcp {
-    fn default() -> Self {
-        Self(McpSession::new(UnportedDomain, None))
+impl ProductMcp {
+    fn new(reads: Reads) -> Self {
+        Self {
+            session: McpSession::new(UnportedDomain, None),
+            reads,
+        }
+    }
+
+    /// `get_build_workflow`: the Build's workflow, read with the caller's key
+    /// in one storage transaction, or `{"error": ...}` as Node answers.
+    async fn build_workflow(
+        &self,
+        arguments: &Value,
+        presented: PresentedCredential,
+    ) -> ToolResult {
+        let error = |message: &str| ToolResult {
+            text: json!({ "error": message }).to_string(),
+            is_error: true,
+        };
+        let Some(id) = arguments
+            .get("plan_id")
+            .and_then(|id| {
+                id.as_u64().or_else(|| {
+                    id.as_f64()
+                        .filter(|id| {
+                            id.fract() == 0.0 && *id >= 1.0 && *id <= 9_007_199_254_740_991.0
+                        })
+                        .map(|id| id as u64)
+                })
+            })
+            .and_then(|id| PositiveId::new(id).ok())
+        else {
+            return error("plan_id required");
+        };
+        let Reads { workflow, wait } = self.reads.clone();
+        let read = tokio::task::spawn_blocking(move || {
+            workflow.read(
+                presented.into_credential(),
+                Request::Build(Some(id)),
+                Arc::new(AtomicBool::new(false)),
+                wait,
+            )
+        })
+        .await;
+        match read {
+            Ok(Ok(Outcome::Workspace(workspace))) => match serde_json::to_string(&workspace) {
+                Ok(text) => ToolResult {
+                    text,
+                    is_error: false,
+                },
+                Err(_) => error("Build workflow is unavailable"),
+            },
+            Ok(Ok(Outcome::MissingBuild)) => error("Build not found"),
+            _ => error("Build workflow is unavailable"),
+        }
     }
 }
 
@@ -199,7 +280,10 @@ impl ServerHandler for ProductMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let tools = self.0.list_tools().map_err(|error| internal(error.0))?;
+        let tools = self
+            .session
+            .list_tools()
+            .map_err(|error| internal(error.0))?;
         serde_json::from_value(tools).map_err(internal)
     }
 
@@ -210,16 +294,20 @@ impl ServerHandler for ProductMcp {
     ) -> Result<CallToolResponse, ErrorData> {
         // The guard attaches the resolved key; tool calls never run without it.
         // GRE-441 scopes ported tools to this principal's tenant.
-        let _caller = context
-            .extensions
-            .get::<axum::http::request::Parts>()
+        let parts = context.extensions.get::<axum::http::request::Parts>();
+        let _caller = parts
             .and_then(|parts| parts.extensions.get::<KeyPrincipal>())
             .ok_or_else(|| internal("MCP request has no resolved API key"))?;
         let arguments = request.arguments.map(Value::Object).unwrap_or(Value::Null);
-        let result = self
-            .0
-            .call_tool(&request.name, &arguments)
-            .map_err(|error| internal(error.0))?;
+        let result = match parts.and_then(|parts| parts.extensions.get::<PresentedCredential>()) {
+            Some(presented) if request.name == "get_build_workflow" => {
+                self.build_workflow(&arguments, presented.clone()).await
+            }
+            _ => self
+                .session
+                .call_tool(&request.name, &arguments)
+                .map_err(|error| internal(error.0))?,
+        };
         let result: CallToolResult = serde_json::from_value(result.to_json()).map_err(internal)?;
         Ok(result.into())
     }

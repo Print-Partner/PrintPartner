@@ -1,7 +1,8 @@
 //! Routes and DTOs that `web/packages/rust-client` is generated from.
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
-//! [`crate::drafts`], [`crate::accepted`], [`crate::planning`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`] or
+//! [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -102,6 +103,14 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "DraftWorkspace",
     ),
     route(
+        "readBuildWorkflow",
+        "GET",
+        "/api/v2/plans/{id}/workflow",
+        None,
+        "BuildWorkflow",
+    ),
+    route("listTasks", "GET", "/api/v2/tasks", None, "TaskFeed"),
+    route(
         "abandonDraft",
         "POST",
         "/api/v2/plans/{id}/drafts/{draft_id}/abandon",
@@ -161,9 +170,16 @@ mod codegen {
             PartRef, PlateChanges, PlateRef, PreviewChanges, PreviewRevision, ProductionCheck,
             SnapshotNote, SpoolImpact, StockImpact, UnitChanges, UnitRef, Unmappable,
         },
-        read_model::planning::{
-            BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, BuildPlanningReadiness,
-            BuildPlanningResponse, PlanDecision, PlanDecisionList, ReadinessBlocker,
+        read_model::{
+            build_workflow::{TaskFeed, UnavailableBuild, rank},
+            planning::{
+                BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, BuildPlanningReadiness,
+                BuildPlanningResponse, PlanDecision, PlanDecisionList, ReadinessBlocker,
+            },
+            workflow::{
+                self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Stock,
+                Working, Workspace as BuildWorkflow,
+            },
         },
         required_units::{
             AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
@@ -203,6 +219,8 @@ mod codegen {
         schema("DraftAcceptPreview", schemars::schema_for!(AcceptPreview))?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
+        schema("BuildWorkflow", schemars::schema_for!(BuildWorkflow))?;
+        schema("TaskFeed", schemars::schema_for!(TaskFeed))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
         schema(
             "FilamentShortfalls",
@@ -656,6 +674,85 @@ mod codegen {
         }
     }
 
+    /// Workflows resolved by the projection itself: a new Build, a saved
+    /// draft, blocked Production with a stock shortfall, and a finished Build.
+    fn build_workflows() -> Result<Vec<BuildWorkflow>, serde_json::Error> {
+        let facts = |id: i64, sources, accepted_plan, working_plan, failed: u64, stock| Facts {
+            build: Build {
+                id,
+                name: format!("Build {UNICODE}"),
+            },
+            sources,
+            accepted_plan,
+            working_plan,
+            production: Production {
+                plate_state: PlateState::NotStarted,
+                queued_jobs: 0,
+                sending_jobs: 0,
+                printing_jobs: 0,
+                failed_jobs: failed,
+            },
+            checkoff: Checkoff {
+                awaiting_verification: failed,
+                failed_verifications: 0,
+                printer_links: failed,
+            },
+            stock,
+        };
+        let accepted = |remaining_units| Accepted::Ready {
+            revision_id: MAX_SAFE,
+            plan_version: 2,
+            total_units: 4,
+            remaining_units,
+        };
+        let stale = Sources::Stale {
+            attached_count: 2,
+            issue_count: 1,
+        };
+        [
+            facts(
+                1,
+                Sources::Empty,
+                Accepted::None,
+                Working::None,
+                0,
+                Stock::NotReady,
+            ),
+            facts(
+                2,
+                Sources::Ready { attached_count: 1 },
+                accepted(4),
+                Working::Ready {
+                    draft_id: MAX_SAFE,
+                    change_count: 3,
+                },
+                0,
+                Stock::NotReady,
+            ),
+            facts(
+                3,
+                stale.clone(),
+                accepted(1),
+                Working::None,
+                2,
+                Stock::Ready { shortfalls: 1 },
+            ),
+            facts(
+                MAX_SAFE,
+                stale,
+                accepted(0),
+                Working::None,
+                0,
+                Stock::Ready { shortfalls: 0 },
+            ),
+        ]
+        .iter()
+        .map(|facts| {
+            workflow::resolve(facts).map_err(<serde_json::Error as serde::ser::Error>::custom)
+        })
+        .collect()
+    }
+
     /// Every need, stock and verdict variant.
     fn shortfalls() -> Vec<FilamentShortfalls> {
         let measured = |grams| GramsNeeded::Measured {
@@ -810,6 +907,32 @@ mod codegen {
                 &format!("variant-{index}"),
                 value,
             )?);
+        }
+        let workflows = build_workflows()?;
+        let due = time::Date::from_calendar_date(2026, time::Month::November, 6).ok();
+        let feed = rank(
+            workflows
+                .iter()
+                .cloned()
+                .zip([None, due, None, due])
+                .collect(),
+            vec![UnavailableBuild {
+                plan_id: 9,
+                build_name: "Damaged order".into(),
+                reason: "Build pointer is invalid".into(),
+            }],
+        );
+        cases.push(served("TaskFeed", "ranked", feed)?);
+        cases.push(served(
+            "TaskFeed",
+            "empty",
+            TaskFeed {
+                tasks: vec![],
+                unavailable: vec![],
+            },
+        )?);
+        for (index, value) in workflows.into_iter().enumerate() {
+            cases.push(served("BuildWorkflow", &format!("variant-{index}"), value)?);
         }
         for (name, value) in previews() {
             cases.push(served("DraftAcceptPreview", name, value)?);

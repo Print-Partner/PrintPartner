@@ -250,16 +250,8 @@ fn planning(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Facts> {
         "SELECT id,name,local_path,last_synced_at,last_commit_sha FROM projects WHERE tenant_id=?1",
     )?;
     let sources = statement
-        .query_map([tenant], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<SourceRow>>>()?;
+        .query_map([tenant], |row| SourceRow::try_from(row))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     // Node's `getPlanDraft`, which verifies the stored snapshot digest.
     let draft = brief.draft_id.map_or(Ok(None), |id| {
         crate::required_units::storage::draft(tx, tenant, build, id).map(|draft| {

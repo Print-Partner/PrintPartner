@@ -139,7 +139,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Checkoff read | `GET /plans/{id}/checkoff`, `/parts/{id}/assembled` | Exists |
 | Sources | `GET /sources`, `/sources/activity`, naming, import rules | Exists |
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
-| Build workflow projection | `GET /plans/:id/workflow` | Port (GRE-415) |
+| Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |
 | Build planning phase | `GET /plans/:id/build-planning` | Exists in Rust behind `desktop_rebuild` (GRE-1119) |
 | Assistant decisions | `GET /plans/:id/decisions` | Exists in Rust behind `desktop_rebuild` (GRE-1119); History lists them too |
 | Printers | `GET /printers` | Port plus drivers (GRE-360, GRE-1044) |
@@ -150,7 +150,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Accept | `POST /plans/:id/drafts/:draftId/apply` | Port |
 | Verify one result | `POST /printer-checkoff/verify`, `/reconcile`, `/dismiss` | Port |
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |
-| Ranked task feed | `GET /api/v1/tasks` | New, a view over the workflow projection |
+| Ranked task feed | `GET /api/v1/tasks` | Exists (GRE-1123), a view over the workflow projection |
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
 | Match suggestions | `GET /printer-checkoff/unattributed/suggestions` | New |
 | Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |

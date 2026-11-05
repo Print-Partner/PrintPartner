@@ -5,6 +5,8 @@ const nonnegativeCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTE
 const summary = z.string().min(1).max(500);
 const actionLabel = z.string().min(1).max(120);
 const actionReason = z.string().min(1).max(500);
+const nullableCount = nonnegativeCount.nullable();
+const stageIdSchema = z.enum(["sources", "plan", "production", "checkoff"]);
 
 const buildWorkflowSourceStateSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("empty") }),
@@ -61,7 +63,7 @@ export type BuildWorkflowWorkingPlan = z.infer<
   typeof buildWorkflowWorkingPlanSchema
 >;
 
-const buildWorkflowStageStatusSchema = z.discriminatedUnion("kind", [
+const legacyStageStatusSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.enum(["not_started", "ready", "complete"]),
     summary,
@@ -76,6 +78,27 @@ const buildWorkflowStageStatusSchema = z.discriminatedUnion("kind", [
     summary,
     task_count: positiveId,
   }),
+]);
+
+/** The Rust projection's stage status: every count is present, null when unused. */
+const rustStageStatusSchema = z.strictObject({
+  kind: z.enum([
+    "not_started",
+    "ready",
+    "in_progress",
+    "needs_attention",
+    "stale",
+    "complete",
+    "error",
+  ]),
+  summary,
+  task_count: nullableCount,
+  active_count: nullableCount,
+});
+
+const buildWorkflowStageStatusSchema = z.union([
+  legacyStageStatusSchema,
+  rustStageStatusSchema,
 ]);
 
 export type BuildWorkflowStageStatus = z.infer<
@@ -110,7 +133,7 @@ const actionBase = {
   reason: actionReason,
 };
 
-const buildWorkflowNextActionSchema = z.discriminatedUnion("kind", [
+const legacyNextActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("attach_sources"),
     stage_id: z.literal("sources"),
@@ -194,6 +217,48 @@ const buildWorkflowNextActionSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
+/**
+ * The Rust projection's next action (GRE-1123): every count is present, null
+ * when unused, and `target` names the Build tab and draft it opens.
+ */
+const rustNextActionSchema = z.strictObject({
+  kind: z.enum([
+    "review_failed_prints",
+    "recover_printer_jobs",
+    "verify_prints",
+    "monitor_production",
+    "review_production_queue",
+    "review_plan_status",
+    "attach_sources",
+    "resolve_plan_issues",
+    "refresh_working_plan",
+    "review_working_plan",
+    "review_source_changes",
+    "create_working_plan",
+    "resolve_stock_shortfall",
+    "prepare_production",
+    "check_off_manually",
+    "view_completed_build",
+  ]),
+  stage_id: stageIdSchema,
+  label: actionLabel,
+  reason: actionReason,
+  target: z.strictObject({
+    plan_id: positiveId,
+    tab: stageIdSchema,
+    draft_id: positiveId.nullable(),
+  }),
+  item_count: nullableCount,
+  draft_id: positiveId.nullable(),
+  issue_count: nullableCount,
+  unit_count: nullableCount,
+});
+
+const buildWorkflowNextActionSchema = z.union([
+  legacyNextActionSchema,
+  rustNextActionSchema,
+]);
+
 export type BuildWorkflowNextAction = z.infer<
   typeof buildWorkflowNextActionSchema
 >;
@@ -206,6 +271,13 @@ const buildWorkflowWorkspaceSchema = z.strictObject({
   sources: buildWorkflowSourceStateSchema,
   accepted_plan: buildWorkflowAcceptedPlanSchema,
   working_plan: buildWorkflowWorkingPlanSchema,
+  /** Only the Rust projection reports the separate stock shortfall input. */
+  stock: z
+    .discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("not_ready") }),
+      z.strictObject({ kind: z.literal("ready"), shortfalls: nonnegativeCount }),
+    ])
+    .optional(),
   stages: buildWorkflowStagesSchema,
   next_action: buildWorkflowNextActionSchema,
   active_work: z.strictObject({

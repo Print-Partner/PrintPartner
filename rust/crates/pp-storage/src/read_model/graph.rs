@@ -17,16 +17,7 @@ pub(crate) fn build_summary(
     repos: &std::path::Path,
     budget: &mut Budget,
 ) -> Result<Option<crate::build_graph::ProfileSummary>> {
-    let accepted = match read(tx, tenant, profile, repos, budget) {
-        Ok(read) => read,
-        Err(error) => match error.downcast_ref::<Integrity>() {
-            Some(error) => super::AcceptedRead::IntegrityFailure {
-                code: error.code.to_owned(),
-                message: error.message.clone(),
-            },
-            None => return Err(error),
-        },
-    };
+    let accepted = super::accepted_read(tx, tenant, profile, repos, budget)?;
     if matches!(accepted, super::AcceptedRead::Missing) {
         return Ok(None);
     }

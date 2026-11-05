@@ -31,9 +31,10 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. `AcceptedHttpConfig::with_stock(Arc<dyn InventoryReader>)` adds `/plans/{id}/filament-shortfalls`; the caller supplies the Spoolman reader. |
 | `history` | `history_router(AcceptedHttpConfig, HistoryClient)`: paged Build history at `/plans/{id}/history` and `/api/v2/plans/{id}/history`. |
 | `planning` | `planning_router(AcceptedHttpConfig, PlanningClient)`: `/plans/{id}/build-planning` and `/plans/{id}/decisions` at `/`, `/api/v1` and `/api/v2`, with Node's data ([Build planning and decisions](../../../docs/build-planning.md)). |
+| `workflow` | `workflow_router(AcceptedHttpConfig, WorkflowClient)`: `/plans/{id}/workflow` at `/`, `/api/v1`, `/api/v2`, and the task feed at `/api/v1/tasks` and `/api/v2/tasks` ([Build workflow](../../../docs/build-workflow.md)). |
 | `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |
-| `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient)`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. |
+| `mcp` | `mcp_router(McpHttpConfig, RebuildAuthClient, WorkflowClient)`: Streamable HTTP MCP at `/mcp` and `/api/v1/mcp`. Every request needs an API key; a session cookie alone is refused. `get_build_workflow` reads the `WorkflowClient` with that key. |
 | `client_contract` | `CLIENT_ROUTES`, `ClientRoute`, `ClientAuth`. With `codegen`: `document`, `document_bytes`. |
 | `problem` | With `desktop_rebuild` only (feature off, just an identity `without_envelope`): `Problem`, `FieldError`, `ProblemType` (stable types, `title`, `classify`) and their bounds, plus the one builder for error responses: `response`, `coded`, `typed`, `overloaded`, `build`, the `layer` backstop each router mounts, `parse_body` for field errors, and `without_envelope` for Node comparisons. See [Problem responses](../../../docs/problem-responses.md). |
 | `fixtures` | Node/Rust parity runner: `Sandbox`, `Served`, `Exchange`, `Ledger`, `StateGraph`, `Labels`. |

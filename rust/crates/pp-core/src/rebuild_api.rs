@@ -12,6 +12,7 @@ use pp_api::{
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpHttpConfig, mcp_router},
     planning::planning_router,
+    workflow::workflow_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
 // non-optional pp-api [dev-dependencies] edge (gated boundary check).
@@ -23,6 +24,7 @@ use pp_storage::{
         rebuild::AuthLifetimes, rebuild::RebuildAuthClient,
     },
     build_graph::BuildGraphClient,
+    read_model::build_workflow::PendingInputs,
     working_drafts::{
         WorkingDraftClient,
         observation::{DraftReads, PreparationLimits},
@@ -165,7 +167,8 @@ pub fn router(
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, Build history, Build planning and
-/// decisions, legal documents, custom filaments and key-only MCP) from one
+/// decisions, Build workflow and task feed, legal documents, custom filaments
+/// and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
 /// is off. Does not cut over production gateway ownership (GRE-593).
@@ -193,6 +196,7 @@ pub fn read_router(
         accepted_client,
         history_client,
         planning_client,
+        workflow_client,
         admin_files,
     ) = {
         let guard = owner
@@ -204,6 +208,9 @@ pub fn read_router(
             guard.accepted_reads_with_policy(policy)?,
             guard.build_history(policy)?,
             guard.build_planning(policy, source_reads(&guard, policy, None)?)?,
+            // No due-date field or Spoolman shortfall exists yet (slice 7,
+            // GRE-1100/GRE-1095; shortfall PR #1479), so their inputs are pending.
+            guard.build_workflow(policy, Arc::new(PendingInputs))?,
             guard.admin_files()?,
         )
     };
@@ -236,9 +243,14 @@ pub fn read_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         planning_client,
     );
+    let workflow = workflow_router(
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        workflow_client.clone(),
+    );
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
+        workflow_client,
     );
     let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
     Ok(Some(
@@ -248,6 +260,7 @@ pub fn read_router(
             .merge(accepted)
             .merge(history)
             .merge(planning)
+            .merge(workflow)
             .merge(admin)
             .merge(mcp),
     ))

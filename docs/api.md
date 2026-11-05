@@ -166,6 +166,20 @@ the hydrated planning brief with its phase and readiness, and the latest 200
 assistant decisions. [Build planning and decisions](build-planning.md)
 describes the fields and the differences from Node.
 
+### Workflow and tasks
+
+```text
+GET   /plans/:id/workflow
+GET   /api/v1/tasks
+```
+
+The Rust API serves these reads only with `desktop_rebuild` on. The workflow
+returns a Build's stages and next action with its reason and target; the task
+feed returns every open Build's next action, most urgent first, and lists
+Builds it could not read under `unavailable`. MCP
+`get_build_workflow` returns the same workflow body.
+[Build workflow and task feed](build-workflow.md) describes the rules.
+
 ### Plates and exports
 
 ```text

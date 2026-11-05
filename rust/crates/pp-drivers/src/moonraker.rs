@@ -37,12 +37,14 @@ pub const REDIRECT_UNAVAILABLE: &str = "Moonraker redirected; printer monitoring
 pub type Observed = Arc<BTreeMap<String, Status>>;
 /// When each watched host last answered a status poll.
 type Heard = Arc<Mutex<HashMap<String, SystemTime>>>;
+/// Each watched host's last answered state and when it entered it.
+type Entered = Arc<Mutex<HashMap<String, (State, SystemTime)>>>;
 /// The senders behind [`PrinterObservations`]: the newest map, and when
 /// each host entered its current state.
 #[derive(Clone)]
 struct Port {
     observed: watch::Sender<Observed>,
-    entered: Heard,
+    entered: Entered,
 }
 /// Read-only port over what the watchers observed. Pollers publish into a
 /// `watch` channel that keeps only the newest map, so a slow reader never
@@ -52,7 +54,7 @@ struct Port {
 pub struct PrinterObservations {
     observed: watch::Receiver<Observed>,
     heard: Heard,
-    entered: Heard,
+    entered: Entered,
 }
 impl PrinterObservations {
     pub fn latest(&self, id: &str) -> Option<Status> {
@@ -67,10 +69,12 @@ impl PrinterObservations {
     pub fn last_heard(&self, id: &str) -> Option<SystemTime> {
         lock(&self.heard).get(id).copied()
     }
-    /// When the host's published `state` last changed, as this process saw it.
-    /// A changed temperature or progress at the same state does not move it.
+    /// When the host entered its last answered state, as this process saw it.
+    /// A changed temperature or progress at the same state does not move it,
+    /// and neither does a spell `offline` or `unknown` that ends in the
+    /// same state: a missed poll is not a new job.
     pub fn state_since(&self, id: &str) -> Option<SystemTime> {
-        lock(&self.entered).get(id).copied()
+        lock(&self.entered).get(id).map(|(_, since)| *since)
     }
     /// Waits for a map newer than the last one this handle returned. `None`
     /// once the watchers are gone.
@@ -144,7 +148,7 @@ impl Watchers {
             interval,
             port: Port {
                 observed: watch::channel(Observed::default()).0,
-                entered: Heard::default(),
+                entered: Entered::default(),
             },
             heard: Heard::default(),
             node_fallback: true,
@@ -350,15 +354,25 @@ fn publish(slot: &Mutex<Slot>, port: &Port, id: &str, value: Slot) {
     *current = value;
     port.observed.send_if_modified(|map| match &*current {
         Slot::Status(status) if map.get(id) != Some(status) => {
-            if map.get(id).map(|known| &known.state) != Some(&status.state) {
-                lock(&port.entered).insert(id.to_owned(), SystemTime::now());
-            }
+            enter(&port.entered, id, status.state.clone(), SystemTime::now());
             Arc::make_mut(map).insert(id.to_owned(), status.clone());
             true
         }
         Slot::Status(_) => false,
         Slot::Node => map.contains_key(id) && Arc::make_mut(map).remove(id).is_some(),
     });
+}
+/// Records `state` for `id` at `now` unless the host is already in it. An
+/// `offline` or `unknown` report only fills in a host never answered.
+fn enter(entered: &Entered, id: &str, state: State, now: SystemTime) {
+    let mut entered = lock(entered);
+    let passing = matches!(state, State::Offline | State::Unknown);
+    match entered.get(id) {
+        Some((known, _)) if *known == state || passing => {}
+        _ => {
+            entered.insert(id.to_owned(), (state, now));
+        }
+    }
 }
 /// Non-empty, bounded and unique ids, or `None` when the snapshot is unusable.
 fn valid_ids(hosts: &[Host]) -> Option<HashSet<String>> {
@@ -894,6 +908,30 @@ mod tests {
         .await
         .unwrap();
     }
+    #[test]
+    fn farm_reads_state_since_survives_a_missed_poll_but_not_a_new_state() {
+        let entered = Entered::default();
+        let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let since = || lock(&entered).get("host").map(|(_, since)| *since);
+        enter(&entered, "host", State::Offline, at(1));
+        assert_eq!(
+            since(),
+            Some(at(1)),
+            "a host never answered is offline since then"
+        );
+        enter(&entered, "host", State::Complete, at(2));
+        enter(&entered, "host", State::Offline, at(3));
+        enter(&entered, "host", State::Unknown, at(4));
+        enter(&entered, "host", State::Complete, at(5));
+        assert_eq!(
+            since(),
+            Some(at(2)),
+            "a missed poll is not a new completion"
+        );
+        enter(&entered, "host", State::Printing, at(6));
+        enter(&entered, "host", State::Complete, at(7));
+        assert_eq!(since(), Some(at(7)), "a new job completes again");
+    }
     #[tokio::test]
     async fn farm_reads_last_heard_survives_offline_and_leaves_with_the_poller() {
         let printer = RecordedPrinter::start(vec![(200, SUCCESS), (503, b"{}")]).unwrap();
@@ -907,13 +945,15 @@ mod tests {
         let heard = observations
             .last_heard("host")
             .expect("heard after a reply");
+        let printing_since = observations.state_since("host").expect("entered printing");
         next_state(&mut observations, "host", State::Offline).await;
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(observations.last_heard("host"), Some(heard));
-        let offline_since = observations.state_since("host").expect("entered offline");
-        assert!(offline_since >= heard);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(observations.state_since("host"), Some(offline_since));
+        assert_eq!(
+            observations.state_since("host"),
+            Some(printing_since),
+            "offline does not move the answered state"
+        );
         watchers.replace(vec![]).await.unwrap();
         assert_eq!(observations.last_heard("host"), None);
         assert_eq!(observations.state_since("host"), None);

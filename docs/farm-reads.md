@@ -79,9 +79,13 @@ printer is newer than the last verification, and when Moonraker reports
 `complete` for a file other than the latest verified result's (including a job
 run outside Print Partner, which has no result) or for that file but entered
 `complete` after the verification was applied (a direct reprint of the same
-file). The watcher records when each host entered its current state in this
-process only, so after a restart a printer still reporting `complete` reads
-`needs_clearing` until the operator confirms again. Otherwise it is
+file). The watcher records when each host entered its last answered state; a
+spell `offline` or `unknown` that ends in the same state does not move it, so
+a missed poll keeps a confirmed bed clear. The record lives in this process
+only, so after a restart a printer still reporting `complete` reads
+`needs_clearing` until the operator confirms again: Moonraker's status carries
+no job identity, and a part printed while Print Partner was stopped must not
+read as cleared. Otherwise it is
 `unknown`, which displays as Bed to clear.
 
 ## Checkoff results, unmatched prints and the send queue

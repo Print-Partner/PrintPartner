@@ -12,8 +12,17 @@ use std::{
 pub(crate) const CURRENT_VERSION: u64 = 42;
 /// The newest step that writes its own `pre-schema{N}.db` copy. Later steps
 /// only add tables, so the copy taken at open covers them.
+///
+/// An open from this version still takes an opening copy named for the next
+/// step, outside the names an interrupted upgrade can leave. That open may be
+/// the restart of an upgrade from below 38, so it skips retention: pruning
+/// there could delete that upgrade's untouched input copy.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) const LAST_COPIED_STEP: u64 = 41;
+// A second uncopied step would let a restart from an uncopied version name
+// another copy; it needs a run marker first.
+#[cfg(feature = "desktop_rebuild")]
+const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP + 1);
 #[cfg(not(feature = "desktop_rebuild"))]
 pub(crate) const CURRENT_VERSION: u64 = 35;
 
@@ -216,6 +225,8 @@ pub(crate) fn preflight(
     crate::source_scan::validate_schema(&conn, version)?;
     #[cfg(feature = "desktop_rebuild")]
     crate::source_sync::validate_schema(&conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    validate_domain_events(&conn, version)?;
     Ok(version)
 }
 
@@ -461,9 +472,13 @@ pub(crate) fn initialize(
     // The upgrade has committed, so retention may now drop copies left by
     // earlier upgrades. This upgrade's copies all stay, including the
     // from-version copy, the only one the previous release opens.
+    #[cfg(feature = "desktop_rebuild")]
+    let retains = version < LAST_COPIED_STEP;
+    #[cfg(not(feature = "desktop_rebuild"))]
+    let retains = true;
     let pruned = match &backup_path {
-        Some(rollback) => crate::backup_retention::prune(rollback, &step_copies),
-        None => Default::default(),
+        Some(rollback) if retains => crate::backup_retention::prune(rollback, &step_copies),
+        _ => Default::default(),
     };
     Ok((
         conn,

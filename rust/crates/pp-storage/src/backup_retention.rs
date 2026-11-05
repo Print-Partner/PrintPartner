@@ -16,7 +16,9 @@
 //! clock does not go back between attempts, so the first one survives. A
 //! compile-time assert below holds that bound; a copied step past 41 needs a
 //! run marker or a larger [`KEEP_VERIFIED`] first. Step 42 writes no copy of
-//! its own (`LAST_COPIED_STEP` in `schema.rs`).
+//! its own, and an open from 41 skips retention because its opening
+//! `pre-schema42.db` would be a fifth name (`LAST_COPIED_STEP` in
+//! `schema.rs`).
 //!
 //! Only this crate's own files are candidates: Node's pre-update and manual
 //! `.tar.gz` archives, temporary `.backup-*.db` files and SQLite sidecars are

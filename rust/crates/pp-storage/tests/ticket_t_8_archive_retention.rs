@@ -266,3 +266,68 @@ fn ticket_t_8_archive_retention_never_deletes_below_three_verified_or_without_an
         assert!(backups.join(format!("pre-schema{version}.db")).exists());
     }
 }
+
+/// A 37 to 42 upgrade interrupted after step 41 commits restarts from 41 with
+/// copies 38 to 41 on disk. The restart's opening `pre-schema42.db` is a new
+/// name, so retention must not run, or it would prune `pre-schema38.db`, the
+/// untouched schema-37 input.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn ticket_t_8_archive_retention_restart_from_41_keeps_the_interrupted_upgrade_input() {
+    let data = Scratch::new("pp-t8-retention-restart-41");
+    upgrade(&data);
+    let backups = data.join("backups");
+    std::fs::remove_dir_all(&backups).unwrap();
+    std::fs::create_dir(&backups).unwrap();
+    Connection::open(data.join("print-partner.db"))
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE domain_events; UPDATE app_settings SET value='41' WHERE tenant_id='default' AND key='schema_version'",
+        )
+        .unwrap();
+    for (index, step) in (38..=41).enumerate() {
+        verified_copy(
+            &backups.join(format!("pre-schema{step}.db")),
+            hour(4 - index as u64),
+        );
+    }
+    let (owner, ready) = WriterOwner::open(&data, Limits::default()).unwrap();
+    owner.shutdown().unwrap();
+    assert_eq!(ready.previous_version, 41);
+    assert_eq!(ready.backup, Some(backups.join("pre-schema42.db")));
+    assert!(
+        ready.pruned_backups.is_empty(),
+        "{:?}",
+        ready.pruned_backups
+    );
+    for step in 38..=42 {
+        assert!(
+            backups.join(format!("pre-schema{step}.db")).exists(),
+            "{step}"
+        );
+    }
+}
+
+/// Preflight checks the event objects against the input version, so a
+/// schema-41 database that already has them is refused before the opening
+/// copy or any write.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn domain_events_objects_below_42_are_refused_by_preflight_before_any_write() {
+    let data = Scratch::new("pp-domain-events-preflight");
+    upgrade(&data);
+    std::fs::remove_dir_all(data.join("backups")).unwrap();
+    Connection::open(data.join("print-partner.db"))
+        .unwrap()
+        .execute_batch(
+            "UPDATE app_settings SET value='41' WHERE tenant_id='default' AND key='schema_version'",
+        )
+        .unwrap();
+    let before = contents(&data);
+    let error = WriterOwner::open(&data, Limits::default()).err().unwrap();
+    assert!(
+        format!("{error:#}").contains("Unexpected domain event schema"),
+        "{error:#}"
+    );
+    assert_eq!(contents(&data), before);
+}

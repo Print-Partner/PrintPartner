@@ -3,21 +3,15 @@
 //! `pp_storage::read_model::planning`. Both write nothing. Admission is
 //! `accepted::Gate`; the id is read with Node's `Number()`.
 
-use crate::{
-    accepted::{AcceptedHttpConfig, Gate, failure, json_response, node_id, read_error},
-    loopback::PresentedCredential,
-};
-use axum::{
-    Extension, Router,
-    extract::{Path, State},
-    http::{StatusCode, Uri},
-    response::Response,
-    routing::get,
-};
-use pp_storage::{
-    build_graph::PositiveId,
-    read_model::planning::{Outcome, PlanningClient, Query, Request},
-};
+use crate::accepted::{AcceptedHttpConfig, Gate, failure, json_response, node_id, read_error};
+use crate::loopback::PresentedCredential;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, Uri};
+use axum::response::Response;
+use axum::routing::get;
+use axum::{Extension, Router};
+use pp_storage::build_graph::PositiveId;
+use pp_storage::read_model::planning::{Outcome, PlanningClient, Query, Request};
 
 #[derive(Clone)]
 struct App {

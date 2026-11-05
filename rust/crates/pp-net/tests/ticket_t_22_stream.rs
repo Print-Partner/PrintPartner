@@ -3,10 +3,10 @@
 use pp_net::outbound::{
     BodyDeadline, HttpGuard, IdleTimeout, MAX_BODY, MAX_LISTING_BODY, StreamReply, SystemResolver,
 };
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
 };
 
 /// A streamed GET with 5 s head and idle deadlines.
@@ -26,19 +26,33 @@ fn guard() -> HttpGuard {
     HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(5), MAX_BODY).unwrap()
 }
 
-/// Answers one request with `length` bytes of body, writing `sent` of them
-/// and then holding the connection open without writing more.
-async fn server(length: usize, sent: usize) -> String {
+/// Binds a loopback listener for `path` and answers its first request with
+/// a 200 head of `kind` and `length`, returning the socket to write the body.
+async fn answer(
+    path: &str,
+    kind: &'static str,
+    length: usize,
+) -> (String, impl Future<Output = TcpStream>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/file", listener.local_addr().unwrap());
-    tokio::spawn(async move {
+    let url = format!("http://{}{path}", listener.local_addr().unwrap());
+    let socket = async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut head = [0; 1024];
         let _ = socket.read(&mut head).await;
-        let reply = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {length}\r\n\r\n"
-        );
+        let reply =
+            format!("HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {length}\r\n\r\n");
         socket.write_all(reply.as_bytes()).await.unwrap();
+        socket
+    };
+    (url, socket)
+}
+
+/// Answers one request with `length` bytes of body, writing `sent` of them
+/// and then holding the connection open without writing more.
+async fn server(length: usize, sent: usize) -> String {
+    let (url, socket) = answer("/file", "application/octet-stream", length).await;
+    tokio::spawn(async move {
+        let mut socket = socket.await;
         let body = vec![b'x'; sent];
         for part in body.chunks(64 * 1024) {
             if socket.write_all(part).await.is_err() {
@@ -132,22 +146,10 @@ async fn ticket_t_22_stream_refuses_reserved_headers() {
 
 /// Answers one request with an endless body, one byte every 50 ms.
 async fn trickle() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/snap", listener.local_addr().unwrap());
+    let (url, socket) = answer("/snap", "image/jpeg", 1_000_000).await;
     tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut head = [0; 1024];
-        let _ = socket.read(&mut head).await;
-        let reply = "HTTP/1.1 200 OK
-content-type: image/jpeg
-content-length: 1000000
-
-";
-        socket.write_all(reply.as_bytes()).await.unwrap();
-        loop {
-            if socket.write_all(b"x").await.is_err() {
-                return;
-            }
+        let mut socket = socket.await;
+        while socket.write_all(b"x").await.is_ok() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     });

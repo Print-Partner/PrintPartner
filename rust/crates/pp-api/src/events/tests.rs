@@ -369,3 +369,40 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+#[tokio::test]
+async fn domain_events_heartbeat_keeps_its_period_while_wakes_send_nothing() {
+    let fixture = Fixture::start(StreamLimits {
+        heartbeat: Duration::from_millis(300),
+        ..StreamLimits::default()
+    })
+    .await;
+    let mut frames = fixture.open(&[]).await;
+    assert_eq!(frames.next().await.unwrap().event, "ready");
+    let db = fixture.database();
+    let mut seen = String::new();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !seen.contains(": keep-alive") {
+        assert!(
+            Instant::now() < deadline,
+            "no keep-alive while other tenants commit"
+        );
+        db.execute(
+            "INSERT INTO domain_events(tenant,event_type,schema_version,aggregate_type,aggregate_id,aggregate_version,operation_id,payload_json,occurred_at) VALUES('other','checkoff.progress_changed',1,'build','1',NULL,?1,'{}',0)",
+            [format!("{:032x}", rand_id())],
+        )
+        .unwrap();
+        fixture.poke();
+        if let Ok(Ok(Some(bytes))) =
+            tokio::time::timeout(Duration::from_millis(100), frames.response.chunk()).await
+        {
+            seen.push_str(std::str::from_utf8(&bytes).unwrap());
+        }
+    }
+    assert!(!seen.contains("event: domain_event"), "{seen}");
+}
+
+fn rand_id() -> u128 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    u128::from(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}

@@ -211,6 +211,9 @@ impl Stream {
     async fn run(self, fresh: bool, first: Read) {
         let mut next = Some(first);
         let mut position = None;
+        let period = self.app.limits.heartbeat;
+        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         if fresh && let Some(Read::Events { position: at, .. }) = &next {
             let data = json!({ "position": at.to_string() });
             if !self.send(frame("ready", at, &data)).await {
@@ -257,7 +260,7 @@ impl Stream {
             }
             tokio::select! {
                 () = self.notify.notified() => {}
-                () = tokio::time::sleep(self.app.limits.heartbeat) => {
+                _ = heartbeat.tick() => {
                     if !self.send(Bytes::from_static(b": keep-alive\n\n")).await {
                         return;
                     }

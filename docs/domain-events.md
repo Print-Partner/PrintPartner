@@ -15,7 +15,7 @@ sequence number, so cursor order is commit order.
 
 | Type | Version | Written by | Aggregate | Payload |
 | --- | --- | --- | --- | --- |
-| `checkoff.progress_changed` | 1 | `checkoff_progress`: unit completion, assembly, count import, printer Checkoff verify (one link or a burst), and burst undo; one event per changed Part (`{"import": true}` for an import) | `build`, the Build ID | `{"part_id": N}` for a Part change, `{"import": true}` for an import |
+| `checkoff.progress_changed` | 1 | `checkoff_progress`: unit completion, assembly, count import, printer Checkoff verify (one link or a burst), and burst undo; one event per changed Part in each verified link or undo, so a burst that confirms one Part on two links writes two (`{"import": true}` for an import) | `build`, the Build ID | `{"part_id": N}` for a Part change, `{"import": true}` for an import |
 | `plan.revision_accepted` | 1 | `plan_publication::publish_in_transaction`, used by Accept and draft save-and-accept | `build`, the Build ID, version = new accepted Plan version | `{"revision_id": N}` |
 
 An idempotent replay of an Accept (`Existing` or `AlreadyApplied`) writes no
@@ -118,8 +118,8 @@ connect. `Last-Event-ID` wins when both are present; a repeated value is a 400.
 | `resync_required` | the position to continue from | `{"reason", "position"}` with a reason from [Cursors and reads](#cursors-and-reads). Reload state; the stream continues. |
 
 Each stream subscribes to storage wake-ups before its first read, re-reads
-after every wake, and sends a `: keep-alive` comment every 15 seconds, which
-also re-reads. A read that fails, such as after the session is revoked or
+after every wake, and sends a `: keep-alive` comment every 15 seconds,
+however many wakes arrive in between, which also re-reads. A read that fails, such as after the session is revoked or
 storage stops, ends the stream.
 
 | Stream bound (`StreamLimits::default`) | Value |

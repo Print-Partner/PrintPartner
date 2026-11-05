@@ -46,7 +46,9 @@ Sources changes, first Plan) with these replacement-product changes:
   Checkoff tab when its plates are not started or ready. Plates that are
   preparing, stale or failed keep `prepare_production`.
 - **Finished Builds stay quiet.** When every required unit is checked off and
-  no draft is open, changed Sources show as complete history, not stale work.
+  no draft with changes is open, changed Sources show as complete history, not
+  stale work. An autosaved draft with no changes counts as no draft everywhere:
+  next action, Plan stage and Sources stage.
   A confirmed bed (link `verified` or `applied`) is never attention.
 - **Stock shortfall** comes only from the adapter. `Stock::Ready{shortfalls>0}`
   makes `resolve_stock_shortfall` the next action ahead of Production;

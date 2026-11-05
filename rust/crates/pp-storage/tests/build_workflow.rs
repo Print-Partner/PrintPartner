@@ -201,6 +201,12 @@ fn build_workflow_confirmed_bed_is_not_attention() {
     }
     assert_eq!(workspace.stages[0].status.kind, StatusKind::Complete);
     assert!(f.tasks(Inputs::default()).tasks.is_empty());
+    // An autosaved draft without changes leaves the Build finished.
+    unchanged_draft(&f);
+    let with_draft = f.workspace(Inputs::default(), 1);
+    assert_eq!(with_draft.next_action, workspace.next_action);
+    assert_eq!(with_draft.stages, workspace.stages);
+    assert!(f.tasks(Inputs::default()).tasks.is_empty());
 
     // The same bed still waiting for confirmation is attention.
     f.links("awaiting_verify");
@@ -278,10 +284,8 @@ fn build_workflow_autosaved_draft_says_saved_not_accepted() {
     }
 }
 
-#[test]
-fn build_workflow_unchanged_draft_keeps_the_build_next_action() {
-    let f = Fixture::new();
-    let before = f.workspace(Inputs::default(), 1);
+/// Opens an autosaved draft whose parts equal the Accepted Plan's.
+fn unchanged_draft(f: &Fixture) {
     let fields = "part_key,relative_path,filename,source_layer,status,role_inferred,role_override,filament_color_id,filament_custom_hex,spoolman_spool_id,quantity_inferred,quantity_override,quantity_effective,included,notes,github_blob_url,geometry_same,requirement,option_group_id,manifest_source,artifact_digest";
     f.sql(&format!(
         "INSERT INTO plan_drafts (tenant_id,profile_id,base_revision_id,base_plan_version,state,digest_format,snapshot_digest,created_by,idempotency_key,created_at)
@@ -290,6 +294,13 @@ fn build_workflow_unchanged_draft_keeps_the_build_next_action() {
          SELECT tenant_id,last_insert_rowid(),id,{fields} FROM plan_revision_parts WHERE revision_id=1;",
         "a".repeat(64)
     ));
+}
+
+#[test]
+fn build_workflow_unchanged_draft_keeps_the_build_next_action() {
+    let f = Fixture::new();
+    let before = f.workspace(Inputs::default(), 1);
+    unchanged_draft(&f);
     let after = f.workspace(Inputs::default(), 1);
     assert!(matches!(
         after.working_plan,

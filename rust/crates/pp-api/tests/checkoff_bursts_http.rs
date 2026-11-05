@@ -2,6 +2,7 @@
 //! GRE-1090 through the mounted Rust route: the P/F contract request from
 //! `web/packages/contracts/src/checkoff-burst.test.ts`, replay across a
 //! restart, undo and its conflict, on a disposable copy of a real SQLite fixture.
+//! Accepted Progress import shares the router and the fixture.
 use axum::{
     Router,
     body::Body,
@@ -256,5 +257,90 @@ async fn farm_log_http_pages_across_restart_and_undoes_by_entry() {
     let (owner, router) = fixture.open("0");
     let (status, _) = send(&router, "GET", "/api/v2/farm-log", "", true).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "the flag off mounts nothing");
+    owner.shutdown().unwrap();
+}
+
+fn import_body(plan_version: i64, rows: Value) -> String {
+    json!({
+        "expected": {
+            "profile_id": 1,
+            "plan_version": plan_version,
+            "plan_revision_id": 1,
+            "plan_revision_digest": "eb2dd43bcbf42d909a0b5bdcbeb9b0010951a905f7c5cb01d4b4def1b9eca54f",
+            "required_unit_mapping_digest": "8c446659d41d31efe3d95931c9f898b0d5442a41104474671bdccab4779e3a41",
+        },
+        "rows": rows,
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn ticket_t_61_publication_progress_import_http_sets_counts_and_refuses_without_writes() {
+    let fixture = Fixture::new();
+    let printed = fixture.printed();
+    let (owner, router) = fixture.open("1");
+    let rows = json!([{ "part_id": 1, "printed_count": 3 }]);
+    let invalid = json!({"detail": "Request is invalid", "code": "invalid_request"});
+    for (path, body, status, expected) in [
+        (
+            "/plans/abc/progress/import",
+            import_body(1, rows.clone()),
+            400,
+            invalid.clone(),
+        ),
+        (
+            "/plans/1/progress/import",
+            "[]".to_owned(),
+            400,
+            Value::Null,
+        ),
+        (
+            "/plans/1/progress/import",
+            import_body(1, json!([])),
+            400,
+            Value::Null,
+        ),
+        (
+            "/plans/2/progress/import",
+            import_body(1, rows.clone()),
+            404,
+            json!({"detail": "Plan or Part not found", "code": "progress_target_not_found"}),
+        ),
+        (
+            "/api/v2/plans/1/progress/import",
+            import_body(2, rows.clone()),
+            409,
+            json!({"detail": "Accepted Plan changed; reload and retry", "code": "stale_accepted_plan"}),
+        ),
+    ] {
+        let (actual, body) = post(&router, path, &body, true).await;
+        assert_eq!(actual.as_u16(), status, "{path} {body}");
+        if !expected.is_null() {
+            assert_eq!(
+                (&body["detail"], &body["code"]),
+                (&expected["detail"], &expected["code"]),
+                "{path}"
+            );
+        }
+    }
+    let (status, _) = post(
+        &router,
+        "/plans/1/progress/import",
+        &import_body(1, rows.clone()),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(fixture.printed(), printed);
+    let (status, body) = post(
+        &router,
+        "/api/v2/plans/1/progress/import",
+        &import_body(1, rows),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"updated_parts": 1}));
+    assert_eq!(fixture.printed(), printed + 2);
     owner.shutdown().unwrap();
 }

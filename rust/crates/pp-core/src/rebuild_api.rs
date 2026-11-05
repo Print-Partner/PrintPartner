@@ -283,7 +283,7 @@ pub fn read_router(
     ))
 }
 
-/// Compose completed draft list/read/edit/abandon routers from one
+/// Compose completed draft read, write and Accept routers from one
 /// `WriterOwner` when the stored rebuild setting is on. Root and `/api/v2`
 /// aliases share that client's executor. Returns `None` before creating
 /// clients or mounting when the setting is off. Does not cut over production

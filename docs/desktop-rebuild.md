@@ -294,7 +294,7 @@ Slices land in this order. Linear tracks each one under GRE-595. A slice is one 
 | D21 | GRE-616 | pp-storage read_model context and graph |
 | D22 | GRE-618 | pp-storage read_model workflow and views |
 | D23 | GRE-617 | pp-api auth HTTP |
-| D24 | GRE-619 | pp-api drafts HTTP (list/read/edit/abandon; abandon GRE-988) |
+| D24 | GRE-619 | pp-api drafts HTTP (list/read/edit/abandon; abandon GRE-988; reconciliation GRE-416; recompute/rebase/Accept GRE-417) |
 | D25 | GRE-620 | pp-api builds HTTP and jobs |
 | D26 | GRE-621 | Web and server wiring behind the flag |
 
@@ -2927,6 +2927,69 @@ transaction on the single writer and nothing is sent to Node.
 - A decision that does not apply to the draft makes Node's service throw, so
   both routes answer 500 `Plan draft update failed`. The transaction rolls
   back every reconciliation, decision and assignment row and writes no event.
+
+
+### Draft recompute, rebase and Accept (GRE-417)
+
+The draft router also serves Node's three remaining draft writes under the
+same flag, at the root and under `/api/v2`. Each needs an `Idempotency-Key`
+header (trimmed, 1 to 160 characters). A request without a usable key gets 400
+`invalid_request` before its body is read. Each request runs on the
+`WorkingDraftClient` writer, and nothing is sent to Node.
+
+- `POST /plans/{id}/drafts/recompute` takes `{ apply_manifest: boolean }` and
+  runs `WorkingDraftClient::recompute_and_select`. It abandons every other open
+  draft, creates the new draft, and selects Required units as an edit does. It
+  answers with the workspace. A replay with the same key returns the same
+  draft and writes nothing. `no_layers`, `no_stls` and `would_wipe` are 422
+  `{ code }`. `accepted_baseline_required`, `base_changed`, `inputs_changed` and
+  `idempotency_conflict` are 409. A missing Plan is 404 `profile_not_found`.
+- `POST /plans/{id}/drafts/{draft_id}/rebase` takes `RebaseRequest` and runs
+  `WorkingDraftClient::rebase_and_select`. A rebased or existing draft is selected
+  and answered as recompute's is. As in Node's `rebaseFailure`, a source whose
+  lifecycle or digest changed is 409 `draft_changed` with the source's workspace,
+  and an open source is 409 `not_open` with its workspace. `merge_conflicts`
+  is 422 `{ code, conflicts }`. `base_unchanged` is 409, alongside recompute's
+  409s and 422s.
+- `POST /plans/{id}/drafts/{draft_id}/apply` (Accept) takes `ApplyRequest` and runs
+  `PublicationClient::apply` through `WorkingDraftClient::publication`. 200 is
+  the receipt `{ profile_id, draft_id, revision_id, plan_version,
+  draft_lifecycle_version, revision_digest, required_unit_mapping_digest,
+  applied_at }`, also for a replay with the same key or an already consumed
+  draft. When Accept answers `reconciliation_required`, the route runs Node's
+  `prepareForApply` and retries once under the same key with the prepared
+  draft's revision. That means checking the draft against the request,
+  answering 409 `not_open`, `draft_changed` or `base_changed` with its
+  workspace, and otherwise selecting Required units. `draft_changed`,
+  `base_changed` and `not_open` from Accept carry the draft's current workspace.
+  `reconciliation_required` is 422 `{ code, reason }`. `production_active` is
+  423 with `checkoff_link_count` and `send_queue_item_count`.
+  `checkoff_remap_unsafe` is 422 with `unmappable`. `build_archived` and
+  `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
+  which Node has no counterpart for, is 409 `{ code, operations }`. A missing Plan
+  is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
+  Only Accept publishes. Recompute, rebase and autosave never write an
+  Accepted Plan.
+
+Contention past the writer's admission deadline is 503
+`transaction_unavailable`. Any other storage failure is 500
+`Plan draft update failed`, as it is for edit. Every draft write in these
+operations appends `plan.draft_changed` in its own transaction
+([Domain events](domain-events.md)).
+
+`POST /plans/{id}/progress/import` (Node's accepted Progress import) is mounted
+on the Checkoff router (`pp_api::checkoff`). It takes `{ expected, rows }` and sets
+each listed Part's printed count against the Accepted Plan the caller
+observed, with the 8 MiB body limit Node's bulk routes use. A body for
+another Plan is 404 `progress_target_not_found`. A stale basis is 409
+`stale_accepted_plan`. Storage's other refusals keep their Node detail and code.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_publication)'
+```
+
+The desktop gateway still does not mount the draft or Checkoff routers. Moving
+the live Node aliases over is the gateway cutover (GRE-593).
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one

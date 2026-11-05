@@ -9,6 +9,9 @@
 //! `idempotency_key`, which returns the stored receipt. Admission is
 //! `accepted::Gate`: loopback, exact Host and Origin, and a session or API key.
 //!
+//! Node's accepted Progress import (`POST /plans/{id}/progress/import`)
+//! shares the router and the same writer transaction rules.
+//!
 //! The farm log (GRE-1126) shares the router: `GET /farm-log` pages the
 //! fleet's logged bursts, undos and sends, and `POST /farm-log/{id}/undo`
 //! undoes a logged burst through the same compensating burst undo.
@@ -20,13 +23,17 @@ use crate::{
 use axum::{
     Extension, Router,
     body::Bytes,
+    extract::DefaultBodyLimit,
     extract::{Path, RawQuery, State},
     http::StatusCode,
     response::Response,
     routing::{get, post},
 };
-use pp_storage::checkoff_progress::{Body, ProgressClient, Request};
+use pp_storage::checkoff_progress::{Body, Import, ProgressClient, Request};
 use serde_json::Value;
+
+/// Node's `MAX_BULK_JSON_BODY_BYTES` for the import route.
+const IMPORT_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 struct App {
@@ -44,7 +51,11 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         .route("/printer-checkoff/verify-batch", post(verify_batch))
         .route("/printer-checkoff/verify-batch/undo", post(undo_batch))
         .route("/farm-log", get(farm_log))
-        .route("/farm-log/{id}/undo", post(undo_farm_log_entry));
+        .route("/farm-log/{id}/undo", post(undo_farm_log_entry))
+        .route(
+            "/plans/{id}/progress/import",
+            post(import).layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT)),
+        );
     gate.guard(routes.clone().nest("/api/v2", routes))
         .with_state(App { gate, client })
 }
@@ -63,6 +74,45 @@ async fn undo_batch(
     body: Bytes,
 ) -> Response {
     apply(app, presented, &body, |body| Request::UndoBatch { body }).await
+}
+
+/// Node's `POST /plans/:id/progress/import`: sets each listed Part's printed
+/// count against the Accepted Plan the caller observed. A body for another
+/// Plan is 404 `progress_target_not_found`, as Node answers it.
+async fn import(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let profile = id.parse::<i64>().ok().filter(|id| *id > 0);
+    let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    let parsed = profile.map(|profile| (profile, Import::parse(body)));
+    let import = match parsed {
+        Some((profile, Ok(import))) if import.expected.profile_id == profile => import,
+        Some((_, Ok(_))) => {
+            return crate::problem::build(
+                crate::problem::problem(
+                    StatusCode::NOT_FOUND,
+                    "Plan or Part not found",
+                    Some("progress_target_not_found"),
+                ),
+                serde_json::Map::new(),
+            );
+        }
+        Some((_, Err(response))) => return present(response),
+        None => {
+            return crate::problem::build(
+                crate::problem::problem(
+                    StatusCode::BAD_REQUEST,
+                    "Request is invalid",
+                    Some("invalid_request"),
+                ),
+                serde_json::Map::new(),
+            );
+        }
+    };
+    run(app, presented, Request::Import(import)).await
 }
 
 /// `cursor` and `limit`, URL-decoded as `history.rs` decodes its query.
@@ -123,15 +173,19 @@ async fn run(app: App, presented: PresentedCredential, request: Request) -> Resp
         })
         .await;
     match applied {
-        Some(Ok(response)) => match (StatusCode::from_u16(response.status), response.body) {
-            (Ok(StatusCode::OK), body) => ok_json(&body),
-            (Ok(status), Body::Failure { detail, code }) => crate::problem::build(
-                crate::problem::problem(status, &detail, code.as_deref()),
-                serde_json::Map::new(),
-            ),
-            _ => internal(),
-        },
+        Some(Ok(response)) => present(response),
         Some(Err(error)) => read_error(&error),
         None => internal(),
+    }
+}
+
+fn present(response: pp_storage::checkoff_progress::Response) -> Response {
+    match (StatusCode::from_u16(response.status), response.body) {
+        (Ok(StatusCode::OK), body) => ok_json(&body),
+        (Ok(status), Body::Failure { detail, code }) => crate::problem::build(
+            crate::problem::problem(status, &detail, code.as_deref()),
+            serde_json::Map::new(),
+        ),
+        _ => internal(),
     }
 }

@@ -526,3 +526,149 @@ fn writes_survive_a_restart() {
         .unwrap();
     assert!(part.units.iter().all(|u| u.completed));
 }
+
+// GRE-1088: each Checkoff write commits its domain event in the same
+// transaction; reads authenticate; a restart starts a new cursor generation.
+use pp_storage::domain_events::{Cursor, DomainEventsClient, Read, ResyncReason, Waker};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn events(f: &Fixture) -> DomainEventsClient {
+    f.owner().domain_events().unwrap()
+}
+
+fn read_events(
+    f: &Fixture,
+    credential: Credential,
+    after: Option<&Cursor>,
+) -> anyhow::Result<Read> {
+    events(f).read(credential, after.cloned(), &AtomicBool::new(false), WAIT)
+}
+
+fn position(f: &Fixture) -> Cursor {
+    match read_events(f, session(), None).unwrap() {
+        Read::Events { events, position } if events.is_empty() => position,
+        other => panic!("expected a position, got {other:?}"),
+    }
+}
+
+fn nothing_after(position: &Cursor) -> Read {
+    Read::Events {
+        events: Vec::new(),
+        position: position.clone(),
+    }
+}
+
+#[test]
+fn domain_events_checkoff_commits_one_event_with_its_change() {
+    let f = Fixture::new();
+    let start = position(&f);
+    assert_eq!(f.complete(2, true)["status"], 200);
+    let Read::Events { events, position } = read_events(&f, session(), Some(&start)).unwrap()
+    else {
+        panic!("expected events");
+    };
+    let [event] = &events[..] else {
+        panic!("expected one event, got {events:?}");
+    };
+    let event = serde_json::to_value(event).unwrap();
+    assert_eq!(event["type"], "checkoff.progress_changed");
+    assert_eq!(event["schema_version"], 1);
+    assert_eq!(
+        (&event["aggregate_type"], &event["aggregate_id"]),
+        (&json!("build"), &json!("1"))
+    );
+    assert_eq!(event["payload"], json!({ "part_id": 1 }));
+    assert_eq!(event["operation_id"].as_str().unwrap().len(), 32);
+    assert_eq!(event["cursor"], position.to_string());
+    assert_eq!(
+        read_events(&f, session(), Some(&position)).unwrap(),
+        nothing_after(&position)
+    );
+}
+
+#[test]
+fn domain_events_refused_or_failed_checkoff_writes_no_event() {
+    let f = Fixture::new();
+    let start = position(&f);
+    assert_eq!(f.complete(9, true)["status"], 404);
+    f.sql("CREATE TRIGGER refuse_event BEFORE INSERT ON domain_events BEGIN SELECT RAISE(ABORT,'probe'); END");
+    assert_eq!(f.complete(2, true)["status"], 500);
+    assert_eq!(
+        f.progress(),
+        UNTOUCHED,
+        "a failed event write rolls back the change"
+    );
+    f.sql("DROP TRIGGER refuse_event");
+    assert_eq!(
+        read_events(&f, session(), Some(&start)).unwrap(),
+        nothing_after(&start)
+    );
+}
+
+#[test]
+fn domain_events_unauthenticated_read_is_refused() {
+    let f = Fixture::new();
+    let wrong = Credential::Session(Secret::new("not-a-session".into()));
+    assert!(read_events(&f, wrong, None).is_err());
+}
+
+#[test]
+fn domain_events_restart_starts_a_new_generation() {
+    let mut f = Fixture::new();
+    let start = position(&f);
+    f.complete(2, true);
+    let previous = f.owner.take().expect("open owner");
+    previous.shutdown().unwrap();
+    let (reopened, _) = WriterOwner::open(&f.root, Limits::default()).unwrap();
+    f.owner.replace(reopened);
+    let Read::Resync {
+        reason,
+        position: after,
+    } = read_events(&f, session(), Some(&start)).unwrap()
+    else {
+        panic!("expected a resync");
+    };
+    assert_eq!(reason, ResyncReason::GenerationChanged);
+    assert_eq!(after, position(&f));
+}
+
+#[test]
+fn domain_events_subscriber_is_woken_by_commits_not_by_reads() {
+    let f = Fixture::new();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let counter = woken.clone();
+    let waker: Waker = Arc::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    events(&f).subscribe(&waker).unwrap();
+    let start = position(&f);
+    read_events(&f, session(), Some(&start)).unwrap();
+    assert_eq!(woken.load(Ordering::SeqCst), 0);
+    f.complete(2, true);
+    // The writer wakes subscribers after it replies to the write.
+    let deadline = std::time::Instant::now() + WAIT;
+    while woken.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(woken.load(Ordering::SeqCst) >= 1);
+}
+
+#[test]
+fn domain_events_checkoff_that_changes_no_row_writes_no_event() {
+    let f = Fixture::new();
+    let start = position(&f);
+    assert_eq!(f.assemble(5, true)["status"], 200);
+    let unchanged = f.import(json!([{ "part_id": 1, "printed_count": 0 }]));
+    assert_eq!(unchanged["body"]["updated_parts"], 0);
+    assert_eq!(
+        read_events(&f, session(), Some(&start)).unwrap(),
+        nothing_after(&start)
+    );
+    for _ in 0..2 {
+        assert_eq!(f.complete(2, true)["status"], 200);
+    }
+    let Read::Events { events, .. } = read_events(&f, session(), Some(&start)).unwrap() else {
+        panic!("expected events");
+    };
+    assert_eq!(events.len(), 1, "repeating a completion is not a change");
+}

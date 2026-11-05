@@ -1504,9 +1504,10 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step writes `backups/pre-schema{N}.db`,
-where N is the step's target version, validates its objects and columns, and then
-commits them with its version stamp in one transaction. For a database at 37 the
+repair's writes to `source_revisions`. Each step through 41 (`LAST_COPIED_STEP`)
+writes `backups/pre-schema{N}.db`, where N is the step's target version; step 42
+only adds a table and writes no copy of its own. Each step validates its objects
+and columns, and then commits them with its version stamp in one transaction. For a database at 37 the
 first backup, `pre-schema38.db`, is the untouched input. `pre-schema39.db` is taken
 after step 2, so it can include that pass's repairs. An
 interrupted step leaves its input version intact, so each attempt takes a fresh copy
@@ -1515,7 +1516,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-41.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-42.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -2543,6 +2544,29 @@ does not serve.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_progress
+```
+
+### Domain event log, GRE-1088
+
+The 41 to 42 step installs `domain_events` and its index. Checkoff
+writes, including GRE-420 verify, bursts and burst undo, and Accept append an
+event in their own transaction when they change a row. The step writes no
+step copy of its own; the copy taken at open covers it. See
+[Domain events](domain-events.md).
+
+### Domain event stream, GRE-1162
+
+`GET /api/v1/events` serves the log as Server-Sent Events from `read_router`,
+so the Rust-only runtime mounts it. It resumes from `Last-Event-ID`, answers
+401 without a credential, ends the stream when the session is revoked, and
+stops feeding a client whose bounded queue stays full for 10 seconds; that
+connection closes at the server's next write, or after 30 seconds in which the
+client accepts no bytes. Shutdown draining ends open streams and does not wait
+for them. See
+[Domain events](domain-events.md#http-stream).
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --lib events::
 ```
 
 ### Printer Checkoff verify and dismiss (GRE-420)

@@ -137,8 +137,7 @@ sending the queued frames. The server polls the body only when the socket can
 take more data, so a client that stops reading entirely keeps its connection
 and its stream slot. Once the server has data it cannot write, the desktop
 gateway closes the connection if the peer accepts no bytes for 30 seconds
-(`WRITE_STALL`), which frees the slot about 40 seconds after the stall
-began. A client that stops reading while the socket buffers still have room
+(`WRITE_STALL`), which frees the slot 30 seconds after the stall began. A client that stops reading while the socket buffers still have room
 looks the same as an idle, healthy listener: heartbeats and small events
 still succeed, so it keeps its slot until those buffers fill or it
 disconnects. Each open connection, healthy or not, counts against the 8

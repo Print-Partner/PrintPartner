@@ -331,6 +331,33 @@ fn verify_batch_undo_ignores_later_activity_that_does_not_touch_its_parts() {
 }
 
 #[test]
+fn verify_batch_undo_refuses_on_an_archived_build() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let done = batch(&owner, two_beds("archive-later"));
+    assert_eq!(done["status"], 200);
+    fixture
+        .sql()
+        .execute(
+            "UPDATE build_profiles SET archived_at='2026-11-05T00:00:00.000Z' WHERE id=1",
+            [],
+        )
+        .unwrap();
+    let rows = fixture.checkoff();
+    let undone = undo(&owner, &done["body"]["undo_token"]);
+    assert_eq!(
+        undone["body"]["detail"], "Archived Plan Progress cannot be changed",
+        "{undone}"
+    );
+    assert_eq!(
+        fixture.checkoff(),
+        rows,
+        "undo writes nothing on an archived Build"
+    );
+    owner.shutdown().unwrap();
+}
+
+#[test]
 fn verify_batch_counts_units_other_beds_confirm_toward_left_fill() {
     let fixture = Fixture::new();
     let owner = fixture.open();

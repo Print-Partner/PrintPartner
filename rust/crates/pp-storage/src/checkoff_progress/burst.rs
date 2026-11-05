@@ -11,7 +11,7 @@
 //! of them, or a touched Accepted Plan, changed since.
 
 use super::{
-    Basis, Body, Outcome, Refusal, Response,
+    Basis, Body, Outcome, Refusal, Response, archived,
     links::{self, Link, field},
     read, verify,
 };
@@ -495,6 +495,14 @@ pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos:
         return refuse(409, "This Checkoff burst was already undone");
     }
     let undo = receipts[position]["undo"].clone();
+    for basis in undo["bases"].as_array().into_iter().flatten() {
+        let profile = basis["profile_id"].as_i64().unwrap_or_default();
+        if let AcceptedRead::Ready { snapshot } = read(tx, tenant, profile, repos)?
+            && archived(&snapshot)
+        {
+            return Ok(Err(Refusal::Archived));
+        }
+    }
     let mut all = links::load(tx, tenant, &links::now())?;
     let current: Vec<Value> = all.iter().map(links::public).collect();
     if let Some(reason) = undo_conflict(tx, tenant, &undo, &current, repos)? {

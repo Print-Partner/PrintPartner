@@ -2640,7 +2640,8 @@ another link that records a unit the burst printed, or a later unit that filled
 from the burst's unit, therefore blocks undo. Unrelated activity, such as a new
 print job, a new link, or a dismiss of a link without the burst's units, does not. A receipt
 without that hash or its unit list (written before they existed) refuses with
-409 instead of undoing on weaker checks. An unknown token is 404. No printer, webhook or
+409 instead of undoing on weaker checks. Undo on a Build archived since the burst refuses like
+every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
 `web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the

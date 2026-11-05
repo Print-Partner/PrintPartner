@@ -47,8 +47,10 @@ Sources changes, first Plan) with these replacement-product changes:
   preparing, stale or failed keep `prepare_production`.
 - **Finished Builds stay quiet.** When every required unit is checked off and
   no draft with changes is open, changed Sources show as complete history, not
-  stale work. An autosaved draft with no changes counts as no draft everywhere:
-  next action, Plan stage and Sources stage.
+  stale work. An autosaved draft with no changes that is still current with
+  the Accepted Plan (`Working::Ready`) counts as no draft for the next action,
+  the Plan stage and the Sources stage. A zero-change draft that is stale or
+  has unresolved choices still asks for a refresh or a decision.
   A confirmed bed (link `verified` or `applied`) is never attention.
 - **Stock shortfall** comes only from the adapter. `Stock::Ready{shortfalls>0}`
   makes `resolve_stock_shortfall` the next action ahead of Production;

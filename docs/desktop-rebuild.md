@@ -2507,6 +2507,13 @@ does not serve.
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_progress
 ```
 
+### Domain event log, GRE-1088
+
+The 41 to 42 step installs `domain_events` and its index. Checkoff
+writes and Accept append an event in their own transaction. The step writes no
+step copy of its own; the copy taken at open covers it. See
+[Domain events](domain-events.md).
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

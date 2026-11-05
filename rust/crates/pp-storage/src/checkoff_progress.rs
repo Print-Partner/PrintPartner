@@ -540,7 +540,11 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
             if archived(&snapshot) {
                 return Ok(Err(Refusal::Archived));
             }
-            return import_counts(tx, tenant, &snapshot, import);
+            let outcome = import_counts(tx, tenant, &snapshot, import)?;
+            if matches!(&outcome, Ok(response) if response.status == 200) {
+                progress_changed(tx, tenant, snapshot.profile.id, None)?;
+            }
+            return Ok(outcome);
         }
         Op::Unit {
             target: Target::Token { expected, token },
@@ -565,6 +569,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         return Ok(Err(Refusal::Archived));
     }
     complete_rows(tx, tenant, &snapshot)?;
+    let profile = snapshot.profile.id;
     // The read model already refuses duplicate tokens.
     let Some((part, position)) = snapshot.parts.iter_mut().find_map(|part| {
         let position = part.units.iter().position(|u| u.token == token)?;
@@ -588,6 +593,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                     unit.assembled &= completed;
                 }
             }
+            progress_changed(tx, tenant, profile, Some(part_id))?;
             Ok(Ok(completion(part)))
         }
         Change::Assembled(assembled) => {
@@ -603,9 +609,33 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
                 );
                 unit.assembled = assembled;
             }
+            progress_changed(tx, tenant, profile, Some(part_id))?;
             Ok(Ok(assembly(part)))
         }
     }
+}
+
+/// Records the change in the domain event log inside the Checkoff transaction.
+fn progress_changed(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    part: Option<i64>,
+) -> Result<()> {
+    crate::domain_events::append(
+        tx,
+        tenant,
+        crate::domain_events::Change {
+            kind: crate::domain_events::PROGRESS_CHANGED,
+            aggregate_type: "build",
+            aggregate_id: profile.to_string(),
+            aggregate_version: None,
+            payload: match part {
+                Some(part) => serde_json::json!({ "part_id": part }),
+                None => serde_json::json!({ "import": true }),
+            },
+        },
+    )
 }
 
 /// Resolves `/parts/:id` and a unit index to the current snapshot and unit

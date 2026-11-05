@@ -221,6 +221,9 @@ fn farm_lists_skip_unusable_rows_and_hide_paths_and_error_text() {
         json!({"results": [{"id": "l-applied", "profile_id": 3, "printer_id": "p-moon",
             "integration_id": "moon", "filename": "dir/Plate.gcode", "state": "verified",
             "host_outcome": "success", "unit_count": 2, "resolved_unit_count": 1,
+            "units": [{"part_id": 1, "unit_index": 0, "part_filename": null},
+                      {"part_id": 1, "unit_index": 1, "part_filename": null}],
+            "resolved_units": [],
             "created_at": "2026-11-05T00:00:00.000Z", "completed_at": null, "applied_at": null}]})
     );
     assert_eq!(
@@ -307,4 +310,76 @@ fn farm_stream_printers_carry_known_fields_only() {
     let idle = farm.stream_printers(observe(seen(HostState::Idle)));
     assert!(!idle[4].same_state(&printing[4]));
     assert_eq!(idle[4].result_id, None);
+}
+
+#[test]
+fn farm_results_list_units_and_decisions_and_skip_unreadable_ones() {
+    let mut stored = link("awaiting_verify", None, None);
+    stored["units"] = json!([
+        {"part_id": 7, "unit_index": 0, "object_name": "a"},
+        {"part_id": "8", "unit_index": 2},
+        {"part_id": 0, "unit_index": 1},
+        {"part_id": 7, "unit_index": -1},
+        {"part_id": 7, "unit_index": 1.5},
+        {"part_id": 7},
+        "junk"
+    ]);
+    stored["resolved_units"] = json!([
+        {"part_id": 7, "unit_index": 0, "result": "confirmed"},
+        {"part_id": 8, "unit_index": 2, "result": "rejected", "reason": "spaghetti"},
+        {"part_id": 8, "unit_index": 3, "result": "maybe"},
+        {"part_id": 8, "unit_index": 4}
+    ]);
+    let results = farm(json!([stored]), json!([])).checkoff().results;
+    let result = &results[0];
+    assert_eq!((result.unit_count, result.resolved_unit_count), (7, 4));
+    assert_eq!(
+        serde_json::to_value(&result.units).unwrap(),
+        json!([{"part_id": 7, "unit_index": 0, "part_filename": null},
+               {"part_id": 8, "unit_index": 2, "part_filename": null}])
+    );
+    assert_eq!(
+        serde_json::to_value(&result.resolved_units).unwrap(),
+        json!([{"part_id": 7, "unit_index": 0, "result": "confirmed"},
+               {"part_id": 8, "unit_index": 2, "result": "rejected"}])
+    );
+}
+
+#[test]
+fn farm_names_result_parts_from_the_tenants_rows_only() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE parts (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, filename TEXT NOT NULL);
+             INSERT INTO parts VALUES (7, 'default', 'bracket.stl'), (8, 'other', 'theirs.stl'),
+                                      (9, 'default', '');",
+        )
+        .unwrap();
+    let mut stored = link("awaiting_verify", None, None);
+    stored["units"] = json!([
+        {"part_id": 7, "unit_index": 0},
+        {"part_id": 7, "unit_index": 1},
+        {"part_id": 8, "unit_index": 0},
+        {"part_id": 9, "unit_index": 0},
+        {"part_id": 10, "unit_index": 0}
+    ]);
+    let mut read = farm(json!([stored]), json!([]));
+    let tx = connection.transaction().unwrap();
+    read.name_parts(&tx, "default").unwrap();
+    let names: Vec<_> = read.checkoff().results[0]
+        .units
+        .iter()
+        .map(|unit| unit.part_filename.clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            Some("bracket.stl".into()),
+            Some("bracket.stl".into()),
+            None,
+            None,
+            None
+        ],
+        "another tenant's Part, an empty file name and a missing Part stay null"
+    );
 }

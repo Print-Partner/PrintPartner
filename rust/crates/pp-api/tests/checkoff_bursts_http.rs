@@ -9,7 +9,12 @@ use axum::{
     http::{Request, StatusCode},
 };
 use pp_api::{accepted::AcceptedHttpConfig, checkoff::checkoff_router};
-use pp_storage::{Limits, WriterOwner};
+use pp_storage::{
+    Limits, WriterOwner,
+    checkoff_progress::wire::{
+        UndoBatchReceipt, UndoBatchRequest, VerifyBatchReceipt, VerifyBatchRequest,
+    },
+};
 use serde_json::{Value, json};
 use std::{net::SocketAddr, path::PathBuf};
 use tower::ServiceExt;
@@ -115,6 +120,22 @@ async fn verify_batch_http_replays_across_restart_and_undoes_once() {
     .await;
     assert_eq!(status, StatusCode::OK, "{first}");
     assert_eq!(first["units_confirmed"], 5);
+    let request: VerifyBatchRequest = serde_json::from_str(&contract_request()).unwrap();
+    assert_eq!(
+        request.beds.len(),
+        2,
+        "the generated client's request type takes the P/F body"
+    );
+    let receipt: VerifyBatchReceipt = serde_json::from_value(first.clone()).unwrap();
+    assert_eq!(
+        (
+            receipt.units_confirmed,
+            receipt.beds.len(),
+            receipt.undo_token.as_str()
+        ),
+        (5, 2, first["undo_token"].as_str().unwrap()),
+        "the generated client's receipt type reads the served receipt"
+    );
     assert_eq!(fixture.printed(), printed + 5);
     owner.shutdown().unwrap();
 
@@ -136,6 +157,9 @@ async fn verify_batch_http_replays_across_restart_and_undoes_once() {
     let (status, undone) = post(&router, "/printer-checkoff/verify-batch/undo", &token, true).await;
     assert_eq!(status, StatusCode::OK, "{undone}");
     assert_eq!(fixture.printed(), printed);
+    let _: UndoBatchRequest = serde_json::from_str(&token).unwrap();
+    let undone: UndoBatchReceipt = serde_json::from_value(undone).unwrap();
+    assert_eq!(undone.undo_token, receipt.undo_token);
     let (status, again) = post(
         &router,
         "/api/v2/printer-checkoff/verify-batch/undo",

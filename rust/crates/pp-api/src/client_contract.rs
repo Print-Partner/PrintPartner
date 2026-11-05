@@ -2,7 +2,7 @@
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
-//! [`crate::farm`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::farm`], [`crate::checkoff`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -167,6 +167,20 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "MatchSuggestionList",
     ),
     route(
+        "verifyCheckoffBurst",
+        "POST",
+        "/api/v2/printer-checkoff/verify-batch",
+        Some("VerifyBatchRequest"),
+        "VerifyBatchReceipt",
+    ),
+    route(
+        "undoCheckoffBurst",
+        "POST",
+        "/api/v2/printer-checkoff/verify-batch/undo",
+        Some("UndoBatchRequest"),
+        "UndoBatchReceipt",
+    ),
+    route(
         "readSendQueue",
         "GET",
         "/api/v2/printer-send-queue",
@@ -200,6 +214,10 @@ mod codegen {
             PlanFreshness, PlanStaleReason, PlanUntrackedReason, ProfileLayer, ProfileLayers,
             ProfileList, ProfileSummary,
         },
+        checkoff_progress::wire::{
+            BurstBedReceipt, UndoBatchReceipt, UndoBatchRequest, VerifyBatchReceipt,
+            VerifyBatchRequest,
+        },
         plan_publication::preview::{
             AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue, InputChange,
             PartRef, PlateChanges, PlateRef, PreviewChanges, PreviewRevision, ProductionCheck,
@@ -208,12 +226,12 @@ mod codegen {
         read_model::{
             build_workflow::{TaskFeed, UnavailableBuild, rank},
             farm::{
-                CheckoffResult, CheckoffResultList, CheckoffResultState, FarmPrinter,
+                CheckoffResult, CheckoffResultList, CheckoffResultState, CheckoffUnit, FarmPrinter,
                 FarmPrinterList, FileNameEvidence, HostOutcome, IntegrationKind, LoadedFilament,
                 MatchBasis, MatchConfidence, MatchEvidence, MatchSuggestion, MatchSuggestionList,
-                ObjectListEvidence, PrinterIntegration, PrinterReason, QueuedSend, SendQueue,
-                SendState, SuggestedBuild, SuggestedPlate, TimeWindowEvidence, UnmatchedPrint,
-                UnmatchedPrintList,
+                ObjectListEvidence, PrinterIntegration, PrinterReason, QueuedSend, ResolvedUnit,
+                SendQueue, SendState, SuggestedBuild, SuggestedPlate, TimeWindowEvidence,
+                UnitResult, UnmatchedPrint, UnmatchedPrintList,
             },
             planning::{
                 BuildPlanning, BuildPlanningBrief, BuildPlanningPhase, BuildPlanningReadiness,
@@ -289,6 +307,16 @@ mod codegen {
             schemars::schema_for!(MatchSuggestionList),
         )?;
         schema("SendQueue", schemars::schema_for!(SendQueue))?;
+        schema(
+            "VerifyBatchRequest",
+            schemars::schema_for!(VerifyBatchRequest),
+        )?;
+        schema(
+            "VerifyBatchReceipt",
+            schemars::schema_for!(VerifyBatchReceipt),
+        )?;
+        schema("UndoBatchRequest", schemars::schema_for!(UndoBatchRequest))?;
+        schema("UndoBatchReceipt", schemars::schema_for!(UndoBatchReceipt))?;
         schema(
             "PrinterDisplayDescriptor",
             schemars::schema_for!(PrinterDisplayDescriptor),
@@ -427,6 +455,27 @@ mod codegen {
                 host_outcome,
                 unit_count: u32::MAX,
                 resolved_unit_count: 0,
+                units: vec![CheckoffUnit {
+                    part_id: MAX_SAFE,
+                    unit_index: u32::MAX,
+                    part_filename: filled.then(|| format!("{UNICODE}.stl")),
+                }],
+                resolved_units: if filled {
+                    vec![
+                        ResolvedUnit {
+                            part_id: 1,
+                            unit_index: 0,
+                            result: UnitResult::Confirmed,
+                        },
+                        ResolvedUnit {
+                            part_id: MAX_SAFE,
+                            unit_index: u32::MAX,
+                            result: UnitResult::Rejected,
+                        },
+                    ]
+                } else {
+                    vec![]
+                },
                 created_at: "2026-11-05T00:00:00.000Z".into(),
                 completed_at: filled.then(|| "2026-11-05T01:00:00.000Z".into()),
                 applied_at: filled.then(|| "2026-11-05T01:30:00.000Z".into()),
@@ -1275,7 +1324,84 @@ mod codegen {
                 value,
             ));
         }
+        cases.extend(burst_fixtures()?);
         cases.extend(planning_fixtures()?);
+        Ok(cases)
+    }
+
+    /// Checkoff burst requests the generated client must accept or refuse as
+    /// Rust does, and the receipts the routes serve.
+    fn burst_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        let decision = json!({"part_id": MAX_SAFE, "unit_index": 0, "result": "confirmed"});
+        let mut cases = vec![
+            served(
+                "VerifyBatchReceipt",
+                "two-beds",
+                VerifyBatchReceipt {
+                    idempotency_key: UNICODE.into(),
+                    undo_token: "ppb_00112233445566778899aabbccddeeff".into(),
+                    units_confirmed: 3,
+                    units_rejected: 1,
+                    beds: vec![
+                        BurstBedReceipt {
+                            units_confirmed: 3,
+                            units_rejected: 0,
+                        },
+                        BurstBedReceipt {
+                            units_confirmed: 0,
+                            units_rejected: 1,
+                        },
+                    ],
+                },
+            )?,
+            served(
+                "UndoBatchReceipt",
+                "undone",
+                UndoBatchReceipt {
+                    undo_token: "ppb_00112233445566778899aabbccddeeff".into(),
+                    undone_at: "2026-11-05T02:00:00.000Z".into(),
+                },
+            )?,
+        ];
+        for (name, value) in [
+            (
+                "one-bed",
+                json!({"idempotency_key": UNICODE, "beds": [{"link_id": "l1", "decisions": [decision]}]}),
+            ),
+            (
+                "rejected-unit",
+                json!({"idempotency_key": "k", "beds": [{"link_id": "l1", "decisions": [
+                    {"part_id": 1, "unit_index": 4, "result": "rejected"}]}]}),
+            ),
+            (
+                "unknown-result",
+                json!({"idempotency_key": "k", "beds": [{"link_id": "l1", "decisions": [
+                    {"part_id": 1, "unit_index": 0, "result": "printed"}]}]}),
+            ),
+            (
+                "negative-index",
+                json!({"idempotency_key": "k", "beds": [{"link_id": "l1", "decisions": [
+                    {"part_id": 1, "unit_index": -1, "result": "confirmed"}]}]}),
+            ),
+            (
+                "extra-field",
+                json!({"idempotency_key": "k", "beds": [], "dry_run": true}),
+            ),
+            ("missing-beds", json!({"idempotency_key": "k"})),
+        ] {
+            cases.push(request::<VerifyBatchRequest>(
+                "VerifyBatchRequest",
+                name,
+                value,
+            ));
+        }
+        for (name, value) in [
+            ("token", json!({"undo_token": "ppb_1"})),
+            ("missing", json!({})),
+            ("number", json!({"undo_token": 1})),
+        ] {
+            cases.push(request::<UndoBatchRequest>("UndoBatchRequest", name, value));
+        }
         Ok(cases)
     }
 

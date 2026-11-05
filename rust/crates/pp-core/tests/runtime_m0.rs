@@ -30,6 +30,10 @@ mod ticket_t_4_watcher_proof;
 #[path = "runtime_m0/farm_reads.rs"]
 mod farm_reads;
 
+#[cfg(feature = "desktop_rebuild")]
+#[path = "runtime_m0/printer_stream.rs"]
+mod printer_stream;
+
 #[path = "support/process_tree.rs"]
 mod process_tree;
 

@@ -473,6 +473,15 @@ impl ReadServer {
                 .execute_batch(setup)
                 .unwrap();
         }
+        Self::serve(directory, flag, tenant, hold, body_limit).await
+    }
+    async fn serve(
+        directory: crate::scratch::Scratch,
+        flag: Option<&str>,
+        tenant: &str,
+        hold: Option<Arc<dyn Fn() + Send + Sync>>,
+        body_limit: usize,
+    ) -> Self {
         let owner = pp_storage::WriterOwner::open(&directory, pp_storage::Limits::default())
             .unwrap()
             .0;
@@ -534,6 +543,19 @@ impl ReadServer {
         self.task.abort();
         let _ = self.task.await;
         self.owner.shutdown().unwrap();
+    }
+    /// Shuts the writer down and serves the same database again.
+    async fn restart(self) -> Self {
+        let Self {
+            task,
+            owner,
+            directory,
+            ..
+        } = self;
+        task.abort();
+        let _ = task.await;
+        owner.shutdown().unwrap();
+        Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
     }
 }
 
@@ -2668,6 +2690,7 @@ async fn ticket_t_61_autosave_writes_the_open_draft_once_per_key_and_never_publi
     let server = ReadServer::start(Some("true"), "default").await;
     with_source_revision(&server);
     let accepted = accepted_rows(&server);
+    let identities = part_identities(&server);
     let path = "/api/v2/plans/1/drafts/save";
     let saved = json_reply(
         keyed(&server, path, Some(" s-1 ")).json(&autosave_body(observed(&json!(DIGEST)), 4)),
@@ -2743,6 +2766,19 @@ async fn ticket_t_61_autosave_writes_the_open_draft_once_per_key_and_never_publi
     );
     assert_eq!(logical_database(&server.sql()), after);
     assert_eq!(draft_events(&server), events);
+    assert_eq!(part_identities(&server), identities);
+
+    // The receipt survives a restart: the same key replays and writes nothing.
+    let server = server.restart().await;
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("s-1")).json(&autosave_body(observed(&json!(DIGEST)), 4)),
+            200
+        )
+        .await,
+        saved
+    );
+    assert_eq!(logical_database(&server.sql()), after);
 
     // The next save observes the saved draft and supersedes its selection.
     let next = json_reply(
@@ -2757,6 +2793,50 @@ async fn ticket_t_61_autosave_writes_the_open_draft_once_per_key_and_never_publi
         receipt["reconciliation_id"]
     );
     assert_eq!(accepted_rows(&server), accepted);
+    assert_eq!(part_identities(&server), identities);
+    server.close().await;
+}
+
+/// Draft and Part ids with their immutable keys, in id order.
+fn part_identities(server: &ReadServer) -> Vec<(i64, i64, String)> {
+    let connection = server.sql();
+    let mut statement = connection
+        .prepare("SELECT draft_id,id,part_key FROM plan_draft_parts ORDER BY id")
+        .unwrap();
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn ticket_t_61_autosave_rolls_back_a_failure_inside_the_transaction() {
+    let server = ReadServer::start_limited(
+        8 * 1024 * 1024,
+        "CREATE TRIGGER fail_autosave BEFORE INSERT ON plan_draft_required_unit_reconciliations BEGIN SELECT RAISE(ABORT,'injected'); END",
+    )
+    .await;
+    with_source_revision(&server);
+    let before = logical_database(&server.sql());
+    let body = autosave_body(observed(&json!(DIGEST)), 4);
+    let path = "/plans/1/drafts/save";
+    let reply = keyed(&server, path, Some("fails"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status().as_u16(), 500);
+    assert!(!reply.text().await.unwrap().contains("injected"));
+    assert_eq!(logical_database(&server.sql()), before);
+    assert!(draft_events(&server).is_empty());
+
+    server
+        .sql()
+        .execute_batch("DROP TRIGGER fail_autosave")
+        .unwrap();
+    let saved = json_reply(keyed(&server, path, Some("fails")).json(&body), 200).await;
+    assert_eq!(saved["receipt"]["draft_id"], 2);
     server.close().await;
 }
 

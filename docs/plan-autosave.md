@@ -1,5 +1,33 @@
 # Plan autosave
 
+## Runtime ownership
+
+Two different operations exist, and each path has one meaning in every runtime:
+
+- `POST /plans/:id/save` is Node's publishing Save, described in the rest of this page. It stays on Node, with its publishing semantics, until UI slice 6 moves the browser to draft-then-Accept. No Rust router serves `/plans/:id/save` with the flag on or off, so Node remains the only writer of that operation.
+- `POST /plans/{id}/drafts/save` is the Rust draft-only autosave (GRE-418). It exists only with the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD=1` or `true`, and Node has no route at that path. It writes Plan choices into a working draft and never publishes: Accept (`POST /plans/{id}/drafts/{draft_id}/apply`) is the only path that writes an Accepted Plan.
+
+### Rust draft-only autosave
+
+The body is `SavePlanChoicesRequest`, the same shape Node's Save takes: `expected_base`, `expected_draft` (the open draft the browser observed, or `null`), `remap_checkoff_links` and the final `decisions`. The `Idempotency-Key` header is required, trimmed, and 1 to 160 characters; without it the route answers 400 `invalid_request` before reading the body.
+
+`WorkingDraftClient::autosave` runs one immediate SQLite transaction:
+
+1. It reads the receipt for the key first. A replay with the same payload returns the stored receipt and the draft's current workspace and writes nothing. A reused key with a different payload is 409 `idempotency_conflict`. Both happen before the stale-base check.
+2. It checks the Accepted base and the observed draft. A stale base is 409 `base_changed`; an observed draft that is no longer open with the same snapshot digest, or a `null` observation while a draft is open, is 409 `draft_changed`.
+3. It applies the final choices to the observed draft, or creates a final-state draft when none is open, then runs one Required-unit reconciliation. That reconciliation row is the durable receipt: it stores the key and a digest of the payload.
+4. It appends `plan.draft_changed` for each draft write, then commits.
+
+Any failure rolls every write back, including the draft creation. Draft and Part IDs stay as they were; autosave never closes or abandons the observed draft and never writes `plan_revisions`, `plan_apply_requests` or `build_profiles`.
+
+200 is `{ receipt, workspace }`, where `receipt` is `{ profile_id, draft_id, reconciliation_id, snapshot_digest, saved_at }` and `workspace` is the draft workspace read after the commit, so it is never older than the receipt. Refusals use Node's codes: 404 `profile_not_found`; 409 `accepted_baseline_required`, `base_changed`, `draft_changed`, `inputs_changed` and `idempotency_conflict`; 422 `build_archived`, `part_not_found`, `part_ambiguous`, `no_layers` and `no_stls`; Required-unit refusals as a Part edit answers them. Writer contention is 503 `transaction_unavailable` and any other storage failure is 500 `Plan draft update failed`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_autosave)'
+```
+
+## Node publishing Save
+
 Ordinary file and quantity edits use one `POST /plans/:id/save` request. The browser sends stable file identities, final choices, the accepted Plan base, and the exact open draft it observed, or null. It keeps newer local choices visible while the request runs.
 
 The server owns the complete save. It prepares a command-owned draft with the final choices, reconciles Required units once, and publishes through the existing native `applyPlanChanges` operation. It does not update accepted revisions in place. The SQLite transaction rolls back draft creation, reconciliation, publication and lifecycle changes together on failure.

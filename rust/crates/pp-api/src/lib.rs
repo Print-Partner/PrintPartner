@@ -19,6 +19,8 @@ pub mod builds;
 #[cfg(feature = "desktop_rebuild")]
 pub mod catalog;
 #[cfg(feature = "desktop_rebuild")]
+pub mod checkoff;
+#[cfg(feature = "desktop_rebuild")]
 pub mod client_contract;
 #[cfg(feature = "desktop_rebuild")]
 pub mod drafts;
@@ -40,6 +42,8 @@ pub mod mcp;
 pub mod planning;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_status;
+#[cfg(feature = "desktop_rebuild")]
+pub mod printer_stream;
 #[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 

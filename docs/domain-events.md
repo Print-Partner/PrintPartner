@@ -15,7 +15,7 @@ sequence number, so cursor order is commit order.
 
 | Type | Version | Written by | Aggregate | Payload |
 | --- | --- | --- | --- | --- |
-| `checkoff.progress_changed` | 1 | `checkoff_progress`: unit completion, assembly, and count import | `build`, the Build ID | `{"part_id": N}` for a unit change, `{"import": true}` for an import |
+| `checkoff.progress_changed` | 1 | `checkoff_progress`: unit completion, assembly, count import, printer Checkoff verify (one link or a burst), and burst undo; one event per changed Part (`{"import": true}` for an import) | `build`, the Build ID | `{"part_id": N}` for a Part change, `{"import": true}` for an import |
 | `plan.revision_accepted` | 1 | `plan_publication::publish_in_transaction`, used by Accept and draft save-and-accept | `build`, the Build ID, version = new accepted Plan version | `{"revision_id": N}` |
 
 An idempotent replay of an Accept (`Existing` or `AlreadyApplied`) writes no

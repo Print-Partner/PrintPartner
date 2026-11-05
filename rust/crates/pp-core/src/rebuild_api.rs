@@ -7,6 +7,7 @@ use pp_api::{
     auth::auth_router,
     builds::{BuildHttpConfig, build_router},
     catalog::{CatalogHttpConfig, admit_catalog_routes},
+    checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     events::{StreamLimits, events_router},
     history::history_router,
@@ -200,6 +201,7 @@ pub fn read_router(
         workflow_client,
         admin_files,
         events_client,
+        checkoff_client,
     ) = {
         let guard = owner
             .lock()
@@ -215,6 +217,7 @@ pub fn read_router(
             guard.build_workflow(policy, Arc::new(PendingInputs))?,
             guard.admin_files()?,
             guard.domain_events_with_policy(policy)?,
+            guard.checkoff_progress_with_policy(policy)?,
         )
     };
     // `_drafts` is opened with the bundle for GRE-818 parity; draft HTTP uses
@@ -255,6 +258,10 @@ pub fn read_router(
         events_client,
         StreamLimits::default(),
     );
+    let checkoff = checkoff_router(
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        checkoff_client,
+    );
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
@@ -271,6 +278,7 @@ pub fn read_router(
             .merge(workflow)
             .merge(admin)
             .merge(events)
+            .merge(checkoff)
             .merge(mcp),
     ))
 }

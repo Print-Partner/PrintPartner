@@ -10,19 +10,25 @@ use pp_api::{
     admin::AdminHttpConfig,
     farm::{FarmObservations, farm_router},
     printer_status::{PrinterStatusPort, StatusLookup, printer_status_router},
+    printer_stream::{HEARTBEAT, PrinterStream, printer_stream_router},
 };
 use pp_gateway::{
     HTTPS_UNAVAILABLE, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
-    PrinterHostState, REDIRECT_UNAVAILABLE,
+    PrinterHostState, PrinterHostStatus, PrinterObservations, REDIRECT_UNAVAILABLE,
 };
 use pp_storage::{
     SettingsClient, WriterOwner, printer_hosts,
     read_model::{
         ReadClient,
-        farm::{FarmClient, HostState, IntegrationKind, Observation, PrinterIntegration, iso_time},
+        farm::{
+            Farm, FarmClient, HostState, IntegrationKind, Observation, PrinterIntegration,
+            iso_time, read_settings,
+        },
     },
 };
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use tokio::sync::broadcast::error::RecvError;
+use tokio_util::sync::CancellationToken;
 
 /// Reader wait per refresh. The gateway refreshes every second and keeps
 /// valid pollers through a busy read.
@@ -91,38 +97,112 @@ impl FarmObservations for WatchedFarm {
         let Some(observations) = self.0.observations() else {
             return Observation::Unavailable;
         };
-        let Some(status) = observations.latest(&integration.id) else {
-            return Observation::Unavailable;
-        };
-        if [HTTPS_UNAVAILABLE, REDIRECT_UNAVAILABLE]
-            .contains(&status.message.as_deref().unwrap_or(""))
-        {
-            return Observation::NotSupported;
-        }
-        let last_heard = observations.last_heard(&integration.id);
-        // The watcher's "Awaiting status" placeholder: unknown, never answered.
-        if status.state == PrinterHostState::Unknown && last_heard.is_none() {
-            return Observation::Unavailable;
-        }
-        Observation::Seen {
-            state: match status.state {
-                PrinterHostState::Idle => HostState::Idle,
-                PrinterHostState::Printing => HostState::Printing,
-                PrinterHostState::Paused => HostState::Paused,
-                PrinterHostState::Complete => HostState::Complete,
-                PrinterHostState::Error => HostState::Error,
-                PrinterHostState::Offline => HostState::Offline,
-                PrinterHostState::Unknown => HostState::Unknown,
-            },
-            progress_percent: status
-                .progress
-                .filter(|progress| progress.is_finite())
-                .map(|progress| progress.clamp(0.0, 100.0).round() as u8),
-            filename: status.filename,
-            last_heard_at: last_heard.map(iso_time),
-            state_since: observations.state_since(&integration.id).map(iso_time),
-        }
+        observe(
+            &observations,
+            &integration.id,
+            observations.latest(&integration.id),
+        )
     }
+}
+
+/// One Moonraker integration's observation, from `status` (the latest map
+/// entry for farm reads, the stream's own ordered copy for `/ws/printers`).
+fn observe(
+    observations: &PrinterObservations,
+    id: &str,
+    status: Option<PrinterHostStatus>,
+) -> Observation {
+    let Some(status) = status else {
+        return Observation::Unavailable;
+    };
+    if [HTTPS_UNAVAILABLE, REDIRECT_UNAVAILABLE].contains(&status.message.as_deref().unwrap_or(""))
+    {
+        return Observation::NotSupported;
+    }
+    let last_heard = observations.last_heard(id);
+    // The watcher's "Awaiting status" placeholder: unknown, never answered.
+    if status.state == PrinterHostState::Unknown && last_heard.is_none() {
+        return Observation::Unavailable;
+    }
+    Observation::Seen {
+        state: match status.state {
+            PrinterHostState::Idle => HostState::Idle,
+            PrinterHostState::Printing => HostState::Printing,
+            PrinterHostState::Paused => HostState::Paused,
+            PrinterHostState::Complete => HostState::Complete,
+            PrinterHostState::Error => HostState::Error,
+            PrinterHostState::Offline => HostState::Offline,
+            PrinterHostState::Unknown => HostState::Unknown,
+        },
+        progress_percent: status
+            .progress
+            .filter(|progress| progress.is_finite())
+            .map(|progress| progress.clamp(0.0, 100.0).round() as u8),
+        filename: status.filename,
+        last_heard_at: last_heard.map(iso_time),
+        state_since: observations.state_since(id).map(iso_time),
+    }
+}
+
+/// Feeds `/ws/printers` from the watchers' ordered transitions. It keeps its
+/// own copy of each host's status, advanced one transition at a time, so a
+/// state the printer passed through is published even when the newest-only
+/// map already moved on. It starts from, and after falling behind resyncs to,
+/// one map snapshot and skips transitions that snapshot already holds. Every
+/// second it re-reads the farm settings and drops hosts whose pollers stopped.
+/// It writes nothing and never polls a printer. On cancellation it stops the
+/// stream and waits for its sockets to close.
+async fn produce(
+    settings: SettingsClient,
+    stream: PrinterStream,
+    observations: PrinterObservations,
+    cancelled: CancellationToken,
+) {
+    let resync = || {
+        let transitions = observations.transitions();
+        let (map, mark) = observations.snapshot();
+        (transitions, (*map).clone(), mark)
+    };
+    let (mut transitions, mut seen, mut mark) = resync();
+    let mut farm: Option<Farm> = None;
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            () = cancelled.cancelled() => break,
+            transition = transitions.recv() => match transition {
+                Ok(transition) if transition.seq > mark => {
+                    seen.insert(transition.id, transition.status);
+                }
+                Ok(_) => continue,
+                Err(RecvError::Lagged(_)) => (transitions, seen, mark) = resync(),
+                Err(RecvError::Closed) => break,
+            },
+            _ = tick.tick() => {
+                let client = settings.clone();
+                if let Ok(Ok(read)) =
+                    tokio::task::spawn_blocking(move || read_settings(&client, READER_WAIT)).await
+                {
+                    farm = Some(read);
+                }
+                let live = observations.all();
+                seen.retain(|id, _| live.contains_key(id));
+            }
+        }
+        let Some(farm) = &farm else {
+            continue;
+        };
+        stream.publish(farm.stream_printers(|integration| {
+            if integration.kind != IntegrationKind::Moonraker {
+                return Observation::NotWatched;
+            }
+            observe(
+                &observations,
+                &integration.id,
+                seen.get(&integration.id).cloned(),
+            )
+        }));
+    }
+    stream.stop().await;
 }
 
 /// The status and farm routes' configuration and storage clients, prepared
@@ -132,6 +212,8 @@ pub struct StatusRoutes {
     client: ReadClient,
     farm_config: AcceptedHttpConfig,
     farm: FarmClient,
+    stream_config: AcceptedHttpConfig,
+    settings: SettingsClient,
 }
 
 impl StatusRoutes {
@@ -143,10 +225,18 @@ impl StatusRoutes {
             client: owner.accepted_reads_with_policy(policy)?,
             farm_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
             farm: owner.farm_reads(policy)?,
+            stream_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
+            settings: owner.client(),
         })
     }
 
     pub fn mount(self, status: MoonrakerStatus) -> Router {
+        let stream = PrinterStream::new(HEARTBEAT);
+        let producer = stream.clone();
+        let settings = self.settings;
+        status.spawn_observer(move |observations, cancelled| {
+            produce(settings, producer, observations, cancelled)
+        });
         printer_status_router(
             self.config,
             self.client,
@@ -154,8 +244,9 @@ impl StatusRoutes {
         )
         .merge(farm_router(
             self.farm_config,
-            self.farm,
+            self.farm.clone(),
             Arc::new(WatchedFarm(status)),
         ))
+        .merge(printer_stream_router(self.stream_config, self.farm, stream))
     }
 }

@@ -73,17 +73,17 @@ impl Burst {
         let mut seen = BTreeSet::new();
         let mut parsed = Vec::with_capacity(beds.len());
         for (i, bed) in beds.iter().enumerate() {
-            let id = field(bed, "link_id")
-                .as_str()
-                .map(links::js_trim)
-                .unwrap_or_default();
+            let id = match field(bed, "link_id") {
+                Value::Null => String::new(),
+                other => links::js_trim(&links::js_string(other)).to_owned(),
+            };
             if !bed.is_object() || id.is_empty() {
                 return Err(bad(&format!("beds[{i}].link_id is required")));
             }
-            if !seen.insert(id.to_owned()) {
+            if !seen.insert(id.clone()) {
                 return Err(bad(&format!("beds[{i}] repeats a link")));
             }
-            parsed.push((id.to_owned(), bed.clone()));
+            parsed.push((id, bed.clone()));
         }
         let hash = hex::encode(Sha256::digest(canonical(body).to_string()));
         Ok(Self {

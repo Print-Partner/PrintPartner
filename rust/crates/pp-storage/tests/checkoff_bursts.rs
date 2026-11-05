@@ -441,6 +441,14 @@ fn verify_batch_refuses_malformed_bursts_before_any_write() {
             json!({ "idempotency_key": "k", "beds": [{ "decisions": [] }] }),
             "beds[0].link_id is required",
         ),
+        (
+            json!({ "idempotency_key": "k", "beds": [{ "link_id": [], "decisions": [] }] }),
+            "beds[0].link_id is required",
+        ),
+        (
+            json!({ "idempotency_key": "k", "beds": [bed, { "link_id": [" link-verify "], "decisions": [] }] }),
+            "beds[1] repeats a link",
+        ),
     ] {
         assert_eq!(
             batch(&owner, body),
@@ -452,6 +460,14 @@ fn verify_batch_refuses_malformed_bursts_before_any_write() {
         "undo_token is required"
     );
     assert_eq!(fixture.checkoff(), before);
+    let coerced = batch(
+        &owner,
+        json!({ "idempotency_key": "array-id", "beds": [{ "link_id": [" link-verify "], "decisions": [confirm(1, 1)] }] }),
+    );
+    assert_eq!(
+        coerced["status"], 200,
+        "link_id is read like String(link_id).trim(): {coerced}"
+    );
     owner.shutdown().unwrap();
 }
 

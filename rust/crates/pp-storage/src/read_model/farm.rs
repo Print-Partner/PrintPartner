@@ -549,7 +549,7 @@ fn normalized_filename(name: &str) -> String {
 }
 
 impl Farm {
-    fn parse(
+    pub(crate) fn parse(
         fleet: Vec<Value>,
         integrations: Vec<Value>,
         links: Vec<Value>,

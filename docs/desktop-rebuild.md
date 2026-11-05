@@ -131,6 +131,11 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   increasing sequence, heartbeats every 15 seconds, and resume by sequence.
   It writes nothing and never polls a printer. See
   [Printer stream](printer-stream.md).
+- Farm log (GRE-1126): `GET /api/v2/farm-log` pages the fleet's Checkoff
+  bursts, burst undos and sends, newest first, and
+  `POST /api/v2/farm-log/{id}/undo` undoes a logged burst through the burst
+  undo. Storage appends an entry in the burst's and the undo's transaction;
+  sends never offer undo. See [Farm log](farm-log.md).
 
   ```sh
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \

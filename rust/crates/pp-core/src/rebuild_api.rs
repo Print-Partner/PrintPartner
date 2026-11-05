@@ -771,7 +771,10 @@ mod tests {
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
             assert!(
-                status == 200 || (status == 404 && body["code"] == "draft_not_found"),
+                status == 200
+                    || (status == 404
+                        && (body["code"] == "draft_not_found"
+                            || body["code"] == "farm_log_entry_not_found")),
                 "{} {path}: {status} {body}",
                 route.method
             );

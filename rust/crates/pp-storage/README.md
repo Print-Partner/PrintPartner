@@ -54,7 +54,7 @@ Modules behind `#[cfg(feature = "desktop_rebuild")]`:
 | `build_graph` | `build_graph_with_policy`, `build_graph_with_observations` (`BuildGraphClient`); `wire`, `manifest_options`. |
 | `plan_publication` | `publication_with_policy` (`PublicationClient`): the acceptance transaction. |
 | `required_units` | `required_units_with_policy` (`ReconciliationClient`). |
-| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). |
+| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). |
 | `features` | `features_with_policy` (`FeatureClient`), `View`, `Scope`. |
 | `uploads` | `imports` (`ImportClient`), `import_repos_root`. |
 | `source_scan`, `source_sync` | Local scan and sync job state, driven through `ServerWorkerClient` (`observe_local_scan`, `open_source_sync`, ...). |

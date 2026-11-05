@@ -195,6 +195,10 @@ describe("UI3-03 the pulse line counts by state from /ws/printers", () => {
       });
     }
     expect(printerCalls(fetchMock)).toBe(1);
+    // An answering printer was heard as of the last frame; an unreachable one keeps its time.
+    const heard = (name: string) => row(name).querySelector("time")?.getAttribute("dateTime");
+    expect(Date.parse(heard("Micron")!)).toBeGreaterThan(Date.parse(HEARD) + 590_000);
+    expect(heard("Annex K3")).toBe("2026-11-05T20:00:00.000Z");
     expect(fetchMock.mock.calls.every(([path]) => path === "/health" || path === "/api/v2/printers")).toBe(true);
     expect(sockets).toHaveLength(1);
   });
@@ -237,10 +241,11 @@ describe("UI3-04 with the stream down the last-known state shows its time", () =
     await act(() => vi.advanceTimersByTimeAsync(1_000));
     expect(sockets).toHaveLength(2);
     expect(socket().url).toBe("ws://localhost:3000/ws/printers?stream=s1&since=7");
-    act(() => {
-      socket().open();
-      socket().frame({ type: "heartbeat", stream: "s1", seq: 7, at: HEARD });
-    });
+    // A resume that missed nothing gets no frame before the next heartbeat; open is current.
+    act(() => socket().open());
+    expect(screen.queryByText(/Live printer updates are down/)).toBeNull();
+    expect(pulse().textContent).not.toContain("Live updates down");
+    act(() => socket().frame({ type: "heartbeat", stream: "s1", seq: 7, at: HEARD }));
     expect(screen.queryByText(/Live printer updates are down/)).toBeNull();
   });
 

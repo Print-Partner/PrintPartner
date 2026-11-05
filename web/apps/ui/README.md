@@ -139,7 +139,9 @@ the Farm screen. No screen polls for printer state.
   `PrinterState` and farm-read reason schemas. A frame that fails the schema, or
   a `seq` that does not follow the last one, drops the socket.
 - **Reconnect.** A closed socket, or one quiet for two heartbeats plus 5 s
-  (including one that never opens), counts as down. The provider reconnects after 1, 2, 5, 10, then every 30 s, with
+  (including one that never opens), counts as down. A resumed socket counts as
+  live once it opens, because a resume that missed nothing gets no frame until
+  the next heartbeat. The provider reconnects after 1, 2, 5, 10, then every 30 s, with
   `?stream=&since=` so the server replays what was missed or sends a fresh
   snapshot ([Printer stream](../../../docs/printer-stream.md#resume)).
 - **Pulse line** (`src/farm/PulseLine.tsx`). One icon, word and count per display
@@ -151,10 +153,13 @@ the Farm screen. No screen polls for printer state.
 - **Farm** (`/farm`, `src/farm/FarmScreen.tsx`). Reads `GET /api/v2/printers`
   once (no refetch) for each printer's model and integration. Once the stream has
   sent a snapshot, it decides which printers exist, their state and their
-  last-heard time (a printer the stream no longer hears reads Never), and every
+  last-heard time, and every
   banner names the stream's last frame time. If the farm read fails, the
   streamed rows still show, with an alert and a Retry for the missing models and
-  integrations. Each row
+  integrations. The stream sends a printer only when its state changes, so a
+  printer it reports as answering shows the time of the stream's last frame
+  (heartbeats included) as last heard; an unreachable, unwatched or unknown
+  printer keeps the stream's own last-heard time, or Never. Each row
   shows the summary status (icon and word from `PrinterStatus`) and, in their own
   columns, the execution state with progress, the bed state and the last-heard
   time ([Farm reads](../../../docs/farm-reads.md#printers)). A printer that is not

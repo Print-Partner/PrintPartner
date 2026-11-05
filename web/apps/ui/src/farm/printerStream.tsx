@@ -115,7 +115,11 @@ export function PrinterStreamProvider({ children }: { children: ReactNode }) {
       // A socket that never opens counts as quiet too.
       watchQuiet(current);
       current.onopen = () => {
-        if (socket === current) watchQuiet(current);
+        if (socket !== current) return;
+        watchQuiet(current);
+        // A resume that missed nothing gets no frame until the next heartbeat; the open
+        // socket is already current.
+        if (resume) setView((v) => ({ ...v, status: "live" }));
       };
       current.onmessage = (message) => {
         if (socket !== current) return;

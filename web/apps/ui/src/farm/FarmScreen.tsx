@@ -6,7 +6,7 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { LoadedAt, ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
 import { PrinterStatus } from "../status/PrinterStatus";
-import { usePrinterStream, type PrinterStreamView } from "./printerStream";
+import { usePrinterStream, type PrinterStreamView, type StreamPrinter } from "./printerStream";
 import { BED_WORDS, EXECUTION_WORDS, reasonText, type IntegrationKind } from "./words";
 
 type FarmPrinter = FarmPrinterList["printers"][number];
@@ -32,6 +32,20 @@ type Row = {
   progress: number | null;
   lastHeardAt: string | null;
 };
+
+/** Execution states in which the core is not hearing from the printer. */
+const NOT_HEARD = new Set<FarmPrinter["state"]["execution"]>(["unreachable", "not_set_up", "manual", "unknown"]);
+
+/**
+ * The stream sends a printer only when its state changes, so a printer that keeps
+ * answering was last heard as of the stream's last frame, not at its last change.
+ */
+function heardAt(p: StreamPrinter, receivedAt: number | null): string | null {
+  if (NOT_HEARD.has(p.display.execution) || receivedAt === null || !p.last_heard_at) {
+    return p.last_heard_at ?? null;
+  }
+  return new Date(Math.max(Date.parse(p.last_heard_at) || 0, receivedAt)).toISOString();
+}
 
 /**
  * Once the stream has sent a snapshot it decides which printers exist and their state;
@@ -61,7 +75,7 @@ function farmRows(read: FarmPrinter[], stream: PrinterStreamView): Row[] {
       state: p.display,
       reason: p.reason ?? null,
       progress: p.progress_percent ?? null,
-      lastHeardAt: p.last_heard_at ?? null,
+      lastHeardAt: heardAt(p, stream.receivedAt),
     };
   });
 }

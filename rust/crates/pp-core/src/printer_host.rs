@@ -18,9 +18,9 @@ const UNPORTED: [&str; 6] = [
     "prusalink",
     "bambu",
     "spoolman",
-    "slicer-sidecar",
-    "ai-assistant",
-    "home-assistant",
+    "slicer_sidecar",
+    "ai_assistant",
+    "home_assistant",
 ];
 
 pub(crate) struct StoredPrinterHosts {
@@ -139,5 +139,43 @@ impl PrinterHostPort for StoredPrinterHosts {
                 })),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored(kind: &str) -> StoredIntegration {
+        StoredIntegration {
+            id: "i".into(),
+            kind: kind.into(),
+            base_url: "http://p.test".into(),
+            api_key: None,
+            enabled: true,
+        }
+    }
+
+    /// Every type Node's adapter registry (`integrations/registry.ts`) knows
+    /// is Moonraker or unported here; anything else is unknown.
+    #[test]
+    fn ticket_t_21_host_types_follow_nodes_registry() {
+        assert!(matches!(
+            host(stored("moonraker")),
+            Some(Host::Moonraker(_))
+        ));
+        for kind in [
+            "prusalink",
+            "bambu",
+            "spoolman",
+            "slicer_sidecar",
+            "ai_assistant",
+            "home_assistant",
+        ] {
+            assert!(matches!(host(stored(kind)), Some(Host::Unported)), "{kind}");
+        }
+        for kind in ["", "slicer-sidecar", "Moonraker", "mystery"] {
+            assert!(host(stored(kind)).is_none(), "{kind}");
+        }
     }
 }

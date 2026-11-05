@@ -87,13 +87,15 @@ fn scenario() -> (
         (15, "pla-basic-black"),
         (16, ""),
         (17, "spoolman:local:filament:7"),
+        (18, "spoolman:off:filament:2"),
     ]);
     let integration = |id: &str| SpoolmanIntegration {
         id: id.into(),
         base_url: "http://127.0.0.1:7912".into(),
         api_key: None,
+        enabled: id != "off",
     };
-    let measured = (10..=17)
+    let measured = (10..=18)
         .map(|part| {
             let job_ids = vec!["shared".into(), format!("own-{part}")];
             let m = Measured {
@@ -104,7 +106,11 @@ fn scenario() -> (
         })
         .collect();
     let inputs = StockInputs::On {
-        integrations: vec![integration("other"), integration("local")],
+        integrations: vec![
+            integration("other"),
+            integration("local"),
+            integration("off"),
+        ],
         measured,
     };
     let filament = |label: &str| InventoryFilament {
@@ -139,7 +145,11 @@ fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
         .into_iter()
         .map(|i| i.id)
         .collect();
-    assert_eq!(read, ["local"], "only configured, named integrations");
+    assert_eq!(
+        read,
+        ["local"],
+        "only configured, enabled, named integrations"
+    );
     let accepted = AcceptedRead::Ready { snapshot };
     let Some(FilamentShortfalls::Ready { filaments, .. }) =
         shortfalls(1, &accepted, &inputs, &inventories)
@@ -163,6 +173,10 @@ fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
         (
             "spoolman:gone:filament:2",
             InventoryUnknown::IntegrationMissing,
+        ),
+        (
+            "spoolman:off:filament:2",
+            InventoryUnknown::IntegrationDisabled,
         ),
         (
             "spoolman:local:filament:404",
@@ -262,7 +276,7 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
            ('default','integrations','[null,
              {"id":"printer","type":"moonraker","config":{"base_url":"http://p"}},
              {"id":"local","type":"spoolman","config":{"base_url":" http://h:7912/ ","api_key":" k "}},
-             {"id":"alt","type":"spoolman","config":{"baseUrl":"http://10.0.0.2","apiKey":""}},
+             {"id":"alt","type":"spoolman","config":{"baseUrl":"http://10.0.0.2","apiKey":"","enabled":false}},
              {"id":"broken","type":"spoolman","config":{}}]')"#,
     );
     store.job("default", "old", 1, "completed", "90", &[2, 2, 2]);
@@ -293,11 +307,13 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
         id: "local".into(),
         base_url: "http://h:7912/".into(),
         api_key: Some("k".into()),
+        enabled: true,
     };
     let alt = SpoolmanIntegration {
         id: "alt".into(),
         base_url: "http://10.0.0.2".into(),
         api_key: None,
+        enabled: false,
     };
     assert_eq!(integrations, [local, alt]);
     let debug = format!("{:?}", integrations[0]);

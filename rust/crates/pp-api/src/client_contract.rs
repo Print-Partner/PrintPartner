@@ -667,7 +667,7 @@ mod codegen {
             grams: 12,
             job_count: 1,
         };
-        filaments.push(need(estimated, stock(1), Sufficiency::Sufficient));
+        filaments.push(need(estimated, stock(12), Sufficiency::Sufficient));
         for reason in [NeedUnknown::GramsNotRecorded, NeedUnknown::PartNotPrinted] {
             let unknown = GramsNeeded::Unknown { reason };
             filaments.push(need(unknown, stock(1), Sufficiency::Unknown));
@@ -675,6 +675,7 @@ mod codegen {
         for reason in [
             InventoryUnknown::NotSpoolman,
             InventoryUnknown::IntegrationMissing,
+            InventoryUnknown::IntegrationDisabled,
             InventoryUnknown::Unreachable,
             InventoryUnknown::FilamentMissing,
             InventoryUnknown::SpoolWeightMissing,

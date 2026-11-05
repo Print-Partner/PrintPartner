@@ -170,7 +170,9 @@ impl Harness {
 
 /// The expected single filament row inside a Ready body for Plan 1.
 fn ready(body: &Value, available: Value, status: Value, needed: Value) {
-    let label = match available["reason"] == "unreachable" {
+    let label = match available["reason"] == "unreachable"
+        || available["reason"] == "integration_disabled"
+    {
         true => "",
         false => "Prusament PLA · Galaxy Black",
     };
@@ -236,6 +238,23 @@ async fn unavailable_inventory_and_unprinted_parts_stay_unknown() {
         ready(&body, unreachable.clone(), unknown.clone(), measured());
         malformed.stop();
     }
+
+    // A disabled integration is never contacted and reads unknown.
+    let disabled = Harness::new(
+        SUFFICIENT,
+        "UPDATE app_settings SET value=json_set(value,'$[0].config.enabled',json('false'))
+          WHERE key='integrations'",
+    )
+    .await;
+    let off = json!({"kind": "unknown", "reason": "integration_disabled"});
+    ready(
+        &disabled.shortfalls().await,
+        off,
+        unknown.clone(),
+        measured(),
+    );
+    assert!(disabled.requests().is_empty());
+    disabled.stop();
 
     let unprinted = Harness::new(SUFFICIENT, "DELETE FROM print_jobs;").await;
     let stock = json!({"kind": "spoolman", "grams": 752, "spool_ids": [7, 8]});

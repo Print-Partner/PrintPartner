@@ -31,6 +31,9 @@ pub struct SpoolmanIntegration {
     pub id: String,
     pub base_url: String,
     pub api_key: Option<String>,
+    /// `false` only when the stored config says `enabled: false`, as Node's
+    /// Spoolman readers check it. A disabled integration is never contacted.
+    pub enabled: bool,
 }
 
 impl std::fmt::Debug for SpoolmanIntegration {
@@ -39,6 +42,7 @@ impl std::fmt::Debug for SpoolmanIntegration {
             .field("id", &self.id)
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "****"))
+            .field("enabled", &self.enabled)
             .finish()
     }
 }
@@ -186,6 +190,8 @@ pub enum InventoryUnknown {
     NotSpoolman,
     /// No configured Spoolman integration has the ID the filament names.
     IntegrationMissing,
+    /// The integration is turned off (`enabled: false`); it is not contacted.
+    IntegrationDisabled,
     /// The Spoolman read failed.
     Unreachable,
     /// Spoolman has no filament with this ID.
@@ -250,6 +256,7 @@ fn parse_integrations(value: &str) -> Vec<SpoolmanIntegration> {
                 id: item.get("id")?.as_str()?.to_owned(),
                 base_url: text(config, ["base_url", "baseUrl"])?,
                 api_key: text(config, ["api_key", "apiKey"]),
+                enabled: config.get("enabled") != Some(&Value::Bool(false)),
             })
         })
         .collect()
@@ -340,7 +347,9 @@ pub fn integrations_to_read(snapshot: &Snapshot, inputs: &StockInputs) -> Vec<Sp
         .collect();
     named
         .into_iter()
-        .filter_map(|id| integrations.iter().find(|known| known.id == id).cloned())
+        .filter_map(|id| integrations.iter().find(|known| known.id == id))
+        .filter(|integration| integration.enabled)
+        .cloned()
         .collect()
 }
 
@@ -468,8 +477,15 @@ fn available(
     let Some((integration, filament_id)) = spoolman_filament(id) else {
         return (catalog(), unknown(InventoryUnknown::NotSpoolman));
     };
-    if !integrations.iter().any(|known| known.id == integration) {
-        return (String::new(), unknown(InventoryUnknown::IntegrationMissing));
+    match integrations.iter().find(|known| known.id == integration) {
+        None => return (String::new(), unknown(InventoryUnknown::IntegrationMissing)),
+        Some(known) if !known.enabled => {
+            return (
+                String::new(),
+                unknown(InventoryUnknown::IntegrationDisabled),
+            );
+        }
+        Some(_) => {}
     }
     let Some(Some(inventory)) = inventories.get(integration) else {
         return (String::new(), unknown(InventoryUnknown::Unreachable));

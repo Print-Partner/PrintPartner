@@ -308,7 +308,7 @@ fn ticket_t_61_checkoff_monitor_states_and_other_tenants_never_mark() {
     let (_fixture, _before, observed) = replay();
     let expected = node();
     for (index, step) in expected["steps"].as_array().unwrap().iter().enumerate() {
-        let id = step["body"]["link_id"].as_str().unwrap();
+        let id = step["body"]["link_id"].as_str().unwrap_or_default();
         if id == "link-watching" || id == "link-foreign" {
             assert_ne!(observed[index]["receipt"]["status"], 200, "{id}");
             assert_eq!(

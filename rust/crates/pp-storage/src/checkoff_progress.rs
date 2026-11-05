@@ -442,9 +442,7 @@ fn coordinate(body: &Value, field: &str) -> std::result::Result<(i64, bool), Res
 fn link_id(body: &Value) -> std::result::Result<String, Response> {
     let id = match body.get("link_id").unwrap_or(&Value::Null) {
         Value::Null => String::new(),
-        Value::String(s) => links::js_trim(s).to_owned(),
-        Value::Object(_) => "[object Object]".into(),
-        other => other.to_string(),
+        other => links::js_trim(&links::js_string(other)).to_owned(),
     };
     if id.is_empty() {
         return Err(Response::failure(400, "link_id is required", None));

@@ -36,7 +36,7 @@ Every route is read-only on the printer. It sends only the GETs it needs, once p
 The PrusaLink driver uses these as Node's adapter does:
 
 - `open_file(path)` reads the file's metadata, follows its same-origin `refs.download`, and streams the download with a 120 s idle deadline. The metadata read has a 15 s total deadline. A cross-origin or missing `refs.download` fails. A metadata reply that is not 2xx comes back unread for the caller to map.
-- `open_camera(id)` streams `/api/v1/cameras/{id}/snap` for a connected camera whose stored `camera_id` equals `id`. The whole snapshot, head and body, must arrive within 30 s, so a trickling camera cannot hold the read open. The object-list prefix keeps the 15 s total listing deadline.
+- `open_camera(id)` streams `/api/v1/cameras/{id}/snap` for a connected camera whose stored `camera_id` equals `id`. The whole snapshot, head and body, must arrive within 30 s, so a trickling camera cannot hold the read open. As with Node's one `AbortSignal`, the deadline starts before the Digest challenge probe and also covers the probe and any 401 retry. The object-list prefix keeps the 15 s total listing deadline.
 - `object_list` reads only the first 64 KiB of the active print file, even when the printer ignores `Range`.
 - `browse` accepts listings up to 8 MiB.
 

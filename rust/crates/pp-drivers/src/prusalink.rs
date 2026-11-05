@@ -194,7 +194,9 @@ impl Driver {
 
     /// One Digest-authorized GET whose reply body streams: the head within
     /// `deadline`, then the body under `body`. A 401 with a fresh challenge
-    /// is retried once, as `send` does for buffered GETs.
+    /// is retried once, as `send` does for buffered GETs. As with Node's one
+    /// `AbortSignal`, `deadline` starts before the challenge probe and covers
+    /// the probe, the retry and, under `BodyDeadline::Total`, the body.
     async fn stream(
         &self,
         url: &Url,
@@ -208,9 +210,15 @@ impl Driver {
                 .stream(url.as_str(), headers, deadline, body)
                 .await;
         }
-        let challenge = self
-            .challenge(url)
+        let until = tokio::time::Instant::now() + deadline;
+        let left = || {
+            let left = until.saturating_duration_since(tokio::time::Instant::now());
+            ensure!(!left.is_zero(), "HTTP deadline");
+            Ok(left)
+        };
+        let challenge = tokio::time::timeout_at(until, self.challenge(url))
             .await
+            .map_err(|_| anyhow!("HTTP deadline"))?
             .map_err(|error| anyhow!("{error}"))?;
         let mut all = headers.to_vec();
         let authorization = challenge
@@ -220,10 +228,7 @@ impl Driver {
         if let Some(value) = &authorization {
             all.push(("authorization", value));
         }
-        let reply = self
-            .guard
-            .stream(url.as_str(), &all, deadline, body)
-            .await?;
+        let reply = self.guard.stream(url.as_str(), &all, left()?, body).await?;
         let Some(retry) = Challenge::from_parts(reply.status, reply.www_authenticate.as_deref())
         else {
             return Ok(reply);
@@ -232,7 +237,7 @@ impl Driver {
         let value = self.authorization("GET", url, &retry)?;
         let mut all = headers.to_vec();
         all.push(("authorization", &value));
-        self.guard.stream(url.as_str(), &all, deadline, body).await
+        self.guard.stream(url.as_str(), &all, left()?, body).await
     }
 
     /// Open one print file for download through the same-origin

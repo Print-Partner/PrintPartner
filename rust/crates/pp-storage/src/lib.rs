@@ -160,6 +160,11 @@ enum Envelope {
         command: read_model::history::Command,
         reply: mpsc::Sender<Result<read_model::history::Outcome>>,
     },
+    #[cfg(feature = "desktop_rebuild")]
+    Planning {
+        command: read_model::planning::Command,
+        reply: mpsc::Sender<Result<read_model::planning::Facts>>,
+    },
     Read {
         command: read_model::Command,
         reply: mpsc::Sender<Result<read_model::Batch>>,
@@ -770,6 +775,10 @@ impl WriterOwner {
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::History { command, reply } => {
                         let _ = reply.send(read_model::history::execute(&mut connection, command));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::Planning { command, reply } => {
+                        let _ = reply.send(read_model::planning::execute(&mut connection, command));
                     }
                     Envelope::Read { command, reply } => {
                         let _ = reply.send(read_model::execute(&mut connection, command));

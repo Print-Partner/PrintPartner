@@ -140,8 +140,8 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Sources | `GET /sources`, `/sources/activity`, naming, import rules | Exists |
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
 | Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |
-| Build planning phase | `GET /plans/:id/build-planning` | Port |
-| Assistant decisions | `GET /plans/:id/decisions` | Port, needs a History home |
+| Build planning phase | `GET /plans/:id/build-planning` | Exists in Rust behind `desktop_rebuild` (GRE-1119) |
+| Assistant decisions | `GET /plans/:id/decisions` | Exists in Rust behind `desktop_rebuild` (GRE-1119); History lists them too |
 | Printers | `GET /printers` | Port plus drivers (GRE-360, GRE-1044) |
 | Printer checkoff and unmatched | `GET /printer-checkoff`, `/unattributed` | Port (GRE-420) |
 | Send queue | `GET /printer-send-queue` | Port |

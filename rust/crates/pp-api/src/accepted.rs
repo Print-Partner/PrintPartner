@@ -338,7 +338,7 @@ async fn filament_shortfalls(
 /// Node reads the id with `Number()`: JS whitespace is trimmed, and decimal,
 /// exponent and `0x`/`0o`/`0b` forms are numbers. Only a safe positive integer
 /// can name a Plan or Part.
-fn node_id(raw: &str) -> Option<i64> {
+pub(crate) fn node_id(raw: &str) -> Option<i64> {
     let text = views::js_trim(raw);
     let radix = |digits: &str, radix: u32| {
         (!digits.is_empty() && digits.chars().all(|c| c.is_digit(radix)))

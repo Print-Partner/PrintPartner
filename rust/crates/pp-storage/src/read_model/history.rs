@@ -19,7 +19,7 @@ use crate::{Envelope, Shared, WriterOwner, auth};
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use pp_domain::PositiveId;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -250,25 +250,17 @@ impl HistoryClient {
 
 pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<Outcome> {
     let cancelled = &command.cancelled;
-    ensure!(
-        !cancelled.load(Ordering::Acquire),
-        "Cancelled before admission"
-    );
-    let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let tenant = super::read_tenant(&tx, &command.credential, command.policy)?;
-    let build = match command.request.build {
-        Some(build) => i64::try_from(build.get())?,
-        None => 0,
-    };
-    let exists: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id=?1 AND id=?2)",
-        params![tenant, build],
-        |row| row.get(0),
+    let (tx, found) = super::owned_build(
+        connection,
+        cancelled,
+        &command.credential,
+        command.policy,
+        command.request.build,
     )?;
-    if build == 0 || !exists {
+    let Some((tenant, build)) = found else {
         tx.commit()?;
         return Ok(Outcome::MissingBuild);
-    }
+    };
     let mut entries = Vec::new();
     for source in [revisions, snapshots, bursts, sends, decisions] {
         ensure!(

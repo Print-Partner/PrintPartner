@@ -33,6 +33,8 @@ mod loopback;
 #[cfg(feature = "desktop_rebuild")]
 pub mod mcp;
 #[cfg(feature = "desktop_rebuild")]
+pub mod planning;
+#[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 
 #[cfg(test)]

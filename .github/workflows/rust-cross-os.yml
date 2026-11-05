@@ -149,12 +149,12 @@ jobs:
       # Only main saves; PRs and other refs restore main's entry when keys match.
       # pp-local skips it: sccache covers it there, and the action's post-job
       # cleanup can delete registry sources another container is compiling.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment != 'self-hosted'
         with:
           workspaces: rust -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: nextest@0.9.148
       - name: Install Linux desktop dependencies
@@ -366,7 +366,7 @@ jobs:
           toolchain: '1.99.0'
       - name: Fetch pinned historical schema commits
         run: rust/scripts/fetch-historical-schema-commits.sh
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: nextest@0.9.148
       - name: Install Linux desktop dependencies

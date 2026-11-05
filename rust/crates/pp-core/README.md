@@ -42,7 +42,7 @@ Gated by `#[cfg(feature = "desktop_rebuild")]`:
 
 - `rebuild_api`: `clients`, `router`, `read_router`, `draft_router`, `job_router`.
 - `uploads` (`SourceImports`) and `source_acquisition` (`SourceAcquisitions`).
-- `profile_interpreter` (`interpret_profile`), `review_observations` (`SnapshotReviewObserver`), `spoolman` (`SpoolmanInventory`, the shortfall route's inventory reader).
+- `profile_interpreter` (`interpret_profile`), `review_observations` (`SnapshotReviewObserver`), `spoolman` (`SpoolmanInventory`, the shortfall route's inventory reader), `printer_status` (`StoredMoonrakerHosts` feeds the Rust-only gateway's watchers from storage; `StatusRoutes` mounts the authenticated status route over the gateway's lookup).
 - `production::geometry` (`parse_accepted_stl`, `dimensions_um`), `layout` (`DirectoryLayout::resolve`).
 
 Binary `pp-perf-capture` (`src/bin/pp-perf-capture.rs`, Linux only): `--kind --name --artifact --out` are required; `--package --runs --idle-secs --ready-timeout-secs --noise-pct --printers --rustc --node` are optional; the command follows `--`.

@@ -31,12 +31,12 @@ Every route is read-only on the printer. It sends only the GETs it needs, once p
 
 ## Streamed PrusaLink replies
 
-`pp_net::outbound::HttpGuard::stream` sends one checked GET and returns the reply head with an unread body. The head must arrive within a deadline, then each body chunk within an idle deadline (`IdleTimeout`). Dropping the body closes the connection. `ReplyBody::prefix` reads at most a given number of bytes. `HttpGuard::with_body_limit` raises the buffered limit up to `MAX_LISTING_BODY` (8 MiB).
+`pp_net::outbound::HttpGuard::stream` sends one checked GET and returns the reply head with an unread body. The head must arrive within a deadline. The body then follows a `BodyDeadline`: `Total` keeps the head deadline over the whole body, as fetch with `AbortSignal.timeout` does, and `Idle(d)` requires each chunk within `d` of the last (`IdleTimeout`). Dropping the body closes the connection. `ReplyBody::prefix` reads at most a given number of bytes. `HttpGuard::with_body_limit` raises the buffered limit up to `MAX_LISTING_BODY` (8 MiB).
 
 The PrusaLink driver uses these as Node's adapter does:
 
-- `open_file(path)` reads the file's metadata, follows its same-origin `refs.download`, and streams the download with a 120 s idle deadline. A cross-origin or missing `refs.download` fails. A metadata reply that is not 2xx comes back unread for the caller to map.
-- `open_camera(id)` streams `/api/v1/cameras/{id}/snap` for a connected camera whose stored `camera_id` equals `id`, within 30 s.
+- `open_file(path)` reads the file's metadata, follows its same-origin `refs.download`, and streams the download with a 120 s idle deadline. The metadata read has a 15 s total deadline. A cross-origin or missing `refs.download` fails. A metadata reply that is not 2xx comes back unread for the caller to map.
+- `open_camera(id)` streams `/api/v1/cameras/{id}/snap` for a connected camera whose stored `camera_id` equals `id`. The whole snapshot, head and body, must arrive within 30 s, so a trickling camera cannot hold the read open. The object-list prefix keeps the 15 s total listing deadline.
 - `object_list` reads only the first 64 KiB of the active print file, even when the printer ignores `Range`.
 - `browse` accepts listings up to 8 MiB.
 

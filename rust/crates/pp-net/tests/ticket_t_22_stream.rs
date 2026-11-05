@@ -1,6 +1,8 @@
 //! GRE-1044: streamed replies and the 8 MiB listing limit on `HttpGuard`,
 //! against loopback servers only.
-use pp_net::outbound::{HttpGuard, IdleTimeout, MAX_BODY, MAX_LISTING_BODY, SystemResolver};
+use pp_net::outbound::{
+    BodyDeadline, HttpGuard, IdleTimeout, MAX_BODY, MAX_LISTING_BODY, SystemResolver,
+};
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -44,7 +46,12 @@ async fn ticket_t_22_stream_reads_a_body_past_the_buffered_limit() {
     let length = 3 * MAX_BODY;
     let url = server(length, length).await;
     let mut reply = guard()
-        .stream(&url, &[], Duration::from_secs(5), Duration::from_secs(5))
+        .stream(
+            &url,
+            &[],
+            Duration::from_secs(5),
+            BodyDeadline::Idle(Duration::from_secs(5)),
+        )
         .await
         .unwrap();
     assert_eq!(reply.status, 200);
@@ -74,7 +81,7 @@ async fn ticket_t_22_stream_fails_after_the_idle_deadline() {
             &url,
             &[],
             Duration::from_secs(5),
-            Duration::from_millis(200),
+            BodyDeadline::Idle(Duration::from_millis(200)),
         )
         .await
         .unwrap();
@@ -90,7 +97,12 @@ async fn ticket_t_22_stream_fails_after_the_idle_deadline() {
 async fn ticket_t_22_prefix_stops_reading_at_its_limit() {
     let url = server(4 * MAX_BODY, 4 * MAX_BODY).await;
     let reply = guard()
-        .stream(&url, &[], Duration::from_secs(5), Duration::from_secs(5))
+        .stream(
+            &url,
+            &[],
+            Duration::from_secs(5),
+            BodyDeadline::Idle(Duration::from_secs(5)),
+        )
         .await
         .unwrap();
     assert_eq!(reply.body.prefix(65_536).await.unwrap().len(), 65_536);
@@ -117,10 +129,81 @@ async fn ticket_t_22_stream_refuses_reserved_headers() {
             "http://127.0.0.1:9/file",
             &[("Host", "other.test")],
             Duration::from_secs(1),
-            Duration::from_secs(1),
+            BodyDeadline::Total,
         )
         .await
         .err()
         .unwrap();
     assert_eq!(error.to_string(), "Reserved request header");
+}
+
+/// Answers one request with an endless body, one byte every 50 ms.
+async fn trickle() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/snap", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = [0; 1024];
+        let _ = socket.read(&mut head).await;
+        let reply = "HTTP/1.1 200 OK
+content-type: image/jpeg
+content-length: 1000000
+
+";
+        socket.write_all(reply.as_bytes()).await.unwrap();
+        loop {
+            if socket.write_all(b"x").await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+    url
+}
+
+async fn read_for(
+    mut reply: pp_net::outbound::StreamReply,
+    cap: Duration,
+) -> anyhow::Result<usize> {
+    let started = tokio::time::Instant::now();
+    let mut total = 0;
+    while started.elapsed() < cap {
+        match reply.body.chunk().await? {
+            Some(chunk) => total += chunk.len(),
+            None => break,
+        }
+    }
+    Ok(total)
+}
+
+#[tokio::test]
+async fn ticket_t_22_total_deadline_covers_a_trickling_body() {
+    let url = trickle().await;
+    let started = tokio::time::Instant::now();
+    let reply = guard()
+        .stream(&url, &[], Duration::from_millis(400), BodyDeadline::Total)
+        .await
+        .unwrap();
+    let error = read_for(reply, Duration::from_secs(5)).await.unwrap_err();
+    assert_eq!(error.to_string(), "HTTP body deadline");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+
+    let url = trickle().await;
+    let reply = guard()
+        .stream(
+            &url,
+            &[],
+            Duration::from_millis(400),
+            BodyDeadline::Idle(Duration::from_millis(400)),
+        )
+        .await
+        .unwrap();
+    assert!(
+        read_for(reply, Duration::from_millis(1200)).await.unwrap() > 0,
+        "an idle deadline lets a steady body run past the head deadline"
+    );
 }

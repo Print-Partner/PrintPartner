@@ -238,7 +238,7 @@ impl HttpGuard {
     }
 
     /// One GET whose reply body is not buffered: the reply head must arrive
-    /// within `deadline`, then each body chunk within `idle` of the last.
+    /// within `deadline`, then the body reads follow `body`.
     /// Extra headers follow `HttpGuard::request`'s rules; no API key is sent.
     /// The connection closes when the returned body is dropped.
     pub async fn stream(
@@ -246,12 +246,18 @@ impl HttpGuard {
         url: &str,
         headers: &[(&str, &str)],
         deadline: Duration,
-        idle: Duration,
+        body: BodyDeadline,
     ) -> Result<StreamReply> {
         ensure!(
-            !deadline.is_zero() && deadline <= MAX_POST_DEADLINE && !idle.is_zero(),
+            !deadline.is_zero()
+                && deadline <= MAX_POST_DEADLINE
+                && body != BodyDeadline::Idle(Duration::ZERO),
             "Invalid deadline"
         );
+        let limit = match body {
+            BodyDeadline::Total => Limit::Until(tokio::time::Instant::now() + deadline),
+            BodyDeadline::Idle(idle) => Limit::Idle(idle),
+        };
         let owned = ["host", "connection", "content-length", "content-type"];
         ensure!(
             !headers
@@ -281,7 +287,7 @@ impl HttpGuard {
             www_authenticate: challenges(&response),
             body: ReplyBody {
                 body: response.into_body(),
-                idle,
+                limit,
                 _connection: connection,
             },
         })
@@ -571,11 +577,27 @@ impl std::fmt::Display for IdleTimeout {
 
 impl std::error::Error for IdleTimeout {}
 
-/// A streamed reply body. Each chunk must arrive within the idle deadline;
-/// the error is then `IdleTimeout`. Dropping it closes the connection.
+/// How long a streamed reply body may take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyDeadline {
+    /// The head deadline also covers the whole body, as fetch with
+    /// `AbortSignal.timeout` does.
+    Total,
+    /// Each chunk must arrive within this long of the last; the error is then
+    /// `IdleTimeout`.
+    Idle(Duration),
+}
+
+enum Limit {
+    Until(tokio::time::Instant),
+    Idle(Duration),
+}
+
+/// A streamed reply body, read under its `BodyDeadline`. Dropping it closes
+/// the connection.
 pub struct ReplyBody {
     body: Incoming,
-    idle: Duration,
+    limit: Limit,
     _connection: Connection,
 }
 
@@ -583,9 +605,14 @@ impl ReplyBody {
     /// The next non-empty data chunk, or `None` at the end of the body.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>> {
         loop {
-            let frame = tokio::time::timeout(self.idle, self.body.frame())
-                .await
-                .map_err(|_| IdleTimeout)?;
+            let frame = match self.limit {
+                Limit::Until(at) => tokio::time::timeout_at(at, self.body.frame())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("HTTP body deadline"))?,
+                Limit::Idle(idle) => tokio::time::timeout(idle, self.body.frame())
+                    .await
+                    .map_err(|_| IdleTimeout)?,
+            };
             let Some(frame) = frame else {
                 return Ok(None);
             };

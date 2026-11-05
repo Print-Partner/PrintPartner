@@ -19,7 +19,8 @@ use crate::moonraker_driver::{
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pp_api_types::printer_status::{PrinterHostState as State, PrinterHostStatus as Status};
 use pp_net::outbound::{
-    HttpGuard, HttpReply, MAX_BODY, MAX_LISTING_BODY, PostBody, PostError, StreamReply,
+    BodyDeadline, HttpGuard, HttpReply, MAX_BODY, MAX_LISTING_BODY, PostBody, PostError,
+    StreamReply,
 };
 use serde_json::{Map, Value};
 use std::{io::Cursor, pin::Pin, time::Duration};
@@ -192,19 +193,19 @@ impl Driver {
     }
 
     /// One Digest-authorized GET whose reply body streams: the head within
-    /// `deadline`, then each chunk within `idle`. A 401 with a fresh challenge
+    /// `deadline`, then the body under `body`. A 401 with a fresh challenge
     /// is retried once, as `send` does for buffered GETs.
     async fn stream(
         &self,
         url: &Url,
         headers: &[(&str, &str)],
         deadline: Duration,
-        idle: Duration,
+        body: BodyDeadline,
     ) -> Result<StreamReply> {
         if self.password.is_none() {
             return self
                 .guard
-                .stream(url.as_str(), headers, deadline, idle)
+                .stream(url.as_str(), headers, deadline, body)
                 .await;
         }
         let challenge = self
@@ -221,7 +222,7 @@ impl Driver {
         }
         let reply = self
             .guard
-            .stream(url.as_str(), &all, deadline, idle)
+            .stream(url.as_str(), &all, deadline, body)
             .await?;
         let Some(retry) = Challenge::from_parts(reply.status, reply.www_authenticate.as_deref())
         else {
@@ -231,7 +232,7 @@ impl Driver {
         let value = self.authorization("GET", url, &retry)?;
         let mut all = headers.to_vec();
         all.push(("authorization", &value));
-        self.guard.stream(url.as_str(), &all, deadline, idle).await
+        self.guard.stream(url.as_str(), &all, deadline, body).await
     }
 
     /// Open one print file for download through the same-origin
@@ -248,7 +249,7 @@ impl Driver {
             .collect();
         let url = self.url(&format!("/api/v1/files/{}", encoded.join("/")))?;
         let metadata = self
-            .stream(&url, &[ACCEPT_JSON], METADATA_DEADLINE, METADATA_DEADLINE)
+            .stream(&url, &[ACCEPT_JSON], METADATA_DEADLINE, BodyDeadline::Total)
             .await?;
         if !(200..300).contains(&metadata.status) {
             return Ok(metadata);
@@ -278,7 +279,7 @@ impl Driver {
             &checked(target.as_str())?,
             &[],
             DOWNLOAD_IDLE,
-            DOWNLOAD_IDLE,
+            BodyDeadline::Idle(DOWNLOAD_IDLE),
         )
         .await
     }
@@ -298,7 +299,7 @@ impl Driver {
             "/api/v1/cameras/{}/snap",
             encode_uri_component(camera_id)
         ))?;
-        self.stream(&url, &[], SNAPSHOT_DEADLINE, SNAPSHOT_DEADLINE)
+        self.stream(&url, &[], SNAPSHOT_DEADLINE, BodyDeadline::Total)
             .await
     }
 
@@ -507,7 +508,12 @@ impl Driver {
         };
         let range = [("range", "bytes=0-65535")];
         let reply = self
-            .stream(&checked(&url)?, &range, LISTING_DEADLINE, LISTING_DEADLINE)
+            .stream(
+                &checked(&url)?,
+                &range,
+                LISTING_DEADLINE,
+                BodyDeadline::Total,
+            )
             .await?;
         if !(200..300).contains(&reply.status) {
             return Ok(Vec::new());

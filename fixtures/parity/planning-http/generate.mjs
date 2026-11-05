@@ -31,10 +31,12 @@ const FILES = [
   ["repos/1/frame/left.stl", "left v1"], ["repos/1/frame/right.stl", "right"],
   ["repos/1/electronics/board.stl", "board"], ["repos/1/README.md", "readme"],
   ["repos/1/moved/part.stl", "part"], ["repos/1/same.stl", "same"],
+  ["repos/1/twin/z.stl", "twin"], ["repos/1/twin/a.stl", "twin"],
   ["repos/1/.git/HEAD", "ref: main"], ["repos/1/.printpartner-source-snapshot.json", "{}"],
   ["repos/2/frame/left.stl", "left v2"], ["repos/2/frame/right.stl", "right"],
   ["repos/2/README.md", "readme"], ["repos/2/renamed/part.stl", "part"],
   ["repos/2/toolhead/new.stl", "new"], ["repos/2/same.stl", "same"], ["repos/2/.git/config", "[core]"],
+  ["repos/2/pair/b.stl", "twin"], ["repos/2/pair/y.stl", "twin"],
   ["repos/2/link.stl", { link: "same.stl" }],
   ["repos/3/x.stl", "x"],
 ];
@@ -199,7 +201,9 @@ if (process.argv.includes("--probe")) {
     }
     const store = { listSources: () => [1, 2].map((id) => ({ id, name: id === 1 ? "Base" : "Overlay", local_path: join(dataDir, `repos/${id}`), last_synced_at: AT, last_commit_sha: id === 1 ? "aaa111" : "bbb222" })) };
     const kept = hydrateBuildPlanningBrief(store, brief(1, { evidence: synced })).differences;
-    assert.equal(kept.length, 4, "changed, renamed, removed and added");
+    assert.equal(kept.length, 6, "changed, three renames, removed and added");
+    const twins = kept.filter((difference) => difference.path_a?.startsWith("twin/")).map((difference) => [difference.path_a, difference.path_b]);
+    assert.deepEqual(twins.sort(), [["twin/a.stl", "pair/b.stl"], ["twin/z.stl", "pair/y.stl"]], "same-content renames pair in sorted readdir order");
     const sql = seedSql(kept, digestPlanDraft({ baseRevisionId: null, basePlanVersion: 0, inputs: [], parts: [] }));
     const writer = new Database(join(dataDir, "print-partner.db"));
     for (const [statement, values] of sql) writer.prepare(statement).run(...values.map((value) => typeof value === "string" ? value.replace("{data}", dataDir) : value));

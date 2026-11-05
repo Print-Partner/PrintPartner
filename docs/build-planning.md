@@ -79,7 +79,7 @@ that is not one positive integer gets 400.
 
 `fixtures/parity/planning-http/generate.mjs` seeds Node's real app with ten
 Builds (briefs in every phase, synced and stale Source trees, contradictions,
-every readiness blocker, a corrupt draft, 205 decisions) and records 27
+every readiness blocker, a corrupt draft, 205 decisions) and records 28
 responses and the seed itself in `node.json`. `pp-core`'s
 `build_planning_read` test replays the same seed into a Rust data directory,
 sends each request through `read_router` and requires Node's status and

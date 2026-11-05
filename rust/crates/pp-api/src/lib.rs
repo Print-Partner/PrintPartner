@@ -39,6 +39,8 @@ pub mod mcp;
 #[cfg(feature = "desktop_rebuild")]
 pub mod planning;
 #[cfg(feature = "desktop_rebuild")]
+pub mod printer_host;
+#[cfg(feature = "desktop_rebuild")]
 pub mod printer_status;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_stream;

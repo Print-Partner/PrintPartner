@@ -131,6 +131,12 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   increasing sequence, heartbeats every 15 seconds, and resume by sequence.
   It writes nothing and never polls a printer. See
   [Printer stream](printer-stream.md).
+- Printer-host reads (GRE-360): `GET /api/v1/printers/{id}/capabilities`,
+  `/files` and `/cameras`, and `POST /api/v1/integrations/{id}/test`, read a
+  Moonraker host on demand through the gateway's driver. They are read-only on
+  the printer: no upload, print start or retry. PrusaLink and Bambu read as
+  having no capabilities until their drivers are composed. See
+  [Printer-host reads](printer-host-reads.md).
 
   ```sh
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \

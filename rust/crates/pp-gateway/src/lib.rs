@@ -30,6 +30,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 mod assets;
 pub mod ownership;
+pub mod printer_host;
 mod rate_limit;
 
 use ownership::{Owner, cutover::OperationOwners};

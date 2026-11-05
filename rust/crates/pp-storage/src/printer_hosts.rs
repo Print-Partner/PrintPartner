@@ -13,6 +13,8 @@ use std::time::Duration;
 
 /// Node's setting key for the integration list.
 const INTEGRATIONS_KEY: &str = "integrations";
+/// Node's setting key for the printer fleet.
+const FLEET_KEY: &str = "printer.fleet";
 /// The single-account tenant Node's `repository.getSetting` reads.
 const TENANT: &str = "default";
 /// More hosts than this are sent as ids only, so every Moonraker id fails
@@ -110,6 +112,113 @@ fn projected(id: String, enabled: bool) -> MoonrakerHost {
         base_url: String::new(),
         api_key: None,
         enabled,
+    }
+}
+
+/// A stored integration, unredacted, as Node's `getIntegrationConfig` reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredIntegration {
+    pub id: String,
+    /// The stored `type`, empty when it is not a string.
+    pub kind: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    /// False only when `config.enabled` is exactly `false`.
+    pub enabled: bool,
+}
+
+/// How a fleet printer reaches its host, as Node's `printerHostCapability`
+/// resolves it before checking the adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrinterLink {
+    PrinterNotFound,
+    /// No `integration_id`, or a blank one.
+    NotLinked,
+    /// The linked integration is missing or disabled.
+    NotAvailable,
+    Linked(StoredIntegration),
+}
+
+/// The integration with `id`, or `None` when no stored row has it.
+pub fn integration(
+    client: &SettingsClient,
+    wait: Duration,
+    id: &str,
+) -> Result<Option<StoredIntegration>> {
+    Ok(find_integration(&setting(client, wait, INTEGRATIONS_KEY)?, id))
+}
+
+/// Resolve fleet printer `printer_id` to its linked integration.
+pub fn printer_link(client: &SettingsClient, wait: Duration, printer_id: &str) -> Result<PrinterLink> {
+    let reader = client.reader(wait)?;
+    let read = |key: &str| -> Result<Value> {
+        Ok(match reader.snapshot(TENANT, key)? {
+            SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap_or(Value::Null),
+            SettingSnapshot::Missing => Value::Null,
+        })
+    };
+    let fleet = read(FLEET_KEY)?;
+    let Some(printer) = fleet
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|printer| js_string(&printer["id"]).as_deref() == Some(printer_id))
+    else {
+        return Ok(PrinterLink::PrinterNotFound);
+    };
+    let Some(linked) = js_string(&printer["integration_id"])
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(PrinterLink::NotLinked);
+    };
+    Ok(match find_integration(&read(INTEGRATIONS_KEY)?, &linked) {
+        Some(integration) if integration.enabled => PrinterLink::Linked(integration),
+        _ => PrinterLink::NotAvailable,
+    })
+}
+
+fn setting(client: &SettingsClient, wait: Duration, key: &str) -> Result<Value> {
+    Ok(match client.reader(wait)?.snapshot(TENANT, key)? {
+        SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap_or(Value::Null),
+        SettingSnapshot::Missing => Value::Null,
+    })
+}
+
+/// Node's `loadRaw(...).find((x) => x.id === id)`: the first object whose
+/// `id` is that string.
+fn find_integration(items: &Value, id: &str) -> Option<StoredIntegration> {
+    let item = items
+        .as_array()?
+        .iter()
+        .find(|item| item.is_object() && item["id"].as_str() == Some(id))?;
+    let config = item["config"].as_object();
+    let field = |names: [&str; 2]| {
+        names
+            .iter()
+            .find_map(|name| config?.get(*name).filter(|value| !value.is_null()))
+    };
+    Some(StoredIntegration {
+        id: id.to_owned(),
+        kind: item["type"].as_str().unwrap_or_default().to_owned(),
+        base_url: field(["base_url", "baseUrl"])
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        api_key: field(["api_key", "apiKey"])
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        enabled: config.and_then(|config| config.get("enabled")) != Some(&Value::Bool(false)),
+    })
+}
+
+/// JavaScript's `String(value)` for the scalar ids Node's fleet parser reads.
+fn js_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
     }
 }
 

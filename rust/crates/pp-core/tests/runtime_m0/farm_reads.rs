@@ -25,7 +25,7 @@ async fn farm_reads_rust_only_runtime_serves_observed_printers() {
     let _ = std::fs::remove_dir_all(data);
 }
 
-fn settings_rows(data: &Path) -> Option<String> {
+pub(super) fn settings_rows(data: &Path) -> Option<String> {
     let path = data.join("print-partner.db");
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
     rusqlite::Connection::open_with_flags(path, flags)

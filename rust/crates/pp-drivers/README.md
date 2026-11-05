@@ -12,7 +12,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Not responsible for
 
-- **Send authority.** This crate runs a request when called; it never decides that a print should be sent. A printer send needs an explicit user action, admitted outside this crate: `pp-storage` owns admitted queue and effect records and `pp-core` runs the workers. No Rust production code calls `upload_file` today; only this crate's tests do, against local simulators. Never call it against a real printer to test something. Each upload request is sent once; when `UploadResult::outcome_unknown` is set, reconcile the printer state instead of resending.
+- **Send authority.** This crate runs a request when called; it never decides that a print should be sent. A printer send needs an explicit user action, admitted outside this crate: `pp-storage` owns admitted queue and effect records and `pp-core` runs the workers. No Rust production code calls `upload_file` today (the printer-host routes use only the read methods); only this crate's tests do, against local simulators. Never call it against a real printer to test something. Each upload request is sent once; when `UploadResult::outcome_unknown` is set, reconcile the printer state instead of resending.
 - Queue, effect, deduction and delivery records, and any SQL: `pp-storage`.
 - Watcher lifetime and snapshot intake: `pp-gateway` holds `Watchers` and answers `/api/v1/integrations/:id/status` today; the target owner is `pp-core`, which also runs workers.
 - DNS, address policy, deadlines and body limits: `pp-net`.
@@ -29,7 +29,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `digest` | `parse_www_authenticate`, `authorization`, `cnonce`: RFC 7616 MD5 and MD5-sess, `qop=auth`. |
 | `farm_filament` (`desktop_rebuild`) | `printer_filament_status`, `slot_filament_status`, `host_reports_filament_runout`, `SlotState`, `LOW_FILAMENT_THRESHOLD_G`. Pure; inventory comes through a `SpoolLookup` closure. |
 
-`pp-gateway` uses `moonraker`. No binaries.
+`pp-gateway` uses `moonraker`, and `moonraker_driver`'s read methods for the Rust-only printer-host routes. No binaries.
 
 ## Effects and flags
 

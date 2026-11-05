@@ -340,20 +340,18 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
     assert_eq!(&head, b"HTTP/1.1 200");
     fixture.record(1..4000, 2000);
     let mut slowest = Duration::ZERO;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let cookie = format!("pp_session={SECRET}");
-    loop {
+    let stalled = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < stalled {
         slowest = slowest.max(fixture.poke());
-        if fixture.connect(&[("Cookie", &cookie)], "").await.status() == 200 {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the slow stream kept its slot");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(
         slowest < Duration::from_secs(1),
         "writers waited {slowest:?}"
     );
+    let cookie = format!("pp_session={SECRET}");
+    let held = fixture.connect(&[("Cookie", &cookie)], "").await;
+    assert_eq!(held.status(), 503, "a stalled connection keeps its slot");
     let mut delivered = Vec::new();
     let drained =
         tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut delivered)).await;
@@ -362,4 +360,12 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
         .matches("event: domain_event")
         .count();
     assert!(events < 3999, "the slow client got every event");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while fixture.connect(&[("Cookie", &cookie)], "").await.status() != 200 {
+        assert!(
+            Instant::now() < deadline,
+            "the closed connection kept its slot"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

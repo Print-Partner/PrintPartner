@@ -1906,7 +1906,9 @@ fn product_router(state: &GatewayState) -> Option<axum::Router> {
 }
 
 /// Answer from the Rust product routes. They see the peer as `ConnectInfo`
-/// and refuse a non-loopback one themselves.
+/// and refuse a non-loopback one themselves. A `text/event-stream` body only
+/// reads, so it ends when draining begins instead of holding the drain open;
+/// other bodies end when the drain finishes.
 async fn product_response(
     state: &GatewayState,
     product: axum::Router,
@@ -1919,11 +1921,20 @@ async fn product_response(
     response
         .headers_mut()
         .insert("cache-control", HeaderValue::from_static("no-store"));
+    let cancelled = if response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .is_some_and(|value| value == "text/event-stream")
+    {
+        state.watcher_cancelled.clone()
+    } else {
+        state.cancelled.clone()
+    };
     response.map(|body| {
         Body::new(TrackedBody {
             body,
             _admission: admission,
-            cancelled: Box::pin(state.cancelled.clone().cancelled_owned()),
+            cancelled: Box::pin(cancelled.cancelled_owned()),
         })
     })
 }

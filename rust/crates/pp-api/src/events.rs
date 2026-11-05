@@ -154,7 +154,6 @@ async fn events(
         presented,
         notify,
         _waker: waker,
-        _permit: permit,
         sender,
         overflowed: overflowed.clone(),
     };
@@ -162,6 +161,7 @@ async fn events(
     let mut response = Response::new(Body::new(EventBody {
         receiver,
         overflowed,
+        _permit: permit,
     }));
     let headers = response.headers_mut();
     headers.insert(
@@ -193,14 +193,13 @@ fn frame(event: &str, id: &impl std::fmt::Display, data: &serde_json::Value) -> 
     Bytes::from(format!("event: {event}\nid: {id}\ndata: {data}\n\n"))
 }
 
-/// One client's producer task. Holds the stream slot and the storage
-/// subscription until it returns.
+/// One client's producer task. Holds the storage subscription until it
+/// returns.
 struct Stream {
     app: App,
     presented: PresentedCredential,
     notify: Arc<Notify>,
     _waker: Waker,
-    _permit: OwnedSemaphorePermit,
     sender: mpsc::Sender<Bytes>,
     overflowed: Arc<AtomicBool>,
 }
@@ -285,11 +284,15 @@ impl Stream {
 }
 
 /// The response body: queued frames in order, then the end of the stream.
-/// After an overflow it fails at once, so the server drops the connection
-/// without sending the frames still queued.
+/// After an overflow it fails on its next poll, so the server drops the
+/// connection without sending the frames still queued. The server polls it
+/// only when the socket can take more, so a client that stops reading keeps
+/// the connection, and this body's stream slot, until it reads again or
+/// disconnects.
 struct EventBody {
     receiver: mpsc::Receiver<Bytes>,
     overflowed: Arc<AtomicBool>,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl http_body::Body for EventBody {

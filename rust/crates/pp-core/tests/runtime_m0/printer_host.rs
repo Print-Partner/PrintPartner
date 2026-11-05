@@ -112,8 +112,51 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
         assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}: {body}");
     }
     let cookie = signed_in(&origin, &desktop, 1).await;
+    capabilities_and_files(&origin, &cookie, &oracle).await;
+    cameras_and_test(&origin, &cookie, &oracle).await;
+
+    shut_down(runtime).await;
+    let lines = printer.request_lines();
+    for target in [
+        "/server/info",
+        "/server/webcams/list",
+        "/server/files/directory?path=gcodes&extended=true",
+    ] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == &format!("GET {target} HTTP/1.1")),
+            "{target}: {lines:?}"
+        );
+    }
+    for line in &lines {
+        assert!(line.starts_with("GET "), "the printer saw {line}");
+        assert!(
+            !line.contains("/print/") && !line.contains("/upload"),
+            "the printer saw {line}"
+        );
+    }
+    assert_eq!(
+        production_rows(&data),
+        rows,
+        "host reads changed production rows"
+    );
+    assert_eq!(
+        settings_rows(&data),
+        settings,
+        "host reads changed settings"
+    );
+    println!(
+        "ticket_t_21: {} printer requests, all read-only GETs",
+        lines.len()
+    );
+}
+
+/// Capabilities and print-file browse for every linked, unlinked and
+/// unported printer, at the root and under `/api/v1`.
+async fn capabilities_and_files(origin: &str, cookie: &str, oracle: &Value) {
     let get = |path: String| {
-        let (origin, cookie) = (origin.clone(), cookie.clone());
+        let (origin, cookie) = (origin.to_owned(), cookie.to_owned());
         async move { call(&origin, Some(&cookie), "GET", &path).await }
     };
 
@@ -175,7 +218,14 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
         StatusCode::BAD_GATEWAY,
         "an unreachable host is an upstream failure"
     );
+}
 
+/// Cameras and the connection test.
+async fn cameras_and_test(origin: &str, cookie: &str, oracle: &Value) {
+    let get = |path: String| {
+        let (origin, cookie) = (origin.to_owned(), cookie.to_owned());
+        async move { call(&origin, Some(&cookie), "GET", &path).await }
+    };
     let cameras = get("/printers/p-moon/cameras".into()).await;
     assert_eq!(
         cameras,
@@ -186,8 +236,8 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
 
     let test = |id: &str| {
         let (origin, cookie, path) = (
-            origin.clone(),
-            cookie.clone(),
+            origin.to_owned(),
+            cookie.to_owned(),
             format!("/api/v1/integrations/{id}/test"),
         );
         async move { call(&origin, Some(&cookie), "POST", &path).await }
@@ -197,10 +247,10 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
         (StatusCode::OK, oracle["test_connection"].clone())
     );
     let (code, _, _) = request(
-        &origin,
+        origin,
         "/integrations/moon-1/test",
         "POST",
-        Some(&cookie),
+        Some(cookie),
         None,
         None,
         None,
@@ -223,41 +273,5 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
             StatusCode::OK,
             json!({"ok": false, "message": "Unknown integration type: mystery"})
         )
-    );
-
-    shut_down(runtime).await;
-    let lines = printer.request_lines();
-    for target in [
-        "/server/info",
-        "/server/webcams/list",
-        "/server/files/directory?path=gcodes&extended=true",
-    ] {
-        assert!(
-            lines
-                .iter()
-                .any(|line| line == &format!("GET {target} HTTP/1.1")),
-            "{target}: {lines:?}"
-        );
-    }
-    for line in &lines {
-        assert!(line.starts_with("GET "), "the printer saw {line}");
-        assert!(
-            !line.contains("/print/") && !line.contains("/upload"),
-            "the printer saw {line}"
-        );
-    }
-    assert_eq!(
-        production_rows(&data),
-        rows,
-        "host reads changed production rows"
-    );
-    assert_eq!(
-        settings_rows(&data),
-        settings,
-        "host reads changed settings"
-    );
-    println!(
-        "ticket_t_21: {} printer requests, all read-only GETs",
-        lines.len()
     );
 }

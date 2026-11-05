@@ -11,7 +11,10 @@ the server ignores anything a client sends.
 The upgrade goes through the same `accepted::Gate` as the farm reads, and a
 storage read proves the session or API key before the upgrade. Without one the
 upgrade answers 401. The credential is checked again before each heartbeat; if
-it no longer holds, the server closes with 1008.
+it no longer holds, the server closes with 1008. Until the producer has read
+the fleet once, and after the runtime starts shutting down, the upgrade answers
+503, so a snapshot never claims an empty fleet that is only unread. Shutdown
+closes every open socket with 1001 and waits for each to finish.
 
 ## Frames
 
@@ -28,7 +31,10 @@ process) and `seq`.
 The producer advances its own copy of each host's status one watcher
 transition at a time, so a state the printer passed through is its own event
 even when the next one follows quickly: `error` then `idle` is two events. A
-new last-heard time alone is not an event.
+new last-heard time alone is not an event. Each watcher transition carries a
+counter; the producer starts from a map snapshot read with that counter and,
+if it falls more than 1,024 transitions behind, resyncs the same way, skipping
+transitions the snapshot already holds so no older state follows a newer one.
 
 ## Printer
 

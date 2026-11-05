@@ -124,3 +124,30 @@ fn printer_stream_heartbeat_names_the_last_sequence() {
     assert_eq!(beat["seq"], 3);
     assert!(beat["at"].as_str().unwrap().ends_with('Z'));
 }
+
+#[tokio::test]
+async fn printer_stream_opens_after_the_first_fleet_and_stop_waits_for_sockets() {
+    let stream = PrinterStream::new(HEARTBEAT);
+    assert!(
+        !stream.open_for_clients(),
+        "no snapshot before the fleet is read"
+    );
+    stream.publish(vec![]);
+    assert!(
+        stream.open_for_clients(),
+        "an empty fleet is still a known fleet"
+    );
+    let socket = stream.sockets.clone().read_owned().await;
+    let stopping = tokio::spawn({
+        let stream = stream.clone();
+        async move { stream.stop().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!stopping.is_finished(), "stop waits for the open socket");
+    assert!(!stream.open_for_clients());
+    drop(socket);
+    tokio::time::timeout(Duration::from_secs(1), stopping)
+        .await
+        .unwrap()
+        .unwrap();
+}

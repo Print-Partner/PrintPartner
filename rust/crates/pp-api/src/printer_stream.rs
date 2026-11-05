@@ -31,7 +31,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, SystemTime},
 };
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast, watch};
 
 /// How often a connected client hears from the stream when nothing changes.
 pub const HEARTBEAT: Duration = Duration::from_secs(15);
@@ -49,6 +49,8 @@ struct Hub {
     seq: u64,
     printers: Vec<StreamPrinter>,
     retained: VecDeque<Frame>,
+    /// Set by the first publish: before it the fleet is not known yet.
+    ready: bool,
 }
 
 impl Hub {
@@ -83,6 +85,10 @@ pub struct PrinterStream {
     hub: Arc<Mutex<Hub>>,
     live: broadcast::Sender<Frame>,
     heartbeat: Duration,
+    stopped: watch::Sender<bool>,
+    /// Each socket holds a read guard; [`PrinterStream::stop`] takes the write
+    /// lock, so it returns once every socket has closed.
+    sockets: Arc<RwLock<()>>,
 }
 
 impl PrinterStream {
@@ -96,9 +102,12 @@ impl PrinterStream {
                 seq: 0,
                 printers: Vec::new(),
                 retained: VecDeque::new(),
+                ready: false,
             })),
             live: broadcast::channel(RETAINED).0,
             heartbeat,
+            stopped: watch::channel(false).0,
+            sockets: Arc::default(),
         }
     }
 
@@ -127,6 +136,18 @@ impl PrinterStream {
             hub.push("removed", json!({"id": id}), &self.live);
         }
         hub.printers = printers;
+        hub.ready = true;
+    }
+
+    /// Closes every socket with 1001 and refuses new ones; returns once each
+    /// socket's task has finished.
+    pub async fn stop(&self) {
+        self.stopped.send_replace(true);
+        drop(self.sockets.write().await);
+    }
+
+    fn open_for_clients(&self) -> bool {
+        self.hub().ready && !*self.stopped.borrow()
     }
 
     /// The first frames for a client, the live feed after them, and the last
@@ -229,7 +250,35 @@ async fn connect(
         Ok(resume) => resume,
         Err(detail) => return crate::accepted::failure(StatusCode::BAD_REQUEST, detail),
     };
-    ws.on_upgrade(move |socket| pump(socket, app, presented, resume))
+    if !app.stream.open_for_clients() {
+        return crate::accepted::failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Printer stream is not running",
+        );
+    }
+    ws.on_upgrade(move |socket| run(socket, app, presented, resume))
+}
+
+/// Serves one socket until it ends or the stream stops. Stopping drops the
+/// serving future, including a blocked send, then sends a bounded 1001 close.
+async fn run(
+    mut socket: WebSocket,
+    app: App,
+    presented: PresentedCredential,
+    resume: Option<(String, u64)>,
+) {
+    let _socket = app.stream.sockets.clone().read_owned().await;
+    let mut stopped = app.stream.stopped.subscribe();
+    if *stopped.borrow_and_update() {
+        return;
+    }
+    tokio::select! {
+        () = pump(&mut socket, &app, presented, resume) => {}
+        () = async { drop(stopped.wait_for(|stopped| *stopped).await) } => {
+            let closing = close(&mut socket, 1001, "Printer stream stopped");
+            let _ = tokio::time::timeout(Duration::from_secs(1), closing).await;
+        }
+    }
 }
 
 /// `None` when the credential still reads, else the refusal to send.
@@ -257,8 +306,8 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
 }
 
 async fn pump(
-    mut socket: WebSocket,
-    app: App,
+    socket: &mut WebSocket,
+    app: &App,
     presented: PresentedCredential,
     resume: Option<(String, u64)>,
 ) {
@@ -283,15 +332,15 @@ async fn pump(
                 }
                 Ok(_) => continue,
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    return close(&mut socket, 1013, "Printer stream fell behind; resume with since").await;
+                    return close(socket, 1013, "Printer stream fell behind; resume with since").await;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    return close(&mut socket, 1001, "Printer stream stopped").await;
+                    return close(socket, 1001, "Printer stream stopped").await;
                 }
             },
             _ = beat.tick() => {
-                if authenticate(&app, presented.clone()).await.is_some() {
-                    return close(&mut socket, 1008, "Authentication required").await;
+                if authenticate(app, presented.clone()).await.is_some() {
+                    return close(socket, 1008, "Authentication required").await;
                 }
                 app.stream.heartbeat(last)
             }

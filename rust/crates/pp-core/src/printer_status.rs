@@ -26,7 +26,7 @@ use pp_storage::{
         },
     },
 };
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
@@ -147,27 +147,35 @@ fn observe(
 /// Feeds `/ws/printers` from the watchers' ordered transitions. It keeps its
 /// own copy of each host's status, advanced one transition at a time, so a
 /// state the printer passed through is published even when the newest-only
-/// map already moved on. Every second it re-reads the farm settings and drops
-/// hosts whose pollers stopped. It writes nothing and never polls a printer.
+/// map already moved on. It starts from, and after falling behind resyncs to,
+/// one map snapshot and skips transitions that snapshot already holds. Every
+/// second it re-reads the farm settings and drops hosts whose pollers stopped.
+/// It writes nothing and never polls a printer. On cancellation it stops the
+/// stream and waits for its sockets to close.
 async fn produce(
     settings: SettingsClient,
     stream: PrinterStream,
     observations: PrinterObservations,
     cancelled: CancellationToken,
 ) {
-    let mut transitions = observations.transitions();
-    let mut seen: BTreeMap<String, PrinterHostStatus> = (*observations.all()).clone();
+    let resync = || {
+        let transitions = observations.transitions();
+        let (map, mark) = observations.snapshot();
+        (transitions, (*map).clone(), mark)
+    };
+    let (mut transitions, mut seen, mut mark) = resync();
     let mut farm: Option<Farm> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
-            () = cancelled.cancelled() => return,
+            () = cancelled.cancelled() => break,
             transition = transitions.recv() => match transition {
-                Ok((id, status)) => {
-                    seen.insert(id, status);
+                Ok(transition) if transition.seq > mark => {
+                    seen.insert(transition.id, transition.status);
                 }
-                Err(RecvError::Lagged(_)) => seen = (*observations.all()).clone(),
-                Err(RecvError::Closed) => return,
+                Ok(_) => continue,
+                Err(RecvError::Lagged(_)) => (transitions, seen, mark) = resync(),
+                Err(RecvError::Closed) => break,
             },
             _ = tick.tick() => {
                 let client = settings.clone();
@@ -194,6 +202,7 @@ async fn produce(
             )
         }));
     }
+    stream.stop().await;
 }
 
 /// The status and farm routes' configuration and storage clients, prepared

@@ -10,7 +10,7 @@ use http_body_util::BodyExt;
 use pp_compat::CompatHandle;
 pub use pp_drivers::moonraker::{
     HTTPS_UNAVAILABLE, Host as MoonrakerHost, PrinterHostState, PrinterHostStatus,
-    PrinterObservations, REDIRECT_UNAVAILABLE,
+    PrinterObservations, REDIRECT_UNAVAILABLE, Transition,
 };
 use pp_drivers::moonraker::{Host, Route, Watchers};
 use pp_net::target;

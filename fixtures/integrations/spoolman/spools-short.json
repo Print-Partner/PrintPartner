@@ -1,0 +1,4 @@
+[
+  { "id": 7, "filament": { "id": 2, "name": "Galaxy Black" }, "remaining_weight": 18.9, "used_weight": 981.1, "archived": false },
+  { "id": 9, "filament": { "id": 2, "name": "Galaxy Black" }, "remaining_weight": 1000.0, "used_weight": 0.0, "archived": true }
+]

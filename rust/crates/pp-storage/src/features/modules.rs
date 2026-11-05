@@ -90,6 +90,21 @@ impl SettingsClient {
     }
 }
 
+/// One module's effective state for `tenant`, read on `connection` so it
+/// shares the caller's transaction.
+pub(crate) fn status_in(
+    connection: &rusqlite::Connection,
+    tenant: &str,
+    module: Module,
+) -> Result<ModuleStatus> {
+    let toggles = crate::snapshot(connection, tenant, USER_KEY)?;
+    let assembly = crate::snapshot(connection, tenant, ASSEMBLY_TRACKING_KEY)?;
+    statuses(&toggles, &assembly)
+        .into_iter()
+        .find(|status| status.module() == module)
+        .ok_or_else(|| anyhow::anyhow!("Module status missing"))
+}
+
 fn statuses(toggles: &SettingSnapshot, assembly: &SettingSnapshot) -> Vec<ModuleStatus> {
     let user: Option<Toggles> = match toggles {
         SettingSnapshot::Missing => Some(Toggles::default()),

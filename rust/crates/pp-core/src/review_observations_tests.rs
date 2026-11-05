@@ -494,11 +494,13 @@ fn review_regression_artifact_removal_after_scan_is_missing() {
 fn review_regression_colorless_provider_uses_neutral_swatch() {
     let lookup = SnapshotFilamentLookup {
         integration_id: "local".into(),
-        spools: vec![],
-        filaments: parse_filaments(&json!([
-            {"id":2,"name":"Natural","color_hex":" "},
-            {"id":3,"name":"Short","color_hex":"#abc"}
-        ])),
+        inventory: parse_inventory(
+            &json!([
+                {"id":2,"name":"Natural","color_hex":" "},
+                {"id":3,"name":"Short","color_hex":"#abc"}
+            ]),
+            &json!([]),
+        ),
     };
     assert_eq!(
         lookup

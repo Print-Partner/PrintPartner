@@ -49,6 +49,9 @@ pub mod rebuild_api;
 pub mod source_acquisition;
 
 #[cfg(feature = "desktop_rebuild")]
+pub mod spoolman;
+
+#[cfg(feature = "desktop_rebuild")]
 pub mod uploads;
 
 #[cfg(test)]

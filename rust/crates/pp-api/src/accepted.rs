@@ -17,12 +17,16 @@ use axum::{
 use pp_storage::{
     auth::AuthFailure,
     read_model::{
-        AcceptedRead, ReadClient,
+        AcceptedRead, Credential, ReadClient,
+        stock::{self, Inventory, SpoolmanIntegration},
         views::{self, CatalogOnly},
     },
 };
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -32,6 +36,16 @@ use std::{
 
 const MAX_SAFE_ID: u64 = 9_007_199_254_740_991;
 
+/// Reads one Spoolman inventory through a checked connection, or `None` when
+/// the read fails. `pp-core` provides it; this crate makes no outbound calls.
+/// Implementations only read: they never reserve or deduct stock.
+pub trait InventoryReader: Send + Sync {
+    fn read(
+        &self,
+        integration: SpoolmanIntegration,
+    ) -> Pin<Box<dyn Future<Output = Option<Inventory>> + Send>>;
+}
+
 #[derive(Clone)]
 pub struct AcceptedHttpConfig {
     origin: String,
@@ -39,6 +53,7 @@ pub struct AcceptedHttpConfig {
     api_key_tenant: String,
     enabled: bool,
     wait: Duration,
+    stock: Option<Arc<dyn InventoryReader>>,
 }
 
 impl AcceptedHttpConfig {
@@ -52,7 +67,15 @@ impl AcceptedHttpConfig {
             api_key_tenant: api_key_tenant.into(),
             enabled: rebuild_flag_enabled(flag),
             wait: Duration::from_millis(100),
+            stock: None,
         })
+    }
+
+    /// Also mount `/plans/{id}/filament-shortfalls`, reading Spoolman through
+    /// `inventory`.
+    pub fn with_stock(mut self, inventory: Arc<dyn InventoryReader>) -> Self {
+        self.stock = Some(inventory);
+        self
     }
 }
 
@@ -74,8 +97,16 @@ impl Gate {
         })
     }
 
-    pub(crate) fn wait(&self) -> Duration {
-        self.config.wait
+    /// Runs `read` on the blocking pool with the storage wait. Its flag is
+    /// set when the request future is dropped, so a queued storage read is
+    /// skipped.
+    pub(crate) async fn blocking<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(Arc<AtomicBool>, Duration) -> T + Send + 'static,
+    ) -> Result<T, tokio::task::JoinError> {
+        let flag = Cancellation(Arc::new(AtomicBool::new(false)));
+        let (cancelled, wait) = (flag.0.clone(), self.config.wait);
+        tokio::task::spawn_blocking(move || read(cancelled, wait)).await
     }
 
     /// Runs `guard` in front of every route in `routes`, and serves every
@@ -93,16 +124,54 @@ struct App {
     client: ReadClient,
 }
 
+impl App {
+    /// Runs `read` with the request's credential, and returns its result
+    /// with whether the request is HEAD. Refusals and storage errors are the
+    /// error response.
+    async fn read<T: Send + 'static>(
+        &self,
+        request: axum::extract::Request,
+        read: impl FnOnce(&ReadClient, Credential, &AtomicBool, Duration) -> Result<T> + Send + 'static,
+    ) -> Result<(T, bool), Box<Response>> {
+        let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
+            return Err(Box::new(failure(
+                StatusCode::UNAUTHORIZED,
+                "Authentication required",
+            )));
+        };
+        let head = *request.method() == Method::HEAD;
+        let client = self.client.clone();
+        let read = self
+            .gate
+            .blocking(move |cancelled, wait| {
+                read(&client, presented.into_credential(), &cancelled, wait)
+            })
+            .await;
+        let refused = match read {
+            Ok(Ok(value)) => return Ok((value, head)),
+            Ok(Err(error)) => read_error(&error),
+            Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        };
+        Err(Box::new(refused))
+    }
+}
+
 /// Mounts Accepted Plan Checkoff GET+HEAD at `/`, `/api/v1`, and `/api/v2`,
 /// and Part assembled units at `/` and `/api/v1`, when `PP_DESKTOP_REBUILD`
 /// was exactly `1` or `true`; otherwise nothing.
 /// Filament labels come from the colour catalog only; Plans that name custom
 /// or Spoolman filaments answer 503 until those lookups are ported.
+/// With [`AcceptedHttpConfig::with_stock`], Plans also serve
+/// `/plans/{id}/filament-shortfalls` at the same three prefixes.
 pub fn accepted_router(config: AcceptedHttpConfig, client: ReadClient) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
     };
-    let plans = Router::new().route("/plans/{id}/checkoff", get(checkoff));
+    let stock = gate.config.stock.is_some();
+    let mut plans = Router::new().route("/plans/{id}/checkoff", get(checkoff));
+    if stock {
+        plans = plans.route("/plans/{id}/filament-shortfalls", get(filament_shortfalls));
+    }
     // Node registers Part routes at `/` and `/api/v1` only.
     let parts = plans.clone().route("/parts/{id}/assembled", get(assembled));
     gate.guard(
@@ -142,7 +211,7 @@ async fn guard(
 
 /// Sets the flag when the request future is dropped, so a queued storage read
 /// is skipped.
-pub(crate) struct Cancellation(pub(crate) Arc<AtomicBool>);
+struct Cancellation(Arc<AtomicBool>);
 impl Drop for Cancellation {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
@@ -182,45 +251,87 @@ async fn assembled(
 }
 
 async fn project(app: App, id: &str, request: axum::extract::Request, view: View) -> Response {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
-    };
-    let head = *request.method() == Method::HEAD;
     // An id that cannot name a row is "not found" once the credential is
     // proven (an empty batch).
     let target = node_id(id);
-    let client = app.client.clone();
-    let wait = app.gate.wait();
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let flag = Cancellation(cancelled.clone());
-    let read = tokio::task::spawn_blocking(move || {
-        let credential = presented.into_credential();
-        let batch = match (view, target) {
-            (View::Assembled, Some(part)) => {
-                client.read_part(credential, part, &cancelled, wait)?
-            }
-            _ => client.read(credential, target.as_slice(), &cancelled, wait)?,
-        };
-        let Some(build) = batch.builds.first() else {
-            return Ok(None);
-        };
-        Ok::<_, anyhow::Error>(Some(match (view, target) {
-            (View::Checkoff, _) if needs_filament_lookup(&build.accepted) => {
-                json!({"kind":"filament_lookup_unavailable"})
-            }
-            (View::Checkoff, _) => {
-                views::checkoff(build.profile_id, &build.accepted, &CatalogOnly)?
-            }
-            (View::Assembled, part) => views::assembled(part.unwrap_or_default(), &build.accepted),
-        }))
-    })
-    .await;
-    drop(flag);
+    let read = app
+        .read(request, move |client, credential, cancelled, wait| {
+            let batch = match (view, target) {
+                (View::Assembled, Some(part)) => {
+                    client.read_part(credential, part, cancelled, wait)?
+                }
+                _ => client.read(credential, target.as_slice(), cancelled, wait)?,
+            };
+            let Some(build) = batch.builds.first() else {
+                return Ok(None);
+            };
+            Ok(Some(match (view, target) {
+                (View::Checkoff, _) if needs_filament_lookup(&build.accepted) => {
+                    json!({"kind":"filament_lookup_unavailable"})
+                }
+                (View::Checkoff, _) => {
+                    views::checkoff(build.profile_id, &build.accepted, &CatalogOnly)?
+                }
+                (View::Assembled, part) => {
+                    views::assembled(part.unwrap_or_default(), &build.accepted)
+                }
+            }))
+        })
+        .await;
     match read {
-        Ok(Ok(Some(body))) => present(body, head, view.missing()),
-        Ok(Ok(None)) => failure(StatusCode::NOT_FOUND, view.missing()),
-        Ok(Err(error)) => read_error(&error),
-        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        Ok((Some(body), head)) => present(body, head, view.missing()),
+        Ok((None, _)) => failure(StatusCode::NOT_FOUND, view.missing()),
+        Err(response) => *response,
+    }
+}
+
+/// Spoolman shortfalls for the accepted Plan: storage reads the Plan, the
+/// Spoolman Module state, the configured integrations and measured grams in
+/// one transaction; then each named integration is read once. Module off
+/// answers 200 with the off reason and makes no outbound call.
+async fn filament_shortfalls(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(inventory) = app.gate.config.stock.clone() else {
+        return failure(StatusCode::NOT_FOUND, "Not Found");
+    };
+    let target = node_id(&id);
+    let read = app
+        .read(request, move |client, credential, cancelled, wait| {
+            match target {
+                Some(id) => client.read_stock(credential, id, cancelled, wait),
+                // An unusable id still proves the credential (an empty batch).
+                None => client.read(credential, &[], cancelled, wait),
+            }
+        })
+        .await;
+    let (mut batch, head) = match read {
+        Ok(read) => read,
+        Err(response) => return *response,
+    };
+    let (Some(profile_id), Some(build), Some(inputs)) =
+        (target, batch.builds.pop(), batch.stock.take())
+    else {
+        return failure(StatusCode::NOT_FOUND, View::Checkoff.missing());
+    };
+    let mut inventories = HashMap::new();
+    if let AcceptedRead::Ready { snapshot } = &build.accepted {
+        for integration in stock::integrations_to_read(snapshot, &inputs) {
+            let id = integration.id.clone();
+            inventories.insert(id, inventory.read(integration).await);
+        }
+    }
+    match stock::shortfalls(profile_id, &build.accepted, &inputs, &inventories) {
+        Some(body) => match serde_json::to_value(body) {
+            Ok(body) => json_response(StatusCode::OK, &body, head),
+            Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+        },
+        None => match views::checkoff(profile_id, &build.accepted, &CatalogOnly) {
+            Ok(view) => present(view, head, View::Checkoff.missing()),
+            Err(error) => read_error(&error),
+        },
     }
 }
 

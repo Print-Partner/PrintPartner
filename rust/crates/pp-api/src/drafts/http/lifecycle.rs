@@ -2,10 +2,10 @@
 use super::*;
 use pp_storage::{
     plan_publication::{ApplyRequest, PublicationCommand},
-    required_units::Workspace,
+    required_units::{DraftIdentity, Workspace},
     working_drafts::{
-        DraftState, RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome,
-        RecomputeOutcome, RecomputeRequest, RecomputeWorkspaceOutcome,
+        RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome, RecomputeOutcome,
+        RecomputeRequest, RecomputeWorkspaceOutcome,
     },
 };
 
@@ -248,21 +248,9 @@ impl Accept {
             _ => return Ok(WorkspaceOutcome::DraftNotFound),
         };
         let identity = draft.identity();
-        let current = identity.workspace_identity()?;
-        let request = &self.request;
-        let refusal = if identity.state() != DraftState::Open {
-            Some("not_open")
-        } else if json!(current.snapshot_digest) != json!(request.expected_snapshot_digest)
-            || json!(current.lifecycle_version) != json!(request.expected_lifecycle_version)
+        if self.mismatch(&identity.workspace_identity()?).is_none()
+            && !draft.has_required_unit_selection()
         {
-            Some("draft_changed")
-        } else if json!(current.base) != json!(request.expected_base) {
-            Some("base_changed")
-        } else {
-            None
-        };
-        let selected = draft.has_required_unit_selection();
-        if refusal.is_none() && !selected {
             let command = ReconciliationCommand::automatic(
                 self.profile,
                 draft_id,
@@ -276,7 +264,9 @@ impl Accept {
         let Some(workspace) = self.current(client, flag, wait)? else {
             return Ok(WorkspaceOutcome::DraftNotFound);
         };
-        Ok(match refusal {
+        // The workspace comes from a later read, so it is checked again: a
+        // write between the two reads must not reach the retried Accept.
+        Ok(match self.mismatch(&workspace.draft) {
             Some("not_open") => WorkspaceOutcome::NotOpen { workspace },
             Some("draft_changed") => WorkspaceOutcome::DraftChanged {
                 workspace: Some(workspace),
@@ -284,6 +274,22 @@ impl Accept {
             Some(_) => WorkspaceOutcome::BaseChanged { workspace },
             None => WorkspaceOutcome::Ready { workspace },
         })
+    }
+
+    /// Node's `prepareForApply` checks of a draft against the request.
+    fn mismatch(&self, draft: &DraftIdentity) -> Option<&'static str> {
+        let request = &self.request;
+        if draft.state != "open" {
+            Some("not_open")
+        } else if json!(draft.snapshot_digest) != json!(request.expected_snapshot_digest)
+            || json!(draft.lifecycle_version) != json!(request.expected_lifecycle_version)
+        {
+            Some("draft_changed")
+        } else if json!(draft.base) != json!(request.expected_base) {
+            Some("base_changed")
+        } else {
+            None
+        }
     }
 
     /// Node's `applyResult` through `sendFailure`, and its receipt body.

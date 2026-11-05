@@ -1,7 +1,9 @@
 //! Printer-host reads in the Rust-only runtime (GRE-360, GRE-1044). The
 //! `pp-api` routes resolve a printer through storage's fleet and integration
 //! settings and read Moonraker and PrusaLink hosts through the gateway's drivers. Every read is
-//! user-initiated and read-only: no upload, start, retry or Checkoff change.
+//! user-initiated and read-only: no upload, start or Checkoff change. The only
+//! resend is PrusaLink's single Digest resend after a 401 (see
+//! `pp_gateway::printer_host`).
 use pp_api::printer_host::{Answer, Capabilities, HostAnswer, PrinterHostPort};
 use pp_gateway::printer_host::{HostReads, HostTarget};
 use pp_storage::{

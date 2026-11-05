@@ -22,7 +22,7 @@
   },
   "devDependencies": {
     "typescript": "^6.0.3",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vitest": "^4.1.12"
   },
   "description": "Shared Print Partner API types and contracts."

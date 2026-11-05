@@ -36,12 +36,12 @@
     "@radix-ui/react-tooltip": "^1.4.1",
     "@sentry/react": "^10.76.2",
     "@tailwindcss/vite": "^4.3.1",
-    "@tanstack/react-query": "^5.104.3",
+    "@tanstack/react-query": "^5.104.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "jszip": "^3.10.2",
-    "lucide-react": "^1.59.0",
+    "lucide-react": "^1.61.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.4",
@@ -65,7 +65,7 @@
     "tailwindcss": "^4.3.1",
     "tw-animate-css": "^1.4.0",
     "typescript": "^6.0.3",
-    "vite": "^8.3.4",
+    "vite": "^8.3.5",
     "vitest": "^4.1.12"
   },
   "description": "Print Partner React SPA — desk loop UI, spine navigation, plate export, and Progress checkoff."

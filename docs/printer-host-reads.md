@@ -11,7 +11,7 @@ With the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD` exactly `1` or
 
 The `files` and `cameras` routes return the same errors as Node: 400 for an invalid storage path, 404 for an unknown printer, 409 `Printer is not linked to a host`, 503 `Printer host is unavailable`, and 502 with the driver's message when the printer request fails. `files` answers 501 `Printer host does not support file browsing` for a host type this runtime cannot read. The connection test answers 501 for those types, and `{ok: false, message: "Unknown integration type: <type>"}` for a type Node has no adapter for. Storage that cannot answer within 500 ms gives 503 `Printer settings are unavailable`.
 
-Node's per-route budgets apply, one window per route per minute: capabilities 120, files 60, cameras 60, connection test 5. Over budget, a route answers 429 with `Retry-After` and never reaches the printer.
+Node's per-route budgets apply, one window per route per minute: capabilities 120, files 60, cameras 60, connection test 5. As in Node, the root and `/api/v1` registrations each keep their own windows. Over budget, a route answers 429 with `Retry-After` and never reaches the printer.
 
 ## How it works
 

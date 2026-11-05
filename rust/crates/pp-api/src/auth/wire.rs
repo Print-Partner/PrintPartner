@@ -122,6 +122,26 @@ pub(super) fn set_cookie(
         },
     );
 }
+/// Schema-only marker for a member a response may omit but never sends as
+/// null, unless `T` itself is nullable.
+#[cfg(feature = "codegen")]
+pub(crate) struct Omittable<T>(std::marker::PhantomData<T>);
+#[cfg(feature = "codegen")]
+impl<T: schemars::JsonSchema> schemars::JsonSchema for Omittable<T> {
+    fn schema_name() -> String {
+        format!("Omittable_{}", T::schema_name())
+    }
+    fn is_referenceable() -> bool {
+        false
+    }
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        T::json_schema(generator)
+    }
+    fn _schemars_private_is_option() -> bool {
+        true
+    }
+}
+
 /// `GET /health` body.
 #[derive(Debug, serde::Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
@@ -129,24 +149,32 @@ pub(crate) struct Health {
     pub ok: bool,
     pub authentication_required: bool,
     pub authenticated: bool,
-    #[cfg_attr(
-        feature = "codegen",
-        schemars(with = "pp_storage::build_graph::wire::RequiredNullable<String>")
-    )]
+    /// The six members below are Rust's own: Node's `/health` omits them, so
+    /// the generated schema marks them optional and a client decodes either body.
+    #[cfg_attr(feature = "codegen", schemars(with = "Omittable<Option<String>>"))]
     pub degraded_detail: Option<&'static str>,
     pub capabilities: Vec<&'static str>,
     pub multi_user: bool,
+    #[cfg_attr(feature = "codegen", schemars(with = "Omittable<bool>"))]
     pub single_user_auth: bool,
+    #[cfg_attr(feature = "codegen", schemars(with = "Omittable<bool>"))]
     pub single_user_setup_required: bool,
     pub registration_open: bool,
+    #[cfg_attr(feature = "codegen", schemars(with = "Omittable<bool>"))]
     pub owner_mapping_required: bool,
+    #[cfg_attr(feature = "codegen", schemars(with = "Omittable<bool>"))]
     pub github_oauth_configured: bool,
+    #[cfg_attr(feature = "codegen", schemars(with = "Omittable<bool>"))]
     pub discord_oauth_configured: bool,
     /// Each Module's effective state. The Rust-only runtime sends it, every
     /// Module `setting_unreadable` when storage cannot be read in time. Node
     /// and the other Rust auth routers omit it, so the schema marks it optional.
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "Omittable<Vec<pp_storage::features::modules::ModuleStatus>>")
+    )]
     pub modules: Option<Vec<pp_storage::features::modules::ModuleStatus>>,
 }
 pub(super) fn json_response(value: Value) -> Response {

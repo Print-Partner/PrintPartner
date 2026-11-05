@@ -71,9 +71,12 @@ test("a descriptor table missing a key value is refused", () => {
   assert.throws(() => generate(changed), /must list every/);
 });
 
-// Members Rust omits when empty: RFC 9457 problem members, and Health's `modules`,
-// which Node and the other Rust routers do not send.
-const optionalMembers = { Problem: new Set(["code", "detail", "errors"]), Health: new Set(["modules"]) };
+// Members a body may omit: RFC 9457 problem members, `modules` (Rust-only runtime), and
+// the Health members Node's `/health` never sends.
+const optionalMembers = {
+  Problem: new Set(["code", "detail", "errors"]),
+  Health: new Set(["modules", "degraded_detail", "single_user_auth", "single_user_setup_required", "owner_mapping_required", "github_oauth_configured", "discord_oauth_configured"]),
+};
 
 for (const fixture of document.fixtures) {
   test(`${fixture.dto} ${fixture.name}: agrees with Rust and round-trips`, () => {
@@ -107,6 +110,16 @@ for (const fixture of document.fixtures) {
   });
 }
 
+test("Health decodes Node's captured /health bodies and Rust-only bodies with and without modules", () => {
+  const nodeCases = JSON.parse(readFileSync(new URL("../../../fixtures/parity/auth-health/node.json", import.meta.url), "utf8")).cases.filter((entry) => entry.node.status === 200);
+  assert(nodeCases.length > 0);
+  for (const entry of nodeCases) assert.equal(dtoSchemas.Health.safeParse(entry.node.body).success, true, entry.name);
+  const rust = document.fixtures.filter((fixture) => fixture.dto === "Health");
+  for (const name of ["ready", "node-mode-no-modules", "modules-unreadable"]) assert(rust.some((fixture) => fixture.name === name), name);
+  const unreadable = rust.find((fixture) => fixture.name === "modules-unreadable").value;
+  assert(unreadable.modules.length === 5 && unreadable.modules.every((module) => module.reason === "setting_unreadable"));
+});
+
 test("hand edits and stray files fail the check without cargo", () => {
   const copy = mkdtempSync(join(tmpdir(), "pp-rust-client-edit-"));
   try {
@@ -125,7 +138,7 @@ test("hand edits and stray files fail the check without cargo", () => {
 
 test("a changed Rust schema is drift", () => {
   const changed = JSON.parse(JSON.stringify(document));
-  changed.dtos.Health.required = changed.dtos.Health.required.filter((key) => key !== "degraded_detail");
+  changed.dtos.Health.required = changed.dtos.Health.required.filter((key) => key !== "ok");
   assert.throws(() => compare(generate(changed)), /drift from Rust/);
   const unsupported = JSON.parse(JSON.stringify(document));
   unsupported.dtos.Health.properties.ok.format = "float";

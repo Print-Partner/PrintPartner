@@ -149,8 +149,11 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   never depends on settings storage and the UI's 8-second poll keeps showing
   the server as reachable. Treat `setting_unreadable` as "unknown, try
   again", not as the user's choice; the next request reads storage again.
-  `modules` is optional in the generated `healthSchema`: Node-mode and
-  other Rust routers omit it. Plan overrides do not change
+  `modules` is optional in the generated `healthSchema`, as are the six
+  members Node's `/health` never sends (`degraded_detail`, `single_user_auth`,
+  `single_user_setup_required`, `owner_mapping_required`,
+  `github_oauth_configured`, `discord_oauth_configured`), so one schema decodes
+  both Node's body and the Rust-only body. Plan overrides do not change
   this list. Other Rust auth routers omit `modules`, so their body still
   matches Node's, and Node-mode `/health` comes from Node unchanged.
 

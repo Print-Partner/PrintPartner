@@ -614,6 +614,8 @@ impl WriterOwner {
             }),
             changed: Condvar::new(),
             capacity: limits.queued_writes,
+            #[cfg(feature = "desktop_rebuild")]
+            domain_events: event_feed,
             job_admission: Mutex::new(None),
             #[cfg(feature = "desktop_rebuild")]
             orphaned_source_leases: Mutex::new(Vec::new()),
@@ -623,8 +625,6 @@ impl WriterOwner {
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             #[cfg(feature = "desktop_rebuild")]
             import_quota: Mutex::new(None),
-            #[cfg(feature = "desktop_rebuild")]
-            domain_events: event_feed,
         });
         let worker = shared.clone();
         let mut catalog_state = catalog::State::new(lease.data_dir().to_owned());

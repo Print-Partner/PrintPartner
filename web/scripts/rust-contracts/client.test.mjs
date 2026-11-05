@@ -106,6 +106,7 @@ test("a descriptor table missing a key value is refused", () => {
 const optionalMembers = {
   Problem: new Set(["code", "detail", "errors"]),
   Health: new Set(["modules", "degraded_detail", "single_user_auth", "single_user_setup_required", "owner_mapping_required", "github_oauth_configured", "discord_oauth_configured"]),
+  VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
 };
 
 for (const fixture of document.fixtures) {
@@ -129,7 +130,8 @@ for (const fixture of document.fixtures) {
         if (strict) assert.equal(extended.success, false, `${where}: request must reject unknown keys`);
         else assert.deepEqual(extended.data, fixture.value, `${where}: response must strip unknown keys`);
       }
-      const optional = path.length === 1 && optionalMembers[fixture.dto]?.has(path[0]);
+      const member = path.map((key) => (/^\d+$/.test(key) ? "*" : key)).join(".");
+      const optional = optionalMembers[fixture.dto]?.has(member);
       if (path.length > 0 && !/^\d+$/.test(path.at(-1)) && !optional && !shape.entry) {
         // Every covered field is required: omitted is never the same as null.
         rejects(() => undefined, "omitted field accepted");

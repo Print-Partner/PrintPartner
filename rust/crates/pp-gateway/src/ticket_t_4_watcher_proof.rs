@@ -1,5 +1,5 @@
 #![cfg(test)]
-//! GRE-449 / GRE-335: the Rust-only gateway polls the hosts `pp-core` reads
+//! GRE-449 / GRE-335 / GRE-364: the Rust-only gateway polls the hosts `pp-core` reads
 //! from storage, answers the status route from the watchers and never reaches
 //! Node. Recorded Moonraker bodies replay from loopback simulators.
 use super::*;
@@ -300,5 +300,54 @@ async fn ticket_t_4_watcher_proof_rust_only_https_host_reports_offline() {
             "message": pp_drivers::moonraker::HTTPS_UNAVAILABLE})
     );
     assert_eq!(gateway.compat_forwards(), 0);
+    gateway.stop().await.unwrap();
+}
+
+/// GRE-364: a wake reconciles against the stored hosts as they are now. The
+/// host moved (a network change) while asleep; the asleep status answers
+/// unavailable instead of a stale value, and only the new address is polled.
+#[tokio::test]
+async fn ticket_t_25_wake_reconciles_hosts_changed_during_sleep() {
+    let before = RecordedPrinter::start(vec![(200, SUCCESS)]).unwrap();
+    let after = RecordedPrinter::start(vec![(200, ERROR)]).unwrap();
+    let hosts = Hosts(Arc::new(Mutex::new(Ok(vec![moonraker(
+        "m1",
+        before.url(),
+    )]))));
+    let (gateway, cookie, _root) = started(&hosts).await;
+    let observations = gateway.printer_observations();
+    until("first status", || {
+        state_is(&gateway, &cookie, "m1", "printing")
+    })
+    .await;
+
+    let monitoring = gateway.monitoring_control();
+    monitoring.suspend().await;
+    assert!(observations.all().is_empty());
+    assert_eq!(
+        status(&gateway, Some(&cookie), "m1", "GET").await.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an asleep host is not shown with a stale status"
+    );
+    hosts.set(Ok(vec![moonraker("m1", after.url())]));
+    let asleep = before.calls();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(before.calls(), asleep, "nothing polls while asleep");
+    assert_eq!(after.calls(), 0, "nothing polls while asleep");
+
+    monitoring.resume();
+    until("reconciled status", || {
+        state_is(&gateway, &cookie, "m1", "error")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        before.calls(),
+        asleep,
+        "the old address is never polled again"
+    );
+    assert_eq!(gateway.compat_forwards(), 0);
+    only_status_gets(&before);
+    only_status_gets(&after);
     gateway.stop().await.unwrap();
 }

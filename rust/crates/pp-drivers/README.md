@@ -12,7 +12,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Not responsible for
 
-- **Send authority.** This crate runs a request when called; it never decides that a print should be sent. A printer send needs an explicit user action, admitted outside this crate: `pp-storage` owns admitted queue and effect records and `pp-core` runs the workers. No Rust production code calls `upload_file` today; only this crate's tests do, against local simulators. Never call it against a real printer to test something. Each upload request is sent once; when `UploadResult::outcome_unknown` is set, reconcile the printer state instead of resending.
+- **Send authority.** This crate runs a request when called; it never decides that a print should be sent. A printer send needs an explicit user action, admitted outside this crate: `pp-storage` owns admitted queue and effect records and `pp-core` runs the workers. No Rust production code calls `upload_file` today (the printer-host routes use only the read methods); only this crate's tests do, against local simulators. Never call it against a real printer to test something. Each upload request is sent once; when `UploadResult::outcome_unknown` is set, reconcile the printer state instead of resending.
 - Queue, effect, deduction and delivery records, and any SQL: `pp-storage`.
 - Watcher lifetime and snapshot intake: `pp-gateway` holds `Watchers` and answers `/api/v1/integrations/:id/status` today; the target owner is `pp-core`, which also runs workers.
 - DNS, address policy, deadlines and body limits: `pp-net`.
@@ -29,12 +29,12 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `digest` | `parse_www_authenticate`, `authorization`, `cnonce`: RFC 7616 MD5 and MD5-sess, `qop=auth`. |
 | `farm_filament` (`desktop_rebuild`) | `printer_filament_status`, `slot_filament_status`, `host_reports_filament_runout`, `SlotState`, `LOW_FILAMENT_THRESHOLD_G`. Pure; inventory comes through a `SpoolLookup` closure. |
 
-`pp-gateway` uses `moonraker`. No binaries.
+`pp-gateway` uses `moonraker`, and `moonraker_driver`'s read methods for the Rust-only printer-host routes. No binaries.
 
 ## Effects and flags
 
 - Network: HTTP to printer hosts through `HttpGuard`. HTTPS is refused and redirects are not followed; replies are capped at 2 MiB.
-- DNS: `Watchers::new` uses `SystemResolver`, a 5 s request deadline and a 2 s poll interval.
+- DNS: `Watchers::new` uses `SystemResolver`, a 5 s request deadline and a 2 s poll interval. Each delay after a poll (the interval, or the failure backoff capped at 60 s) is cut by up to 20% at random, so hosts started together after a wake or a network change drift apart; no delay grows past its bound.
 - Tokio: `Watchers` spawns one polling task per enabled plain-HTTP host, up to `MAX_HOSTS`.
 - Files: `UploadSource::Path` reads the file to upload.
 - No SQLite, env vars or child processes.
@@ -48,7 +48,7 @@ Cargo features:
 - `tests/ticket_t_4_watcher_proof.rs`, `tests/ticket_t_4_watcher_proof_parity.rs`: Moonraker pollers and the shared status corpus in `fixtures/drivers/moonraker`.
 - `tests/ticket_t_21_moonraker_driver.rs`, `tests/ticket_t_21_moonraker_upload.rs`: replay `fixtures/drivers/moonraker/driver`, including lost-connection uploads.
 - `tests/ticket_t_22_prusalink.rs`, `tests/ticket_t_22_prusalink_reads.rs`: replay `fixtures/drivers/prusalink` through a loopback simulator.
-- Unit tests in `src/moonraker.rs`, `src/moonraker_driver.rs` and `src/farm_filament.rs`.
+- Unit tests in `src/moonraker.rs`, `src/moonraker_driver.rs` and `src/farm_filament.rs`. `ticket_t_25_*` in `src/moonraker.rs` prove the watcher lifecycle (GRE-364): one joined worker per enabled host across replace, remove and stop; jitter bounds; offline, idle and stopped kept apart; reconnect after refused connections; and a lagging transitions reader bounded at `TRANSITION_CAPACITY` while publishing never waits. `pp-gateway`'s `ticket_t_25_wake_reconciles_hosts_changed_during_sleep` covers sleep and wake.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-drivers

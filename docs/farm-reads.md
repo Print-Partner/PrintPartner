@@ -96,11 +96,20 @@ read as cleared. Otherwise it is
 - `CheckoffResult`: `id`, `profile_id`, `printer_id`, `integration_id`,
   `filename`, `state` (`watching`, `awaiting_verify`, `host_failed`,
   `dismissed`, `verified`; Node's legacy `applied` reads as `verified`),
-  `host_outcome`, `unit_count`, `resolved_unit_count`, `created_at`,
-  `completed_at`, `applied_at`. Every stored result, in stored order. As in
+  `host_outcome`, `unit_count`, `resolved_unit_count`, `units`,
+  `resolved_units`, `created_at`, `completed_at`, `applied_at`. Every stored result, in stored order. As in
   Node, a missing `host_outcome` reads `success` for verified and awaiting
   results and `failed` for `host_failed`, and a missing `completed_at` reads
   `applied_at`.
+  `units` lists each stored unit with a whole positive `part_id` and a
+  non-negative `unit_index`, in stored order, with `part_filename` from the
+  tenant's `parts` row read in the same transaction (null when the Part is
+  gone or its file name is empty). `resolved_units` lists each stored decision
+  with a valid unit and a `result` of `confirmed` or `rejected`. Entries that
+  fail those checks are left out, never guessed; `unit_count` and
+  `resolved_unit_count` still count the stored lists. These are what
+  `POST /printer-checkoff/verify-batch` decides, so a client can build a burst
+  and show what it will mark ([Checkoff bursts](desktop-rebuild.md#checkoff-bursts-gre-1090)).
 - `UnmatchedPrint`: open prints only (not claimed, not dismissed) that no
   watching, awaiting or verified result matches by integration and
   case-insensitive basename, as Node's `filterLinkedUnattributedPrints`

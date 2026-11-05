@@ -47,12 +47,16 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/printer-checkoff` | | `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | | `UnmatchedPrintList` |
 | `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
+| `POST /api/v2/printer-checkoff/verify-batch` | `VerifyBatchRequest` | `VerifyBatchReceipt` |
+| `POST /api/v2/printer-checkoff/verify-batch/undo` | `UndoBatchRequest` | `UndoBatchReceipt` |
 | `GET /api/v2/printer-send-queue` | | `SendQueue` |
 | `GET /api/v2/farm-log` (query `cursor`, `limit`) | | `FarmLogPage` |
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |
 | `GET /health` | | `Health` (`modules` is always present in Rust-only mode; other Rust auth routers and Node omit it) |
 
 `PrinterState` (execution, bed-clear and display state as separate fields) is each `FarmPrinter`'s `state`. `PrinterDisplayDescriptor` has no route; its table is `printerDisplayDescriptors`. The farm routes are documented in [Farm reads](../../../docs/farm-reads.md).
+
+The Checkoff burst types (`pp_storage::checkoff_progress::wire`) are the subset the replacement UI sends and reads. The routes parse a JSON value and accept more (imported-extra `additional_decisions`, JavaScript-style coercion), and a receipt carries more fields, such as each bed's stored link, which the generated schema strips. A `UnitDecision` with `result: "rejected"` needs `reason` (one of the ten `RejectReason` values) or the route answers 400; `reason` and `note` may be omitted on a confirmed unit. `checkoff_bursts_http` parses the served receipts into these types and records a rejection with its reason through the mounted route.
 
 `Problem` is the body of every error any covered route returns, served as `application/problem+json`. Its `type` is a `z.enum` of the stable problem URNs and `errors` holds at most 16 field errors. Route-specific extension members, such as a draft conflict's `workspace`, are stripped by `z.object`. See [Problem responses](../../../docs/problem-responses.md).
 

@@ -30,6 +30,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `catalog` | `admit_catalog_routes(CatalogHttpConfig, Arc<Mutex<WriterOwner>>)`: Sources, import rules, STL naming. |
 | `accepted` | `accepted_router(AcceptedHttpConfig, ReadClient)`: Checkoff and Part assembled units. `AcceptedHttpConfig::with_stock(Arc<dyn InventoryReader>)` adds `/plans/{id}/filament-shortfalls`; the caller supplies the Spoolman reader. |
 | `history` | `history_router(AcceptedHttpConfig, HistoryClient)`: paged Build history at `/plans/{id}/history` and `/api/v2/plans/{id}/history`. |
+| `planning` | `planning_router(AcceptedHttpConfig, PlanningClient)`: `/plans/{id}/build-planning` and `/plans/{id}/decisions` at `/`, `/api/v1` and `/api/v2`, with Node's data ([Build planning and decisions](../../../docs/build-planning.md)). |
 | `workflow` | `workflow_router(AcceptedHttpConfig, WorkflowClient)`: `/plans/{id}/workflow` at `/`, `/api/v1`, `/api/v2`, and the task feed at `/api/v1/tasks` and `/api/v2/tasks` ([Build workflow](../../../docs/build-workflow.md)). |
 | `admin` | `admin_router(AdminHttpConfig, ReadClient, AdminFiles)`: legal pages and custom filaments. |
 | `jobs` | `jobs_router(JobsHttpConfig, AtomicJobClient)`: job list/read and `/ws/jobs/{id}`. |

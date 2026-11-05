@@ -2,7 +2,8 @@
 // fake core holding 10,000 Builds, then in WebKitGTK (the Linux release webview) and
 // Chromium (Blink, as in WebView2) records the time from navigation to the first and the
 // last row, and the delay from each Down or End key to the next painted frame. It fails
-// when a row is missing or focus lands on the wrong row. There is no approved latency
+// when a row is missing, next actions never load, or focus lands on the wrong row. There
+// is no approved latency
 // budget, so the timings are recorded, not judged. A missing engine prints SKIP and the
 // run exits 77; a SKIP is not a pass. Run `npm run build` first.
 import { log } from "node:console";

@@ -149,7 +149,8 @@ GET   /api/v1/tasks
 
 The Rust API serves these reads only with `desktop_rebuild` on. The workflow
 returns a Build's stages and next action with its reason and target; the task
-feed returns every open Build's next action, most urgent first. MCP
+feed returns every open Build's next action, most urgent first, and lists
+Builds it could not read under `unavailable`. MCP
 `get_build_workflow` returns the same workflow body.
 [Build workflow and task feed](build-workflow.md) describes the rules.
 

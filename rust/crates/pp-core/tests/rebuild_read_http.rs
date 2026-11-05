@@ -561,7 +561,8 @@ mod with_feature {
             )
             .await;
         assert_eq!((status, &by_key), (200, &workflow));
-        let mcp = mcp_workflow(&server, &bearer).await;
+        let mcp = mcp_workflow(&server, &bearer, json!(1)).await;
+        assert_eq!(mcp_workflow(&server, &bearer, json!(1.0)).await, mcp);
 
         // Compare the three answers to each other, not to written copies.
         for field in ["kind", "reason", "target"] {
@@ -616,9 +617,9 @@ mod with_feature {
         shutdown(owner, directory);
     }
 
-    /// Calls MCP `get_build_workflow` for Build 1 with an API key and returns
-    /// the workflow it answered.
-    async fn mcp_workflow(server: &Server, bearer: &str) -> Value {
+    /// Calls MCP `get_build_workflow` for Build `plan_id` with an API key and
+    /// returns the workflow it answered.
+    async fn mcp_workflow(server: &Server, bearer: &str, plan_id: Value) -> Value {
         let post = |body: Value, session: Option<String>| {
             let mut request = server
                 .client
@@ -657,7 +658,7 @@ mod with_feature {
         initialized.text().await.unwrap();
         let body = post(
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-                "name": "get_build_workflow", "arguments": {"plan_id": 1}}}),
+                "name": "get_build_workflow", "arguments": {"plan_id": plan_id}}}),
             Some(session.clone()),
         )
         .await

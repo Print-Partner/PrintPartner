@@ -684,7 +684,9 @@ fn next(f: &Facts) -> NextAction {
             n,
         );
     }
-    let mut a = if c.printer_links == 0 && p.plate_state == PlateState::NotStarted {
+    let mut a = if c.printer_links == 0
+        && matches!(p.plate_state, PlateState::NotStarted | PlateState::Ready)
+    {
         action(
             CheckOffManually,
             StageId::Checkoff,

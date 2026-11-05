@@ -223,7 +223,15 @@ impl ProductMcp {
         };
         let Some(id) = arguments
             .get("plan_id")
-            .and_then(Value::as_u64)
+            .and_then(|id| {
+                id.as_u64().or_else(|| {
+                    id.as_f64()
+                        .filter(|id| {
+                            id.fract() == 0.0 && *id >= 1.0 && *id <= 9_007_199_254_740_991.0
+                        })
+                        .map(|id| id as u64)
+                })
+            })
             .and_then(|id| PositiveId::new(id).ok())
         else {
             return error("plan_id required");

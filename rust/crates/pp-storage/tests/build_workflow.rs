@@ -10,7 +10,10 @@ use pp_storage::{
     read_model::{
         Credential,
         build_workflow::{BuildInputs, Outcome, Request, TaskFeed, WorkflowInputs},
-        workflow::{ActionKind, StageId, StatusKind, Stock, Target, Workspace},
+        workflow::{
+            self, Accepted, ActionKind, Build, Checkoff, Facts, PlateState, Production, Sources,
+            StageId, StatusKind, Stock, Target, Working, Workspace,
+        },
     },
 };
 use std::{
@@ -316,4 +319,82 @@ fn build_workflow_reads_authenticate_before_answering() {
             Outcome::MissingBuild
         ));
     }
+}
+
+#[test]
+fn build_workflow_task_feed_reports_an_unreadable_build() {
+    let f = Fixture::new();
+    f.sql("INSERT INTO build_profiles (tenant_id,name) VALUES ('default','Healthy order');");
+    let healthy = f.workspace(Inputs::default(), 2);
+    // Corrupt Build 1's Plan history past its immutability triggers.
+    let db = rusqlite::Connection::open(f.root.join("print-partner.db")).unwrap();
+    let drops: String = db
+        .query_row(
+            "SELECT group_concat('DROP TRIGGER \"' || name || '\";', '') FROM sqlite_master WHERE type='trigger' AND tbl_name='plan_revisions'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(db);
+    f.sql(&drops);
+    f.sql("UPDATE plan_revisions SET parent_revision_id=id WHERE profile_id=1");
+    let feed = f.tasks(Inputs::default());
+    assert_eq!(feed.tasks.len(), 1);
+    assert_eq!(feed.tasks[0].plan_id, 2);
+    assert_eq!(feed.tasks[0].next_action, healthy.next_action);
+    assert_eq!(feed.unavailable.len(), 1);
+    assert_eq!(feed.unavailable[0].plan_id, 1);
+    assert!(!feed.unavailable[0].reason.is_empty());
+    assert!(
+        f.read(
+            Inputs::default(),
+            SESSION,
+            Request::Build(PositiveId::new(1).ok())
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn build_workflow_prepared_plates_without_printer_link_are_manual_checkoff() {
+    let facts = |plate_state, printer_links| Facts {
+        build: Build {
+            id: 1,
+            name: "Order".into(),
+        },
+        sources: Sources::Ready { attached_count: 1 },
+        accepted_plan: Accepted::Ready {
+            revision_id: 1,
+            plan_version: 1,
+            total_units: 3,
+            remaining_units: 2,
+        },
+        working_plan: Working::None,
+        production: Production {
+            plate_state,
+            queued_jobs: 0,
+            sending_jobs: 0,
+            printing_jobs: 0,
+            failed_jobs: 0,
+        },
+        checkoff: Checkoff {
+            awaiting_verification: 0,
+            failed_verifications: 0,
+            printer_links,
+        },
+        stock: Stock::NotReady,
+    };
+    let kind = |plate_state, printer_links| {
+        workflow::resolve(&facts(plate_state, printer_links))
+            .unwrap()
+            .next_action
+            .kind
+    };
+    assert_eq!(kind(PlateState::Ready, 0), ActionKind::CheckOffManually);
+    assert_eq!(
+        kind(PlateState::NotStarted, 0),
+        ActionKind::CheckOffManually
+    );
+    assert_eq!(kind(PlateState::Ready, 1), ActionKind::PrepareProduction);
+    assert_eq!(kind(PlateState::Stale, 0), ActionKind::PrepareProduction);
 }

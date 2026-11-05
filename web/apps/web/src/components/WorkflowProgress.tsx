@@ -49,7 +49,7 @@ function statusDotClass(stage: WorkflowStage, active: boolean): string {
 
 /** Outstanding task count for a stage, used as the mobile badge number. */
 function stageTaskCount(stage: WorkflowStage): number {
-  return "task_count" in stage.status ? stage.status.task_count : 0;
+  return "task_count" in stage.status ? (stage.status.task_count ?? 0) : 0;
 }
 
 function stageAriaLabel(stage: WorkflowStage): string {

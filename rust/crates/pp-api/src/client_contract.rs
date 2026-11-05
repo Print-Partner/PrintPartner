@@ -149,7 +149,7 @@ mod codegen {
             SnapshotNote, SpoolImpact, StockImpact, UnitChanges, UnitRef, Unmappable,
         },
         read_model::{
-            build_workflow::{TaskFeed, rank},
+            build_workflow::{TaskFeed, UnavailableBuild, rank},
             workflow::{
                 self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Stock,
                 Working, Workspace as BuildWorkflow,
@@ -800,9 +800,21 @@ mod codegen {
                 .cloned()
                 .zip([None, due, None, due])
                 .collect(),
+            vec![UnavailableBuild {
+                plan_id: 9,
+                build_name: "Damaged order".into(),
+                reason: "Build pointer is invalid".into(),
+            }],
         );
         cases.push(served("TaskFeed", "ranked", feed)?);
-        cases.push(served("TaskFeed", "empty", TaskFeed { tasks: vec![] })?);
+        cases.push(served(
+            "TaskFeed",
+            "empty",
+            TaskFeed {
+                tasks: vec![],
+                unavailable: vec![],
+            },
+        )?);
         for (index, value) in workflows.into_iter().enumerate() {
             cases.push(served("BuildWorkflow", &format!("variant-{index}"), value)?);
         }

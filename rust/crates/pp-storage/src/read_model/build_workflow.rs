@@ -93,12 +93,24 @@ pub struct Task {
     pub next_action: NextAction,
 }
 
+/// An open Build whose stored data failed a check, so it has no next action.
+/// The rest of the feed still answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct UnavailableBuild {
+    pub plan_id: i64,
+    pub build_name: String,
+    pub reason: String,
+}
+
 /// The body of `GET /api/v1/tasks`. Builds whose every unit is checked off
 /// have no task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct TaskFeed {
     pub tasks: Vec<Task>,
+    /// Open Builds that could not be read, in id order.
+    pub unavailable: Vec<UnavailableBuild>,
 }
 
 #[derive(Debug)]
@@ -124,9 +136,10 @@ pub(crate) struct Command {
     cancelled: Arc<AtomicBool>,
 }
 
-/// The caller's tenant and the facts of each Build read, in id order. `None`
-/// when the requested Build does not exist.
-pub(crate) type Read = Option<(String, Vec<Facts>)>;
+/// The caller's tenant, the facts of each Build read and the task feed's
+/// unreadable Builds, in id order. `None` when the requested Build does not
+/// exist.
+pub(crate) type Read = Option<(String, Vec<Facts>, Vec<UnavailableBuild>)>;
 
 impl WriterOwner {
     pub fn build_workflow(
@@ -168,7 +181,7 @@ impl WorkflowClient {
             },
             reply,
         })?;
-        let Some((tenant, facts)) = read else {
+        let Some((tenant, facts, unavailable)) = read else {
             return Ok(Outcome::MissingBuild);
         };
         let mut resolved = Vec::with_capacity(facts.len());
@@ -184,14 +197,17 @@ impl WorkflowClient {
                     .ok_or_else(|| anyhow!("Build workflow missing"))?
                     .0,
             )),
-            Request::Tasks => Outcome::Tasks(rank(resolved)),
+            Request::Tasks => Outcome::Tasks(rank(resolved, unavailable)),
         })
     }
 }
 
 /// Orders open Builds: work blocked on the user first, then the earliest due
 /// date, then Builds without one, then Build id. Completed Builds drop out.
-pub fn rank(resolved: Vec<(Workspace, Option<time::Date>)>) -> TaskFeed {
+pub fn rank(
+    resolved: Vec<(Workspace, Option<time::Date>)>,
+    unavailable: Vec<UnavailableBuild>,
+) -> TaskFeed {
     let mut ranked: Vec<_> = resolved
         .into_iter()
         .filter(|(workspace, _)| workspace.next_action.kind != ActionKind::ViewCompletedBuild)
@@ -217,6 +233,7 @@ pub fn rank(resolved: Vec<(Workspace, Option<time::Date>)>) -> TaskFeed {
     ranked.sort_by_key(|(key, _)| *key);
     TaskFeed {
         tasks: ranked.into_iter().map(|(_, task)| task).collect(),
+        unavailable,
     }
 }
 
@@ -229,20 +246,22 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
         Request::Build(None) => Vec::new(),
         Request::Build(Some(build)) => tx
             .query_row(
-                "SELECT id FROM build_profiles WHERE tenant_id=?1 AND id=?2",
+                "SELECT id,name FROM build_profiles WHERE tenant_id=?1 AND id=?2",
                 params![tenant, i64::try_from(build.get())?],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
             .into_iter()
             .collect(),
         Request::Tasks => {
             let mut statement = tx.prepare(
-                "SELECT id FROM build_profiles WHERE tenant_id=?1 AND archived_at IS NULL ORDER BY id LIMIT ?2",
+                "SELECT id,name FROM build_profiles WHERE tenant_id=?1 AND archived_at IS NULL ORDER BY id LIMIT ?2",
             )?;
             let ids = statement
-                .query_map(params![tenant, MAX_BUILDS as i64 + 1], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<i64>>>()?;
+                .query_map(params![tenant, MAX_BUILDS as i64 + 1], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<(i64, String)>>>()?;
             ensure!(ids.len() <= MAX_BUILDS, Failure::TooManyBuilds);
             ids
         }
@@ -252,14 +271,35 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
         return Ok(None);
     }
     let mut facts = Vec::with_capacity(ids.len());
-    for id in ids {
+    let mut unavailable = Vec::new();
+    for (id, name) in ids {
         ensure!(!cancelled(), "Cancelled before admission");
         let mut budget = graph::Budget::default();
         let accepted = super::accepted_read(&tx, &tenant, id, &command.repos, &mut budget)?;
-        let captured = context::capture(&tx, &tenant, id, &accepted, &mut budget)?
-            .ok_or_else(|| anyhow!("Build context missing"))?;
-        facts.push(captured.facts);
+        match context::capture(&tx, &tenant, id, &accepted, &mut budget) {
+            Ok(captured) => {
+                facts.push(
+                    captured
+                        .ok_or_else(|| anyhow!("Build context missing"))?
+                        .facts,
+                );
+            }
+            Err(error)
+                if command.request == Request::Tasks
+                    && !matches!(
+                        error.downcast_ref::<crate::build_graph::Failure>(),
+                        Some(crate::build_graph::Failure::BudgetExhausted { .. })
+                    ) =>
+            {
+                unavailable.push(UnavailableBuild {
+                    plan_id: id,
+                    build_name: name,
+                    reason: error.to_string(),
+                });
+            }
+            Err(error) => return Err(error),
+        }
     }
     tx.commit()?;
-    Ok(Some((tenant, facts)))
+    Ok(Some((tenant, facts, unavailable)))
 }

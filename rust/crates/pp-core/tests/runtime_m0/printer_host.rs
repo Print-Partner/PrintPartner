@@ -84,6 +84,10 @@ fn seed(data: &Path, url: &str) {
     );
 }
 
+async fn get(origin: &str, cookie: &str, path: String) -> (StatusCode, Value) {
+    call(origin, Some(cookie), "GET", &path).await
+}
+
 async fn call(origin: &str, cookie: Option<&str>, method: &str, path: &str) -> (StatusCode, Value) {
     let (code, _, body) = request(origin, path, method, cookie, None, None, None).await;
     (code, serde_json::from_slice(&body).unwrap_or_default())
@@ -155,10 +159,7 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
 /// Capabilities and print-file browse for every linked, unlinked and
 /// unported printer, at the root and under `/api/v1`.
 async fn capabilities_and_files(origin: &str, cookie: &str, oracle: &Value) {
-    let get = |path: String| {
-        let (origin, cookie) = (origin.to_owned(), cookie.to_owned());
-        async move { call(&origin, Some(&cookie), "GET", &path).await }
-    };
+    let get = |path: String| get(origin, cookie, path);
 
     let all = json!({"files": true, "cameras": true, "status": true});
     let none = json!({"files": false, "cameras": false, "status": false});
@@ -222,10 +223,7 @@ async fn capabilities_and_files(origin: &str, cookie: &str, oracle: &Value) {
 
 /// Cameras and the connection test.
 async fn cameras_and_test(origin: &str, cookie: &str, oracle: &Value) {
-    let get = |path: String| {
-        let (origin, cookie) = (origin.to_owned(), cookie.to_owned());
-        async move { call(&origin, Some(&cookie), "GET", &path).await }
-    };
+    let get = |path: String| get(origin, cookie, path);
     let cameras = get("/printers/p-moon/cameras".into()).await;
     assert_eq!(
         cameras,

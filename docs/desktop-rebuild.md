@@ -136,6 +136,13 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   increasing sequence, heartbeats every 15 seconds, and resume by sequence.
   It writes nothing and never polls a printer. See
   [Printer stream](printer-stream.md).
+
+  ```sh
+  cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
+    --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+    -E 'test(ticket_t_4_watcher_proof)'
+  ```
+
 - Printer-host reads (GRE-360, GRE-1044): `GET /printers/{id}/capabilities`,
   `/files` and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are
@@ -146,8 +153,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 
   ```sh
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
-    --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
-    -E 'test(ticket_t_4_watcher_proof)'
+    --features pp-core/desktop_rebuild,pp-api/desktop_rebuild \
+    -E 'test(ticket_t_21) | test(ticket_t_22)'
   ```
 
 - The gateway listener is loopback only and passes the peer address to the

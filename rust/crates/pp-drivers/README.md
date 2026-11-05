@@ -47,8 +47,7 @@ Cargo features:
 
 - `tests/ticket_t_4_watcher_proof.rs`, `tests/ticket_t_4_watcher_proof_parity.rs`: Moonraker pollers and the shared status corpus in `fixtures/drivers/moonraker`.
 - `tests/ticket_t_21_moonraker_driver.rs`, `tests/ticket_t_21_moonraker_upload.rs`: replay `fixtures/drivers/moonraker/driver`, including lost-connection uploads.
-- `tests/ticket_t_22_prusalink.rs`, `tests/ticket_t_22_prusalink_reads.rs`: replay `fixtures/drivers/prusalink` through a loopback simulator.
-- `tests/ticket_t_22_prusalink_streams.rs`: downloads, snapshots, 8 MiB listings and the `object_list` prefix against a Digest-checking simulator.
+- `tests/ticket_t_22_prusalink.rs`, `tests/ticket_t_22_prusalink_reads.rs`: replay `fixtures/drivers/prusalink` through a loopback simulator. The reads file also covers downloads, snapshots, 8 MiB listings and the `object_list` prefix (GRE-1044).
 - Unit tests in `src/moonraker.rs`, `src/moonraker_driver.rs` and `src/farm_filament.rs`.
 
 ```sh

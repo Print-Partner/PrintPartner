@@ -12,6 +12,7 @@ stream, `GET /ws/printers`, is GRE-1014 and is not part of these routes.
 | `GET /api/v2/printers` | `{printers: FarmPrinter[]}` | `listPrinters`, `FarmPrinterList` |
 | `GET /api/v2/printer-checkoff` | `{results: CheckoffResult[]}` | `listPrinterCheckoff`, `CheckoffResultList` |
 | `GET /api/v2/printer-checkoff/unattributed` | `{prints: UnmatchedPrint[]}` | `listUnmatchedPrints`, `UnmatchedPrintList` |
+| `GET /api/v2/printer-checkoff/unattributed/suggestions` | `{suggestions: MatchSuggestion[]}` | `listMatchSuggestions`, `MatchSuggestionList` |
 | `GET /api/v2/printer-send-queue` | `{items: QueuedSend[]}` | `readSendQueue`, `SendQueue` |
 
 ## Composition and admission
@@ -109,10 +110,58 @@ read as cleared. Otherwise it is
   `wait_for_idle`, `unit_count`, `created_at`, `updated_at`. The artifact path
   and error text stay server-side. Every stored item, in stored order.
 
+## Match suggestions
+
+`GET /api/v2/printer-checkoff/unattributed/suggestions` (GRE-1091) returns one
+`MatchSuggestion` per print `/unattributed` lists, in the same order. It
+reads the farm settings plus the open (not archived) Builds' included part
+files, the Required units the prints name, each Build's current accepted
+Plates and the file names of checked-off print jobs, in the same deferred
+transaction. It writes nothing, and no job, timer or other route confirms a
+suggestion: the operator claims a print through Checkoff (GRE-1169). The
+launcher test checks that production rows and settings are value-identical
+after the read.
+
+Each row has `print_id`, `printer_id`, `filename`, `completed_at`,
+`confidence`, `starts_checked`, `build` (`{id, name}` or `null`), `plate`
+(`{plate_id, ordinal}` or `null`) and `evidence`:
+
+- `file_name.build_ids`: open Builds whose stored Checkoff results, send queue
+  items or checked-off print jobs used the same file name (trimmed basename,
+  case-insensitive).
+- `object_list`: `object_count`; `unit_token_count`, the objects whose name
+  carries a Required-unit token (`ppu_` and 32 lowercase hex digits, which
+  Print Partner writes into every exported object name);
+  `unit_build_ids`, the open Builds owning those tokens; and
+  `part_build_ids`, the open Builds whose part files match every object as
+  `pp_domain::gcode_objects` matches them, computed only when no object
+  carries a token.
+- `time_window`: `start` (72 hours before completion), `end` (the completion)
+  and the open Builds with a result or send to the same printer created in
+  that window; `null` when `completed_at` does not parse.
+- `basis`: which of `unit_tokens`, `object_list`, `file_name` and
+  `time_window` support the suggested Build; empty for `none`.
+
+| Confidence | Rule |
+| --- | --- |
+| `exact` | Every object carries a token, every token belongs to the same open Build, and the tokens are exactly the units of one Plate in that Build's current accepted layout |
+| `likely` | Tokens name one open Build but do not make a whole Plate; or, with no tokens, the object list matches exactly one Build's part files; or, with no objects, the file name names exactly one Build. When the object list matches several Builds, the file name and then the time window may leave one |
+| `none` | Tokens name more than one Build or none, objects match no Build, the evidence ties, or only the time window points anywhere |
+
+`plate` is set for `exact`, for `likely` when exactly one current Plate holds
+every token, and for a tokenless `likely` when exactly one current Plate has
+the same object names (without token or slicer suffix, counted with copies).
+
+`starts_checked` is `true` only for `exact`. A Match prints review starts
+`likely` and `none` rows unchecked. Accuracy on the real 18-print backlog has
+not been hand-counted yet (GRE-1091 MCH-02), so no confidence is treated as
+safe to confirm without the operator.
+
 ## Tests
 
 ```sh
 cargo test --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --lib read_model::farm
+cargo test --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test match_suggestions
 cargo test --manifest-path rust/Cargo.toml -p pp-drivers --lib farm_reads
 cargo test --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild --test runtime_m0 farm_reads
 cargo test --manifest-path rust/Cargo.toml -p pp-core --features desktop_rebuild --lib client_routes_match_registrations

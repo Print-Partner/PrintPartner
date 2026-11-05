@@ -126,6 +126,11 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   execution and bed-clear facts, last-heard time and distinct not-set-up,
   manual and unreachable reasons. They write nothing. See
   [Farm reads](farm-reads.md).
+- Match suggestions (GRE-1091):
+  `GET /api/v2/printer-checkoff/unattributed/suggestions` proposes a Build and
+  Plate for each unmatched print with confidence `exact`, `likely` or `none`
+  and the evidence used. It is a read; nothing confirms a suggestion. See
+  [Match suggestions](farm-reads.md#match-suggestions).
 
   ```sh
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \

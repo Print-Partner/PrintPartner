@@ -297,7 +297,14 @@ impl HttpGuard {
         let written = AtomicBool::new(false);
         let key = key_header(api_key);
         let headers = with_key(&key, &[]);
-        let request = self.send("GET", url, &headers, None, Empty::<Bytes>::new(), &written);
+        let empty = Empty::<Bytes>::new();
+        let request = async {
+            self.reply(
+                self.open("GET", url, &headers, None, empty, &written)
+                    .await?,
+            )
+            .await
+        };
         self.bounded(self.deadline, request).await
     }
 
@@ -367,12 +374,24 @@ impl HttpGuard {
                     failed: failed.clone(),
                 };
                 let header = Some((body.content_type, body.length));
-                let request = self.send(method, url, &headers, header, reader, &written);
+                let request = async {
+                    self.reply(
+                        self.open(method, url, &headers, header, reader, &written)
+                            .await?,
+                    )
+                    .await
+                };
                 self.bounded(deadline, request).await
             }
             None => {
                 let empty = Empty::<Bytes>::new();
-                let request = self.send(method, url, &headers, None, empty, &written);
+                let request = async {
+                    self.reply(
+                        self.open(method, url, &headers, None, empty, &written)
+                            .await?,
+                    )
+                    .await
+                };
                 self.bounded(deadline, request).await
             }
         };
@@ -415,23 +434,12 @@ impl HttpGuard {
         result
     }
 
-    /// `written` turns true just before the request is handed to the connection.
-    async fn send<B>(
+    /// Buffers an opened reply under `max_body`; the connection lives until
+    /// the body is read.
+    async fn reply(
         &self,
-        method: &str,
-        url: &str,
-        headers: &[(&str, &str)],
-        content: Option<(String, u64)>,
-        body: B,
-        written: &AtomicBool,
-    ) -> Result<HttpReply>
-    where
-        B: Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    {
-        let (response, _connection) = self
-            .open(method, url, headers, content, body, written)
-            .await?;
+        (response, _connection): (axum::http::Response<Incoming>, Connection),
+    ) -> Result<HttpReply> {
         let status = response.status().as_u16();
         let www_authenticate = challenges(&response);
         if response.status().is_redirection() {

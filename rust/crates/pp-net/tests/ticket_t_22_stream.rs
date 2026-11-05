@@ -1,13 +1,26 @@
 //! GRE-1044: streamed replies and the 8 MiB listing limit on `HttpGuard`,
 //! against loopback servers only.
 use pp_net::outbound::{
-    BodyDeadline, HttpGuard, IdleTimeout, MAX_BODY, MAX_LISTING_BODY, SystemResolver,
+    BodyDeadline, HttpGuard, IdleTimeout, MAX_BODY, MAX_LISTING_BODY, StreamReply, SystemResolver,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+
+/// A streamed GET with 5 s head and idle deadlines.
+async fn open(url: &str) -> StreamReply {
+    guard()
+        .stream(
+            url,
+            &[],
+            Duration::from_secs(5),
+            BodyDeadline::Idle(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap()
+}
 
 fn guard() -> HttpGuard {
     HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(5), MAX_BODY).unwrap()
@@ -20,12 +33,8 @@ async fn server(length: usize, sent: usize) -> String {
     let url = format!("http://{}/file", listener.local_addr().unwrap());
     tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
-        let mut head = Vec::new();
-        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
-            let mut chunk = [0; 1024];
-            let n = socket.read(&mut chunk).await.unwrap();
-            head.extend_from_slice(&chunk[..n]);
-        }
+        let mut head = [0; 1024];
+        let _ = socket.read(&mut head).await;
         let reply = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {length}\r\n\r\n"
         );
@@ -45,15 +54,7 @@ async fn server(length: usize, sent: usize) -> String {
 async fn ticket_t_22_stream_reads_a_body_past_the_buffered_limit() {
     let length = 3 * MAX_BODY;
     let url = server(length, length).await;
-    let mut reply = guard()
-        .stream(
-            &url,
-            &[],
-            Duration::from_secs(5),
-            BodyDeadline::Idle(Duration::from_secs(5)),
-        )
-        .await
-        .unwrap();
+    let mut reply = open(&url).await;
     assert_eq!(reply.status, 200);
     assert_eq!(reply.content_length, Some(length as u64));
     assert_eq!(
@@ -96,15 +97,7 @@ async fn ticket_t_22_stream_fails_after_the_idle_deadline() {
 #[tokio::test]
 async fn ticket_t_22_prefix_stops_reading_at_its_limit() {
     let url = server(4 * MAX_BODY, 4 * MAX_BODY).await;
-    let reply = guard()
-        .stream(
-            &url,
-            &[],
-            Duration::from_secs(5),
-            BodyDeadline::Idle(Duration::from_secs(5)),
-        )
-        .await
-        .unwrap();
+    let reply = open(&url).await;
     assert_eq!(reply.body.prefix(65_536).await.unwrap().len(), 65_536);
 }
 
@@ -161,10 +154,7 @@ content-length: 1000000
     url
 }
 
-async fn read_for(
-    mut reply: pp_net::outbound::StreamReply,
-    cap: Duration,
-) -> anyhow::Result<usize> {
+async fn read_for(mut reply: StreamReply, cap: Duration) -> anyhow::Result<usize> {
     let started = tokio::time::Instant::now();
     let mut total = 0;
     while started.elapsed() < cap {

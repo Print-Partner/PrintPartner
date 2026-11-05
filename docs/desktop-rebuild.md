@@ -154,19 +154,6 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
     -E 'binary(farm_log) | test(farm_log)'
   ```
 
-- Printer-host reads (GRE-360): `GET /printers/{id}/capabilities`, `/files`
-  and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
-  Moonraker host on demand through the gateway's driver. They are read-only on
-  the printer: no upload, print start or retry. PrusaLink and Bambu read as
-  having no capabilities until their drivers are composed. See
-  [Printer-host reads](printer-host-reads.md).
-
-  ```sh
-  cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
-    --features pp-core/desktop_rebuild,pp-api/desktop_rebuild \
-    -E 'test(ticket_t_21)'
-  ```
-
 - Printer-host reads (GRE-360, GRE-1044): `GET /printers/{id}/capabilities`,
   `/files` and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are

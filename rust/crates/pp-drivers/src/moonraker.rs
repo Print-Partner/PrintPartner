@@ -1346,7 +1346,6 @@ mod tests {
         })
         .await
         .expect("publishing waited on a subscriber");
-        assert_eq!(lagging.len(), TRANSITION_CAPACITY, "the channel is bounded");
         match lagging.try_recv() {
             Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                 assert_eq!(skipped, changes - TRANSITION_CAPACITY as u64)
@@ -1355,6 +1354,14 @@ mod tests {
         }
         let first = lagging.try_recv().unwrap();
         assert_eq!(first.seq, changes - TRANSITION_CAPACITY as u64 + 1);
+        let mut retained = 1;
+        while lagging.try_recv().is_ok() {
+            retained += 1;
+        }
+        assert_eq!(
+            retained, TRANSITION_CAPACITY,
+            "the channel keeps only its capacity"
+        );
         // The newest-only map coalesces every change into one wake-up.
         let newest = observations.changed().await.unwrap();
         assert_eq!(newest.len(), 1);

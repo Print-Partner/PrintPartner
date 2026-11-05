@@ -164,21 +164,49 @@ fn save_receipts(tx: &Transaction<'_>, tenant: &str, receipts: &[Value]) -> Resu
     save_list(tx, tenant, KEY, kept)
 }
 
-/// SHA-256 of everything a Checkoff can change: the stored links, every
-/// progress row and every print outcome and job id of the tenant. Undo
-/// compares it with the value the burst left.
-fn state_hash(tx: &Transaction<'_>, tenant: &str) -> Result<String> {
+/// SHA-256 of what can depend on the burst's units: every progress row of
+/// their Parts, the outcome rows that name one of them, and every stored link
+/// whose units or resolved units name one of them. Undo compares it with the
+/// value the burst left, so unrelated prints, jobs and links do not block it.
+fn state_hash(tx: &Transaction<'_>, tenant: &str, units: &BTreeSet<(i64, i64)>) -> Result<String> {
     let mut hasher = Sha256::new();
-    hasher.update(setting(tx, tenant, links::KEY)?.unwrap_or_default());
-    for sql in [
-        "SELECT part_id || ':' || unit_index || ':' || completed || ':' || assembled FROM print_progress WHERE tenant_id=?1 ORDER BY part_id, unit_index",
-        "SELECT CAST(id AS TEXT) FROM print_job_parts WHERE tenant_id=?1 ORDER BY id",
-        "SELECT CAST(id AS TEXT) FROM print_jobs WHERE tenant_id=?1 ORDER BY id",
-    ] {
-        hasher.update([0]);
-        let mut statement = tx.prepare(sql)?;
-        for row in statement.query_map(params![tenant], |r| r.get::<_, String>(0))? {
+    let parts: BTreeSet<i64> = units.iter().map(|&(part, _)| part).collect();
+    let mut progress = tx.prepare(
+        "SELECT unit_index || ':' || completed || ':' || assembled FROM print_progress
+         WHERE tenant_id=?1 AND part_id=?2 ORDER BY unit_index",
+    )?;
+    for part in &parts {
+        hasher.update(part.to_string());
+        for row in progress.query_map(params![tenant, part], |r| r.get::<_, String>(0))? {
             hasher.update(row?);
+            hasher.update([1]);
+        }
+    }
+    hasher.update([0]);
+    let mut outcomes = tx.prepare(
+        "SELECT CAST(id AS TEXT) FROM print_job_parts
+         WHERE tenant_id=?1 AND part_id=?2 AND unit_index=?3 ORDER BY id",
+    )?;
+    for &(part, index) in units {
+        for id in outcomes.query_map(params![tenant, part, index], |r| r.get::<_, String>(0))? {
+            hasher.update(id?);
+            hasher.update([1]);
+        }
+    }
+    hasher.update([0]);
+    let names = |link: &Value, key: &str| {
+        link[key].as_array().into_iter().flatten().any(|u| {
+            matches!(
+                (links::js_integer(u.get("part_id"), 1.0), links::js_integer(u.get("unit_index"), 0.0)),
+                (Some(part), Some(index)) if units.contains(&(part, index))
+            )
+        })
+    };
+    let stored = setting(tx, tenant, links::KEY)?
+        .and_then(|raw| serde_json::from_str::<Value>(&links::js_json(&raw)).ok());
+    for link in stored.iter().filter_map(Value::as_array).flatten() {
+        if names(link, "units") || names(link, "resolved_units") {
+            hasher.update(link.to_string());
             hasher.update([1]);
         }
     }
@@ -255,6 +283,7 @@ pub(super) fn verify_batch(
     let before = public_links(tx, tenant)?;
     let mut touched = Vec::new();
     let mut confirmed = BTreeSet::new();
+    let mut units = BTreeSet::new();
     for (_, bed) in &burst.beds {
         for d in field(bed, "decisions").as_array().into_iter().flatten() {
             let (Some(part), Some(index)) = (
@@ -263,6 +292,7 @@ pub(super) fn verify_batch(
             ) else {
                 continue;
             };
+            units.insert((part, index));
             if d.get("result").and_then(Value::as_str) == Some("confirmed") {
                 confirmed.insert((part, index));
             }
@@ -342,9 +372,10 @@ pub(super) fn verify_batch(
             "progress": progress,
             "outcomes": outcome_ids,
             "bases": bases(tx, tenant, &profiles, repos)?,
+            "units": units.iter().map(|&(part, index)| json!([part, index])).collect::<Vec<_>>(),
         },
     }));
-    let state = state_hash(tx, tenant)?;
+    let state = state_hash(tx, tenant, &units)?;
     if let Some(Value::Object(undo)) = receipts.last_mut().and_then(|r| r.get_mut("undo")) {
         undo.insert("state".into(), state.into());
     }
@@ -411,9 +442,15 @@ fn undo_conflict(
             "This Checkoff burst predates the undo state check and cannot be undone".into(),
         ));
     }
-    if undo["state"] != state_hash(tx, tenant)?.as_str() {
+    let units: BTreeSet<(i64, i64)> = undo["units"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|unit| Some((unit[0].as_i64()?, unit[1].as_i64()?)))
+        .collect();
+    if undo["state"] != state_hash(tx, tenant, &units)?.as_str() {
         return Ok(Some(
-            "Checkoff changed since this burst: a later verify, dismiss or progress change depends on it".into(),
+            "Checkoff changed since this burst: a later verify or progress change on its Parts depends on it".into(),
         ));
     }
     Ok(None)

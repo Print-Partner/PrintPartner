@@ -2626,11 +2626,13 @@ that still has its receipt returns the original receipt and writes nothing.
 Undo takes `{ "undo_token" }` and is a compensating write: it restores each
 link at its original position, the progress rows and the outcome rows the burst
 wrote. It refuses with 409 and a reason when any of them changed since, when
-the burst was already undone, and when anything else in the tenant's Checkoff
-changed after the burst: the burst stores the SHA-256 of the links setting, every
-progress row and every outcome and job id, and undo compares it. A later verify
-of another link that records a unit the burst printed, a later unit that filled
-from the burst's unit, or a dismiss elsewhere therefore blocks undo. A receipt
+the burst was already undone, and when anything that can depend on the burst's
+units changed after it: the burst stores the SHA-256 of every progress row of
+the Parts it decided, the outcome rows that name its units, and every stored link
+whose units or resolved units name them, and undo compares it. A later verify of
+another link that records a unit the burst printed, or a later unit that filled
+from the burst's unit, therefore blocks undo. Unrelated activity, such as a new
+print job, a new link, or a dismiss of a link without the burst's units, does not. A receipt
 without that hash (written before it existed) refuses with 409 instead of
 undoing on weaker checks. An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.

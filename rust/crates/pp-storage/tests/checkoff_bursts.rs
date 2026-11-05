@@ -254,7 +254,7 @@ fn verify_batch_undo_restores_the_prior_state_or_refuses_with_a_reason() {
 
 #[test]
 fn verify_batch_undo_refuses_after_a_later_checkoff_on_another_link() {
-    let later: [(&str, Value, Request); 3] = [
+    let later: [(&str, Value, Request); 2] = [
         (
             "a second link records the printed unit",
             json!([{ "link_id": "link-verify", "decisions": [confirm(1, 1)] }]),
@@ -269,13 +269,6 @@ fn verify_batch_undo_refuses_after_a_later_checkoff_on_another_link() {
                 body: json!({ "link_id": "link-burst", "decisions": [confirm(3, 1)] }),
             },
         ),
-        (
-            "another link is dismissed",
-            json!([{ "link_id": "link-verify", "decisions": [confirm(1, 1)] }]),
-            Request::Dismiss {
-                body: json!({ "link_id": "link-host-failed" }),
-            },
-        ),
     ];
     for (case, beds, request) in later {
         let fixture = Fixture::new();
@@ -287,7 +280,7 @@ fn verify_batch_undo_refuses_after_a_later_checkoff_on_another_link() {
         let rows = fixture.checkoff();
         assert_eq!(
             undo(&owner, &done["body"]["undo_token"]),
-            json!({ "status": 409, "body": { "detail": "Checkoff changed since this burst: a later verify, dismiss or progress change depends on it" } }),
+            json!({ "status": 409, "body": { "detail": "Checkoff changed since this burst: a later verify or progress change on its Parts depends on it" } }),
             "{case}"
         );
         assert_eq!(
@@ -297,6 +290,44 @@ fn verify_batch_undo_refuses_after_a_later_checkoff_on_another_link() {
         );
         owner.shutdown().unwrap();
     }
+}
+
+#[test]
+fn verify_batch_undo_ignores_later_activity_that_does_not_touch_its_parts() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let before = fixture.checkoff();
+    let done = batch(
+        &owner,
+        json!({ "idempotency_key": "k", "beds": [{ "link_id": "link-burst", "decisions": [confirm(2, 0)] }] }),
+    );
+    assert_eq!(done["status"], 200, "{done}");
+    let dismissed = apply(
+        &owner,
+        Request::Dismiss {
+            body: json!({ "link_id": "link-host-failed" }),
+        },
+    );
+    assert_eq!(dismissed["status"], 200);
+    fixture
+        .sql()
+        .execute(
+            "INSERT INTO print_jobs (id, tenant_id, profile_id, filename, status, at) VALUES ('unrelated-send', 'default', 1, 'other.gcode', 'printing', '2020-01-03T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+    let undone = undo(&owner, &done["body"]["undo_token"]);
+    assert_eq!(undone["status"], 200, "{undone}");
+    let after = fixture.checkoff();
+    assert_eq!(
+        after["progress"], before["progress"],
+        "Part 2 unit 0 is pending again"
+    );
+    assert_eq!(
+        after["parts"], before["parts"],
+        "the burst's outcome is gone"
+    );
+    owner.shutdown().unwrap();
 }
 
 #[test]

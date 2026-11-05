@@ -12,6 +12,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Defines `RustStatus`, which `/__runtime` reports for a runtime started with `Gateway::start_rust_only`. `pp-core` owns the sender.
 - Closes a connection when a write stays pending because the peer accepts no bytes for 30 seconds (`stall::WRITE_STALL`). A peer that stops reading while socket buffers still have room is not detected. At shutdown, `text/event-stream` product responses stop counting toward the drain as soon as draining begins.
 - Runs Moonraker status watchers from `pp_drivers::moonraker` and the request drain used at shutdown. With Node, watchers take hosts from Node's `/__desktop/moonraker-hosts` and the gateway answers cached statuses itself. In a Rust-only runtime they take hosts from the caller's `MoonrakerHosts` source, and an authenticated product route answers through `MoonrakerStatus`.
+- Runs on-demand Moonraker reads for the Rust-only runtime's printer-host routes (`printer_host::MoonrakerReads`: connection test, print-file browse, camera list) through `pp_drivers::moonraker_driver`. Read-only; no upload or print start.
 - Temporary ownership code (`ownership`): which runtime owns each operation participant, and the cutover record that moves one from Node to Rust.
 
 ## Not responsible for
@@ -28,6 +29,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `Gateway::start_rust_only(listener, assets, product, status, hosts)` | No Node child. `product` builds the Rust routes from a `MoonrakerStatus` lookup (`lookup(id)` returns `StatusLookup`: `Status`, `NotWatched`, `Unavailable`; `observations()` returns the `PrinterObservations` port while the gateway lives); `hosts` is the `MoonrakerHosts` snapshot source (`HostReadError::Unavailable` keeps pollers through the grace period, `Invalid` stops them). |
 | `Gateway` methods | `origin`, `take_launch_target`, `bootstrap_minter`, `monitoring_control`, `printer_observations`, `shutdown_requested`, `begin_drain`, `wait_idle`, `finish_drain`, `stop`. |
 | `LaunchTarget`, `BootstrapMinter`, `MonitoringControl`, `ShutdownRequested` | First sign-in URL, new browser links, watcher suspend/resume, logout-triggered shutdown. |
+| `printer_host::MoonrakerReads` | `new()` (8 s deadline, 2 MiB replies), `test`, `browse`, `cameras` for one `MoonrakerTarget` (`base_url`, `api_key`); JSON values in Node's shapes. Read-only. |
 | `MUTATION_DRAIN` | 5-second bound for in-flight mutations at shutdown. |
 | `ownership` | Source Sync admission: `admit_bundled_source_sync`, `boot_bundled_source_sync`, `Owner`, `AdmissionError`. |
 | `ownership::manifest` | `admit_bundled_manifest` builds the `OwnershipIndex` (`lookup`, `resources_for`, `admit_rollback`). |

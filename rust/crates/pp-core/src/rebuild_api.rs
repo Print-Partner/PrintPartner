@@ -165,8 +165,8 @@ pub fn router(
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
-/// Plan Checkoff, Build history, Build workflow and task feed, legal
-/// documents, custom filaments and key-only MCP) from one
+/// Plan Checkoff and Spoolman shortfalls, Build history, Build workflow and
+/// task feed, legal documents, custom filaments and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
 /// is off. Does not cut over production gateway ownership (GRE-593).
@@ -225,8 +225,10 @@ pub fn read_router(
         accepted_client.clone(),
         admin_files,
     );
+    // Spoolman shortfalls read inventory through pp-net's checked connections.
     let accepted = accepted_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+            .with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
         accepted_client,
     );
     let history = history_router(

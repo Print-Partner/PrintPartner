@@ -531,21 +531,13 @@ mod with_feature {
                 .unwrap()
                 .rebuild_auth_with_policy(policy, lifetimes)
                 .unwrap();
-            let outcome = tokio::task::spawn_blocking(move || {
-                auth.submit(
-                    pp_storage::auth::Request::CreateKey {
-                        session: Secret::new(SESSION.into()),
-                    },
-                    Arc::new(AtomicBool::new(false)),
-                    Duration::from_secs(2),
-                )
-                .unwrap()
-                .recv()
-                .unwrap()
-                .unwrap()
-            })
-            .await
-            .unwrap();
+            let session = Secret::new(SESSION.into());
+            let create = pp_storage::auth::Request::CreateKey { session };
+            let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let stop = Arc::new(AtomicBool::new(false));
+                auth.submit(create, stop, Duration::from_secs(2))?.recv()?
+            });
+            let outcome = outcome.await.unwrap().unwrap();
             let pp_storage::auth::Outcome::KeyCreated { key, .. } = outcome else {
                 panic!("API key creation");
             };

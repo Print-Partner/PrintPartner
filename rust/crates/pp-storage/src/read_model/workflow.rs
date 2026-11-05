@@ -316,8 +316,9 @@ fn active(kind: StatusKind, summary: impl Into<String>, n: u64) -> StageStatus {
         ..status(kind, summary)
     }
 }
-/// Every required unit of the Accepted Plan is checked off and no draft is
-/// open, so earlier Source changes are history rather than open work.
+/// Every required unit of the Accepted Plan is checked off and no draft with
+/// changes is open, so earlier Source changes are history rather than open
+/// work.
 fn finished(f: &Facts) -> bool {
     matches!(
         f.accepted_plan,
@@ -325,7 +326,14 @@ fn finished(f: &Facts) -> bool {
             remaining_units: 0,
             ..
         }
-    ) && matches!(f.working_plan, Working::None)
+    ) && matches!(
+        f.working_plan,
+        Working::None
+            | Working::Ready {
+                change_count: 0,
+                ..
+            }
+    )
 }
 fn source_status(f: &Facts) -> StageStatus {
     use StatusKind::*;
@@ -358,7 +366,7 @@ fn plan_status(f: &Facts) -> StageStatus {
     match &f.working_plan {
         Working::Ready {
             change_count: n, ..
-        } => status(
+        } if *n > 0 => status(
             Ready,
             format!("{n} Plan {} saved in a draft.", plural(*n, "change")),
         ),
@@ -372,7 +380,7 @@ fn plan_status(f: &Facts) -> StageStatus {
             "Open Plan to refresh its saved changes.",
             *issue_count,
         ),
-        Working::None => match &f.accepted_plan {
+        Working::None | Working::Ready { .. } => match &f.accepted_plan {
             Accepted::Ready { plan_version, .. } => {
                 status(Complete, format!("Plan revision {plan_version} saved."))
             }
@@ -623,7 +631,7 @@ fn next(f: &Facts) -> NextAction {
         Working::Ready {
             draft_id,
             change_count: n,
-        } => {
+        } if n > 0 => {
             return draft(
                 ReviewWorkingPlan,
                 "Review saved Plan changes",
@@ -636,7 +644,7 @@ fn next(f: &Facts) -> NextAction {
                 draft_id,
             );
         }
-        Working::None => {}
+        Working::None | Working::Ready { .. } => {}
     }
     let Accepted::Ready {
         remaining_units: remaining,

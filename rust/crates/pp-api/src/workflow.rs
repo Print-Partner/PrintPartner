@@ -52,15 +52,15 @@ async fn tasks(
     read(app, presented, Request::Tasks).await
 }
 
-async fn read(app: App, presented: PresentedCredential, request: Request) -> Response {
-    let client = app.client;
-    let read = app
-        .gate
-        .read(presented, move |credential, cancelled, wait| {
-            client.read(credential, request, cancelled, wait)
-        })
-        .await;
-    match read {
+async fn read(
+    App { gate, client }: App,
+    presented: PresentedCredential,
+    request: Request,
+) -> Response {
+    let outcome = gate.read(presented, move |credential, stop, wait| {
+        client.read(credential, request, stop, wait)
+    });
+    match outcome.await {
         Some(Ok(Outcome::Workspace(workspace))) => ok_json(&workspace),
         Some(Ok(Outcome::Tasks(feed))) => ok_json(&feed),
         Some(Ok(Outcome::MissingBuild)) => failure(StatusCode::NOT_FOUND, "Profile not found"),

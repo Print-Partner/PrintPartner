@@ -46,7 +46,11 @@ Sources changes, first Plan) with these replacement-product changes:
   Checkoff tab when its plates are not started or ready. Plates that are
   preparing, stale or failed keep `prepare_production`.
 - **Finished Builds stay quiet.** When every required unit is checked off and
-  no draft is open, changed Sources show as complete history, not stale work.
+  no draft with changes is open, changed Sources show as complete history, not
+  stale work. An autosaved draft with no changes that is still current with
+  the Accepted Plan (`Working::Ready`) counts as no draft for the next action,
+  the Plan stage and the Sources stage. A zero-change draft that is stale or
+  has unresolved choices still asks for a refresh or a decision.
   A confirmed bed (link `verified` or `applied`) is never attention.
 - **Stock shortfall** comes only from the adapter. `Stock::Ready{shortfalls>0}`
   makes `resolve_stock_shortfall` the next action ahead of Production;
@@ -65,8 +69,8 @@ no task. The rest sort by:
 2. Earliest due date, then Builds with no due date.
 3. Build id.
 
-`rank_reason` says why: "Needs attention now.", "Due 2026-11-10." or "No due
-date." The feed reads at most 500 open Builds and answers 500 past that rather
+`rank_reason` says why: "Needs attention now.", "Needs attention now. Due
+2026-11-10." (attention with a due date), "Due 2026-11-10." or "No due date." The feed reads at most 500 open Builds and answers 500 past that rather
 than rank a partial list.
 
 A Build whose stored data fails a check (for example a corrupt Plan history)

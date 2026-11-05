@@ -255,6 +255,67 @@ fn bases(
     Ok(out)
 }
 
+/// The coordinates a burst's decisions name, the ones it confirms, and the
+/// progress rows they had before the burst.
+struct Decided {
+    units: BTreeSet<(i64, i64)>,
+    confirmed: BTreeSet<(i64, i64)>,
+    touched: Vec<(i64, i64, (bool, bool))>,
+}
+
+fn decided(tx: &Transaction<'_>, tenant: &str, beds: &[(String, Value)]) -> Result<Decided> {
+    let mut out = Decided {
+        units: BTreeSet::new(),
+        confirmed: BTreeSet::new(),
+        touched: Vec::new(),
+    };
+    for (_, bed) in beds {
+        for d in field(bed, "decisions").as_array().into_iter().flatten() {
+            let (Some(part), Some(index)) = (
+                links::js_integer(d.get("part_id"), 1.0),
+                links::js_integer(d.get("unit_index"), 0.0),
+            ) else {
+                continue;
+            };
+            out.units.insert((part, index));
+            if d.get("result").and_then(Value::as_str) == Some("confirmed") {
+                out.confirmed.insert((part, index));
+            }
+            if let Some(row) = progress_row(tx, tenant, part, index)? {
+                out.touched.push((part, index, row));
+            }
+        }
+    }
+    out.touched.sort_unstable();
+    out.touched.dedup();
+    Ok(out)
+}
+
+/// The progress rows the burst changed, as they were before it.
+fn changed_progress(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    touched: Vec<(i64, i64, (bool, bool))>,
+) -> Result<Vec<Value>> {
+    let mut progress = Vec::new();
+    for (part, index, (completed, assembled)) in touched {
+        if progress_row(tx, tenant, part, index)? != Some((completed, assembled)) {
+            progress.push(json!({ "part_id": part, "unit_index": index, "completed": completed, "assembled": assembled }));
+        }
+    }
+    Ok(progress)
+}
+
+/// Each bed's link before and after the burst, with its place before it.
+fn undo_links(beds: &[(String, Value)], before: &[Value], after: &[Value]) -> Vec<Value> {
+    beds.iter()
+        .map(|(id, _)| {
+            let index = before.iter().position(|link| link["id"] == id.as_str());
+            json!({ "id": id, "index": index, "before": find(before, id), "after": find(after, id) })
+        })
+        .collect()
+}
+
 pub(super) fn verify_batch(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -281,28 +342,11 @@ pub(super) fn verify_batch(
         );
     }
     let before = public_links(tx, tenant)?;
-    let mut touched = Vec::new();
-    let mut confirmed = BTreeSet::new();
-    let mut units = BTreeSet::new();
-    for (_, bed) in &burst.beds {
-        for d in field(bed, "decisions").as_array().into_iter().flatten() {
-            let (Some(part), Some(index)) = (
-                links::js_integer(d.get("part_id"), 1.0),
-                links::js_integer(d.get("unit_index"), 0.0),
-            ) else {
-                continue;
-            };
-            units.insert((part, index));
-            if d.get("result").and_then(Value::as_str) == Some("confirmed") {
-                confirmed.insert((part, index));
-            }
-            if let Some(row) = progress_row(tx, tenant, part, index)? {
-                touched.push((part, index, row));
-            }
-        }
-    }
-    touched.sort_unstable();
-    touched.dedup();
+    let Decided {
+        units,
+        confirmed,
+        touched,
+    } = decided(tx, tenant, &burst.beds)?;
     let mut results = Vec::with_capacity(burst.beds.len());
     for (i, (id, bed)) in burst.beds.iter().enumerate() {
         match verify::verify(tx, tenant, id, bed, repos, &confirmed)? {
@@ -329,12 +373,7 @@ pub(super) fn verify_batch(
         }
     }
     let after = public_links(tx, tenant)?;
-    let mut progress = Vec::new();
-    for (part, index, (completed, assembled)) in touched {
-        if progress_row(tx, tenant, part, index)? != Some((completed, assembled)) {
-            progress.push(json!({ "part_id": part, "unit_index": index, "completed": completed, "assembled": assembled }));
-        }
-    }
+    let progress = changed_progress(tx, tenant, touched)?;
     let outcome_ids: Vec<Value> = results
         .iter()
         .flat_map(|r| r.3.iter().map(|o| o["id"].clone()))
@@ -343,14 +382,7 @@ pub(super) fn verify_batch(
         .iter()
         .filter_map(|r| r.0["profile_id"].as_i64())
         .collect();
-    let undo_links: Vec<Value> = burst
-        .beds
-        .iter()
-        .map(|(id, _)| {
-            let index = before.iter().position(|link| link["id"] == id.as_str());
-            json!({ "id": id, "index": index, "before": find(&before, id), "after": find(&after, id) })
-        })
-        .collect();
+    let undo_links = undo_links(&burst.beds, &before, &after);
     let token = format!("ppb_{}", hex::encode(rand::random::<[u8; 16]>()));
     let response = json!({
         "idempotency_key": burst.key,
@@ -361,6 +393,7 @@ pub(super) fn verify_batch(
             "link": link, "units_confirmed": confirmed, "units_rejected": rejected, "outcomes": outcomes,
         })).collect::<Vec<_>>(),
     });
+    let state = state_hash(tx, tenant, &units)?;
     receipts.push(json!({
         "idempotency_key": burst.key,
         "request_hash": burst.hash,
@@ -373,12 +406,9 @@ pub(super) fn verify_batch(
             "outcomes": outcome_ids,
             "bases": bases(tx, tenant, &profiles, repos)?,
             "units": units.iter().map(|&(part, index)| json!([part, index])).collect::<Vec<_>>(),
+            "state": state,
         },
     }));
-    let state = state_hash(tx, tenant, &units)?;
-    if let Some(Value::Object(undo)) = receipts.last_mut().and_then(|r| r.get_mut("undo")) {
-        undo.insert("state".into(), state.into());
-    }
     save_receipts(tx, tenant, &receipts)?;
     Ok(Ok(Response::ok(Body::Receipt(response))))
 }

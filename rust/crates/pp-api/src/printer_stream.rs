@@ -339,8 +339,13 @@ async fn pump(
                 }
             },
             _ = beat.tick() => {
-                if authenticate(app, presented.clone()).await.is_some() {
-                    return close(socket, 1008, "Authentication required").await;
+                if let Some(refused) = authenticate(app, presented.clone()).await {
+                    return match refused.status() {
+                        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                            close(socket, 1008, "Authentication required").await;
+                        }
+                        _ => close(socket, 1013, "Printer stream busy; resume with since").await,
+                    };
                 }
                 app.stream.heartbeat(last)
             }

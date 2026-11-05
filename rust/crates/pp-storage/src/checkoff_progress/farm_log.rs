@@ -179,6 +179,18 @@ fn decode(raw: &str) -> Option<(i128, String)> {
     Some((time, parts.next()?.to_owned()))
 }
 
+/// The id as it sorts within one time: a logged entry's sequence number is
+/// zero-padded so `checkoff_burst:10` sorts after `checkoff_burst:9`.
+fn tie_break(id: &str) -> String {
+    match id.rsplit_once(':') {
+        Some((kind, seq)) if [BURST, UNDO].contains(&kind) => match seq.parse::<u64>() {
+            Ok(seq) => format!("{kind}:{seq:020}"),
+            Err(_) => id.to_owned(),
+        },
+        _ => id.to_owned(),
+    }
+}
+
 /// Nanoseconds since the epoch, for ordering; an unparsable time sorts oldest.
 fn sort_time(at: &str) -> i128 {
     time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339)
@@ -369,24 +381,20 @@ fn held(stored: &[Value], id: &str) -> bool {
 /// One page, newest first. Only the page's bursts are checked for undo.
 pub(super) fn page(tx: &Transaction<'_>, tenant: &str, query: &Query, repos: &Path) -> Outcome {
     let stored = burst::load_list(tx, tenant, KEY)?;
-    let mut entries: Vec<(i128, FarmLogEntry)> = stored
+    let mut entries: Vec<((i128, String), FarmLogEntry)> = stored
         .iter()
         .filter_map(logged)
         .chain(sends(tx, tenant)?)
-        .map(|entry| (sort_time(&entry.at), entry))
+        .map(|entry| ((sort_time(&entry.at), tie_break(&entry.id)), entry))
         .collect();
-    entries.sort_by(|a, b| (b.0, &b.1.id).cmp(&(a.0, &a.1.id)));
-    let after = entries.into_iter().filter(|(time, entry)| {
-        query
-            .after
-            .as_ref()
-            .is_none_or(|(at, id)| (*time, &entry.id) < (*at, id))
-    });
-    let mut page: Vec<(i128, FarmLogEntry)> = after.take(query.limit + 1).collect();
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    let after = entries
+        .into_iter()
+        .filter(|(key, _)| query.after.as_ref().is_none_or(|after| key < after));
+    let mut page: Vec<((i128, String), FarmLogEntry)> = after.take(query.limit + 1).collect();
     let next_cursor = (page.len() > query.limit).then(|| {
         page.truncate(query.limit);
-        page.last()
-            .map(|(time, entry)| encode(&(*time, entry.id.clone())))
+        page.last().map(|(key, _)| encode(key))
     });
     let receipts = burst::load_receipts(tx, tenant)?;
     let mut out = Vec::with_capacity(page.len());

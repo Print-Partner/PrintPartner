@@ -180,6 +180,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         )
     },
     route(
+        "listMatchSuggestions",
+        "GET",
+        "/api/v2/printer-checkoff/unattributed/suggestions",
+        None,
+        "MatchSuggestionList",
+    ),
+    route(
         "readSendQueue",
         "GET",
         "/api/v2/printer-send-queue",
@@ -226,8 +233,10 @@ mod codegen {
             build_workflow::{TaskFeed, UnavailableBuild, rank},
             farm::{
                 CheckoffResult, CheckoffResultList, CheckoffResultState, FarmPrinter,
-                FarmPrinterList, HostOutcome, IntegrationKind, LoadedFilament, PrinterIntegration,
-                PrinterReason, QueuedSend, SendQueue, SendState, UnmatchedPrint,
+                FarmPrinterList, FileNameEvidence, HostOutcome, IntegrationKind, LoadedFilament,
+                MatchBasis, MatchConfidence, MatchEvidence, MatchSuggestion, MatchSuggestionList,
+                ObjectListEvidence, PrinterIntegration, PrinterReason, QueuedSend, SendQueue,
+                SendState, SuggestedBuild, SuggestedPlate, TimeWindowEvidence, UnmatchedPrint,
                 UnmatchedPrintList,
             },
             planning::{
@@ -298,6 +307,10 @@ mod codegen {
         schema(
             "UnmatchedPrintList",
             schemars::schema_for!(UnmatchedPrintList),
+        )?;
+        schema(
+            "MatchSuggestionList",
+            schemars::schema_for!(MatchSuggestionList),
         )?;
         schema("SendQueue", schemars::schema_for!(SendQueue))?;
         schema("FarmLogPage", schemars::schema_for!(FarmLogPage))?;
@@ -538,6 +551,61 @@ mod codegen {
             entries,
             next_cursor: Some("76310a310a78".into()),
         }
+    }
+
+    /// One suggestion per confidence, with every basis, filled and null.
+    fn match_suggestions() -> MatchSuggestionList {
+        let suggestions = [
+            (
+                MatchConfidence::Exact,
+                vec![MatchBasis::UnitTokens, MatchBasis::FileName],
+            ),
+            (
+                MatchConfidence::Likely,
+                vec![MatchBasis::ObjectList, MatchBasis::TimeWindow],
+            ),
+            (MatchConfidence::None, vec![]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (confidence, basis))| {
+            let filled = confidence != MatchConfidence::None;
+            MatchSuggestion {
+                print_id: format!("print-{index}"),
+                printer_id: "printer-0".into(),
+                filename: format!("{UNICODE}.gcode"),
+                completed_at: "2026-11-05T01:00:00.000Z".into(),
+                confidence,
+                starts_checked: confidence == MatchConfidence::Exact,
+                build: filled.then(|| SuggestedBuild {
+                    id: MAX_SAFE,
+                    name: UNICODE.into(),
+                }),
+                plate: (confidence == MatchConfidence::Exact).then(|| SuggestedPlate {
+                    plate_id: "plate_0123456789abcdef0123456789abcdef".into(),
+                    ordinal: 1,
+                }),
+                evidence: MatchEvidence {
+                    basis,
+                    file_name: FileNameEvidence {
+                        build_ids: filled.then_some(MAX_SAFE).into_iter().collect(),
+                    },
+                    object_list: ObjectListEvidence {
+                        object_count: u32::MAX,
+                        unit_token_count: 2,
+                        unit_build_ids: vec![1, MAX_SAFE],
+                        part_build_ids: vec![],
+                    },
+                    time_window: filled.then(|| TimeWindowEvidence {
+                        start: "2026-11-02T01:00:00.000Z".into(),
+                        end: "2026-11-05T01:00:00.000Z".into(),
+                        build_ids: vec![MAX_SAFE],
+                    }),
+                },
+            }
+        })
+        .collect();
+        MatchSuggestionList { suggestions }
     }
 
     /// Sorted, pretty JSON with a trailing newline.
@@ -1150,6 +1218,18 @@ mod codegen {
         )?);
         cases.push(served("CheckoffResultList", "every-state", results)?);
         cases.push(served("UnmatchedPrintList", "one", prints)?);
+        cases.push(served(
+            "MatchSuggestionList",
+            "every-confidence",
+            match_suggestions(),
+        )?);
+        cases.push(served(
+            "MatchSuggestionList",
+            "empty",
+            MatchSuggestionList {
+                suggestions: vec![],
+            },
+        )?);
         cases.push(served("SendQueue", "every-state", queue)?);
         let log = farm_log();
         for entry in &log.entries {

@@ -378,8 +378,17 @@ pub struct Farm {
     printers: Vec<StoredPrinter>,
     integrations: HashMap<String, StoredIntegration>,
     results: Vec<CheckoffResult>,
-    unmatched: Vec<UnmatchedPrint>,
+    unmatched: Vec<OpenPrint>,
     queue: Vec<QueuedSend>,
+    /// Read only for match suggestions.
+    library: Option<MatchLibrary>,
+}
+
+/// An open unmatched print with its raw object names.
+#[derive(Debug, Clone, PartialEq)]
+struct OpenPrint {
+    print: UnmatchedPrint,
+    objects: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -392,6 +401,7 @@ pub(crate) struct Command {
     credential: Credential,
     policy: auth::AuthPolicy,
     cancelled: Arc<AtomicBool>,
+    match_library: bool,
 }
 
 impl WriterOwner {
@@ -412,12 +422,34 @@ impl FarmClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<Farm> {
+        self.submit(credential, cancelled, wait, false)
+    }
+
+    /// [`Self::read`] plus the open Builds' parts, Required units, current
+    /// Plates and checked-off file names, for [`Farm::suggestions`].
+    pub fn read_for_suggestions(
+        &self,
+        credential: Credential,
+        cancelled: Arc<AtomicBool>,
+        wait: Duration,
+    ) -> Result<Farm> {
+        self.submit(credential, cancelled, wait, true)
+    }
+
+    fn submit(
+        &self,
+        credential: Credential,
+        cancelled: Arc<AtomicBool>,
+        wait: Duration,
+        match_library: bool,
+    ) -> Result<Farm> {
         let flag = cancelled.clone();
         super::submit_read(&self.shared, &flag, wait, |reply| Envelope::Farm {
             command: Command {
                 credential,
                 policy: self.policy,
                 cancelled,
+                match_library,
             },
             reply,
         })
@@ -432,13 +464,16 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let tenant = super::read_tenant(&tx, &command.credential, command.policy)?;
     let list = |key: &str| setting_list(&tx, &tenant, key);
-    let farm = Farm::parse(
+    let mut farm = Farm::parse(
         list("printer.fleet")?,
         list("integrations")?,
         list("printer.checkoff_links")?,
         list("printer.unattributed_prints")?,
         list("printer.send_queue")?,
     );
+    if command.match_library {
+        farm.library = Some(MatchLibrary::read(&tx, &tenant, &farm)?);
+    }
     tx.commit()?;
     Ok(farm)
 }
@@ -577,7 +612,7 @@ impl Farm {
         let mut open: Vec<_> = unmatched
             .iter()
             .filter_map(unmatched_print)
-            .filter(|print| {
+            .filter(|OpenPrint { print, .. }| {
                 let name = normalized_filename(&print.filename);
                 !linked.iter().any(|(integration, file)| {
                     *integration == print.integration_id && *file == name
@@ -624,6 +659,7 @@ impl Farm {
             results,
             unmatched: open,
             queue: queue.iter().filter_map(queued_send).collect(),
+            library: None,
         }
     }
 
@@ -635,8 +671,18 @@ impl Farm {
 
     pub fn unmatched(&self) -> UnmatchedPrintList {
         UnmatchedPrintList {
-            prints: self.unmatched.clone(),
+            prints: self
+                .unmatched
+                .iter()
+                .map(|open| open.print.clone())
+                .collect(),
         }
+    }
+
+    /// Match suggestions for the open unmatched prints; `None` unless the
+    /// farm was read with [`FarmClient::read_for_suggestions`].
+    pub fn suggestions(&self) -> Option<MatchSuggestionList> {
+        self.library.as_ref().map(|library| self.suggest(library))
     }
 
     pub fn send_queue(&self) -> SendQueue {
@@ -829,7 +875,12 @@ impl Farm {
                 CheckoffResultState::Watching | CheckoffResultState::Dismissed => {}
             }
         }
-        for print in self.unmatched.iter().filter(|p| p.printer_id == printer) {
+        for print in self
+            .unmatched
+            .iter()
+            .map(|open| &open.print)
+            .filter(|p| p.printer_id == printer)
+        {
             finished = finished.max(instant(Some(&print.completed_at)).or(Some(i128::MAX)));
         }
         if let Some(host) = host.filter(|host| host.state == HostState::Complete)
@@ -965,11 +1016,11 @@ fn result(value: &Value) -> Option<CheckoffResult> {
 }
 
 /// Open entries only: not claimed and not dismissed.
-fn unmatched_print(value: &Value) -> Option<UnmatchedPrint> {
+fn unmatched_print(value: &Value) -> Option<OpenPrint> {
     if text(value, "claimed_at").is_some() || value["dismissed"] == Value::Bool(true) {
         return None;
     }
-    Some(UnmatchedPrint {
+    let print = UnmatchedPrint {
         id: text(value, "id")?,
         printer_id: text(value, "printer_id")?,
         integration_id: text(value, "integration_id")?,
@@ -977,7 +1028,15 @@ fn unmatched_print(value: &Value) -> Option<UnmatchedPrint> {
         completed_at: text(value, "completed_at")?,
         object_count: count(&value["gcode_objects"]),
         candidate_count: count(&value["candidates"]),
-    })
+    };
+    let objects = value["gcode_objects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    Some(OpenPrint { print, objects })
 }
 
 /// Node's `parseItem`, without the artifact path and error text.
@@ -1004,6 +1063,13 @@ fn queued_send(value: &Value) -> Option<QueuedSend> {
         updated_at: text(value, "updated_at"),
     })
 }
+
+mod suggestions;
+pub use suggestions::{
+    FileNameEvidence, MatchBasis, MatchConfidence, MatchEvidence, MatchLibrary, MatchSuggestion,
+    MatchSuggestionList, ObjectListEvidence, SuggestedBuild, SuggestedPlate, TIME_WINDOW_HOURS,
+    TimeWindowEvidence,
+};
 
 #[cfg(test)]
 mod tests;

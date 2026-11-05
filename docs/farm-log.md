@@ -77,7 +77,11 @@ The burst and its undo run through `checkoff_progress`, so they write the
 `checkoff.progress_changed` domain events it already writes, one per changed
 Part, in the same transaction as the farm log entry (see
 [Domain events](domain-events.md)). The farm log adds no event type of its
-own, so a client reloads the log on those events.
+own, and not every new entry comes with an event: a burst that changes no
+Part (every unit rejected or already complete), an undo that only restores
+links and outcomes, and a send state change write none. A client that shows
+the log reloads it after its own burst or undo and on those events, and
+otherwise rereads it as it rereads the send queue.
 
 ## Paging
 
@@ -86,7 +90,9 @@ own, so a client reloads the log on those events.
 | `limit` | Entries per page, 1 to 200. Default 50. |
 | `cursor` | The previous page's `next_cursor`. |
 
-Entries sort by time, then id, both descending. The cursor holds the sort key
+Entries sort by time, then id, both descending; within one millisecond a
+logged entry's sequence number compares as a number, so `checkoff_burst:10`
+comes before `checkoff_burst:9`. The cursor holds the sort key
 of the page's last entry and the next page starts after it; `next_cursor` is
 `null` on the last page. A new entry has a newer time and sorts ahead of any
 cursor, so walking the pages shows each existing entry once. Other query

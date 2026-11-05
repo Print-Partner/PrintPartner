@@ -52,3 +52,10 @@ fn farm_log_held_names_only_kept_entries() {
     assert!(held(&stored, "checkoff_burst_undo:7"));
     assert!(!held(&stored, "checkoff_burst:1"));
 }
+
+#[test]
+fn farm_log_same_time_entries_sort_by_sequence_number() {
+    assert!(tie_break("checkoff_burst:10") > tie_break("checkoff_burst:9"));
+    assert!(tie_break("checkoff_burst_undo:10") > tie_break("checkoff_burst_undo:9"));
+    assert_eq!(tie_break("send:9"), "send:9");
+}

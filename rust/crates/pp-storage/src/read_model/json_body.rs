@@ -168,7 +168,7 @@ impl BuildRead {
 
 impl Batch {
     pub fn into_json_body(self) -> Result<AcceptedBatchJsonBody> {
-        let Self { builds } = self;
+        let Self { builds, .. } = self;
         let mut object = Object::default();
         object.raw("builds", &array(builds.iter().map(BuildRead::json_bytes))?);
         Ok(AcceptedBatchJsonBody(object.finish()))
@@ -229,6 +229,7 @@ mod tests {
                     context_error: None,
                 },
             ],
+            stock: None,
         }
     }
 

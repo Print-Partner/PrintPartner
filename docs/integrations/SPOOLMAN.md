@@ -52,6 +52,15 @@ When Plan feature controls are available, disabling Spoolman for a Plan hides it
 
 Importing a color preset while Spoolman is disabled for the Plan removes its Spoolman filament and spool references. Catalog colors and custom hex colors still import. If removing Spoolman references leaves a role without a color, the import skips that role and keeps its stored assignment. If access changes during an import, it may stop after saving some roles; the picker reloads those assignments.
 
+## Filament shortfalls
+
+The Rust core compares the grams a Build still needs with the grams Spoolman reports. It needs the Spoolman Module turned on; while it is off, the check reports the off reason and makes no Spoolman request.
+
+- **Grams needed come from past prints.** Print Partner divides each completed print job's measured filament by the units that job printed and averages the five most recent jobs for that Part. A job that printed several Parts splits its grams evenly over all of its units. A new Part shows grams needed as unknown until it has been printed once with measured filament.
+- **Print Partner does not record measured grams yet.** Printer checkoff stores each job without the filament it used, so today grams needed is always unknown (`grams_not_recorded`) and no shortfall is reported. The planned writer (GRE-1165) records the slicer's estimate when a job is sent and replaces it with the measured grams when the print finishes. Grams needed then shows its basis: `estimated` while any Part relies on an estimate, `measured` once all of them come from finished prints.
+- **Grams available come from Spoolman**, summed over the filament's unarchived spools. If Spoolman cannot be reached, does not know the filament, or a spool has no remaining weight, stock is unknown, not zero. The check reads plain `http://` Spoolman URLs only; an `https://` URL reads as unknown.
+- A shortfall is reported only when both numbers are known. Reading the check never reserves or deducts stock.
+
 ## Material deductions
 
 Print Partner can deduct material after a linked printer job reaches Checkoff and the user confirms the completed units.

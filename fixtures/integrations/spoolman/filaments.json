@@ -1,0 +1,24 @@
+[
+  {
+    "id": 2,
+    "registered": "2026-10-01T12:00:00Z",
+    "name": "Galaxy Black",
+    "vendor": { "id": 1, "name": "Prusament" },
+    "material": "PLA",
+    "density": 1.24,
+    "diameter": 1.75,
+    "weight": 1000,
+    "color_hex": "3D3E3D"
+  },
+  {
+    "id": 3,
+    "registered": "2026-10-01T12:00:00Z",
+    "name": "Orange",
+    "vendor": { "id": 2, "name": "Generic" },
+    "material": "PETG",
+    "density": 1.27,
+    "diameter": 1.75,
+    "weight": 1000,
+    "color_hex": "#F28C28"
+  }
+]

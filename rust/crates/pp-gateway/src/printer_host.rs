@@ -51,7 +51,9 @@ impl MoonrakerReads {
 
     /// One directory of the `gcodes` root as Node's `StorageListing`.
     pub async fn browse(&self, target: &MoonrakerTarget, path: &str) -> Result<Value> {
-        Ok(serde_json::to_value(self.driver(target).browse(path).await?)?)
+        Ok(serde_json::to_value(
+            self.driver(target).browse(path).await?,
+        )?)
     }
 
     /// The configured webcams as Node's `PrinterCamera` list.

@@ -145,15 +145,24 @@ pub fn integration(
     wait: Duration,
     id: &str,
 ) -> Result<Option<StoredIntegration>> {
-    Ok(find_integration(&setting(client, wait, INTEGRATIONS_KEY)?, id))
+    Ok(find_integration(
+        &setting(client, wait, INTEGRATIONS_KEY)?,
+        id,
+    ))
 }
 
 /// Resolve fleet printer `printer_id` to its linked integration.
-pub fn printer_link(client: &SettingsClient, wait: Duration, printer_id: &str) -> Result<PrinterLink> {
+pub fn printer_link(
+    client: &SettingsClient,
+    wait: Duration,
+    printer_id: &str,
+) -> Result<PrinterLink> {
     let reader = client.reader(wait)?;
     let read = |key: &str| -> Result<Value> {
         Ok(match reader.snapshot(TENANT, key)? {
-            SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap_or(Value::Null),
+            SettingSnapshot::Stored { value } => {
+                serde_json::from_str(&value).unwrap_or(Value::Null)
+            }
             SettingSnapshot::Missing => Value::Null,
         })
     };
@@ -309,5 +318,41 @@ mod tests {
             MAX_SNAPSHOT_IDS
         );
         assert_eq!(project(Some(&rows(MAX_SNAPSHOT_IDS + 1))), None);
+    }
+
+    #[test]
+    fn ticket_t_21_integration_lookup_reads_like_node() {
+        let items = json!([
+            null,
+            {"id": 7, "type": "moonraker"},
+            {"id": "moon", "type": "moonraker",
+             "config": {"baseUrl": "http://p.test", "apiKey": "k", "base_url": null}},
+            {"id": "moon", "type": "prusalink"},
+            {"id": "off", "type": "moonraker", "config": {"enabled": false}},
+            {"id": "odd", "type": 3, "config": "text"}
+        ]);
+        let moon = find_integration(&items, "moon").unwrap();
+        assert_eq!(
+            moon,
+            StoredIntegration {
+                id: "moon".into(),
+                kind: "moonraker".into(),
+                base_url: "http://p.test".into(),
+                api_key: Some("k".into()),
+                enabled: true,
+            },
+            "the first matching row wins, and a null field falls back to its alias"
+        );
+        assert!(!find_integration(&items, "off").unwrap().enabled);
+        let odd = find_integration(&items, "odd").unwrap();
+        assert_eq!((odd.kind.as_str(), odd.enabled), ("", true));
+        assert_eq!(
+            find_integration(&items, "7"),
+            None,
+            "Node matches string ids only"
+        );
+        assert_eq!(find_integration(&json!({"id": "moon"}), "moon"), None);
+        assert_eq!(js_string(&json!(7)).as_deref(), Some("7"));
+        assert_eq!(js_string(&Value::Null), None);
     }
 }

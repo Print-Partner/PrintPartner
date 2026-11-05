@@ -58,7 +58,9 @@ async fn linked<T>(settings: &SettingsClient, printer: String) -> Result<Host, H
     })
     .await;
     match link {
-        Ok(Ok(PrinterLink::Linked(integration))) => host(integration).ok_or(HostAnswer::Unavailable),
+        Ok(Ok(PrinterLink::Linked(integration))) => {
+            host(integration).ok_or(HostAnswer::Unavailable)
+        }
         Ok(Ok(PrinterLink::PrinterNotFound)) => Err(HostAnswer::NotFound),
         Ok(Ok(PrinterLink::NotLinked)) => Err(HostAnswer::NotLinked),
         Ok(Ok(PrinterLink::NotAvailable)) => Err(HostAnswer::Unavailable),
@@ -90,9 +92,10 @@ impl PrinterHostPort for StoredPrinterHosts {
         let (settings, reads) = (self.settings.clone(), self.reads.clone());
         Box::pin(async move {
             match linked(&settings, printer).await {
-                Ok(Host::Moonraker(target)) => {
-                    reads.browse(&target, &path).await.map_or_else(failed, HostAnswer::Ok)
-                }
+                Ok(Host::Moonraker(target)) => reads
+                    .browse(&target, &path)
+                    .await
+                    .map_or_else(failed, HostAnswer::Ok),
                 Ok(Host::Unported) => HostAnswer::Unsupported,
                 Err(answer) => answer,
             }
@@ -103,9 +106,10 @@ impl PrinterHostPort for StoredPrinterHosts {
         let (settings, reads) = (self.settings.clone(), self.reads.clone());
         Box::pin(async move {
             match linked(&settings, printer).await {
-                Ok(Host::Moonraker(target)) => {
-                    reads.cameras(&target).await.map_or_else(failed, HostAnswer::Ok)
-                }
+                Ok(Host::Moonraker(target)) => reads
+                    .cameras(&target)
+                    .await
+                    .map_or_else(failed, HostAnswer::Ok),
                 Ok(Host::Unported) => HostAnswer::Unsupported,
                 Err(answer) => answer,
             }

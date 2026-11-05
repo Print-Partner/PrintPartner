@@ -158,9 +158,10 @@ fn refusal<T>(answer: HostAnswer<T>, unsupported: impl FnOnce() -> Response) -> 
         HostAnswer::Ok(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
         HostAnswer::NotFound => failure(StatusCode::NOT_FOUND, "Printer not found"),
         HostAnswer::NotLinked => failure(StatusCode::CONFLICT, "Printer is not linked to a host"),
-        HostAnswer::Unavailable => {
-            failure(StatusCode::SERVICE_UNAVAILABLE, "Printer host is unavailable")
-        }
+        HostAnswer::Unavailable => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Printer host is unavailable",
+        ),
         HostAnswer::Unsupported => unsupported(),
         HostAnswer::Failed(detail) => failure(StatusCode::BAD_GATEWAY, &detail),
         HostAnswer::Busy => failure(
@@ -203,14 +204,12 @@ pub fn safe_storage_path(raw: &str) -> Option<String> {
 async fn files(
     State(app): State<App>,
     Path(id): Path<String>,
-    query: Option<Query<PathQuery>>,
+    Query(query): Query<PathQuery>,
 ) -> Response {
     if let Some(after) = app.windows.consume("files", FILES_LIMIT) {
         return throttled(after);
     }
-    let requested = query
-        .and_then(|Query(query)| query.path)
-        .unwrap_or_default();
+    let requested = query.path.unwrap_or_default();
     let requested = requested.trim();
     // No path, or an empty one, means the host's storage root.
     let path = if requested.is_empty() {
@@ -245,7 +244,9 @@ async fn cameras(State(app): State<App>, Path(id): Path<String>) -> Response {
         HostAnswer::Ok(cameras) => axum::Json(json!({ "cameras": cameras })).into_response(),
         // Camera controls appear only for capabilities the host can serve, so
         // a host without cameras reports none rather than failing.
-        other => refusal(other, || axum::Json(json!({ "cameras": [] })).into_response()),
+        other => refusal(other, || {
+            axum::Json(json!({ "cameras": [] })).into_response()
+        }),
     }
 }
 

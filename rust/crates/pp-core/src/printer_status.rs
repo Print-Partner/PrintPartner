@@ -3,6 +3,7 @@
 //! expose their cached statuses to the authenticated `pp-api` status route and
 //! farm reads. No adapter writes: monitoring never changes Checkoff or
 //! dispatches a send.
+use crate::printer_host::StoredPrinterHosts;
 use anyhow::Result;
 use axum::Router;
 use pp_api::{
@@ -13,7 +14,6 @@ use pp_api::{
     printer_status::{PrinterStatusPort, StatusLookup, printer_status_router},
     printer_stream::{HEARTBEAT, PrinterStream, printer_stream_router},
 };
-use crate::printer_host::StoredPrinterHosts;
 use pp_gateway::printer_host::MoonrakerReads;
 use pp_gateway::{
     HTTPS_UNAVAILABLE, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
@@ -248,7 +248,11 @@ impl StatusRoutes {
             self.client.clone(),
             Arc::new(WatchedStatus(status.clone())),
         )
-        .merge(printer_host_router(self.config, self.client, Arc::new(hosts)))
+        .merge(printer_host_router(
+            self.config,
+            self.client,
+            Arc::new(hosts),
+        ))
         .merge(farm_router(
             self.farm_config,
             self.farm.clone(),

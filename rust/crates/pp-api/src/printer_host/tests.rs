@@ -20,7 +20,10 @@ fn answer(printer: &str) -> HostAnswer<Value> {
 
 impl PrinterHostPort for Fake {
     fn capabilities(&self, printer: String) -> Answer<Capabilities> {
-        self.calls.lock().unwrap().push(format!("capabilities {printer}"));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("capabilities {printer}"));
         let answer = match answer(&printer) {
             HostAnswer::Ok(_) => HostAnswer::Ok(Capabilities {
                 files: true,
@@ -37,12 +40,18 @@ impl PrinterHostPort for Fake {
         Box::pin(async move { answer })
     }
     fn files(&self, printer: String, path: String) -> Answer<Value> {
-        self.calls.lock().unwrap().push(format!("files {printer} {path}"));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("files {printer} {path}"));
         let answer = answer(&printer);
         Box::pin(async move { answer })
     }
     fn cameras(&self, printer: String) -> Answer<Value> {
-        self.calls.lock().unwrap().push(format!("cameras {printer}"));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("cameras {printer}"));
         let answer = match answer(&printer) {
             HostAnswer::Ok(_) => HostAnswer::Ok(json!([{"id": "0", "name": "Bed"}])),
             other => other,
@@ -50,9 +59,14 @@ impl PrinterHostPort for Fake {
         Box::pin(async move { answer })
     }
     fn test(&self, integration: String) -> Answer<Value> {
-        self.calls.lock().unwrap().push(format!("test {integration}"));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("test {integration}"));
         let answer = match answer(&integration) {
-            HostAnswer::Ok(_) => HostAnswer::Ok(json!({"ok": true, "message": "Connected (klippy: ready)"})),
+            HostAnswer::Ok(_) => {
+                HostAnswer::Ok(json!({"ok": true, "message": "Connected (klippy: ready)"}))
+            }
             other => other,
         };
         Box::pin(async move { answer })
@@ -75,13 +89,20 @@ async fn body(response: Response) -> (u16, Value) {
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
-fn query(path: &str) -> Option<Query<PathQuery>> {
-    Some(Query(PathQuery {
+fn query(path: &str) -> Query<PathQuery> {
+    Query(PathQuery {
         path: Some(path.into()),
-    }))
+    })
+}
+
+fn root() -> Query<PathQuery> {
+    Query(PathQuery { path: None })
 }
 
 #[tokio::test]
@@ -97,22 +118,34 @@ async fn ticket_t_21_capabilities_map_like_node() {
         assert_eq!(body(read(id).await).await, (200, none.clone()), "{id}");
     }
     let (status, problem) = body(read("gone").await).await;
-    assert_eq!((status, &problem["detail"]), (404, &json!("Printer not found")));
+    assert_eq!(
+        (status, &problem["detail"]),
+        (404, &json!("Printer not found"))
+    );
     assert_eq!(body(read("busy").await).await.0, 503);
 }
 
 #[tokio::test]
 async fn ticket_t_21_files_validate_the_path_before_the_port() {
     let (app, fake) = app();
-    let list = |id: &str, path: Option<Query<PathQuery>>| files(State(app.clone()), Path(id.into()), path);
+    let list = |id: &str, path: Query<PathQuery>| files(State(app.clone()), Path(id.into()), path);
     for bad in ["../etc", "a//b", "a/./b", "a\\b", "a\0b"] {
         let (status, problem) = body(list("moon", query(bad)).await).await;
         assert_eq!(status, 400, "{bad}");
-        assert_eq!(problem["detail"], "path is not a valid printer storage path");
+        assert_eq!(
+            problem["detail"],
+            "path is not a valid printer storage path"
+        );
     }
-    assert!(fake.calls.lock().unwrap().is_empty(), "no invalid path reaches the port");
-    assert_eq!(body(list("moon", None).await).await.0, 200);
-    assert_eq!(body(list("moon", query("  /plates/a/  ")).await).await.0, 200);
+    assert!(
+        fake.calls.lock().unwrap().is_empty(),
+        "no invalid path reaches the port"
+    );
+    assert_eq!(body(list("moon", root()).await).await.0, 200);
+    assert_eq!(
+        body(list("moon", query("  /plates/a/  ")).await).await.0,
+        200
+    );
     assert_eq!(
         *fake.calls.lock().unwrap(),
         ["files moon ", "files moon plates/a"]
@@ -125,8 +158,12 @@ async fn ticket_t_21_files_validate_the_path_before_the_port() {
         ("down", 502, "Moonraker directory listing returned HTTP 500"),
     ];
     for (id, code, detail) in expect {
-        let (status, problem) = body(list(id, None).await).await;
-        assert_eq!((status, problem["detail"].as_str()), (code, Some(detail)), "{id}");
+        let (status, problem) = body(list(id, root()).await).await;
+        assert_eq!(
+            (status, problem["detail"].as_str()),
+            (code, Some(detail)),
+            "{id}"
+        );
     }
 }
 
@@ -138,35 +175,57 @@ async fn ticket_t_21_cameras_and_test_answer_like_node() {
         body(list("moon").await).await,
         (200, json!({"cameras": [{"id": "0", "name": "Bed"}]}))
     );
-    assert_eq!(body(list("spool").await).await, (200, json!({"cameras": []})));
+    assert_eq!(
+        body(list("spool").await).await,
+        (200, json!({"cameras": []}))
+    );
     assert_eq!(body(list("down").await).await.0, 502);
     assert_eq!(body(list("manual").await).await.0, 409);
 
     let probe = |id: &str| test(State(app.clone()), Path(id.into()));
     assert_eq!(
         body(probe("moon").await).await,
-        (200, json!({"ok": true, "message": "Connected (klippy: ready)"}))
+        (
+            200,
+            json!({"ok": true, "message": "Connected (klippy: ready)"})
+        )
     );
     let (status, problem) = body(probe("gone").await).await;
-    assert_eq!((status, &problem["detail"]), (404, &json!("Integration not found")));
+    assert_eq!(
+        (status, &problem["detail"]),
+        (404, &json!("Integration not found"))
+    );
 }
 
 #[tokio::test]
 async fn ticket_t_21_connection_test_keeps_nodes_five_per_minute_budget() {
     let (app, fake) = app();
     for _ in 0..TEST_LIMIT {
-        assert_eq!(body(test(State(app.clone()), Path("moon".into())).await).await.0, 200);
+        assert_eq!(
+            body(test(State(app.clone()), Path("moon".into())).await)
+                .await
+                .0,
+            200
+        );
     }
     let throttled = test(State(app.clone()), Path("moon".into())).await;
     assert!(throttled.headers().contains_key(header::RETRY_AFTER));
     let (status, problem) = body(throttled).await;
     assert_eq!(status, 429);
-    assert!(problem["detail"].as_str().unwrap().starts_with("Rate limit exceeded"));
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("Rate limit exceeded")
+    );
     assert_eq!(
         fake.calls.lock().unwrap().len(),
         TEST_LIMIT as usize,
         "a throttled test never reaches the printer"
     );
     // Other routes keep their own budgets.
-    assert_eq!(body(cameras(State(app), Path("moon".into())).await).await.0, 200);
+    assert_eq!(
+        body(cameras(State(app), Path("moon".into())).await).await.0,
+        200
+    );
 }

@@ -5,8 +5,7 @@
 //! the printer sees only read-only GETs: no upload and no print start.
 use super::farm_reads::settings_rows;
 use super::ticket_t_4_watcher_proof::{
-    production_rows, proof_data, run_in_child, seed_settings, shut_down, signed_in,
-    start_rust_only,
+    production_rows, proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
 };
 use super::{request, temporary};
 use axum::http::StatusCode;
@@ -130,47 +129,94 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
         assert_eq!(read, (StatusCode::OK, expected.clone()), "{printer}");
     }
     let (code, problem) = get("/api/v1/printers/p-missing/capabilities".into()).await;
-    assert_eq!((code, &problem["detail"]), (StatusCode::NOT_FOUND, &json!("Printer not found")));
+    assert_eq!(
+        (code, &problem["detail"]),
+        (StatusCode::NOT_FOUND, &json!("Printer not found"))
+    );
 
     let root = get("/api/v1/printers/p-moon/files".into()).await;
     assert_eq!(root, (StatusCode::OK, oracle["browse"][""]["ok"].clone()));
     let plates = get("/api/v1/printers/p-moon/files?path=%2Fplates%2F".into()).await;
-    assert_eq!(plates, (StatusCode::OK, oracle["browse"]["/plates/"]["ok"].clone()));
+    assert_eq!(
+        plates,
+        (StatusCode::OK, oracle["browse"]["/plates/"]["ok"].clone())
+    );
     for (path, code, detail) in [
-        ("p-moon/files?path=..%2Fescape", 400, "path is not a valid printer storage path"),
+        (
+            "p-moon/files?path=..%2Fescape",
+            400,
+            "path is not a valid printer storage path",
+        ),
         ("7/files", 409, "Printer is not linked to a host"),
         ("p-off/files", 503, "Printer host is unavailable"),
         ("p-odd/files", 503, "Printer host is unavailable"),
-        ("p-prusa/files", 501, "Printer host does not support file browsing"),
+        (
+            "p-prusa/files",
+            501,
+            "Printer host does not support file browsing",
+        ),
     ] {
         let (status, problem) = get(format!("/api/v1/printers/{path}")).await;
-        assert_eq!((status.as_u16(), problem["detail"].as_str()), (code, Some(detail)), "{path}");
+        assert_eq!(
+            (status.as_u16(), problem["detail"].as_str()),
+            (code, Some(detail)),
+            "{path}"
+        );
     }
     let (status, _) = get("/api/v1/printers/p-down/files".into()).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "an unreachable host is an upstream failure");
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "an unreachable host is an upstream failure"
+    );
 
     let cameras = get("/api/v1/printers/p-moon/cameras".into()).await;
-    assert_eq!(cameras, (StatusCode::OK, json!({"cameras": oracle["cameras"]["ok"]})));
+    assert_eq!(
+        cameras,
+        (StatusCode::OK, json!({"cameras": oracle["cameras"]["ok"]}))
+    );
     let unported = get("/api/v1/printers/p-prusa/cameras".into()).await;
     assert_eq!(unported, (StatusCode::OK, json!({"cameras": []})));
 
     let test = |id: &str| {
-        let (origin, cookie, path) = (origin.clone(), cookie.clone(), format!("/api/v1/integrations/{id}/test"));
+        let (origin, cookie, path) = (
+            origin.clone(),
+            cookie.clone(),
+            format!("/api/v1/integrations/{id}/test"),
+        );
         async move { call(&origin, Some(&cookie), "POST", &path).await }
     };
-    assert_eq!(test("moon-1").await, (StatusCode::OK, oracle["test_connection"].clone()));
+    assert_eq!(
+        test("moon-1").await,
+        (StatusCode::OK, oracle["test_connection"].clone())
+    );
     let (code, problem) = test("removed-1").await;
-    assert_eq!((code, &problem["detail"]), (StatusCode::NOT_FOUND, &json!("Integration not found")));
+    assert_eq!(
+        (code, &problem["detail"]),
+        (StatusCode::NOT_FOUND, &json!("Integration not found"))
+    );
     assert_eq!(test("prusa-1").await.0, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(
         test("odd-1").await,
-        (StatusCode::OK, json!({"ok": false, "message": "Unknown integration type: mystery"}))
+        (
+            StatusCode::OK,
+            json!({"ok": false, "message": "Unknown integration type: mystery"})
+        )
     );
 
     shut_down(runtime).await;
     let lines = printer.request_lines();
-    for target in ["/server/info", "/server/webcams/list", "/server/files/directory?path=gcodes&extended=true"] {
-        assert!(lines.iter().any(|line| line == &format!("GET {target} HTTP/1.1")), "{target}: {lines:?}");
+    for target in [
+        "/server/info",
+        "/server/webcams/list",
+        "/server/files/directory?path=gcodes&extended=true",
+    ] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == &format!("GET {target} HTTP/1.1")),
+            "{target}: {lines:?}"
+        );
     }
     for line in &lines {
         assert!(line.starts_with("GET "), "the printer saw {line}");
@@ -179,7 +225,18 @@ async fn ticket_t_21_rust_only_runtime_host_reads_in_child() {
             "the printer saw {line}"
         );
     }
-    assert_eq!(production_rows(&data), rows, "host reads changed production rows");
-    assert_eq!(settings_rows(&data), settings, "host reads changed settings");
-    println!("ticket_t_21: {} printer requests, all read-only GETs", lines.len());
+    assert_eq!(
+        production_rows(&data),
+        rows,
+        "host reads changed production rows"
+    );
+    assert_eq!(
+        settings_rows(&data),
+        settings,
+        "host reads changed settings"
+    );
+    println!(
+        "ticket_t_21: {} printer requests, all read-only GETs",
+        lines.len()
+    );
 }

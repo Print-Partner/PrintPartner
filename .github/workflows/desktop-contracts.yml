@@ -24,6 +24,7 @@ on:
       - 'scripts/setup-ci-linux.sh'
       - "web/packages/contracts/**"
       - "web/packages/domain/**"
+      - "web/packages/rust-client/**"
       - "web/apps/server/**"
       - "web/apps/web/src/api/planReview.ts"
       - "web/scripts/desktop-parity/**"
@@ -54,6 +55,7 @@ on:
       - 'scripts/setup-ci-linux.sh'
       - "web/packages/contracts/**"
       - "web/packages/domain/**"
+      - "web/packages/rust-client/**"
       - "web/apps/server/**"
       - "web/apps/web/src/api/planReview.ts"
       - "web/scripts/desktop-parity/**"

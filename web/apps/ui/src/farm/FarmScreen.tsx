@@ -129,11 +129,14 @@ function PrintersTable({ rows }: { rows: Row[] }) {
 }
 
 /** Says the farm read failed while the stream still shows printers, with a Retry. */
-function DetailsNotice({ query }: { query: UseQueryResult<unknown> }) {
+function DetailsNotice({ query, live }: { query: UseQueryResult<unknown>; live: boolean }) {
   if (!query.isError) return null;
   return (
     <div role="alert" className="pp-banner" data-kind="error">
-      <p>Could not load printer models and integrations. States are live from the printer stream.</p>
+      <p>
+        Could not load printer models and integrations.{" "}
+        {live ? "States are live from the printer stream." : "States are the last the printer stream sent."}
+      </p>
       <p className="pp-banner-detail">{query.error.message}</p>
       <button type="button" className="pp-button" onClick={() => void query.refetch()}>
         Retry
@@ -186,7 +189,7 @@ export function FarmScreen() {
           {state.kind !== "offline" && (
             <StreamNotice stream={stream} readAt={printers.dataUpdatedAt || undefined} />
           )}
-          {stream.printers && <DetailsNotice query={printers} />}
+          {stream.printers && <DetailsNotice query={printers} live={stream.status === "live"} />}
           <PrintersTable rows={rows} />
         </>
       )}

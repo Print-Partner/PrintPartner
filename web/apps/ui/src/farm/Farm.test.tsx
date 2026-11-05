@@ -348,7 +348,11 @@ describe("Farm screen states", () => {
       }
     });
     expect(cells("Trident").slice(0, 3)).toEqual(["Bed to clear", "Idle", "Needs clearing"]);
-    expect((await screen.findByRole("alert")).textContent).toContain("States are live from the printer stream.");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("States are live from the printer stream.");
+    act(() => socket().close());
+    expect(alert.textContent).toContain("States are the last the printer stream sent.");
+    expect(alert.textContent).not.toContain("live");
   });
 
   it("shows the empty state with no printers", async () => {

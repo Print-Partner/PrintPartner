@@ -1,7 +1,9 @@
-//! Closes a connection whose peer accepts no bytes for [`WRITE_STALL`]. The
-//! server only polls a response body when the socket can take more data, so
-//! without this a client that stops reading would hold its response, and
-//! whatever that response holds, until it disconnects.
+//! Closes a connection when a write stays pending because the peer accepts no
+//! bytes for [`WRITE_STALL`]. The server only polls a response body when the
+//! socket can take more data, so without this a client that stops reading
+//! would hold its response, and whatever that response holds, until it
+//! disconnects. A peer that stops reading while socket buffers still have room
+//! is not detected: its writes still succeed.
 
 use std::{
     future::Future,

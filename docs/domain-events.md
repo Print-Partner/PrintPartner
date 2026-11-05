@@ -135,11 +135,14 @@ deadline, the task stops and drops its storage subscription, and the response
 body fails on its next poll, so the server closes the connection without
 sending the queued frames. The server polls the body only when the socket can
 take more data, so a client that stops reading entirely keeps its connection
-and its stream slot. The desktop gateway closes any connection whose peer
-accepts no bytes for 30 seconds (`WRITE_STALL`), which frees that slot. A
-stalled client can therefore hold one of the 8 slots for at most about 40
-seconds (the 10 s deadline plus the 30 s stall), with its queue and socket
-buffers.
+and its stream slot. Once the server has data it cannot write, the desktop
+gateway closes the connection if the peer accepts no bytes for 30 seconds
+(`WRITE_STALL`), which frees the slot about 40 seconds after the stall
+began. A client that stops reading while the socket buffers still have room
+looks the same as an idle, healthy listener: heartbeats and small events
+still succeed, so it keeps its slot until those buffers fill or it
+disconnects. Each open connection, healthy or not, counts against the 8
+streams.
 
 When shutdown draining begins, the gateway stops counting
 `text/event-stream` responses as active and ends each one at its next poll,

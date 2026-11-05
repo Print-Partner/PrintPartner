@@ -285,6 +285,84 @@ fn verify_batch_undo_restores_the_prior_state_or_refuses_with_a_reason() {
 }
 
 #[test]
+fn verify_batch_undo_refuses_after_a_later_checkoff_on_another_link() {
+    let later: [(&str, Value, Request); 3] = [
+        (
+            "a second link records the printed unit",
+            json!([{ "link_id": "link-verify", "decisions": [confirm(1, 1)] }]),
+            Request::Verify {
+                body: json!({ "link_id": "link-stale-file", "decisions": [confirm(1, 1)] }),
+            },
+        ),
+        (
+            "a later unit fills from the burst's unit",
+            json!([{ "link_id": "link-verify", "decisions": [confirm(3, 0)] }]),
+            Request::Verify {
+                body: json!({ "link_id": "link-burst", "decisions": [confirm(3, 1)] }),
+            },
+        ),
+        (
+            "another link is dismissed",
+            json!([{ "link_id": "link-verify", "decisions": [confirm(1, 1)] }]),
+            Request::Dismiss {
+                body: json!({ "link_id": "link-host-failed" }),
+            },
+        ),
+    ];
+    for (case, beds, request) in later {
+        let fixture = Fixture::new();
+        let owner = fixture.open();
+        let done = batch(&owner, json!({ "idempotency_key": "k", "beds": beds }));
+        assert_eq!(done["status"], 200, "{case}: {done}");
+        let applied = apply(&owner, request);
+        assert_eq!(applied["status"], 200, "{case}: {applied}");
+        let rows = fixture.checkoff();
+        assert_eq!(
+            undo(&owner, &done["body"]["undo_token"]),
+            json!({ "status": 409, "body": { "detail": "Checkoff changed since this burst: a later verify, dismiss or progress change depends on it" } }),
+            "{case}"
+        );
+        assert_eq!(
+            fixture.checkoff(),
+            rows,
+            "{case}: a refused undo writes nothing"
+        );
+        owner.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn verify_batch_refuses_a_key_whose_receipt_was_trimmed() {
+    let fixture = Fixture::new();
+    let old: Vec<Value> = (0..100)
+        .map(|i| json!({ "idempotency_key": format!("old-{i}"), "request_hash": "", "undo_token": format!("ppb_old{i}"), "response": {}, "undo": {} }))
+        .collect();
+    fixture
+        .sql()
+        .execute(
+            "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'printer.checkoff_bursts', ?1)",
+            [serde_json::to_string(&old).unwrap()],
+        )
+        .unwrap();
+    let owner = fixture.open();
+    assert_eq!(batch(&owner, two_beds("new"))["status"], 200);
+    let rows = fixture.checkoff();
+    let mut replay = two_beds("old-0");
+    replay["beds"] = json!([{ "link_id": "link-stale-file", "decisions": [confirm(1, 1)] }]);
+    assert_eq!(
+        batch(&owner, replay),
+        json!({ "status": 409, "body": { "detail": "idempotency_key belongs to a Checkoff burst too old to replay" } })
+    );
+    assert_eq!(fixture.checkoff(), rows, "a retired key writes nothing");
+    assert_eq!(
+        batch(&owner, two_beds("old-1"))["status"],
+        409,
+        "old-1 is still a receipt with another hash"
+    );
+    owner.shutdown().unwrap();
+}
+
+#[test]
 fn verify_batch_never_exceeds_required_counts_or_changes_required_units() {
     let fixture = Fixture::new();
     let owner = fixture.open();

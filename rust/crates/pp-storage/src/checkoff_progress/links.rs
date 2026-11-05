@@ -8,7 +8,7 @@ use anyhow::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Map, Number, Value, json};
 
-const KEY: &str = "printer.checkoff_links";
+pub(super) const KEY: &str = "printer.checkoff_links";
 const MAX_LINKS: usize = 200;
 const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
 const REASONS: [&str; 10] = [

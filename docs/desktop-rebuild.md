@@ -2583,19 +2583,27 @@ The receipt is written in the same transaction under the
 object keys sorted, the response, and the link, progress and outcome rows undo
 needs. A repeat with the same key and request returns the stored response before
 any other check and writes nothing, also after a restart. The same key with a
-different request returns 409. The newest 100 receipts are kept; replaying an
-older key runs the verify again, which refuses because its units are no longer
-pending, so it cannot count twice.
+different request returns 409. The newest 100 receipts are kept. A dropped
+receipt leaves the SHA-256 of its key in `printer.checkoff_bursts_retired` (the
+newest 5,000), and replaying that key returns 409 instead of running again, so an
+undone burst cannot be counted again by a late retry. A replay of an undone burst
+that still has its receipt returns the original receipt and writes nothing.
 
 Undo takes `{ "undo_token" }` and is a compensating write: it restores each
 link at its original position, the progress rows and the outcome rows the burst
-wrote. It refuses with 409 and a reason when any of them changed since, and when
-the burst was already undone; an unknown token is 404. No printer, webhook or
+wrote. It refuses with 409 and a reason when any of them changed since, when
+the burst was already undone, and when anything else in the tenant's Checkoff
+changed after the burst: the burst stores the SHA-256 of the links setting, every
+progress row and every outcome and job id, and undo compares it. A later verify
+of another link that records a unit the burst printed, a later unit that filled
+from the burst's unit, or a dismiss elsewhere therefore blocks undo. An unknown
+token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
 `web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the
 `P` (`plateBed`) and `F` (`partFillBeds`) helpers, which both produce this
-request shape.
+request shape. `verifyBatchRequest` merges beds for the same link, keeping both
+unit decisions and imported-extra `additional_decisions`.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'

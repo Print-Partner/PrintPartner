@@ -9,6 +9,20 @@ fn log() -> Connection {
     connection
 }
 
+/// A fresh log, its feed, and the position a client starts from.
+fn opened() -> (Connection, Feed, Cursor) {
+    let mut connection = log();
+    let feed = Feed::new(0);
+    let (_, start) = events(read_at(&mut connection, &feed, "default", None));
+    (connection, feed, start)
+}
+
+fn stored(connection: &Connection) -> i64 {
+    connection
+        .query_row("SELECT count(*) FROM domain_events", [], |row| row.get(0))
+        .unwrap()
+}
+
 fn change(id: i64) -> Change {
     Change {
         kind: PROGRESS_CHANGED,
@@ -76,9 +90,7 @@ fn domain_events_cursor_round_trips_and_refuses_malformed_text() {
 
 #[test]
 fn domain_events_rolled_back_change_leaves_no_event() {
-    let mut connection = log();
-    let feed = Feed::new(0);
-    let (_, start) = events(read_at(&mut connection, &feed, "default", None));
+    let (mut connection, feed, start) = opened();
     let tx = connection.transaction().unwrap();
     append(&tx, "default", change(1)).unwrap();
     tx.rollback().unwrap();
@@ -119,9 +131,7 @@ fn domain_events_replay_returns_missed_events_in_commit_order() {
 
 #[test]
 fn domain_events_read_pages_at_the_limit() {
-    let mut connection = log();
-    let feed = Feed::new(0);
-    let (_, start) = events(read_at(&mut connection, &feed, "default", None));
+    let (mut connection, feed, start) = opened();
     for id in 0..(READ_LIMIT as i64 + 5) {
         commit(&mut connection, "default", id);
     }
@@ -135,16 +145,11 @@ fn domain_events_read_pages_at_the_limit() {
 
 #[test]
 fn domain_events_cursor_past_retention_requires_resync() {
-    let mut connection = log();
-    let feed = Feed::new(0);
-    let (_, start) = events(read_at(&mut connection, &feed, "default", None));
+    let (mut connection, feed, start) = opened();
     for id in 0..(RETAINED_EVENTS + 3) {
         commit(&mut connection, "default", id);
     }
-    let stored: i64 = connection
-        .query_row("SELECT count(*) FROM domain_events", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(stored, RETAINED_EVENTS);
+    assert_eq!(stored(&connection), RETAINED_EVENTS);
     for seq in [0, 2] {
         assert_eq!(
             resync(read_at(
@@ -168,9 +173,7 @@ fn domain_events_cursor_past_retention_requires_resync() {
 
 #[test]
 fn domain_events_other_generation_or_future_cursor_requires_resync() {
-    let mut connection = log();
-    let feed = Feed::new(0);
-    let (_, start) = events(read_at(&mut connection, &feed, "default", None));
+    let (mut connection, feed, start) = opened();
     commit(&mut connection, "default", 1);
     assert_eq!(
         resync(read_at(
@@ -215,9 +218,7 @@ fn domain_events_unknown_version_requires_resync_instead_of_skipping() {
         "UPDATE domain_events SET schema_version=2",
         "UPDATE domain_events SET event_type='checkoff.future'",
     ] {
-        let mut connection = log();
-        let feed = Feed::new(0);
-        let (_, start) = events(read_at(&mut connection, &feed, "default", None));
+        let (mut connection, feed, start) = opened();
         commit(&mut connection, "default", 1);
         commit(&mut connection, "default", 2);
         connection
@@ -268,10 +269,7 @@ fn domain_events_append_refuses_oversized_payload_and_unknown_kind() {
         version: 2,
     };
     assert!(append(&tx, "default", unknown).is_err());
-    let stored: i64 = tx
-        .query_row("SELECT count(*) FROM domain_events", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(stored, 0);
+    assert_eq!(stored(&tx), 0);
 }
 
 #[test]

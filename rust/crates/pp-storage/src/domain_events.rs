@@ -352,7 +352,18 @@ pub struct DomainEventsClient {
 }
 
 impl WriterOwner {
-    pub fn domain_events(&self, policy: auth::AuthPolicy) -> Result<DomainEventsClient> {
+    pub fn domain_events(&self) -> Result<DomainEventsClient> {
+        self.domain_events_with_policy(auth::AuthPolicy {
+            registration: auth::RegistrationPolicy::Open,
+            session_tenant: auth::SessionTenantPolicy::AccountTenant,
+            first_user: auth::FirstUserTenant::NewUser,
+        })
+    }
+
+    pub fn domain_events_with_policy(
+        &self,
+        policy: auth::AuthPolicy,
+    ) -> Result<DomainEventsClient> {
         auth::validate_policy(policy)?;
         ensure!(self.lease.is_some(), "Storage owner is closed");
         Ok(DomainEventsClient {

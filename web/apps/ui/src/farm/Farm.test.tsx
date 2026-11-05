@@ -229,6 +229,39 @@ describe("UI3-03 the pulse line counts by state from /ws/printers", () => {
     expect(heard("wait")).toBe("2026-11-05T20:00:00.000Z");
   });
 
+  it("reads details once for a printer added after the farm read", async () => {
+    const added = printer("k1", "Moonraker K1", {
+      model: "K1",
+      state: { execution: "manual", bed_clear: "unknown", display: "manual" },
+      reason: "monitoring_not_supported",
+      last_heard_at: null,
+    });
+    let fleet = FLEET;
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === "/health") return json(health("on"));
+      if (path === "/api/v2/printers") return json({ printers: fleet });
+      return json({ title: "Not Found" }, 404);
+    });
+    renderAt("/farm", fetchMock);
+    snapshot();
+    await screen.findByRole("table", { name: "Printers" });
+    expect(printerCalls(fetchMock)).toBe(1);
+    fleet = [...FLEET, added];
+    act(() => socket().frame({ type: "printer", stream: "s1", seq: 8, printer: streamed(added) }));
+    await within(row("k1")).findByText("K1");
+    expect(row("k1").textContent).toContain("cannot watch this Moonraker host");
+    expect(printerCalls(fetchMock)).toBe(2);
+    act(() =>
+      socket().frame({
+        type: "printer",
+        stream: "s1",
+        seq: 9,
+        printer: streamed(FLEET[2]!, { execution: "idle", bed_clear: "needs_clearing", display: "bed_to_clear" }),
+      }),
+    );
+    expect(printerCalls(fetchMock)).toBe(2);
+  });
+
   it("drops a printer the stream removes", async () => {
     renderAt("/farm");
     snapshot();

@@ -1,5 +1,6 @@
 import type { FarmPrinterList } from "@print-partner/rust-client";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
@@ -13,7 +14,8 @@ type FarmPrinter = FarmPrinterList["printers"][number];
 
 /**
  * `GET /api/v2/printers` once, for each printer's model and integration. State after that
- * comes from `/ws/printers`, so this read never polls or refetches on its own.
+ * comes from `/ws/printers`, so this read never polls; it reads again only when the stream
+ * names a printer it does not contain.
  */
 const printersQuery = {
   queryKey: ["core", "printers"],
@@ -191,6 +193,16 @@ export function FarmScreen() {
   const farm = useModule("farm");
   const stream = usePrinterStream();
   const printers = useQuery(printersQuery);
+  const asked = useRef(new Set<string>());
+  const { data, isFetching, refetch } = printers;
+  useEffect(() => {
+    if (!stream.printers || !data || isFetching) return;
+    const known = new Set(data.printers.map((p) => p.id));
+    const added = stream.printers.filter((p) => !known.has(p.id) && !asked.current.has(p.id));
+    if (added.length === 0) return;
+    for (const p of added) asked.current.add(p.id);
+    void refetch();
+  }, [stream.printers, data, isFetching, refetch]);
   const state: ScreenState<Row[]> =
     farm?.state === "off"
       ? { kind: "module-off", module: "Farm", wouldShow: "every printer and its state" }

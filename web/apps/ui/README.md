@@ -151,7 +151,9 @@ the Farm screen. No screen polls for printer state.
   zeros. While the stream is down it keeps the last counts and says "Live updates
   down. Last known" with the time of the last frame.
 - **Farm** (`/farm`, `src/farm/FarmScreen.tsx`). Reads `GET /api/v2/printers`
-  once (no refetch) for each printer's model and integration. Once the stream has
+  once for each printer's model and integration, and again only when the stream
+  names a printer that read does not contain (one read per added printer, never
+  polling). Once the stream has
   sent a snapshot, it decides which printers exist, their state and their
   last-heard time, and every
   banner names the stream's last frame time. If the farm read fails, the

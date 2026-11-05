@@ -65,8 +65,8 @@ no task. The rest sort by:
 2. Earliest due date, then Builds with no due date.
 3. Build id.
 
-`rank_reason` says why: "Needs attention now.", "Due 2026-11-10." or "No due
-date." The feed reads at most 500 open Builds and answers 500 past that rather
+`rank_reason` says why: "Needs attention now.", "Needs attention now. Due
+2026-11-10." (attention with a due date), "Due 2026-11-10." or "No due date." The feed reads at most 500 open Builds and answers 500 past that rather
 than rank a partial list.
 
 A Build whose stored data fails a check (for example a corrupt Plan history)

@@ -269,3 +269,42 @@ fn farm_results_fill_outcome_and_completion_as_node_does() {
     );
     assert_eq!(results["results"][1]["host_outcome"], Value::Null);
 }
+
+#[test]
+fn farm_stream_printers_carry_known_fields_only() {
+    let watching = json!({"id": "l-run", "profile_id": 3, "printer_id": "p-moon",
+        "integration_id": "moon", "filename": "dir/Plate.gcode", "state": "watching",
+        "units": [], "created_at": "2026-11-05T00:00:00.000Z"});
+    let farm = farm(json!([watching]), json!([]));
+    let printing = farm.stream_printers(observe(seen(HostState::Printing)));
+    assert_eq!(
+        serde_json::to_value(&printing[4]).unwrap(),
+        json!({"id": "p-moon", "name": "Micron", "state": "printing",
+            "display": {"execution": "printing", "bed_clear": "needs_clearing", "display": "printing"},
+            "result_id": "l-run", "progress_percent": 42, "bed_needs_clearing": true,
+            "filaments": [{"slot": 1}], "last_heard_at": "2026-11-05T02:00:00.000Z"})
+    );
+    let quiet = serde_json::to_value(&printing[0]).unwrap();
+    assert_eq!(quiet["state"], "unknown");
+    assert_eq!(
+        quiet["filaments"][1],
+        json!({"slot": 2, "color_id": "pla-red", "label": "Red"})
+    );
+    for absent in [
+        "result_id",
+        "progress_percent",
+        "bed_needs_clearing",
+        "last_heard_at",
+    ] {
+        assert!(quiet.get(absent).is_none(), "{absent}");
+    }
+    let mut later = printing[4].clone();
+    later.last_heard_at = Some("2026-11-05T02:00:05.000Z".into());
+    assert!(
+        later.same_state(&printing[4]),
+        "a new last-heard time is not a change"
+    );
+    let idle = farm.stream_printers(observe(seen(HostState::Idle)));
+    assert!(!idle[4].same_state(&printing[4]));
+    assert_eq!(idle[4].result_id, None);
+}

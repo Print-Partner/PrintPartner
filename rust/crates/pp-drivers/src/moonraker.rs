@@ -6,10 +6,16 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime},
 };
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::{broadcast, watch},
+    task::JoinHandle,
+};
 
 pub use pp_api_types::printer_status::{PrinterHostState, PrinterHostStatus};
 use tokio_util::sync::CancellationToken;
@@ -49,11 +55,23 @@ struct Spell {
     since: SystemTime,
     unanswered: Option<SystemTime>,
 }
-/// The senders behind [`PrinterObservations`]: the newest map, and when
-/// each host entered its current state.
+/// Status changes kept for a reader that falls behind `PrinterObservations::transitions`.
+pub const TRANSITION_CAPACITY: usize = 1024;
+/// One status change. `seq` counts changes in publish order, so a reader can
+/// skip the ones a [`PrinterObservations::snapshot`] already holds.
+#[derive(Clone, Debug)]
+pub struct Transition {
+    pub seq: u64,
+    pub id: String,
+    pub status: Status,
+}
+/// The senders behind [`PrinterObservations`]: the newest map, every change
+/// in order, and when each host entered its current state.
 #[derive(Clone)]
 struct Port {
     observed: watch::Sender<Observed>,
+    transitions: broadcast::Sender<Transition>,
+    published: Arc<AtomicU64>,
     entered: Entered,
 }
 /// Read-only port over what the watchers observed. Pollers publish into a
@@ -65,6 +83,8 @@ pub struct PrinterObservations {
     observed: watch::Receiver<Observed>,
     heard: Heard,
     entered: Entered,
+    transitions: broadcast::Sender<Transition>,
+    published: Arc<AtomicU64>,
 }
 impl PrinterObservations {
     pub fn latest(&self, id: &str) -> Option<Status> {
@@ -86,6 +106,18 @@ impl PrinterObservations {
     /// new job. A longer outage could hide one, so it starts the state afresh.
     pub fn state_since(&self, id: &str) -> Option<SystemTime> {
         lock(&self.entered).get(id).map(|spell| spell.since)
+    }
+    /// Every status change in publish order, including ones the newest-only
+    /// map coalesced away. A reader more than [`TRANSITION_CAPACITY`] changes
+    /// behind gets `Lagged`. Removals are not transitions: read `all`.
+    pub fn transitions(&self) -> broadcast::Receiver<Transition> {
+        self.transitions.subscribe()
+    }
+    /// The newest map and the `seq` of the last transition it includes, read
+    /// together: a later transition has a higher `seq`.
+    pub fn snapshot(&self) -> (Observed, u64) {
+        let map = self.observed.borrow();
+        (map.clone(), self.published.load(Ordering::SeqCst))
     }
     /// Waits for a map newer than the last one this handle returned. `None`
     /// once the watchers are gone.
@@ -160,6 +192,8 @@ impl Watchers {
             port: Port {
                 observed: watch::channel(Observed::default()).0,
                 entered: Entered::default(),
+                transitions: broadcast::channel(TRANSITION_CAPACITY).0,
+                published: Arc::default(),
             },
             heard: Heard::default(),
             node_fallback: true,
@@ -176,6 +210,8 @@ impl Watchers {
             observed: self.port.observed.subscribe(),
             heard: self.heard.clone(),
             entered: self.port.entered.clone(),
+            transitions: self.port.transitions.clone(),
+            published: self.port.published.clone(),
         }
     }
     pub fn status(&self, id: &str) -> Option<Status> {
@@ -367,6 +403,12 @@ fn publish(slot: &Mutex<Slot>, port: &Port, id: &str, value: Slot) {
         Slot::Status(status) if map.get(id) != Some(status) => {
             enter(&port.entered, id, status.state.clone(), SystemTime::now());
             Arc::make_mut(map).insert(id.to_owned(), status.clone());
+            let seq = port.published.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ = port.transitions.send(Transition {
+                seq,
+                id: id.to_owned(),
+                status: status.clone(),
+            });
             true
         }
         Slot::Status(_) => false,
@@ -966,6 +1008,51 @@ mod tests {
             since(),
             Some(at(308)),
             "an outage long enough to hide a reprint starts complete afresh"
+        );
+    }
+    #[tokio::test]
+    async fn printer_stream_transitions_keep_every_change_in_order() {
+        const ERROR: &[u8] =
+            include_bytes!("../../../../fixtures/drivers/moonraker/moonraker-error.json");
+        let replies = vec![
+            (200, SUCCESS),
+            (200, ERROR),
+            (503, &b"{}"[..]),
+            (200, SUCCESS),
+        ];
+        let printer = RecordedPrinter::start(replies).unwrap();
+        let mut watchers = watchers_every(Duration::from_millis(5));
+        let mut transitions = watchers.observations().transitions();
+        watchers
+            .replace(vec![host(printer.url().into())])
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while printer.calls() < 6 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        watchers.stop().await;
+        let mut states = Vec::new();
+        let mut last = 0;
+        while let Ok(transition) = transitions.try_recv() {
+            assert_eq!(transition.id, "host");
+            assert_eq!(transition.seq, last + 1, "seq counts every change");
+            last = transition.seq;
+            states.push(transition.status.state);
+        }
+        assert_eq!(watchers.observations().snapshot().1, last);
+        assert_eq!(
+            states,
+            [
+                State::Unknown,
+                State::Printing,
+                State::Error,
+                State::Offline,
+                State::Printing
+            ]
         );
     }
     #[tokio::test]

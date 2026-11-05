@@ -156,7 +156,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
 | Accept preview with checks | `POST /plans/:id/drafts/:draftId/preview` | New |
 | Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant |
-| Printer stream | `GET /ws/printers` | New (GRE-1014) |
+| Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |
 
 The task feed must be a read view over the ported Build Workflow projection (GRE-415), not a second ranking engine. Today, Build Overview and MCP must not be able to disagree about the next action.

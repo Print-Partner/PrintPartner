@@ -131,6 +131,12 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   increasing sequence, heartbeats every 15 seconds, and resume by sequence.
   It writes nothing and never polls a printer. See
   [Printer stream](printer-stream.md).
+
+  ```sh
+  cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
+    --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+    -E 'test(ticket_t_4_watcher_proof)'
+  ```
 - Farm log (GRE-1126): `GET /api/v2/farm-log` pages the fleet's Checkoff
   bursts, burst undos and sends, newest first, and
   `POST /api/v2/farm-log/{id}/undo` undoes a logged burst through the burst
@@ -139,8 +145,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
 
   ```sh
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
-    --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
-    -E 'test(ticket_t_4_watcher_proof)'
+    --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
+    -E 'binary(farm_log) | test(farm_log)'
   ```
 
 - The gateway listener is loopback only and passes the peer address to the

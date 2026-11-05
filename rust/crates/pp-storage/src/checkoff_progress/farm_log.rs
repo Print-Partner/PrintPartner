@@ -13,7 +13,7 @@
 //! and neither does an undo entry: there is no redo.
 
 use super::{Body, Outcome, Response, burst};
-use crate::read_model::farm::{Farm, SendState};
+use crate::read_model::farm::{Farm, SendState, setting_list};
 use anyhow::Result;
 use rusqlite::Transaction;
 use serde::Serialize;
@@ -311,7 +311,7 @@ fn logged(entry: &Value) -> Option<FarmLogEntry> {
 }
 
 fn sends(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<FarmLogEntry>> {
-    let queue = burst::load_list(tx, tenant, "printer.send_queue")?;
+    let queue = setting_list(tx, tenant, "printer.send_queue")?;
     Ok(Farm::parse(vec![], vec![], vec![], vec![], queue)
         .send_queue()
         .items

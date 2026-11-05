@@ -70,14 +70,36 @@ fn seed_sends(fixture: &Fixture) {
          "printer_id": "printer-1", "profile_id": 1, "state": "cancelled",
          "created_at": "2020-01-01T00:01:00.000Z"}
     ]);
+    seed_queue(fixture, &queue.to_string());
+}
+
+fn seed_queue(fixture: &Fixture, raw: &str) {
     fixture
         .sql()
         .execute(
             "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'printer.send_queue', ?1)
              ON CONFLICT (tenant_id, key) DO UPDATE SET value=excluded.value",
-            [queue.to_string()],
+            [raw],
         )
         .unwrap();
+}
+
+#[test]
+fn farm_log_reads_an_unparseable_send_queue_as_empty() {
+    let fixture = Fixture::new();
+    seed_queue(&fixture, "not json");
+    let owner = fixture.open();
+    let bed = json!({ "link_id": "link-burst", "decisions": [confirm(2, 0)] });
+    burst(&owner, "malformed-queue", bed);
+    assert_eq!(
+        entries(&owner)
+            .iter()
+            .map(|e| e["id"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!("checkoff_burst:1")],
+        "bursts still list when the send queue does not parse"
+    );
+    assert_eq!(undo_entry(&owner, "send:send-1")["status"], 404);
 }
 
 #[test]

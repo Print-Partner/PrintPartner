@@ -511,7 +511,7 @@ fn json_list(raw: Option<String>) -> Vec<Value> {
 }
 
 /// A stored JSON array, or empty when missing or unparseable, as Node reads it.
-fn setting_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
+pub(crate) fn setting_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
     let row: Option<(i64, Option<String>)> = tx
         .query_row(
             "SELECT length(value), CASE WHEN length(value) <= ?3 THEN value END
@@ -584,7 +584,7 @@ fn normalized_filename(name: &str) -> String {
 }
 
 impl Farm {
-    fn parse(
+    pub(crate) fn parse(
         fleet: Vec<Value>,
         integrations: Vec<Value>,
         links: Vec<Value>,

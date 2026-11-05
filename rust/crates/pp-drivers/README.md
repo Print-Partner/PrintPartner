@@ -34,7 +34,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 ## Effects and flags
 
 - Network: HTTP to printer hosts through `HttpGuard`. HTTPS is refused and redirects are not followed. Buffered replies are capped at 2 MiB, PrusaLink listings at 8 MiB; PrusaLink downloads and snapshots stream.
-- DNS: `Watchers::new` uses `SystemResolver`, a 5 s request deadline and a 2 s poll interval.
+- DNS: `Watchers::new` uses `SystemResolver`, a 5 s request deadline and a 2 s poll interval. Each delay after a poll (the interval, or the failure backoff capped at 60 s) is cut by up to 20% at random, so hosts started together after a wake or a network change drift apart; no delay grows past its bound.
 - Tokio: `Watchers` spawns one polling task per enabled plain-HTTP host, up to `MAX_HOSTS`.
 - Files: `UploadSource::Path` reads the file to upload.
 - No SQLite, env vars or child processes.
@@ -48,7 +48,7 @@ Cargo features:
 - `tests/ticket_t_4_watcher_proof.rs`, `tests/ticket_t_4_watcher_proof_parity.rs`: Moonraker pollers and the shared status corpus in `fixtures/drivers/moonraker`.
 - `tests/ticket_t_21_moonraker_driver.rs`, `tests/ticket_t_21_moonraker_upload.rs`: replay `fixtures/drivers/moonraker/driver`, including lost-connection uploads.
 - `tests/ticket_t_22_prusalink.rs`, `tests/ticket_t_22_prusalink_reads.rs`: replay `fixtures/drivers/prusalink` through a loopback simulator. The reads file also covers downloads, snapshots, 8 MiB listings and the `object_list` prefix (GRE-1044).
-- Unit tests in `src/moonraker.rs`, `src/moonraker_driver.rs` and `src/farm_filament.rs`.
+- Unit tests in `src/moonraker.rs`, `src/moonraker_driver.rs` and `src/farm_filament.rs`. `ticket_t_25_*` in `src/moonraker.rs` prove the watcher lifecycle (GRE-364): one joined worker per enabled host across replace, remove and stop; jitter bounds; offline, idle and stopped kept apart; reconnect after refused connections; and a lagging transitions reader bounded at `TRANSITION_CAPACITY` while publishing never waits. `pp-gateway`'s `ticket_t_25_wake_reconciles_hosts_changed_during_sleep` covers sleep and wake.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-drivers

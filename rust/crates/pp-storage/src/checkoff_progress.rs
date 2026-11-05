@@ -23,6 +23,8 @@ use std::{
 };
 
 mod burst;
+#[cfg(feature = "desktop_rebuild")]
+pub mod farm_log;
 mod links;
 mod verify;
 
@@ -170,6 +172,15 @@ pub enum Request {
     VerifyBatch { body: Value },
     /// `POST /printer-checkoff/verify-batch/undo` with its raw JSON body.
     UndoBatch { body: Value },
+    /// `GET /api/v2/farm-log` with its raw `cursor` and `limit` query values.
+    #[cfg(feature = "desktop_rebuild")]
+    FarmLog {
+        cursor: Option<String>,
+        limit: Option<String>,
+    },
+    /// `POST /api/v2/farm-log/{id}/undo`.
+    #[cfg(feature = "desktop_rebuild")]
+    UndoFarmLogEntry { id: String },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -210,6 +221,10 @@ pub enum Body {
     },
     /// A Checkoff burst receipt or undo result.
     Receipt(Value),
+    #[cfg(feature = "desktop_rebuild")]
+    FarmLog(Box<farm_log::FarmLogPage>),
+    #[cfg(feature = "desktop_rebuild")]
+    FarmLogEntry(Box<farm_log::FarmLogEntry>),
     Failure {
         detail: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -308,12 +323,28 @@ pub struct ProgressClient {
 }
 /// A validated request. Part coordinates resolve to a token inside the writer.
 enum Op {
-    Unit { target: Target, change: Change },
+    Unit {
+        target: Target,
+        change: Change,
+    },
     Import(Import),
-    Verify { link_id: String, body: Value },
-    Dismiss { link_id: String },
+    Verify {
+        link_id: String,
+        body: Value,
+    },
+    Dismiss {
+        link_id: String,
+    },
     VerifyBatch(burst::Burst),
-    UndoBatch { token: String },
+    UndoBatch {
+        token: String,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    FarmLog(farm_log::Query),
+    #[cfg(feature = "desktop_rebuild")]
+    UndoFarmLogEntry {
+        id: String,
+    },
 }
 enum Target {
     Token { expected: Basis, token: String },
@@ -462,6 +493,12 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         Request::UndoBatch { body } => {
             return burst::undo_token(&body).map(|token| Op::UndoBatch { token });
         }
+        #[cfg(feature = "desktop_rebuild")]
+        Request::FarmLog { cursor, limit } => {
+            return farm_log::Query::parse(cursor.as_deref(), limit.as_deref()).map(Op::FarmLog);
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Request::UndoFarmLogEntry { id } => return Ok(Op::UndoFarmLogEntry { id }),
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -589,6 +626,10 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::Dismiss { link_id } => return verify::dismiss(tx, tenant, &link_id),
         Op::VerifyBatch(burst) => return burst::verify_batch(tx, tenant, burst, repos),
         Op::UndoBatch { token } => return burst::undo_batch(tx, tenant, &token, repos),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::FarmLog(query) => return farm_log::page(tx, tenant, &query, repos),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::UndoFarmLogEntry { id } => return farm_log::undo_entry(tx, tenant, &id, repos),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,

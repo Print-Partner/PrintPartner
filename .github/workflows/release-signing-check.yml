@@ -59,7 +59,7 @@ jobs:
           printf 'FROM scratch\nCOPY payload /payload\n' > image/Dockerfile
           docker build --quiet --tag localhost:5000/throwaway:check image
           docker push --quiet localhost:5000/throwaway:check
-          digest="$(docker buildx imagetools inspect localhost:5000/throwaway:check | awk '/^Digest:/ { print $2; exit }')"
+          digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' localhost:5000/throwaway:check)"
           test -n "$digest"
           ref="localhost:5000/throwaway@$digest"
           must_reject "no signatures found" cosign verify --key "$key" "$ref"

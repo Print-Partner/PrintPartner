@@ -538,14 +538,15 @@ fn js_prefix(text: &str, units: usize) -> &str {
 }
 
 /// Node's `sourceFiles`: every regular file under `root` (symlinks are
-/// neither followed nor listed), in `readdir` order with a LIFO directory
-/// stack, mapped to its SHA-256.
+/// neither followed nor listed), in libuv's sorted `readdir` order with a
+/// LIFO directory stack, mapped to its SHA-256.
 fn source_files(root: &Path) -> Result<Vec<(String, String)>> {
     let mut files = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)? {
-            let entry = entry?;
+        let mut entries = fs::read_dir(&directory)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
             let name = entry.file_name();
             if name == ".git" || name == ".printpartner-source-snapshot.json" {
                 continue;

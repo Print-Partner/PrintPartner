@@ -68,10 +68,12 @@ async fn build_planning(
     Extension(presented): Extension<PresentedCredential>,
     uri: Uri,
 ) -> Response {
-    let draft = draft_query(uri.query());
-    let read = read(app, &id, presented, Query::BuildPlanning).await;
+    let query = Query::BuildPlanning {
+        draft_id_valid: draft_query(uri.query()).is_ok(),
+    };
+    let read = read(app, &id, presented, query).await;
     respond(read, |outcome| match outcome {
-        Outcome::BuildPlanning(body) if body.planning.is_some() && draft.is_err() => Some(failure(
+        Outcome::InvalidDraftId => Some(failure(
             StatusCode::BAD_REQUEST,
             "draft_id must be a positive integer",
         )),

@@ -68,7 +68,11 @@ pub struct PlanDecisionList {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Query {
-    BuildPlanning,
+    /// Node refuses an invalid `draft_id` after it hydrates a stored brief
+    /// and before it derives the phase.
+    BuildPlanning {
+        draft_id_valid: bool,
+    },
     Decisions,
 }
 
@@ -84,6 +88,8 @@ pub struct Request {
 pub enum Outcome {
     BuildPlanning(Box<BuildPlanningResponse>),
     Decisions(PlanDecisionList),
+    /// A brief exists, hydrated, and the request's `draft_id` is invalid.
+    InvalidDraftId,
     MissingBuild,
 }
 
@@ -143,6 +149,10 @@ impl PlanningClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<Outcome> {
+        let refuse_draft_id = request.query
+            == Query::BuildPlanning {
+                draft_id_valid: false,
+            };
         let flag = cancelled.clone();
         let facts = super::submit_read(&self.shared, &flag, wait, |reply| Envelope::Planning {
             command: Command {
@@ -178,6 +188,9 @@ impl PlanningClient {
                     })
                     .collect();
                 let brief = hydrate(*brief, &sources)?;
+                if refuse_draft_id {
+                    return Ok(Outcome::InvalidDraftId);
+                }
                 let groups: std::collections::HashSet<&str> = brief
                     .differences
                     .iter()
@@ -214,7 +227,7 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
         (Some((tenant, build)), Query::Decisions) => {
             Facts::Decisions(decisions(&tx, &tenant, build)?)
         }
-        (Some((tenant, build)), Query::BuildPlanning) => planning(&tx, &tenant, build)?,
+        (Some((tenant, build)), Query::BuildPlanning { .. }) => planning(&tx, &tenant, build)?,
     };
     tx.commit()?;
     Ok(facts)

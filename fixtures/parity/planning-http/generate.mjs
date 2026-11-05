@@ -162,6 +162,7 @@ const REQUESTS = [
   ["planning invalid draft_id", "/plans/1/build-planning?draft_id=abc"],
   ["planning valid draft_id", "/api/v2/plans/1/build-planning?draft_id=2"],
   ["planning draft_id without brief", "/plans/7/build-planning?draft_id=0"],
+  ["planning invalid draft_id before corrupt draft", "/plans/10/build-planning?draft_id=abc"],
   ["planning missing plan", "/api/v2/plans/999999/build-planning"],
   ["decisions missing plan", "/plans/999999/decisions"],
   ["decisions hex id", "/plans/0x2/decisions"],

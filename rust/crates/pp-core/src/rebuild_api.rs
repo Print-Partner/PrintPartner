@@ -673,8 +673,36 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "ReconcileDraftRequest" => {
+                json!({"expected_snapshot_digest": "0".repeat(64), "decisions": []})
+            }
             other => panic!("no sample body for {other}"),
         }
+    }
+
+    /// One request to the composed routers, with the route's required
+    /// headers, an optional session cookie and an optional JSON body.
+    fn contract_request(
+        client: &reqwest::Client,
+        origin: &str,
+        (method, path): (&str, &str),
+        headers: &[&str],
+        cookie: Option<&str>,
+        body: Option<Value>,
+    ) -> reqwest::RequestBuilder {
+        let mut request = client
+            .request(method.parse().unwrap(), format!("{origin}{path}"))
+            .header("Origin", origin);
+        for header in headers {
+            request = request.header(*header, "client-contract");
+        }
+        if let Some(cookie) = cookie {
+            request = request.header("Cookie", cookie);
+        }
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        request
     }
 
     /// Every `pp_api::client_contract::CLIENT_ROUTES` entry, which generates
@@ -722,22 +750,14 @@ mod tests {
                 .merge(farm),
         );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let send = |method: &str, path: &str, cookie: Option<&str>, body: Option<Value>| {
-            let mut request = client
-                .request(method.parse().unwrap(), format!("{origin}{path}"))
-                .header("Origin", &origin);
-            if let Some(cookie) = cookie {
-                request = request.header("Cookie", cookie);
-            }
-            if let Some(body) = body {
-                request = request.json(&body);
-            }
-            request.send()
+        let send = |method: &str, path: &str, headers: &[&str], cookie: Option<&str>, body| {
+            contract_request(&client, &origin, (method, path), headers, cookie, body).send()
         };
         let cookie = session(&client, &origin, "client@example.com").await;
         let created = send(
             "POST",
             "/api/v2/plans",
+            &[],
             Some(&cookie),
             Some(json!({"name": "Client contract"})),
         );
@@ -751,6 +771,7 @@ mod tests {
         let unregistered = send(
             "GET",
             &format!("/api/v2/plans/{build}/nope"),
+            &[],
             Some(&cookie),
             None,
         );
@@ -763,7 +784,9 @@ mod tests {
                 .replace("{id}", &build)
                 .replace("{draft_id}", "1");
             let body = route.request.map(sample_body);
-            let anonymous = send(route.method, &path, None, body.clone()).await.unwrap();
+            let anonymous = send(route.method, &path, route.headers, None, body.clone())
+                .await
+                .unwrap();
             let expected = match route.auth {
                 ClientAuth::Credential => 401,
                 ClientAuth::None => 200,
@@ -774,7 +797,7 @@ mod tests {
                 "{} {path} without credentials",
                 route.method
             );
-            let response = send(route.method, &path, Some(&cookie), body)
+            let response = send(route.method, &path, route.headers, Some(&cookie), body)
                 .await
                 .unwrap();
             let status = response.status().as_u16();

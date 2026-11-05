@@ -373,6 +373,7 @@ fn ticket_t_61_publication_cancelled_follow_on_preserves_committed_edit() {
     assert_eq!(
         f.changed(&committed),
         [
+            "domain_events",
             "plan_draft_required_unit_assignments",
             "plan_draft_required_unit_reconciliations",
             "plan_drafts"

@@ -24,6 +24,7 @@ pub use view::{
 };
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Decision {
     SelectExactPredecessor {
@@ -66,10 +67,25 @@ pub struct ReconciliationRequest {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 struct RequestWire {
+    #[cfg_attr(feature = "codegen", schemars(with = "pp_domain::Digest"))]
     expected_snapshot_digest: String,
+    #[cfg_attr(feature = "codegen", schemars(length(max = 10000)))]
     decisions: Vec<Decision>,
+}
+
+/// The wire schema is [`RequestWire`]'s. JSON Schema cannot express the
+/// one-decision-per-Part rule; the server refuses it.
+#[cfg(feature = "codegen")]
+impl schemars::JsonSchema for ReconciliationRequest {
+    fn schema_name() -> String {
+        "ReconciliationRequest".into()
+    }
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        <RequestWire as schemars::JsonSchema>::json_schema(generator)
+    }
 }
 
 impl TryFrom<RequestWire> for ReconciliationRequest {
@@ -180,6 +196,10 @@ impl WriterOwner {
 }
 
 impl ReconciliationClient {
+    pub(crate) fn new(shared: Arc<Shared>, policy: auth::AuthPolicy) -> Self {
+        Self { shared, policy }
+    }
+
     pub fn reconcile(
         &self,
         input: ReconciliationCommand,

@@ -41,6 +41,9 @@ pub struct ClientRoute {
     pub response: &'static str,
     /// Path parameters that are opaque strings; the rest are positive integers.
     pub text_params: &'static [&'static str],
+    /// Request headers the route refuses to run without, such as
+    /// `Idempotency-Key`.
+    pub headers: &'static [&'static str],
 }
 
 const fn route(
@@ -58,6 +61,7 @@ const fn route(
         request,
         response,
         text_params: &[],
+        headers: &[],
     }
 }
 
@@ -105,6 +109,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("EditDraftPartsRequest"),
         "DraftWorkspace",
     ),
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
+            "reconcileDraft",
+            "PUT",
+            "/api/v2/plans/{id}/drafts/{draft_id}/reconciliation",
+            Some("ReconcileDraftRequest"),
+            "DraftWorkspace",
+        )
+    },
     route(
         "readBuildWorkflow",
         "GET",
@@ -201,6 +215,7 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         request: None,
         response: "Health",
         text_params: &[],
+        headers: &[],
     },
 ];
 
@@ -250,7 +265,7 @@ mod codegen {
         },
         required_units::{
             AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
-            DraftListResponse, PartView, ReconciliationView, Workspace,
+            DraftListResponse, PartView, ReconciliationRequest, ReconciliationView, Workspace,
         },
         working_drafts::{AbandonRequest, EditRequest},
     };
@@ -286,6 +301,10 @@ mod codegen {
         schema("DraftAcceptPreview", schemars::schema_for!(AcceptPreview))?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
+        schema(
+            "ReconcileDraftRequest",
+            schemars::schema_for!(ReconciliationRequest),
+        )?;
         schema("BuildWorkflow", schemars::schema_for!(BuildWorkflow))?;
         schema("TaskFeed", schemars::schema_for!(TaskFeed))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
@@ -326,7 +345,7 @@ mod codegen {
             .map(|route| {
                 json!({"name": route.name, "method": route.method, "path": route.path,
                     "auth": route.auth.as_str(), "request": route.request, "response": route.response,
-                    "text_params": route.text_params})
+                    "text_params": route.text_params, "headers": route.headers})
             })
             .collect();
         // Emitted as a TypeScript record keyed by `key`; rows in Rust order.
@@ -1362,6 +1381,45 @@ mod codegen {
         ] {
             cases.push(request::<AbandonRequest>(
                 "AbandonDraftRequest",
+                name,
+                value,
+            ));
+        }
+        let reconcile =
+            |decisions: Value| json!({"expected_snapshot_digest": digest, "decisions": decisions});
+        for (name, value) in [
+            (
+                "every-decision",
+                reconcile(json!([
+                    {"kind": "select_exact_predecessor", "target_draft_part_id": 1, "predecessor_revision_part_id": MAX_SAFE},
+                    {"kind": "accept_prior_completion", "target_draft_part_id": 2, "predecessor_revision_part_id": 3},
+                    {"kind": "replace", "target_draft_part_id": MAX_SAFE},
+                ])),
+            ),
+            ("no-decisions", reconcile(json!([]))),
+            (
+                "short-digest",
+                json!({"expected_snapshot_digest": "d".repeat(63), "decisions": []}),
+            ),
+            (
+                "unknown-kind",
+                reconcile(json!([{"kind": "retire", "target_draft_part_id": 1}])),
+            ),
+            (
+                "missing-predecessor",
+                reconcile(json!([{"kind": "accept_prior_completion", "target_draft_part_id": 1}])),
+            ),
+            (
+                "zero-target",
+                reconcile(json!([{"kind": "replace", "target_draft_part_id": 0}])),
+            ),
+            (
+                "missing-decisions",
+                json!({"expected_snapshot_digest": digest}),
+            ),
+        ] {
+            cases.push(request::<ReconciliationRequest>(
+                "ReconcileDraftRequest",
                 name,
                 value,
             ));

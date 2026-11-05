@@ -7,15 +7,18 @@ use axum::{
     Json, Router,
     body::{Body, Bytes, to_bytes},
     extract::{DefaultBodyLimit, Extension, State},
-    http::{Method, StatusCode, Uri},
+    http::{HeaderMap, Method, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
 };
 use pp_storage::{
     auth::{self, AuthFailure, Secret, rebuild::RebuildAuthClient},
     plan_publication::{Outcome as AcceptOutcome, preview::PreviewOutcome},
-    required_units::{AdmissionFailure, DraftListResponse, Outcome as WorkspaceOutcome},
+    required_units::{
+        AdmissionFailure, DraftListResponse, Outcome as WorkspaceOutcome, ReconciliationCommand,
+        ReconciliationRequest,
+    },
     working_drafts::{
         AbandonOutcome, AbandonRequest, DraftIdentity, DraftList, EditRequest, Failure, Outcome,
         PositiveId, Request, WorkingDraftClient, edit_rejection,
@@ -129,7 +132,7 @@ async fn guard(
     };
     request.extensions_mut().insert(presented);
     let limit = match *request.method() {
-        Method::PATCH => config.body_limit,
+        Method::PATCH | Method::PUT => config.body_limit,
         _ => config.body_limit.min(READ_BODY_LIMIT),
     };
     let (parts, body) = request.into_parts();
@@ -229,8 +232,8 @@ enum ReadError {
     Storage(anyhow::Error),
 }
 
-/// Mounts list/workspace reads, Accept previews, part edits, and abandon when the startup gate
-/// is on. Storage accepts the presented credential before a handler runs.
+/// Mounts list/workspace reads, Accept previews, part edits, Required-unit
+/// reconciliation, and abandon when the startup gate is on. Storage accepts the presented credential before a handler runs.
 /// API-key reads also resolve the key so `lastUsedAt` commits as Node does.
 /// A disabled gate mounts nothing.
 pub fn draft_router(
@@ -282,6 +285,10 @@ fn mount(
             get(accept_preview),
         )
         .route("/plans/{id}/drafts/{draft_id}/parts", patch(edit))
+        .route(
+            "/plans/{id}/drafts/{draft_id}/reconciliation",
+            put(reconcile),
+        )
         .route("/plans/{id}/drafts/{draft_id}/abandon", post(abandon))
         .route_layer(middleware::from_fn_with_state(app, authorize));
     admit_draft_routes(config, routes)
@@ -497,38 +504,22 @@ async fn edit(
             return invalid_body(&body, errors.unwrap_or_default());
         }
     };
-    match run_edit(&app, presented, profile, draft_id, request).await {
+    let credential = presented.into_credential();
+    let work = move |client: &WorkingDraftClient, flag, wait| {
+        client.edit(credential, profile, draft_id, request, flag, wait)
+    };
+    match run_write(&app, work).await {
         Ok(outcome) => present_edit(outcome),
-        Err(error) => {
-            let (class, response) = match error {
-                ReadError::Worker => ("worker_failure", edit_internal_error()),
-                ReadError::Storage(error) => (
-                    error_class(&error),
-                    storage_failure_with(&error, EDIT_DETAIL),
-                ),
-                ReadError::Busy => (
-                    "read_pool_exhausted",
-                    crate::problem::overloaded("Draft service temporarily unavailable"),
-                ),
-            };
-            if response.status().is_server_error() {
-                log::error!(
-                    target: "pp_api::drafts",
-                    "Draft HTTP failed; operation=edit profile_id={profile:?} draft_id={draft_id:?} error_class={class}"
-                );
-            }
-            response
-        }
+        Err(error) => write_failure(error, "edit", profile, draft_id),
     }
 }
 
-async fn run_edit(
+/// Runs one draft write on a blocking worker, holding a read permit, and
+/// cancels it if the handler is dropped first.
+async fn run_write<T: Send + 'static>(
     app: &App,
-    presented: PresentedCredential,
-    profile: PositiveId,
-    draft_id: PositiveId,
-    request: EditRequest,
-) -> std::result::Result<WorkspaceOutcome, ReadError> {
+    work: impl FnOnce(&WorkingDraftClient, Arc<AtomicBool>, Duration) -> Result<T> + Send + 'static,
+) -> std::result::Result<T, ReadError> {
     let Ok(permit) = app.waiters.clone().try_acquire_owned() else {
         return Err(ReadError::Busy);
     };
@@ -550,14 +541,7 @@ async fn run_edit(
         if flag.load(Ordering::Acquire) {
             return Err(anyhow::Error::new(Failure::Cancelled));
         }
-        client.edit(
-            presented.into_credential(),
-            profile,
-            draft_id,
-            request,
-            flag,
-            wait,
-        )
+        work(&client, flag, wait)
     })
     .await;
     cancel.armed = false;
@@ -568,8 +552,39 @@ async fn run_edit(
     }
 }
 
+/// The response for a failed draft write, logged when it is a server error.
+fn write_failure(
+    error: ReadError,
+    operation: &str,
+    profile: PositiveId,
+    draft_id: PositiveId,
+) -> Response {
+    let (class, response) = match error {
+        ReadError::Worker => ("worker_failure", edit_internal_error()),
+        ReadError::Storage(error) => (
+            error_class(&error),
+            storage_failure_with(&error, EDIT_DETAIL),
+        ),
+        ReadError::Busy => (
+            "read_pool_exhausted",
+            crate::problem::overloaded("Draft service temporarily unavailable"),
+        ),
+    };
+    if response.status().is_server_error() {
+        log::error!(
+            target: "pp_api::drafts",
+            "Draft HTTP failed; operation={operation} profile_id={profile:?} draft_id={draft_id:?} error_class={class}"
+        );
+    }
+    response
+}
+
 fn edit_target(path: &str) -> Option<(PositiveId, PositiveId)> {
     write_target(path, "parts")
+}
+
+fn reconcile_target(path: &str) -> Option<(PositiveId, PositiveId)> {
+    write_target(path, "reconciliation")
 }
 
 fn abandon_target(path: &str) -> Option<(PositiveId, PositiveId)> {
@@ -606,74 +621,53 @@ async fn abandon(
         Ok(request) => request,
         Err(errors) => return invalid_body(&body, errors),
     };
-    match run_abandon(&app, presented, profile, draft_id, request).await {
+    let credential = presented.into_credential();
+    let work = move |client: &WorkingDraftClient, flag, wait| {
+        client.abandon(credential, profile, draft_id, request, flag, wait)
+    };
+    match run_write(&app, work).await {
         Ok(outcome) => present_abandon(outcome),
-        Err(error) => {
-            let (class, response) = match error {
-                ReadError::Worker => ("worker_failure", edit_internal_error()),
-                ReadError::Storage(error) => (
-                    error_class(&error),
-                    storage_failure_with(&error, EDIT_DETAIL),
-                ),
-                ReadError::Busy => (
-                    "read_pool_exhausted",
-                    crate::problem::overloaded("Draft service temporarily unavailable"),
-                ),
-            };
-            if response.status().is_server_error() {
-                log::error!(
-                    target: "pp_api::drafts",
-                    "Draft HTTP failed; operation=abandon profile_id={profile:?} draft_id={draft_id:?} error_class={class}"
-                );
-            }
-            response
-        }
+        Err(error) => write_failure(error, "abandon", profile, draft_id),
     }
 }
 
-async fn run_abandon(
-    app: &App,
-    presented: PresentedCredential,
-    profile: PositiveId,
-    draft_id: PositiveId,
-    request: AbandonRequest,
-) -> std::result::Result<AbandonOutcome, ReadError> {
-    let Ok(permit) = app.waiters.clone().try_acquire_owned() else {
-        return Err(ReadError::Busy);
+/// Saves and selects a Required-unit reconciliation as Node's
+/// `PUT /plans/:id/drafts/:draftId/reconciliation` does. The idempotency key
+/// is the `Idempotency-Key` header; a missing, blank or over-long key is 400
+/// before the body is read. Outcomes map as an edit's do.
+async fn reconcile(
+    Extension(app): Extension<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((profile, draft_id)) = reconcile_target(uri.path()) else {
+        return invalid_request();
     };
-    let flag = Arc::new(AtomicBool::new(false));
-    let mut cancel = CancelOnDrop {
-        flag: Arc::clone(&flag),
-        armed: true,
+    let Some(key) = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim_matches([' ', '\t']))
+        .filter(|key| (1..=160).contains(&key.len()))
+    else {
+        return invalid_request();
     };
-    let client = app.client.clone();
-    let wait = app.wait;
-    #[cfg(test)]
-    let hold = app.hold.clone();
-    let joined = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        #[cfg(test)]
-        if let Some(hold) = hold {
-            hold();
-        }
-        if flag.load(Ordering::Acquire) {
-            return Err(anyhow::Error::new(Failure::Cancelled));
-        }
-        client.abandon(
-            presented.into_credential(),
-            profile,
-            draft_id,
-            request,
-            flag,
-            wait,
-        )
-    })
-    .await;
-    cancel.armed = false;
-    match joined {
-        Ok(Ok(outcome)) => Ok(outcome),
-        Ok(Err(error)) => Err(ReadError::Storage(error)),
-        Err(_) => Err(ReadError::Worker),
+    let request = match crate::problem::parse_body::<ReconciliationRequest>(&body) {
+        Ok(request) => request,
+        Err(errors) => return invalid_body(&body, errors),
+    };
+    let Ok(command) =
+        ReconciliationCommand::new(profile, draft_id, request, key, presented.into_credential())
+    else {
+        return invalid_request();
+    };
+    let work = move |client: &WorkingDraftClient, flag, wait| {
+        client.reconciliation().reconcile(command, flag, wait)
+    };
+    match run_write(&app, work).await {
+        Ok(outcome) => present_edit(outcome),
+        Err(error) => write_failure(error, "reconcile", profile, draft_id),
     }
 }
 

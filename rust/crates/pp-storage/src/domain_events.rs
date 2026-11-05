@@ -59,9 +59,14 @@ pub const REVISION_ACCEPTED: EventKind = EventKind {
     name: "plan.revision_accepted",
     version: 1,
 };
+/// A Plan draft's Required-unit selection changed.
+pub const DRAFT_CHANGED: EventKind = EventKind {
+    name: "plan.draft_changed",
+    version: 1,
+};
 /// Every kind this build writes and reads. A stored event of any other type
 /// or version makes a read answer a resync instead of skipping it.
-pub const KNOWN: [EventKind; 2] = [PROGRESS_CHANGED, REVISION_ACCEPTED];
+pub const KNOWN: [EventKind; 3] = [PROGRESS_CHANGED, REVISION_ACCEPTED, DRAFT_CHANGED];
 
 /// A position in the log: `<generation>.<sequence>`.
 #[derive(Debug, Clone, PartialEq, Eq)]

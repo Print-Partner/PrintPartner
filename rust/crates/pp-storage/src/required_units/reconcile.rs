@@ -66,6 +66,17 @@ impl Scope<'_> {
             changed == 1,
             "Required-unit reconciliation selection failed"
         );
+        crate::domain_events::append(
+            self.tx,
+            self.tenant,
+            crate::domain_events::Change {
+                kind: crate::domain_events::DRAFT_CHANGED,
+                aggregate_type: "build",
+                aggregate_id: self.profile.to_string(),
+                aggregate_version: None,
+                payload: json!({"draft_id": self.draft}),
+            },
+        )?;
         storage::draft(self.tx, self.tenant, self.profile, self.draft)?
             .filter(|d| {
                 d.header["snapshotDigest"] == next

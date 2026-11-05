@@ -99,6 +99,11 @@ impl FarmObservations for WatchedFarm {
         {
             return Observation::NotSupported;
         }
+        let last_heard = observations.last_heard(&integration.id);
+        // The watcher's "Awaiting status" placeholder: unknown, never answered.
+        if status.state == PrinterHostState::Unknown && last_heard.is_none() {
+            return Observation::Unavailable;
+        }
         Observation::Seen {
             state: match status.state {
                 PrinterHostState::Idle => HostState::Idle,
@@ -113,7 +118,8 @@ impl FarmObservations for WatchedFarm {
                 .progress
                 .filter(|progress| progress.is_finite())
                 .map(|progress| progress.clamp(0.0, 100.0).round() as u8),
-            last_heard_at: observations.last_heard(&integration.id).map(iso_time),
+            filename: status.filename,
+            last_heard_at: last_heard.map(iso_time),
         }
     }
 }

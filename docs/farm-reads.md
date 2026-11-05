@@ -76,8 +76,9 @@ on that printer whose `applied_at` is not older than any later finished print.
 It is `needs_clearing` while printing or paused, when Moonraker reports
 `error`, when an awaiting or failed result or an open unmatched print on that
 printer is newer than the last verification, and when Moonraker reports
-`complete` with no result on record. Otherwise it is `unknown`, which displays
-as Bed to clear.
+`complete` for a file other than the latest verified result's (including a job
+run outside Print Partner, which has no result). Otherwise it is `unknown`,
+which displays as Bed to clear.
 
 ## Checkoff results, unmatched prints and the send queue
 
@@ -85,7 +86,7 @@ as Bed to clear.
   `filename`, `state` (`watching`, `awaiting_verify`, `host_failed`,
   `dismissed`, `verified`; Node's legacy `applied` reads as `verified`),
   `host_outcome`, `unit_count`, `resolved_unit_count`, `created_at`,
-  `completed_at`, `applied_at`. At most 200, in stored order.
+  `completed_at`, `applied_at`. Every stored result, in stored order.
 - `UnmatchedPrint`: open prints only (not claimed, not dismissed) that no
   watching, awaiting or verified result matches by integration and
   case-insensitive basename, as Node's `filterLinkedUnattributedPrints`
@@ -94,7 +95,7 @@ as Bed to clear.
 - `QueuedSend`: `id`, `filename`, `printer_id`, `profile_id`, `state`
   (`queued`, `sending`, `done`, `error`, `cancelled`), `start`,
   `wait_for_idle`, `unit_count`, `created_at`, `updated_at`. The artifact path
-  and error text stay server-side. At most 50, in stored order.
+  and error text stay server-side. Every stored item, in stored order.
 
 ## Tests
 

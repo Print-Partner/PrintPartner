@@ -46,6 +46,7 @@ fn seen(state: HostState) -> Observation {
     Observation::Seen {
         state,
         progress_percent: Some(42),
+        filename: Some("dir/Plate.gcode".into()),
         last_heard_at: Some("2026-11-05T02:00:00.000Z".into()),
     }
 }
@@ -131,6 +132,18 @@ fn farm_bed_is_clear_only_after_a_verified_result_with_nothing_newer() {
         bed(json!([verified]), json!([]), HostState::Complete),
         json!({"execution": "idle", "bed_clear": "clear", "display": "ready"})
     );
+    let direct = Observation::Seen {
+        state: HostState::Complete,
+        progress_percent: None,
+        filename: Some("direct.gcode".into()),
+        last_heard_at: None,
+    };
+    let direct = farm(json!([verified]), json!([])).printers(observe(direct));
+    assert_eq!(
+        direct.printers[4].state.bed_clear(),
+        BedClearState::NeedsClearing,
+        "a job run outside Print Partner is not covered by an older verification"
+    );
     let awaiting = link("awaiting_verify", Some("2026-11-05T01:45:00.000Z"), None);
     assert_eq!(
         bed(json!([verified, awaiting]), json!([]), HostState::Idle)["display"],
@@ -192,6 +205,18 @@ fn farm_lists_skip_unusable_rows_and_hide_paths_and_error_text() {
         json!({"items": [{"id": "q1", "filename": "a.gcode", "printer_id": "p-moon",
             "profile_id": 7, "state": "sending", "start": true, "wait_for_idle": true,
             "unit_count": 1, "created_at": "2026-11-05T01:00:00.000Z", "updated_at": null}]})
+    );
+    let many: Vec<_> = (0..300)
+        .map(|i| {
+            json!({"id": format!("q{i}"), "filename": "a.gcode", "artifact_path": "x",
+            "printer_id": "p", "state": "queued"})
+        })
+        .collect();
+    let all = Farm::parse(vec![], vec![], vec![], vec![], many);
+    assert_eq!(
+        all.send_queue().items.len(),
+        300,
+        "active sends are never dropped"
     );
     let text = queue.to_string();
     assert!(!text.contains("/data/exports") && !text.contains("secret detail"));

@@ -30,11 +30,9 @@ use std::{
 
 /// A larger setting fails the read instead of answering a partial farm.
 const MAX_SETTING_BYTES: i64 = 4 * 1024 * 1024;
-const MAX_PRINTERS: usize = 256;
-/// Node's own caps for each list.
-const MAX_LINKS: usize = 200;
+/// Node keeps the newest 100 unmatched prints, open ones included. Results
+/// and the queue are not capped: Node trims only their finished entries.
 const MAX_UNMATCHED: usize = 100;
-const MAX_QUEUE: usize = 50;
 
 /// A farm setting is larger than [`MAX_SETTING_BYTES`].
 #[derive(Debug)]
@@ -61,6 +59,8 @@ pub enum Observation {
         state: HostState,
         /// Whole percent, 0 to 100.
         progress_percent: Option<u8>,
+        /// The file the printer reports, to match a completion to a result.
+        filename: Option<String>,
         /// The last successful response, RFC 3339.
         last_heard_at: Option<String>,
     },
@@ -463,7 +463,7 @@ impl Farm {
         unmatched: Vec<Value>,
         queue: Vec<Value>,
     ) -> Self {
-        let results: Vec<_> = links.iter().filter_map(result).take(MAX_LINKS).collect();
+        let results: Vec<_> = links.iter().filter_map(result).collect();
         let linked: Vec<_> = results
             .iter()
             .filter(|link| {
@@ -493,11 +493,7 @@ impl Farm {
             .collect();
         open.drain(..open.len().saturating_sub(MAX_UNMATCHED));
         Self {
-            printers: fleet
-                .iter()
-                .filter_map(printer)
-                .take(MAX_PRINTERS)
-                .collect(),
+            printers: fleet.iter().filter_map(printer).collect(),
             integrations: integrations
                 .iter()
                 .filter_map(|item| {
@@ -514,11 +510,7 @@ impl Farm {
                 .collect(),
             results,
             unmatched: open,
-            queue: queue
-                .iter()
-                .filter_map(queued_send)
-                .take(MAX_QUEUE)
-                .collect(),
+            queue: queue.iter().filter_map(queued_send).collect(),
         }
     }
 
@@ -566,8 +558,13 @@ impl Farm {
                     Some(Observation::Seen {
                         state,
                         progress_percent,
+                        filename,
                         last_heard_at,
-                    }) => (Some(*state), *progress_percent, last_heard_at.clone()),
+                    }) => (
+                        Some((*state, filename.as_deref())),
+                        *progress_percent,
+                        last_heard_at.clone(),
+                    ),
                     _ => (None, None, None),
                 };
                 let active = matches!(
@@ -594,27 +591,35 @@ impl Farm {
     }
 
     /// Only a verified result (an operator confirmation) makes a bed clear,
-    /// and only when no later finished print is waiting on it.
+    /// and only when no later finished print is waiting on it. A printer that
+    /// reports `complete` is clear only when its latest verified result is for
+    /// the file it reports; a job run outside Print Partner has no result.
     fn bed_clear(
         &self,
         printer: &str,
         execution: PrinterExecutionState,
-        host: Option<HostState>,
+        host: Option<(HostState, Option<&str>)>,
     ) -> BedClearState {
+        let state = host.map(|(state, _)| state);
         if matches!(
             execution,
             PrinterExecutionState::Printing | PrinterExecutionState::Paused
-        ) || host == Some(HostState::Error)
+        ) || state == Some(HostState::Error)
         {
             return BedClearState::NeedsClearing;
         }
         let mut finished = None;
         let mut cleared = None;
+        let mut confirmed = None;
         for result in self.results.iter().filter(|r| r.printer_id == printer) {
             match result.state {
                 CheckoffResultState::Verified => {
                     finished = finished.max(instant(result.completed_at.as_deref()));
-                    cleared = cleared.max(instant(result.applied_at.as_deref()));
+                    let applied = instant(result.applied_at.as_deref());
+                    if applied.is_some() && applied >= cleared {
+                        cleared = applied;
+                        confirmed = Some(normalized_filename(&result.filename));
+                    }
                 }
                 CheckoffResultState::AwaitingVerify | CheckoffResultState::HostFailed => {
                     finished = finished.max(
@@ -629,8 +634,10 @@ impl Farm {
         for print in self.unmatched.iter().filter(|p| p.printer_id == printer) {
             finished = finished.max(instant(Some(&print.completed_at)).or(Some(i128::MAX)));
         }
-        if host == Some(HostState::Complete) && finished.is_none() {
-            finished = Some(i128::MAX);
+        if let Some((HostState::Complete, reported)) = host
+            && confirmed.is_none_or(|file| reported.map(normalized_filename) != Some(file))
+        {
+            return BedClearState::NeedsClearing;
         }
         match (finished, cleared) {
             (Some(finished), Some(cleared)) if cleared >= finished => BedClearState::Clear,

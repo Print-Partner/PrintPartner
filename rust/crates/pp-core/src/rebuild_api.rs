@@ -680,6 +680,10 @@ mod tests {
                 "beds": [{"link_id": "no-such-link", "decisions": [
                     {"part_id": 1, "unit_index": 0, "result": "confirmed"}]}]}),
             "UndoBatchRequest" => json!({"undo_token": "ppb_unknown"}),
+            "ManualBurstRequest" => json!({"idempotency_key": "client-contract",
+                "expected": {"profile_id": 1, "plan_version": 1, "plan_revision_id": 1,
+                    "plan_revision_digest": "0".repeat(64), "required_unit_mapping_digest": "0".repeat(64)},
+                "units": [{"token": format!("ppu_{}", "0".repeat(32)), "printed": true}]}),
             "ClaimUnattributedRequest" => json!({"profile_id": 1}),
             "DismissUnattributedRequest" => json!({}),
             other => panic!("no sample body for {other}"),
@@ -816,8 +820,11 @@ mod tests {
                     || body["detail"] == "beds[0]: Checkoff link not found"
                     || body["detail"] == "Checkoff burst not found"
                     || body["detail"] == "Unattributed print not found");
+            // A manual burst names an Accepted Plan basis no stored Build has.
+            let handler_stale =
+                status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
             assert!(
-                status == 200 || handler_not_found,
+                status == 200 || handler_not_found || handler_stale,
                 "{} {path}: {status} {body}",
                 route.method
             );

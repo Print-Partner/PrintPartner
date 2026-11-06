@@ -2748,6 +2748,68 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 
+### Manual Checkoff bursts (GRE-1191)
+
+The Build Checkoff tab records what was printed or assembled with no printer
+link. With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the
+Checkoff router mounts two writes at `/` and `/api/v2`, and the Accepted Plan
+reads mount one read at `/api/v2` only. All three are Rust-only; Node has no
+route at these paths, so the gateway manifests do not list them.
+
+- `GET /api/v2/plans/{id}/checkoff/units` returns `{ profile_id, basis, parts }`:
+  the included Parts in the order of `GET /plans/{id}/checkoff`, each with its
+  quantity, printed and assembled counts and every Required unit's `token`,
+  `unit_index`, `object_name`, `printed` and `assembled`. `basis` is the
+  Accepted Plan basis a burst sends as `expected`, or `null` for a Build with
+  no Accepted Plan (`parts` is then empty). A Build the caller cannot see is 404.
+- `POST /plans/{id}/checkoff/bursts` takes `{ idempotency_key, expected, units }`:
+  a key of 1 to 200 characters after trimming, the basis, and 1 to 1,000
+  `{ token, printed?, assembled? }` entries, each setting at least one flag and
+  naming a different token. Unknown fields are refused. `expected` for another
+  Build than the path is 404 `Plan not found`.
+  `pp-storage::checkoff_progress::manual` applies the burst in one writer
+  transaction. Printed units fill from the left, as the single-unit writes do:
+  `printed: true` prints that unit and every lower unit of its Part, and
+  `printed: false` clears that unit and every higher unit and their assembly. A
+  burst that prints a unit at or above one it clears on the same Part is 400.
+  Assembling a unit that is not printed after the burst is 400. A token that is
+  not on an included Part of the Accepted Plan is 404, so counts never pass the
+  Part's units. A stale basis is 409 `Accepted Plan changed; reload and retry`,
+  and an archived Build is 409 like every progress write. The first refusal
+  leaves the database unchanged.
+- Success returns `{ idempotency_key, undo_token, profile_id, printed_added,
+  printed_removed, assembled_added, assembled_removed, parts }`, where `parts`
+  holds each named Part's quantity and new counts. The receipt is stored in the
+  same transaction under the `checkoff.manual_bursts` setting with the request's
+  SHA-256 (object keys sorted), the progress rows as they were before, and the
+  SHA-256 of what can depend on the changed units (the same state hash as
+  printer bursts). Retention and replay follow printer bursts: the same key and
+  request returns the stored receipt and writes nothing, also after a restart;
+  the same key with another request is 409; a key whose receipt was dropped
+  (newest 100 kept) is 409 from `checkoff.manual_bursts_retired`. A replay of a
+  burst that was undone is 409 `This Checkoff burst was undone; send the change
+  again as a new burst`, so a late retry never counts it again.
+- `POST /plans/{id}/checkoff/bursts/undo` takes `{ undo_token }` and restores
+  the progress rows the burst changed. It refuses with 409 and a reason when the
+  Accepted Plan basis changed since the burst, when any progress row of the
+  touched Parts, an outcome naming a touched unit, or a printer Checkoff link
+  naming one changed since (`Checkoff changed since this burst: a later change
+  on its Parts depends on it`), and when it was already undone. A token from
+  another Build's path, or an unknown one, is 404.
+
+Each Part a burst or undo changes appends one `checkoff.progress_changed` event
+in the same transaction ([Domain events](domain-events.md)). Neither write
+touches a draft, a Required-unit ID, a printer Checkoff link, a print job, the
+send queue or Spoolman, so Checkoff never passes the Accept gate and never
+deducts or reserves stock. The generated client names the three routes
+`readBuildCheckoffUnits`, `recordManualCheckoffBurst` and
+`undoManualCheckoffBurst`.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_manual_bursts
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_manual_bursts_http
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

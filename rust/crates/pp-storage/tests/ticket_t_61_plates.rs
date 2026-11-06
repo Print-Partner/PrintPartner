@@ -18,16 +18,28 @@ const SECRET: &str = "read-fixture-secret";
 struct Fixture {
     dir: tempfile::TempDir,
     owner: Option<WriterOwner>,
+    secret: &'static str,
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::with(include_bytes!("fixtures/accepted-plate-node.db"), SECRET)
+    }
+
+    fn with(database: &[u8], secret: &'static str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let accepted = dir.path().join("repos/1/revisions/accepted");
-        pp_os::create_private_dir_all(&accepted).unwrap();
-        let database = include_bytes!("fixtures/accepted-plate-node.db");
+        // accepted-plate-node.db pins its Source revision under `accepted`,
+        // required-units/unchanged.db under `fixture`.
+        for revision in ["accepted", "fixture"] {
+            pp_os::create_private_dir_all(&dir.path().join("repos/1/revisions").join(revision))
+                .unwrap();
+        }
         std::fs::write(dir.path().join("print-partner.db"), database).unwrap();
-        let mut fixture = Self { dir, owner: None };
+        let mut fixture = Self {
+            dir,
+            owner: None,
+            secret,
+        };
         fixture.restart();
         fixture
     }
@@ -66,7 +78,7 @@ impl Fixture {
     }
 
     fn apply(&self, request: Request) -> Response {
-        self.send(SECRET, request).unwrap()
+        self.send(self.secret, request).unwrap()
     }
 
     fn sql(&self) -> Connection {
@@ -701,4 +713,199 @@ fn ticket_t_61_plates_pin_unplace_and_restore_survive_restart() {
         "plate_revision_changed",
     );
     assert_eq!(f.history(), history);
+}
+
+/// Every column of `table` as JSON rows in rowid order, with `created_at`
+/// nulled: Node's golden records it as null because it is a clock value.
+fn json_rows(sql: &Connection, table: &str) -> Vec<Value> {
+    let mut statement = sql
+        .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+        .unwrap();
+    let names: Vec<String> = statement
+        .column_names()
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+    statement
+        .query_map([], |row| {
+            let mut object = serde_json::Map::new();
+            for (index, name) in names.iter().enumerate() {
+                let value = match row.get_ref(index)? {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => json!(n),
+                    rusqlite::types::ValueRef::Real(n) => json!(n),
+                    rusqlite::types::ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
+                    rusqlite::types::ValueRef::Blob(b) => json!(b),
+                };
+                object.insert(
+                    name.clone(),
+                    if name == "created_at" {
+                        Value::Null
+                    } else {
+                        value
+                    },
+                );
+            }
+            Ok(Value::Object(object))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// Every table but `domain_events` as text, so a request's changed tables
+/// compare with Node's. Rust alone appends `plates.revision_changed`.
+fn table_state(sql: &Connection) -> Vec<(String, String)> {
+    let tables: Vec<String> = sql
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'domain_events' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    tables
+        .into_iter()
+        .map(|table| {
+            let rows = format!("{:?}", json_rows(sql, &table));
+            (table, rows)
+        })
+        .collect()
+}
+
+/// Node's arrange golden (`fixtures/parity/plates-arrange`): each phase seeds
+/// the layout Node published, then every arrange and restore answers and
+/// writes exactly what Node did, and the Plate rows end equal.
+#[test]
+fn ticket_t_61_plates_arrange_matches_node() {
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/parity/plates-arrange/node.json"
+    ))
+    .unwrap();
+    assert!(
+        golden["generated"]
+            .as_str()
+            .unwrap()
+            .contains("plates-arrange/generate.mjs")
+    );
+    for phase in golden["phases"].as_array().unwrap() {
+        let name = phase["name"].as_str().unwrap();
+        let f = match phase["database"].as_str().unwrap() {
+            "rust/crates/pp-storage/tests/fixtures/accepted-plate-node.db" => Fixture::new(),
+            "rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db" => Fixture::with(
+                include_bytes!("fixtures/required-units/unchanged.db"),
+                "required-unit-fixture-secret",
+            ),
+            other => panic!("{name}: {other}"),
+        };
+        let sql = f.sql();
+        seed_phase(&sql, phase, name);
+        for case in phase["cases"].as_array().unwrap() {
+            let id = case["id"].as_str().unwrap();
+            let path = case["path"].as_str().unwrap();
+            let profile = path.split('/').nth(2).unwrap().to_owned();
+            let body = case["body"].clone();
+            let request = if path.ends_with("/restore") {
+                Request::Restore { profile, body }
+            } else {
+                Request::Arrange { profile, body }
+            };
+            let before = table_state(&sql);
+            let events = f.events().len();
+            let response = f.apply(request);
+            let after = table_state(&sql);
+            assert_eq!(
+                (response.status, &response.body),
+                (
+                    case["node"]["status"].as_u64().unwrap() as u16,
+                    &case["node"]["body"]
+                ),
+                "{name}/{id}"
+            );
+            let changed: Vec<&str> = before
+                .iter()
+                .zip(&after)
+                .filter(|(left, right)| left != right)
+                .map(|(left, _)| left.0.as_str())
+                .collect();
+            assert_eq!(json!(changed), case["changed"], "{name}/{id}");
+            assert_eq!(
+                f.events().len() - events,
+                usize::from(!changed.is_empty()),
+                "{name}/{id}"
+            );
+        }
+        for (table, rows) in phase["plateRows"].as_object().unwrap() {
+            assert_eq!(json!(json_rows(&sql, table)), *rows, "{name} {table}");
+        }
+    }
+}
+
+/// Writes a golden phase's seed rows and seed SQL, with triggers dropped and
+/// foreign keys off, as Node's generator did.
+fn seed_phase(sql: &Connection, phase: &Value, name: &str) {
+    for (table, rows) in phase["seedRows"].as_object().unwrap() {
+        if table == "accepted_plate_heads" {
+            let head = &rows[0];
+            sql.execute(
+                "INSERT OR REPLACE INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    head["tenant_id"].as_str(),
+                    head["profile_id"].as_i64(),
+                    head["current_revision_id"].as_i64()
+                ],
+            )
+            .unwrap();
+            continue;
+        }
+        for row in rows.as_array().unwrap() {
+            let row = row.as_object().unwrap();
+            let columns: Vec<&String> = row.keys().filter(|key| *key != "created_at").collect();
+            let values: Vec<rusqlite::types::Value> = columns
+                .iter()
+                .map(|key| match &row[key.as_str()] {
+                    Value::Null => rusqlite::types::Value::Null,
+                    Value::Number(n) => rusqlite::types::Value::Integer(n.as_i64().unwrap()),
+                    Value::String(s) => rusqlite::types::Value::Text(s.clone()),
+                    Value::Bool(b) => rusqlite::types::Value::Integer(i64::from(*b)),
+                    other => panic!("{name}: {other}"),
+                })
+                .collect();
+            let created = if row.contains_key("created_at") {
+                ",created_at"
+            } else {
+                ""
+            };
+            let stamp = if created.is_empty() {
+                ""
+            } else {
+                ",'2026-10-02T21:46:08.046Z'"
+            };
+            let marks = vec!["?"; columns.len()].join(",");
+            let list = columns
+                .iter()
+                .map(|c| c.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.execute(
+                &format!("INSERT INTO {table}({list}{created}) VALUES({marks}{stamp})"),
+                rusqlite::params_from_iter(values),
+            )
+            .unwrap();
+        }
+    }
+    if let Some(seed) = phase["seed"].as_str() {
+        let triggers: Vec<String> = sql
+            .prepare("SELECT name FROM sqlite_schema WHERE type='trigger'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for trigger in triggers {
+            sql.execute_batch(&format!("DROP TRIGGER \"{trigger}\""))
+                .unwrap();
+        }
+        sql.execute_batch(&format!("PRAGMA foreign_keys=OFF; {seed}"))
+            .unwrap();
+    }
 }

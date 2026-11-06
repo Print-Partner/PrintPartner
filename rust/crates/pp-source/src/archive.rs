@@ -145,10 +145,53 @@ impl Default for ArchiveLimits {
         }
     }
 }
-pub struct ZipInput(File);
+/// Called before each read of the pinned input file.
+pub trait ReadHook {
+    fn before_read(&mut self);
+}
+/// The default hook; it does nothing and compiles away.
+pub struct NoHook;
+impl ReadHook for NoHook {
+    #[inline]
+    fn before_read(&mut self) {}
+}
+impl<F: FnMut()> ReadHook for F {
+    fn before_read(&mut self) {
+        self()
+    }
+}
+/// The opened input file always stays inside; a hook can observe its reads but
+/// cannot replace it.
+pub struct ZipInput<H = NoHook> {
+    file: File,
+    hook: H,
+}
 impl ZipInput {
     pub fn open(files: &LocalFiles, path: &SourcePath) -> Result<Self> {
-        Ok(Self(files.root.file(path.as_str(), false)?))
+        Ok(Self {
+            file: files.root.file(path.as_str(), false)?,
+            hook: NoHook,
+        })
+    }
+}
+impl<H> ZipInput<H> {
+    /// Runs `hook` before each read of the pinned file, so a caller can pace
+    /// or observe the copy.
+    pub fn on_read<N: ReadHook>(self, hook: N) -> ZipInput<N> {
+        ZipInput {
+            file: self.file,
+            hook,
+        }
+    }
+}
+struct HookedFile<'a, H> {
+    file: &'a mut File,
+    hook: &'a mut H,
+}
+impl<H: ReadHook> Read for HookedFile<'_, H> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.hook.before_read();
+        self.file.read(buf)
     }
 }
 #[derive(Clone, Debug, Serialize)]
@@ -222,7 +265,7 @@ impl SourceRoot {
     /// Extracts using strict `SourcePath` labels without normalization.
     pub fn extract_zip(
         &mut self,
-        input: ZipInput,
+        input: ZipInput<impl ReadHook>,
         limits: ArchiveLimits,
         cancelled: &AtomicBool,
     ) -> Result<ExtractedArchive> {
@@ -234,7 +277,7 @@ impl SourceRoot {
     #[cfg(feature = "desktop_rebuild")]
     pub fn extract_zip_with_label_policy(
         &mut self,
-        input: ZipInput,
+        input: ZipInput<impl ReadHook>,
         limits: ArchiveLimits,
         label_policy: ArchiveLabelPolicy,
         cancelled: &AtomicBool,
@@ -244,7 +287,7 @@ impl SourceRoot {
 
     fn extract_zip_impl(
         &mut self,
-        mut input: ZipInput,
+        mut input: ZipInput<impl ReadHook>,
         limits: ArchiveLimits,
         label_policy: ArchiveLabelPolicy,
         cancelled: &AtomicBool,
@@ -293,16 +336,19 @@ impl SourceRoot {
     }
     fn extract_to(
         &self,
-        input: &mut ZipInput,
+        input: &mut ZipInput<impl ReadHook>,
         limits: ArchiveLimits,
         label_policy: ArchiveLabelPolicy,
         cancelled: &AtomicBool,
         stage: &Stage,
     ) -> Result<(LocalFiles, ArchiveReceipt)> {
-        input.0.seek(SeekFrom::Start(0))?;
+        input.file.seek(SeekFrom::Start(0))?;
         let mut compressed = stage.root.file("archive.zip", true)?;
         let (compressed_bytes, archive_sha256) = transfer(
-            &mut input.0,
+            HookedFile {
+                file: &mut input.file,
+                hook: &mut input.hook,
+            },
             &mut compressed,
             limits.max_compressed_bytes,
             cancelled,

@@ -356,10 +356,11 @@ function useCheckoff() {
     unanswered.current.set(burstId(sending), { key, picks: sending });
     confirm.mutate({ bursts: [{ picks: sending, key, onConfirmed }] });
   };
-  // Retry of a confirm that got no answer. It rereads the results first. While every sent
-  // unit is listed as pending, it goes through `confirmPicks` and its saved-key rule, so a
-  // burst undone elsewhere becomes a new write. Once one is gone, the write landed, so the
-  // same request and key go again and the core replays the receipt.
+  // Retry of a confirm that got no answer. It rereads the results first. A burst is all or
+  // nothing, so only when no sent unit is listed any more did the write land, and the same
+  // request and key go again for the core to replay the receipt. Otherwise the units still
+  // listed go through `confirmPicks`: all of them reuse the saved key, and a remainder (some
+  // were confirmed by another write) is a new burst.
   const retryConfirm = async () => {
     const sent = confirm.variables!;
     try {
@@ -368,14 +369,19 @@ function useCheckoff() {
     } catch {
       // An unreadable reread keeps the last one.
     }
+    const waiting = (bed: Bed, u: Unit) => listed.current.has(pendingKey(bed, u));
+    const landed = sent.bursts.every(({ picks }) =>
+      picks.every(({ bed, units }) => !units.some((u) => waiting(bed, u))),
+    );
     const [only] = sent.bursts;
-    const waiting =
-      sent.bursts.length === 1 &&
-      only!.picks.every(({ bed, units }) =>
-        units.every((u) => listed.current.has(pendingKey(bed, u))),
-      );
-    if (waiting) await confirmPicks(only!.picks, only!.onConfirmed);
-    else confirm.mutate(sent);
+    if (landed || sent.bursts.length > 1) {
+      confirm.mutate(sent);
+      return;
+    }
+    const still = only!.picks
+      .map(({ bed, units }) => ({ bed, units: units.filter((u) => waiting(bed, u)) }))
+      .filter(({ units }) => units.length > 0);
+    await confirmPicks(still, only!.onConfirmed);
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
   const undoBurst = (tallied: Undo[]) => {

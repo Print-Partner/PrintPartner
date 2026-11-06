@@ -219,13 +219,19 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
     null,
   );
   // A recorded burst drops only the picks it sent; a pick added or changed while it was in
-  // flight stays for the next burst.
+  // flight, or made since in the other field, stays for the next burst.
+  const current = useRef(field);
+  useEffect(() => {
+    current.current = field;
+  }, [field]);
   const { record, undo, tally } = useBursts(id, (sent) => {
     setPending(null);
     setPicks((now) => {
       const next = new Map(now);
-      for (const u of sent.units)
-        if (next.get(u.token) === (u.printed ?? u.assembled)) next.delete(u.token);
+      for (const u of sent.units) {
+        const want = u[current.current];
+        if (want !== undefined && next.get(u.token) === want) next.delete(u.token);
+      }
       return next;
     });
   });

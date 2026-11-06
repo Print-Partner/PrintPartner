@@ -370,6 +370,37 @@ describe("CHK-03 in-flight and stale writes", () => {
     expect(screen.queryByText(/may have landed/)).toBeNull();
   });
 
+  it("a Retry that lands keeps a pick of the same unit in the other field", async () => {
+    let calls = 0;
+    let landed = false;
+    const after = (): CheckoffUnits => {
+      const data = units();
+      if (landed) data.parts[0]!.units[1]!.printed = true;
+      return data;
+    };
+    const fetchMock = core(
+      reads(after, () => {
+        calls += 1;
+        landed = true;
+        if (calls <= 3) return Promise.reject(new TypeError("Failed to fetch"));
+        return json(RECEIPT);
+      }),
+    );
+    renderAt(fetchMock);
+    await screen.findByRole("group", { name: /^bracket\.stl/ });
+    fireEvent.click(box("bracket.stl", 2));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    const alert = await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("radio", { name: "Mark assembled" }));
+    await waitFor(() => expect(box("bracket.stl", 2).disabled).toBe(false));
+    fireEvent.click(box("bracket.stl", 2));
+    expect(preview()).toBe("bracket.stl: +1 assembled (unit 2)");
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await screen.findByText(/Recorded:/);
+    expect(posts(fetchMock).at(-1)!.body.units).toEqual([{ token: token(2), printed: true }]);
+    expect(preview()).toBe("bracket.stl: +1 assembled (unit 2)");
+  });
+
   it("an undo keeps a lost record send and its same-key Retry in view", async () => {
     let records = 0;
     const fetchMock = core(

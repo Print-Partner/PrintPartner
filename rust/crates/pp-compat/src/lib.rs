@@ -2069,6 +2069,21 @@ if sys.argv[1] == "wait":
         child
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn scratch_diag_job_members_after_clean_exit() {
+        let mut forced = 0;
+        for _ in 0..150 {
+            let (child, _stdout) = spawn_cooperative_child().await;
+            let outcome = stop_owned_child(child, true).await;
+            if outcome.exit == super::CompatExit::Forced {
+                forced += 1;
+            }
+        }
+        let lines = super::platform::SCRATCH_DIAG.lock().unwrap().clone();
+        panic!("SCRATCH_RESULT forced={forced}/150 members={lines:#?}");
+    }
+
     #[tokio::test]
     async fn ticket_t_3_drain_process_stop_sigterms_cooperative_child() {
         let (child, _stdout) = spawn_cooperative_child().await;

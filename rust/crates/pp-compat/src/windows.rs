@@ -552,10 +552,60 @@ pub(crate) fn request_group_stop(_pid: u32) -> bool {
 }
 
 /// Terminate every process in the child's job. True when one was running.
+pub(crate) static SCRATCH_DIAG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn scratch_members(job: &Job) -> String {
+    use windows_sys::Win32::System::JobObjects::JobObjectBasicProcessIdList;
+    use windows_sys::Win32::System::Threading::{
+        PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    let mut buf = [0usize; 66];
+    let ok = unsafe {
+        QueryInformationJobObject(
+            job.raw(),
+            JobObjectBasicProcessIdList,
+            buf.as_mut_ptr().cast(),
+            size_of_val(&buf) as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return format!("query failed: {}", std::io::Error::last_os_error());
+    }
+    let counts = buf[0];
+    let listed = counts >> 32;
+    let assigned = counts & 0xffff_ffff;
+    let mut out = format!("assigned={assigned} listed={listed}:");
+    for &member in &buf[1..1 + listed.min(65)] {
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, member as u32) };
+        let mut name = [0u16; 512];
+        let mut len = name.len() as u32;
+        let image = if process.is_null() {
+            format!("<open failed {}>", std::io::Error::last_os_error())
+        } else {
+            let got =
+                unsafe { QueryFullProcessImageNameW(process, 0, name.as_mut_ptr(), &mut len) };
+            unsafe { CloseHandle(process) };
+            if got == 0 {
+                "<name failed>".into()
+            } else {
+                String::from_utf16_lossy(&name[..len as usize])
+            }
+        };
+        out.push_str(&format!(" {member}={image}"));
+    }
+    out
+}
+
 pub(crate) fn kill_group(pid: u32) -> bool {
     let Some(job) = job_of(pid) else {
         return false;
     };
+    if job.active() > 0 {
+        let line = format!("leader={pid} {}", scratch_members(&job));
+        eprintln!("SCRATCH_DIAG {line}");
+        SCRATCH_DIAG.lock().unwrap().push(line);
+    }
     job.active() > 0 && unsafe { TerminateJobObject(job.raw(), JOB_KILL_EXIT_CODE) } != 0
 }
 

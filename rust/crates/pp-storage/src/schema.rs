@@ -9,7 +9,7 @@ use std::{
 };
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 44;
+pub(crate) const CURRENT_VERSION: u64 = 45;
 /// The newest step that writes its own `pre-schema{N}.db` copy. Every step
 /// from 38 does.
 ///
@@ -20,7 +20,7 @@ pub(crate) const CURRENT_VERSION: u64 = 44;
 /// whose run left `pre-schema38.db` to `pre-schema41.db` and no marker, so an
 /// open from 41 without a marker skips retention.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const LAST_COPIED_STEP: u64 = 44;
+pub(crate) const LAST_COPIED_STEP: u64 = 45;
 #[cfg(feature = "desktop_rebuild")]
 const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP);
 /// The last step a release without the run marker installs. Its interrupted
@@ -32,7 +32,7 @@ const UNMARKED_RESTART: u64 = 41;
 pub(crate) const DRAFT_HEADER_STEP: u64 = 43;
 /// The step that installs the Build header Accept saved before it replaced it.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const SNAPSHOT_HEADER_STEP: u64 = 44;
+pub(crate) const SNAPSHOT_HEADER_STEP: u64 = 45;
 #[cfg(not(feature = "desktop_rebuild"))]
 pub(crate) const CURRENT_VERSION: u64 = 35;
 
@@ -558,6 +558,8 @@ fn install_steps(
     let install_headers: fn(&Connection) -> Result<()> = |connection| {
         Ok(connection.execute_batch(include_str!("working_drafts/header_schema.sql"))?)
     };
+    let install_send_queue: fn(&Connection) -> Result<()> =
+        |connection| Ok(connection.execute_batch(include_str!("send_queue/schema.sql"))?);
     let install_snapshot_headers: fn(&Connection) -> Result<()> =
         |connection| {
             Ok(connection
@@ -568,6 +570,7 @@ fn install_steps(
         (41, install_sync),
         (crate::domain_events::SCHEMA_STEP, install_events),
         (DRAFT_HEADER_STEP, install_headers),
+        (crate::send_queue::SCHEMA_STEP, install_send_queue),
         (SNAPSHOT_HEADER_STEP, install_snapshot_headers),
     ]) {
         if version < step {
@@ -599,7 +602,7 @@ fn install_steps(
 /// Rust-only side tables: each step's objects must match its reference SQL
 /// from that step on and be absent before it.
 #[cfg(feature = "desktop_rebuild")]
-const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 3] = [
+const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 4] = [
     (
         crate::domain_events::SCHEMA_STEP,
         "name LIKE 'domain_event%'",
@@ -613,6 +616,13 @@ const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 3] = [
         include_str!("working_drafts/header_schema.sql"),
         "Unexpected draft header schema",
         "Draft header schema mismatch",
+    ),
+    (
+        crate::send_queue::SCHEMA_STEP,
+        "tbl_name='printer_send_queue'",
+        include_str!("send_queue/schema.sql"),
+        "Unexpected send queue schema",
+        "Send queue schema mismatch",
     ),
     (
         SNAPSHOT_HEADER_STEP,

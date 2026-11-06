@@ -34,6 +34,9 @@ impl Fixture {
                 .execute_batch(&format!("DROP TRIGGER \"{trigger}\";"))
                 .unwrap();
         }
+        connection
+            .execute_batch(include_str!("../send_queue/schema.sql"))
+            .unwrap();
         connection.execute_batch(sql).unwrap();
         Self { root, connection }
     }

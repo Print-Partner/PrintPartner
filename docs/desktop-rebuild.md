@@ -3305,7 +3305,7 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   them. An empty input set is a Plan with no Source layers; its snapshot has
   `layers: []`, which restores that. A replay, an already consumed draft and
   every refusal save none either. Beside the snapshot, Accept saves the Build's
-  header as it stood in `plan_snapshot_headers` (schema step 44), and a draft
+  header as it stood in `plan_snapshot_headers` (schema step 45), and a draft
   header row is copied to the Build
   ([Draft header fields](draft-headers.md#accept)).
 
@@ -3355,7 +3355,7 @@ open, in one immediate transaction. It needs an `Idempotency-Key`, writes
 nothing to the Build, and Accept publishes it.
 `GET /plans/{id}/drafts/{draft_id}/header` reads the draft's header beside the
 Build's current one. [Draft header fields](draft-headers.md) has the contract,
-schema steps 43 and 44, the draft paths that carry the header forward, and the
+schema steps 43 and 45, the draft paths that carry the header forward, and the
 Accept copy.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the

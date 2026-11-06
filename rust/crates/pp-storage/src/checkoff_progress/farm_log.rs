@@ -8,12 +8,12 @@
 //! keep only counts and ids; the receipt in `printer.checkoff_bursts` stays
 //! the one copy of what undo restores.
 //!
-//! Sends are read from the existing `printer.send_queue` records, not copied.
+//! Sends are read from the send queue records (`crate::send_queue`), not copied.
 //! A send is a printer command (dispatch or cancel), so it never offers undo,
 //! and neither does an undo entry: there is no redo.
 
 use super::{Body, Outcome, Response, burst};
-use crate::read_model::farm::{Farm, SendState, setting_list};
+use crate::read_model::farm::{Farm, SendState, queue_list};
 use anyhow::Result;
 use rusqlite::Transaction;
 use serde::Serialize;
@@ -323,7 +323,7 @@ fn logged(entry: &Value) -> Option<FarmLogEntry> {
 }
 
 fn sends(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<FarmLogEntry>> {
-    let queue = setting_list(tx, tenant, "printer.send_queue")?;
+    let queue = queue_list(tx, tenant)?;
     let text = |value: &Value, key: &str| {
         value[key]
             .as_str()

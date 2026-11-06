@@ -3,7 +3,7 @@
 A draft can propose a new Build name, order number, customer and due date. The
 proposal autosaves into the durable draft, and only Accept copies it to the
 Build. GRE-1197 built the storage, the draft write and the draft read; GRE-1207
-built the Accept copy, its preview and schema step 44 ([Accept](#accept)).
+built the Accept copy, its preview and schema step 45 ([Accept](#accept)).
 Everything here is Rust-only, behind `desktop_rebuild` and
 `PP_DESKTOP_REBUILD=1`.
 
@@ -162,14 +162,14 @@ Two limits remain:
   included, and send that preview's `revision` without `draft_id` (the draft
   id goes in the path), `expected_header_version` included, as the Accept body.
 
-## Schema 44
+## Schema 45
 
 When Accept saves its `pre_apply` snapshot of the replaced Plan, it also saves
 the Build's header as it stood in `plan_snapshot_headers`, keyed by that
 snapshot's id, so a restore (GRE-1094) can bring the header back. Node's
-snapshot payload is unchanged. The 43 to 44 step installs the table from
+snapshot payload is unchanged. The 44 to 45 step installs the table from
 `pp-storage/src/plan_publication/snapshot_header_schema.sql`, takes
-`pre-schema44.db`, and alters no table Node uses.
+`pre-schema45.db`, and alters no table Node uses.
 
 | Table | Key | Columns |
 | --- | --- | --- |

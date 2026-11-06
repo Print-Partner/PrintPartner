@@ -430,6 +430,9 @@ fn database() -> Connection {
          CREATE TABLE app_settings(tenant_id TEXT,key TEXT,value TEXT);"
     )).unwrap();
     connection
+        .execute_batch(include_str!("../send_queue/schema.sql"))
+        .unwrap();
+    connection
 }
 
 fn insert_part(tx: &Transaction<'_>, table: &str, row: &Value) {
@@ -632,6 +635,91 @@ fn remapped_settings_match_literal_node_results() {
     }
 }
 
+/// The same remap cases with the queue moved into `printer_send_queue`:
+/// Accept reads the table, counts the same items and writes the remapped
+/// units to the table rows, and the legacy setting stays absent.
+#[test]
+fn remapped_queue_rows_match_literal_node_results() {
+    let cases = golden();
+    for case in cases["remap"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["expected"]["kind"] != "unsafe")
+    {
+        // The golden items carry only what Accept reads; a stored item also
+        // has the fields Node's `parseItem` requires.
+        let mut queue = case["input"]["queue"].clone();
+        for (index, item) in queue.as_array_mut().unwrap().iter_mut().enumerate() {
+            for (key, value) in [
+                ("id", format!("q{index}")),
+                ("filename", "plate.gcode".into()),
+                (
+                    "artifact_path",
+                    "/exports/printer-uploads/q/plate.gcode".into(),
+                ),
+                ("printer_id", "p1".into()),
+            ] {
+                if item.get(key).is_none() {
+                    item[key] = json!(value);
+                }
+            }
+        }
+        let mut connection = database();
+        let tx = connection.transaction().unwrap();
+        settings(&tx, &case["input"]["links"], &queue);
+        tx.commit().unwrap();
+        crate::send_queue::recover(&mut connection).unwrap();
+        let tx = connection.transaction().unwrap();
+        assert!(
+            setting(&tx, "tenant", "printer.send_queue")
+                .unwrap()
+                .is_none()
+        );
+        let production = production(&tx, "tenant", 1).unwrap();
+        assert!(production.queue_in_table);
+        let active = usize::from(case["id"] == "links-queue-resolved");
+        assert_eq!(
+            (production.link_count, production.queue_count),
+            (active, active)
+        );
+        let prepared = prepared(&cases["prepare"][2]).unwrap();
+        let tokens = HashMap::from([
+            ((11, 0), format!("ppu_{:032x}", 1)),
+            ((11, 1), format!("ppu_{:032x}", 2)),
+        ]);
+        let Remap::Mapped(mapping) = remap(&production, 1, &tokens, &prepared).unwrap() else {
+            panic!("unexpected unmappable link")
+        };
+        write_remap(
+            &tx,
+            "tenant",
+            production,
+            &mapping,
+            &HashMap::from([(21, 31)]),
+        )
+        .unwrap();
+        let units = |items: &Value| -> Vec<Value> {
+            items
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["checkoff_units"].clone())
+                .collect()
+        };
+        let rows = json!(crate::send_queue::rows(&tx, "tenant").unwrap().unwrap());
+        assert_eq!(
+            units(&rows),
+            units(&case["expected"]["settings"]["printer.send_queue"])
+        );
+        assert!(
+            setting(&tx, "tenant", "printer.send_queue")
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
 #[test]
 fn ownerless_queue_with_deleted_parts_is_unmappable_like_node() {
     let cases = golden();
@@ -828,7 +916,7 @@ fn client_validates_reused_required_unit_named_utf8_text_at_boundary() {
             &json!({"definitions":data["transactionSchema"]}),
             &corrupted,
         );
-        c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
+        c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_send_queue; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
         let session = "reused-unit-text-session";
         let digest = hex::encode(Sha256::digest(session.as_bytes()));
         c.execute_batch("INSERT INTO users(id,display_name,is_admin,created_at) VALUES('default','Fixture',0,'2026-09-06T00:00:00.000Z')").unwrap();
@@ -928,6 +1016,8 @@ mod transaction {
         }
         c.execute_batch(include_str!("schema.sql")).unwrap();
         c.execute_batch(include_str!("../domain_events/schema.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../send_queue/schema.sql"))
             .unwrap();
         c.execute_batch(include_str!("../working_drafts/header_schema.sql"))
             .unwrap();

@@ -38,71 +38,55 @@ pub(crate) fn assert_special_entry(path: &Path) {
 
 /// Windows has no mode bits: a new state file inherits its directory's ACL.
 /// Every ACE that grants access names this user, SYSTEM or Administrators,
-/// and one names this user, as the profile folder's ACL gives.
+/// and one names this user, as the profile folder's ACL gives. PowerShell
+/// prints each SID in full, because SDDL abbreviates some accounts, such as
+/// `LA` for the built-in Administrator that hosted runners use.
 pub(crate) fn assert_private_file(path: &Path) {
-    let output = |program: &str, args: &[&std::ffi::OsStr]| {
-        let output = std::process::Command::new(program)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{program} failed: {}",
-            output.status
-        );
-        String::from_utf8(output.stdout).unwrap()
-    };
-    let user = output(
-        "whoami",
-        &[
-            "/user".as_ref(),
-            "/fo".as_ref(),
-            "csv".as_ref(),
-            "/nh".as_ref(),
-        ],
+    let mut script = std::ffi::OsString::from(
+        "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; \
+         (Get-Acl -LiteralPath '",
     );
-    let user = user
-        .trim()
-        .rsplit(',')
-        .next()
-        .unwrap()
-        .trim_matches('"')
-        .to_owned();
-    let mut script = std::ffi::OsString::from("(Get-Acl -LiteralPath '");
     script.push(path.as_os_str());
-    script.push("').Sddl");
-    let sddl = output(
-        "powershell",
-        &["-NoProfile".as_ref(), "-Command".as_ref(), &script],
+    script.push(
+        "').GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | \
+         ForEach-Object { '{0} {1} {2}' -f $_.AccessControlType, \
+         $_.PropagationFlags.HasFlag([Security.AccessControl.PropagationFlags]::InheritOnly), \
+         $_.IdentityReference.Value }",
     );
-    let dacl = sddl
-        .trim()
-        .split("D:")
-        .nth(1)
-        .unwrap()
-        .split("S:")
-        .next()
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command"])
+        .arg(&script)
+        .output()
         .unwrap();
-    let granted: Vec<&str> = dacl
-        .split('(')
-        .skip(1)
-        .filter_map(|ace| {
-            let fields: Vec<&str> = ace.trim_end_matches(')').split(';').collect();
-            (fields[0] == "A" && !fields[1].contains("IO")).then_some(fields[5])
-        })
+    assert!(
+        output.status.success(),
+        "powershell failed: {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = String::from_utf8(output.stdout).unwrap();
+    let mut lines = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let user = lines.next().unwrap();
+    let granted: Vec<&str> = lines
+        .filter_map(
+            |rule| match rule.split_whitespace().collect::<Vec<_>>()[..] {
+                ["Allow", "False", sid] => Some(sid),
+                ["Allow", "True", _] | ["Deny", _, _] => None,
+                _ => panic!("unexpected access rule {rule:?}"),
+            },
+        )
         .collect();
     assert!(
         granted
             .iter()
-            .all(|sid| ["SY", "BA", user.as_str()].contains(sid)),
-        "{} grants {granted:?}",
+            .all(|sid| ["S-1-5-18", "S-1-5-32-544", user].contains(sid)),
+        "{} grants {granted:?}; user {user}",
         path.display()
     );
-    assert!(
-        granted.contains(&user.as_str()),
-        "{}: {sddl}",
-        path.display()
-    );
+    assert!(granted.contains(&user), "{}: {output}", path.display());
 }
 
 fn icacls(path: &Path, change: &[&str]) {

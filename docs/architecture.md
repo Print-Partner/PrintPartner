@@ -133,7 +133,7 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
 | [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | `pp-os` (Windows log entries) |
-| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`; `pp-source`, `pp-net`, `pp-api` gated |
+| [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`, `pp-os`; `pp-source`, `pp-net`, `pp-api` gated |
 | [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
@@ -149,8 +149,10 @@ no-replace rename and its directory locks. `pp-compat` uses it on Windows for
 its log writes relative to the pinned log directory: append opens,
 exclusive creates, the archive security open and the replacing rotation
 rename. Read-only tail reads still open by path. Its Unix logs still call `openat` and `renameat` through libc.
-`pp-core` is the next consumer; add
-its edge to the checker and manifests only with its migration. It supplies directory-relative handle access,
+`pp-core` uses it for its state files (`desktop.toml`, browser preferences and
+desktop settings): no-follow reads relative to the data directory handle, identity
+rechecks, private creation and durable publication, and for the review thumbnail
+open and the perf scratch directory. `pp-os` supplies directory-relative handle access,
 identity/no-follow checks, lock primitives and durable file publication. The
 crate documentation in `rust/crates/pp-os/src/lib.rs` lists where the Unix and
 Windows guarantees differ; on Windows it reports no POSIX owner or mode, so

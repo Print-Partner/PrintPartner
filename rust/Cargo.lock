@@ -3297,7 +3297,6 @@ dependencies = [
  "http-body",
  "lettre",
  "log",
- "pp-os",
  "pp-services",
  "pp-storage",
  "reqwest",

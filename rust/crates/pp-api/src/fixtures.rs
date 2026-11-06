@@ -30,7 +30,12 @@ impl Sandbox {
         let path = std::env::temp_dir().join(format!("pp-parity-{label}-{}", hex::encode(random)));
         // WriterOwner refuses group/world-writable data directories, so do not
         // let a permissive umask decide the mode.
-        pp_os::create_private_dir(&path).with_context(|| format!("create {}", path.display()))?;
+        let builder = &mut std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
+        builder
+            .create(&path)
+            .with_context(|| format!("create {}", path.display()))?;
         Ok(Self(path))
     }
 

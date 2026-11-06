@@ -24,7 +24,6 @@ required-features = ["codegen"]
 
 [dependencies]
 pp-storage = { path = "../pp-storage" }
-pp-os = { path = "../pp-os" }
 pp-services = { path = "../pp-services", optional = true }
 rmcp = { version = "=3.5.0", default-features = false, features = ["server", "transport-streamable-http-server"], optional = true }
 anyhow.workspace = true

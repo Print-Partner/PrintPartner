@@ -529,7 +529,10 @@ pub fn read_settings(client: &crate::SettingsClient, wait: Duration) -> Result<F
             }
         }
     };
-    let connection = reader.connection.as_ref().expect("checked out connection");
+    let connection = reader
+        .connection
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Reader connection missing"))?;
     let queue = match crate::send_queue::rows(connection, "default")? {
         Some(items) => items,
         None => list(crate::send_queue::LEGACY_KEY)?,

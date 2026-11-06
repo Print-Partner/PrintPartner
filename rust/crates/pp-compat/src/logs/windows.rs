@@ -1,8 +1,11 @@
 //! Windows log files. The admitted directory is held open without
 //! `FILE_SHARE_DELETE`, so it cannot be renamed, replaced or removed while the
-//! logs are open. Every entry operation runs through `pp_os::Dir` relative to
-//! that handle, never by path, so replacing an ancestor with a junction cannot
-//! redirect it. Every open refuses a reparse point (symbolic link or junction)
+//! logs are open. Every write-side entry operation (append, create, archive
+//! repair, rotation) runs through `pp_os::Dir` relative to that handle, never
+//! by path, so replacing an ancestor with a junction cannot redirect it. The
+//! read-only tail readers (`open_tail`, used by `recent_logs` and
+//! `recent_diagnostics`) still open by path and are not pinned unless a
+//! running `Logs` holds the directory open. Every open refuses a reparse point (symbolic link or junction)
 //! as the final component. Access control is a protected DACL that grants only the current
 //! user, the equivalent of modes 0600 and 0700.
 

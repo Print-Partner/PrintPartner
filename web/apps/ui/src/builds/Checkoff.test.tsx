@@ -268,6 +268,47 @@ describe("CHK-03 retry and refusals", () => {
   });
 });
 
+describe("CHK-03 in-flight and stale writes", () => {
+  it("keeps units picked while a burst is in flight", async () => {
+    let answer: (r: Response) => void = () => {};
+    const fetchMock = core(
+      reads(units, () => new Promise<Response>((resolve) => (answer = resolve))),
+    );
+    renderAt(fetchMock);
+    await screen.findByRole("group", { name: /^bracket\.stl/ });
+    fireEvent.click(box("bracket.stl", 2));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(1));
+    fireEvent.click(box("gear.stl", 1));
+    await act(async () => answer(json(RECEIPT)));
+    await screen.findByText(/Recorded:/);
+    expect(preview()).toBe("gear.stl: +1 printed (unit 1)");
+  });
+
+  it("a stale undo Retry never marks a newer burst undone", async () => {
+    let undos = 0;
+    const fetchMock = core(
+      reads(units, (path) => {
+        if (!path.endsWith("/undo")) return json(RECEIPT);
+        undos += 1;
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }),
+    );
+    renderAt(fetchMock);
+    await screen.findByRole("group", { name: /^bracket\.stl/ });
+    fireEvent.click(box("bracket.stl", 2));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    await screen.findByText(/Recorded:/);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await screen.findByText("Could not undo the burst.");
+    fireEvent.click(box("gear.stl", 1));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    await waitFor(() => expect(screen.queryByText("Could not undo the burst.")).toBeNull());
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+    expect(undos).toBeGreaterThan(0);
+  });
+});
+
 describe("CHK-05 offline", () => {
   it("disables recording with the reason and queues nothing", async () => {
     let down = false;

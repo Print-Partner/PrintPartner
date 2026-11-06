@@ -74,7 +74,7 @@ const receiptText = (r: ManualBurstReceipt) =>
     .filter(Boolean)
     .join(", ") || "nothing changed";
 
-function useBursts(id: number, onRecorded: () => void) {
+function useBursts(id: number, onRecorded: (sent: ManualBurstRequest) => void) {
   const client = useQueryClient();
   const [tally, setTally] = useState<Tally | null>(null);
   const reread = () => client.invalidateQueries({ queryKey: checkoffUnitsQuery(id).queryKey });
@@ -82,9 +82,9 @@ function useBursts(id: number, onRecorded: () => void) {
     mutationFn: (burst: { body: ManualBurstRequest; lines: string[] }) =>
       writeCore("recordManualCheckoffBurst", { id }, burst.body),
     retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
-    onSuccess: (receipt, { lines }) => {
+    onSuccess: (receipt, { body, lines }) => {
       setTally({ kind: "recorded", receipt, lines });
-      onRecorded();
+      onRecorded(body);
     },
     onSettled: reread,
   });
@@ -103,8 +103,13 @@ function useBursts(id: number, onRecorded: () => void) {
         if (!landed) throw error;
       }
     },
-    onSuccess: () =>
-      setTally((t) => (t?.kind === "recorded" ? { kind: "undone", lines: t.lines } : t)),
+    // Only the burst this undo named turns undone; a newer burst keeps its Undo.
+    onSuccess: (_, { undo_token }) =>
+      setTally((t) =>
+        t?.kind === "recorded" && t.receipt.undo_token === undo_token
+          ? { kind: "undone", lines: t.lines }
+          : t,
+      ),
     onSettled: reread,
   });
   return { record, undo, tally };
@@ -207,9 +212,16 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
   const [pending, setPending] = useState<{ body: ManualBurstRequest; lines: string[] } | null>(
     null,
   );
-  const { record, undo, tally } = useBursts(id, () => {
+  // A recorded burst drops only the picks it sent; a pick added or changed while it was in
+  // flight stays for the next burst.
+  const { record, undo, tally } = useBursts(id, (sent) => {
     setPending(null);
-    setPicks(new Map());
+    setPicks((now) => {
+      const next = new Map(now);
+      for (const u of sent.units)
+        if (next.get(u.token) === (u.printed ?? u.assembled)) next.delete(u.token);
+      return next;
+    });
   });
   // A reread drops picks that now match the stored state, so a burst that landed while its
   // answer was lost is never picked twice.
@@ -246,6 +258,8 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
       lines: lines.map((l) => l.text),
     };
     setPending(burst);
+    // A new burst retires an old undo's failure, so its Retry cannot act on a newer tally.
+    undo.reset();
     record.mutate(burst);
   };
   const switchField = (next: Field) => {

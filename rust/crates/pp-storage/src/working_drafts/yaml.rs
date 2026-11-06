@@ -138,7 +138,7 @@ fn scalar(text: JsText, style: ScalarStyle, tag: Option<&Tag>) -> ReadResult<Nod
         }),
     }
 }
-fn number_text(n: f64) -> String {
+pub(super) fn number_text(n: f64) -> String {
     if n.is_nan() {
         "NaN".into()
     } else if n == f64::INFINITY {

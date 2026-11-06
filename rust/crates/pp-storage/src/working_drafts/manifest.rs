@@ -1,6 +1,6 @@
 use super::{
     observation::{DocumentRead, PreparationBudget, ReadFailure, ReadResult},
-    yaml::{Document, Node},
+    yaml::{Document, Node, number_text},
 };
 use crate::manifest_text::{
     DraftPart, JsText, ManifestText, OptionGroupId, VariantId, is_ecmascript_whitespace,
@@ -224,11 +224,12 @@ fn rules(
     }
     Ok(out)
 }
+fn blank(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|text| text.encode_utf16().all(is_ecmascript_whitespace))
+}
 pub(crate) fn parse(bytes: &[u8], b: &mut PreparationBudget<'_>) -> ReadResult<Manifest> {
     b.document(bytes.len(), 0)?;
-    if std::str::from_utf8(bytes)
-        .is_ok_and(|text| text.encode_utf16().all(is_ecmascript_whitespace))
-    {
+    if blank(bytes) {
         return Ok(Manifest::default());
     }
     let d = Document::parse(bytes, b)?;
@@ -275,6 +276,73 @@ pub(crate) fn parse(bytes: &[u8], b: &mut PreparationBudget<'_>) -> ReadResult<M
                 return invalid();
             }
         }
+    }
+    Ok(out)
+}
+/// One option of a variant dimension: a YAML string or number.
+#[derive(Clone)]
+pub(crate) enum DimensionOption {
+    Text(JsText),
+    Number(f64),
+}
+impl DimensionOption {
+    /// `JSON.stringify` of the option; a non-finite number is `null`.
+    pub(crate) fn write_json(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Text(text) => text.write_json(output),
+            Self::Number(n) if n.is_finite() => {
+                output.extend_from_slice(number_text(*n).as_bytes())
+            }
+            Self::Number(_) => output.extend_from_slice(b"null"),
+        }
+    }
+    /// Node's `String(option) === value`.
+    pub(crate) fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::Text(text) => text.units().iter().copied().eq(value.encode_utf16()),
+            Self::Number(n) => number_text(*n) == value,
+        }
+    }
+}
+pub(crate) type Dimensions = Vec<(JsText, Vec<DimensionOption>)>;
+/// Node's `loadManifestYaml(text).variant_dimensions`: nothing unless the
+/// whole manifest loads, then each entry of a mapping (or each index of a
+/// sequence) whose value is a sequence, keeping its strings and numbers.
+pub(crate) fn variant_dimensions(
+    bytes: &[u8],
+    b: &mut PreparationBudget<'_>,
+) -> ReadResult<Dimensions> {
+    parse(bytes, b)?;
+    if blank(bytes) {
+        return Ok(Vec::new());
+    }
+    let d = Document::parse(bytes, b)?;
+    let Some(id) = d.get(d.root, "variant_dimensions", b)? else {
+        return Ok(Vec::new());
+    };
+    let entries = match d.node(id, b)? {
+        Node::Mapping(entries) => entries.clone(),
+        Node::Sequence(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (JsText::scalar(&index.to_string()), *item))
+            .collect(),
+        _ => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    for (key, value) in entries {
+        let Node::Sequence(items) = d.node(value, b)? else {
+            continue;
+        };
+        let mut options = Vec::new();
+        for item in items {
+            match d.node(*item, b)? {
+                Node::String(text) => options.push(DimensionOption::Text(text.clone())),
+                Node::Number(n) => options.push(DimensionOption::Number(*n)),
+                _ => {}
+            }
+        }
+        out.push((key, options));
     }
     Ok(out)
 }

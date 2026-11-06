@@ -1,9 +1,11 @@
-//! Printer-host reads in the Rust-only runtime (GRE-360). The `pp-api`
-//! routes resolve a printer through storage's fleet and integration settings
-//! and read Moonraker hosts through the gateway's driver. Every read is
-//! user-initiated and read-only: no upload, start, retry or Checkoff change.
+//! Printer-host reads in the Rust-only runtime (GRE-360, GRE-1044). The
+//! `pp-api` routes resolve a printer through storage's fleet and integration
+//! settings and read Moonraker and PrusaLink hosts through the gateway's drivers. Every read is
+//! user-initiated and read-only: no upload, start or Checkoff change. The only
+//! resend is PrusaLink's single Digest resend after a 401 (see
+//! `pp_gateway::printer_host`).
 use pp_api::printer_host::{Answer, Capabilities, HostAnswer, PrinterHostPort};
-use pp_gateway::printer_host::{MoonrakerReads, MoonrakerTarget};
+use pp_gateway::printer_host::{HostReads, HostTarget};
 use pp_storage::{
     SettingsClient,
     printer_hosts::{self, PrinterLink, StoredIntegration},
@@ -12,10 +14,8 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 const READER_WAIT: Duration = Duration::from_millis(500);
-const MOONRAKER: &str = "moonraker";
 /// Types Node has an adapter for that this runtime cannot read yet.
-const UNPORTED: [&str; 6] = [
-    "prusalink",
+const UNPORTED: [&str; 5] = [
     "bambu",
     "spoolman",
     "slicer_sidecar",
@@ -25,25 +25,31 @@ const UNPORTED: [&str; 6] = [
 
 pub(crate) struct StoredPrinterHosts {
     settings: SettingsClient,
-    reads: MoonrakerReads,
+    reads: HostReads,
 }
 
 impl StoredPrinterHosts {
-    pub(crate) fn new(settings: SettingsClient, reads: MoonrakerReads) -> Self {
+    pub(crate) fn new(settings: SettingsClient, reads: HostReads) -> Self {
         Self { settings, reads }
     }
 }
 
 enum Host {
-    Moonraker(MoonrakerTarget),
+    Read(HostTarget),
     Unported,
 }
 
 fn host(integration: StoredIntegration) -> Option<Host> {
     match integration.kind.as_str() {
-        MOONRAKER => Some(Host::Moonraker(MoonrakerTarget {
+        "moonraker" => Some(Host::Read(HostTarget::Moonraker {
             base_url: integration.base_url,
             api_key: integration.api_key,
+        })),
+        "prusalink" => Some(Host::Read(HostTarget::PrusaLink {
+            base_url: integration.base_url,
+            username: integration.username,
+            password: integration.password,
+            storage: integration.storage,
         })),
         kind if UNPORTED.contains(&kind) => Some(Host::Unported),
         _ => None,
@@ -78,7 +84,7 @@ impl StoredPrinterHosts {
         let (settings, reads) = (self.settings.clone(), self.reads.clone());
         Box::pin(async move {
             let target = match linked(&settings, printer).await {
-                Ok(Host::Moonraker(target)) => target,
+                Ok(Host::Read(target)) => target,
                 Ok(Host::Unported) => return HostAnswer::Unsupported,
                 Err(answer) => return answer,
             };
@@ -96,10 +102,11 @@ impl PrinterHostPort for StoredPrinterHosts {
         let settings = self.settings.clone();
         Box::pin(async move {
             match linked(&settings, printer).await {
-                Ok(Host::Moonraker(_)) => HostAnswer::Ok(Capabilities {
+                // Only Moonraker has a status watcher here so far.
+                Ok(Host::Read(target)) => HostAnswer::Ok(Capabilities {
                     files: true,
                     cameras: true,
-                    status: true,
+                    status: matches!(target, HostTarget::Moonraker { .. }),
                 }),
                 Ok(Host::Unported) => HostAnswer::Unsupported,
                 Err(answer) => answer,
@@ -130,7 +137,7 @@ impl PrinterHostPort for StoredPrinterHosts {
             };
             let kind = stored.kind.clone();
             match host(stored) {
-                Some(Host::Moonraker(target)) => HostAnswer::Ok(reads.test(&target).await),
+                Some(Host::Read(target)) => HostAnswer::Ok(reads.test(&target).await),
                 Some(Host::Unported) => HostAnswer::Unsupported,
                 None => HostAnswer::Ok(json!({
                     "ok": false,
@@ -151,20 +158,26 @@ mod tests {
             kind: kind.into(),
             base_url: "http://p.test".into(),
             api_key: None,
+            username: String::new(),
+            password: None,
+            storage: None,
             enabled: true,
         }
     }
 
     /// Every type Node's adapter registry (`integrations/registry.ts`) knows
-    /// is Moonraker or unported here; anything else is unknown.
+    /// is read here (Moonraker, PrusaLink) or unported; anything else is unknown.
     #[test]
     fn ticket_t_21_host_types_follow_nodes_registry() {
         assert!(matches!(
             host(stored("moonraker")),
-            Some(Host::Moonraker(_))
+            Some(Host::Read(HostTarget::Moonraker { .. }))
+        ));
+        assert!(matches!(
+            host(stored("prusalink")),
+            Some(Host::Read(HostTarget::PrusaLink { .. }))
         ));
         for kind in [
-            "prusalink",
             "bambu",
             "spoolman",
             "slicer_sidecar",

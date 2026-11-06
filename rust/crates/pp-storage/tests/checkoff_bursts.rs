@@ -2,16 +2,16 @@
 //! GRE-1090: one Checkoff burst over several beds is one transaction with an
 //! idempotency key and an undo token. Runs on a copy of the required-units
 //! fixture with the synthetic beds of the printer Checkoff verify parity fixture.
+use checkoff_apply::apply;
 use checkoff_fixture::Fixture;
 use pp_storage::{
     WriterOwner,
-    auth::Secret,
-    checkoff_progress::{Basis, Request, Response},
-    read_model::Credential,
+    checkoff_progress::{Basis, Request},
 };
 use serde_json::{Value, json};
-use std::{sync::atomic::AtomicBool, time::Duration};
 
+#[path = "common/checkoff_apply.rs"]
+mod checkoff_apply;
 #[path = "common/checkoff_fixture.rs"]
 mod checkoff_fixture;
 #[path = "common/js_json.rs"]
@@ -31,20 +31,6 @@ impl Fixture {
         });
         json_rows::query_rows(&self.sql(), queries.as_object().unwrap())
     }
-}
-
-fn apply(owner: &WriterOwner, request: Request) -> Value {
-    let response: Response = owner
-        .checkoff_progress()
-        .unwrap()
-        .apply(
-            Credential::Session(Secret::new("required-unit-fixture-secret".into())),
-            request,
-            &AtomicBool::new(false),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-    serde_json::to_value(response).unwrap()
 }
 
 fn batch(owner: &WriterOwner, body: Value) -> Value {

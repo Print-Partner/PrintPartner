@@ -116,7 +116,7 @@ function fakeCore({
     results,
     printers,
     marked: 0,
-    receipts: new Map<string, unknown>(),
+    receipts: new Map<string, { undo_token: string }>(),
     undone: new Set<string>(),
   };
   const before = new Map<string, { links: Result[]; units: number }>();
@@ -148,6 +148,14 @@ function fakeCore({
     if (path === "/api/v2/printer-checkoff/verify-batch") {
       const key = body.idempotency_key as string;
       const seen = state.receipts.get(key);
+      if (seen && state.undone.has(seen.undo_token))
+        return json(
+          {
+            title: "Conflict",
+            detail: "burst_undone: this Checkoff burst was undone; send a new idempotency_key",
+          },
+          409,
+        );
       if (seen) return json(seen);
       const beds = body.beds as {
         link_id: string;
@@ -675,6 +683,7 @@ describe("an uncertain write is reconciled, not repeated", () => {
     // Undone elsewhere before Today rereads: the core keeps the receipt for that key.
     core.state.results = waiting;
     core.state.marked = 0;
+    for (const r of core.state.receipts.values()) core.state.undone.add(r.undo_token);
     fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
     expect(
       await screen.findByText(
@@ -1117,6 +1126,7 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     await screen.findByRole("alert");
     core.state.results = waiting;
     core.state.marked = 0;
+    for (const r of core.state.receipts.values()) core.state.undone.add(r.undo_token);
     fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
     await screen.findByText(/^Nothing was marked on Voron 2\.4/);
     expect(unit("bracket.stl unit 2")).toHaveProperty("checked", true);

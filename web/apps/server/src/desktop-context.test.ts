@@ -71,6 +71,57 @@ describe("Windows private pipe dial-in", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("keeps a dial waiting while earlier connections hold streams open", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pp-dial-"));
+    const path =
+      process.platform === "win32"
+        ? String.raw`\\.\pipe\pp-dial-hold-${process.pid}`
+        : join(directory, "core.sock");
+    const http = createHttpServer((request, response) => {
+      if (request.url === "/health") response.end("healthy");
+      else response.write("streaming");
+    });
+    const accepted: Socket[] = [];
+    const core = createNetServer((socket) => accepted.push(socket));
+    core.listen(path);
+    await once(core, "listening");
+    const stop = dialDesktopPipe(http, path, 2);
+    const take = async () => {
+      const deadline = Date.now() + 2000;
+      while (accepted.length === 0) {
+        if (Date.now() > deadline) throw new Error("No dial waiting");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      return accepted.shift()!;
+    };
+    const send = (socket: Socket, target: string, expected: string) => {
+      const received = new Promise<void>((resolve) => {
+        let body = "";
+        socket.on("data", (chunk) => {
+          body += chunk;
+          if (body.includes(expected)) resolve();
+        });
+      });
+      socket.write(`GET ${target} HTTP/1.1\r\nHost: desktop-compat\r\n\r\n`);
+      return received;
+    };
+    const held: Socket[] = [];
+    try {
+      for (let stream = 0; stream < 4; stream += 1) {
+        const socket = await take();
+        held.push(socket);
+        await send(socket, "/stream", "streaming");
+      }
+      await send(await take(), "/health", "healthy");
+    } finally {
+      stop();
+      for (const socket of [...held, ...accepted]) socket.destroy();
+      core.close();
+      http.closeAllConnections();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Rust-written storage markers", () => {

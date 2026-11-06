@@ -248,7 +248,9 @@ the Farm screen. No screen polls for printer state.
   suggestion. A second press while Apply runs is ignored, and a print an Apply
   resolved leaves the list at once, before the reread answers. A refused print stays
   checked with the core's reason under it; a print that answers "Print already
-  claimed" is reported as already claimed, never as claimed now. Applying one group
+  claimed" is reported as already claimed, never as claimed now. The core claims
+  every open print of the same file on that printer together, so reprints of one
+  file are counted as claimed by the Apply that claimed them, with one request. Applying one group
   leaves the other groups' checks and reasons as they were, and the outcome stays
   shown when the last print is resolved. The list rereads after every Apply. Farm module off shows the Module-off state and reads nothing.
 - **Tests.** `src/farm/Farm.test.tsx` drives a fake socket (`src/testSockets.ts`,

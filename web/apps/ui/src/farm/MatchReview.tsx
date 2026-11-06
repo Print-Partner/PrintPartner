@@ -49,6 +49,15 @@ const basisText = (s: Suggestion) =>
     ? "Nothing points to one Build."
     : `From ${s.evidence.basis.map((b) => BASIS_WORDS[b]).join(", ")}.`;
 
+/**
+ * The file a print came from, as the core compares it: a claim claims every open print of
+ * the same file on the same printer, so reprints of one file are claimed together.
+ */
+const fileOf = (s: Suggestion) => {
+  const name = s.filename.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  return `${s.printer_id}:${name.slice(name.lastIndexOf("/") + 1).toLowerCase()}`;
+};
+
 /** Whether Apply claims a checked row for its Build; otherwise it dismisses the row. */
 const claims = (s: Suggestion) => s.confidence !== "none" && s.build !== null;
 
@@ -100,7 +109,9 @@ export function MatchReview() {
     let claimed = 0;
     let already = 0;
     let dismissed = 0;
+    const rows = suggestions.data?.suggestions ?? [];
     for (const s of picked) {
+      if (done.includes(s.print_id)) continue;
       try {
         if (claims(s)) {
           try {
@@ -109,8 +120,15 @@ export function MatchReview() {
               { id: s.print_id },
               { profile_id: s.build!.id },
             );
-            claimed += 1;
-            done.push(s.print_id);
+            const reprints = rows.filter(
+              (r) =>
+                !resolved.has(r.print_id) && !done.includes(r.print_id) && fileOf(r) === fileOf(s),
+            );
+            const ids = reprints.some((r) => r.print_id === s.print_id)
+              ? reprints.map((r) => r.print_id)
+              : [s.print_id];
+            claimed += ids.length;
+            done.push(...ids);
           } catch (error) {
             if (!(
               error instanceof CoreError &&

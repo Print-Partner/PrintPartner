@@ -82,8 +82,12 @@ function fakeCore({ farm = "on" as "on" | "off", claimed = new Set<string>() } =
       }
       if (state.claimed.has(id!))
         return json({ title: "Conflict", detail: "Print already claimed" }, 409);
-      state.claimed.add(id!);
-      state.suggestions = state.suggestions.filter((s) => s.print_id !== id);
+      // Like the core, a claim claims every open print of the same file on that printer.
+      const same = state.suggestions.filter(
+        (s) => s.printer_id === row!.printer_id && s.filename === row!.filename,
+      );
+      for (const s of same) state.claimed.add(s.print_id);
+      state.suggestions = state.suggestions.filter((s) => !same.includes(s));
       return json({
         ok: true,
         link: {
@@ -266,6 +270,19 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     expect(screen.queryByRole("checkbox", { name: /^bracket\.gcode/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Apply Exact/ })).toBeNull();
     expect(core.posts).toHaveLength(1);
+  });
+
+  it("counts reprints of one file as claimed by the Apply that claimed them", async () => {
+    const core = fakeCore();
+    core.state.suggestions.push({
+      ...suggestion("bracket", "exact", { id: 22, name: "Voron 2.4 kit" }),
+      print_id: "bracket-reprint",
+    });
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Apply Exact: claim 2 prints" }));
+    expect(await within(result()).findByText("Applied: claimed 2 prints.")).toBeTruthy();
+    expect(core.posts).toHaveLength(1);
+    expect(core.state.claimed).toEqual(new Set(["bracket", "bracket-reprint"]));
   });
 
   it("says the Farm module is off instead of reading suggestions", async () => {

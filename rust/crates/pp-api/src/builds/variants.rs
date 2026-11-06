@@ -1,9 +1,7 @@
 //! `GET /plans/{id}/variant-dimensions` and `POST /plans/{id}/variant-selection`
 //! through the Build router (GRE-1221).
 
-use super::http::{
-    App, bytes_response, execute, failure, parse_build_id, run, unknown_build, unreadable,
-};
+use super::http::{App, bytes_response, execute, failure, run, unknown_build, unreadable};
 use crate::loopback::PresentedCredential;
 use axum::{
     body::to_bytes,
@@ -12,8 +10,14 @@ use axum::{
     response::Response,
 };
 use pp_storage::build_graph::{
-    BuildCommand, ManifestOptionsOutcome, VariantCommand, VariantOutcome,
+    BuildCommand, ManifestOptionsOutcome, PositiveId, VariantCommand, VariantOutcome,
 };
+
+/// Node reads the id with `Number(id)`, so `0x3`, `3e0` and `" 3 "` name Plan 3.
+fn parse_build_id(id: &str) -> Option<PositiveId> {
+    let id = pp_storage::plates::build_id(id)??;
+    PositiveId::new(u64::try_from(id).ok()?).ok()
+}
 
 pub(super) async fn read(
     State(app): State<App>,

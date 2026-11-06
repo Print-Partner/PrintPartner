@@ -321,7 +321,10 @@ pub(crate) fn variant_dimensions(
         return Ok(Vec::new());
     };
     let entries = match d.node(id, b)? {
-        Node::Mapping(entries) => entries.clone(),
+        Node::Mapping(entries) => {
+            b.expansion(entries.iter().map(|(key, _)| key.units().len() * 2).sum())?;
+            entries.clone()
+        }
         Node::Sequence(items) => items
             .iter()
             .enumerate()
@@ -337,7 +340,10 @@ pub(crate) fn variant_dimensions(
         let mut options = Vec::new();
         for item in items {
             match d.node(*item, b)? {
-                Node::String(text) => options.push(DimensionOption::Text(text.clone())),
+                Node::String(text) => {
+                    b.expansion(text.units().len() * 2)?;
+                    options.push(DimensionOption::Text(text.clone()));
+                }
                 Node::Number(n) => options.push(DimensionOption::Number(*n)),
                 _ => {}
             }
@@ -1425,3 +1431,33 @@ pub(super) fn kit(raw: Option<String>, b: &mut PreparationBudget<'_>) -> ReadRes
 #[cfg(test)]
 #[path = "manifest_preparation_tests.rs"]
 mod preparation_tests;
+
+#[cfg(test)]
+mod variant_dimension_tests {
+    use super::*;
+    use crate::working_drafts::observation::{PreparationLimits, Resource};
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn aliased_variant_options_charge_their_copies() {
+        let long = "x".repeat(1000);
+        let aliases = vec!["*s"; 200].join(", ");
+        let source = format!("variant_dimensions:\n  a: [&s {long}]\n  b: [{aliases}]\n");
+        let cancel = AtomicBool::new(false);
+        let mut budget = PreparationBudget::new(&cancel, PreparationLimits::default()).unwrap();
+        let dimensions = variant_dimensions(source.as_bytes(), &mut budget).unwrap();
+        assert_eq!(dimensions[1].1.len(), 200);
+        let mut budget = PreparationBudget::new(
+            &cancel,
+            PreparationLimits {
+                total_document_bytes: 20_000,
+                ..PreparationLimits::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            variant_dimensions(source.as_bytes(), &mut budget),
+            Err(ReadFailure::LimitExceeded(Resource::DocumentBytes))
+        ));
+    }
+}

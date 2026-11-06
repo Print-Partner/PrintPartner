@@ -1621,7 +1621,7 @@ mod ticket_t_10_fixtures {
         let fixture = seeded_fixture(
             include_str!("../../../../fixtures/parity/variants-http/node.json"),
             "variants-http",
-            69,
+            72,
         );
         assert!(fixture.seed.is_some());
         let sandbox = Sandbox::new("t10-variants").unwrap();
@@ -1652,7 +1652,7 @@ mod ticket_t_10_fixtures {
             let Some(stored) = &case.stored else {
                 continue;
             };
-            let plan: i64 = case.path.split('/').nth_back(1).unwrap().parse().unwrap();
+            let plan = case.node.body["profile_id"].as_i64().unwrap();
             let source = case.node.body["source_id"].as_i64().unwrap();
             let connection =
                 rusqlite::Connection::open(sandbox.path().join("print-partner.db")).unwrap();
@@ -1680,8 +1680,8 @@ mod ticket_t_10_fixtures {
         }
         served.stop().await.unwrap();
         owner.shutdown().unwrap();
-        assert_eq!(matched, 69);
-        assert_eq!(checked, 17);
+        assert_eq!(matched, 72);
+        assert_eq!(checked, 18);
     }
 
     #[tokio::test]

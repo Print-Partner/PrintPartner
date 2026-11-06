@@ -3100,8 +3100,9 @@ or `{}` when it is missing, empty or not JSON.
 
 A selection checks in Node's order:
 
-1. The id is a positive integer, else 404 `Profile not found`, before the body
-   is read.
+1. The id is `Number(id)` as a positive integer (so `0x3`, `3e0` and `" 3 "`
+   name Plan 3, through `plates::build_id`), else 404 `Profile not found`,
+   before the body is read. The dimensions read does the same.
 2. The body is `{ selection?: Record<string, string>, source_id?: positive safe
    integer }` (an empty body or `null` is `{}`), else 400 `Invalid variant
    selection`. A body that is not JSON is 400 `Request is invalid`.
@@ -3116,14 +3117,15 @@ A selection checks in Node's order:
 One immediate writer transaction then rechecks the Build and its base Source,
 stores the selection as `JSON.stringify` writes it, and saves each non-empty
 value plus `/` as an import rule. A read failure other than a missing or
-unreadable file, such as an exhausted `PreparationLimits` budget, is 503
+unreadable file, such as an exhausted `PreparationLimits` budget (each
+copied dimension name and text option, aliases included, is charged to it), is 503
 `source_observation_failed`, as for the manifest builder; Node has no limits.
 
-`fixtures/parity/variants-http/node.json` is Node's answer for 69 requests on
+`fixtures/parity/variants-http/node.json` is Node's answer for 72 requests on
 one database. `variants_flat_v1_v2_match_node_responses_and_changed_tables`
 in `ticket_t_10_fixtures` replays every case through `build_router` over the
-production `SourceReads`: all 69 match Node's status, body and changed tables,
-and after each of the 17 saves the stored selection text and the Source's
+production `SourceReads`: all 72 match Node's status, body and changed tables,
+and after each of the 18 saves the stored selection text and the Source's
 `imported_paths` equal Node's byte for byte. Regenerate the golden with
 `node fixtures/parity/variants-http/generate.mjs`.
 

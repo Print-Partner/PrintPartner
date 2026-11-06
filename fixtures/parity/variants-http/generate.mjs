@@ -174,6 +174,10 @@ const REQUESTS = [
   post("missing_build_v1", "/api/v1/plans/99/variant-selection", { selection: {} }),
   post("foreign_build_bad_body_v2", "/api/v2/plans/2/variant-selection", []),
   post("text_id_flat", "/plans/abc/variant-selection", { selection: {} }),
+  // Node reads the id with Number().
+  get("hex_id_flat", "/plans/0x3/variant-dimensions"),
+  get("padded_exponent_id_v1", "/api/v1/plans/%203e0%20/variant-dimensions"),
+  post("decimal_id_v2", "/api/v2/plans/3.0/variant-selection", { selection: { size: "large" } }),
 ];
 
 if (process.argv.includes("--probe")) {
@@ -234,7 +238,7 @@ if (process.argv.includes("--probe")) {
         ...(payload === undefined ? {} : verbatim ? { rawBody: payload } : { body: JSON.parse(payload) }),
         node: { status: response.statusCode, body: response.body === "" ? null : response.json(), setCookie: [] },
         changed,
-        ...(changed.length ? { stored: stored(path.split("/").at(-2), response.json().source_id) } : {}),
+        ...(changed.length ? { stored: stored(response.json().profile_id, response.json().source_id) } : {}),
       });
     }
     reader.close();

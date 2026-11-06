@@ -166,6 +166,23 @@ Phase 2 remains Chad's work and keeps GRE-635 open:
    A PR touching only `rust/` must merge on green checks if the review policy permits it.
    A docs-only PR must receive both named lint checks.
 
+## Edits to a pull request
+
+An edit to a pull request body or title can start these workflows. This matrix comes from the `on:` blocks and from the run history of PR #1547 (heads 91478f2 and 8ac5680), where `review-gate` ran once per head (plus one rerun) and `Lint Evidence block` ran on each body edit.
+
+| Event | `review-gate` | `Lint Evidence block` | Other workflows |
+| --- | --- | --- | --- |
+| Push to the PR branch (`synchronize`) | runs, waits for the review | runs | all PR workflows run |
+| Body edit (`edited`) | does not run | runs and lints the new body | `droid.yml` starts and skips unless the body or title mentions Droid; `linear-pr-sync.yml` syncs |
+| Title edit (`edited`) | does not run | runs; the lint reads only the body, so the verdict repeats | same as above |
+| Base change (`edited`) | does not run | runs | same as above |
+| Comment with a `pp-review-gate` marker | rerun by `review-gate-rerun.yml` | does not run | none |
+| Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | none |
+
+`review-gate` already ignores edits, so a body edit costs it nothing. `Lint Evidence block` has to run on a body edit, because fixing a failing Evidence section by editing the body is the normal path. Its `concurrency` group cancels an older run of the same PR.
+
+Do not skip `Lint Evidence block` on an edit with a job-level `if`, for example when the Evidence section did not change. GitHub counts a skipped required job as passing, and a run for the head that is newer than an earlier failure replaces it, so an unrelated edit would clear a failing lint. `scripts/test_merge_group_workflows.py` keeps both workflows in the shape the table shows. To avoid the cost, edit the body once, before pushing the work that starts the other jobs; a body edit starts `droid.yml`, `linear-pr-sync.yml` and `Lint Evidence block` only.
+
 ## Emergency path
 
 Chad can temporarily disable **main CI controls** in **Settings > Rules**.

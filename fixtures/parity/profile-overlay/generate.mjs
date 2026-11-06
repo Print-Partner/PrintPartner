@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const NODE_VERSION = "v22.23.3";
@@ -101,7 +101,7 @@ function render(cases) {
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
-const { createSelfHostPorts } = await import(join(server, "src/adapters/self-host/index.ts"));
+const { createSelfHostPorts } = await import(pathToFileURL(join(server, "src/adapters/self-host/index.ts")).href);
 const cases = [];
 for (const test of matrix) {
   const directory = mkdtempSync(join(tmpdir(), "pp-profile-overlay-"));

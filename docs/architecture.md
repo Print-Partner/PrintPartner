@@ -150,7 +150,9 @@ Windows guarantees differ; on Windows it reports no POSIX owner or mode, so
 is open, as on Unix, and entries are opened, inspected, created and deleted
 with `NtCreateFile` relative to that handle, the counterpart of the Unix `*at`
 calls. NTFS refuses byte-range locks on a directory, so a directory lock on
-Windows is a lock on a regular file inside the directory. Storage keeps installation lease
+Windows is a lock on a regular file inside the directory. Windows locks are
+mandatory for the range they cover, so `pp-os` locks only the byte at offset
+`i64::MAX` and other handles can still read a held lease file. Storage keeps installation lease
 lifetime, migration ordering and SQL transactions. Source keeps snapshot policy.
 Native shell behavior and worker/signal orchestration stay with their owners.
 

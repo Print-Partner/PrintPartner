@@ -463,18 +463,28 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
-| `pp-storage` | GRE-653 | Its file mechanics go through `pp-os` and it type-checks for `x86_64-pc-windows-msvc`, but a hosted Windows run fails 42 of its tests: byte-range locks block reads of lease files, open files cause sharing violations, SQLite rejects `file:\\?\` URIs, and some tests compare path spellings or run Node fixture scripts. |
 | `pp-source` | GRE-653 | Its file mechanics go through `pp-os`, but NTFS refuses to rename a directory while handles to entries inside it are open, and snapshot publication and retained capture rename under such handles. |
 | `pp-compat` | GRE-654 | The Node child supervisor uses Unix sockets, process groups, signals and file modes. |
 | `pp-core` | GRE-654 | It depends on `pp-compat` and `pp-storage`. |
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
 | `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |
 
-`pp-os` is not excluded. The Windows job builds and tests it, including
+`pp-os` and `pp-storage` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. The Windows job builds and tests `pp-os`, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
 tests for symbolic links, junctions, directory locks, write-through renames,
 device-name refusal and the FAT fallbacks.
+
+### Windows test portability
+
+These rules came out of the pp-storage Windows port (GRE-1154). New tests follow them too:
+
+- Locks from `pp_os::try_lock` and `Dir::lock` cover one byte at offset `i64::MAX` on Windows, so other handles can read and copy a held lease file. A whole-file lock (`std::fs::File::lock`, `fs4`) still conflicts with them.
+- `.gitattributes` checks out `rust/**` and `fixtures/**` with LF endings on every OS. Schema SQL, JSON fixtures and generator output are compared byte for byte, and a CRLF checkout made them differ.
+- Build SQLite `file:` URIs with `pp_storage::sqlite_uri::immutable_uri`. SQLite on Windows cannot open a URI that holds a verbatim `\\?\` prefix.
+- Hand Node a path from `pp_testkit::node_path::node_path`, and an `--import` or `import()` target as a `file:` URL (`pp_testkit::node_path::file_url`, or `pathToFileURL` in scripts). Node cannot resolve verbatim paths, and its ESM loader refuses a bare `C:\` path.
+- Close every connection and file under a directory before removing it. Windows refuses to delete an open file.
+- Compare paths in the spelling the product reports. `std::env::temp_dir()` on a runner can hold 8.3 short names (`RUNNER~1`), while `canonicalize` returns the long verbatim form.
 
 `rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.
 

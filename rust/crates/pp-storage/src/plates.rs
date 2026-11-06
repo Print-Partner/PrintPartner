@@ -139,9 +139,8 @@ impl Basis {
     }
 }
 
-/// Node's `positiveSafeInteger`.
-fn positive(value: &Value) -> Option<i64> {
-    let number = value.as_f64()?;
+/// Node's `positiveSafeInteger`; a non-finite number is not one.
+fn positive(number: f64) -> Option<i64> {
     (number.fract() == 0.0 && (1.0..=MAX_JS_SAFE_INTEGER as f64).contains(&number))
         .then_some(number as i64)
 }
@@ -177,7 +176,7 @@ fn profile_id(id: &str) -> Option<i64> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    positive(&json!(id.parse::<f64>().ok()?))
+    positive(id.parse().ok()?)
 }
 
 /// A read that returns no workspace, as Node's `sendReadFailure` answers it.
@@ -407,15 +406,17 @@ fn layout(
                 .all(|(ordinal, plate)| plate.2 == ordinal),
         corrupt("layout")
     );
+    let mut by_plate: HashMap<&str, Vec<_>> = HashMap::new();
+    for (_, owner, unit) in &units {
+        by_plate.entry(owner.as_str()).or_default().push(unit);
+    }
     let mut stored = Vec::with_capacity(plates.len());
     for (_, id, _, plate) in plates {
         let mut plate = plate.ok_or_else(|| corrupt("layout"))?;
-        for (_, owner, unit) in &units {
-            if *owner == id {
-                plate
-                    .units
-                    .push(unit.clone().ok_or_else(|| corrupt("layout"))?);
-            }
+        for unit in by_plate.remove(id.as_str()).unwrap_or_default() {
+            plate
+                .units
+                .push(unit.clone().ok_or_else(|| corrupt("layout"))?);
         }
         stored.push(plate);
     }
@@ -503,7 +504,8 @@ fn js_string(value: &Value) -> String {
 }
 
 /// JavaScript `Number(value ?? fallback)` for a parsed JSON value; `None`
-/// stands for NaN.
+/// stands for NaN. An array converts through its `toString`, as in
+/// JavaScript.
 fn js_number(value: &Value, fallback: f64) -> Option<f64> {
     match value {
         Value::Null => Some(fallback),
@@ -514,6 +516,18 @@ fn js_number(value: &Value, fallback: f64) -> Option<f64> {
             if text.is_empty() {
                 return Some(0.0);
             }
+            let radix = |digits: &str, radix: u32| {
+                (!digits.is_empty() && digits.chars().all(|c| c.is_digit(radix)))
+                    .then(|| u128::from_str_radix(digits, radix).ok())
+                    .flatten()
+                    .map(|value| value as f64)
+            };
+            match text.get(..2) {
+                Some("0x" | "0X") => return radix(&text[2..], 16),
+                Some("0o" | "0O") => return radix(&text[2..], 8),
+                Some("0b" | "0B") => return radix(&text[2..], 2),
+                _ => {}
+            }
             let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
             if digits
                 .chars()
@@ -523,7 +537,8 @@ fn js_number(value: &Value, fallback: f64) -> Option<f64> {
             }
             text.parse().ok()
         }
-        Value::Array(_) | Value::Object(_) => None,
+        Value::Array(_) => js_number(&Value::String(js_string(value)), fallback),
+        Value::Object(_) => None,
     }
 }
 

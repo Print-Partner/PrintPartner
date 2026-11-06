@@ -201,6 +201,8 @@ fn ticket_t_61_plates_read_lists_the_head_layout_and_complete_printers() {
         {"id": "flat", "name": "Flat", "bed_width_mm": 200, "bed_depth_mm": 200},
         {"id": "p2", "name": " Second ", "model": "MK", "bed_width_mm": 200, "bed_depth_mm": "180", "bed_height_mm": 150, "margin_mm": 5},
         {"id": "a1", "name": "Tight", "bed_width_mm": 10, "bed_depth_mm": 10, "bed_height_mm": 10, "margin_mm": 5},
+        {"id": "h1", "name": "Hex", "bed_width_mm": "0xC8", "bed_depth_mm": [180], "bed_height_mm": "0b1010", "margin_mm": []},
+        {"id": "n1", "name": "Pair", "bed_width_mm": [1, 2], "bed_height_mm": 10},
     ]);
     f.sql()
         .execute(
@@ -244,8 +246,11 @@ fn ticket_t_61_plates_read_lists_the_head_layout_and_complete_printers() {
     assert_eq!(body["unplaced"], json!([]));
     assert_eq!(
         body["printers"],
-        json!([{"id": "p2", "name": "Second", "model": "MK", "bed_width_um": 200_000, "bed_depth_um": 180_000, "bed_height_um": 150_000, "margin_um": 5000}]),
-        "Printers without a build height or with margins filling the bed are not offered"
+        json!([
+            {"id": "h1", "name": "Hex", "model": "Hex", "bed_width_um": 200_000, "bed_depth_um": 180_000, "bed_height_um": 10_000, "margin_um": 0},
+            {"id": "p2", "name": "Second", "model": "MK", "bed_width_um": 200_000, "bed_depth_um": 180_000, "bed_height_um": 150_000, "margin_um": 5000},
+        ]),
+        "JavaScript Number() reads radix strings and arrays; printers without a build height, with margins filling the bed or with NaN sizes are not offered"
     );
     let unassigned = body["unassigned"].as_array().unwrap();
     assert!(unassigned.iter().all(|unit| unit["token"] != TOKEN));

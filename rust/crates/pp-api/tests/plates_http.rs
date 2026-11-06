@@ -45,9 +45,16 @@ async fn plates_http_read_answers_node_failures_on_both_aliases() {
         get(&router, "/plans/1/plates", false).await.0,
         StatusCode::UNAUTHORIZED
     );
+    let infinite = format!("/plans/{}/plates", "9".repeat(320));
     for (path, status, code, detail) in [
         (
             "/plans/x/plates",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Request is invalid",
+        ),
+        (
+            infinite.as_str(),
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "Request is invalid",

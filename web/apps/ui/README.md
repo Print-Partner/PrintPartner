@@ -234,9 +234,26 @@ the Farm screen. No screen polls for printer state.
   integration reads Not set up. While the stream is down a banner says the
   states are the last known, with that time, and each row keeps its last-heard
   time. Farm module off (from `GET /health`) shows the Module-off state.
+- **Match prints** (`/farm/match`, `src/farm/MatchReview.tsx`, linked from Farm). Reads
+  `GET /api/v2/printer-checkoff/unattributed/suggestions` and lists every finished
+  print the app could not match in three groups: Exact, Likely and No suggestion
+  ([Farm reads](../../../docs/farm-reads.md#match-suggestions)). Each row names the
+  file, the printer, what Apply would do (claim for the suggested Build and plate,
+  or dismiss) and what the suggestion rests on, in words. Only rows with
+  `starts_checked` (Exact) start checked; Likely and No suggestion start
+  unchecked, and nothing is claimed or dismissed until a group's Apply is pressed.
+  Each group has Check all, Uncheck all and one Apply. Apply sends one request per
+  checked print: `POST .../unattributed/{id}/claim` with the suggested Build for
+  Exact and Likely rows, `POST .../unattributed/{id}/dismiss` for rows with no
+  suggestion. A second press while Apply runs is ignored. A refused print stays
+  checked with the core's reason under it; a print that answers "Print already
+  claimed" is reported as already claimed, never as claimed now. The list rereads
+  after every Apply. Farm module off shows the Module-off state and reads nothing.
 - **Tests.** `src/farm/Farm.test.tsx` drives a fake socket (`src/testSockets.ts`,
   installed for every test by `src/testSetup.ts`) and counts requests: ten
   minutes of heartbeats and one state change make no second printer read.
+  `src/farm/Match.test.tsx` covers UI5-03 against a fake core with the claim
+  and dismiss routes.
 
 ## Fonts and type
 

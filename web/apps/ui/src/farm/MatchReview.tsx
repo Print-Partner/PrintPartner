@@ -1,0 +1,244 @@
+import type { MatchSuggestionList } from "@print-partner/rust-client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { Link } from "react-router";
+import { CoreError } from "../core/client";
+import { useModule } from "../core/modules";
+import { readCore, writeCore } from "../core/rust";
+import { useConnection } from "../frame/connection";
+import { queryScreenState } from "../screen/queryState";
+import { MutationButton, ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
+
+type Suggestion = MatchSuggestionList["suggestions"][number];
+type Confidence = Suggestion["confidence"];
+
+/** One read of every unmatched print with its suggestion; it never confirms anything. */
+const suggestionsQuery = {
+  queryKey: ["core", "match-suggestions"],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listMatchSuggestions", {}, signal),
+} as const;
+
+/** Printer names, so a row says "Voron 2.4" rather than its id. */
+const printersQuery = {
+  queryKey: ["core", "printers"],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinters", {}, signal),
+} as const;
+
+const GROUPS: readonly { confidence: Confidence; title: string; does: string }[] = [
+  { confidence: "exact", title: "Exact", does: "claim it for the suggested Build" },
+  { confidence: "likely", title: "Likely", does: "claim it for the suggested Build" },
+  { confidence: "none", title: "No suggestion", does: "dismiss it" },
+];
+
+// A claim whose print was claimed already, by an earlier Apply whose answer was lost or
+// from another window. It is reported as already claimed, never as claimed now.
+const ALREADY_CLAIMED = "Print already claimed";
+
+const plural = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+
+const BASIS_WORDS = {
+  unit_tokens: "Required-unit names in the objects",
+  object_list: "the object list",
+  file_name: "the file name",
+  time_window: "the printer's recent work",
+} as const;
+
+/** What one row's suggestion rests on, in words. */
+const basisText = (s: Suggestion) =>
+  s.confidence === "none" || s.evidence.basis.length === 0
+    ? "Nothing points to one Build."
+    : `From ${s.evidence.basis.map((b) => BASIS_WORDS[b]).join(", ")}.`;
+
+/** Whether Apply claims a checked row for its Build; otherwise it dismisses the row. */
+const claims = (s: Suggestion) => s.confidence !== "none" && s.build !== null;
+
+const listParts = (claim: number, dismiss: number, claimWord: string, dismissWord: string) =>
+  [
+    claim > 0 && `${claimWord} ${plural(claim, "print")}`,
+    dismiss > 0 && `${dismissWord} ${plural(dismiss, "print")}`,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+
+/**
+ * The Match prints review: every finished print the app could not match, grouped by
+ * confidence in words. Only Exact rows start checked (`starts_checked`), and nothing is
+ * claimed or dismissed until a group's Apply is pressed. Each group has one Apply: it claims
+ * each checked Exact or Likely print for its suggested Build, or dismisses each checked print
+ * with no suggestion, one request per print, through the Rust claim and dismiss routes.
+ */
+export function MatchReview() {
+  const connection = useConnection();
+  const farm = useModule("farm");
+  const client = useQueryClient();
+  const suggestions = useQuery({ ...suggestionsQuery, enabled: farm?.state === "on" });
+  const printers = useQuery({ ...printersQuery, enabled: farm?.state === "on" });
+  const printerName = (id: string) => printers.data?.printers.find((p) => p.id === id)?.name ?? id;
+  const state: ScreenState<MatchSuggestionList> =
+    farm?.state === "off"
+      ? { kind: "module-off", module: "Farm", wouldShow: "finished prints to match" }
+      : queryScreenState(suggestions, connection, (d) => d.suggestions.length === 0);
+  const [checked, setChecked] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map());
+  // Set while Apply runs, so a second press waits instead of sending twice.
+  const applying = useRef(false);
+  const [result, setResult] = useState("");
+
+  const isChecked = (s: Suggestion) => checked.get(s.print_id) ?? s.starts_checked;
+  const setMany = (rows: readonly Suggestion[], on: boolean) =>
+    setChecked((now) => new Map([...now, ...rows.map((s) => [s.print_id, on] as const)]));
+
+  const apply = async (picked: readonly Suggestion[]) => {
+    if (applying.current || picked.length === 0) return;
+    applying.current = true;
+    setResult("");
+    const failed = new Map<string, string>();
+    let claimed = 0;
+    let already = 0;
+    let dismissed = 0;
+    for (const s of picked) {
+      try {
+        if (claims(s)) {
+          try {
+            await writeCore(
+              "claimUnattributedPrint",
+              { id: s.print_id },
+              { profile_id: s.build!.id },
+            );
+            claimed += 1;
+          } catch (error) {
+            if (!(
+              error instanceof CoreError &&
+              error.status === 409 &&
+              error.detail === ALREADY_CLAIMED
+            ))
+              throw error;
+            already += 1;
+          }
+        } else {
+          await writeCore("dismissUnattributedPrint", { id: s.print_id }, {});
+          dismissed += 1;
+        }
+      } catch (error) {
+        failed.set(
+          s.print_id,
+          error instanceof CoreError
+            ? (error.detail ?? error.message)
+            : "No answer from the core. Apply again to retry it.",
+        );
+      }
+    }
+    setFailures(failed);
+    setChecked(new Map([...failed.keys()].map((id) => [id, true])));
+    const applied = listParts(claimed, dismissed, "claimed", "dismissed");
+    setResult(
+      [
+        applied && `Applied: ${applied}.`,
+        already > 0 &&
+          `${plural(already, "print")} ${already === 1 ? "was" : "were"} already claimed.`,
+        failed.size > 0 && `${plural(failed.size, "print")} could not be applied.`,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+    applying.current = false;
+    await client.invalidateQueries({ queryKey: ["core"] });
+  };
+
+  return (
+    <ScreenTemplate
+      title="Match prints"
+      state={state}
+      empty={{
+        message: "Every finished print is matched.",
+        action: (
+          <Link to="/farm" className="pp-link">
+            Back to Farm
+          </Link>
+        ),
+      }}
+      renderData={(data) => {
+        const rows = data.suggestions;
+        return (
+          <>
+            <p>
+              Finished prints the app could not match to a Build. A checked Exact or Likely print is
+              claimed for its suggested Build, and a checked print with no suggestion is dismissed.
+              Only Exact rows start checked, and nothing changes until you press a group&apos;s
+              Apply.
+            </p>
+            <div role="status" aria-label="Match review result" className="pp-tally">
+              {result && <p>{result}</p>}
+            </div>
+            {GROUPS.map(({ confidence, title, does }) => {
+              const group = rows.filter((s) => s.confidence === confidence);
+              if (group.length === 0) return null;
+              const picked = group.filter(isChecked);
+              const claimCount = picked.filter(claims).length;
+              const headingId = `match-${confidence}`;
+              return (
+                <section key={confidence} aria-labelledby={headingId}>
+                  <h2 id={headingId}>{`${title} (${group.length})`}</h2>
+                  <p>{`Applying a checked row will ${does}.`}</p>
+                  <p>
+                    <button
+                      type="button"
+                      className="pp-button"
+                      onClick={() => setMany(group, true)}
+                    >
+                      {`Check all ${title}`}
+                    </button>{" "}
+                    <button
+                      type="button"
+                      className="pp-button"
+                      onClick={() => setMany(group, false)}
+                    >
+                      {`Uncheck all ${title}`}
+                    </button>
+                  </p>
+                  <ul>
+                    {group.map((s) => {
+                      const target = claims(s)
+                        ? `Claim for ${s.build!.name}${s.plate ? `, plate ${s.plate.ordinal}` : ""}`
+                        : "Dismiss";
+                      const error = failures.get(s.print_id);
+                      return (
+                        <li key={s.print_id}>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={isChecked(s)}
+                              onChange={(e) => setMany([s], e.currentTarget.checked)}
+                            />{" "}
+                            {`${s.filename} on ${printerName(s.printer_id)}`}
+                          </label>
+                          <p>
+                            {`${target}. ${basisText(s)}`} Finished{" "}
+                            <time dateTime={s.completed_at}>
+                              {new Date(s.completed_at).toLocaleString()}
+                            </time>
+                            .
+                          </p>
+                          {error && <p>{error}</p>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <p>
+                    {picked.length === 0 ? (
+                      `Nothing checked in ${title}.`
+                    ) : (
+                      <MutationButton primary onClick={() => void apply(picked)}>
+                        {`Apply ${title}: ${listParts(claimCount, picked.length - claimCount, "claim", "dismiss")}`}
+                      </MutationButton>
+                    )}
+                  </p>
+                </section>
+              );
+            })}
+          </>
+        );
+      }}
+    />
+  );
+}

@@ -247,8 +247,9 @@ the Farm screen. No screen polls for printer state.
   Exact and Likely rows, `POST .../unattributed/{id}/dismiss` for rows with no
   suggestion. A second press while Apply runs is ignored. A refused print stays
   checked with the core's reason under it; a print that answers "Print already
-  claimed" is reported as already claimed, never as claimed now. The list rereads
-  after every Apply. Farm module off shows the Module-off state and reads nothing.
+  claimed" is reported as already claimed, never as claimed now. Applying one group
+  leaves the other groups' checks and reasons as they were, and the outcome stays
+  shown when the last print is resolved. The list rereads after every Apply. Farm module off shows the Module-off state and reads nothing.
 - **Tests.** `src/farm/Farm.test.tsx` drives a fake socket (`src/testSockets.ts`,
   installed for every test by `src/testSetup.ts`) and counts requests: ten
   minutes of heartbeats and one state change make no second printer read.

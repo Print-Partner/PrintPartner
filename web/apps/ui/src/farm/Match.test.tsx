@@ -211,6 +211,44 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     expect(box("bracket")).toHaveProperty("checked", true);
   });
 
+  it("keeps other groups' choices and refusals when one group is applied", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path.endsWith("/spacer/claim")
+        ? json({ title: "Conflict", detail: "Accepted Plan has no Required units" }, 409)
+        : real(path, init),
+    );
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^spacer\.gcode/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply Likely: claim 1 print" }));
+    expect(await screen.findByText("Accepted Plan has no Required units")).toBeTruthy();
+    fireEvent.click(box("bracket"));
+    fireEvent.click(box("benchy"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply No suggestion: dismiss 1 print" }));
+    expect(await within(result()).findByText("Applied: dismissed 1 print.")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.queryByRole("checkbox", { name: /^benchy\.gcode/ })).toBeNull(),
+    );
+    expect(box("bracket")).toHaveProperty("checked", false);
+    expect(box("spacer")).toHaveProperty("checked", true);
+    expect(screen.getByText("Accepted Plan has no Required units")).toBeTruthy();
+    expect(core.posts.map((p) => p.path)).toEqual([
+      "/api/v2/printer-checkoff/unattributed/benchy/dismiss",
+    ]);
+  });
+
+  it("keeps the outcome of the Apply that empties the backlog", async () => {
+    const core = fakeCore();
+    core.state.suggestions = core.state.suggestions.filter((s) => s.print_id === "bracket");
+    core.state.claimed.add("bracket");
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Apply Exact: claim 1 print" }));
+    core.state.suggestions = [];
+    expect(await screen.findByText("Every finished print is matched.")).toBeTruthy();
+    expect(within(result()).getByText("1 print was already claimed.")).toBeTruthy();
+  });
+
   it("says the Farm module is off instead of reading suggestions", async () => {
     const core = fakeCore({ farm: "off" });
     renderMatch(core);

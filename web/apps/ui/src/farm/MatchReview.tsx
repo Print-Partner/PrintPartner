@@ -128,8 +128,13 @@ export function MatchReview() {
         );
       }
     }
-    setFailures(failed);
-    setChecked(new Map([...failed.keys()].map((id) => [id, true])));
+    const tried = new Set(picked.map((s) => s.print_id));
+    setFailures((now) => new Map([...[...now].filter(([id]) => !tried.has(id)), ...failed]));
+    setChecked((now) => {
+      const next = new Map([...now].filter(([id]) => !tried.has(id)));
+      for (const id of failed.keys()) next.set(id, true);
+      return next;
+    });
     const applied = listParts(claimed, dismissed, "claimed", "dismissed");
     setResult(
       [
@@ -145,6 +150,13 @@ export function MatchReview() {
     await client.invalidateQueries({ queryKey: ["core"] });
   };
 
+  // Outside the data rows, so the outcome of the Apply that empties the backlog still shows.
+  const status = (
+    <div role="status" aria-label="Match review result" className="pp-tally">
+      {result && <p>{result}</p>}
+    </div>
+  );
+
   return (
     <ScreenTemplate
       title="Match prints"
@@ -152,9 +164,12 @@ export function MatchReview() {
       empty={{
         message: "Every finished print is matched.",
         action: (
-          <Link to="/farm" className="pp-link">
-            Back to Farm
-          </Link>
+          <>
+            {status}
+            <Link to="/farm" className="pp-link">
+              Back to Farm
+            </Link>
+          </>
         ),
       }}
       renderData={(data) => {
@@ -167,9 +182,7 @@ export function MatchReview() {
               Only Exact rows start checked, and nothing changes until you press a group&apos;s
               Apply.
             </p>
-            <div role="status" aria-label="Match review result" className="pp-tally">
-              {result && <p>{result}</p>}
-            </div>
+            {status}
             {GROUPS.map(({ confidence, title, does }) => {
               const group = rows.filter((s) => s.confidence === confidence);
               if (group.length === 0) return null;

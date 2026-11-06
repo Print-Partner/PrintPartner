@@ -1,11 +1,10 @@
-//! Managed accepted Plates (GRE-1189 and GRE-1184, part of GRE-419) over
-//! `pp_storage::plates`: `GET /plans/{id}/plates` and the Plate-revision
-//! edits that move, pin, unplace and transfer a Required unit or restore the
+//! Managed accepted Plates (GRE-419) over `pp_storage::plates`:
+//! `GET /plans/{id}/plates`, initialize, arrange, and the Plate-revision edits
+//! that move, pin, unplace and transfer a Required unit or restore the
 //! revision an arrange replaced. One request is one storage transaction.
 //!
-//! Not mounted yet. Initialize and arrange still run on Node and write the
-//! same Plate tables, so these routes join `read_router` together with them
-//! (GRE-419) and every alias switches as one operation.
+//! `pp_core::rebuild_api::read_router` mounts every route and alias together,
+//! so no Plate write runs on Node and Rust at once.
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, storage_answer},
@@ -13,12 +12,18 @@ use crate::{
 };
 use axum::{
     Extension, Router,
-    body::Bytes,
+    body::{Body, to_bytes},
     extract::{Path, State},
+    http::StatusCode,
     response::Response,
     routing::{get, patch, post},
 };
 use pp_storage::plates::{PlatesClient, Request, UnitEdit};
+
+/// Node's `MAX_JSON_BODY_BYTES`, and `MAX_BULK_JSON_BODY_BYTES` for initialize
+/// (`services/upload-limits.ts`).
+const BODY_LIMIT: usize = 1024 * 1024;
+const BULK_BODY_LIMIT: usize = 8 * 1024 * 1024;
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -36,7 +41,18 @@ pub fn plates_router(config: AcceptedHttpConfig, client: PlatesClient) -> Router
     let path = "/plans/{id}/plates/{plate}/units/{token}";
     let routes = Router::new()
         .route("/plans/{id}/plates", get(read))
-        .route("/plans/{id}/plates/restore", post(restore))
+        .route(
+            "/plans/{id}/plates/restore",
+            post(|s, c, p, b| plan(s, c, p, b, Write::Restore)),
+        )
+        .route(
+            "/plans/{id}/plates/arrange",
+            post(|s, c, p, b| plan(s, c, p, b, Write::Arrange)),
+        )
+        .route(
+            "/plans/{id}/plates/initialize",
+            post(|s, c, p, b| plan(s, c, p, b, Write::Initialize)),
+        )
         .route(path, patch(|s, c, p, b| unit(s, c, p, b, UnitEdit::Move)))
         .route(
             &format!("{path}/pin"),
@@ -62,37 +78,65 @@ async fn read(
     run(app, presented, Request::Read { profile }).await
 }
 
-async fn restore(
+/// A write on the whole Plan's Plates.
+#[derive(Clone, Copy)]
+enum Write {
+    Restore,
+    Arrange,
+    Initialize,
+}
+
+async fn plan(
     State(app): State<App>,
     Extension(presented): Extension<PresentedCredential>,
     Path(profile): Path<String>,
-    body: Bytes,
+    body: Body,
+    write: Write,
 ) -> Response {
-    let body = json(&body);
-    run(app, presented, Request::Restore { profile, body }).await
+    let limit = match write {
+        Write::Initialize => BULK_BODY_LIMIT,
+        Write::Restore | Write::Arrange => BODY_LIMIT,
+    };
+    let Some(body) = json(body, limit).await else {
+        return too_large();
+    };
+    let request = match write {
+        Write::Restore => Request::Restore { profile, body },
+        Write::Arrange => Request::Arrange { profile, body },
+        Write::Initialize => Request::Initialize { profile, body },
+    };
+    run(app, presented, request).await
 }
 
 async fn unit(
     State(app): State<App>,
     Extension(presented): Extension<PresentedCredential>,
     Path((profile, plate, token)): Path<(String, String, String)>,
-    body: Bytes,
+    body: Body,
     edit: UnitEdit,
 ) -> Response {
+    let Some(body) = json(body, BODY_LIMIT).await else {
+        return too_large();
+    };
     let request = Request::Unit {
         edit,
         profile,
         plate,
         token,
-        body: json(&body),
+        body,
     };
     run(app, presented, request).await
 }
 
-/// The parsed body. Storage answers anything but a JSON object as Node's
-/// parsers do: 400 `invalid_request`.
-fn json(body: &[u8]) -> Value {
-    serde_json::from_slice(body).unwrap_or(Value::Null)
+/// The parsed body, or `None` past Node's body limit. Storage answers
+/// anything but a JSON object as Node's parsers do: 400 `invalid_request`.
+async fn json(body: Body, limit: usize) -> Option<Value> {
+    let bytes = to_bytes(body, limit).await.ok()?;
+    Some(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+fn too_large() -> Response {
+    crate::problem::response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large")
 }
 
 async fn run(

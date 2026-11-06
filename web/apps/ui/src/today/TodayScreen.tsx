@@ -395,10 +395,13 @@ export function TodayScreen() {
   const checkoff = useCheckoff();
   const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));
   const printerName = (id: string) => byId.get(id)?.name ?? id;
-  // Why a printer's link cannot report a finished print, or null when it can. A failed or
-  // missing farm read says nothing about links, so it never counts as up or as down.
+  // Why a printer's link cannot report a finished print, or null when it can. A failed,
+  // pending or switched-off farm read says nothing about links, so it never counts as up
+  // or as down.
   const linkNote = (id: string) => {
-    if (printers.isError || !printers.data) return "Printer links could not be read";
+    if (farm && farm.state !== "on") return "The Farm module is off";
+    if (printers.isError) return "Printer links could not be read";
+    if (!printers.data) return "Printer links not read yet";
     const printer = byId.get(id);
     return !printer || LINK_DOWN.has(printer.state.execution) ? "Printer link down" : null;
   };

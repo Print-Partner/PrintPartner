@@ -167,7 +167,10 @@ so a print that ends or a link that drops shows up without a reload.
   the farm read shows unreachable, not set up, manual or unknown, or does not
   name, says to confirm by hand what came off. Results still `watching` on such
   a printer are listed under "Prints the app cannot see finish" with a link to
-  the Build's Checkoff tab, so no print drops out of sight.
+  the Build's Checkoff tab, so no print drops out of sight. The same happens,
+  with its own reason, while the farm read is pending ("Printer links not read
+  yet"), when it fails ("Printer links could not be read"), and when the Farm
+  module is off ("The Farm module is off").
 - With the core offline every confirm, Undo and Retry is disabled with the
   offline reason (`MutationButton`).
 - **Tests.** `src/today/Today.test.tsx` runs against a fake core that applies

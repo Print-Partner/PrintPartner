@@ -507,6 +507,7 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
   });
 
   it("does not claim a link is up when the farm read fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore();
     core.fetchMock.mockImplementation(async (path: string) =>
       path === "/api/v2/printers"
@@ -517,7 +518,36 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     );
     renderToday(core);
     expect(await screen.findByRole("heading", { level: 3, name: "voron" })).toBeTruthy();
-    expect(within(bed("voron")).getByText(/Printer links could not be read/)).toBeTruthy();
+    // The read fails after react-query's three backed-off retries (1 + 2 + 4 s).
+    await act(() => vi.advanceTimersByTimeAsync(8_000));
+    expect(await within(bed("voron")).findByText(/Printer links could not be read/)).toBeTruthy();
+  });
+
+  it("says the links are not read yet while the first farm read is pending", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/api/v2/printers" ? new Promise<Response>(() => {}) : real(path, init),
+    );
+    renderToday(core);
+    expect(await screen.findByRole("heading", { level: 3, name: "voron" })).toBeTruthy();
+    expect(within(bed("voron")).getByText(/Printer links not read yet/)).toBeTruthy();
+    expect(within(bed("voron")).queryByText(/could not be read/)).toBeNull();
+  });
+
+  it("says the Farm module is off instead of a failed read when farm is off", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/health"
+        ? json({ ...health, modules: [{ module: "farm", state: "off", reason: "turned_off" }] })
+        : real(path, init),
+    );
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "voron" });
+    expect(await within(bed("voron")).findByText(/The Farm module is off/)).toBeTruthy();
+    expect(within(bed("voron")).queryByText(/could not be read/)).toBeNull();
+    expect(core.fetchMock.mock.calls.some(([path]) => path === "/api/v2/printers")).toBe(false);
   });
 });
 

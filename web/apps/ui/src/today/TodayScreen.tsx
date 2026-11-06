@@ -32,6 +32,9 @@ type FarmPrinter = FarmPrinterList["printers"][number];
 /** Today rereads results and printer links this often, so a print that ends or a link that drops shows up. */
 const REFRESH_MS = 30_000;
 
+const nothingMarked = (printer: string) =>
+  `Nothing was marked on ${printer}: that confirm had already been undone elsewhere. Confirm the bed again.`;
+
 const checkoffQuery = {
   queryKey: ["core", "checkoff"],
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinterCheckoff", {}, signal),
@@ -106,7 +109,7 @@ const tallyText = (t: Tally) =>
         "unit",
       )} from ${printersOf(t.undos)}.`
     : t.kind === "replayed"
-      ? `Nothing was marked on ${t.printer}: that confirm had already been undone elsewhere. Confirm the bed again.`
+      ? nothingMarked(t.printer)
       : `Undid the ${t.printer} confirmation. ${plural(t.units, "unit")} ${t.units === 1 ? "is" : "are"} waiting again.`;
 
 // A send that never reached the core, or whose answer was lost, is resent with the same
@@ -238,6 +241,9 @@ function useCheckoff() {
           ? [`Not marked on ${pickedPrinters(picks)}: ${receipt.message}`]
           : [];
       });
+      const undone = bursts.filter((_, i) => burstUndone(receipts[i]));
+      const undoneOn = pickedPrinters(undone.flatMap(({ picks }) => picks));
+      if (answered.length > 0 && undone.length > 0) refusals.push(nothingMarked(undoneOn));
       if (refusals.length > 0) setNotice(refusals.join(" "));
       if (answered.length > 0) {
         setTally({
@@ -247,12 +253,7 @@ function useCheckoff() {
         for (const { burst } of answered) burst.onConfirmed?.();
         return;
       }
-      const undone = bursts.filter((_, i) => burstUndone(receipts[i]));
-      if (undone.length > 0)
-        setTally({
-          kind: "replayed",
-          printer: pickedPrinters(undone.flatMap(({ picks }) => picks)),
-        });
+      if (undone.length > 0) setTally({ kind: "replayed", printer: undoneOn });
     },
   });
   // Set while a confirm rereads before it decides what to send, so a second click waits.

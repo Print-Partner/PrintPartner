@@ -208,7 +208,9 @@ so a print that ends or a link that drops shows up without a reload.
   so confirming again can still reach its receipt and Undo. When a resend
   reuses the key of a burst undone elsewhere, the core refuses it with 409
   `burst_undone` and writes nothing; Today says nothing was marked instead of
-  showing the tally and Undo, and the next confirm uses a new key. Keys come from
+  showing the tally and Undo, and the next confirm uses a new key. When other
+  bursts in the same resend were answered, their tally and Undo show and a
+  notice names the printers where nothing was marked. Keys come from
   `crypto.randomUUID`, or from `crypto.getRandomValues` where the page is not a
   secure context (a shared core over plain HTTP). One write runs at a time:
   Confirm and Undo do nothing while the other is in flight or a confirm is

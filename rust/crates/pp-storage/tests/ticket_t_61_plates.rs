@@ -330,6 +330,22 @@ fn ticket_t_61_plates_read_lists_the_head_layout_and_complete_printers() {
         ready,
         "the same workspace after a restart"
     );
+
+    f.sql()
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE key='printer.fleet'",
+            [json!([
+                {"id": "p2", "name": "Second", "bed_height_mm": 150},
+                {"id": "q", "bed_height_mm": 200, "loaded_filaments": [null]},
+            ])
+            .to_string()],
+        )
+        .unwrap();
+    assert_eq!(
+        f.apply(read("1")).body["printers"],
+        json!([]),
+        "a null loaded filament makes Node's fleet parse throw, which empties the fleet"
+    );
 }
 
 #[test]

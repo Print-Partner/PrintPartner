@@ -2285,6 +2285,19 @@ if sys.argv[1] == "wait":
         (spawned, line.trim().parse().unwrap())
     }
 
+    /// Whether `pid` exits within 5 s. A job reports no active process as soon
+    /// as its members start terminating; each process exits a moment later.
+    #[cfg(windows)]
+    async fn exits(pid: u32) -> bool {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while super::drain::process_alive(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     #[cfg(windows)]
     fn member_release(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -2309,10 +2322,7 @@ if sys.argv[1] == "wait":
                 cancelled.cancel();
             }
             let stopped = stop_owned_child_with((child, guard), true, observed, cancelled).await;
-            assert!(
-                !super::drain::process_alive(member),
-                "job member outlived the stop"
-            );
+            assert!(exits(member).await, "job member outlived the stop");
             assert!(stopped.group_absent);
             assert!(stopped.rejected);
             assert_eq!(
@@ -2352,8 +2362,8 @@ if sys.argv[1] == "wait":
         .unwrap();
         assert!(matches!(report.exit, super::drain::GroupExit::Forced(_)));
         assert!(report.group_absent);
-        assert!(!super::drain::process_alive(member));
         assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(exits(member).await);
     }
 
     /// Windows counterpart: `ticket_t_3_drain_job_remains_until_every_member_exits`.
@@ -2441,7 +2451,7 @@ if sys.argv[1] == "wait":
         })
         .await
         .unwrap();
-        assert!(!super::drain::process_alive(member));
+        assert!(exits(member).await);
         std::fs::remove_file(&release).unwrap();
     }
 

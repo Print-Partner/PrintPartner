@@ -2,29 +2,17 @@
 //! GRE-1126: the farm log on disposable on-disk SQLite. Bursts and undos
 //! append durable entries in their own transactions, a replay appends none,
 //! sends never offer undo, and pages are stable across a restart.
+use checkoff_apply::apply;
 use checkoff_fixture::Fixture;
-use pp_storage::{WriterOwner, auth::Secret, checkoff_progress::Request, read_model::Credential};
+use pp_storage::{WriterOwner, checkoff_progress::Request};
 use serde_json::{Value, json};
-use std::{sync::atomic::AtomicBool, time::Duration};
 
+#[path = "common/checkoff_apply.rs"]
+mod checkoff_apply;
 #[path = "common/checkoff_fixture.rs"]
 mod checkoff_fixture;
 #[path = "common/js_json.rs"]
 mod js_json;
-
-fn apply(owner: &WriterOwner, request: Request) -> Value {
-    let response = owner
-        .checkoff_progress()
-        .unwrap()
-        .apply(
-            Credential::Session(Secret::new("required-unit-fixture-secret".into())),
-            request,
-            &AtomicBool::new(false),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-    serde_json::to_value(response).unwrap()
-}
 
 fn page(owner: &WriterOwner, cursor: Option<&str>, limit: Option<&str>) -> Value {
     apply(

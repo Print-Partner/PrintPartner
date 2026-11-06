@@ -131,6 +131,20 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   Plate for each unmatched print with confidence `exact`, `likely` or `none`
   and the evidence used. It is a read; nothing confirms a suggestion. See
   [Match suggestions](farm-reads.md#match-suggestions).
+- Claim and dismiss (GRE-1182):
+  `POST /api/v2/printer-checkoff/unattributed/{id}/claim` takes
+  `{"profile_id": N}` and optional `selected_stl_basenames`, attributes the
+  print's object names to incomplete Required units of that Build, and in one
+  transaction creates its printer Checkoff link awaiting verify, marks every
+  open print of that file on that integration claimed, records the printer's
+  plan binding and appends `checkoff.unattributed_resolved`.
+  `POST .../unattributed/{id}/dismiss` marks the print dismissed with the same
+  event. Refusals keep Node's status and detail (400 `profile_id is required`,
+  404 `Unattributed print not found`, 409 `Print already claimed`, `That print
+  file is already assigned`, and the rest of `materializeProblem`) and write
+  nothing. Node's per-IP rate limit is not carried over because the routes are
+  loopback-only. Tests: `pp-storage/tests/unattributed_claim.rs` and
+  `pp-api/tests/unattributed_claim_http.rs`.
 - Printer stream (GRE-1014): `GET /ws/printers` sends a snapshot of every
   configured printer, then each watcher transition in order with a strictly
   increasing sequence, heartbeats every 15 seconds, and resume by sequence.
@@ -309,7 +323,7 @@ Slices land in this order. Linear tracks each one under GRE-595. A slice is one 
 | D21 | GRE-616 | pp-storage read_model context and graph |
 | D22 | GRE-618 | pp-storage read_model workflow and views |
 | D23 | GRE-617 | pp-api auth HTTP |
-| D24 | GRE-619 | pp-api drafts HTTP (list/read/edit/abandon; abandon GRE-988) |
+| D24 | GRE-619 | pp-api drafts HTTP (list/read/edit/abandon; abandon GRE-988; reconciliation GRE-416; recompute/rebase/Accept GRE-417) |
 | D25 | GRE-620 | pp-api builds HTTP and jobs |
 | D26 | GRE-621 | Web and server wiring behind the flag |
 
@@ -2719,6 +2733,10 @@ without that hash or its unit list (written before they existed) refuses with
 every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
+The replacement UI's Today screen confirms one bed, or units picked on several
+beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a
+lost send with the same key; see `web/apps/ui/README.md` (Today).
+
 `web/packages/contracts/src/checkoff-burst.ts` holds the request schema and the
 `P` (`plateBed`) and `F` (`partFillBeds`) helpers, which both produce this
 request shape. `verifyBatchRequest` merges beds for the same link, keeping both
@@ -2728,6 +2746,37 @@ nothing to decide (a plate still `watching`), which the route would refuse.
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
+```
+
+### Accepted Plate workspace read (GRE-1189)
+
+`pp-storage::plates` serves Node's `GET /plans/{id}/plates`
+(`routes/accepted-plates.ts`, `readAcceptedPlateWorkspace`) in one deferred
+read transaction. `pp-api::plates::plates_router` serves it at `/` and
+`/api/v2` behind `accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
+
+The router is not mounted in `read_router` yet. Initialize, arrange and the
+Plate edits (GRE-419, GRE-1184) still run on Node and write the
+`accepted_plate_*` tables, so the Plate routes and their aliases switch to Rust
+together, as one operation.
+
+The read answers as Node does. A Build the caller cannot see is 404
+`profile_not_found`; an empty Accepted Plan, or one with no Required units, is
+`{"kind": "empty_plan"}`; a dirty or uninitialized compatibility state is 409
+`accepted_state_unavailable`. With no head, or a head revision stamped with
+another Accepted Plan basis, the answer is `setup` with the Required units and
+`expected_plate_revision_id` (`null` without a head). Otherwise it is `ready`:
+the head revision's layout, read in either stored layout format and checked
+against its counts, tenant and layout digest, with placed units per Plate,
+`unplaced` units, and `unassigned` Required units. `printers` lists the
+`printer.fleet` rows that Node's `acceptedPrinter` accepts (trimmed id, name
+and model, a positive build height, margins smaller than half the bed),
+sorted by UTF-8 id. Stored Plate data that contradicts its revision, and a
+stored Plate id that is not a generated `plate_` id, which Node's contract
+parser rejects, are 500 `internal_error`. A read writes nothing.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
 ```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
@@ -2876,6 +2925,7 @@ With both gates on, `draft_router` serves these paths at the root and
 | PATCH | `/plans/{id}/drafts/{draft_id}/parts` | `edit` with typed `EditRequest` |
 | PUT | `/plans/{id}/drafts/{draft_id}/reconciliation` | `ReconciliationClient::reconcile` with typed `ReconciliationRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
+| POST | `/plans/{id}/drafts/save` | draft-only autosave, `WorkingDraftClient::autosave` (GRE-418) |
 
 `admit_draft_routes` buffers each body before routing, disables Axum's 2 MiB
 default, and applies the guard's limits: 16 KiB request target, 1 MiB for
@@ -2942,6 +2992,88 @@ transaction on the single writer and nothing is sent to Node.
 - A decision that does not apply to the draft makes Node's service throw, so
   both routes answer 500 `Plan draft update failed`. The transaction rolls
   back every reconciliation, decision and assignment row and writes no event.
+
+
+### Draft recompute, rebase and Accept (GRE-417)
+
+The draft router also serves Node's three remaining draft writes under the
+same flag, at the root and under `/api/v2`. Each needs an `Idempotency-Key`
+header (trimmed, 1 to 160 characters). A request without a usable key gets 400
+`invalid_request` before its body is read. Each request runs on the
+`WorkingDraftClient` writer, and nothing is sent to Node.
+
+- `POST /plans/{id}/drafts/recompute` takes `{ apply_manifest: boolean }` and
+  runs `WorkingDraftClient::recompute_and_select`. It abandons every other open
+  draft, creates the new draft, and selects Required units as an edit does. It
+  answers with the workspace. A replay with the same key returns the same
+  draft and writes nothing. `no_layers`, `no_stls` and `would_wipe` are 422
+  `{ code }`. `accepted_baseline_required`, `base_changed`, `inputs_changed` and
+  `idempotency_conflict` are 409. A missing Plan is 404 `profile_not_found`.
+- `POST /plans/{id}/drafts/{draft_id}/rebase` takes `RebaseRequest` and runs
+  `WorkingDraftClient::rebase_and_select`. A rebased or existing draft is selected
+  and answered as recompute's is. As in Node's `rebaseFailure`, a source whose
+  lifecycle or digest changed is 409 `draft_changed` with the source's workspace,
+  and a source whose state differs from `expected_source_state` is 409
+  `not_open` with its workspace. `merge_conflicts`
+  is 422 `{ code, conflicts }`. `base_unchanged` is 409, alongside recompute's
+  409s and 422s.
+- `POST /plans/{id}/drafts/{draft_id}/apply` (Accept) takes `ApplyRequest` and runs
+  `PublicationClient::apply` through `WorkingDraftClient::publication`. 200 is
+  the receipt `{ profile_id, draft_id, revision_id, plan_version,
+  draft_lifecycle_version, revision_digest, required_unit_mapping_digest,
+  applied_at }`, also for a replay with the same key or an already consumed
+  draft. When Accept answers `reconciliation_required`, the route runs Node's
+  `prepareForApply` and retries once under the same key with the prepared
+  draft's revision. That means checking the draft against the request,
+  answering 409 `not_open`, `draft_changed` or `base_changed` with its
+  workspace, and otherwise selecting Required units. `draft_changed`,
+  `base_changed` and `not_open` from Accept carry the draft's current workspace.
+  `reconciliation_required` is 422 `{ code, reason }`. `production_active` is
+  423 with `checkoff_link_count` and `send_queue_item_count`.
+  `checkoff_remap_unsafe` is 422 with `unmappable`. `build_archived` and
+  `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
+  which Node has no counterpart for, is 409 `{ code, operations }`. A missing Plan
+  is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
+  Only Accept publishes. Recompute, rebase and autosave never write an
+  Accepted Plan.
+
+Contention past the writer's admission deadline is 503
+`transaction_unavailable`. Any other storage failure is 500
+`Plan draft update failed`, as it is for edit. Every draft write in these
+operations appends `plan.draft_changed` in its own transaction
+([Domain events](domain-events.md)).
+
+`POST /plans/{id}/progress/import` (Node's accepted Progress import) is mounted
+on the Checkoff router (`pp_api::checkoff`). It takes `{ expected, rows }` and sets
+each listed Part's printed count against the Accepted Plan the caller
+observed, with the 8 MiB body limit Node's bulk routes use. A body for
+another Plan is 404 `progress_target_not_found`. A stale basis is 409
+`stale_accepted_plan`. Storage's other refusals keep their Node detail and code.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_publication)'
+```
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, the Rust-only start
+(`CoreRuntime::start_for_launcher`) serves recompute, rebase, Accept and
+progress import through `rebuild_api::product_router`, which merges the draft
+router into the read router that carries Checkoff. The flag-off default still
+serves those four from Node. Making Rust the default is the gateway cutover (GRE-593).
+
+### Draft-only autosave (GRE-418)
+
+`POST /plans/{id}/drafts/save` writes Plan choices into the observed open
+draft, or into a new final-state draft when none is open, with one
+Required-unit reconciliation whose row is the durable receipt, all in one
+immediate transaction. It needs an `Idempotency-Key` like the routes above,
+replays before the stale-base check, refuses a changed payload under a reused
+key, and never publishes. [Plan autosave](plan-autosave.md) has the contract.
+
+This is a separate operation from Node's `POST /plans/:id/save`, which
+publishes. That path stays on Node with its publishing semantics until UI
+slice 6 moves the browser to draft-then-Accept, and no Rust router mounts it,
+so Node and Rust never write the same operation. Node has no route at
+`/plans/{id}/drafts/save`, which is why the gateway manifests do not list it.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one

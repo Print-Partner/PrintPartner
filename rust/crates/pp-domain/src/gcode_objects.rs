@@ -98,19 +98,27 @@ pub fn match_objects_to_filenames<S: AsRef<str>>(
     plate_matches
         .iter()
         .map(|plate| {
-            let filenames = match match_indexed_name(
-                &interpret_sliced_object_name(&plate.stl_basename),
-                &index,
-            ) {
-                SlicedObjectNameMatch::Matched(filename) => vec![filename.to_owned()],
-                SlicedObjectNameMatch::Ambiguous(filenames) => {
-                    filenames.into_iter().map(str::to_owned).collect()
-                }
-                SlicedObjectNameMatch::Unmatched => Vec::new(),
-            };
+            let filenames = matched_filenames(&plate.stl_basename, &index);
             (plate.stl_basename.clone(), filenames)
         })
         .collect()
+}
+
+/// Matches one raw object name to library filenames, as
+/// `createSlicedObjectMatcher(filenames)(rawName)` does: one filename when
+/// matched, every candidate when ambiguous, none when unmatched.
+pub fn match_object_name<S: AsRef<str>>(raw_name: &str, filenames: &[S]) -> Vec<String> {
+    matched_filenames(raw_name, &index_filenames(filenames))
+}
+
+fn matched_filenames(raw_name: &str, index: &[IndexedFilename<'_>]) -> Vec<String> {
+    match match_indexed_name(&interpret_sliced_object_name(raw_name), index) {
+        SlicedObjectNameMatch::Matched(filename) => vec![filename.to_owned()],
+        SlicedObjectNameMatch::Ambiguous(filenames) => {
+            filenames.into_iter().map(str::to_owned).collect()
+        }
+        SlicedObjectNameMatch::Unmatched => Vec::new(),
+    }
 }
 
 fn parse_gcode_object_name(raw: &str) -> ParsedGcodeObject {

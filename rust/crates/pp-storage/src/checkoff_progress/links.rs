@@ -451,7 +451,7 @@ fn status_fields(raw: &Value, state: &str, now: &str) -> [(&'static str, Value);
 }
 
 /// `parseLink`, including the legacy `applied` state that now reads as verified.
-fn parse(raw: &Value, now: &str) -> Option<Link> {
+pub(super) fn parse(raw: &Value, now: &str) -> Option<Link> {
     let state = match raw.get("state")?.as_str()? {
         "applied" => "verified",
         s @ ("watching" | "awaiting_verify" | "host_failed" | "dismissed" | "verified") => s,

@@ -97,6 +97,7 @@ async fn checkoff_single_http_manual_complete_only_for_hand_tracked_prints() {
     assert_eq!(link["state"], "awaiting_verify");
     assert_eq!(link["host_outcome"], "success");
     assert_eq!(link["last_progress"], 100);
+    assert_eq!(link["saw_active"], true);
     assert!(link["completed_at"].is_string());
     assert_eq!(&fixture.link("link-manual"), link);
     assert_eq!(
@@ -105,7 +106,13 @@ async fn checkoff_single_http_manual_complete_only_for_hand_tracked_prints() {
         "manual complete checks nothing off"
     );
 
-    let (status, twice) = post(&router, &complete("link-manual"), "", true).await;
+    let (status, twice) = post(
+        &router,
+        &format!("/api/v1{}", complete("link-manual")),
+        "",
+        true,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "{twice}");
     assert_eq!(
         twice["detail"],

@@ -57,7 +57,8 @@ struct App {
 }
 
 /// Mounts the burst routes at `/` and `/api/v2` when `PP_DESKTOP_REBUILD` was
-/// exactly `1` or `true`; otherwise nothing.
+/// exactly `1` or `true`; otherwise nothing. Manual-complete also keeps
+/// Node's `/api/v1` alias.
 pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
@@ -88,7 +89,11 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
             "/printer-checkoff/unattributed/{id}/dismiss",
             post(dismiss_unattributed),
         );
-    gate.guard(routes.clone().nest("/api/v2", routes))
+    let v1 = Router::new().route(
+        "/printer-checkoff/{id}/manual-complete",
+        post(manual_complete),
+    );
+    gate.guard(routes.clone().nest("/api/v2", routes).nest("/api/v1", v1))
         .with_state(App { gate, client })
 }
 

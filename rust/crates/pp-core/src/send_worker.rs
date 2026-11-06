@@ -1,0 +1,421 @@
+//! The send queue's printer-upload worker (GRE-365, GRE-1215). It runs only
+//! `printer-upload` jobs, and only the send queue enqueues those, each after
+//! a user's Send now or Send ready. Per job it:
+//!
+//! 1. checks the job's original authority, resolves the printer's Moonraker
+//!    or PrusaLink host, and reads the staged file from under `exports`;
+//! 2. admits one printer effect in storage before any request:
+//!    `printer_upload`, or `printer_upload_and_start` when the item starts
+//!    the print;
+//! 3. sends the file once through [`HostSends`] and records the result. A
+//!    success is confirmed and finished, with the Build's Checkoff link. A
+//!    definite refusal denies the effect, so the job fails and the printer is
+//!    free. An unknown outcome fails the attempt, which leaves the job
+//!    awaiting the user's reconciliation. Nothing is ever resent.
+//!
+//! A failure before the effect, such as an unlinked printer or a missing
+//! file, fails the job with its reason and sends nothing.
+use anyhow::{Context, Result, anyhow};
+use axum::http::StatusCode;
+use pp_api::send_queue::{Prepared, SendTargets};
+use pp_gateway::{
+    MoonrakerStatus,
+    printer_host::{HostSends, UploadResult},
+};
+use pp_storage::{
+    SettingsClient, WriterOwner,
+    auth::AuthPolicy,
+    jobs::{
+        AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobKind, Payload,
+        PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission, WorkerOperation,
+    },
+    printer_hosts::{self, PrinterLink},
+    read_model::farm::{HostState, Observation},
+    send_queue::writes::MISSING_ARTIFACT,
+};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+/// Node's `MAX_PRINT_FILE_UPLOAD_BYTES`.
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const READER_WAIT: Duration = Duration::from_millis(500);
+const INVALID_ARTIFACT: &str = "Invalid artifact path";
+const SETTINGS_UNAVAILABLE: &str = "Printer settings unavailable";
+/// Longer than one upload and start (120 s and 15 s in the drivers).
+const LEASE_SECONDS: u32 = 300;
+
+#[derive(Clone)]
+pub struct SendWorker {
+    worker: ServerWorkerClient,
+    settings: SettingsClient,
+    sends: HostSends,
+    exports: PathBuf,
+}
+
+/// What one claimed upload ended as, for logs and tests.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Sent {
+    /// The printer confirmed it; the job succeeded.
+    Done,
+    /// Nothing printed; the job failed with this reason.
+    Failed(String),
+    /// The printer may have it; the job awaits reconciliation.
+    Unknown(String),
+    /// Storage refused the attempt, for example a revoked authority.
+    Refused,
+}
+
+impl SendWorker {
+    pub fn new(owner: &WriterOwner, policy: AuthPolicy, sends: HostSends) -> Result<Self> {
+        let exports = owner
+            .lease()
+            .context("Storage lease unavailable")?
+            .data_dir()
+            .join("exports");
+        Ok(Self {
+            worker: owner.job_worker_with_policy(
+                policy,
+                WorkerAdmission {
+                    kinds: vec![(JobKind::PrinterUpload, 4)],
+                    total: 4,
+                    per_resource: 1,
+                    lease_seconds: LEASE_SECONDS,
+                },
+            )?,
+            settings: owner.client(),
+            sends,
+            exports,
+        })
+    }
+
+    /// Claims and runs printer uploads until `cancelled` is set. Waiting for a
+    /// job blocks a worker thread, never the runtime.
+    pub fn spawn(self, cancelled: Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while !cancelled.load(Ordering::Acquire) {
+                let worker = self.worker.clone();
+                let flag = Arc::clone(&cancelled);
+                let claimed = tokio::task::spawn_blocking(move || {
+                    worker
+                        .claim_pending(&flag, Duration::from_secs(1))?
+                        .receive()
+                })
+                .await;
+                match claimed {
+                    Ok(Ok(Some(claimed))) => {
+                        if let Err(error) = self.run(claimed).await {
+                            tracing::warn!(error = %error, "printer upload stopped");
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(_)) | Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+                }
+            }
+        })
+    }
+
+    /// Claims one waiting printer upload and runs it, or returns `None`.
+    pub async fn run_next(&self) -> Result<Option<Sent>> {
+        let worker = self.worker.clone();
+        let claimed = tokio::task::spawn_blocking(move || worker.claim()).await??;
+        match claimed {
+            Some(claimed) => self.run(claimed).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn run(&self, claimed: ClaimedAttempt) -> Result<Sent> {
+        let ClaimedAttempt { job, mut lease, .. } = claimed;
+        let Payload::PrinterUpload {
+            printer_id,
+            artifact_path,
+            filename,
+            start,
+            host_name,
+            ..
+        } = job.payload.clone()
+        else {
+            return Err(anyhow!("Printer worker claimed another job kind"));
+        };
+        let authorized = {
+            let worker = self.worker.clone();
+            let attempt = lease.clone();
+            tokio::task::spawn_blocking(move || worker.authorize(&attempt)).await?
+        };
+        if authorized.is_err() {
+            return Ok(Sent::Refused);
+        }
+        let prepared = self.prepare(&printer_id, &artifact_path).await;
+        let (target, kind, integration_id, file) = match prepared {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                self.advance(&mut lease, WorkerOperation::FailWith(reason.clone())).await?;
+                return Ok(Sent::Failed(reason));
+            }
+        };
+        let content_hash = hex::encode(Sha256::digest(&file));
+        let basis_hash = hex::encode(Sha256::digest(format!(
+            "{}\n{printer_id}\n{filename}\n{start}",
+            job.job_id
+        )));
+        let intent = EffectIntent {
+            operation: if start {
+                EffectOperation::PrinterUploadAndStart
+            } else {
+                EffectOperation::PrinterUpload
+            },
+            basis_hash,
+            content_hash: content_hash.clone(),
+            target: printer_id.clone(),
+        };
+        if self.advance(&mut lease, WorkerOperation::BeginEffect(intent)).await.is_err() {
+            return Ok(Sent::Refused);
+        }
+        let result = self.sends.upload(&target, file, &filename, start).await;
+        let sent = classify(&result, start);
+        match &sent {
+            Sent::Done => {
+                let remote_path = result.remote_path.clone().unwrap_or_else(|| filename.clone());
+                self.advance(&mut lease, WorkerOperation::ConfirmEffect(ResultArtifact {
+                    receipt_id: receipt_id(&remote_path),
+                    content_hash,
+                    target: printer_id.clone(),
+                }))
+                .await?;
+                let labels = {
+                    let settings = self.settings.clone();
+                    let printer = printer_id.clone();
+                    tokio::task::spawn_blocking(move || {
+                        printer_hosts::send_labels(&settings, READER_WAIT, &printer)
+                    })
+                    .await??
+                };
+                let host_name = host_name
+                    .or(labels.host_name)
+                    .unwrap_or_else(|| "Printer".into());
+                self.advance(&mut lease, WorkerOperation::FinishPublic {
+                    artifact: None,
+                    result: Box::new(CompletedResult::PrinterUpload(PrinterUploadResult {
+                        printer_name: labels.printer_name.unwrap_or_else(|| printer_id.clone()),
+                        printer_id,
+                        integration_id,
+                        integration_type: kind,
+                        host_name,
+                        filename,
+                        remote_path,
+                        started: result.started.unwrap_or(false),
+                        message: Some(result.message.clone()),
+                        checkoff_link_id: None,
+                        checkoff_units: 0,
+                    })),
+                })
+                .await?;
+                let exports = self.exports.clone();
+                let _ = tokio::task::spawn_blocking(move || discard(&exports, &artifact_path)).await;
+            }
+            Sent::Failed(reason) => {
+                self.advance(&mut lease, WorkerOperation::DenyEffect(reason.clone())).await?;
+            }
+            Sent::Unknown(_) => {
+                self.advance(&mut lease, WorkerOperation::Fail).await?;
+            }
+            Sent::Refused => {}
+        }
+        Ok(sent)
+    }
+
+    /// Applies one worker operation off the async runtime and keeps the
+    /// lease's new version.
+    async fn advance(&self, lease: &mut AttemptLease, operation: WorkerOperation) -> Result<()> {
+        let worker = self.worker.clone();
+        let mut attempt = lease.clone();
+        let (attempt, result) = tokio::task::spawn_blocking(move || {
+            let result = worker.update(&mut attempt, operation);
+            (attempt, result)
+        })
+        .await?;
+        *lease = attempt;
+        result.map(drop)
+    }
+
+    /// The host, its type and id, and the staged file, or the reason the job
+    /// fails without sending.
+    async fn prepare(
+        &self,
+        printer_id: &str,
+        artifact_path: &str,
+    ) -> std::result::Result<(pp_gateway::printer_host::HostTarget, String, String, Vec<u8>), String>
+    {
+        let settings = self.settings.clone();
+        let printer = printer_id.to_owned();
+        let link = tokio::task::spawn_blocking(move || {
+            printer_hosts::printer_link(&settings, READER_WAIT, &printer)
+        })
+        .await
+        .map_err(|_| SETTINGS_UNAVAILABLE.to_owned())?
+        .map_err(|_| SETTINGS_UNAVAILABLE.to_owned())?;
+        let integration = match link {
+            PrinterLink::Linked(integration) => integration,
+            PrinterLink::PrinterNotFound => return Err("Fleet printer not found".into()),
+            PrinterLink::NotLinked => return Err("Printer is not linked to a host".into()),
+            PrinterLink::NotAvailable => return Err("Linked host not found".into()),
+        };
+        let (kind, id) = (integration.kind.clone(), integration.id.clone());
+        let Some(crate::printer_host::Host::Read(target)) = crate::printer_host::host(integration)
+        else {
+            return Err(format!("Upload is not supported for {kind}"));
+        };
+        let file = read_artifact(&self.exports, Path::new(artifact_path)).await?;
+        Ok((target, kind, id, file))
+    }
+}
+
+/// The staged file's real path, when it is under `exports` inside a
+/// `printer-uploads` directory, as Node's `assertPrinterUploadArtifactPath`
+/// requires; otherwise Node's reason.
+fn staged(exports: &Path, path: &Path) -> std::result::Result<PathBuf, &'static str> {
+    let root = exports.canonicalize().map_err(|_| MISSING_ARTIFACT)?;
+    let file = path.canonicalize().map_err(|_| MISSING_ARTIFACT)?;
+    let inside = file.starts_with(&root)
+        && file
+            .ancestors()
+            .take_while(|ancestor| *ancestor != root)
+            .any(|ancestor| ancestor.file_name().is_some_and(|name| name == "printer-uploads"));
+    if !inside {
+        return Err(INVALID_ARTIFACT);
+    }
+    if !std::fs::metadata(&file).is_ok_and(|metadata| metadata.is_file()) {
+        return Err(MISSING_ARTIFACT);
+    }
+    Ok(file)
+}
+
+/// The staged file's bytes, or the reason the send fails.
+async fn read_artifact(exports: &Path, path: &Path) -> std::result::Result<Vec<u8>, String> {
+    let (exports, path) = (exports.to_owned(), path.to_owned());
+    tokio::task::spawn_blocking(move || {
+        let file = staged(&exports, &path)?;
+        let metadata = std::fs::metadata(&file).map_err(|_| MISSING_ARTIFACT)?;
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err("Print file exceeds the 64 MiB upload limit");
+        }
+        std::fs::read(&file).map_err(|_| MISSING_ARTIFACT)
+    })
+    .await
+    .map_err(|_| MISSING_ARTIFACT.to_owned())?
+    .map_err(str::to_owned)
+}
+
+/// The send queue routes' printer checks before a dispatch: the staged file,
+/// the printer's Moonraker or PrusaLink host and, for an item that waits for
+/// idle, the status watcher's latest state. Nothing here contacts a printer.
+pub(crate) struct QueueTargets {
+    pub(crate) settings: SettingsClient,
+    pub(crate) exports: PathBuf,
+    pub(crate) status: MoonrakerStatus,
+}
+
+impl SendTargets for QueueTargets {
+    fn prepare(&self, item: &Value, idle: bool) -> Prepared {
+        let refused = |status, detail: &str| Prepared::Refused {
+            status,
+            detail: detail.to_owned(),
+        };
+        let path = Path::new(item["artifact_path"].as_str().unwrap_or_default());
+        match staged(&self.exports, path) {
+            Ok(_) => {}
+            Err(MISSING_ARTIFACT) => return Prepared::Missing,
+            Err(reason) => return refused(StatusCode::BAD_REQUEST, reason),
+        }
+        let printer = item["printer_id"].as_str().unwrap_or_default();
+        let integration = match printer_hosts::printer_link(&self.settings, READER_WAIT, printer) {
+            Ok(PrinterLink::Linked(integration)) => integration,
+            Ok(PrinterLink::PrinterNotFound) => {
+                return refused(StatusCode::NOT_FOUND, "Fleet printer not found");
+            }
+            Ok(PrinterLink::NotLinked) => {
+                return refused(StatusCode::BAD_REQUEST, "Printer is not linked to a host");
+            }
+            Ok(PrinterLink::NotAvailable) => {
+                return refused(StatusCode::BAD_REQUEST, "Linked host not found");
+            }
+            Err(_) => return refused(StatusCode::SERVICE_UNAVAILABLE, SETTINGS_UNAVAILABLE),
+        };
+        let (kind, id) = (integration.kind.clone(), integration.id.clone());
+        if !matches!(
+            crate::printer_host::host(integration),
+            Some(crate::printer_host::Host::Read(_))
+        ) {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                &format!("Upload is not supported for {kind}"),
+            );
+        }
+        if idle {
+            let wait = "wait for Idle or force dispatch";
+            let busy = match (kind.as_str(), crate::printer_status::observed(&self.status, &id)) {
+                ("moonraker", Observation::Seen { state: HostState::Idle | HostState::Complete, .. }) => None,
+                ("moonraker", Observation::Seen { state, .. }) => {
+                    Some(format!("Printer is {} — {wait}", format!("{state:?}").to_lowercase()))
+                }
+                ("moonraker", _) => Some(format!("Printer status is unavailable — {wait}")),
+                _ => Some(format!("Printer status is not watched for {kind} hosts — {wait}")),
+            };
+            if let Some(detail) = busy {
+                return refused(StatusCode::CONFLICT, &detail);
+            }
+        }
+        match printer_hosts::send_labels(&self.settings, READER_WAIT, printer) {
+            Ok(labels) => Prepared::Ready {
+                host_name: labels.host_name.unwrap_or_default(),
+            },
+            Err(_) => refused(StatusCode::SERVICE_UNAVAILABLE, SETTINGS_UNAVAILABLE),
+        }
+    }
+
+    fn discard(&self, item: &Value) {
+        discard(&self.exports, item["artifact_path"].as_str().unwrap_or_default());
+    }
+}
+
+/// Deletes a staged file's own directory, as Node's
+/// `cleanupPrinterUploadArtifactDir` does after a sent or removed item.
+fn discard(exports: &Path, path: &str) {
+    if let Ok(file) = staged(exports, Path::new(path))
+        && let Some(directory) = file.parent()
+        && directory.parent().and_then(Path::file_name) == Some("printer-uploads".as_ref())
+    {
+        let _ = std::fs::remove_dir_all(directory);
+    }
+}
+
+/// How the driver's answer settles the admitted effect. A start that was
+/// requested but definitely did not happen means nothing printed.
+fn classify(result: &UploadResult, start: bool) -> Sent {
+    if result.outcome_unknown {
+        return Sent::Unknown(result.message.clone());
+    }
+    if result.ok && (!start || result.started == Some(true)) {
+        return Sent::Done;
+    }
+    Sent::Failed(result.message.clone())
+}
+
+/// The printer's path as a receipt id: at most 128 characters.
+fn receipt_id(remote_path: &str) -> String {
+    match remote_path.char_indices().nth(128) {
+        Some((end, _)) => remote_path[..end].to_owned(),
+        None => remote_path.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests;

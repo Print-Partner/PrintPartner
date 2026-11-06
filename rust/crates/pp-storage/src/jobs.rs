@@ -203,6 +203,13 @@ pub enum WorkerOperation {
         result: Box<CompletedResult>,
     },
     Fail,
+    /// The printer definitely refused the admitted printer upload, so nothing
+    /// printed: the effect is denied and the job fails with the reason.
+    #[cfg(feature = "desktop_rebuild")]
+    DenyEffect(String),
+    /// Fails a job that admitted no effect, with the reason the user sees.
+    #[cfg(feature = "desktop_rebuild")]
+    FailWith(String),
 }
 /// A damaged document is retained for inspection and repair, never executed.
 #[derive(Debug)]
@@ -1814,6 +1821,56 @@ fn close_unresolved_upload(
     job.recovery = Some(recovery.into());
     save(tx, &mut job, event)
 }
+/// A worker's failure reason as the job keeps it: at most 500 characters.
+#[cfg(feature = "desktop_rebuild")]
+fn bounded_reason(reason: &str) -> String {
+    let reason = reason.trim();
+    match reason.char_indices().nth(500) {
+        Some((end, _)) => reason[..end].to_owned(),
+        None if reason.is_empty() => "Upload failed".into(),
+        None => reason.to_owned(),
+    }
+}
+/// Node's `createPrinterCheckoffLink` after a successful printer upload: a
+/// Build-bound send gets a watching Checkoff link in the job's transaction,
+/// and the public result names it.
+#[cfg(feature = "desktop_rebuild")]
+fn link_printer_upload(
+    tx: &Transaction<'_>,
+    job: &JobRecord,
+    result: &mut PrinterUploadResult,
+) -> Result<()> {
+    let Payload::PrinterUpload {
+        profile_id: Some(profile_id),
+        checkoff_units,
+        unlabeled_names,
+        ..
+    } = &job.payload
+    else {
+        return Ok(());
+    };
+    let link = crate::checkoff_progress::link_upload(
+        tx,
+        &job.tenant,
+        &serde_json::json!({
+            "profile_id": profile_id,
+            "integration_id": result.integration_id,
+            "printer_id": result.printer_id,
+            "host_name": result.host_name,
+            "filename": result.filename,
+            "remote_path": result.remote_path,
+            "upload_job_id": job.job_id,
+            "units": checkoff_units,
+            "unlabeled_names": unlabeled_names,
+            "started": result.started,
+        }),
+    )?;
+    if let Some(id) = link {
+        result.checkoff_link_id = Some(id);
+        result.checkoff_units = checkoff_units.len() as u64;
+    }
+    Ok(())
+}
 /// True when a queued, running or unresolved job holds `printer_id`.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn printer_reserved(
@@ -3345,7 +3402,9 @@ fn advance(
             WorkerOperation::BeginEffect(_)
             | WorkerOperation::ConfirmEffect(_)
             | WorkerOperation::Finish(_)
-            | WorkerOperation::FinishPublic { .. } => {
+            | WorkerOperation::FinishPublic { .. }
+            | WorkerOperation::DenyEffect(_)
+            | WorkerOperation::FailWith(_) => {
                 return Err(anyhow!("Sync operation belongs to its journal owner"));
             }
             WorkerOperation::Heartbeat | WorkerOperation::Progress(_) | WorkerOperation::Fail => {}
@@ -3509,11 +3568,38 @@ fn advance(
         }
         WorkerOperation::Finish(result) => finish(&mut job, result)?,
         #[cfg(feature = "desktop_rebuild")]
-        WorkerOperation::FinishPublic { artifact, result } => {
+        WorkerOperation::FinishPublic { artifact, mut result } => {
             ensure!(result.kind() == job.kind, "Completed result kind mismatch");
             let event = finish(&mut job, artifact)?;
+            if let CompletedResult::PrinterUpload(upload) = result.as_mut() {
+                link_printer_upload(tx, &job, upload)?;
+            }
             job.public_result = Some(*result);
             event
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        WorkerOperation::DenyEffect(reason) => {
+            ensure!(
+                job.kind == JobKind::PrinterUpload && job.state == PersistentState::EffectAdmitted,
+                "No admitted printer effect"
+            );
+            job.effects
+                .last_mut()
+                .ok_or_else(|| anyhow!("No effect intent"))?
+                .deny()?;
+            job.state = PersistentState::Failed;
+            job.recovery = Some(bounded_reason(&reason));
+            "effect_denied"
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        WorkerOperation::FailWith(reason) => {
+            ensure!(
+                job.effects.is_empty() && job.state == PersistentState::Running,
+                "Job admitted an effect"
+            );
+            job.state = PersistentState::Failed;
+            job.recovery = Some(bounded_reason(&reason));
+            "failed"
         }
         WorkerOperation::Fail => {
             if job.state == PersistentState::EffectAdmitted {

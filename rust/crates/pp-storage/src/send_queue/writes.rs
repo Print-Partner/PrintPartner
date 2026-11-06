@@ -61,6 +61,11 @@ pub enum Request {
     Get {
         id: String,
     },
+    /// The item `id` when Send now may claim it, or [`Request::Dispatch`]'s
+    /// refusal, without writing. Routes check the printer only after this.
+    Check {
+        id: String,
+    },
     /// Up to [`DRAIN_ITEM_CAP`] `queued` items in stored order, optionally
     /// for one printer.
     Ready {
@@ -236,6 +241,7 @@ fn transact(
     } else {
         match command.request {
             Request::Get { id } => item(&tx, &tenant, &id)?.map_or(NOT_FOUND, Reply::Item),
+            Request::Check { id } => check(&tx, &tenant, &id)?,
             Request::Ready { printer_id } => Reply::Items(
                 rows(&tx, &tenant)?
                     .unwrap_or_default()
@@ -442,6 +448,17 @@ fn dispatch(
         item,
         job_id: job.job_id,
     })
+}
+
+fn check(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Reply> {
+    let stored = match resendable(tx, tenant, id)? {
+        Ok(stored) => stored,
+        Err(refusal) => return Ok(refusal),
+    };
+    if outcome_unknown(tx, tenant, &stored)? {
+        return Ok(OUTCOME_UNKNOWN);
+    }
+    Ok(item(tx, tenant, id)?.map_or(NOT_FOUND, Reply::Item))
 }
 
 fn remove(tx: &Transaction<'_>, tenant: &str, subject: &str, id: &str) -> Result<Reply> {

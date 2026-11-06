@@ -797,7 +797,7 @@ impl WriterOwner {
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Plates { command, reply } => {
-                        let _ = reply.send(plates::execute(&mut connection, command));
+                        let _ = reply.send(plates::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::WorkingDraft { command, reply } => {

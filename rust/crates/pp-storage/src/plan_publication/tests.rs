@@ -1058,24 +1058,25 @@ mod transaction {
     /// of that Plan's recorded inputs in the same transaction; the first Accept
     /// and every other outcome save none.
     fn assert_pre_accept_snapshot(c: &Connection, case: &Value, actual: &Value) {
-        let rows: Vec<(i64, String, String)> = c
-            .prepare("SELECT profile_id,created_at,payload_json FROM plan_snapshots WHERE source='pre_apply'")
+        let rows: Vec<Value> = snapshot(c, "plan_snapshots")
+            .as_array()
             .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
+            .iter()
+            .filter(|row| row["source"] == "pre_apply")
+            .cloned()
+            .collect();
         let input = &case["input"];
         let previous = &input["expectedBase"]["revisionId"];
         if actual["kind"] != "applied" || previous.is_null() {
-            assert_eq!(rows, vec![], "{}", case["id"]);
+            assert_eq!(rows, Vec::<Value>::new(), "{}", case["id"]);
             return;
         }
-        let [(profile, created_at, payload)] = rows.as_slice() else {
+        let [row] = rows.as_slice() else {
             panic!("{}: {rows:?}", case["id"]);
         };
-        let payload: Value = serde_json::from_str(payload).unwrap();
-        assert_eq!(json!(profile), input["profileId"], "{}", case["id"]);
+        let created_at = &row["created_at"];
+        let payload: Value = serde_json::from_str(row["payload_json"].as_str().unwrap()).unwrap();
+        assert_eq!(row["profile_id"], input["profileId"], "{}", case["id"]);
         let before = &case["before"];
         let rows = |table: &str| before[table].as_array().cloned().unwrap_or_default();
         let set = rows("plan_revisions")
@@ -1115,19 +1116,22 @@ mod transaction {
             case["id"]
         );
     }
+    fn changed_case(fixture: &Value) -> Value {
+        fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == "changed")
+            .unwrap()
+            .clone()
+    }
     /// The snapshot holds the replaced Plan's recorded inputs, not the working
     /// `profile_layers`: a working layer with no Source, which Accept does not
     /// publish, stays out of it.
     #[test]
     fn transaction_snapshot_holds_the_replaced_plan_inputs() {
         let fixture = fixture();
-        let mut case = fixture["cases"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|case| case["id"] == "changed")
-            .unwrap()
-            .clone();
+        let mut case = changed_case(&fixture);
         let mut extra = case["before"]["profile_layers"][0].clone();
         extra["id"] = json!(99);
         extra["layer_type"] = json!("addon");
@@ -1147,10 +1151,8 @@ mod transaction {
         tx.commit().unwrap();
         assert_eq!(actual["kind"], "applied");
         assert_pre_accept_snapshot(&c, &case, &actual);
-        let payload: String = c
-            .query_row("SELECT payload_json FROM plan_snapshots", [], |r| r.get(0))
-            .unwrap();
-        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let payload = &snapshot(&c, "plan_snapshots")[0]["payload_json"];
+        let payload: Value = serde_json::from_str(payload.as_str().unwrap()).unwrap();
         assert_eq!(payload["layers"].as_array().unwrap().len(), 1);
     }
     /// The preview promises a snapshot exactly when Accept saves one: a Ready
@@ -1198,6 +1200,24 @@ mod transaction {
             2,
             "both a first Accept and a replacing Accept are covered"
         );
+    }
+    /// Input sets migrated by schema v18 store `legacy:<id>` layers, which Node's
+    /// restore cannot place, so they count as nothing to restore.
+    #[test]
+    fn transaction_legacy_input_layers_are_not_restorable() {
+        let fixture = fixture();
+        let case = changed_case(&fixture);
+        let mut c = database(&fixture, &case);
+        let tx = c.transaction().unwrap();
+        let layers = super::super::snapshot::replaced_layers(&tx, "default", 1, Some(1)).unwrap();
+        assert_eq!(layers.unwrap()[0]["layer_type"], "base");
+        tx.execute(
+            "UPDATE plan_revision_inputs SET source_layer='legacy:1'",
+            [],
+        )
+        .unwrap();
+        let layers = super::super::snapshot::replaced_layers(&tx, "default", 1, Some(1)).unwrap();
+        assert_eq!(layers, None);
     }
     #[test]
     fn transaction_replays_node_outcomes_receipts_and_persisted_rows() {

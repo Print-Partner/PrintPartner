@@ -11,9 +11,11 @@ use super::*;
 use rusqlite::OptionalExtension;
 
 /// The Source layers of the Accepted Plan revision `previous` in the payload's
-/// `layers` shape, or `None` when there is no Accepted Plan or its revision
-/// has no input set, so there is nothing to restore and Accept saves no
-/// snapshot. The preview reports `saved_before_accept` from the same answer.
+/// `layers` shape, or `None` when there is nothing Node's restore can bring
+/// back: no Accepted Plan, a revision with no input set, or an input set
+/// migrated by schema v18 whose `legacy:<id>` rows name no layer type (restore
+/// would treat each as an addon and drop the base). Accept then saves no
+/// snapshot, and the preview reports `saved_before_accept` from the same answer.
 pub(super) fn replaced_layers(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -51,7 +53,10 @@ pub(super) fn replaced_layers(
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(Some(layers))
+    let restorable = layers
+        .iter()
+        .all(|layer| matches!(layer["layer_type"].as_str(), Some("base" | "addon")));
+    Ok(restorable.then_some(layers))
 }
 
 /// Inserts one `pre_apply` `plan_snapshots` row for Build `profile` inside

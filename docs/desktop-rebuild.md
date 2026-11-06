@@ -3140,17 +3140,18 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   `plan_snapshots` row, `source` `pre_apply`, named `Before accepting draft
   <draft_id>`, in the same transaction. It holds the Accepted Plan being
   replaced. Its `layers` come from that revision's `plan_revision_inputs`
-  (type, Source id, current Source name and order), not from
-  `profile_layers`: Accept publishes the working layers, so they already
-  match the new Plan. The payload has Node's `capturePlanSnapshotPayload`
-  shape plus `accepted_plan_revision_id` and `accepted_plan_version`.
-  Accepted revisions record no kit manifest, Source tag or branch, so
-  `kit_manifest`, `tag`, `branch` and `recipe_summary` are `null`, and
-  restoring the row brings back the replaced Plan's Source layers while
-  keeping the current kit manifest and Source refs. The first Accept and a
-  replaced revision with no input set have nothing to restore, so they save
-  none, and the preview reports `saved_before_accept: false` for them. A
-  replay, an already consumed draft and every refusal save none either.
+  (type, Source id, current Source name and order), not from `profile_layers`:
+  Accept publishes the working layers, so they already match the new Plan. The
+  payload has Node's `capturePlanSnapshotPayload` shape plus
+  `accepted_plan_revision_id` and `accepted_plan_version`. Accepted revisions
+  record no kit manifest, Source tag or branch, so `kit_manifest`, `tag`,
+  `branch` and `recipe_summary` are `null`, and restoring the row brings back
+  the replaced Plan's Source layers while keeping the current kit manifest and
+  Source refs. The first Accept, a replaced revision with no input set and one
+  whose migrated input set holds `legacy:<id>` layers have nothing restore can
+  place, so they save none, and the preview reports
+  `saved_before_accept: false` for them. A replay, an already consumed draft
+  and every refusal save none either.
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500
@@ -3221,9 +3222,12 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   expects. Accept refuses a stale one with `draft_changed` or `base_changed`.
 - `snapshot` is `{ saved_before_accept, detail }`. `saved_before_accept` is
   true when Accept will save the `pre_apply` snapshot described above, that
-  is when the accepted Plan's revision has an input set. It is false, with a
-  detail saying no snapshot is saved, on a Build's first Accept or when the
-  accepted revision has no input set (a `legacy` revision).
+  is when the accepted Plan's revision has an input set whose layers are all
+  `base` or `addon`. It is false, with a detail saying no snapshot is saved,
+  on a Build's first Accept, when the accepted revision has no input set (a
+  `legacy` revision), and when its input set was migrated by schema v18 and
+  holds `legacy:<id>` layers, which Node's restore would turn into addons
+  with no base.
 - A refusal is the one Accept would return, as an RFC 9457 problem
   ([Problem responses](problem-responses.md)): 404 `draft_not_found` for a
   missing draft, otherwise 409 with no `detail`, Accept's outcome kind as

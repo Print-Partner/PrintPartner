@@ -227,10 +227,23 @@ pub fn checkoff(
 /// [`checkoff`]: included Parts in the same order, with unit tokens and the
 /// basis a manual burst names.
 #[cfg(feature = "desktop_rebuild")]
-pub fn checkoff_units(profile_id: i64, read: &AcceptedRead) -> Result<Value> {
+pub fn checkoff_units(
+    profile_id: i64,
+    read: &AcceptedRead,
+    plates: Option<&super::HeadPlates>,
+) -> Result<Value> {
     use crate::checkoff_progress::{
         Basis,
-        wire::{CheckoffPart, CheckoffUnitState, CheckoffUnits},
+        wire::{CheckoffPart, CheckoffUnitState, CheckoffUnits, UnitPlate},
+    };
+    let plate = |token: &str| {
+        plates.and_then(|(_, by_token)| by_token.get(token)).map(
+            |(plate_id, ordinal, printer_name)| UnitPlate {
+                plate_id: plate_id.clone(),
+                ordinal: *ordinal,
+                printer_name: printer_name.clone(),
+            },
+        )
     };
     if let Some(value) = unavailable(read) {
         return Ok(value);
@@ -257,6 +270,7 @@ pub fn checkoff_units(profile_id: i64, read: &AcceptedRead) -> Result<Value> {
                             object_name: u.object_name.clone(),
                             printed: u.completed,
                             assembled: u.assembled,
+                            plate: plate(u.token.as_str()),
                         })
                         .collect(),
                 })
@@ -266,7 +280,8 @@ pub fn checkoff_units(profile_id: i64, read: &AcceptedRead) -> Result<Value> {
         _ => (None, Vec::new()),
     };
     let kind = if basis.is_some() { "ready" } else { "empty" };
-    Ok(json!({"kind": kind, "body": CheckoffUnits { profile_id, basis, parts }}))
+    let plate_revision_id = basis.as_ref().and(plates).map(|(id, _)| *id);
+    Ok(json!({"kind": kind, "body": CheckoffUnits { profile_id, basis, plate_revision_id, parts }}))
 }
 pub fn assembled(part_id: i64, read: &AcceptedRead) -> Value {
     if let Some(value) = unavailable(read) {

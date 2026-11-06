@@ -80,7 +80,20 @@ pub struct Batch {
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip)]
     pub stock: Option<stock::StockInputs>,
+    /// The head Plate revision and each placed unit's Plate, read only by
+    /// [`ReadClient::read_checkoff_units`]; see [`crate::plates::head_plates`].
+    #[cfg(feature = "desktop_rebuild")]
+    #[serde(skip)]
+    pub plates: Option<HeadPlates>,
 }
+
+/// A head Plate revision id and, by Required-unit token, the Plate id,
+/// ordinal and Printer name the unit is placed on.
+#[cfg(feature = "desktop_rebuild")]
+pub type HeadPlates = (
+    i64,
+    std::collections::HashMap<String, (String, u32, String)>,
+);
 
 #[derive(Clone)]
 pub struct ReadClient {
@@ -102,6 +115,9 @@ enum Target {
     /// One Plan plus its Spoolman stock inputs, in the same transaction.
     #[cfg(feature = "desktop_rebuild")]
     Stock(i64),
+    /// One Plan plus the head Plate of each of its placed Required units.
+    #[cfg(feature = "desktop_rebuild")]
+    CheckoffUnits(i64),
 }
 
 impl WriterOwner {
@@ -178,11 +194,22 @@ impl ReadClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Batch> {
-        ensure!(
-            profile_id > 0 && profile_id <= 9_007_199_254_740_991,
-            "Accepted Plan IDs must be positive safe integers"
-        );
-        self.submit(credential, Target::Stock(profile_id), cancelled, wait)
+        let target = Target::Stock(plan_id(profile_id)?);
+        self.submit(credential, target, cancelled, wait)
+    }
+
+    /// Reads one Accepted Plan and, when it is ready, the head Plate each
+    /// Required unit is placed on, in the same transaction.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn read_checkoff_units(
+        &self,
+        credential: Credential,
+        profile_id: i64,
+        cancelled: &AtomicBool,
+        wait: Duration,
+    ) -> Result<Batch> {
+        let target = Target::CheckoffUnits(plan_id(profile_id)?);
+        self.submit(credential, target, cancelled, wait)
     }
 
     fn submit(
@@ -202,6 +229,16 @@ impl ReadClient {
             reply,
         })
     }
+}
+
+/// `id` when it can name one Accepted Plan: a positive safe integer.
+#[cfg(feature = "desktop_rebuild")]
+fn plan_id(id: i64) -> Result<i64> {
+    ensure!(
+        id > 0 && id <= 9_007_199_254_740_991,
+        "Accepted Plan IDs must be positive safe integers"
+    );
+    Ok(id)
 }
 
 /// Queues the envelope `envelope` builds once the writer queue has room,
@@ -280,10 +317,15 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
         Target::Stock(id) => Some(id),
         _ => None,
     };
+    #[cfg(feature = "desktop_rebuild")]
+    let plates_profile = match command.target {
+        Target::CheckoffUnits(id) => Some(id),
+        _ => None,
+    };
     let profile_ids = match command.target {
         Target::Profiles(ids) => ids,
         #[cfg(feature = "desktop_rebuild")]
-        Target::Stock(id) => vec![id],
+        Target::Stock(id) | Target::CheckoffUnits(id) => vec![id],
         Target::Part(part) => tx
             .query_row(
                 "SELECT profile_id FROM parts WHERE tenant_id=?1 AND id=?2",
@@ -330,11 +372,20 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<B
         }
         _ => None,
     };
+    #[cfg(feature = "desktop_rebuild")]
+    let plates = match (plates_profile, builds.first().map(|b| &b.accepted)) {
+        (Some(id), Some(AcceptedRead::Ready { snapshot })) => {
+            crate::plates::head_plates(&tx, &tenant, id, snapshot)?
+        }
+        _ => None,
+    };
     tx.commit()?;
     Ok(Batch {
         builds,
         #[cfg(feature = "desktop_rebuild")]
         stock,
+        #[cfg(feature = "desktop_rebuild")]
+        plates,
     })
 }
 

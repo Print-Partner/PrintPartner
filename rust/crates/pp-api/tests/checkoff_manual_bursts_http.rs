@@ -46,6 +46,11 @@ async fn manual_burst_http_reads_units_records_replays_and_undoes_once() {
     assert_eq!(status, StatusCode::OK, "{units}");
     assert_eq!(units["profile_id"], 1);
     assert_eq!(units["basis"]["profile_id"], 1);
+    assert_eq!(
+        units["plate_revision_id"],
+        Value::Null,
+        "the fixture has no Plates"
+    );
     let filenames: Vec<&str> = units["parts"]
         .as_array()
         .unwrap()
@@ -60,7 +65,7 @@ async fn manual_burst_http_reads_units_records_replays_and_undoes_once() {
     assert_eq!(
         units["parts"][0]["units"][0],
         json!({ "token": "ppu_00000000000000000000000000000001", "unit_index": 0,
-            "object_name": "bracket__ppu_00000000000000000000000000000001", "printed": true, "assembled": true })
+            "object_name": "bracket__ppu_00000000000000000000000000000001", "printed": true, "assembled": true, "plate": null })
     );
     let (status, _) = send(&router, "GET", "/api/v2/plans/1/checkoff/units", "", false).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

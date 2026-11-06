@@ -230,6 +230,7 @@ mod tests {
                 },
             ],
             stock: None,
+            plates: None,
         }
     }
 

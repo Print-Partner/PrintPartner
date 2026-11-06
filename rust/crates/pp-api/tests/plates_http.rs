@@ -2,9 +2,13 @@
 //! GRE-1189, GRE-1184: the Plate routes through `plates_router` on a disposable
 //! copy of the Node-written `accepted-plate-node.db`: admission, the flag,
 //! the root and `/api/v2` aliases, and Node's `{ detail, code }` failures.
+//! GRE-1196: the Checkoff units read names each unit's head Plate.
 use axum::{Router, http::StatusCode};
 use loopback::ORIGIN;
-use pp_api::{accepted::AcceptedHttpConfig, plates::plates_router};
+use pp_api::{
+    accepted::{AcceptedHttpConfig, accepted_router},
+    plates::plates_router,
+};
 use pp_storage::{Limits, WriterOwner};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -51,6 +55,48 @@ async fn send(
 
 async fn get(router: &Router, path: &str, cookie: bool) -> (StatusCode, Value) {
     send(router, "GET", path, &Value::Null, cookie).await
+}
+
+/// Removes every Plate head, so the Build has no Plate revision.
+fn drop_heads(root: &Path) {
+    rusqlite::Connection::open(root.join("print-partner.db"))
+        .unwrap()
+        .execute("DELETE FROM accepted_plate_heads", [])
+        .unwrap();
+}
+
+/// The fixture unit's entry in `GET /api/v2/plans/1/checkoff/units`, and the
+/// head Plate revision the read names.
+async fn checkoff_unit(root: &Path) -> (Value, Value) {
+    let owner = WriterOwner::open(root, Limits::default()).unwrap().0;
+    let config = AcceptedHttpConfig::from_startup(ORIGIN, "default", Some("1")).unwrap();
+    let router = accepted_router(config, owner.accepted_reads().unwrap());
+    let (status, body) = get(&router, "/api/v2/plans/1/checkoff/units", true).await;
+    owner.shutdown().unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let unit = body["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|part| part["units"].as_array().unwrap())
+        .find(|unit| unit["token"] == TOKEN)
+        .unwrap()
+        .clone();
+    (body["plate_revision_id"].clone(), unit["plate"].clone())
+}
+
+#[tokio::test]
+async fn checkoff_units_http_names_each_units_head_plate() {
+    let dir = data_dir();
+    assert_eq!(
+        checkoff_unit(dir.path()).await,
+        (
+            json!(1),
+            json!({ "plate_id": "fixture-plate", "ordinal": 1, "printer_name": "Fixture Printer" })
+        )
+    );
+    drop_heads(dir.path());
+    assert_eq!(checkoff_unit(dir.path()).await, (Value::Null, Value::Null));
 }
 
 #[tokio::test]
@@ -100,10 +146,7 @@ async fn plates_http_read_answers_node_failures_on_both_aliases() {
     }
     owner.shutdown().unwrap();
 
-    rusqlite::Connection::open(root.join("print-partner.db"))
-        .unwrap()
-        .execute("DELETE FROM accepted_plate_heads", [])
-        .unwrap();
+    drop_heads(root);
     let (owner, router) = open(root, "true");
     let (status, setup) = get(&router, "/plans/1/plates", true).await;
     assert_eq!(

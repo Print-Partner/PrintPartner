@@ -834,10 +834,21 @@ fn jobs(
         ("printer.send_queue", false),
         ("printer.checkoff_links", true),
     ] {
-        let values = setting(tx, tenant, key, b)?
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
+        #[cfg(feature = "desktop_rebuild")]
+        let table = if link {
+            None
+        } else {
+            crate::send_queue::rows(tx, tenant)?
+        };
+        #[cfg(not(feature = "desktop_rebuild"))]
+        let table = None;
+        let values = match table {
+            Some(values) => values,
+            None => setting(tx, tenant, key, b)?
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default(),
+        };
         for v in values {
             if numeric(&v["profile_id"]) != Some(id) {
                 continue;

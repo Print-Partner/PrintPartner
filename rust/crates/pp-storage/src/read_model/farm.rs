@@ -3,7 +3,7 @@
 //!
 //! One deferred read of the caller's tenant settings `printer.fleet`,
 //! `integrations`, `printer.checkoff_links`, `printer.unattributed_prints`
-//! and `printer.send_queue`. It writes nothing: unlike Node's routes it never
+//! and the send queue (`crate::send_queue`). It writes nothing: unlike Node's routes it never
 //! repairs links or reconciles live sends, and rows Node would repair are
 //! skipped. Bodies carry no host addresses, file paths or printer error text.
 //!
@@ -506,7 +506,7 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
         list("integrations")?,
         list("printer.checkoff_links")?,
         list("printer.unattributed_prints")?,
-        list("printer.send_queue")?,
+        queue_list(&tx, &tenant)?,
     );
     if command.match_library {
         farm.library = Some(MatchLibrary::read(&tx, &tenant, &farm)?);
@@ -529,12 +529,17 @@ pub fn read_settings(client: &crate::SettingsClient, wait: Duration) -> Result<F
             }
         }
     };
+    let connection = reader.connection.as_ref().expect("checked out connection");
+    let queue = match crate::send_queue::rows(connection, "default")? {
+        Some(items) => items,
+        None => list(crate::send_queue::LEGACY_KEY)?,
+    };
     Ok(Farm::parse(
         list("printer.fleet")?,
         list("integrations")?,
         list("printer.checkoff_links")?,
         list("printer.unattributed_prints")?,
-        list("printer.send_queue")?,
+        queue,
     ))
 }
 
@@ -549,6 +554,14 @@ fn json_list(raw: Option<String>) -> Vec<Value> {
 }
 
 /// A stored JSON array, or empty when missing or unparseable, as Node reads it.
+/// The send queue: the table's items, or the legacy setting while it exists.
+pub(crate) fn queue_list(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Value>> {
+    match crate::send_queue::rows(tx, tenant)? {
+        Some(items) => Ok(items),
+        None => setting_list(tx, tenant, crate::send_queue::LEGACY_KEY),
+    }
+}
+
 pub(crate) fn setting_list(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Vec<Value>> {
     let row: Option<(i64, Option<String>)> = tx
         .query_row(

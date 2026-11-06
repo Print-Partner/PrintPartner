@@ -76,7 +76,11 @@ the loopback server and WebKitGTK launcher that both browser checks use.
   logic and `test/core-proxy.test.ts` tests it.
 - UI code calls the core through `fetchCore` in `src/core/client.ts`. It accepts
   same-origin paths only and sends same-origin credentials. In the desktop app
-  and Docker the Rust core serves this UI, so the paths reach it directly.
+  and Docker the Rust core serves this UI, so the paths reach it directly. An
+  error answer names the core's problem `detail` when it sends one.
+- `readCore` and `writeCore` in `src/core/rust.ts` are the typed GET and write.
+  `writeCore` checks the body against the generated request schema before it
+  sends, and the answer against the response schema.
 
 ## Builds
 
@@ -126,6 +130,65 @@ what they will hold and that a later slice brings them. Nothing here changes dat
   numbers and fails only on a missing row, next actions that never load, or
   misplaced focus. Revisit
   virtualization if a measurement says otherwise.
+
+## Today
+
+`/today` (`src/today/TodayScreen.tsx`) reads `GET /api/v2/printer-checkoff`,
+`GET /api/v2/tasks` and, with the Farm module on, `GET /api/v2/printers` for
+printer names and link state. It rereads the results, tasks and printers every 30 s,
+so a print that ends or a link that drops shows up without a reload.
+
+- **Hero task.** When printer results wait in `awaiting_verify` with pending
+  units, the hero is "Clear N beds and confirm what came off", the reason names
+  the printers it frees, and each bed lists what confirming it marks: one line
+  per Part with its file name, the count and the unit numbers (`unit_index` + 1).
+  With no bed waiting, the hero is the top task from the shared Rust ranking,
+  with its reason and counts, and the ranked list holds the rest.
+- **Confirm one bed.** "Confirm <printer> bed" sends one
+  `POST /api/v2/printer-checkoff/verify-batch` with one bed and a new
+  `crypto.randomUUID()` idempotency key, confirming every pending unit of that
+  result. Rejecting units and multi-bed bursts are slice 5 and the Build
+  Checkoff tab (GRE-1121).
+- **Retry.** A send that fails without an answer from the core (a network error
+  or a lost answer) is resent up to twice with the same key, and the alert's
+  Retry resends it again with the same key. The core answers a repeated key
+  with the first receipt and writes nothing, so a retry never counts twice
+  ([Checkoff bursts](../../../docs/desktop-rebuild.md#checkoff-bursts-gre-1090)).
+  A refusal from the core (4xx) shows its detail and no Retry. Until a bed's
+  confirm gets an answer, confirming that bed again reuses its key, so a write
+  that landed while its answer was lost replays its receipt and Undo instead of
+  being refused as already verified. The key is kept only while a reread still
+  lists that bed with the same pending units; once the bed is gone, confirming
+  it later uses a new key, so a burst undone elsewhere is not answered with its
+  old receipt. The alert's Retry rereads the results first and follows the same
+  rule while the bed is listed; once the reread no longer lists it, the write
+  landed, so Retry sends the same request and key and the core replays the
+  receipt and Undo. A reread cannot tell a write that never landed from one that
+  landed and was undone elsewhere before it, so a resend can get the old receipt
+  of an undone burst; Today rereads after every answer and, when the bed is
+  still waiting, says nothing was marked instead of showing the tally and Undo.
+  Keys come from `crypto.randomUUID`, or from `crypto.getRandomValues` where the
+  page is not a secure context (a shared core over plain HTTP). One write runs
+  at a time: Confirm and Undo do nothing while the other is in flight. A resent Undo whose first answer was lost
+  gets 409 "already undone"; Today counts that as done and rereads.
+- **Undo.** The tally, "Confirmed N units from <printer>.", sits in a polite
+  `role="status"` region that is in the page before any confirm, beside an Undo
+  button. Undo sends the receipt's `undo_token` to
+  `POST /api/v2/printer-checkoff/verify-batch/undo`; the core restores the
+  links, progress and outcomes, or refuses with 409 and a reason.
+- **Printer links down.** Confirming a bed needs no printer. A bed whose printer
+  the farm read shows unreachable, not set up, manual or unknown, or does not
+  name, says to confirm by hand what came off. Results still `watching` on such
+  a printer are listed under "Prints the app cannot see finish" with a link to
+  the Build's Checkoff tab, so no print drops out of sight. The same happens,
+  with its own reason, while the farm read is pending ("Printer links not read
+  yet"), when it fails ("Printer links could not be read"), and when the Farm
+  module is off ("The Farm module is off").
+- With the core offline every confirm, Undo and Retry is disabled with the
+  offline reason (`MutationButton`).
+- **Tests.** `src/today/Today.test.tsx` runs against a fake core that applies
+  verify-batch and undo like the Rust routes, including the replay of a
+  repeated key, and counts the requests and marked units.
 
 ## Farm and the pulse line
 

@@ -1,5 +1,6 @@
 mod model;
 pub mod preview;
+mod snapshot;
 #[cfg(test)]
 mod tests;
 
@@ -1459,6 +1460,7 @@ pub(crate) fn publish_in_transaction(
         now.second(),
         now.millisecond()
     );
+    snapshot::save_before_accept(tx, tenant, profile, draft_id, (previous, version), &at)?;
     tx.execute(
         "DELETE FROM accepted_plate_heads WHERE tenant_id=? AND profile_id=?",
         params![tenant, profile],

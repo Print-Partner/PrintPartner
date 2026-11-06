@@ -315,6 +315,33 @@ describe("CHK-03 in-flight and stale writes", () => {
     expect(screen.queryByRole("button", { name: /^Record/ })).toBeNull();
   });
 
+  it("an undo failure replaces an older record failure, with the undo's reason", async () => {
+    let records = 0;
+    const fetchMock = core(
+      reads(units, (path) => {
+        if (path.endsWith("/undo"))
+          return json({ detail: "A later change touched these units" }, 409);
+        records += 1;
+        if (records === 1) return json(RECEIPT);
+        return json({ detail: "Accepted Plan changed; reload and retry" }, 409);
+      }),
+    );
+    renderAt(fetchMock);
+    await screen.findByRole("group", { name: /^bracket\.stl/ });
+    fireEvent.click(box("bracket.stl", 2));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    await screen.findByText(/Recorded:/);
+    fireEvent.click(box("gear.stl", 1));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    const recordFailure = await screen.findByRole("alert");
+    expect(recordFailure.textContent).toContain("Could not record the burst.");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await screen.findByText("Could not undo the burst.");
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("A later change touched these units");
+    expect(alert.textContent).not.toContain("Could not record the burst.");
+  });
+
   it("a stale undo Retry never marks a newer burst undone", async () => {
     let undos = 0;
     const fetchMock = core(

@@ -263,6 +263,12 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
     undo.reset();
     record.mutate(burst);
   };
+  // An undo retires an older record failure, so the alert and its Retry speak for the undo.
+  const undoLast = (receipt: Parameters<typeof undo.mutate>[0]) => () => {
+    if (busy) return;
+    record.reset();
+    undo.mutate(receipt);
+  };
   const switchField = (next: Field) => {
     setField(next);
     setPicks(new Map());
@@ -335,9 +341,7 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
         {tally?.kind === "recorded" && (
           <p>
             {`Recorded: ${receiptText(tally.receipt)}.`}{" "}
-            <MutationButton onClick={() => !busy && undo.mutate(tally.receipt)}>
-              Undo
-            </MutationButton>
+            <MutationButton onClick={undoLast(tally.receipt)}>Undo</MutationButton>
           </p>
         )}
         {tally?.kind === "undone" && <p>Undid the last burst. The units are back as they were.</p>}

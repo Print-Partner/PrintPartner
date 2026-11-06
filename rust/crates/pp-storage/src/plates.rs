@@ -589,10 +589,18 @@ fn accepted_printer(row: &Value) -> Option<Printer> {
 }
 
 /// Node's `loadFleet` mapped through `acceptedPrinter`, by raw id. A `null`
-/// row makes Node's parse throw, which empties the whole fleet.
+/// row, or a `null` entry in a row's `loaded_filaments` array, makes Node's
+/// `parsePrinterMachine` throw, which empties the whole fleet.
 fn fleet(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<(String, Option<Printer>)>> {
     let rows = setting_list(tx, tenant, "printer.fleet")?;
-    if rows.iter().any(Value::is_null) {
+    let throws = |row: &Value| {
+        row.is_null()
+            || row
+                .get("loaded_filaments")
+                .and_then(Value::as_array)
+                .is_some_and(|slots| slots.iter().any(Value::is_null))
+    };
+    if rows.iter().any(throws) {
         return Ok(Vec::new());
     }
     Ok(rows

@@ -1239,6 +1239,39 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     ]);
   });
 
+  it("names a printer once when bursts on two of its beds are replayed together", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({
+      results: [
+        result("link-voron-a", "voron", [[1, 1, "bracket.stl"]]),
+        result("link-voron-b", "voron", [[3, 0, "gear.stl"]], {
+          created_at: "2026-11-05T18:30:00.000Z",
+        }),
+      ],
+      loseFirstAnswers: 6,
+    });
+    renderToday(core);
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { level: 3, name: "Voron 2.4" })).toHaveLength(2),
+    );
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(unit("gear.stl unit 1"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(core.state.marked).toBe(2));
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    expect(await screen.findByText("Confirmed 2 units from Voron 2.4.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(
+      await screen.findByText("Undid the Voron 2.4 confirmation. 2 units are waiting again."),
+    ).toBeTruthy();
+  });
+
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ results: SHARED() });

@@ -77,7 +77,7 @@ const burstId = (picks: readonly Pick[]) =>
 const pendingKey = (bed: Bed, u: Unit) => `${bed.result.id}=${unitKey(u)}`;
 
 interface Undo {
-  printer: string;
+  picks: Pick[];
   receipt: VerifyBatchReceipt;
 }
 
@@ -98,7 +98,7 @@ const newKey = () =>
         b.toString(16).padStart(2, "0"),
       ).join("");
 
-const printersOf = (undos: readonly Undo[]) => undos.map((u) => u.printer).join(" and ");
+const printersOf = (undos: readonly Undo[]) => pickedPrinters(undos.flatMap((u) => u.picks));
 
 const tallyText = (t: Tally) =>
   t.kind === "confirmed"
@@ -250,7 +250,7 @@ function useCheckoff() {
       if (refusals.length > 0) setNotice(refusals.join(" "));
       if (answered.length === 0) return;
       const undos = answered.flatMap(({ burst, receipt }) =>
-        replayed(burst) ? [] : [{ printer: pickedPrinters(burst.picks), receipt }],
+        replayed(burst) ? [] : [{ picks: burst.picks, receipt }],
       );
       setTally(
         undos.length === 0

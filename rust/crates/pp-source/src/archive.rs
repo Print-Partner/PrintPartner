@@ -145,10 +145,15 @@ impl Default for ArchiveLimits {
         }
     }
 }
-pub struct ZipInput(File);
+pub struct ZipInput<R = File>(R);
 impl ZipInput {
     pub fn open(files: &LocalFiles, path: &SourcePath) -> Result<Self> {
         Ok(Self(files.root.file(path.as_str(), false)?))
+    }
+    /// Wraps the pinned input file without changing which file it reads, so a
+    /// caller can observe or pace the copy.
+    pub fn map_reader<R: Read + Seek>(self, wrap: impl FnOnce(File) -> R) -> ZipInput<R> {
+        ZipInput(wrap(self.0))
     }
 }
 #[derive(Clone, Debug, Serialize)]
@@ -222,7 +227,7 @@ impl SourceRoot {
     /// Extracts using strict `SourcePath` labels without normalization.
     pub fn extract_zip(
         &mut self,
-        input: ZipInput,
+        input: ZipInput<impl Read + Seek>,
         limits: ArchiveLimits,
         cancelled: &AtomicBool,
     ) -> Result<ExtractedArchive> {
@@ -234,7 +239,7 @@ impl SourceRoot {
     #[cfg(feature = "desktop_rebuild")]
     pub fn extract_zip_with_label_policy(
         &mut self,
-        input: ZipInput,
+        input: ZipInput<impl Read + Seek>,
         limits: ArchiveLimits,
         label_policy: ArchiveLabelPolicy,
         cancelled: &AtomicBool,
@@ -244,7 +249,7 @@ impl SourceRoot {
 
     fn extract_zip_impl(
         &mut self,
-        mut input: ZipInput,
+        mut input: ZipInput<impl Read + Seek>,
         limits: ArchiveLimits,
         label_policy: ArchiveLabelPolicy,
         cancelled: &AtomicBool,
@@ -293,7 +298,7 @@ impl SourceRoot {
     }
     fn extract_to(
         &self,
-        input: &mut ZipInput,
+        input: &mut ZipInput<impl Read + Seek>,
         limits: ArchiveLimits,
         label_policy: ArchiveLabelPolicy,
         cancelled: &AtomicBool,

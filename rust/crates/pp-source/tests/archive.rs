@@ -5,11 +5,11 @@ use pp_source::{
 };
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -61,6 +61,53 @@ impl Fixture {
     fn candidate(&self) -> PathBuf {
         self.0
             .join("repos/42/revisions/.pp-source-archives/.candidate")
+    }
+}
+
+/// Sets `cancel` when the copy asks for its second chunk. The first chunk is
+/// already in the stage by then, so the cancel check at the top of the copy
+/// loop trips after a partial copy on every OS, with no polling or sleeping.
+struct CancelAfterFirstChunk {
+    file: File,
+    reads: u32,
+    staged: PathBuf,
+    cancel: Arc<AtomicBool>,
+    staged_len: Arc<AtomicU64>,
+}
+impl Read for CancelAfterFirstChunk {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.reads == 1 {
+            self.staged_len
+                .store(fs::metadata(&self.staged).unwrap().len(), Ordering::SeqCst);
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+        self.reads += 1;
+        self.file.read(buf)
+    }
+}
+impl Seek for CancelAfterFirstChunk {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(pos)
+    }
+}
+impl Fixture {
+    /// Returns the input and the staged length seen when cancel was raised.
+    fn cancelling_input(
+        &self,
+        cancel: &Arc<AtomicBool>,
+    ) -> (ZipInput<CancelAfterFirstChunk>, Arc<AtomicU64>) {
+        let staged_len = Arc::new(AtomicU64::new(0));
+        let input = self.input().map_reader(|file| CancelAfterFirstChunk {
+            file,
+            reads: 0,
+            staged: self.candidate().join("archive.zip"),
+            cancel: cancel.clone(),
+            staged_len: staged_len.clone(),
+        });
+        (input, staged_len)
+    }
+    fn input_len(&self) -> u64 {
+        fs::metadata(self.0.join("input/upload.zip")).unwrap().len()
     }
 }
 
@@ -279,24 +326,11 @@ fn cancellation_during_input_copy_cleans_private_stage() {
     let fixture = Fixture::new();
     fixture.zip(512);
     let mut source = fixture.tenant().source(42).unwrap();
-    let input = fixture.input();
     let cancel = Arc::new(AtomicBool::new(false));
-    let signal = cancel.clone();
-    let path = fixture.candidate().join("archive.zip");
-    let watcher = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
-                signal.store(true, Ordering::Relaxed);
-                return true;
-            }
-            thread::sleep(Duration::from_micros(100));
-        }
-        signal.store(true, Ordering::Relaxed);
-        false
-    });
+    let (input, staged_len) = fixture.cancelling_input(&cancel);
     let result = source.extract_zip(input, ArchiveLimits::default(), &cancel);
-    assert!(watcher.join().unwrap());
+    let staged_len = staged_len.load(Ordering::SeqCst);
+    assert!(staged_len > 0 && staged_len < fixture.input_len());
     assert!(matches!(result, Err(ArchiveError::Cancelled)));
     assert!(!fixture.candidate().exists());
     assert!(!fixture.0.join("repos/42/revisions/accepted").exists());
@@ -915,30 +949,15 @@ mod acquisition_labels {
         ));
         assert!(!fixture.candidate().exists());
         cancel.store(false, Ordering::Relaxed);
-        let signal = cancel.clone();
-        let path = fixture.candidate().join("archive.zip");
-        let input_len = fs::metadata(fixture.0.join("input/upload.zip"))
-            .unwrap()
-            .len();
-        let watcher = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline {
-                if fs::metadata(&path).is_ok_and(|m| m.len() > 0 && m.len() < input_len) {
-                    signal.store(true, Ordering::Relaxed);
-                    return true;
-                }
-                thread::sleep(Duration::from_micros(100));
-            }
-            signal.store(true, Ordering::Relaxed);
-            false
-        });
+        let (input, staged_len) = fixture.cancelling_input(&cancel);
         let result = source.extract_zip_with_label_policy(
-            fixture.input(),
+            input,
             ArchiveLimits::default(),
             ArchiveLabelPolicy::NfcAtAcquisition,
             &cancel,
         );
-        assert!(watcher.join().unwrap());
+        let staged_len = staged_len.load(Ordering::SeqCst);
+        assert!(staged_len > 0 && staged_len < fixture.input_len());
         assert!(matches!(result, Err(ArchiveError::Cancelled)));
         assert!(!fixture.candidate().exists());
         cancel.store(false, Ordering::Relaxed);

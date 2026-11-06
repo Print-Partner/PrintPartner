@@ -599,6 +599,7 @@ fn transact(
         if changed != 1 {
             return Ok(TransactionResult::Refused(Refusal::DraftChanged));
         }
+        crate::domain_events::draft_changed(tx, tenant, profile, num(&d.header, "id")?)?;
         let after = storage::draft_checked(tx, tenant, profile, num(&d.header, "id")?, &|| {
             Ok(budget.check()?)
         })?

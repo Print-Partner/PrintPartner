@@ -59,7 +59,8 @@ pub const REVISION_ACCEPTED: EventKind = EventKind {
     name: "plan.revision_accepted",
     version: 1,
 };
-/// A Plan draft's Required-unit selection changed.
+/// A Plan draft was created, edited or closed, or its Required-unit
+/// selection changed.
 pub const DRAFT_CHANGED: EventKind = EventKind {
     name: "plan.draft_changed",
     version: 1,
@@ -170,6 +171,26 @@ pub(crate) struct Change {
     pub aggregate_id: String,
     pub aggregate_version: Option<i64>,
     pub payload: Value,
+}
+
+/// Appends one `plan.draft_changed` event for `draft` of Build `profile`.
+pub(crate) fn draft_changed(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft: i64,
+) -> Result<()> {
+    append(
+        tx,
+        tenant,
+        Change {
+            kind: DRAFT_CHANGED,
+            aggregate_type: "build",
+            aggregate_id: profile.to_string(),
+            aggregate_version: None,
+            payload: serde_json::json!({ "draft_id": draft }),
+        },
+    )
 }
 
 /// Appends `change` inside `tx`, the transaction that makes the change, and

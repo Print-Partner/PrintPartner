@@ -73,8 +73,9 @@
 //! after reopening the entry by name. NTFS file IDs include a sequence number,
 //! so a freed ID is not given to a new file. Unix can reuse a freed inode
 //! number, so a Unix caller that relies on identity keeps a descriptor open,
-//! which a Unix rename ignores. pp-source's snapshot publication and retained
-//! captures work this way.
+//! which a Unix rename ignores. pp-source's snapshot publication closes its
+//! handles before renaming, and its retained captures also record and check
+//! identities this way.
 //!
 //! # File systems without POSIX semantics
 //!

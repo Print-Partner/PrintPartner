@@ -174,8 +174,12 @@ pub(crate) mod test_support {
         "fs.writeSync(1, 'ready\\n'); setInterval(() => {}, 1e9);",
     );
 
-    /// Ignores SIGTERM and stdin closing.
-    pub(crate) const STUBBORN: &str = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1e9)";
+    /// Ignores SIGTERM and stdin closing, and prints `ready` once the handler
+    /// is set.
+    pub(crate) const STUBBORN: &str = concat!(
+        "process.on('SIGTERM', () => {}); ",
+        "require('node:fs').writeSync(1, 'ready\\n'); setInterval(() => {}, 1e9);",
+    );
 
     /// Defines `serve(server, path)`, which serves `server` on the channel the
     /// child receives as `socket_path`: on Unix the child listens on it.

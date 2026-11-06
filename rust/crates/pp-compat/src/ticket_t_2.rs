@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use super::platform::test_support;
 
 /// Exits 0 when stdin closes.
-const STAY: &str = "process.stdin.on('end', () => process.exit(0)); process.stdin.resume();";
+const STAY: &str = "process.stdin.on('end', () => process.exit(0)); process.stdin.resume(); console.log('stay-ready');";
 
 /// `script` after [`test_support::SERVE`], so it can call `serve(server, path)`.
 fn served(script: &str) -> &'static str {
@@ -174,6 +174,12 @@ async fn ticket_t_3_drain_supervisor_shutdown_reports_graceful_exit() {
         super::Supervisor::launch_shell(shell_spec(&scratch), super::SupervisorConfig::default())
             .unwrap();
     wait_live(&scratch.pidfile(), 1).await;
+    pump_until(|| {
+        diagnostic_rows(&scratch)
+            .iter()
+            .any(|row| row["event"] == "compat_output")
+    })
+    .await;
     assert_eq!(shutdown(supervisor).await, super::CompatExit::Graceful);
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }

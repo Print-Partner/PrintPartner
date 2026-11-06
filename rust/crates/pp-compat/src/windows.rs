@@ -773,8 +773,9 @@ pub(crate) mod test_support {
         "process.stdin.resume(); console.log('ready');",
     );
 
-    /// Ignores stdin closing.
-    pub(crate) const STUBBORN: &str = "setInterval(() => {}, 1e9)";
+    /// Ignores stdin closing, and prints `ready` once running.
+    pub(crate) const STUBBORN: &str =
+        "require('node:fs').writeSync(1, 'ready\\n'); setInterval(() => {}, 1e9);";
 
     /// Defines `serve(server, path)`, which serves `server` on the channel the
     /// child receives as `socket_path`. On Windows the core owns the pipe, so

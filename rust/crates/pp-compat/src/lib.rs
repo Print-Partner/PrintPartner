@@ -2060,6 +2060,15 @@ if sys.argv[1] == "wait":
         (child, stdout)
     }
 
+    /// Spawns [`test_support::STUBBORN`] and returns once it ignores stop requests.
+    async fn spawn_stubborn_child() -> Spawned {
+        let mut child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
+        let (stdout, line) = first_line(child.0.stdout.take().unwrap()).await;
+        assert_eq!(line, "ready\n");
+        child.0.stdout = Some(stdout.into_inner());
+        child
+    }
+
     #[tokio::test]
     async fn ticket_t_3_drain_process_stop_sigterms_cooperative_child() {
         let (child, _stdout) = spawn_cooperative_child().await;
@@ -2106,15 +2115,14 @@ if sys.argv[1] == "wait":
     #[cfg(windows)]
     #[tokio::test]
     async fn ticket_t_3_drain_restart_cleanup_becomes_planned_stop_when_shutdown_starts() {
-        let child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
+        let child = spawn_stubborn_child().await;
         let outcome = stop_owned_child_at(child, false, Some(Duration::from_millis(100))).await;
         assert_forced_after_grace(&outcome);
     }
 
     #[tokio::test]
     async fn ticket_t_3_drain_process_stop_force_kills_after_sigterm_grace() {
-        let child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let child = spawn_stubborn_child().await;
         let outcome = stop_owned_child(child, false).await;
         assert_forced_after_grace(&outcome);
     }

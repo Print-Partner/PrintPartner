@@ -388,6 +388,35 @@ describe("a burst names lower units that are still printing", () => {
   });
 });
 
+describe("a burst names lower units no bed can confirm", () => {
+  it("names a failed print's lower unit, and not one confirmed on another result", async () => {
+    const core = fakeCore({
+      results: [
+        result("link-voron", "voron", [[7, 2, "hinge.stl"]]),
+        result("link-annex", "annex", [[7, 0, "hinge.stl"]], { state: "host_failed", host_outcome: "failed" }),
+        result("link-old", "trident", [[7, 1, "hinge.stl"]], {
+          state: "awaiting_verify",
+          resolved_units: [{ part_id: 7, unit_index: 1, result: "rejected" }],
+          resolved_unit_count: 1,
+        }),
+        result("link-redo", "trident", [[7, 1, "hinge.stl"]], {
+          state: "verified",
+          resolved_units: [{ part_id: 7, unit_index: 1, result: "confirmed" }],
+          resolved_unit_count: 1,
+        }),
+      ],
+      printers: [printer("voron", "Voron 2.4"), printer("annex", "Annex K3"), printer("trident", "Trident")],
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(
+      within(bed("Voron 2.4")).getByText(
+        "Lower units of these Parts are not confirmed on any print Today shows: Annex K3: hinge.stl unit 1. Progress fills from the left, so the core refuses this unless they were completed another way.",
+      ),
+    ).toBeTruthy();
+  });
+});
+
 describe("a burst stays inside the verify-batch contract", () => {
   it("says to split a burst of more than 50 beds instead of offering Confirm", async () => {
     const results = Array.from({ length: 51 }, (_, i) =>

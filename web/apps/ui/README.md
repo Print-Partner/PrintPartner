@@ -161,10 +161,12 @@ so a print that ends or a link that drops shows up without a reload.
   unit of that Part is still pending (400 "Confirm must include lower incomplete
   units first"). When a pick or a bed's confirm skips a lower pending unit shown
   on another bed, Today names those units before the send, and "Pick them too"
-  adds them to the burst. It never adds them on its own. A lower unit on a print
-  still running (`watching`) cannot be picked, so Today says it is still printing
-  and that the core refuses the confirm until it comes off. A lower unit on no
-  loaded result is not known to the UI; the core's 400 detail shows instead.
+  adds them to the burst. It never adds them on its own. A lower unit that no bed
+  can confirm now is named too: one on a print still running (`watching`) as still
+  printing, and one on a failed, dismissed or rejected result that no other result
+  confirmed as "not confirmed on any print Today shows". The core refuses those
+  confirms unless the unit was completed another way. A lower unit on no loaded
+  result is unknown to the UI; the core's 400 detail shows instead.
 - **Burst limit.** One verify-batch carries at most 50 beds. A bigger pick shows
   that limit in place of Confirm. A send refused by the client contract is never
   resent, and picks made while a confirm is in flight stay picked.

@@ -48,11 +48,34 @@ export const bedsToClear = (
   printerName: (id: string) => string,
 ) => bedsIn(results, printerName, "awaiting_verify");
 
-/** Prints still running: their units cannot be confirmed until they come off. */
-export const bedsPrinting = (
+/**
+ * Units on loaded results that no bed can confirm now: on a print still running, or failed,
+ * dismissed or rejected and not confirmed on any other result. A lower one of these makes
+ * the core refuse a confirm (Progress fills from the left) unless it was completed elsewhere.
+ */
+export function bedsBlocking(
   results: readonly CheckoffResult[],
   printerName: (id: string) => string,
-) => bedsIn(results, printerName, "watching");
+  beds: readonly Bed[],
+): { printing: Bed[]; unconfirmed: Bed[] } {
+  const pickable = new Set(beds.flatMap((bed) => bed.pending.map(unitKey)));
+  const confirmed = new Set(
+    results.flatMap((r) => r.resolved_units.filter((u) => u.result === "confirmed").map(unitKey)),
+  );
+  const blocked = (result: CheckoffResult): Bed => ({
+    result,
+    printer: printerName(result.printer_id),
+    pending: result.units.filter((u) => !pickable.has(unitKey(u)) && !confirmed.has(unitKey(u))),
+  });
+  const all = [...results]
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+    .map(blocked)
+    .filter((bed) => bed.pending.length > 0);
+  return {
+    printing: all.filter((bed) => bed.result.state === "watching"),
+    unconfirmed: all.filter((bed) => bed.result.state !== "watching"),
+  };
+}
 
 /** "A", "A and B", "A, B and C". */
 export const listWords = (words: readonly string[]) =>

@@ -58,11 +58,13 @@ function Preview({
   picks,
   needs,
   printing,
+  unconfirmed,
   pickNeeds,
 }: {
   picks: readonly Pick[];
   needs: readonly Pick[];
   printing: readonly Pick[];
+  unconfirmed: readonly Pick[];
   pickNeeds: () => void;
 }) {
   const units = picks.flatMap((p) => p.units);
@@ -91,6 +93,9 @@ function Preview({
               </button>
             </p>
           )}
+          {unconfirmed.length > 0 && (
+            <p className="pp-burst-needs">{`Lower units of these Parts are not confirmed on any print Today shows: ${pickWords(unconfirmed)}. Progress fills from the left, so the core refuses this unless they were completed another way.`}</p>
+          )}
           {printing.length > 0 && (
             <p className="pp-burst-needs">
               {`Lower units of these Parts are still printing: ${pickWords(printing)}. Progress fills from the left, so the core refuses this until they come off and are confirmed.`}
@@ -109,12 +114,12 @@ function Preview({
  */
 export function ClearBeds({
   beds,
-  printing,
+  blocking,
   linkNote,
   confirm,
 }: {
   beds: Bed[];
-  printing: Bed[];
+  blocking: { printing: Bed[]; unconfirmed: Bed[] };
   linkNote: (printerId: string) => string | null;
   confirm: (picks: Pick[]) => boolean;
 }) {
@@ -126,7 +131,8 @@ export function ClearBeds({
   const selected = new Set([...picked].filter((key) => slots.some((s) => s.key === key)));
   const picks = picksOf(beds, selected);
   const needs = lowerFirst(beds, picks);
-  const stillPrinting = lowerFirst(printing, picks);
+  const stillPrinting = lowerFirst(blocking.printing, picks);
+  const unconfirmed = lowerFirst(blocking.unconfirmed, picks);
   const pickNeeds = () =>
     setPicked(
       new Set([...selected, ...needs.flatMap((p) => p.units.map((u) => slotKey(p.bed, u)))]),
@@ -175,7 +181,8 @@ export function ClearBeds({
       <ul className="pp-beds">
         {beds.map((bed) => {
           const first = lowerFirst(beds, [{ bed, units: bed.pending }]);
-          const running = lowerFirst(printing, [{ bed, units: bed.pending }]);
+          const running = lowerFirst(blocking.printing, [{ bed, units: bed.pending }]);
+          const elsewhere = lowerFirst(blocking.unconfirmed, [{ bed, units: bed.pending }]);
           return (
             <li key={bed.result.id} className="pp-bed" data-link={bed.result.id}>
               <h3>{bed.printer}</h3>
@@ -193,6 +200,9 @@ export function ClearBeds({
                 <p className="pp-muted">
                   {`Progress fills from the left, so confirm ${pickWords(first)} first, or pick those units with this bed below.`}
                 </p>
+              )}
+              {elsewhere.length > 0 && (
+                <p className="pp-muted">{`Lower units of these Parts are not confirmed on any print Today shows: ${pickWords(elsewhere)}. Progress fills from the left, so the core refuses this unless they were completed another way.`}</p>
               )}
               {running.length > 0 && (
                 <p className="pp-muted">
@@ -224,7 +234,13 @@ export function ClearBeds({
         })}
       </ul>
       <div className="pp-burst">
-        <Preview picks={picks} needs={needs} printing={stillPrinting} pickNeeds={pickNeeds} />
+        <Preview
+          picks={picks}
+          needs={needs}
+          printing={stillPrinting}
+          unconfirmed={unconfirmed}
+          pickNeeds={pickNeeds}
+        />
         {tooMany && (
           <p className="pp-burst-needs">
             {`One burst holds at most ${MAX_BURST_BEDS} beds, and ${picks.length} are picked. Untick some beds and confirm them in a second burst.`}

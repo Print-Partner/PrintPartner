@@ -14,7 +14,7 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import {
-  bedsPrinting,
+  bedsBlocking,
   bedsToClear,
   MAX_BURST_BEDS,
   pickedPrinters,
@@ -346,7 +346,7 @@ export function TodayScreen() {
             {beds.length > 0 ? (
               <ClearBeds
                 beds={beds}
-                printing={bedsPrinting(data.results, printerName)}
+                blocking={bedsBlocking(data.results, printerName, beds)}
                 linkNote={linkNote}
                 confirm={checkoff.confirmPicks}
               />

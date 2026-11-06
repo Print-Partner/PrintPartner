@@ -248,8 +248,10 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
   const { conflicts } = outcome(data.parts, field, picks);
   const tooMany = picks.size > MAX_BURST_UNITS;
   const busy = record.isPending || undo.isPending;
+  // A lost send may have landed, so only its same-key Retry may record next.
+  const uncertain = record.isError && lostSend(record.error) && pending !== null;
   const send = () => {
-    if (busy || picks.size === 0 || conflicts.length > 0 || tooMany) return;
+    if (busy || uncertain || picks.size === 0 || conflicts.length > 0 || tooMany) return;
     const burst = {
       body: {
         idempotency_key: newKey(),
@@ -330,8 +332,13 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
           {tooMany && (
             <p className="pp-burst-needs">{`One burst holds at most ${MAX_BURST_UNITS} units, and ${picks.size} are picked.`}</p>
           )}
+          {uncertain && (
+            <p className="pp-burst-needs">
+              The last burst may have landed. Retry it before recording another.
+            </p>
+          )}
         </div>
-        {lines.length > 0 && conflicts.length === 0 && !tooMany && (
+        {lines.length > 0 && conflicts.length === 0 && !tooMany && !uncertain && (
           <MutationButton primary onClick={send}>
             {`Record ${plural(picks.size, "picked unit")}`}
           </MutationButton>

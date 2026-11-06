@@ -18,7 +18,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 0 10\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 10\n   vertex 20 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');",
    "seedRows": {},
    "cases": [
     {
@@ -72,6 +72,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -181,6 +190,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -315,6 +333,15 @@
          "margin_um": 3000
         },
         {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
+        },
+        {
          "id": "p-tiny",
          "name": "Tiny",
          "model": "Tiny",
@@ -417,6 +444,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -624,7 +660,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 0 10\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 10\n   vertex 20 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
    "seedRows": {},
    "cases": [
     {
@@ -706,6 +742,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -815,6 +860,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -976,7 +1030,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 0 10\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 10\n   vertex 20 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
    "seedRows": {},
    "cases": [
     {
@@ -1195,6 +1249,34 @@
      "changed": []
     },
     {
+     "id": "outside_build_area",
+     "path": "/plans/1/plates/initialize",
+     "body": {
+      "expected": {
+       "profile_id": 1,
+       "plan_version": 1,
+       "plan_revision_id": 1,
+       "plan_revision_digest": "2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a",
+       "required_unit_mapping_digest": "a26b59e92961a70d709090b6dc1742df84dc1cfaed94ee0a2a77a57f9ac0b952"
+      },
+      "expected_plate_revision_id": null,
+      "assignments": [
+       {
+        "token": "ppu_574c8d5f92624f029e21705a8ebb8a1b",
+        "printer_id": "p-huge"
+       }
+      ]
+     },
+     "node": {
+      "status": 422,
+      "body": {
+       "detail": "Accepted Plate geometry is invalid",
+       "code": "outside_build_area"
+      }
+     },
+     "changed": []
+    },
+    {
      "id": "stale_revision_before_assignments",
      "path": "/plans/1/plates/initialize",
      "body": {
@@ -1384,6 +1466,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -1687,7 +1778,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 0 10\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 10\n   vertex 20 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;UPDATE build_profiles SET archived_at='2026-10-03T00:00:00.000Z' WHERE id=1;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;UPDATE build_profiles SET archived_at='2026-10-03T00:00:00.000Z' WHERE id=1;",
    "seedRows": {},
    "cases": [
     {
@@ -1706,6 +1797,34 @@
        {
         "token": "ppu_574c8d5f92624f029e21705a8ebb8a1b",
         "printer_id": "p-a"
+       }
+      ]
+     },
+     "node": {
+      "status": 409,
+      "body": {
+       "detail": "Plan is archived",
+       "code": "plan_archived"
+      }
+     },
+     "changed": []
+    },
+    {
+     "id": "archived_before_outside_bed",
+     "path": "/plans/1/plates/initialize",
+     "body": {
+      "expected": {
+       "profile_id": 1,
+       "plan_version": 1,
+       "plan_revision_id": 1,
+       "plan_revision_digest": "2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a",
+       "required_unit_mapping_digest": "a26b59e92961a70d709090b6dc1742df84dc1cfaed94ee0a2a77a57f9ac0b952"
+      },
+      "expected_plate_revision_id": null,
+      "assignments": [
+       {
+        "token": "ppu_574c8d5f92624f029e21705a8ebb8a1b",
+        "printer_id": "p-huge"
        }
       ]
      },
@@ -1779,7 +1898,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 0 10\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 10\n   vertex 20 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;UPDATE build_profiles SET tenant_id='foreign' WHERE id=1;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;UPDATE build_profiles SET tenant_id='foreign' WHERE id=1;",
    "seedRows": {},
    "cases": [
     {
@@ -1866,7 +1985,7 @@
    "name": "missing_file",
    "database": "rust/crates/pp-storage/tests/fixtures/accepted-plate-node.db",
    "files": [],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
    "seedRows": {},
    "cases": [
     {
@@ -1959,7 +2078,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 11\n   vertex 20 0 11\n   vertex 20 30 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 11\n   vertex 20 30 11\n   vertex 0 30 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 11\n   vertex 0 0 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 11\n   vertex 0 30 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 11\n   vertex 0 0 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 11\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 11\n   vertex 20 0 11\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
    "seedRows": {},
    "cases": [
     {
@@ -2052,7 +2171,7 @@
      "text": "solid nope\nendsolid nope\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='ae58915eb8470d24479142d9b3745d483ab545d2433a5f1f3386a096da868aa9' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='e94e2e373454fb8d859b6d1441b4b7930e11db07f9f107eb652036d8d78c06b3' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='e94e2e373454fb8d859b6d1441b4b7930e11db07f9f107eb652036d8d78c06b3' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='ae58915eb8470d24479142d9b3745d483ab545d2433a5f1f3386a096da868aa9' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='e94e2e373454fb8d859b6d1441b4b7930e11db07f9f107eb652036d8d78c06b3' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='e94e2e373454fb8d859b6d1441b4b7930e11db07f9f107eb652036d8d78c06b3' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
    "seedRows": {},
    "cases": [
     {
@@ -2145,7 +2264,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 0 0 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 0 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 0 0\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='78a6b122ac84fbf28a6757ae7dec0364febe1a2720b40616a4eb9fcd4c587cc9' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='0a05bf9235dff30661686b9752e396e52af1b85ab3e4fa252c9d5589423a97cc' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='0a05bf9235dff30661686b9752e396e52af1b85ab3e4fa252c9d5589423a97cc' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='78a6b122ac84fbf28a6757ae7dec0364febe1a2720b40616a4eb9fcd4c587cc9' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='0a05bf9235dff30661686b9752e396e52af1b85ab3e4fa252c9d5589423a97cc' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='0a05bf9235dff30661686b9752e396e52af1b85ab3e4fa252c9d5589423a97cc' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
    "seedRows": {},
    "cases": [
     {
@@ -2238,7 +2357,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 0 10\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 0\n   vertex 20 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 20 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 20 30 10\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 0\n   vertex 20 30 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 20 0 0\n   vertex 20 30 10\n   vertex 20 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');DELETE FROM accepted_plate_heads;",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='f4a9ecb98d89be6e025764de8ea6d0b9c9784a670907513d7f5d9e96753ce171' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='2c2f3d22b5c767b919c1ac3cee2dc0cfc340515fcf17e7e7b4d86b872ebc893a' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
    "seedRows": {},
    "cases": [
     {
@@ -2292,6 +2411,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -2462,7 +2590,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 25 0\n   vertex 0 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 0 10\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 0\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 10\n   vertex 25 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='aff4c1410867a88684532f6e22e0b9519bcce219ae61cda5b915844d24afbdc8' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='ca168656585d6e81c28e07d9df535c1a527a38e7ef2eeae39ace96d5973f578c' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='aff4c1410867a88684532f6e22e0b9519bcce219ae61cda5b915844d24afbdc8' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='ca168656585d6e81c28e07d9df535c1a527a38e7ef2eeae39ace96d5973f578c' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');",
    "seedRows": {},
    "cases": [
     {
@@ -2532,6 +2660,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -2817,7 +2954,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 25 0\n   vertex 0 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 0 10\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 0\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 10\n   vertex 25 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='aff4c1410867a88684532f6e22e0b9519bcce219ae61cda5b915844d24afbdc8' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='ca168656585d6e81c28e07d9df535c1a527a38e7ef2eeae39ace96d5973f578c' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');INSERT INTO app_settings(tenant_id,key,value) VALUES('default','production_setup:1','{\"format\":\"production-setup-v1\",\"profile_id\":1,\"preferred_slicer_instance_id\":null,\"updated_at\":null,\"selection\":{\"mode\":\"all_incomplete\"},\"rules\":[{\"id\":\"by-part\",\"enabled\":true,\"kind\":\"separate_by\",\"field\":\"part\"}]}');",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='aff4c1410867a88684532f6e22e0b9519bcce219ae61cda5b915844d24afbdc8' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='ca168656585d6e81c28e07d9df535c1a527a38e7ef2eeae39ace96d5973f578c' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');INSERT INTO app_settings(tenant_id,key,value) VALUES('default','production_setup:1','{\"format\":\"production-setup-v1\",\"profile_id\":1,\"preferred_slicer_instance_id\":null,\"updated_at\":null,\"selection\":{\"mode\":\"all_incomplete\"},\"rules\":[{\"id\":\"by-part\",\"enabled\":true,\"kind\":\"separate_by\",\"field\":\"part\"}]}');",
    "seedRows": {},
    "cases": [
     {
@@ -2887,6 +3024,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -3256,7 +3402,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 25 0\n   vertex 0 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 0 10\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 0\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 10\n   vertex 25 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='aff4c1410867a88684532f6e22e0b9519bcce219ae61cda5b915844d24afbdc8' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='ca168656585d6e81c28e07d9df535c1a527a38e7ef2eeae39ace96d5973f578c' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='aff4c1410867a88684532f6e22e0b9519bcce219ae61cda5b915844d24afbdc8' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='ca168656585d6e81c28e07d9df535c1a527a38e7ef2eeae39ace96d5973f578c' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');",
    "seedRows": {},
    "cases": [
     {
@@ -3318,6 +3464,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -3536,7 +3691,7 @@
      "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 100 0 0\n   vertex 100 90 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 100 90 0\n   vertex 0 90 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 100 0 10\n   vertex 100 90 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 100 90 10\n   vertex 0 90 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 100 0 0\n   vertex 100 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 100 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 90 0\n   vertex 100 90 0\n   vertex 100 90 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 90 0\n   vertex 100 90 10\n   vertex 0 90 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 90 0\n   vertex 0 90 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 90 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 100 0 0\n   vertex 100 90 0\n   vertex 100 90 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 100 0 0\n   vertex 100 90 10\n   vertex 100 0 10\n  endloop\n endfacet\nendsolid box\n"
     }
    ],
-   "seed": "UPDATE plan_revision_parts SET artifact_digest='7ccd6bde494464dc89bd8000b523e4bd0b2fdc458e1e5e5dcfd83ea33d1e4e96' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='f81861ea3e9841510f45e84a4df795726bdc38f10f6f1f323624fb004cd5bf0b' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='9b0c316b3703c7c32ae61ac0593f02bd8c38109839b961c780f4292aa33527cd' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='9b0c316b3703c7c32ae61ac0593f02bd8c38109839b961c780f4292aa33527cd' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2}]');",
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='7ccd6bde494464dc89bd8000b523e4bd0b2fdc458e1e5e5dcfd83ea33d1e4e96' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='f81861ea3e9841510f45e84a4df795726bdc38f10f6f1f323624fb004cd5bf0b' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='9b0c316b3703c7c32ae61ac0593f02bd8c38109839b961c780f4292aa33527cd' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='9b0c316b3703c7c32ae61ac0593f02bd8c38109839b961c780f4292aa33527cd' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');",
    "seedRows": {},
    "cases": [
     {
@@ -3606,6 +3761,15 @@
          "bed_depth_um": 180000,
          "bed_height_um": 150000,
          "margin_um": 3000
+        },
+        {
+         "id": "p-huge",
+         "name": "Huge",
+         "model": "Huge",
+         "bed_width_um": 3000000000,
+         "bed_depth_um": 210000,
+         "bed_height_um": 200000,
+         "margin_um": 4000
         },
         {
          "id": "p-tiny",
@@ -3960,6 +4124,120 @@
       "current_revision_id": 1
      }
     ]
+   }
+  },
+  {
+   "name": "multi_outside_bed",
+   "database": "rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db",
+   "files": [
+    {
+     "path": "repos/1/revisions/fixture/bracket.stl",
+     "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 40 0 0\n   vertex 40 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 40 30 0\n   vertex 0 30 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 20\n   vertex 40 0 20\n   vertex 40 30 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 20\n   vertex 40 30 20\n   vertex 0 30 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 40 0 0\n   vertex 40 0 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 40 0 20\n   vertex 0 0 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 40 30 0\n   vertex 40 30 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 30 0\n   vertex 40 30 20\n   vertex 0 30 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 0\n   vertex 0 30 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 30 20\n   vertex 0 0 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 40 0 0\n   vertex 40 30 0\n   vertex 40 30 20\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 40 0 0\n   vertex 40 30 20\n   vertex 40 0 20\n  endloop\n endfacet\nendsolid box\n"
+    },
+    {
+     "path": "repos/1/revisions/fixture/gear.stl",
+     "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 25 0\n   vertex 0 25 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 0 10\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 0\n   vertex 25 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 25 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 25 0\n   vertex 25 25 10\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 0\n   vertex 0 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 25 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 0\n   vertex 25 25 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 25 0 0\n   vertex 25 25 10\n   vertex 25 0 10\n  endloop\n endfacet\nendsolid box\n"
+    }
+   ],
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='aff4c1410867a88684532f6e22e0b9519bcce219ae61cda5b915844d24afbdc8' WHERE revision_id=1 AND relative_path='bracket.stl';UPDATE plan_revision_parts SET artifact_digest='ca168656585d6e81c28e07d9df535c1a527a38e7ef2eeae39ace96d5973f578c' WHERE revision_id=1 AND relative_path='gear.stl';UPDATE plan_revisions SET snapshot_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');",
+   "seedRows": {},
+   "cases": [
+    {
+     "id": "multi_too_large_after_outside_bed",
+     "path": "/plans/1/plates/initialize",
+     "body": {
+      "expected": {
+       "profile_id": 1,
+       "plan_version": 1,
+       "plan_revision_id": 1,
+       "plan_revision_digest": "34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f",
+       "required_unit_mapping_digest": "8c446659d41d31efe3d95931c9f898b0d5442a41104474671bdccab4779e3a41"
+      },
+      "expected_plate_revision_id": null,
+      "assignments": [
+       {
+        "token": "ppu_00000000000000000000000000000001",
+        "printer_id": "p-huge"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000002",
+        "printer_id": "p-huge"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000003",
+        "printer_id": "p-huge"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000005",
+        "printer_id": "p-tiny"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000006",
+        "printer_id": "p-tiny"
+       }
+      ]
+     },
+     "node": {
+      "status": 422,
+      "body": {
+       "detail": "Required unit does not fit the selected Printer",
+       "code": "unit_too_large",
+       "token": "ppu_00000000000000000000000000000005",
+       "printer_id": "p-tiny"
+      }
+     },
+     "changed": []
+    },
+    {
+     "id": "multi_outside_bed_refused",
+     "path": "/plans/1/plates/initialize",
+     "body": {
+      "expected": {
+       "profile_id": 1,
+       "plan_version": 1,
+       "plan_revision_id": 1,
+       "plan_revision_digest": "34149cf7cd60771e3a0119b6b6ef773035ff53b25f9469d0cc32ed7d612e9c9f",
+       "required_unit_mapping_digest": "8c446659d41d31efe3d95931c9f898b0d5442a41104474671bdccab4779e3a41"
+      },
+      "expected_plate_revision_id": null,
+      "assignments": [
+       {
+        "token": "ppu_00000000000000000000000000000001",
+        "printer_id": "p-huge"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000002",
+        "printer_id": "p-huge"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000003",
+        "printer_id": "p-huge"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000005",
+        "printer_id": "p-a"
+       },
+       {
+        "token": "ppu_00000000000000000000000000000006",
+        "printer_id": "p-a"
+       }
+      ]
+     },
+     "node": {
+      "status": 422,
+      "body": {
+       "detail": "Accepted Plate geometry is invalid",
+       "code": "outside_build_area"
+      }
+     },
+     "changed": []
+    }
+   ],
+   "plateRows": {
+    "accepted_plate_revisions": [],
+    "accepted_plates": [],
+    "accepted_plate_units": [],
+    "accepted_plate_heads": []
    }
   }
  ]

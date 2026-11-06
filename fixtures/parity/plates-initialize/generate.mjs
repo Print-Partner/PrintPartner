@@ -54,6 +54,7 @@ const FLEET = [
   { id: "p-b", name: "Printer B", model: "Model B", bed_width_mm: 180, bed_depth_mm: 180, bed_height_mm: 150, margin_mm: 3 },
   { id: "p-tiny", name: "Tiny", model: "Tiny", bed_width_mm: 12, bed_depth_mm: 12, bed_height_mm: 12, margin_mm: 1 },
   { id: "p-nogeo", name: "No height", model: "No height", bed_width_mm: 200, bed_depth_mm: 200, bed_height_mm: null, margin_mm: 2 },
+  { id: "p-huge", name: "Huge", model: "Huge", bed_width_mm: 3000000, bed_depth_mm: 210, bed_height_mm: 200, margin_mm: 4 },
 ];
 const setup = (rules) => "INSERT INTO app_settings(tenant_id,key,value) VALUES('default','production_setup:1','" +
   JSON.stringify({ format: "production-setup-v1", profile_id: 1, preferred_slicer_instance_id: null, updated_at: null,
@@ -91,6 +92,7 @@ const PHASES = [
     init("printer_not_found", assign([TOKEN, "p-zzz"]), { revision: null }),
     init("missing_printer_geometry", assign([TOKEN, "p-nogeo"]), { revision: null }),
     init("unit_too_large", assign([TOKEN, "p-tiny"]), { revision: null }),
+    init("outside_build_area", assign([TOKEN, "p-huge"]), { revision: null }),
     init("stale_revision_before_assignments", assign([ppu(9), "p-a"]), { revision: 5 }),
     init("stale_basis", assign([TOKEN, "p-a"]), { revision: null, basis: { plan_revision_digest: "0".repeat(64) } }),
     init("revision_missing", assign([TOKEN, "p-a"]), { revision: undefined }),
@@ -106,6 +108,7 @@ const PHASES = [
   { name: "archived", database: single, files: one(same(box(20, 30, 10))),
     seed: NO_HEAD + "UPDATE build_profiles SET archived_at='2026-10-03T00:00:00.000Z' WHERE id=1;", requests: [
     init("archived_refused", assign([TOKEN, "p-a"]), { revision: null }),
+    init("archived_before_outside_bed", assign([TOKEN, "p-huge"]), { revision: null }),
   ] },
   { name: "foreign_plan", database: single, files: one(same(box(20, 30, 10))),
     seed: NO_HEAD + "UPDATE build_profiles SET tenant_id='foreign' WHERE id=1;", requests: [
@@ -138,6 +141,10 @@ const PHASES = [
   ] },
   { name: "multi_overflow", database: multi, files: { "bracket.stl": same(box(100, 100, 20)), "gear.stl": same(box(100, 90, 10)) }, requests: [
     init("multi_overflows_to_new_plates", MULTI_ALL("p-b"), { revision: null }),
+  ] },
+  { name: "multi_outside_bed", database: multi, files: { "bracket.stl": same(box(40, 30, 20)), "gear.stl": same(box(25, 25, 10)) }, requests: [
+    init("multi_too_large_after_outside_bed", assign(...[1, 2, 3].map((n) => [ppu(n), "p-huge"]), ...[5, 6].map((n) => [ppu(n), "p-tiny"])), { revision: null }),
+    init("multi_outside_bed_refused", assign(...[1, 2, 3].map((n) => [ppu(n), "p-huge"]), ...[5, 6].map((n) => [ppu(n), "p-a"])), { revision: null }),
   ] },
 ];
 

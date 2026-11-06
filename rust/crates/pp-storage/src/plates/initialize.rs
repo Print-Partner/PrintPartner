@@ -158,11 +158,15 @@ fn geometry_failure(failure_kind: Failure) -> Response {
 
 /// What packing the assigned units produced.
 enum Packed {
-    Plates(Vec<PlateInput>),
+    /// `outside` when an assigned Printer's bed is past the stored Plate
+    /// range. Node packs that Printer's units onto it and then refuses the
+    /// layout as `outside_build_area`, after the archived check, so its
+    /// units are left out here and the other Printers still pack.
+    Plates {
+        plates: Vec<PlateInput>,
+        outside: bool,
+    },
     TooLarge(TooLarge),
-    /// A Printer whose bed is past the stored Plate range, which Node's
-    /// layout validation refuses as `outside_build_area`.
-    OutsideBuildArea,
 }
 
 struct Packing<'a> {
@@ -184,9 +188,11 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
         .map(|(token, printer)| (token.as_str(), printer.as_deref()))
         .collect();
     let mut plates = Vec::new();
+    let mut outside = false;
     for (printer_id, printer) in input.printers {
         let Some(geometry) = &printer.geometry else {
-            return Ok(Some(Packed::OutsideBuildArea));
+            outside = true;
+            continue;
         };
         let mut members = Vec::new();
         for (part, row) in input.units {
@@ -235,7 +241,7 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
             }
         }
     }
-    Ok(Some(Packed::Plates(plates)))
+    Ok(Some(Packed::Plates { plates, outside }))
 }
 
 /// The fleet Printer of each assigned id, as Node's `fleetById` keeps the
@@ -348,9 +354,10 @@ pub(super) fn run(
             })
             .collect();
         let replayed = match packing(&dimensions)? {
-            Some(Packed::Plates(plates)) => {
-                plates.iter().eq(current.iter().map(|plate| &plate.input))
-            }
+            Some(Packed::Plates {
+                plates,
+                outside: false,
+            }) => plates.iter().eq(current.iter().map(|plate| &plate.input)),
             _ => false,
         };
         return if replayed {
@@ -372,13 +379,15 @@ pub(super) fn run(
         Ok(dimensions) => dimensions,
         Err(refused) => return Ok(geometry_failure(refused)),
     };
-    let plates = match packing(&dimensions)?
+    let (plates, outside) = match packing(&dimensions)?
         .ok_or_else(|| anyhow!("Accepted artifact geometry is missing"))?
     {
-        Packed::Plates(plates) => plates,
+        Packed::Plates { plates, outside } => (plates, outside),
         Packed::TooLarge(too_large) => return Ok(unit_too_large(too_large)),
-        Packed::OutsideBuildArea => return Ok(Refusal::Geometry("outside_build_area").response()),
     };
+    if outside && snapshot.profile.archived_at.is_none() {
+        return Ok(Refusal::Geometry("outside_build_area").response());
+    }
     publish(tx, tenant, repos, cmd, &stored, plates, &snapshot)
 }
 

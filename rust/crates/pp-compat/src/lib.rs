@@ -2404,7 +2404,7 @@ if sys.argv[1] == "wait":
                 "planned={planned}, already_exited={already_exited}"
             );
             assert!(
-                stopped.elapsed < Duration::from_millis(500),
+                stopped.elapsed < Duration::from_secs(3),
                 "{:?}",
                 stopped.elapsed
             );

@@ -1054,6 +1054,179 @@ mod transaction {
         });
         assert_eq!(events, Vec::from_iter(expected), "{}", case["id"]);
     }
+    /// An applied Accept that replaces a Plan saves one `pre_apply` snapshot
+    /// of that Plan's recorded inputs in the same transaction; the first Accept
+    /// and every other outcome save none.
+    fn assert_pre_accept_snapshot(c: &Connection, case: &Value, actual: &Value) {
+        let rows: Vec<Value> = snapshot(c, "plan_snapshots")
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["source"] == "pre_apply")
+            .cloned()
+            .collect();
+        let input = &case["input"];
+        let previous = &input["expectedBase"]["revisionId"];
+        if actual["kind"] != "applied" || previous.is_null() {
+            assert_eq!(rows, Vec::<Value>::new(), "{}", case["id"]);
+            return;
+        }
+        let [row] = rows.as_slice() else {
+            panic!("{}: {rows:?}", case["id"]);
+        };
+        let created_at = &row["created_at"];
+        let payload: Value = serde_json::from_str(row["payload_json"].as_str().unwrap()).unwrap();
+        assert_eq!(row["profile_id"], input["profileId"], "{}", case["id"]);
+        let before = &case["before"];
+        let rows = |table: &str| before[table].as_array().cloned().unwrap_or_default();
+        let set = rows("plan_revisions")
+            .into_iter()
+            .find(|row| &row["id"] == previous)
+            .unwrap()["input_set_id"]
+            .clone();
+        let mut inputs: Vec<Value> = rows("plan_revision_inputs")
+            .into_iter()
+            .filter(|row| row["input_set_id"] == set)
+            .collect();
+        inputs.sort_by_key(|row| (row["layer_order"].as_i64(), row["source_id"].as_i64()));
+        let layers: Vec<Value> = inputs
+            .iter()
+            .map(|row| {
+                let name = rows("projects")
+                    .into_iter()
+                    .find(|project| project["id"] == row["source_id"])
+                    .unwrap()["name"]
+                    .clone();
+                let kind = row["source_layer"].as_str().unwrap().split_once(':').unwrap().0;
+                json!({"layer_type":kind,"project_id":row["source_id"],"source_name":name,"tag":null,"branch":null,"order":row["layer_order"]})
+            })
+            .collect();
+        assert!(!layers.is_empty(), "{}", case["id"]);
+        assert_eq!(
+            payload,
+            json!({
+                "layers": layers,
+                "kit_manifest": null,
+                "recipe_summary": null,
+                "captured_at": created_at,
+                "accepted_plan_revision_id": previous,
+                "accepted_plan_version": input["expectedBase"]["planVersion"],
+            }),
+            "{}",
+            case["id"]
+        );
+    }
+    fn changed_case(fixture: &Value) -> Value {
+        fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == "changed")
+            .unwrap()
+            .clone()
+    }
+    /// The snapshot holds the replaced Plan's recorded inputs, not the working
+    /// `profile_layers`: a working layer with no Source, which Accept does not
+    /// publish, stays out of it.
+    #[test]
+    fn transaction_snapshot_holds_the_replaced_plan_inputs() {
+        let fixture = fixture();
+        let mut case = changed_case(&fixture);
+        let mut extra = case["before"]["profile_layers"][0].clone();
+        extra["id"] = json!(99);
+        extra["layer_type"] = json!("addon");
+        extra["project_id"] = Value::Null;
+        extra["layer_order"] = json!(1);
+        case["before"]["profile_layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(extra);
+        let mut c = database(&fixture, &case);
+        let tx = c.transaction().unwrap();
+        let actual = publish(
+            &tx,
+            &case,
+            &mut Tokens(case["allocationStart"].as_u64().unwrap().into()),
+        );
+        tx.commit().unwrap();
+        assert_eq!(actual["kind"], "applied");
+        assert_pre_accept_snapshot(&c, &case, &actual);
+        let payload = &snapshot(&c, "plan_snapshots")[0]["payload_json"];
+        let payload: Value = serde_json::from_str(payload.as_str().unwrap()).unwrap();
+        assert_eq!(payload["layers"].as_array().unwrap().len(), 1);
+    }
+    /// The preview promises a snapshot exactly when Accept saves one: a Ready
+    /// preview reports `saved_before_accept`, and accepting the same case leaves
+    /// a `pre_apply` row, both or neither.
+    #[test]
+    fn transaction_preview_promises_the_snapshot_accept_saves() {
+        let fixture = fixture();
+        let mut seen = HashSet::new();
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut c = database(&fixture, case);
+            let tx = c.transaction().unwrap();
+            let input = &case["input"];
+            let profile = input["profileId"].as_i64().unwrap();
+            let draft = input["draftId"].as_i64().unwrap();
+            let promised = match preview::preview(&tx, "default", profile, draft).unwrap() {
+                preview::PreviewOutcome::Ready(ready) => match *ready {
+                    preview::AcceptPreview::NoChange { snapshot, .. }
+                    | preview::AcceptPreview::Changed { snapshot, .. } => {
+                        snapshot.saved_before_accept
+                    }
+                },
+                preview::PreviewOutcome::Refused(_) => continue,
+            };
+            let actual = publish(
+                &tx,
+                case,
+                &mut Tokens(case["allocationStart"].as_u64().unwrap().into()),
+            );
+            if actual["kind"] != "applied" {
+                continue;
+            }
+            let saved: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM plan_snapshots WHERE source='pre_apply'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(saved == 1, promised, "{}", case["id"]);
+            seen.insert(promised);
+        }
+        assert_eq!(
+            seen.len(),
+            2,
+            "both a first Accept and a replacing Accept are covered"
+        );
+    }
+    /// Input sets migrated by schema v18 store `legacy:<id>` layers, which Node's
+    /// restore cannot place, so they count as nothing to restore. An empty input
+    /// set is a Plan with no Source layers and still restores.
+    #[test]
+    fn transaction_legacy_input_layers_are_not_restorable() {
+        let fixture = fixture();
+        let case = changed_case(&fixture);
+        let mut c = database(&fixture, &case);
+        let tx = c.transaction().unwrap();
+        let layers = super::super::snapshot::replaced_layers(&tx, "default", 1, Some(1)).unwrap();
+        assert_eq!(layers.unwrap()[0]["layer_type"], "base");
+        tx.execute(
+            "UPDATE plan_revision_inputs SET source_layer='legacy:1'",
+            [],
+        )
+        .unwrap();
+        let layers = super::super::snapshot::replaced_layers(&tx, "default", 1, Some(1)).unwrap();
+        assert_eq!(layers, None);
+        tx.execute("DELETE FROM plan_revision_inputs", []).unwrap();
+        let layers = super::super::snapshot::replaced_layers(&tx, "default", 1, Some(1)).unwrap();
+        assert_eq!(
+            layers,
+            Some(vec![]),
+            "a Plan with no Source layers restores as []"
+        );
+    }
     #[test]
     fn transaction_replays_node_outcomes_receipts_and_persisted_rows() {
         let fixture = fixture();
@@ -1126,6 +1299,7 @@ mod transaction {
                 );
             }
             assert_accept_event(&c, case, &actual);
+            assert_pre_accept_snapshot(&c, case, &actual);
             if actual["kind"] == "checkoff_remap_unsafe" {
                 assert_eq!(snapshot(&c, "plan_apply_admissions"), json!([]));
             }
@@ -1137,6 +1311,7 @@ mod transaction {
                 assert_eq!(replay["kind"], "existing");
                 assert_eq!(replay["receipt"], actual["receipt"]);
                 assert_accept_event(&c, case, &actual);
+                assert_pre_accept_snapshot(&c, case, &actual);
                 assert!(
                     c.execute(
                         "UPDATE plan_apply_admissions SET request_digest='tampered'",

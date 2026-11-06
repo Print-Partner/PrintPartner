@@ -67,25 +67,13 @@ fn profiles(directory: &Path) -> Vec<(String, i64, String)> {
 struct Server {
     origin: String,
     client: Client,
-    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
-    task: Option<tokio::task::JoinHandle<()>>,
+    serving: Option<pp_api::serving::Serving>,
 }
 
 impl Server {
     async fn spawn(listener: tokio::net::TcpListener, router: axum::Router) -> Self {
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-            .unwrap();
-        });
+        let serving = pp_api::serving::Serving::start(listener, router);
         Self {
             origin,
             client: Client::builder()
@@ -93,8 +81,7 @@ impl Server {
                 .no_proxy()
                 .build()
                 .unwrap(),
-            shutdown: Some(shutdown),
-            task: Some(task),
+            serving: Some(serving),
         }
     }
 
@@ -137,19 +124,8 @@ impl Server {
     }
 
     async fn stop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(task) = self.task.take() {
-            task.await.unwrap();
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
+        if let Some(mut serving) = self.serving.take() {
+            serving.stop().await.unwrap();
         }
     }
 }

@@ -325,6 +325,11 @@ fn scratch_root_is_empty_after_drain_tests() {
     ]);
 }
 
+// Unix only: it unwinds through the group guard of a Unix process group.
+// Windows counterpart: pp-compat's
+// `ticket_t_3_drain_job_object_kills_children_when_core_is_killed`, where the
+// owner ends without running any cleanup and its child and detached
+// grandchild still die with the job.
 #[cfg(unix)]
 #[tokio::test]
 async fn scratch_cleanup_on_child_panic() {

@@ -627,10 +627,15 @@ pub(crate) fn node_path(path: &Path) -> PathBuf {
 
 /// `--import` takes a URL on Windows: Node reads `C:\…` as a URL with the
 /// scheme `c:` and refuses it.
-pub(crate) fn import_specifier(path: &Path) -> std::ffi::OsString {
+pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsString> {
     url::Url::from_file_path(node_path(path))
         .map(|url| url.as_str().into())
-        .unwrap_or_else(|()| path.into())
+        .map_err(|()| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Preload path is not a file URL",
+            )
+        })
 }
 
 /// Whether `path` is itself a junction (a mount-point reparse point), which
@@ -914,9 +919,11 @@ mod tests {
         );
         assert_eq!(node_path(Path::new(r"C:\pp\web")), Path::new(r"C:\pp\web"));
         assert_eq!(
-            import_specifier(Path::new(r"\\?\C:\pp\a b\desktop-resolution.js")),
+            import_specifier(Path::new(r"\\?\C:\pp\a b\desktop-resolution.js")).unwrap(),
             "file:///C:/pp/a%20b/desktop-resolution.js"
         );
+        assert!(import_specifier(Path::new(r"\\?\GLOBALROOT\Device\pp")).is_err());
+        assert!(import_specifier(Path::new(r"relative\desktop-resolution.js")).is_err());
     }
 
     /// The core for the startup test: it exits the moment its child exists,

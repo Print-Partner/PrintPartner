@@ -36,10 +36,73 @@ pub(crate) fn assert_special_entry(path: &Path) {
     );
 }
 
-/// Windows has no mode bits: a new state file inherits its directory's ACL,
-/// which pp-os does not report.
+/// Windows has no mode bits: a new state file inherits its directory's ACL.
+/// Every ACE that grants access names this user, SYSTEM or Administrators,
+/// and one names this user, as the profile folder's ACL gives.
 pub(crate) fn assert_private_file(path: &Path) {
-    assert_eq!(pp_os::status_follow(path).unwrap().posix_access(), None);
+    let output = |program: &str, args: &[&std::ffi::OsStr]| {
+        let output = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{program} failed: {}",
+            output.status
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let user = output(
+        "whoami",
+        &[
+            "/user".as_ref(),
+            "/fo".as_ref(),
+            "csv".as_ref(),
+            "/nh".as_ref(),
+        ],
+    );
+    let user = user
+        .trim()
+        .rsplit(',')
+        .next()
+        .unwrap()
+        .trim_matches('"')
+        .to_owned();
+    let mut script = std::ffi::OsString::from("(Get-Acl -LiteralPath '");
+    script.push(path.as_os_str());
+    script.push("').Sddl");
+    let sddl = output(
+        "powershell",
+        &["-NoProfile".as_ref(), "-Command".as_ref(), &script],
+    );
+    let dacl = sddl
+        .trim()
+        .split("D:")
+        .nth(1)
+        .unwrap()
+        .split("S:")
+        .next()
+        .unwrap();
+    let granted: Vec<&str> = dacl
+        .split('(')
+        .skip(1)
+        .filter_map(|ace| {
+            let fields: Vec<&str> = ace.trim_end_matches(')').split(';').collect();
+            (fields[0] == "A" && !fields[1].contains("IO")).then_some(fields[5])
+        })
+        .collect();
+    assert!(
+        granted
+            .iter()
+            .all(|sid| ["SY", "BA", user.as_str()].contains(sid)),
+        "{} grants {granted:?}",
+        path.display()
+    );
+    assert!(
+        granted.contains(&user.as_str()),
+        "{}: {sddl}",
+        path.display()
+    );
 }
 
 fn icacls(path: &Path, change: &[&str]) {

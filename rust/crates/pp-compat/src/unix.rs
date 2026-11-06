@@ -100,8 +100,8 @@ pub(crate) fn node_path(path: &Path) -> PathBuf {
 }
 
 /// `--import` takes an absolute Unix path.
-pub(crate) fn import_specifier(path: &Path) -> std::ffi::OsString {
-    path.into()
+pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsString> {
+    Ok(path.into())
 }
 
 /// Junctions exist only on Windows.

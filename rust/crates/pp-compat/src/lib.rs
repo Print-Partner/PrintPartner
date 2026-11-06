@@ -542,7 +542,7 @@ impl Process {
         command
             .arg("--no-global-search-paths")
             .arg("--import")
-            .arg(platform::import_specifier(&preload))
+            .arg(platform::import_specifier(&preload).context("Desktop preload unavailable")?)
             .arg(platform::node_path(&spec.bundle.entry))
             .arg(root_argument)
             .env_remove("NODE_OPTIONS")

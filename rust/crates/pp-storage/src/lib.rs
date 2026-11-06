@@ -32,6 +32,8 @@ pub mod ownership_marker;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plan_publication;
 #[cfg(feature = "desktop_rebuild")]
+pub mod plates;
+#[cfg(feature = "desktop_rebuild")]
 pub use pp_domain::printer_display_state;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_hosts;
@@ -153,6 +155,11 @@ enum Envelope {
     Checkoff {
         command: checkoff_progress::Command,
         reply: mpsc::Sender<Result<checkoff_progress::Response>>,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    Plates {
+        command: plates::Command,
+        reply: mpsc::Sender<Result<plates::Response>>,
     },
     #[cfg(feature = "desktop_rebuild")]
     Workflow {
@@ -480,6 +487,18 @@ impl Drop for ReaderCheckout {
     }
 }
 impl WriterOwner {
+    /// The owned data directory's `repos` directory, where accepted Source
+    /// snapshots live.
+    #[cfg(feature = "desktop_rebuild")]
+    pub(crate) fn repos_dir(&self) -> Result<PathBuf> {
+        Ok(self
+            .lease
+            .as_ref()
+            .ok_or_else(|| anyhow!("Storage owner is closed"))?
+            .data_dir()
+            .join("repos"))
+    }
+
     /// In a `desktop_rebuild` build, applies the ownership marker decision
     /// ([`ownership_marker`]) with the gate from `PP_DESKTOP_REBUILD` before any
     /// schema write.
@@ -774,6 +793,10 @@ impl WriterOwner {
                             command,
                             admission,
                         ));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::Plates { command, reply } => {
+                        let _ = reply.send(plates::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::WorkingDraft { command, reply } => {

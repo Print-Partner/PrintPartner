@@ -2744,6 +2744,51 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 
+### Accepted Plate edits (GRE-1184)
+
+`pp-storage::plates` serves the Plate workspace read and the Plate-revision
+edits from Node's `routes/accepted-plates.ts`: `GET /plans/{id}/plates`,
+`PATCH /plans/{id}/plates/{plateId}/units/{token}` (move),
+`PATCH .../units/{token}/pin`, `POST .../units/{token}/unplace`,
+`POST .../units/{token}/transfer` and `POST /plans/{id}/plates/restore`.
+`pp-api::plates::plates_router` serves them at `/` and `/api/v2` behind
+`accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
+
+The router is not mounted in `read_router` yet. Initialize and arrange
+(GRE-419) still run on Node and write the same `accepted_plate_*` tables, so
+the Plate routes and their aliases switch to Rust together with them, as one
+operation, and never with one runtime writing beside the other.
+
+Each edit is one immediate writer transaction. It checks, in Node's order, the
+target Printer (transfer only, 422 `printer_not_found`), that the Build is
+visible and its Accepted Plan matches the request's `expected` basis (409
+`accepted_plan_changed`, or `accepted_state_unavailable` while compatibility is
+dirty or uninitialized), that the Build is not archived (409 `plan_archived`),
+and that the head is `expected_plate_revision_id` (409
+`plate_revision_changed`). It then reads the head revision's layout in either
+stored layout format and checks its counts, tenant and digest. A change is
+validated with the current clearance rule (422 `outside_build_area`,
+`overlapping_units` or `invalid_units`), written as a new immutable revision
+with the next revision number, and the head moves by compare-and-set from the
+expected revision. The same transaction appends `plates.revision_changed`. An
+edit whose layout digest equals the head's returns the head and writes nothing.
+Refusals write nothing. Stored Plate data that contradicts its revision is 500
+`internal_error`, as Node's `AcceptedPlateIntegrityError`.
+
+A move takes any trimmed Plate id of at most 200 characters; pin, unplace and
+transfer take only generated `plate_` ids, as Node's routes do. A transfer
+leaves the unit unplaced on the target Plate, or on a new random `plate_` Plate
+for `target_printer_id`, and drops a source Plate it empties. Restore accepts
+only the revision the head's arrange replaced (otherwise 422
+`unit_not_found`), writes its layout as a new revision and returns the
+workspace. The read lists `printer.fleet` Printers with complete build geometry
+and refuses a stored Plate id that is not a generated `plate_` id with 500, as
+Node's contract parser does.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

@@ -69,13 +69,19 @@ pub const UNATTRIBUTED_RESOLVED: EventKind = EventKind {
     name: "checkoff.unattributed_resolved",
     version: 1,
 };
+/// A Build's accepted Plate layout moved to a new revision.
+pub const PLATES_CHANGED: EventKind = EventKind {
+    name: "plates.revision_changed",
+    version: 1,
+};
 /// Every kind this build writes and reads. A stored event of any other type
 /// or version makes a read answer a resync instead of skipping it.
-pub const KNOWN: [EventKind; 4] = [
+pub const KNOWN: [EventKind; 5] = [
     PROGRESS_CHANGED,
     REVISION_ACCEPTED,
     DRAFT_CHANGED,
     UNATTRIBUTED_RESOLVED,
+    PLATES_CHANGED,
 ];
 
 /// A position in the log: `<generation>.<sequence>`.

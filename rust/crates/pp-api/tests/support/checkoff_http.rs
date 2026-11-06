@@ -1,0 +1,87 @@
+//! Shared by the printer Checkoff HTTP tests: a disposable copy of a real
+//! SQLite fixture with the synthetic links of the verify parity fixture, the
+//! mounted Checkoff router, and loopback requests to it.
+use axum::{
+    Router,
+    body::Body,
+    extract::ConnectInfo,
+    http::{Request, StatusCode},
+};
+use pp_api::{accepted::AcceptedHttpConfig, checkoff::checkoff_router};
+use pp_storage::{Limits, WriterOwner};
+use serde_json::Value;
+use std::{net::SocketAddr, path::PathBuf};
+use tower::ServiceExt;
+
+const ORIGIN: &str = "http://127.0.0.1:4100";
+const NODE: &str = include_str!("../../../../../fixtures/parity/printer-checkoff-verify/node.json");
+const DATABASE: &[u8] =
+    include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db");
+
+pub struct Fixture(PathBuf);
+
+impl Fixture {
+    pub fn new() -> Self {
+        let path = tempfile::tempdir().unwrap().keep();
+        std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
+        std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
+        let fixture = Self(path);
+        let sql = fixture.sql();
+        for statement in crate::js_json::parse(NODE)["setup"].as_array().unwrap() {
+            sql.execute_batch(statement.as_str().unwrap()).unwrap();
+        }
+        fixture
+    }
+
+    pub fn sql(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.0.join("print-partner.db")).unwrap()
+    }
+
+    pub fn open(&self, flag: &str) -> (WriterOwner, Router) {
+        let owner = WriterOwner::open(&self.0, Limits::default()).unwrap().0;
+        let config = AcceptedHttpConfig::from_startup(ORIGIN, "default", Some(flag)).unwrap();
+        let router = checkoff_router(config, owner.checkoff_progress().unwrap());
+        (owner, router)
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub async fn post(router: &Router, path: &str, body: &str, cookie: bool) -> (StatusCode, Value) {
+    send(router, "POST", path, body, cookie).await
+}
+
+pub async fn send(
+    router: &Router,
+    method: &str,
+    path: &str,
+    body: &str,
+    cookie: bool,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "127.0.0.1:4100")
+        .header("origin", ORIGIN)
+        .header("content-type", "application/json");
+    if cookie {
+        request = request.header("cookie", "pp_session=required-unit-fixture-secret");
+    }
+    let mut request = request.body(Body::from(body.to_owned())).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}

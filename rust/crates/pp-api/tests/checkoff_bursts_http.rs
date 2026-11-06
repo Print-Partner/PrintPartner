@@ -2,57 +2,21 @@
 //! GRE-1090 through the mounted Rust route: the P/F contract request from
 //! `web/packages/contracts/src/checkoff-burst.test.ts`, replay across a
 //! restart, undo and its conflict, on a disposable copy of a real SQLite fixture.
-//! Accepted Progress import shares the router and the fixture.
-use axum::{
-    Router,
-    body::Body,
-    extract::ConnectInfo,
-    http::{Request, StatusCode},
-};
-use pp_api::{accepted::AcceptedHttpConfig, checkoff::checkoff_router};
-use pp_storage::{
-    Limits, WriterOwner,
-    checkoff_progress::wire::{
-        UndoBatchReceipt, UndoBatchRequest, VerifyBatchReceipt, VerifyBatchRequest,
-    },
+use axum::http::StatusCode;
+use checkoff_http::{Fixture, post, send};
+use pp_storage::checkoff_progress::wire::{
+    UndoBatchReceipt, UndoBatchRequest, VerifyBatchReceipt, VerifyBatchRequest,
 };
 use serde_json::{Value, json};
-use std::{net::SocketAddr, path::PathBuf};
-use tower::ServiceExt;
 
-const ORIGIN: &str = "http://127.0.0.1:4100";
+#[path = "support/checkoff_http.rs"]
+mod checkoff_http;
 #[path = "../../pp-storage/tests/common/js_json.rs"]
 mod js_json;
 
-const NODE: &str = include_str!("../../../../fixtures/parity/printer-checkoff-verify/node.json");
-const DATABASE: &[u8] =
-    include_bytes!("../../pp-storage/tests/fixtures/required-units/unchanged.db");
-
-struct Fixture(PathBuf);
-
 impl Fixture {
-    fn new() -> Self {
-        let path = tempfile::tempdir().unwrap().keep();
-        std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
-        std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
-        let sql = rusqlite::Connection::open(path.join("print-partner.db")).unwrap();
-        let node = js_json::parse(NODE);
-        for statement in node["setup"].as_array().unwrap() {
-            sql.execute_batch(statement.as_str().unwrap()).unwrap();
-        }
-        Self(path)
-    }
-
-    fn open(&self, flag: &str) -> (WriterOwner, Router) {
-        let owner = WriterOwner::open(&self.0, Limits::default()).unwrap().0;
-        let config = AcceptedHttpConfig::from_startup(ORIGIN, "default", Some(flag)).unwrap();
-        let router = checkoff_router(config, owner.checkoff_progress().unwrap());
-        (owner, router)
-    }
-
     fn printed(&self) -> i64 {
-        rusqlite::Connection::open(self.0.join("print-partner.db"))
-            .unwrap()
+        self.sql()
             .query_row(
                 "SELECT COUNT(*) FROM print_progress WHERE completed=1",
                 [],
@@ -60,47 +24,6 @@ impl Fixture {
             )
             .unwrap()
     }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-async fn post(router: &Router, path: &str, body: &str, cookie: bool) -> (StatusCode, Value) {
-    send(router, "POST", path, body, cookie).await
-}
-
-async fn send(
-    router: &Router,
-    method: &str,
-    path: &str,
-    body: &str,
-    cookie: bool,
-) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("host", "127.0.0.1:4100")
-        .header("origin", ORIGIN)
-        .header("content-type", "application/json");
-    if cookie {
-        request = request.header("cookie", "pp_session=required-unit-fixture-secret");
-    }
-    let mut request = request.body(Body::from(body.to_owned())).unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
-    let response = router.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
 }
 
 fn confirmed(part: i64, unit: i64) -> Value {

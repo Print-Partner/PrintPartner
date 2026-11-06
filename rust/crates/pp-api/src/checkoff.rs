@@ -15,6 +15,11 @@
 //! The farm log (GRE-1126) shares the router: `GET /farm-log` pages the
 //! fleet's logged bursts, undos and sends, and `POST /farm-log/{id}/undo`
 //! undoes a logged burst through the same compensating burst undo.
+//!
+//! Unattributed prints (GRE-1182) share it too:
+//! `POST /printer-checkoff/unattributed/{id}/claim` attributes a print to a
+//! Build and creates its Checkoff link, and `/dismiss` drops it from Match
+//! review. Storage owns both writes; there is no Node fallback.
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, failure, internal, ok_json, read_error},
@@ -55,6 +60,14 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         .route(
             "/plans/{id}/progress/import",
             post(import).layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT)),
+        )
+        .route(
+            "/printer-checkoff/unattributed/{id}/claim",
+            post(claim_unattributed),
+        )
+        .route(
+            "/printer-checkoff/unattributed/{id}/dismiss",
+            post(dismiss_unattributed),
         );
     gate.guard(routes.clone().nest("/api/v2", routes))
         .with_state(App { gate, client })
@@ -147,6 +160,27 @@ async fn undo_farm_log_entry(
     Path(id): Path<String>,
 ) -> Response {
     run(app, presented, Request::UndoFarmLogEntry { id }).await
+}
+
+async fn claim_unattributed(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    apply(app, presented, &body, |body| Request::ClaimUnattributed {
+        id,
+        body,
+    })
+    .await
+}
+
+async fn dismiss_unattributed(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+) -> Response {
+    run(app, presented, Request::DismissUnattributed { id }).await
 }
 
 async fn apply(

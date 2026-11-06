@@ -1202,7 +1202,8 @@ mod transaction {
         );
     }
     /// Input sets migrated by schema v18 store `legacy:<id>` layers, which Node's
-    /// restore cannot place, so they count as nothing to restore.
+    /// restore cannot place, and an empty input set would make restore clear
+    /// every layer, so both count as nothing to restore.
     #[test]
     fn transaction_legacy_input_layers_are_not_restorable() {
         let fixture = fixture();
@@ -1218,6 +1219,9 @@ mod transaction {
         .unwrap();
         let layers = super::super::snapshot::replaced_layers(&tx, "default", 1, Some(1)).unwrap();
         assert_eq!(layers, None);
+        tx.execute("DELETE FROM plan_revision_inputs", []).unwrap();
+        let layers = super::super::snapshot::replaced_layers(&tx, "default", 1, Some(1)).unwrap();
+        assert_eq!(layers, None, "an empty input set would clear every layer");
     }
     #[test]
     fn transaction_replays_node_outcomes_receipts_and_persisted_rows() {

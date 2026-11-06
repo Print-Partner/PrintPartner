@@ -142,7 +142,7 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   event. Refusals keep Node's status and detail (400 `profile_id is required`,
   404 `Unattributed print not found`, 409 `Print already claimed`, `That print
   file is already assigned`, and the rest of `materializeProblem`) and write
-  nothing. Node's per-IP rate limit is not carried over because the routes are
+  nothing. A Build that does not exist is a 500, as in Node (GRE-1217). Node's per-IP rate limit is not carried over because the routes are
   loopback-only. Tests: `pp-storage/tests/unattributed_claim.rs` and
   `pp-api/tests/unattributed_claim_http.rs`.
 - Printer stream (GRE-1014): `GET /ws/printers` sends a snapshot of every
@@ -2849,6 +2849,57 @@ binary G-code, ZIP64 records, hostile ZIP entries (including names with a leadin
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/print-file-classification/generate.mjs --check
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-domain --features desktop_rebuild --test print_file_parity
+```
+
+### Print-file assignment storage (GRE-1217)
+
+`Request::AssignFile` in `pp-storage::checkoff_progress` (feature
+`desktop_rebuild`) is the create path of Node's
+`materializeAcceptedPrinterLink`. It is what `POST
+/printer-checkoff/file-assignments` records once the route has parsed the
+request and read the file. No route uses it yet; GRE-1210 mounts it. In one
+writer transaction, against the Build's Accepted Plan:
+
+- The plan revision must be the one the operator saw, or 409 `The Accepted
+  Plan moved on; reload the Build and choose the file again`.
+- Every confirmed unit must be an incomplete Required unit of an included
+  Part, picked once, and every object mapping must point an unmatched or
+  ambiguous object at a distinct confirmed unit. Otherwise 409 `That print
+  file does not map to an incomplete Required unit in this Build`.
+- No watching or awaiting-verify link may already hold the same file name
+  (basename, any case) on that integration, or 409 `That print file is already
+  assigned`.
+- The link is created watching with the confirmed units (each with its
+  Required-unit object name), the unmatched names as `unlabeled_names`, the
+  remote path, identity and classification, and, with `retain_unmatched`, the
+  unmatched objects (or the file itself) as pending imported extras. With
+  `completed` it is created awaiting verify with Node's host-completed fields.
+  Node applies that patch in a second transaction; here it is the same write.
+- The response is `{ link, attribution }`, with Node's camelCase
+  `attribution` object.
+
+`checkoff_progress::attribution` is now the one port of
+`resolveAcceptedPrinterAttribution` (per-name outcomes, the positive-only rule
+that drops fuzzy file-name matches, the file-name fallback),
+`confirmAcceptedPrinterUnits` and `applyConfirmedObjectMappings`. The
+unattributed-print claim uses it too. `pp_domain::gcode_objects::match_object_name_exact`
+is the matcher without its fuzzy step.
+
+A Build that does not exist is a 500 for both claim and assignment, because
+Node's operational read throws `Profile not found` and both routes answer that
+with a plain 500. The claim answered 409 `Accepted Plan operational state is
+not initialized` before.
+
+`fixtures/parity/printer-file-assignment/node.json` replays 18 create commands
+through Node's repository (and its completed patch) on a copy of the
+required-units fixture: matches by Required-unit name and by file name,
+confirmed and mapped units, every refusal the fixture can reach, kept extras, a
+completed print and a missing Build. The Rust test replays them and compares
+every response and stored row.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/printer-file-assignment/generate.mjs --check
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
 ```
 
 ### Accepted Plate workspace read (GRE-1189)

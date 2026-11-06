@@ -53,6 +53,17 @@ pub(super) fn is_reason(value: &Value) -> bool {
 
 /// `String.prototype.trim`: JS whitespace and line terminators, which are
 /// Unicode White_Space without U+0085, plus U+FEFF.
+/// `normalizePrinterFilename`: the trimmed basename in lower case.
+pub(super) fn normalized_filename(name: &str) -> String {
+    js_trim(name)
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
 pub(super) fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
 }

@@ -182,8 +182,8 @@ async fn claim_http_refuses_before_storage_writes() {
         ),
         (
             r#"{"profile_id":99}"#,
-            StatusCode::CONFLICT,
-            "Accepted Plan operational state is not initialized",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal Server Error",
         ),
     ];
     for (body, expected, detail) in refusals {

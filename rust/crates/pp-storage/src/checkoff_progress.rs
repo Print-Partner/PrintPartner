@@ -22,6 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "desktop_rebuild")]
+mod assign;
+#[cfg(feature = "desktop_rebuild")]
+pub mod attribution;
 mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
@@ -31,6 +35,9 @@ mod manual;
 mod unattributed;
 mod verify;
 pub mod wire;
+
+#[cfg(feature = "desktop_rebuild")]
+pub use assign::{AssignedLink, Assignment};
 
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_IMPORT: i64 = 10_000;
@@ -197,6 +204,10 @@ pub enum Request {
     /// `POST /printer-checkoff/unattributed/{id}/dismiss`.
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed { id: String },
+    /// `POST /printer-checkoff/file-assignments`, parsed and with its file
+    /// already read by the route.
+    #[cfg(feature = "desktop_rebuild")]
+    AssignFile(Box<Assignment>),
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -245,6 +256,11 @@ pub enum Body {
     Claimed {
         link: Value,
         ok: bool,
+    },
+    /// A recorded print file: its new printer Checkoff link and attribution.
+    Assigned {
+        link: Value,
+        attribution: Box<Value>,
     },
     /// A dismissed unattributed print.
     Dismissed {
@@ -373,6 +389,8 @@ enum Op {
     },
     #[cfg(feature = "desktop_rebuild")]
     ClaimUnattributed(unattributed::Claim),
+    #[cfg(feature = "desktop_rebuild")]
+    AssignFile(Box<Assignment>),
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed {
         id: String,
@@ -544,6 +562,8 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::AssignFile(assignment) => return Ok(Op::AssignFile(assignment)),
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -680,6 +700,8 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::ClaimUnattributed(claim) => return unattributed::claim(tx, tenant, claim, repos),
         #[cfg(feature = "desktop_rebuild")]
         Op::DismissUnattributed { id } => return unattributed::dismiss(tx, tenant, &id),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::AssignFile(assignment) => return assign::assign(tx, tenant, *assignment, repos),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,

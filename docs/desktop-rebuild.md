@@ -1549,9 +1549,12 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 41 (`LAST_COPIED_STEP`)
-writes `backups/pre-schema{N}.db`, where N is the step's target version; step 42
-only adds a table and writes no copy of its own. Each step validates its objects
+repair's writes to `source_revisions`. Each step through 43 (`LAST_COPIED_STEP`)
+writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
+the first step writes, the open names its rollback copy in the run marker
+`backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
+and retention keeps that copy. The marker goes once the upgrade commits, or when
+an open finds nothing to upgrade. Each step validates its objects
 and columns, and then commits them with its version stamp in one transaction. For a database at 37 the
 first backup, `pre-schema38.db`, is the untouched input. `pre-schema39.db` is taken
 after step 2, so it can include that pass's repairs. An
@@ -1561,7 +1564,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-42.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-43.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -3076,6 +3079,8 @@ With both gates on, `draft_router` serves these paths at the root and
 | PUT | `/plans/{id}/drafts/{draft_id}/reconciliation` | `ReconciliationClient::reconcile` with typed `ReconciliationRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
 | POST | `/plans/{id}/drafts/save` | draft-only autosave, `WorkingDraftClient::autosave` (GRE-418) |
+| GET | `/plans/{id}/drafts/{draft_id}/header` | draft header beside the Build's header (GRE-1197) |
+| PUT | `/plans/{id}/drafts/header` | draft header save, `WorkingDraftClient::save_header` (GRE-1197) |
 
 `admit_draft_routes` buffers each body before routing, disables Axum's 2 MiB
 default, and applies the guard's limits: 16 KiB request target, 1 MiB for
@@ -3242,6 +3247,16 @@ publishes. That path stays on Node with its publishing semantics until UI
 slice 6 moves the browser to draft-then-Accept, and no Rust router mounts it,
 so Node and Rust never write the same operation. Node has no route at
 `/plans/{id}/drafts/save`, which is why the gateway manifests do not list it.
+
+### Draft header fields (GRE-1197)
+
+`PUT /plans/{id}/drafts/header` saves a Build's name, order number, customer
+and due date into the observed open draft, or into a new draft when none is
+open, in one immediate transaction. It needs an `Idempotency-Key`, writes
+nothing to the Build, and Accept publishes it (part B, not yet built).
+`GET /plans/{id}/drafts/{draft_id}/header` reads the draft's header beside the
+Build's current one. [Draft header fields](draft-headers.md) has the contract,
+schema step 43, and the draft paths that carry the header forward.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one

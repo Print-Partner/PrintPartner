@@ -7,7 +7,7 @@
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
 use super::save::{
     Checked, Refusal, accepted_base, canonical_inputs, changes, choices, copy_credential,
-    observed_draft, prepare_new,
+    observed_draft, prepare_new, tenant_actor,
 };
 use super::*;
 pub use pp_contracts::autosave::SavePlanChoicesRequest;
@@ -165,14 +165,8 @@ fn transact(
     tx: &mut Transaction<'_>,
     c: &Args<'_>,
 ) -> Result<std::result::Result<AutosaveReceipt, Refusal>> {
-    let (tenant, actor) =
-        auth::authority::queries::observe_reconciliation_actor(tx, c.credential, c.policy)?;
-    let tenant = tenant.as_str();
-    let actor = JsText::scalar(&actor)
-        .trim_ecmascript()
-        .as_scalar()
-        .ok_or_else(|| anyhow!("Invalid autosave actor"))?;
-    let actor = actor.as_str();
+    let (tenant, actor) = tenant_actor(tx, c.credential, c.policy)?;
+    let (tenant, actor) = (tenant.as_str(), actor.as_str());
     let profile = i64::try_from(c.profile.get())?;
     let request = c.request;
     let Some(p) = one(
@@ -197,7 +191,7 @@ fn transact(
         }
         return Ok(Ok(receipt(&prior)?));
     }
-    let base = match accepted_base(tx, tenant, &p, request)? {
+    let base = match accepted_base(tx, tenant, &p, request.expected_base())? {
         Ok(base) => base,
         Err(reason) => return Ok(Err(reason)),
     };
@@ -209,7 +203,14 @@ fn transact(
         profile,
         base: &base,
     };
-    let written = match observed_draft(tx, tenant, profile, &base, request, &mut budget)? {
+    let written = match observed_draft(
+        tx,
+        tenant,
+        profile,
+        &base,
+        request.expected_draft(),
+        &mut budget,
+    )? {
         Ok(Some(d)) => write_observed(tx, c, &at, &d, &mut budget)?,
         Ok(None) => write_new(tx, c, &at, &key, &mut budget)?,
         Err(reason) => Err(reason),
@@ -310,7 +311,15 @@ fn write_new(
     }
     prepared.digest = model::planning(at.base, &prepared.capture.inputs, &prepared.parts)?;
     budget.check()?;
-    let id = insert_snapshot(tx, at.tenant, at.actor, at.profile, key, &prepared, None)?;
+    let id = insert_snapshot(
+        tx,
+        at.tenant,
+        at.actor,
+        at.profile,
+        key,
+        &prepared,
+        Origin::New,
+    )?;
     Ok(Ok((id, Vec::new())))
 }
 

@@ -627,3 +627,32 @@ fn ticket_t_61_publication_rebase_and_select_selects_the_rebased_draft_once_per_
     assert_eq!(events(), json!([draft(3), draft(3)]));
     owner.shutdown().unwrap();
 }
+
+/// GRE-1197: a rebased draft carries its source draft's header row.
+#[test]
+fn rebase_carries_the_source_draft_header() {
+    let case = node("base-moved-abandoned");
+    let f = Fixture::new(&case);
+    let call = &case["calls"][0];
+    let owner = f.open();
+    f.sql().execute("INSERT INTO plan_draft_headers (draft_id,tenant_id,name,order_number,customer,due_date,header_version,updated_at) VALUES (2,'default','Renamed','PO-7','Acme','2026-12-01',3,'2026-11-06T00:00:00.000Z')", []).unwrap();
+    let outcome = rebase(
+        &owner,
+        f.reads(&case["files"], &Value::Null, None),
+        call,
+        PreparationLimits::default(),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    assert_eq!(outcome["kind"], "rebased", "{outcome}");
+    let headers = f.rows(
+        "SELECT draft_id,tenant_id,name,order_number,customer,due_date,header_version,updated_at FROM plan_draft_headers ORDER BY draft_id",
+    );
+    let rows = headers.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{headers}");
+    assert_eq!(rows[1]["draft_id"], 3);
+    let mut carried = rows[1].clone();
+    carried["draft_id"] = json!(2);
+    assert_eq!(carried, rows[0]);
+    owner.shutdown().unwrap();
+}

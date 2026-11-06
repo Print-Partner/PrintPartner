@@ -318,18 +318,50 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     expect(core.posts).toHaveLength(1);
   });
 
-  it("says the Farm module is off instead of reading suggestions", async () => {
+  it("says the Farm module is off and offers nothing to apply", async () => {
     const core = fakeCore({ farm: "off" });
     renderMatch(core);
     expect(await screen.findByText("The Farm module is off.")).toBeTruthy();
     expect(
       screen.getByText("When it is on, this screen shows finished prints to match."),
     ).toBeTruthy();
-    await waitFor(() =>
-      expect(core.fetchMock.mock.calls.map(([p]) => p)).not.toContain(
-        "/api/v2/printer-checkoff/unattributed/suggestions",
-      ),
-    );
     expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("reads suggestions when the core does not list the Farm module", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/health" ? json({ ...health("on"), modules: undefined }) : real(path, init),
+    );
+    renderMatch(core);
+    expect(await screen.findByRole("heading", { level: 2, name: "Exact (1)" })).toBeTruthy();
+  });
+
+  it("counts a reprint as claimed by this Apply when the integrations cannot be read", async () => {
+    const core = fakeCore();
+    core.state.integration = () => "int-shared";
+    core.state.suggestions.push({
+      ...suggestion("bracket", "exact", { id: 22, name: "Voron 2.4 kit" }),
+      print_id: "bracket-elsewhere",
+      printer_id: "voron-2",
+    });
+    core.state.claimed = new Set();
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/api/v2/printer-checkoff/unattributed"
+        ? json({ title: "Internal Server Error" }, 500)
+        : real(path, init),
+    );
+    // The core claims both prints with the first request; the second is answered as claimed.
+    const answer = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path.endsWith("/bracket-elsewhere/claim")
+        ? json({ title: "Conflict", detail: "Print already claimed" }, 409)
+        : answer(path, init),
+    );
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Apply Exact: claim 2 prints" }));
+    expect(await within(result()).findByText("Applied: claimed 2 prints.")).toBeTruthy();
   });
 });

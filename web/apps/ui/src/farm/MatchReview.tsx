@@ -83,8 +83,8 @@ export function MatchReview() {
   const connection = useConnection();
   const farm = useModule("farm");
   const client = useQueryClient();
-  const suggestions = useQuery({ ...suggestionsQuery, enabled: farm?.state === "on" });
-  const printers = useQuery({ ...printersQuery, enabled: farm?.state === "on" });
+  const suggestions = useQuery({ ...suggestionsQuery, enabled: farm?.state !== "off" });
+  const printers = useQuery({ ...printersQuery, enabled: farm?.state !== "off" });
   const printerName = (id: string) => printers.data?.printers.find((p) => p.id === id)?.name ?? id;
   // Prints an Apply resolved, hidden at once so a stale row is never offered again.
   const [resolved, setResolved] = useState<ReadonlySet<string>>(new Set());
@@ -124,6 +124,7 @@ export function MatchReview() {
       const integration = prints.find((p) => p.id === s.print_id)?.integration_id;
       return `${integration ?? `printer:${s.printer_id}`}:${baseName(s.filename)}`;
     };
+    const claimedNames = new Set<string>();
     for (const s of picked) {
       if (done.includes(s.print_id)) continue;
       try {
@@ -142,6 +143,7 @@ export function MatchReview() {
               ? reprints.map((r) => r.print_id)
               : [s.print_id];
             claimed += ids.length;
+            claimedNames.add(baseName(s.filename));
             done.push(...ids);
           } catch (error) {
             if (!(
@@ -150,7 +152,10 @@ export function MatchReview() {
               error.detail === ALREADY_CLAIMED
             ))
               throw error;
-            already += 1;
+            // A file this Apply already claimed elsewhere was claimed by it, even when the
+            // integrations could not be read to group it in advance.
+            if (claimedNames.has(baseName(s.filename))) claimed += 1;
+            else already += 1;
             done.push(s.print_id);
           }
         } else {

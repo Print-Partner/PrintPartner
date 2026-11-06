@@ -251,9 +251,12 @@ the Farm screen. No screen polls for printer state.
   claimed" is reported as already claimed, never as claimed now. The core claims
   every open print of the same file on that integration together (read from
   `GET .../unattributed`), so reprints of one
-  file are counted as claimed by the Apply that claimed them, with one request. Applying one group
+  file are counted as claimed by the Apply that claimed them, with one request.
+  If that list cannot be read, a reprint answered "Print already claimed" after
+  this Apply claimed the same file name is still counted as claimed by it. Applying one group
   leaves the other groups' checks and reasons as they were, and the outcome stays
-  shown when the last print is resolved. The list rereads after every Apply. Farm module off shows the Module-off state and reads nothing.
+  shown when the last print is resolved. The list rereads after every Apply. Farm module off shows the Module-off state; a core that lists no Farm
+  module is read as on, as Farm does.
 - **Tests.** `src/farm/Farm.test.tsx` drives a fake socket (`src/testSockets.ts`,
   installed for every test by `src/testSetup.ts`) and counts requests: ten
   minutes of heartbeats and one state change make no second printer read.

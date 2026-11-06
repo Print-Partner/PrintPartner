@@ -263,29 +263,29 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
     undo.reset();
     record.mutate(burst);
   };
-  // An undo retires an older record failure, so the alert and its Retry speak for the undo.
+  // An undo retires an older refused record, so its alert speaks for the undo. A lost
+  // record send stays shown with its same-key Retry, because it may have landed.
   const undoLast = (receipt: Parameters<typeof undo.mutate>[0]) => () => {
     if (busy) return;
-    record.reset();
+    if (record.error && !lostSend(record.error)) record.reset();
     undo.mutate(receipt);
   };
   const switchField = (next: Field) => {
     setField(next);
     setPicks(new Map());
   };
-  const failure = record.isError
-    ? {
-        what: "Could not record the burst.",
-        error: record.error,
-        resend: () => pending && record.mutate(pending),
-      }
-    : undo.isError
-      ? {
-          what: "Could not undo the burst.",
-          error: undo.error,
-          resend: () => undo.mutate(undo.variables),
-        }
-      : null;
+  const failures = [
+    record.isError && {
+      what: "Could not record the burst.",
+      error: record.error,
+      resend: () => pending && record.mutate(pending),
+    },
+    undo.isError && {
+      what: "Could not undo the burst.",
+      error: undo.error,
+      resend: () => undo.mutate(undo.variables),
+    },
+  ].filter((failure) => failure !== false);
 
   return (
     <>
@@ -346,15 +346,15 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
         )}
         {tally?.kind === "undone" && <p>Undid the last burst. The units are back as they were.</p>}
       </div>
-      {failure && (
-        <div role="alert" className="pp-banner" data-kind="error">
+      {failures.map((failure) => (
+        <div key={failure.what} role="alert" className="pp-banner" data-kind="error">
           <p>{failure.what}</p>
           <p className="pp-banner-detail">{reason(failure.error)}</p>
           {resendable(failure.error) && (
             <MutationButton onClick={failure.resend}>Retry</MutationButton>
           )}
         </div>
-      )}
+      ))}
     </>
   );
 }

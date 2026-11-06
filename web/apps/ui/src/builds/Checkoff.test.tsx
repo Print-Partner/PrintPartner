@@ -342,6 +342,34 @@ describe("CHK-03 in-flight and stale writes", () => {
     expect(alert.textContent).not.toContain("Could not record the burst.");
   });
 
+  it("an undo keeps a lost record send and its same-key Retry in view", async () => {
+    let records = 0;
+    const fetchMock = core(
+      reads(units, (path) => {
+        if (path.endsWith("/undo"))
+          return json({ detail: "A later change touched these units" }, 409);
+        records += 1;
+        if (records === 1) return json(RECEIPT);
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }),
+    );
+    renderAt(fetchMock);
+    await screen.findByRole("group", { name: /^bracket\.stl/ });
+    fireEvent.click(box("bracket.stl", 2));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    await screen.findByText(/Recorded:/);
+    fireEvent.click(box("gear.stl", 1));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    await screen.findByText("Could not record the burst.");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await screen.findByText("Could not undo the burst.");
+    const [lost, refused] = screen.getAllByRole("alert");
+    expect(lost!.textContent).toContain("Could not record the burst.");
+    expect(within(lost!).getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(refused!.textContent).toContain("A later change touched these units");
+    expect(within(refused!).queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
   it("a stale undo Retry never marks a newer burst undone", async () => {
     let undos = 0;
     const fetchMock = core(

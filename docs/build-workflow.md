@@ -99,10 +99,14 @@ tenant's `printer.checkoff_links`, `printer.unattributed_prints`,
 way the [farm reads](farm-reads.md) parse them. A setting over 4 MiB fails the
 workflow read with `Farm settings exceed the read limit`.
 
-- **`beds_to_clear`.** An awaiting-verify result is on its bed until a later
-  result starts on the same printer (the bed was cleared to start it) or a
-  later unmatched print finishes there. Times compare as RFC 3339 when both
-  parse; otherwise the result stored later counts as later. At most one result
+- **`beds_to_clear`.** Each result's bed time is when its print came off
+  (`completed_at`) or, while it runs, when it started (`created_at`). A claimed
+  print's link is created at claim time but keeps the print's `completed_at`,
+  so a late claim does not jump ahead. An awaiting-verify result is on its bed
+  until another result on the same printer has a later bed time, or an
+  unmatched print (open, claimed or dismissed) completed there later.
+  Result times compare as RFC 3339 when both parse; otherwise the result
+  stored later counts as later. At most one result
   per printer is on its bed, so the count is beds, never more than
   `awaiting_verification`. A result without `created_at` is skipped, as the
   farm reads skip it, and stays a `verify_prints` result.
@@ -172,7 +176,8 @@ result rather than a second local stock authority.
   - TSK-01 kinds clear beds and match (GRE-1166):
     `task_feed_clear_beds_until_the_printer_moves_on` (two beds, then one
     after a later print starts on the Voron, then none after a later unmatched
-    print on the Trident) and
+    print on the Trident, which stays so after that print is dismissed),
+    `task_feed_clear_beds_orders_a_late_claim_by_its_print_time` and
     `task_feed_match_prints_for_suggested_unmatched_prints` (a print carrying
     one of the Build's Required-unit tokens; no task without evidence or once
     claimed). `build_workflow_orders_clear_beds_confirm_and_match` pins the

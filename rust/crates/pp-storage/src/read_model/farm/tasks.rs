@@ -3,7 +3,9 @@
 //! names the Build. Read in the workflow read's own transaction, so the task
 //! feed, `GET /plans/{id}/workflow` and MCP see the same counts.
 
-use super::{CheckoffResultState, Farm, MatchConfidence, MatchLibrary, instant, setting_list};
+use super::{
+    CheckoffResultState, Farm, MatchConfidence, MatchLibrary, instant, setting_list, text,
+};
 use anyhow::Result;
 use rusqlite::Transaction;
 use std::collections::BTreeMap;
@@ -18,11 +20,21 @@ pub(crate) struct FarmTasks {
 impl FarmTasks {
     pub(crate) fn read(tx: &Transaction<'_>, tenant: &str) -> Result<Self> {
         let list = |key: &str| setting_list(tx, tenant, key);
+        let unattributed = list("printer.unattributed_prints")?;
+        let finished: Vec<(String, i128)> = unattributed
+            .iter()
+            .filter_map(|print| {
+                Some((
+                    text(print, "printer_id")?,
+                    instant(text(print, "completed_at").as_deref())?,
+                ))
+            })
+            .collect();
         let farm = Farm::parse(
             list("printer.fleet")?,
             list("integrations")?,
             list("printer.checkoff_links")?,
-            list("printer.unattributed_prints")?,
+            unattributed,
             list("printer.send_queue")?,
         );
         let mut matches = BTreeMap::new();
@@ -37,7 +49,7 @@ impl FarmTasks {
             }
         }
         Ok(Self {
-            beds: farm.beds_to_clear(),
+            beds: farm.beds_to_clear(&finished),
             matches,
         })
     }
@@ -54,34 +66,39 @@ impl FarmTasks {
 }
 
 impl Farm {
-    /// Awaiting results still on their bed, per Build. A result leaves its bed
-    /// when a later result on the same printer started (the bed was cleared to
-    /// start it) or a later unmatched print finished there. Times compare when
-    /// both parse; otherwise the result stored later is the later one.
-    fn beds_to_clear(&self) -> BTreeMap<i64, u64> {
+    /// Awaiting results still on their bed, per Build. Each result's bed time
+    /// is when its print came off (`completed_at`) or, while it runs, when it
+    /// started (`created_at`); a claimed print's link is created at claim time
+    /// but keeps the print's `completed_at`. A result leaves its bed when
+    /// another result on the same printer has a later bed time, or an
+    /// unmatched print (open, claimed or dismissed, in `finished`) completed
+    /// there later. Result times compare when both parse; otherwise the result
+    /// stored later is the later one.
+    fn beds_to_clear(&self, finished: &[(String, i128)]) -> BTreeMap<i64, u64> {
+        let bed_time = |index: usize| {
+            let result = &self.results[index];
+            instant(result.completed_at.as_deref()).or_else(|| instant(Some(&result.created_at)))
+        };
         let mut beds = BTreeMap::new();
         for (index, result) in self.results.iter().enumerate() {
             if result.state != CheckoffResultState::AwaitingVerify {
                 continue;
             }
-            let started = instant(Some(&result.created_at));
-            let finished = instant(result.completed_at.as_deref()).or(started);
-            let later_print = self.results.iter().enumerate().any(|(other, next)| {
+            let this = bed_time(index);
+            let later_result = self.results.iter().enumerate().any(|(other, next)| {
                 other != index
                     && next.printer_id == result.printer_id
-                    && match (started, instant(Some(&next.created_at))) {
+                    && match (this, bed_time(other)) {
                         (Some(this), Some(that)) => that > this || (that == this && other > index),
                         _ => other > index,
                     }
             });
-            let later_unmatched = self.unmatched.iter().any(|open| {
-                open.print.printer_id == result.printer_id
-                    && matches!(
-                        (finished, instant(Some(&open.print.completed_at))),
-                        (Some(this), Some(that)) if that > this
-                    )
+            let later_print = this.is_some_and(|this| {
+                finished
+                    .iter()
+                    .any(|(printer, at)| *printer == result.printer_id && *at > this)
             });
-            if !later_print && !later_unmatched {
+            if !later_result && !later_print {
                 *beds.entry(result.profile_id).or_default() += 1;
             }
         }

@@ -685,6 +685,58 @@ fn task_feed_clear_beds_until_the_printer_moves_on() {
     assert_eq!(workspace.next_action.item_count, Some(2));
     let feed = f.tasks(Inputs::default());
     assert_eq!(feed.tasks[0].next_action, workspace.next_action);
+
+    // Dismissing that print does not put the older result back on the bed.
+    f.setting(
+        "printer.unattributed_prints",
+        &serde_json::json!([{
+            "id": "later",
+            "printer_id": "trident",
+            "integration_id": "moonraker-1",
+            "filename": "someone-else.gcode",
+            "completed_at": "2026-11-06T12:00:00.000Z",
+            "gcode_objects": [],
+            "candidates": [],
+            "dismissed": true,
+        }]),
+    );
+    assert_eq!(
+        f.workspace(Inputs::default(), 1).next_action,
+        workspace.next_action
+    );
+}
+
+#[test]
+fn task_feed_clear_beds_orders_a_late_claim_by_its_print_time() {
+    let f = Fixture::new();
+    let mut finished = bed_link(
+        "finished",
+        "voron",
+        "awaiting_verify",
+        "2026-11-06T10:00:00.000Z",
+    );
+    finished["completed_at"] = "2026-11-06T10:30:00.000Z".into();
+    // Another Build's print came off at 09:00 and was claimed at 12:00: its
+    // link is newer, its print is older, so Build 1's print holds the bed.
+    let mut claimed = bed_link(
+        "claimed",
+        "voron",
+        "awaiting_verify",
+        "2026-11-06T12:00:00.000Z",
+    );
+    claimed["profile_id"] = 2.into();
+    claimed["completed_at"] = "2026-11-06T09:00:00.000Z".into();
+    f.setting(
+        "printer.checkoff_links",
+        &serde_json::json!([finished, claimed]),
+    );
+    let action = f.workspace(Inputs::default(), 1).next_action;
+    assert_eq!(action.kind, ActionKind::ClearBeds);
+    assert_eq!(action.item_count, Some(1));
+    assert_eq!(
+        action.reason,
+        "1 finished print from this Build is still on its bed. Clear it and confirm what came off."
+    );
 }
 
 #[test]

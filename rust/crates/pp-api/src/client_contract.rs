@@ -319,9 +319,10 @@ mod codegen {
             VerifyBatchReceipt, VerifyBatchRequest,
         },
         plan_publication::preview::{
-            AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue, InputChange,
-            PartRef, PlateChanges, PlateRef, PreviewChanges, PreviewRevision, ProductionCheck,
-            SnapshotNote, SpoolImpact, StockImpact, UnitChanges, UnitRef, Unmappable,
+            AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue,
+            HeaderChange, InputChange, PartRef, PlateChanges, PlateRef, PreviewChanges,
+            PreviewRevision, ProductionCheck, SnapshotNote, SpoolImpact, StockImpact, UnitChanges,
+            UnitRef, Unmappable,
         },
         read_model::{
             build_workflow::{TaskFeed, UnavailableBuild, rank},
@@ -1130,6 +1131,18 @@ mod codegen {
                     unprinted_after: 0,
                 }],
             },
+            header: vec![
+                HeaderChange {
+                    field: "name".into(),
+                    old: Some(UNICODE.into()),
+                    new: Some("Bracket kit".into()),
+                },
+                HeaderChange {
+                    field: "due_date".into(),
+                    old: None,
+                    new: Some("2026-12-01".into()),
+                },
+            ],
             duplicate_orders: vec![DuplicateOrder {
                 profile_id: MAX_SAFE,
                 name: UNICODE.into(),
@@ -1162,6 +1175,7 @@ mod codegen {
             },
             plates: PlateChanges { cleared: vec![] },
             stock: StockImpact::Off,
+            header: vec![],
             duplicate_orders: vec![],
             production: None,
             blocked_by: vec![],

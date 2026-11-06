@@ -2946,5 +2946,7 @@ async fn ticket_t_61_autosave_refusals_write_nothing() {
     server.close().await;
 }
 
+#[path = "tests/accept_header.rs"]
+mod accept_header;
 #[path = "tests/header.rs"]
 mod header;

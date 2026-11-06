@@ -333,7 +333,7 @@ fn interrupted(name: &str, at: u64) -> (Scratch, PathBuf) {
     Connection::open(data.join("print-partner.db"))
         .unwrap()
         .execute_batch(&format!(
-            "DROP TABLE plan_draft_header_receipts; DROP TABLE plan_draft_headers; DROP TABLE build_profile_details; {events} UPDATE app_settings SET value='{at}' WHERE tenant_id='default' AND key='schema_version'"
+            "DROP TABLE plan_snapshot_headers; DROP TABLE plan_draft_header_receipts; DROP TABLE plan_draft_headers; DROP TABLE build_profile_details; {events} UPDATE app_settings SET value='{at}' WHERE tenant_id='default' AND key='schema_version'"
         ))
         .unwrap();
     for (index, step) in (38..=at).enumerate() {

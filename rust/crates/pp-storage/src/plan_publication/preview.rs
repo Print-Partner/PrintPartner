@@ -66,7 +66,11 @@ pub struct PreviewChanges {
     pub required_units: UnitChanges,
     pub plates: PlateChanges,
     pub stock: StockImpact,
-    /// Other unarchived Plans with this Plan's order number.
+    /// Build header fields the draft changes, old against new. Accept copies
+    /// them to the Build.
+    pub header: Vec<HeaderChange>,
+    /// Other unarchived Plans with the order number this Plan has after
+    /// Accept.
     pub duplicate_orders: Vec<DuplicateOrder>,
     /// Active checkoff links or queued sends Accept would remap.
     #[cfg_attr(
@@ -76,6 +80,24 @@ pub struct PreviewChanges {
     pub production: Option<ProductionCheck>,
     /// Running operations that make Accept refuse until they finish.
     pub blocked_by: Vec<BlockingOperation>,
+}
+
+/// One Build header field (`name`, `order_number`, `customer` or
+/// `due_date`) the draft changes. `null` is an empty field.
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeaderChange {
+    pub field: String,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
+    pub old: Option<String>,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
+    pub new: Option<String>,
 }
 
 /// A Part or input field value, tagged so a client can tell `"3"` from `3`.
@@ -282,18 +304,14 @@ pub(crate) fn preview(
         Ok(gate) => gate,
         Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
     };
-    let saved_before_accept =
-        super::snapshot::replaced_layers(tx, tenant, profile, revision.expected_base.revision_id)?
-            .is_some();
-    let snapshot = SnapshotNote {
-        saved_before_accept,
-        detail: if saved_before_accept {
-            SNAPSHOT_DETAIL
-        } else {
-            NO_SNAPSHOT_DETAIL
-        }
-        .into(),
+    let draft_header = match super::draft_header(tx, tenant, profile, draft_id)? {
+        Ok(header) => header,
+        Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
     };
+    let snapshot = snapshot_note(
+        super::snapshot::replaced_layers(tx, tenant, profile, revision.expected_base.revision_id)?
+            .is_some(),
+    );
     // Diff the Parts Accept would publish: filament comes from the live Part.
     inherit_live_filament(&mut gate.draft.parts, &gate.predecessors);
     let diff = diff::read(tx, tenant, &gate.profile_row, &gate.draft)?.0;
@@ -301,7 +319,8 @@ pub(crate) fn preview(
         Ok(checked) => checked,
         Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
     };
-    if diff.is_empty() {
+    let header = header_changes(tx, tenant, profile, draft_header.as_ref())?;
+    if diff.is_empty() && header.is_empty() {
         // `no_change` only when Accept, sent without `remap_checkoff_links`,
         // would pass too. A changed preview reports these as checks instead.
         if let Err(refused) = checked.refusals(tx, tenant, profile, false)? {
@@ -327,14 +346,6 @@ pub(crate) fn preview(
                 })
                 .collect(),
         });
-    let blocked_by = crate::jobs::publication_conflicts(tx, tenant, profile)?
-        .into_iter()
-        .map(|operation| BlockingOperation {
-            operation_id: operation.operation_id,
-            kind: operation.kind,
-            state: operation.state,
-        })
-        .collect();
     Ok(PreviewOutcome::Ready(Box::new(AcceptPreview::Changed {
         revision,
         changes: Box::new(PreviewChanges {
@@ -345,9 +356,16 @@ pub(crate) fn preview(
             required_units: units(&checked, &diff)?,
             plates: plates(tx, tenant, profile)?,
             stock: stock(tx, tenant, profile, &checked)?,
-            duplicate_orders: duplicate_orders(tx, tenant, profile, &checked.profile_row)?,
+            header,
+            duplicate_orders: duplicate_orders(
+                tx,
+                tenant,
+                profile,
+                &checked,
+                draft_header.as_ref(),
+            )?,
             production,
-            blocked_by,
+            blocked_by: blocked_by(tx, tenant, profile)?,
         }),
         snapshot,
     })))
@@ -540,16 +558,72 @@ fn stock(
     Ok(StockImpact::On { spools })
 }
 
+/// The header fields the draft's header row changes against Build
+/// `profile`'s current header. A draft with no header row changes none.
+fn header_changes(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft: Option<&crate::working_drafts::header::DraftHeaderState>,
+) -> Result<Vec<HeaderChange>> {
+    let Some(draft) = draft else {
+        return Ok(Vec::new());
+    };
+    let build = crate::working_drafts::header::build_header(tx, tenant, profile)?;
+    let new = draft.header.clone();
+    Ok([
+        ("name", Some(build.name), Some(new.name)),
+        ("order_number", build.order_number, new.order_number),
+        ("customer", build.customer, new.customer),
+        ("due_date", build.due_date, new.due_date),
+    ]
+    .into_iter()
+    .filter(|(_, old, new)| old != new)
+    .map(|(field, old, new)| HeaderChange {
+        field: field.into(),
+        old,
+        new,
+    })
+    .collect())
+}
+
+fn snapshot_note(saved_before_accept: bool) -> SnapshotNote {
+    SnapshotNote {
+        saved_before_accept,
+        detail: if saved_before_accept {
+            SNAPSHOT_DETAIL
+        } else {
+            NO_SNAPSHOT_DETAIL
+        }
+        .into(),
+    }
+}
+
+fn blocked_by(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<Vec<BlockingOperation>> {
+    Ok(crate::jobs::publication_conflicts(tx, tenant, profile)?
+        .into_iter()
+        .map(|operation| BlockingOperation {
+            operation_id: operation.operation_id,
+            kind: operation.kind,
+            state: operation.state,
+        })
+        .collect())
+}
+
+/// Other unarchived Plans with the order number Build `profile` has after
+/// Accept: the draft header's when it has one, else the current one.
 fn duplicate_orders(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
-    profile_row: &Value,
+    checked: &Checked,
+    draft: Option<&crate::working_drafts::header::DraftHeaderState>,
 ) -> Result<Vec<DuplicateOrder>> {
-    let Some(order) = profile_row["orderNumber"]
-        .as_str()
-        .filter(|order| !order.trim().is_empty())
-    else {
+    let order = draft.map_or_else(
+        || checked.profile_row["orderNumber"].as_str(),
+        |state| state.header.order_number.as_deref(),
+    );
+    let Some(order) = order.filter(|order| !order.trim().is_empty()) else {
         return Ok(Vec::new());
     };
     rows(
@@ -602,6 +676,9 @@ mod tests {
                  DROP TRIGGER trg_parts_invalidate_accepted_revision_update;
                  {sql}"
             ))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../working_drafts/header_schema.sql"))
             .unwrap();
         (directory, connection)
     }

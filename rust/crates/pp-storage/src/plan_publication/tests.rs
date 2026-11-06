@@ -828,7 +828,7 @@ fn client_validates_reused_required_unit_named_utf8_text_at_boundary() {
             &json!({"definitions":data["transactionSchema"]}),
             &corrupted,
         );
-        c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
+        c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
         let session = "reused-unit-text-session";
         let digest = hex::encode(Sha256::digest(session.as_bytes()));
         c.execute_batch("INSERT INTO users(id,display_name,is_admin,created_at) VALUES('default','Fixture',0,'2026-09-06T00:00:00.000Z')").unwrap();
@@ -928,6 +928,10 @@ mod transaction {
         }
         c.execute_batch(include_str!("schema.sql")).unwrap();
         c.execute_batch(include_str!("../domain_events/schema.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("../working_drafts/header_schema.sql"))
+            .unwrap();
+        c.execute_batch(include_str!("snapshot_header_schema.sql"))
             .unwrap();
         c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         c

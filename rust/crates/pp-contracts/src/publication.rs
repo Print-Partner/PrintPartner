@@ -74,6 +74,10 @@ pub enum Outcome {
     TransactionUnavailable,
     TokenAllocationFailed,
     IdempotencyConflict,
+    /// The draft renames the Build to a name another Build already has.
+    DuplicateBuildName {
+        name: String,
+    },
 }
 #[cfg(test)]
 mod tests {

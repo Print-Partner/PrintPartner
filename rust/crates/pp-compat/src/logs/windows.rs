@@ -169,9 +169,8 @@ pub(super) fn secure_archive(directory: &Directory, name: &str) -> std::io::Resu
         OPEN_EXISTING,
         0,
     ) {
-        Ok(file) => { let r = secure_log(&file); eprintln!("DIAG secure_archive {name} first-open ok, secure_log {r:?}"); r }
+        Ok(file) => secure_log(&file),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) if { eprintln!("DIAG secure_archive {name} first-open {error:?}"); false } => Err(error),
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => repair_archive(&path),
         Err(error) => Err(error),
     }
@@ -192,14 +191,13 @@ fn repair_archive(path: &Path) -> std::io::Result<()> {
         return Err(invalid());
     }
     let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-    let file = open(path, READ_CONTROL | WRITE_DAC, share, OPEN_EXISTING, 0).inspect_err(|e| eprintln!("DIAG repair open {e:?}"))?;
+    let file = open(path, READ_CONTROL | WRITE_DAC, share, OPEN_EXISTING, 0)?;
     let user = CurrentUser::query()?;
-    if !user.owns(&file, SE_FILE_OBJECT).inspect_err(|e| eprintln!("DIAG repair owns {e:?}"))? {
-        eprintln!("DIAG repair not owner");
+    if !user.owns(&file, SE_FILE_OBJECT)? {
         return Err(invalid());
     }
-    let saved = SavedDacl::of(&file, SE_FILE_OBJECT).inspect_err(|e| eprintln!("DIAG repair saved {e:?}"))?;
-    user.restrict(&file, SE_FILE_OBJECT, false).inspect_err(|e| eprintln!("DIAG repair restrict {e:?}"))?;
+    let saved = SavedDacl::of(&file, SE_FILE_OBJECT)?;
+    user.restrict(&file, SE_FILE_OBJECT, false)?;
     let checked = open(
         path,
         READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
@@ -207,9 +205,7 @@ fn repair_archive(path: &Path) -> std::io::Result<()> {
         OPEN_EXISTING,
         0,
     )
-    .inspect_err(|e| eprintln!("DIAG repair reopen {e:?}"))
     .and_then(|reopened| secure_log(&reopened));
-    eprintln!("DIAG repair checked {checked:?}");
     if checked.is_err() {
         saved.restore(&file, SE_FILE_OBJECT)?;
     }

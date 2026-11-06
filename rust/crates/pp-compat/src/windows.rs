@@ -371,7 +371,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use windows_sys::Win32::{
-        Foundation::WAIT_OBJECT_0,
+        Foundation::{GENERIC_WRITE, WAIT_OBJECT_0},
         System::{JobObjects::IsProcessInJob, Threading::PROCESS_QUERY_LIMITED_INFORMATION},
     };
 
@@ -527,7 +527,7 @@ mod tests {
                 OpenOptions::new()
                     .read(true)
                     .write(true)
-                    .access_mode(FILE_GENERIC_READ | READ_CONTROL | 0x4000_0000)
+                    .access_mode(FILE_GENERIC_READ | READ_CONTROL | GENERIC_WRITE)
                     .open(name)
             });
             let mut server = channel.connect().await.unwrap();

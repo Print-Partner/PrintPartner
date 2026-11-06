@@ -20,9 +20,10 @@ use windows_sys::Win32::{
         BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, FILE_APPEND_DATA,
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileStandardInfo,
-        GetFileInformationByHandle, GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING,
-        MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileStandardInfo, FindClose,
+        FindFirstFileW, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
+        READ_CONTROL, SYNCHRONIZE, WIN32_FIND_DATAW, WRITE_DAC,
     },
 };
 
@@ -159,17 +160,74 @@ pub(super) fn secure_directory(directory: &Directory) -> std::io::Result<()> {
 }
 
 pub(super) fn secure_archive(directory: &Directory, name: &str) -> std::io::Result<()> {
+    let path = directory.path.join(name);
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     match open(
-        &directory.path.join(name),
+        &path,
         READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        share,
         OPEN_EXISTING,
         0,
     ) {
         Ok(file) => secure_log(&file),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            repair_archive(&path)?;
+            secure_log(&open(
+                &path,
+                READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
+                share,
+                OPEN_EXISTING,
+                0,
+            )?)
+        }
         Err(error) => Err(error),
     }
+}
+
+/// An archive whose DACL denies this user even attribute reads. Its owner
+/// still holds `READ_CONTROL` and `WRITE_DAC`, so a regular file with one
+/// link that this user owns gets the private DACL back. The directory listing
+/// supplies the attributes the handle cannot read; `FileStandardInfo` needs
+/// no access right.
+fn repair_archive(path: &Path) -> std::io::Result<()> {
+    let mut found = WIN32_FIND_DATAW::default();
+    let search = unsafe { FindFirstFileW(wide(path).as_ptr(), &mut found) };
+    if search == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    unsafe { FindClose(search) };
+    if found.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0 {
+        return Err(invalid());
+    }
+    let file = open(
+        path,
+        READ_CONTROL | WRITE_DAC,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        OPEN_EXISTING,
+        0,
+    )?;
+    let user = CurrentUser::query()?;
+    if standard(&file)?.NumberOfLinks != 1 || !user.owns(&file, SE_FILE_OBJECT)? {
+        return Err(invalid());
+    }
+    user.restrict(&file, SE_FILE_OBJECT, false)
+}
+
+fn standard(file: &File) -> std::io::Result<FILE_STANDARD_INFO> {
+    let mut information = FILE_STANDARD_INFO::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileStandardInfo,
+            (&mut information as *mut FILE_STANDARD_INFO).cast(),
+            size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(information)
 }
 
 /// `create` fails with `AlreadyExists` when any entry has the name,
@@ -192,16 +250,8 @@ pub(super) fn open_append(
 /// The open log no longer has a name: deleted with POSIX semantics, or
 /// waiting for its last handle under the classic delete.
 pub(super) fn unlinked(file: &File) -> bool {
-    let mut information = FILE_STANDARD_INFO::default();
-    let read = unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle() as HANDLE,
-            FileStandardInfo,
-            (&mut information as *mut FILE_STANDARD_INFO).cast(),
-            size_of::<FILE_STANDARD_INFO>() as u32,
-        )
-    };
-    read != 0 && (information.DeletePending || information.NumberOfLinks == 0)
+    standard(file)
+        .is_ok_and(|information| information.DeletePending || information.NumberOfLinks == 0)
 }
 
 /// Rename within the admitted directory, replacing `to`. The source is opened

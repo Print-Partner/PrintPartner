@@ -751,7 +751,8 @@ pub(crate) fn test_shell(script: &str) -> Command {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{
-        Channel, Child, JOB_KILL_EXIT_CODE, ParentDeathGuard, adopt, configure_child, spawn,
+        Channel, Child, CloseHandle, JOB_KILL_EXIT_CODE, OpenProcess, ParentDeathGuard,
+        TerminateProcess, adopt, configure_child, spawn,
     };
     use std::{
         fs::{File, OpenOptions},
@@ -760,6 +761,7 @@ pub(crate) mod test_support {
         process::ExitStatus,
     };
     use tokio::process::Command;
+    use windows_sys::Win32::System::Threading::PROCESS_TERMINATE;
 
     /// Exits 0 at once.
     pub(crate) const EXITS: &str = "process.exit(0)";
@@ -773,6 +775,43 @@ pub(crate) mod test_support {
 
     /// Ignores stdin closing.
     pub(crate) const STUBBORN: &str = "setInterval(() => {}, 1e9)";
+
+    /// Defines `serve(server, path)`, which serves `server` on the channel the
+    /// child receives as `socket_path`. On Windows the core owns the pipe, so
+    /// the child keeps four dials waiting and replaces each one the core takes,
+    /// as `dialDesktopPipe` does.
+    pub(crate) const SERVE: &str = concat!(
+        "function serve(server, path) { ",
+        "const waiting = new Set(); ",
+        "const dial = () => { let connected = false; const socket = require('node:net').connect(path); ",
+        "socket.once('error', () => { if (!connected) { socket.destroy(); setTimeout(dial, 50).unref(); } }); ",
+        "socket.once('connect', () => { connected = true; waiting.add(socket); ",
+        "socket.once('close', () => { if (waiting.delete(socket)) dial(); }); server.emit('connection', socket); }); }; ",
+        "server.on('request', (request) => { if (waiting.delete(request.socket)) dial(); }); ",
+        "for (let lane = 0; lane < 4; lane++) dial(); }\n",
+    );
+
+    /// How the supervisor records a child that terminated itself with
+    /// `process.kill(process.pid, 'SIGTERM')`: libuv calls `TerminateProcess`
+    /// with exit code 1, and Windows has no signals.
+    pub(crate) fn self_terminated() -> serde_json::Value {
+        serde_json::json!({"kind":"exit_code","value":1})
+    }
+
+    /// End the child the way an outside actor would: terminate its process.
+    pub(crate) fn kill_child(pid: u32) {
+        let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        assert!(!process.is_null());
+        let terminated = unsafe { TerminateProcess(process, 1) };
+        unsafe { CloseHandle(process) };
+        assert_ne!(terminated, 0);
+    }
+
+    /// True once `pid` has exited. A process handle the supervisor holds
+    /// keeps the exit status, so nothing is reaped here.
+    pub(crate) fn exited_unreaped(pid: u32) -> bool {
+        !super::process_alive(pid)
+    }
 
     pub(crate) fn exited(code: u8) -> ExitStatus {
         ExitStatus::from_raw(u32::from(code))

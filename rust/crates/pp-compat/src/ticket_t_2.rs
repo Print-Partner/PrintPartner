@@ -7,7 +7,15 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-const STAY: &str = "while read line; do :; done";
+use super::platform::test_support;
+
+/// Exits 0 when stdin closes.
+const STAY: &str = "process.stdin.on('end', () => process.exit(0)); process.stdin.resume();";
+
+/// `script` after [`test_support::SERVE`], so it can call `serve(server, path)`.
+fn served(script: &str) -> &'static str {
+    Box::leak(format!("{}{script}", test_support::SERVE).into_boxed_str())
+}
 
 struct Scratch {
     root: PathBuf,
@@ -33,8 +41,8 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         if let Ok(text) = std::fs::read_to_string(self.pidfile()) {
-            for pid in text.lines().filter_map(|line| line.parse::<i32>().ok()) {
-                unsafe { libc::kill(-pid, libc::SIGKILL) };
+            for pid in text.lines().filter_map(|line| line.parse().ok()) {
+                super::drain::reap_process_group(pid);
             }
         }
         let _ = std::fs::remove_dir_all(&self.root);
@@ -170,14 +178,14 @@ async fn ticket_t_3_drain_supervisor_shutdown_reports_graceful_exit() {
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
-const READY: &str = r#"exec "$NODE" -e 'const http=require("node:http"); const input=require("node:readline").createInterface({input:process.stdin}); input.on("close",()=>process.exit(0)); input.once("line",line=>{const setup=JSON.parse(line); http.createServer((req,res)=>{res.setHeader("Content-Type","application/json"); res.end(JSON.stringify({ok:true,version:"ticket-t-2-unreleased",release:{commit:"ticket-t-2-unreleased"}}));}).listen(setup.socket_path);});'"#;
+const READY: &str = r#"const http=require("node:http"); const input=require("node:readline").createInterface({input:process.stdin}); input.on("close",()=>process.exit(0)); input.once("line",line=>{const setup=JSON.parse(line); serve(http.createServer((req,res)=>{res.setHeader("Content-Type","application/json"); res.end(JSON.stringify({ok:true,version:"ticket-t-2-unreleased",release:{commit:"ticket-t-2-unreleased"}}));}), setup.socket_path);});"#;
 
 #[tokio::test]
 async fn ticket_t_3_drain_supervisor_crash_after_disarm_is_not_graceful() {
     let scratch = Scratch::new("disarmed-crash");
     let supervisor = super::Supervisor::launch_shell(
         super::ShellSpec {
-            script: READY,
+            script: served(READY),
             ..shell_spec(&scratch)
         },
         super::SupervisorConfig::default(),
@@ -193,7 +201,7 @@ async fn ticket_t_3_drain_supervisor_crash_after_disarm_is_not_graceful() {
         _ => unreachable!(),
     };
     supervisor.disarm_restarts();
-    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+    test_support::kill_child(pid);
     wait_status(&mut status, |state| matches!(state, super::Status::Stopped)).await;
     assert!(!supervisor.stop.is_cancelled());
     assert!(live_pids(&scratch.pidfile()).is_empty());
@@ -206,7 +214,7 @@ async fn ticket_t_3_drain_supervisor_recovered_crash_can_shutdown_gracefully() {
     let scratch = Scratch::new("recovered-crash");
     let supervisor = super::Supervisor::launch_shell(
         super::ShellSpec {
-            script: READY,
+            script: served(READY),
             ..shell_spec(&scratch)
         },
         super::SupervisorConfig::default(),
@@ -218,7 +226,7 @@ async fn ticket_t_3_drain_supervisor_recovered_crash_can_shutdown_gracefully() {
     })
     .await;
     let first = recorded_pids(&scratch.pidfile())[0];
-    assert_eq!(unsafe { libc::kill(first as i32, libc::SIGTERM) }, 0);
+    test_support::kill_child(first);
     wait_status(
         &mut status,
         |state| matches!(state, super::Status::Ready { pid, .. } if *pid != first),
@@ -234,7 +242,7 @@ async fn ticket_t_3_drain_supervisor_recovered_crash_can_shutdown_gracefully() {
 async fn ticket_t_3_drain_supervisor_shutdown_reports_forced_exit() {
     let scratch = Scratch::new("forced");
     let spec = super::ShellSpec {
-        script: "trap '' TERM; printf 'term-trap-ready\\n'; while :; do sleep 1; done",
+        script: "process.on('SIGTERM', () => {}); console.log('term-trap-ready'); setInterval(() => {}, 1e9)",
         ..shell_spec(&scratch)
     };
     let supervisor =
@@ -308,7 +316,7 @@ async fn ticket_t_2_repeated_start_stop_no_duplicate_child() {
     for nth in 1..=3 {
         let supervisor = super::Supervisor::launch_shell(
             super::ShellSpec {
-                script: "read line || exit 1; printf 'started\\n'; while read line; do :; done",
+                script: "let started = false; const input = require('node:readline').createInterface({ input: process.stdin }); input.once('line', () => { started = true; console.log('started'); }); input.on('close', () => process.exit(started ? 0 : 1));",
                 ..shell_spec(&scratch)
             },
             super::SupervisorConfig::default(),
@@ -495,7 +503,7 @@ fn ticket_t_2_diagnostic_rows_include_rotated_raw_records_chronologically() {
 async fn ticket_t_2_crash_diagnostics_preserve_exit_without_backend_secrets() {
     let scratch = Scratch::new("crash-facts");
     let mut spec = shell_spec(&scratch);
-    spec.script = "read line; printf '%s\\n' '{\"level\":50,\"event\":\"desktop_start_failed\",\"message\":\"SECRET_TOKEN_PRIVATE_PATH\"}'; exit 7";
+    spec.script = r#"require("node:readline").createInterface({ input: process.stdin }).once("line", () => { require("node:fs").writeSync(1, '{"level":50,"event":"desktop_start_failed","message":"SECRET_TOKEN_PRIVATE_PATH"}\n'); process.exit(7); });"#;
     let supervisor =
         super::Supervisor::launch_shell(spec, super::SupervisorConfig::default()).unwrap();
     let mut status = supervisor.handle.status.clone();
@@ -557,7 +565,7 @@ async fn ticket_t_3_drain_never_started_child_is_graceful() {
 async fn ticket_t_2_crash_signal_is_distinct_from_parent_cleanup() {
     let scratch = Scratch::new("signal-facts");
     let mut spec = shell_spec(&scratch);
-    spec.script = "read line; kill -TERM $$";
+    spec.script = "require('node:readline').createInterface({ input: process.stdin }).once('line', () => process.kill(process.pid, 'SIGTERM'));";
     let supervisor =
         super::Supervisor::launch_shell(spec, super::SupervisorConfig::default()).unwrap();
     let mut status = supervisor.handle.status.clone();
@@ -573,17 +581,16 @@ async fn ticket_t_2_crash_signal_is_distinct_from_parent_cleanup() {
         .find(|row| row["event"] == "compat_failure")
         .unwrap();
     assert_eq!(failure["reason"], "child_exit");
-    assert_eq!(
-        failure["termination"],
-        serde_json::json!({"kind":"signal","value":15})
-    );
+    assert_eq!(failure["termination"], test_support::self_terminated());
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
 async fn health_failure_shutdown(disarm_while_ready: bool) {
     let scratch = Scratch::new("health-facts");
     let mut spec = shell_spec(&scratch);
-    spec.script = r#"exec "$NODE" -e 'const http=require("node:http"); const input=require("node:readline").createInterface({input:process.stdin}); input.on("close",()=>process.exit(0)); input.once("line",line=>{const setup=JSON.parse(line); let checks=0; http.createServer((req,res)=>{checks++; res.setHeader("Content-Type","application/json"); res.end(JSON.stringify({ok:checks===1,version:"ticket-t-2-unreleased",release:{commit:"ticket-t-2-unreleased"}}));}).listen(setup.socket_path);});'"#;
+    spec.script = served(
+        r#"const http=require("node:http"); const input=require("node:readline").createInterface({input:process.stdin}); input.on("close",()=>process.exit(0)); input.once("line",line=>{const setup=JSON.parse(line); let checks=0; serve(http.createServer((req,res)=>{checks++; res.setHeader("Content-Type","application/json"); res.end(JSON.stringify({ok:checks===1,version:"ticket-t-2-unreleased",release:{commit:"ticket-t-2-unreleased"}}));}), setup.socket_path);});"#,
+    );
     let supervisor =
         super::Supervisor::launch_shell(spec, super::SupervisorConfig::default()).unwrap();
     let mut status = supervisor.handle.status.clone();
@@ -668,7 +675,7 @@ async fn ticket_t_2_guard_logs_five_failure_facts_then_stops_restarts() {
 
 fn crash_guard_spec(scratch: &Scratch) -> super::ShellSpec {
     let mut spec = shell_spec(scratch);
-    spec.script = r#"read line || exit 1; data=${line#*'"data_dir":"'}; data=${data%%'"'*}; if [ -f "$data/hold" ]; then while read line; do :; done; else exit 7; fi"#;
+    spec.script = r#"let setup = null; const input = require("node:readline").createInterface({ input: process.stdin }); input.once("line", (line) => { setup = JSON.parse(line); if (!require("node:fs").existsSync(setup.data_dir + "/hold")) process.exit(7); }); input.on("close", () => process.exit(setup === null ? 1 : 0));"#;
     spec
 }
 
@@ -676,17 +683,7 @@ fn shell_exited(pid: u32) -> bool {
     if super::drain::process_group_absent(pid) {
         return true;
     }
-    // Observe the exit without taking the supervisor's wait status.
-    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
-    let result = unsafe {
-        libc::waitid(
-            libc::P_PID,
-            pid,
-            &mut info,
-            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-        )
-    };
-    result == 0 && unsafe { info.si_pid() } == pid as i32
+    test_support::exited_unreaped(pid)
 }
 
 async fn wait_shell_crash(
@@ -947,6 +944,9 @@ async fn ticket_t_2_shell_crashes_expire_outside_default_guard_window() {
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
+// INTERIM (GRE-1194): the health fixture plays the child on a Unix listener.
+// Its Windows dial loop, and these tests on Windows, are still to come.
+#[cfg(unix)]
 struct HealthFixture {
     delay_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
     hung: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -956,6 +956,7 @@ struct HealthFixture {
     task: tokio::task::JoinHandle<()>,
 }
 
+#[cfg(unix)]
 impl HealthFixture {
     async fn attach(scratch: &Scratch, completed: tokio::sync::watch::Receiver<usize>) -> Self {
         let setup_file = scratch.root.join("data/setup");
@@ -1075,6 +1076,7 @@ impl HealthFixture {
     }
 }
 
+#[cfg(unix)]
 impl Drop for HealthFixture {
     fn drop(&mut self) {
         self.task.abort();
@@ -1099,9 +1101,10 @@ async fn pump_for(duration: Duration) {
     }
 }
 
+#[cfg(unix)]
 async fn health_supervisor(scratch: &Scratch) -> (super::Supervisor, HealthFixture) {
     let mut spec = shell_spec(scratch);
-    spec.script = r#"read line || exit 1; data=${line#*'"data_dir":"'}; data=${data%%'"'*}; printf '%s' "$line" > "$data/setup.tmp"; mv "$data/setup.tmp" "$data/setup"; while read line; do :; done"#;
+    spec.script = r#"const fs = require("node:fs"); let setup = null; const input = require("node:readline").createInterface({ input: process.stdin }); input.once("line", (line) => { setup = JSON.parse(line); fs.writeFileSync(setup.data_dir + "/setup.tmp", line); fs.renameSync(setup.data_dir + "/setup.tmp", setup.data_dir + "/setup"); }); input.on("close", () => process.exit(setup === null ? 1 : 0));"#;
     let supervisor =
         super::Supervisor::launch_shell(spec, super::SupervisorConfig::default()).unwrap();
     pump_until(|| *supervisor.health_probes_completed.borrow() == 1).await;
@@ -1110,6 +1113,7 @@ async fn health_supervisor(scratch: &Scratch) -> (super::Supervisor, HealthFixtu
     (supervisor, fixture)
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_cadence_requires_ok_and_bundled_release() {
     let scratch = Scratch::new("health-cadence");
@@ -1174,6 +1178,7 @@ async fn ticket_t_2_health_cadence_requires_ok_and_bundled_release() {
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_unhealthy_startup_stops_polling_at_thirty_seconds() {
     let scratch = Scratch::new("health-budget");
@@ -1246,11 +1251,7 @@ async fn ticket_t_3_drain_repeated_eof_interrupts_mutation_without_resend() {
 
         let supervisor = super::Supervisor::launch_shell(
             super::ShellSpec {
-                script: concat!(
-                    "exec \"$NODE\" -e '",
-                    include_str!("fixtures/drain-upload.cjs"),
-                    "'"
-                ),
+                script: served(include_str!("fixtures/drain-upload.cjs")),
                 ..shell_spec(&scratch)
             },
             super::SupervisorConfig::default(),
@@ -1344,9 +1345,8 @@ async fn ticket_t_2_process_exit_obeys_every_backoff_deadline_and_cap() {
     // prevent observation of the later backoff attempts. No child reaches Ready.
     let supervisor = super::Supervisor::launch_shell(
         super::ShellSpec {
-            // A signal arriving just before a blocking read can leave its trap
-            // pending until input arrives. Keep this crash fixture interruptible.
-            script: r#"trap 'exit 7' USR1; read line || exit 0; data=${line#*'"data_dir":"'}; data=${data%%'"'*}; echo $$ > "$data/armed"; while :; do :; done"#,
+            // Exits 7 once the test creates its trigger file.
+            script: r#"const fs = require("node:fs"); let armed = false; const input = require("node:readline").createInterface({ input: process.stdin }); input.on("close", () => { if (!armed) process.exit(0); }); input.once("line", (line) => { armed = true; const data = JSON.parse(line).data_dir; fs.writeFileSync(data + "/armed", String(process.pid)); setInterval(() => { if (fs.existsSync(data + "/crash-" + process.pid)) process.exit(7); }, 10); });"#,
             ..shell_spec(&scratch)
         },
         super::SupervisorConfig {
@@ -1368,7 +1368,7 @@ async fn ticket_t_2_process_exit_obeys_every_backoff_deadline_and_cap() {
                 .is_ok_and(|text| text.trim() == pid.to_string())
         })
         .await;
-        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGUSR1) }, 0);
+        std::fs::write(scratch.root.join(format!("data/crash-{pid}")), "").unwrap();
         wait_shell_crash(&supervisor, &scratch, count, false).await;
         assert!(matches!(
             *supervisor.handle.status.borrow(),
@@ -1397,6 +1397,7 @@ async fn ticket_t_2_process_exit_obeys_every_backoff_deadline_and_cap() {
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
+#[cfg(unix)]
 async fn healthy_generation(
     supervisor: &super::Supervisor,
     scratch: &Scratch,
@@ -1418,6 +1419,7 @@ async fn healthy_generation(
     }
 }
 
+#[cfg(unix)]
 async fn lose_health(supervisor: &super::Supervisor, scratch: &Scratch, fixture: &HealthFixture) {
     let count = recorded_pids(&scratch.pidfile()).len();
     let pid = recorded_pids(&scratch.pidfile())[count - 1];
@@ -1486,12 +1488,14 @@ async fn lose_health(supervisor: &super::Supervisor, scratch: &Scratch, fixture:
     );
 }
 
+#[cfg(unix)]
 enum HealthBackoffEnd {
     Restart,
     Shutdown,
     Disarm,
 }
 
+#[cfg(unix)]
 async fn health_backoff_deadlines(end: HealthBackoffEnd) {
     let scratch = Scratch::new("health-backoff");
     let (supervisor, mut fixture) = health_supervisor(&scratch).await;
@@ -1570,21 +1574,25 @@ async fn health_backoff_deadlines(end: HealthBackoffEnd) {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_loss_obeys_every_backoff_deadline_and_cap() {
     health_backoff_deadlines(HealthBackoffEnd::Restart).await;
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_loss_shutdown_cancels_late_capped_restart() {
     health_backoff_deadlines(HealthBackoffEnd::Shutdown).await;
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_loss_disarm_cancels_late_capped_restart() {
     health_backoff_deadlines(HealthBackoffEnd::Disarm).await;
 }
 
+#[cfg(unix)]
 async fn readiness_remaining_budget(hung: bool) {
     let scratch = Scratch::new("hung-readiness");
     let started = tokio::time::Instant::now();
@@ -1642,6 +1650,7 @@ async fn readiness_remaining_budget(hung: bool) {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_hung_liveness_times_out_three_times_and_shutdown_cancels_restart() {
     let scratch = Scratch::new("hung-liveness");
@@ -1698,11 +1707,13 @@ async fn ticket_t_2_hung_liveness_times_out_three_times_and_shutdown_cancels_res
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_hung_readiness_is_cut_off_at_remaining_budget() {
     readiness_remaining_budget(true).await;
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_slow_readiness_cannot_publish_after_remaining_budget() {
     readiness_remaining_budget(false).await;
@@ -1713,7 +1724,7 @@ async fn ticket_t_3_drain_shutdown_cancels_backpressured_startup_setup() {
     let scratch = Scratch::new("blocked-startup-setup");
     let supervisor = super::Supervisor::launch_shell(
         super::ShellSpec {
-            script: "exec \"$NODE\" -e 'setInterval(() => {}, 1e9)'",
+            script: "setInterval(() => {}, 1e9)",
             setup_padding: "x".repeat(1024 * 1024),
             ..shell_spec(&scratch)
         },
@@ -1740,8 +1751,10 @@ async fn ticket_t_3_drain_shutdown_cancels_backpressured_startup_setup() {
     println!("startup setup cancelled; spawns=1; probes=0; live_groups=0; status=stopped");
 }
 
+#[cfg(unix)]
 const STARTUP_OWNER_ROOT: &str = "PP_COMPAT_STARTUP_DEATH_ROOT";
 
+#[cfg(unix)]
 fn startup_process_state(pid: u32) -> Option<char> {
     #[cfg(target_os = "linux")]
     {
@@ -1766,6 +1779,7 @@ fn startup_process_state(pid: u32) -> Option<char> {
     }
 }
 
+#[cfg(unix)]
 fn startup_process_live(pid: u32) -> bool {
     super::drain::process_alive(pid) && !matches!(startup_process_state(pid), Some('Z' | 'X'))
 }
@@ -1835,12 +1849,14 @@ fn measured_release_ack_deadline_excludes_verification() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[cfg(unix)]
 struct StartupDeathFixture {
     owner: std::process::Child,
     peer: Option<std::process::Child>,
     scratch: Scratch,
 }
 
+#[cfg(unix)]
 impl Drop for StartupDeathFixture {
     fn drop(&mut self) {
         unsafe { libc::kill(-(self.owner.id() as i32), libc::SIGKILL) };
@@ -1856,6 +1872,7 @@ impl Drop for StartupDeathFixture {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn startup_owner_death_fixture() {
     let Some(root) = std::env::var_os(STARTUP_OWNER_ROOT) else {
@@ -1864,12 +1881,12 @@ async fn startup_owner_death_fixture() {
     let scratch = Scratch { root: root.into() };
     let node_fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/startup-no-stdin.cjs");
-    let quote = |path: &Path| format!("'{}'", path.to_str().unwrap().replace('\'', "'\"'\"'"));
+    let quote = |path: &Path| serde_json::to_string(path.to_str().unwrap()).unwrap();
     let script = Box::leak(
         format!(
-            "exec \"$NODE\" {} {}",
-            quote(&node_fixture),
-            quote(&scratch.root.join("node-execed"))
+            "process.argv = [process.argv[0], {fixture}, {ready}]; require({fixture});",
+            fixture = quote(&node_fixture),
+            ready = quote(&scratch.root.join("node-execed"))
         )
         .into_boxed_str(),
     );
@@ -1912,6 +1929,7 @@ async fn startup_owner_death_fixture() {
 
 const MEASURED_STARTUP_STAGE: &str = "PP_COMPAT_MEASURED_STARTUP_STAGE";
 
+#[cfg(unix)]
 fn measured_startup_before_setup(data: &Path, pid: u32) -> anyhow::Result<()> {
     let root = data.parent().unwrap();
     super::record_test_pid(&root.join("pids"), pid)?;
@@ -1934,6 +1952,7 @@ fn measured_startup_before_setup(data: &Path, pid: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn measured_startup_owner_death_fixture() {
     let Some(root) = std::env::var_os(STARTUP_OWNER_ROOT) else {
@@ -1993,6 +2012,8 @@ async fn measured_startup_owner_death_fixture() {
     drop(supervisor);
 }
 
+/// Windows counterpart: `windows::tests::ticket_t_3_drain_job_object_kills_children_when_core_is_killed`.
+#[cfg(unix)]
 #[test]
 fn ticket_t_3_drain_force_killed_owner_during_startup_kills_group() {
     startup_owner_death_cycles(
@@ -2028,6 +2049,8 @@ fn measured_startup_bundle() -> super::Bundle {
     }
 }
 
+/// Windows counterpart: `windows::tests::ticket_t_3_drain_job_object_kills_children_when_core_is_killed`.
+#[cfg(unix)]
 #[test]
 fn ticket_t_3_drain_measured_release_startup_parent_death() {
     let bundle = measured_startup_bundle();
@@ -2049,6 +2072,7 @@ fn ticket_t_3_drain_measured_release_startup_parent_death() {
     );
 }
 
+#[cfg(unix)]
 fn startup_owner_death_cycles(
     helper: &str,
     node: &Path,
@@ -2174,11 +2198,7 @@ async fn ticket_t_3_drain_repeated_eof_joins_unread_response_body() {
         );
         let supervisor = super::Supervisor::launch_shell(
             super::ShellSpec {
-                script: concat!(
-                    "exec \"$NODE\" -e '",
-                    include_str!("fixtures/drain-stream.cjs"),
-                    "'"
-                ),
+                script: served(include_str!("fixtures/drain-stream.cjs")),
                 ..shell_spec(&scratch)
             },
             super::SupervisorConfig::default(),

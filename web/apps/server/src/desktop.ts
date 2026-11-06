@@ -102,7 +102,17 @@ try {
   // A Windows named pipe has the DACL the core gave it.
   if (process.platform !== "win32") chmodSync(setup.socket_path, 0o600);
   if (stopping) await stop();
-} catch {
-  process.stderr.write('{"event":"desktop_start_failed"}\n');
+} catch (error) {
+  // The error kind only: a message can carry private paths.
+  const failure = error instanceof Error ? (error as NodeJS.ErrnoException) : undefined;
+  process.stderr.write(
+    `${JSON.stringify({
+      level: 50,
+      event: "desktop_start_failed",
+      name: failure?.name,
+      code: failure?.code,
+      syscall: failure?.syscall,
+    })}\n`,
+  );
   await stop();
 }

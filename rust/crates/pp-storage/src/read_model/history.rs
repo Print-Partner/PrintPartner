@@ -7,7 +7,8 @@
 //! - `plan_revisions` (accepted revisions, `accepted_at`)
 //! - `plan_snapshots` (`created_at`)
 //! - `print_jobs` with their `print_job_parts` counts (checkoff bursts, `at`)
-//! - the `printer.send_queue` setting's items for the Build (sends, `created_at`)
+//! - the send queue's items for the Build (sends, `created_at`), from
+//!   `crate::send_queue`
 //! - `plan_decisions` (`created_at`), the rows `GET /plans/:id/decisions` serves
 //!
 //! Entries sort by (time, type, id), newest first. The cursor names the last
@@ -35,7 +36,6 @@ use std::{
 const MAX_SOURCE_ROWS: usize = 10_000;
 pub const DEFAULT_LIMIT: u16 = 50;
 pub const MAX_LIMIT: u16 = 200;
-const SEND_QUEUE_KEY: &str = "printer.send_queue";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
@@ -446,16 +446,23 @@ fn bursts(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> 
 /// it is queued, so a later dispatch never inserts it behind a cursor. Node
 /// keeps a bounded tail of finished items, so older sends drop out.
 fn sends(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
-            params![tenant, SEND_QUEUE_KEY],
-            |row| row.get(0),
-        )
-        .optional()?;
-    // Node reads a missing, blank or malformed queue as empty.
-    let Some(Value::Array(items)) = raw.and_then(|raw| serde_json::from_str(&raw).ok()) else {
-        return Ok(Vec::new());
+    let items = match crate::send_queue::rows(tx, tenant)? {
+        Some(items) => items,
+        None => {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
+                    params![tenant, crate::send_queue::LEGACY_KEY],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            // Node reads a missing, blank or malformed queue as empty.
+            let Some(Value::Array(items)) = raw.and_then(|raw| serde_json::from_str(&raw).ok())
+            else {
+                return Ok(Vec::new());
+            };
+            items
+        }
     };
     let text = |item: &Value, key: &str| {
         item.get(key)

@@ -324,6 +324,8 @@ fn validate_projection(
 struct Production {
     links: Option<Vec<Value>>,
     queue: Option<Vec<Value>>,
+    /// The queue came from `printer_send_queue`, not the legacy setting.
+    queue_in_table: bool,
     link_count: usize,
     queue_count: usize,
     owners: HashMap<i64, i64>,
@@ -355,7 +357,12 @@ fn coordinate(unit: &Value) -> Result<(i64, i64)> {
 }
 fn production(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<Production> {
     let links = setting(tx, tenant, "printer.checkoff_links")?;
-    let queue = setting(tx, tenant, "printer.send_queue")?;
+    let table = crate::send_queue::rows(tx, tenant)?;
+    let queue_in_table = table.is_some();
+    let queue = match table {
+        Some(items) => Some(items),
+        None => setting(tx, tenant, crate::send_queue::LEGACY_KEY)?,
+    };
     let parts = rows(
         tx,
         "SELECT id,profile_id,match_key FROM parts WHERE tenant_id=?",
@@ -437,6 +444,7 @@ fn production(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<Produc
     Ok(Production {
         links,
         queue,
+        queue_in_table,
         link_count,
         queue_count,
         owners,
@@ -571,16 +579,18 @@ fn write_remap(
     if mapping.is_empty() {
         return Ok(());
     }
-    for (key, value, fields) in [
+    for (key, value, fields, in_table) in [
         (
             "printer.checkoff_links",
             production.links,
             vec!["units", "resolved_units"],
+            false,
         ),
         (
-            "printer.send_queue",
+            crate::send_queue::LEGACY_KEY,
             production.queue,
             vec!["checkoff_units"],
+            production.queue_in_table,
         ),
     ] {
         if let Some(mut value) = value {
@@ -601,10 +611,14 @@ fn write_remap(
                     }
                 }
             }
-            tx.execute(
-                "UPDATE app_settings SET value=? WHERE tenant_id=? AND key=?",
-                params![serde_json::to_string(&value)?, tenant, key],
-            )?;
+            if in_table {
+                crate::send_queue::write_units(tx, tenant, &value)?;
+            } else {
+                tx.execute(
+                    "UPDATE app_settings SET value=? WHERE tenant_id=? AND key=?",
+                    params![serde_json::to_string(&value)?, tenant, key],
+                )?;
+            }
         }
     }
     Ok(())

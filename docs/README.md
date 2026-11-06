@@ -108,6 +108,7 @@ will autosave into a draft and require an explicit Accept.
 - [Cross-source Voron stack](examples/cross-source-voron/ldo-2.4-golden-stack.md): the golden stack manifests by repository, with [example manifests](examples/cross-source-voron/README.md) for a base and add-ons
 - [Plan autosave](plan-autosave.md)
 - [Draft header fields](draft-headers.md)
+- [Printer send queue storage](send-queue.md)
 - [Accepted Plate 3MF validation](3MF_EXPORT_VALIDATION.md)
 - [Replacement UI tokens](product/ui-tokens.md): tokens, themes and the contrast gate for the replacement UI
 - [Design system](design-system.md): tokens and components for the existing UI

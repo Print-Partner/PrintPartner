@@ -25,11 +25,12 @@ loopback Host and Origin checks, then a session cookie or an API key. A desktop
 session alone is refused with 401.
 
 Each request reads the tenant's `printer.fleet`, `integrations`,
-`printer.checkoff_links`, `printer.unattributed_prints` and
-`printer.send_queue` settings in one deferred SQLite read
-(`pp_storage::read_model::farm`). A setting over 4 MiB answers 500 `Farm
-settings exceed the read limit`; a missing or malformed setting reads as an
-empty list, as Node reads it.
+`printer.checkoff_links` and `printer.unattributed_prints` settings and the
+send queue in one deferred SQLite read (`pp_storage::read_model::farm`). The
+send queue is the `printer_send_queue` table, or the `printer.send_queue`
+setting while that setting exists ([Send queue storage](send-queue.md)). A
+setting over 4 MiB answers 500 `Farm settings exceed the read limit`; a
+missing or malformed setting reads as an empty list, as Node reads it.
 
 ## No writes, no polling
 

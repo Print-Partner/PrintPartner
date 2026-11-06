@@ -1549,7 +1549,7 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 43 (`LAST_COPIED_STEP`)
+repair's writes to `source_revisions`. Each step through 44 (`LAST_COPIED_STEP`)
 writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
 the first step writes, the open names its rollback copy in the run marker
 `backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
@@ -1564,7 +1564,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-43.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-44.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -2674,9 +2674,10 @@ seeds a lone surrogate and cuts a note across a pair to cover both directions.
 
 Not ported here: the route itself and its webhooks, unattributed-print claiming
 after verify, the Spoolman deduction Node runs after the response (and the
-storage-owned deduction intent GRE-411 adds), manual complete, unattributed claim
-and dismiss, file assignments, remote-file recheck, and the monitor that moves
-links to `awaiting_verify`. Those stay on Node until their whole operation moves.
+storage-owned deduction intent GRE-411 adds), file assignments, remote-file
+recheck, and the monitor that moves links to `awaiting_verify`. Those stay on
+Node until their whole operation moves. Manual complete moved with GRE-1169
+(below).
 
 The Node fixture replays the services on a copy of
 `rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db` with
@@ -2685,6 +2686,33 @@ synthetic links; generated IDs and times are normalized.
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/printer-checkoff-verify/generate.mjs --check
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_61_checkoff)'
+```
+
+### Manual complete (GRE-1169)
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the Checkoff
+router mounts Node's `POST /printer-checkoff/{id}/manual-complete` (and its
+`/api/v1` and `/api/v2` aliases) behind the same loopback, Host, Origin and
+credential gate as the bursts.
+`pp-storage::checkoff_progress::verify::manual_complete` runs in one writer
+transaction and matches Node:
+
+- 404 `Tracked print not found` when the link id is unknown.
+- 409 `This print is monitored by its printer host` unless the link's
+  `integration_id` is `manual:<printer_id>`.
+- 409 `Tracked print is no longer waiting to finish` unless the link is
+  `watching`.
+- Otherwise the link becomes `awaiting_verify` with `host_outcome: success`,
+  `saw_active: true`, `last_progress: 100` and a fresh `completed_at`, moves
+  to the end of the list before the terminal-history trim, and the response is
+  `{ link }`. Nothing is checked off; the operator still verifies the print.
+
+Node's handler has no side effects after the write, so this route owns the
+whole operation. Single-link verify and dismiss stay on Node: they deduct
+Spoolman stock, send webhooks and claim unattributed prints after the write.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_single_http
 ```
 
 ### Checkoff bursts (GRE-1090)
@@ -3101,6 +3129,53 @@ flag through the router.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
+```
+
+### Production setup in Rust (GRE-1209)
+
+GRE-421's first part. `pp_storage::plates` serves Node's `GET` and
+`PATCH /plans/{id}/production-setup` as `Request::ProductionSetup`, and
+`pp_api::plates::plates_router` mounts both at `/` only, because Node
+registers no `/api/v2` alias for them. With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone runs the command that writes
+`production_setup:<id>`. Rust already deletes the key with its Build. Node's
+duplicate still copies it to the new Build's own key until the duplicate part
+of GRE-421 moves, so the two runtimes never write the same key.
+
+The route checks in Node's order:
+
+1. The id is `Number(id)` as a positive integer (so `0x1` and `" 1 "` name
+   Build 1), else 400 `invalid Build id`.
+2. The Build must exist in the tenant, else 404 `Build not found`. An archived
+   Build still saves, as in Node.
+3. The PATCH body must be one `productionSetupCommandSchema` command, else 400
+   `Invalid production setup` with Zod's `issues`: the same paths and
+   messages, in Zod's order.
+4. A `set_route` that changes a route already chosen is 409
+   `production_method_locked` when a Printer Checkoff link of this Build that
+   is not dismissed names, after the slicer's instance suffix, a Required unit
+   the next package makes. The next package is the custom selection's available
+   tokens, or every incomplete unit. When the Accepted Plan state cannot be
+   read, it is 503.
+
+A stored setup that fails `productionSetupSchema`, or names another Build, reads
+as Node's default. A saved setup is Zod's output: trimmed text, unknown keys
+dropped, and the schema's key order. Node retries its setting compare-and-set
+and answers 409 after eight conflicts. Here the read, the lock check and the
+write share one immediate transaction on the single writer, so no conflict can
+occur. The body limit is Node's 8 MiB (`MAX_BULK_JSON_BODY_BYTES`), and a body
+that is not JSON is 400 `Invalid JSON body`.
+
+`fixtures/parity/production-setup/node.json` is Node's answer for 82 cases in
+22 phases. `ticket_t_61_build_lifecycle_production_setup_matches_node` replays
+the 78 that reach storage and compares the status, the body, the changed tables
+and the stored text, then reopens the writer. The other four are the
+`/api/v2` alias and Fastify's body parser, which `plates_http` covers at the
+router. Regenerate the golden with
+`node fixtures/parity/production-setup/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
 ```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1

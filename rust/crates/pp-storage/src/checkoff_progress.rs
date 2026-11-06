@@ -29,7 +29,7 @@ pub mod attribution;
 mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
-mod links;
+pub(crate) mod links;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
 mod unattributed;
@@ -208,6 +208,9 @@ pub enum Request {
     /// already read by the route.
     #[cfg(feature = "desktop_rebuild")]
     AssignFile(Box<Assignment>),
+    /// `POST /printer-checkoff/{id}/manual-complete`.
+    #[cfg(feature = "desktop_rebuild")]
+    ManualComplete { id: String },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -564,6 +567,10 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
         #[cfg(feature = "desktop_rebuild")]
         Request::AssignFile(assignment) => return Ok(Op::AssignFile(assignment)),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::ManualComplete { id } => {
+            return Ok(Op::Manual(manual::Op::CompleteLink { link_id: id }));
+        }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,

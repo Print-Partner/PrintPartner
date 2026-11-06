@@ -358,6 +358,49 @@ pub(super) fn verify(
     })))
 }
 
+/// Node's `POST /printer-checkoff/:id/manual-complete`: a watching link on a
+/// printer tracked by hand (integration `manual:<printer_id>`) becomes
+/// awaiting verification, as a host would report a successful finish. It
+/// checks nothing off; the operator still verifies the result.
+#[cfg(feature = "desktop_rebuild")]
+pub(super) fn manual_complete(tx: &Transaction<'_>, tenant: &str, link_id: &str) -> Outcome {
+    let now = links::now();
+    let mut all = links::load(tx, tenant, &now)?;
+    let Some(index) = all.iter().position(|link| link["id"] == link_id) else {
+        return Ok(Ok(Response::failure(404, "Tracked print not found", None)));
+    };
+    let link = &mut all[index];
+    let manual = link["printer_id"]
+        .as_str()
+        .is_some_and(|printer| link["integration_id"] == format!("manual:{printer}"));
+    if !manual {
+        return Ok(Ok(Response::failure(
+            409,
+            "This print is monitored by its printer host",
+            None,
+        )));
+    }
+    if link["state"] != "watching" {
+        return Ok(Ok(Response::failure(
+            409,
+            "Tracked print is no longer waiting to finish",
+            None,
+        )));
+    }
+    for (key, value) in [
+        ("state", Value::from("awaiting_verify")),
+        ("host_outcome", Value::from("success")),
+        ("saw_active", Value::from(true)),
+        ("last_progress", Value::from(100)),
+        ("completed_at", Value::from(now)),
+    ] {
+        link.insert(key.into(), value);
+    }
+    let link = links::public(link);
+    links::save(tx, tenant, all, index)?;
+    Ok(Ok(Response::ok(Body::Link { link })))
+}
+
 pub(super) fn dismiss(tx: &Transaction<'_>, tenant: &str, link_id: &str) -> Outcome {
     let (mut all, index, _) = match load_in_state(
         tx,

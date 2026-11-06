@@ -949,9 +949,13 @@ fn transfer(
         (Target::Plate(id), _) => id,
         (Target::Printer(_), Some(printer)) => {
             let Some(geometry) = printer.geometry else {
+                let [width, depth, height, margin] = printer.um;
+                let fits = i64::from(unit.width_um.get()) <= width - 2 * margin
+                    && i64::from(unit.depth_um.get()) <= depth - 2 * margin
+                    && i64::from(unit.height_um.get()) <= height;
                 let emptied = source.is_some_and(|p| p.input.units.len() == 1);
                 let count = plates.len() + 1 - usize::from(emptied);
-                return Ok(Decision::Refused(if count > MAX_ACCEPTED_PLATES {
+                return Ok(Decision::Refused(if fits && count > MAX_ACCEPTED_PLATES {
                     Refusal::InvalidUnits
                 } else {
                     Refusal::Geometry("outside_build_area")

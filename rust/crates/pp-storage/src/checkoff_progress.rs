@@ -25,7 +25,7 @@ use std::{
 mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
-mod links;
+pub(crate) mod links;
 #[cfg(feature = "desktop_rebuild")]
 mod lookup;
 mod manual;
@@ -206,6 +206,9 @@ pub enum Request {
     /// One printer Checkoff link by id, for MCP proposals. Reads only.
     #[cfg(feature = "desktop_rebuild")]
     CheckoffLink { id: String },
+    /// `POST /printer-checkoff/{id}/manual-complete`.
+    #[cfg(feature = "desktop_rebuild")]
+    ManualComplete { id: String },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -572,6 +575,10 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
                 return Err(Response::failure(400, "link_id is required", None));
             }
             return Ok(Op::CheckoffLink { id });
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Request::ManualComplete { id } => {
+            return Ok(Op::Manual(manual::Op::CompleteLink { link_id: id }));
         }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {

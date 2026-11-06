@@ -4,6 +4,7 @@
 //! the root and `/api/v2` aliases, and Node's `{ detail, code }` failures.
 //! GRE-1196: the Checkoff units read names each unit's head Plate.
 //! GRE-419: initialize and arrange, and Node's body limits.
+//! GRE-421: the Production setup read and command, at the root only.
 use axum::{Router, http::StatusCode};
 use loopback::ORIGIN;
 use pp_api::{
@@ -377,5 +378,94 @@ async fn plates_http_initializes_then_arranges_within_node_body_limits() {
         send(&router, "POST", initialize, &body, true).await.0,
         StatusCode::NOT_FOUND
     );
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn plates_http_serves_production_setup_at_the_root_only() {
+    let dir = data_dir();
+    let root = dir.path();
+    let (owner, router) = open(root, "1");
+    let setup = "/plans/1/production-setup";
+    assert_eq!(get(&router, setup, false).await.0, StatusCode::UNAUTHORIZED);
+    let (status, body) = get(&router, setup, true).await;
+    assert_eq!(
+        (status, &body["format"], &body["route"]),
+        (StatusCode::OK, &json!("production-setup-v1"), &Value::Null),
+        "{body}"
+    );
+    assert_eq!(
+        get(&router, &format!("/api/v2{setup}"), true).await.0,
+        StatusCode::NOT_FOUND,
+        "Node registers no /api/v2 alias"
+    );
+    let (status, body) = get(&router, "/plans/abc/production-setup", true).await;
+    assert_eq!(
+        (status, &body["detail"], &body["code"]),
+        (
+            StatusCode::BAD_REQUEST,
+            &json!("invalid Build id"),
+            &Value::Null
+        )
+    );
+    let (status, body) = send(&router, "PATCH", setup, &json!({"kind": "nope"}), true).await;
+    assert_eq!(
+        (status, &body["detail"], &body["issues"][0]["path"]),
+        (
+            StatusCode::BAD_REQUEST,
+            &json!("Invalid production setup"),
+            &json!(["kind"])
+        )
+    );
+    let cookie = Some("pp_session=read-fixture-secret");
+    let (status, body) = loopback::send(&router, "PATCH", setup, "{", cookie).await;
+    assert_eq!(
+        (status, &body["detail"]),
+        (StatusCode::BAD_REQUEST, &json!("Invalid JSON body"))
+    );
+    // Node's 8 MiB limit admits a body past axum's 2 MiB default.
+    let assignments: Vec<Value> = (0..20_000)
+        .map(|index| json!({"token": format!("t{index:0>150}"), "printer_id": "p"}))
+        .collect();
+    let command =
+        json!({"kind": "replace_printer_assignments", "printer_assignments": assignments});
+    assert!(command.to_string().len() > 3 * 1024 * 1024);
+    let (status, body) = send(&router, "PATCH", setup, &command, true).await;
+    assert_eq!(
+        (status, body["printer_assignments"].as_array().map(Vec::len)),
+        (StatusCode::OK, Some(20_000))
+    );
+    let oversized =
+        json!({"kind": "set_route", "route": "plates", "pad": "x".repeat(8 * 1024 * 1024)});
+    let (status, body) = send(&router, "PATCH", setup, &oversized, true).await;
+    assert_eq!(
+        (status, &body["detail"]),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &json!("Request body too large")
+        )
+    );
+    let route = json!({"kind": "set_route", "route": "plates"});
+    assert_eq!(
+        send(&router, "PATCH", setup, &route, true).await.0,
+        StatusCode::OK
+    );
+    owner.shutdown().unwrap();
+
+    let (owner, router) = open(root, "1");
+    let (status, body) = get(&router, setup, true).await;
+    assert_eq!(
+        (
+            status,
+            &body["route"],
+            body["printer_assignments"].as_array().map(Vec::len)
+        ),
+        (StatusCode::OK, &json!("plates"), Some(20_000)),
+        "the setup survives a restart"
+    );
+    owner.shutdown().unwrap();
+
+    let (owner, router) = open(root, "0");
+    assert_eq!(get(&router, setup, true).await.0, StatusCode::NOT_FOUND);
     owner.shutdown().unwrap();
 }

@@ -75,7 +75,7 @@ channel: a Unix socket on macOS and Linux, and on Windows a named pipe that Rust
 creates with a current-user DACL and `PIPE_REJECT_REMOTE_CLIENTS` and Node dials
 into. Rust owns the directory lock and process lifetime; Node owns live domain
 operations. On Unix, Node runs in its own process group with a parent-death
-watcher; on Windows it runs in a Job Object with
+watcher; on Windows it is created inside a Job Object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the kernel terminates it and its
 children when the core exits, however it exits. Rust storage, HTTP routers, and jobs already have substantial tested
 implementations behind `desktop_rebuild`. With both gates on, `pp-server` and

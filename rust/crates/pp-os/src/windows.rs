@@ -40,9 +40,10 @@ use windows_sys::{
             FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
             FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE,
             FileFullDirectoryInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-            LOCK_FILE_FLAGS, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
-            MOVE_FILE_FLAGS, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-            READ_CONTROL, SYNCHRONIZE, UnlockFileEx, WRITE_DAC,
+            GetVolumeInformationByHandleW, LOCK_FILE_FLAGS, LOCKFILE_EXCLUSIVE_LOCK,
+            LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVE_FILE_FLAGS, MOVEFILE_REPLACE_EXISTING,
+            MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE, UnlockFileEx,
+            WRITE_DAC,
         },
         System::IO::{IO_STATUS_BLOCK, OVERLAPPED},
     },
@@ -734,6 +735,33 @@ impl Dir {
             return Err(io::Error::from(io::ErrorKind::NotADirectory));
         }
         delete_open(&directory)
+    }
+
+    /// True only on NTFS, whose file IDs carry a reuse sequence number.
+    pub(crate) fn identities_are_never_reused(&self) -> io::Result<bool> {
+        let mut name = [0u16; 64];
+        // SAFETY: the handle is open for the call, every optional output is
+        // null, and `name` holds the length passed.
+        let named = unsafe {
+            GetVolumeInformationByHandleW(
+                self.directory.as_raw_handle() as HANDLE,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                name.as_mut_ptr(),
+                name.len() as u32,
+            )
+        };
+        if named == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let length = name
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(name.len());
+        Ok(String::from_utf16_lossy(&name[..length]) == "NTFS")
     }
 
     /// A read handle cannot flush a directory. [`Dir::create_dir`] and

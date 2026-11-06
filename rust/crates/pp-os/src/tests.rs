@@ -178,6 +178,17 @@ fn locks_exclude_a_second_open_file_until_unlocked() {
 }
 
 #[test]
+fn identity_reuse_follows_the_file_system() {
+    let root = scratch();
+    let reused = !Dir::open(root.path())
+        .unwrap()
+        .identities_are_never_reused()
+        .unwrap();
+    // Hosted Windows runners use NTFS.
+    assert_eq!(reused, cfg!(unix));
+}
+
+#[test]
 fn a_held_lock_lets_other_handles_read_the_file() {
     let root = scratch();
     let path = root.path().join("lease");

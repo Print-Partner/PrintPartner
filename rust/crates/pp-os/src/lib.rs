@@ -12,6 +12,7 @@
 //! | --- | --- | --- |
 //! | Entry access is relative to the opened directory | `openat`, `fstatat` and `unlinkat` on the directory descriptor | `NtCreateFile` with the directory handle as `RootDirectory`, then `NtSetInformationFile` on the entry's own handle to delete it. No entry operation re-resolves a path |
 //! | The opened directory can be renamed or removed | Yes; entry operations keep reaching the moved directory, and creating entries in a removed one fails | The same: the directory handle shares read, write and delete |
+//! | A directory with open entries below it can be renamed | Yes; open descriptors below it keep working | No: NTFS refuses the rename with `ERROR_ACCESS_DENIED` while any handle to a file or directory below it is open, whatever its share mode. Close those handles first; see [Renaming directories on Windows](#renaming-directories-on-windows) |
 //! | No-follow | `O_NOFOLLOW` and `AT_SYMLINK_NOFOLLOW` | `FILE_FLAG_OPEN_REPARSE_POINT`, then refusal of any reparse point (symbolic links and junctions) |
 //! | Identity | device and inode | volume serial number and 64-bit file index |
 //! | Owner and mode | [`PosixAccess`] | `None`: access is governed by ACLs, which this crate does not inspect yet |
@@ -73,6 +74,21 @@
 //! publish with one `rename_no_replace` rely on that, where Unix callers
 //! `fsync` the directory after `renameat`. Tests check that both handles are
 //! write-through; nothing simulates power loss.
+//!
+//! # Renaming directories on Windows
+//!
+//! A handle to the directory being renamed does not block
+//! [`Dir::rename_no_replace`] or `MoveFileExW`, because it shares delete. A
+//! handle to any entry below it does, including a [`Dir`] for a subdirectory
+//! and a [`File`] that shares delete, so callers close every handle below a
+//! directory before renaming it. A caller that must later prove an entry is
+//! still the one it created records the entry's [`Identity`] and checks it
+//! after reopening the entry by name. NTFS file IDs include a sequence number,
+//! so a freed ID is not given to a new file. Unix can reuse a freed inode
+//! number, so a Unix caller that relies on identity keeps a descriptor open,
+//! which a Unix rename ignores. pp-source's snapshot publication closes its
+//! handles before renaming, and its retained captures also record and check
+//! identities this way.
 //!
 //! # File systems without POSIX semantics
 //!
@@ -300,6 +316,16 @@ impl Dir {
     /// Inspect the opened directory itself.
     pub fn status(&self) -> io::Result<Status> {
         self.inner.status()
+    }
+
+    /// Whether the volume never gives a freed [`Identity`] to a new entry, so
+    /// an identity recorded without an open handle still names the same
+    /// object later. NTFS file IDs carry a sequence number that changes when
+    /// an ID is reused, so this is `true` on NTFS. FAT, exFAT and other
+    /// Windows file systems derive IDs from reusable slots, and Unix reuses
+    /// freed inode numbers, so both report `false`.
+    pub fn identities_are_never_reused(&self) -> io::Result<bool> {
+        self.inner.identities_are_never_reused()
     }
 
     /// Inspect the entry `name` without following it.

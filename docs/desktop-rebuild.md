@@ -2762,6 +2762,14 @@ route at these paths, so the gateway manifests do not list them.
   `unit_index`, `object_name`, `printed` and `assembled`. `basis` is the
   Accepted Plan basis a burst sends as `expected`, or `null` for a Build with
   no Accepted Plan (`parts` is then empty). A Build the caller cannot see is 404.
+  Each unit also carries `plate`, `{ plate_id, ordinal, printer_name }` for the
+  head Plate revision's Plate it is placed on, and the body carries that
+  revision as `plate_revision_id` (GRE-1121, for the Checkoff tab's `P` key).
+  `pp-storage::plates::head_plates` reads them in the same transaction as the
+  units. Both are `null` when the head revision stamps an older Accepted Plan
+  or there is none; a unit the head lists as unplaced has `plate: null`. A head
+  revision whose layout fails its integrity checks fails the read with 500,
+  as `GET /plans/{id}/plates` does.
 - `POST /plans/{id}/checkoff/bursts` takes `{ idempotency_key, expected, units }`:
   a key of 1 to 200 characters after trimming, the basis, and 1 to 1,000
   `{ token, printed?, assembled? }` entries, each setting at least one flag and

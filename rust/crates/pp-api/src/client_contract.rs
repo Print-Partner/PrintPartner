@@ -298,7 +298,7 @@ mod codegen {
             BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
             ClaimUnattributedReceipt, ClaimUnattributedRequest, ClaimedLink,
             DismissUnattributedReceipt, DismissUnattributedRequest, ManualBurstPart,
-            ManualBurstReceipt, ManualBurstRequest, UndoBatchReceipt, UndoBatchRequest,
+            ManualBurstReceipt, ManualBurstRequest, UndoBatchReceipt, UndoBatchRequest, UnitPlate,
             VerifyBatchReceipt, VerifyBatchRequest,
         },
         plan_publication::preview::{
@@ -1641,6 +1641,7 @@ mod codegen {
                 CheckoffUnits {
                     profile_id: MAX_SAFE,
                     basis: Some(parsed),
+                    plate_revision_id: Some(MAX_SAFE),
                     parts: vec![CheckoffPart {
                         part_id: MAX_SAFE,
                         filename: UNICODE.into(),
@@ -1657,6 +1658,11 @@ mod codegen {
                                 object_name: UNICODE.into(),
                                 printed: true,
                                 assembled: true,
+                                plate: Some(UnitPlate {
+                                    plate_id: "plate_00000000000000000000000000000001".into(),
+                                    ordinal: 1,
+                                    printer_name: UNICODE.into(),
+                                }),
                             },
                             CheckoffUnitState {
                                 token: token.into(),
@@ -1664,6 +1670,7 @@ mod codegen {
                                 object_name: String::new(),
                                 printed: false,
                                 assembled: false,
+                                plate: None,
                             },
                         ],
                     }],
@@ -1675,6 +1682,7 @@ mod codegen {
                 CheckoffUnits {
                     profile_id: 1,
                     basis: None,
+                    plate_revision_id: None,
                     parts: vec![],
                 },
             )?,

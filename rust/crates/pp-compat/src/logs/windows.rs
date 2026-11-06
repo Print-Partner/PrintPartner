@@ -5,7 +5,7 @@
 //! component. Access control is a protected DACL that grants only the current
 //! user, the equivalent of modes 0600 and 0700.
 
-use crate::windows_security::{CurrentUser, SE_FILE_OBJECT, SavedDacl};
+use crate::windows_security::{CurrentUser, PrivateDescriptor, SE_FILE_OBJECT, SavedDacl};
 use std::{
     fs::{File, Metadata},
     os::windows::{
@@ -23,6 +23,7 @@ use windows_sys::{
         Foundation::{
             GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, RtlNtStatusToDosError, UNICODE_STRING,
         },
+        Security::SECURITY_ATTRIBUTES,
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, FILE_APPEND_DATA,
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
@@ -30,7 +31,7 @@ use windows_sys::{
             FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
             FileStandardInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
             MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
-            READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+            READ_CONTROL, ReOpenFile, SYNCHRONIZE, WRITE_DAC,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -56,12 +57,31 @@ fn open(
     disposition: u32,
     flags: u32,
 ) -> std::io::Result<File> {
+    open_with(path, access, share, disposition, flags, None)
+}
+
+/// `descriptor` is the security of a file this call creates.
+fn open_with(
+    path: &Path,
+    access: u32,
+    share: u32,
+    disposition: u32,
+    flags: u32,
+    descriptor: Option<&PrivateDescriptor>,
+) -> std::io::Result<File> {
+    let attributes = descriptor.map(|descriptor| SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.as_ptr(),
+        bInheritHandle: 0,
+    });
     let handle = unsafe {
         CreateFileW(
             wide(path).as_ptr(),
             access,
             share,
-            std::ptr::null(),
+            attributes
+                .as_ref()
+                .map_or(std::ptr::null(), |attributes| attributes as *const _),
             disposition,
             FILE_FLAG_OPEN_REPARSE_POINT | flags,
             std::ptr::null_mut(),
@@ -153,7 +173,7 @@ pub(super) fn secure_log(file: &File) -> std::io::Result<()> {
     if !user.owns(file, SE_FILE_OBJECT)? {
         return Err(invalid());
     }
-    user.restrict(file, SE_FILE_OBJECT, false)
+    user.restrict(file, false)
 }
 
 pub(super) fn secure_directory(directory: &Directory) -> std::io::Result<()> {
@@ -165,7 +185,7 @@ pub(super) fn secure_directory(directory: &Directory) -> std::io::Result<()> {
     if !user.owns(&directory.handle, SE_FILE_OBJECT)? {
         return Err(invalid());
     }
-    user.restrict(&directory.handle, SE_FILE_OBJECT, true)
+    user.restrict(&directory.handle, true)
 }
 
 pub(super) fn secure_archive(directory: &Directory, name: &str) -> std::io::Result<()> {
@@ -188,9 +208,11 @@ pub(super) fn secure_archive(directory: &Directory, name: &str) -> std::io::Resu
 }
 
 /// An archive whose DACL denies this user even attribute reads. Its owner
-/// still holds `READ_CONTROL` and `WRITE_DAC`, so it gets the private DACL,
-/// is reopened and checked as every log is. A check that fails puts the old
-/// DACL back, so a hard link to an outside file leaves that file unchanged.
+/// still holds `READ_CONTROL` and `WRITE_DAC`, so it gets the private DACL
+/// and is checked as every log is, through a handle reopened from the same
+/// object rather than by name, so a rename cannot swap in another file. A
+/// failed check puts the exact old DACL back. A hard link, which could be a
+/// file outside the directory, is refused before anything changes.
 ///
 /// `CreateFileW` always adds `SYNCHRONIZE` and `FILE_READ_ATTRIBUTES`, which
 /// the owner does not hold here, so the first open is `NtOpenFile` relative to
@@ -233,20 +255,33 @@ fn repair_archive(directory: &Directory, name: &str) -> std::io::Result<()> {
     if !user.owns(&file, SE_FILE_OBJECT)? {
         return Err(invalid());
     }
+    let links = standard(&file)?;
+    if links.NumberOfLinks != 1 || links.DeletePending || links.Directory {
+        return Err(invalid());
+    }
     let saved = SavedDacl::of(&file, SE_FILE_OBJECT)?;
-    user.restrict(&file, SE_FILE_OBJECT, false)?;
-    let checked = open(
-        &directory.path.join(name),
-        READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
-        share,
-        OPEN_EXISTING,
-        0,
-    )
-    .and_then(|reopened| secure_log(&reopened));
+    user.restrict(&file, false)?;
+    let checked = reopen(&file).and_then(|reopened| secure_log(&reopened));
     if checked.is_err() {
-        saved.restore(&file, SE_FILE_OBJECT)?;
+        saved.restore(&file)?;
     }
     checked
+}
+
+/// A new handle to the object `file` names, access-checked against its DACL now.
+fn reopen(file: &File) -> std::io::Result<File> {
+    let handle = unsafe {
+        ReOpenFile(
+            file.as_raw_handle() as HANDLE,
+            READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_handle(handle as _) })
 }
 
 fn standard(file: &File) -> std::io::Result<FILE_STANDARD_INFO> {
@@ -273,12 +308,18 @@ pub(super) fn open_append(
     name: &str,
     create: bool,
 ) -> std::io::Result<File> {
-    open(
+    let descriptor = if create {
+        Some(CurrentUser::query()?.private_descriptor(false)?)
+    } else {
+        None
+    };
+    open_with(
         &directory.path.join(name),
         FILE_APPEND_DATA | READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         if create { CREATE_NEW } else { OPEN_EXISTING },
         0,
+        descriptor.as_ref(),
     )
 }
 
@@ -312,21 +353,90 @@ pub(super) fn rename(directory: &Directory, from: &str, to: &str) -> std::io::Re
 #[cfg(test)]
 pub(super) mod test_support {
     use super::{CurrentUser, SE_FILE_OBJECT, information, open};
-    use std::{fs::File, path::Path};
+    use std::{
+        fs::File,
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        path::Path,
+    };
     use windows_sys::Win32::{
+        Foundation::LocalFree,
         Security::{
             Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-                SetSecurityInfo,
+                ConvertSecurityDescriptorToStringSecurityDescriptorW,
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+                SDDL_REVISION_1, SetSecurityInfo,
             },
             DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl,
             PROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_DACL_SECURITY_INFORMATION,
         },
         Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+            DELETE, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FileDispositionInfo, OPEN_EXISTING, READ_CONTROL,
+            SetFileInformationByHandle, WRITE_DAC,
         },
     };
+
+    /// The DACL of `path` in SDDL, with its protection and inheritance flags.
+    pub(crate) fn access(path: &Path) -> String {
+        let file = handle(path);
+        let mut descriptor = std::ptr::null_mut();
+        let mut text = std::ptr::null_mut();
+        let mut length = 0;
+        unsafe {
+            assert_eq!(
+                GetSecurityInfo(
+                    file.as_raw_handle() as _,
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut descriptor,
+                ),
+                0
+            );
+            assert_ne!(
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor,
+                    SDDL_REVISION_1,
+                    DACL_SECURITY_INFORMATION,
+                    &mut text,
+                    &mut length,
+                ),
+                0
+            );
+            let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(text, length as usize));
+            LocalFree(text as _);
+            LocalFree(descriptor as _);
+            sddl.trim_end_matches('\0').to_owned()
+        }
+    }
+
+    /// Delete `path` with the classic disposition: its name stays taken until
+    /// the last open handle closes. `DeleteFileW` uses POSIX semantics on
+    /// current NTFS, which frees the name at once.
+    pub(crate) fn delete_pending(path: &Path) {
+        let file = std::fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .unwrap();
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        assert_ne!(
+            unsafe {
+                SetFileInformationByHandle(
+                    file.as_raw_handle() as _,
+                    FileDispositionInfo,
+                    (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+                    size_of::<FILE_DISPOSITION_INFO>() as u32,
+                )
+            },
+            0
+        );
+    }
 
     fn handle(path: &Path) -> File {
         open(
@@ -396,7 +506,7 @@ pub(super) mod test_support {
                 ),
                 0
             );
-            windows_sys::Win32::Foundation::LocalFree(descriptor as _);
+            LocalFree(descriptor as _);
         }
     }
 
@@ -415,7 +525,7 @@ pub(super) mod test_support {
     pub(crate) fn restrict(path: &Path) {
         CurrentUser::query()
             .unwrap()
-            .restrict(&handle(path), SE_FILE_OBJECT, path.is_dir())
+            .restrict(&handle(path), path.is_dir())
             .unwrap();
     }
 

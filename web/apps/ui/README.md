@@ -194,8 +194,12 @@ so a print that ends or a link that drops shows up without a reload.
   waiting any more; a burst is all or nothing) is resent with its
   key, so the core replays each receipt, and one Undo undoes them all (if the
   core refuses one of them, the others keep their receipts and Undo, and an alert
-  names the refused printer); if none did, the picks the reread still
-  lists as pending go as a new burst. A replayed receipt of a burst undone
+  names the refused printer), and the picks they do not cover go with them as a
+  new burst; if none did, the picks the reread still lists as pending go as a new
+  burst. This works only until a reread: a reread that shows a lost burst landed
+  drops its key and its bed leaves Today, and then only the alert's Retry (while
+  no newer confirm has replaced it) resends it with its key and brings back its
+  Undo. A replayed receipt of a burst undone
   elsewhere leaves the picks picked. If the
   reread fails, nothing is sent, an alert says so, and that burst keeps its key,
   so confirming again can still reach its receipt and Undo. A reread cannot
@@ -210,7 +214,8 @@ so a print that ends or a link that drops shows up without a reload.
   gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo
-  button. Undo sends the receipt's `undo_token` to
+  button. When the tally covers several bursts, Undo sends their tokens one by one;
+  if one fails, the tally keeps only the bursts still confirmed. Undo sends the receipt's `undo_token` to
   `POST /api/v2/printer-checkoff/verify-batch/undo`; the core restores the
   links, progress and outcomes, or refuses with 409 and a reason.
 - **Printer links down.** Confirming a bed needs no printer. A bed whose printer

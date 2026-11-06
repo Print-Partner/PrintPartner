@@ -945,7 +945,7 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(preview().textContent).toContain("Nothing picked.");
   });
 
-  it("resends a lost multi-bed burst with its key when one of its beds is confirmed", async () => {
+  it("resends a lost multi-bed burst with its key and sends the rest of the bed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ results: SHARED(), loseFirstAnswers: 3 });
     renderToday(core);
@@ -956,9 +956,20 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     await act(() => vi.advanceTimersByTimeAsync(4_000));
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
-    expect(await screen.findByText("Confirmed 2 units from Voron 2.4 and Trident.")).toBeTruthy();
-    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
-    expect(core.state.marked).toBe(2);
+    expect(await screen.findByText("Confirmed 4 units from Voron 2.4 and Trident.")).toBeTruthy();
+    const keys = core.posts.map((p) => p.body.idempotency_key);
+    expect(new Set(keys).size).toBe(2);
+    expect(keys.filter((k) => k === keys[0])).toHaveLength(4);
+    expect(core.posts.at(-1)!.body.beds).toEqual([
+      {
+        link_id: "link-voron",
+        decisions: [
+          { part_id: 1, unit_index: 2, result: "confirmed" },
+          { part_id: 3, unit_index: 0, result: "confirmed" },
+        ],
+      },
+    ]);
+    expect(core.state.marked).toBe(4);
   });
 
   it("sends a changed selection as a new burst when the lost one never landed", async () => {
@@ -1073,10 +1084,13 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     fireEvent.click(unit("bracket.stl unit 2"));
     fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
-    expect(await screen.findByText("Confirmed 2 units from Trident.")).toBeTruthy();
+    expect(await screen.findByText("Confirmed 3 units from Trident and Voron 2.4.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
-    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
-    expect(core.state.marked).toBe(2);
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(2);
+    expect(core.posts.at(-1)!.body.beds).toEqual([
+      { link_id: "link-voron", decisions: [{ part_id: 1, unit_index: 1, result: "confirmed" }] },
+    ]);
+    expect(core.state.marked).toBe(3);
   });
 
   it("replays every overlapping lost burst that landed, with one Undo for all of them", async () => {
@@ -1270,6 +1284,37 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(
       await screen.findByText("Undid the Voron 2.4 confirmation. 2 units are waiting again."),
     ).toBeTruthy();
+  });
+
+  it("narrows the tally to the bursts still confirmed when part of an Undo fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED(), loseFirstAnswers: 6 });
+    const real = core.fetchMock.getMockImplementation()!;
+    let undos = 0;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path.endsWith("/verify-batch/undo") && ++undos === 2)
+        return json(
+          { title: "Conflict", detail: "A newer change to this Checkoff link exists" },
+          409,
+        );
+      return real(path, init);
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Trident bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(core.state.marked).toBe(5));
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    await screen.findByText("Confirmed 5 units from Voron 2.4 and Trident.");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Could not undo the confirmation.")).toBeTruthy();
+    expect(within(status()).getByText(/^Confirmed 2 units from Trident\./)).toBeTruthy();
+    expect(core.state.marked).toBe(2);
   });
 
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {

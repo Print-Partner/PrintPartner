@@ -53,20 +53,19 @@ const LINK_DOWN = new Set<FarmPrinter["state"]["execution"]>([
 ]);
 
 /** A burst in flight: the picked units and the idempotency key every resend of it reuses. */
-/** One burst: the picks it confirms and its idempotency key. */
 interface Burst {
   picks: Pick[];
   key: string;
+  /** Runs only when the core confirms this burst, never on a replayed undone receipt. */
+  onConfirmed?: () => void;
 }
 
 /**
- * One confirm. It sends one burst, or resends every lost burst a reread shows had landed,
- * so each one's receipt and Undo come back.
+ * One confirm. It sends one burst, or resends every lost burst a reread shows had landed
+ * (so each one's receipt and Undo come back) together with the picks they do not cover.
  */
 interface Confirm {
   bursts: Burst[];
-  /** Runs only when the core confirms these picks, never on a replayed undone receipt. */
-  onConfirmed?: () => void;
 }
 
 /** Names a burst by the units it confirms, so the same burst finds its unanswered key. */
@@ -149,8 +148,10 @@ function useCheckoff() {
       client.invalidateQueries({ queryKey: tasksQuery.queryKey }),
     ]);
   const undo = useMutation({
+    // One token at a time. If a later one fails, the tally keeps only the bursts still
+    // confirmed, so it never offers or names a burst that is already undone.
     mutationFn: async (undos: Undo[]) => {
-      for (const { receipt } of undos) {
+      for (const [i, { receipt }] of undos.entries()) {
         try {
           await writeCore("undoCheckoffBurst", {}, { undo_token: receipt.undo_token });
         } catch (error) {
@@ -159,6 +160,7 @@ function useCheckoff() {
             error.status === 409 &&
             error.detail === ALREADY_UNDONE
           )) {
+            if (i > 0) setTally({ kind: "confirmed", undos: undos.slice(i) });
             throw error;
           }
         }
@@ -218,7 +220,7 @@ function useCheckoff() {
       for (const { picks } of bursts) unanswered.current.delete(burstId(picks));
       return refresh();
     },
-    onSuccess: async (receipts, { bursts, onConfirmed }) => {
+    onSuccess: async (receipts, { bursts }) => {
       for (const { picks } of bursts) unanswered.current.delete(burstId(picks));
       undo.reset();
       const answeredAt = Date.now();
@@ -260,7 +262,7 @@ function useCheckoff() {
             }
           : { kind: "confirmed", undos },
       );
-      if (undos.length > 0) onConfirmed?.();
+      for (const { burst } of answered) if (!replayed(burst)) burst.onConfirmed?.();
     },
   });
   // Set while a confirm rereads before it decides what to send, so a second click waits.
@@ -280,7 +282,7 @@ function useCheckoff() {
     const id = burstId(picks);
     const saved = unanswered.current.get(id);
     if (saved) {
-      confirm.mutate({ bursts: [{ picks, key: saved.key }], onConfirmed });
+      confirm.mutate({ bursts: [{ picks, key: saved.key, onConfirmed }] });
       return;
     }
     const beds = new Set(picks.map((p) => p.bed.result.id));
@@ -310,7 +312,22 @@ function useCheckoff() {
         ),
       );
       if (landed.length > 0) {
-        confirm.mutate({ bursts: landed.map(([, burst]) => burst) });
+        const replaying = new Set(
+          landed.flatMap(([, lost]) =>
+            lost.picks.flatMap(({ bed, units }) => units.map((u) => pendingKey(bed, u))),
+          ),
+        );
+        const rest = picks
+          .map(({ bed, units }) => ({
+            bed,
+            units: units.filter(
+              (u) => listed.current.has(pendingKey(bed, u)) && !replaying.has(pendingKey(bed, u)),
+            ),
+          }))
+          .filter(({ units }) => units.length > 0);
+        const extra = rest.length > 0 ? [{ picks: rest, key: newKey(), onConfirmed }] : [];
+        for (const burst of extra) unanswered.current.set(burstId(burst.picks), burst);
+        confirm.mutate({ bursts: [...landed.map(([, burst]) => burst), ...extra] });
         return;
       }
       sending = picks
@@ -336,7 +353,7 @@ function useCheckoff() {
     }
     const key = newKey();
     unanswered.current.set(burstId(sending), { key, picks: sending });
-    confirm.mutate({ bursts: [{ picks: sending, key }], onConfirmed });
+    confirm.mutate({ bursts: [{ picks: sending, key, onConfirmed }] });
   };
   // Retry of a confirm that got no answer. It rereads the results first. While every sent
   // unit is listed as pending, it goes through `confirmPicks` and its saved-key rule, so a
@@ -356,7 +373,7 @@ function useCheckoff() {
       only!.picks.every(({ bed, units }) =>
         units.every((u) => listed.current.has(pendingKey(bed, u))),
       );
-    if (waiting) await confirmPicks(only!.picks, sent.onConfirmed);
+    if (waiting) await confirmPicks(only!.picks, only!.onConfirmed);
     else confirm.mutate(sent);
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.

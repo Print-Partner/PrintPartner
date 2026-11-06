@@ -60,7 +60,8 @@ pub struct Opened {
 /// fires when the pump gives up on a client that stopped reading.
 struct Pumped {
     chunks: mpsc::Receiver<std::io::Result<Bytes>>,
-    stopped: oneshot::Receiver<std::io::Error>,
+    /// Taken once it resolves: a completed oneshot must not be polled again.
+    stopped: Option<oneshot::Receiver<std::io::Error>>,
 }
 
 impl http_body::Body for Pumped {
@@ -71,8 +72,13 @@ impl http_body::Body for Pumped {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-        if let Poll::Ready(Ok(error)) = Pin::new(&mut self.stopped).poll(cx) {
-            return Poll::Ready(Some(Err(error)));
+        if let Some(stopped) = self.stopped.as_mut()
+            && let Poll::Ready(stopped) = Pin::new(stopped).poll(cx)
+        {
+            self.stopped = None;
+            if let Ok(error) = stopped {
+                return Poll::Ready(Some(Err(error)));
+            }
         }
         self.chunks
             .poll_recv(cx)
@@ -111,7 +117,10 @@ fn pump(mut body: ReplyBody) -> Body {
             }
         }
     });
-    Body::new(Pumped { chunks, stopped })
+    Body::new(Pumped {
+        chunks,
+        stopped: Some(stopped),
+    })
 }
 
 /// Only a 2xx body is streamed. Any other reply's body is dropped unread,
@@ -300,6 +309,18 @@ mod tests {
         })
         .await
         .is_ok()
+    }
+
+    #[tokio::test]
+    async fn ticket_t_21_a_finished_body_reads_to_its_end() {
+        let body: &[u8] = b"5\r\nframe\r\n5\r\nframe\r\n5\r\nframe\r\n5\r\nframe\r\n5\r\nframe\r\n5\r\nframe\r\n0\r\n\r\n";
+        let (url, printer) = printer(body).await;
+        let body = open(&url, Duration::from_secs(5)).await;
+        let _socket = printer.await.unwrap();
+        // Let the pump read every chunk and finish before the client polls.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let read = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        assert_eq!(read, "frame".repeat(6));
     }
 
     #[tokio::test]

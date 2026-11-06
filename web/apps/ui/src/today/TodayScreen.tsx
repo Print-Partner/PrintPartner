@@ -218,14 +218,17 @@ function useCheckoff() {
 
 type Checkoff = ReturnType<typeof useCheckoff>;
 
-/** The live tally, Undo, and a Retry that resends the same request with the same key. */
+/**
+ * The live tally, Undo, and a Retry. A confirm's Retry goes through `confirmBed`, so it
+ * reuses the saved key only while a reread still lists that bed waiting.
+ */
 function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
-  const { confirm, undo, undoBurst, tally } = checkoff;
+  const { confirm, confirmBed, undo, undoBurst, tally } = checkoff;
   const failure = confirm.isError
     ? {
         what: "Could not confirm the bed.",
         error: confirm.error,
-        resend: () => confirm.mutate(confirm.variables),
+        resend: () => confirmBed(confirm.variables!.bed),
       }
     : undo.isError
       ? {

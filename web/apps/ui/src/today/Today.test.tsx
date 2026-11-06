@@ -420,6 +420,26 @@ describe("an uncertain write is reconciled, not repeated", () => {
     expect(core.state.marked).toBe(3);
   });
 
+  it("sends Retry with a new key once a reread no longer lists the bed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseFirstAnswers: 3 });
+    const waiting = structuredClone(core.state.results);
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Voron 2.4" })).toBeNull());
+    core.state.results = waiting;
+    core.state.marked = 0;
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" });
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(2);
+    expect(core.state.marked).toBe(3);
+  });
+
   it("drops the unanswered key once a reread no longer lists the bed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ loseFirstAnswers: 3 });

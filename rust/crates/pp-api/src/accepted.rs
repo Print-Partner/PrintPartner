@@ -271,6 +271,9 @@ async fn project(app: App, id: &str, request: axum::extract::Request, view: View
                 (View::Assembled, Some(part)) => {
                     client.read_part(credential, part, cancelled, wait)?
                 }
+                (View::CheckoffUnits, Some(build)) => {
+                    client.read_checkoff_units(credential, build, cancelled, wait)?
+                }
                 _ => client.read(credential, target.as_slice(), cancelled, wait)?,
             };
             let Some(build) = batch.builds.first() else {
@@ -284,7 +287,7 @@ async fn project(app: App, id: &str, request: axum::extract::Request, view: View
                     views::checkoff(build.profile_id, &build.accepted, &CatalogOnly)?
                 }
                 (View::CheckoffUnits, _) => {
-                    views::checkoff_units(build.profile_id, &build.accepted)?
+                    views::checkoff_units(build.profile_id, &build.accepted, batch.plates.as_ref())?
                 }
                 (View::Assembled, part) => {
                     views::assembled(part.unwrap_or_default(), &build.accepted)

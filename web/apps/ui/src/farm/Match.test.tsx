@@ -249,6 +249,25 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     expect(within(result()).getByText("1 print was already claimed.")).toBeTruthy();
   });
 
+  it("hides a claimed print at once, before the reread answers", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    let hold = false;
+    core.fetchMock.mockImplementation((path: string, init?: RequestInit) =>
+      hold && path === "/api/v2/printer-checkoff/unattributed/suggestions"
+        ? new Promise<Response>(() => {})
+        : real(path, init),
+    );
+    renderMatch(core);
+    const apply = await screen.findByRole("button", { name: "Apply Exact: claim 1 print" });
+    hold = true;
+    fireEvent.click(apply);
+    expect(await within(result()).findByText("Applied: claimed 1 print.")).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /^bracket\.gcode/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Apply Exact/ })).toBeNull();
+    expect(core.posts).toHaveLength(1);
+  });
+
   it("says the Farm module is off instead of reading suggestions", async () => {
     const core = fakeCore({ farm: "off" });
     renderMatch(core);

@@ -74,10 +74,13 @@ export function MatchReview() {
   const suggestions = useQuery({ ...suggestionsQuery, enabled: farm?.state === "on" });
   const printers = useQuery({ ...printersQuery, enabled: farm?.state === "on" });
   const printerName = (id: string) => printers.data?.printers.find((p) => p.id === id)?.name ?? id;
+  // Prints an Apply resolved, hidden at once so a stale row is never offered again.
+  const [resolved, setResolved] = useState<ReadonlySet<string>>(new Set());
+  const open = (d: MatchSuggestionList) => d.suggestions.filter((s) => !resolved.has(s.print_id));
   const state: ScreenState<MatchSuggestionList> =
     farm?.state === "off"
       ? { kind: "module-off", module: "Farm", wouldShow: "finished prints to match" }
-      : queryScreenState(suggestions, connection, (d) => d.suggestions.length === 0);
+      : queryScreenState(suggestions, connection, (d) => open(d).length === 0);
   const [checked, setChecked] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [failures, setFailures] = useState<ReadonlyMap<string, string>>(new Map());
   // Set while Apply runs, so a second press waits instead of sending twice.
@@ -93,6 +96,7 @@ export function MatchReview() {
     applying.current = true;
     setResult("");
     const failed = new Map<string, string>();
+    const done: string[] = [];
     let claimed = 0;
     let already = 0;
     let dismissed = 0;
@@ -106,6 +110,7 @@ export function MatchReview() {
               { profile_id: s.build!.id },
             );
             claimed += 1;
+            done.push(s.print_id);
           } catch (error) {
             if (!(
               error instanceof CoreError &&
@@ -114,10 +119,12 @@ export function MatchReview() {
             ))
               throw error;
             already += 1;
+            done.push(s.print_id);
           }
         } else {
           await writeCore("dismissUnattributedPrint", { id: s.print_id }, {});
           dismissed += 1;
+          done.push(s.print_id);
         }
       } catch (error) {
         failed.set(
@@ -146,8 +153,12 @@ export function MatchReview() {
         .filter(Boolean)
         .join(" "),
     );
-    applying.current = false;
-    await client.invalidateQueries({ queryKey: ["core"] });
+    setResolved((now) => new Set([...now, ...done]));
+    try {
+      await client.invalidateQueries({ queryKey: ["core"] });
+    } finally {
+      applying.current = false;
+    }
   };
 
   // Outside the data rows, so the outcome of the Apply that empties the backlog still shows.
@@ -173,7 +184,7 @@ export function MatchReview() {
         ),
       }}
       renderData={(data) => {
-        const rows = data.suggestions;
+        const rows = open(data);
         return (
           <>
             <p>

@@ -28,7 +28,10 @@ SUITES = {1: (".github/workflows/review-gate.yml", "pull_request_target"), 2: (D
           6: (CLAUDE, "pull_request", [{"number": 8, "base": {"ref": "release"}}]),
           7: (DROID, "pull_request", [{"number": 8, "base": {"ref": "release"}}]),
           8: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "main"}}, {"number": 8, "base": {"ref": "release"}}]),
-          11: (DROID, "pull_request", [])}
+          11: (DROID, "pull_request", []),
+          # Stacked PR 7 into release: the runs list that base.
+          12: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "release"}}]),
+          13: (DROID, "pull_request", [{"number": 7, "base": {"ref": "release"}}])}
 DROID_RAN = "##[end-action id=__Factory-AI_droid-action.droid;outcome=success;conclusion=success;duration_ms=128764]"
 DROID_SKIPPED = "##[end-action id=__Factory-AI_droid-action.droid;outcome=skipped;conclusion=skipped;duration_ms=0]"
 SUITE_FOR = {"review-gate": 1, "droid-review": 2, "claude-code-review": 3, "claude-security-review": 3}
@@ -171,11 +174,19 @@ class ReviewGateStepTests(unittest.TestCase):
                 self.assertIn("not this PR's into main", result.stdout)
         self.assertPasses(checks=[run("droid-review", suite=7)], pages=[[marker()]])
 
-    def test_a_pr_into_another_base_passes_with_a_note_and_reads_nothing_else(self):
-        for checks in ([], [run("droid-review", "failure")]):
-            result = self.assertPasses(checks=checks, pr_base="release")
-            self.assertIn("targets release, not main", result.stdout)
-        self.assertIn("targets release, not main", (self.folder / "summary.md").read_text())
+    def test_a_stacked_pr_is_judged_against_its_own_base_with_the_same_rules(self):
+        stacked = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
+        self.assertPasses(checks=stacked, pr_base="release")
+        self.assertPasses(checks=[run("droid-review", suite=13)], pr_base="release")
+        self.assertFails(checks=[])
+        self.assertFails(checks=[], pr_base="release")
+        self.assertFails(checks=[run("droid-review", "failure", suite=13)], pr_base="release")
+        self.assertPasses(checks=[], pr_base="release", pages=[[marker()]])
+        moved = self.assertFails(checks=[run("claude-code-review"), run("claude-security-review")], pr_base="release")
+        self.assertIn("not this PR's into release", moved.stdout)
+        self.assertFails(checks=[run("claude-code-review", suite=12), run("claude-security-review", suite=12)])
+        differs = {f"{CLAUDE}@{HEAD}": "c2", f"{CLAUDE}@main": "c1"}
+        self.assertFails(checks=stacked, pr_base="release", files=[CLAUDE], blobs=differs)
 
     def test_the_gate_waits_for_claude_jobs_that_are_still_running(self):
         review = [run("claude-code-review", None), run("claude-security-review", None)]
@@ -376,9 +387,9 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         workflow = load("review-gate.yml")
         self.assertEqual(set(workflow["on"]), {"pull_request_target"})
         self.assertEqual(workflow["on"]["pull_request_target"]["types"],
-                         ["opened", "synchronize", "reopened", "ready_for_review", "edited"])
+                         ["opened", "synchronize", "reopened", "ready_for_review"])
         job = workflow["jobs"]["review-gate"]
-        self.assertEqual(job["if"], "github.event.action != 'edited' || github.event.changes.base != null")
+        self.assertNotIn("if", job)
         self.assertEqual(job["permissions"], {"actions": "read", "checks": "read", "contents": "read",
                                               "pull-requests": "read"})
         self.assertNotIn("uses:", text)

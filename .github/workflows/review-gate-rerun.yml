@@ -56,10 +56,6 @@ jobs:
               exit 0
             fi
             read -r id status <<< "$run"
-            if [ "$EVENT_NAME" = workflow_run ] && [ "$status" != completed ]; then
-              echo "review-gate run $id is still running and waits for the Claude review itself."
-              exit 0
-            fi
             if [ "$status" = completed ] && gh api -X POST "repos/$REPO/actions/runs/$id/rerun" > /dev/null; then
               echo "Reran review-gate run $id for $head."
               exit 0

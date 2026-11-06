@@ -24,12 +24,13 @@ name: Review gate
 # scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
 # the guard), as Dependabot's action bumps do, it needs both path 3 (the
 # owner's marker for that head) and path 1 or 2.
-# Every push starts a run that waits up to 30 minutes for the head's Claude jobs,
-# then judges the final state. A base other than the default passes with a note
-# and reruns on a base change. See docs/development/ci.md#review-checks.
+# Every push waits up to 30 minutes for the head's Claude jobs, then fails
+# unless one path holds; a stacked PR is judged against its own base.
+# review-gate-rerun.yml reruns it when a review ends or a marker changes. See
+# docs/development/definition-of-done.md#code-review.
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions: {}
 
@@ -39,9 +40,6 @@ concurrency:
 
 jobs:
   review-gate:
-    # An edit reruns the gate only when the base changed: the gate reads the base, and a PR
-    # moved onto main must be judged again. Title and body edits change nothing it reads.
-    if: github.event.action != 'edited' || github.event.changes.base != null
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -108,17 +106,10 @@ jobs:
           pull = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
                                            capture_output=True, text=True).stdout)
           changed, pr_base = pull["changed_files"], pull["base"]["ref"]
-          if pr_base != DEFAULT:
-              note = (f"Passed: this PR targets {pr_base}, not {DEFAULT}, so there is nothing to gate here. "
-                      f"The gate runs again if the base changes to {DEFAULT}.")
-              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-                  summary.write(f"## Review gate for `{HEAD}`\n\n{note}\n")
-              print(note)
-              sys.exit(0)
           # Claude's review starts with this run, so wait for its jobs instead of failing early.
-          # Only the Claude jobs are waited on, and only for a bounded time; a job that never
-          # appears within GRACE seconds is treated as not running. Everything below still
-          # judges the final state, so waiting cannot create a pass.
+          # Only the Claude jobs are waited on, only for a bounded time, and a job that never
+          # appears within GRACE seconds counts as not running. Everything below judges the final
+          # state, so waiting decides when the gate judges and cannot create a pass.
           MAX_WAIT = int(os.environ.get("PP_GATE_MAX_WAIT_SECONDS", "1800"))
           GRACE, INTERVAL = min(120, MAX_WAIT), int(os.environ.get("PP_GATE_POLL_SECONDS", "30"))
           CLAUDE_JOBS = ("claude-code-review", "claude-security-review")
@@ -165,13 +156,14 @@ jobs:
               """Whether the latest run of a check came from this PR into the default branch.
 
               Another PR with the same head SHA but another base runs that base's copy of the workflow,
-              so the run's pull_requests must name this PR, and every PR it names must target the default
-              branch. Anything else, including an empty list, fails closed.
+              so the run's pull_requests must name this PR, and every PR it names must target this PR's
+              own base (the default branch, or the branch a stacked PR builds on). Anything else,
+              including an empty list, fails closed.
               """
               found = workflow_run(latest[name]) if name in latest else None
               prs = (found or {}).get("pull_requests") or []
-              return (pr_base == DEFAULT and bool(prs) and any(str(item.get("number")) == PR for item in prs)
-                      and all((item.get("base") or {}).get("ref") == DEFAULT for item in prs))
+              return (bool(prs) and any(str(item.get("number")) == PR for item in prs)
+                      and all((item.get("base") or {}).get("ref") == pr_base for item in prs))
 
 
           problems, latest, touched = [], {}, []
@@ -222,13 +214,13 @@ jobs:
           droid_ok = (droid == "success" and for_this_pr("droid-review") and base_definition(ORIGINS["droid-review"][0])
                       and droid_reviewed(latest["droid-review"]))
           if droid == "success" and not droid_ok:
-              droid = ("success, but the run is not this PR's into main, the Droid review did not run, "
+              droid = (f"success, but the run is not this PR's into {pr_base}, the Droid review did not run, "
                        "or its workflow differs from main")
           claude_ok = (code == "success" and security in ("success", "neutral")
                        and for_this_pr("claude-code-review") and for_this_pr("claude-security-review")
                        and base_definition(ORIGINS["claude-code-review"][0]))
           if code == "success" and not claude_ok and security in ("success", "neutral"):
-              code = "success, but the run is not this PR's into main or its workflow differs from main"
+              code = f"success, but the run is not this PR's into {pr_base} or its workflow differs from main"
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write(f"## Review gate for `{HEAD}`\n\n| Path | State |\n| --- | --- |\n"
                             f"| droid-review | {droid} |\n| claude-code-review | {code} |\n"

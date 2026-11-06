@@ -138,26 +138,18 @@ impl WorkingDraftClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<Outcome> {
-        let observations = self
-            .observations
-            .clone()
-            .ok_or_else(|| anyhow!("Working-draft observations are not configured"))?;
-        self.enqueue(cancelled, wait, |reply, cancelled| {
-            Envelope::WorkingDraftWrite {
-                command: Write {
-                    credential: input.credential,
-                    profile: input.profile,
-                    policy: self.policy,
-                    cancelled,
-                    operation: Operation::Save {
-                        request: input.request,
-                        key: input.key,
-                        observations,
-                        reply,
-                    },
-                },
-            }
-        })
+        self.enqueue_observed(
+            input.credential,
+            input.profile,
+            cancelled,
+            wait,
+            |observations, reply| Operation::Save {
+                request: input.request,
+                key: input.key,
+                observations,
+                reply,
+            },
+        )
     }
 }
 pub(super) struct Command {

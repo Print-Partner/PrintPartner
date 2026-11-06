@@ -76,26 +76,18 @@ impl WorkingDraftClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<AutosaveOutcome> {
-        let observations = self
-            .observations
-            .clone()
-            .ok_or_else(|| anyhow!("Working-draft observations are not configured"))?;
-        self.enqueue(cancelled, wait, |reply, cancelled| {
-            Envelope::WorkingDraftWrite {
-                command: Write {
-                    credential: input.credential,
-                    profile: input.profile,
-                    policy: self.policy,
-                    cancelled,
-                    operation: Operation::Autosave {
-                        request: input.request,
-                        key: input.key,
-                        observations,
-                        reply,
-                    },
-                },
-            }
-        })
+        self.enqueue_observed(
+            input.credential,
+            input.profile,
+            cancelled,
+            wait,
+            |observations, reply| Operation::Autosave {
+                request: input.request,
+                key: input.key,
+                observations,
+                reply,
+            },
+        )
     }
 }
 

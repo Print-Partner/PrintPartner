@@ -2191,10 +2191,21 @@ fn reconcile_body(digest: &str, decisions: Value) -> Value {
 
 /// The draft events storage committed, oldest first.
 fn draft_events(server: &ReadServer) -> Vec<(String, String, String)> {
-    let sql = server.sql();
-    let mut statement = sql
-        .prepare("SELECT event_type,aggregate_id,payload_json FROM domain_events ORDER BY seq")
-        .unwrap();
+    triples(
+        server,
+        "SELECT event_type,aggregate_id,payload_json FROM domain_events ORDER BY seq",
+    )
+}
+
+/// Every row of a three-column query.
+fn triples<A, B, C>(server: &ReadServer, sql: &str) -> Vec<(A, B, C)>
+where
+    A: rusqlite::types::FromSql,
+    B: rusqlite::types::FromSql,
+    C: rusqlite::types::FromSql,
+{
+    let connection = server.sql();
+    let mut statement = connection.prepare(sql).unwrap();
     statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .unwrap()
@@ -2805,15 +2816,10 @@ async fn ticket_t_61_autosave_receipt_replays_after_restart() {
 
 /// Draft and Part ids with their immutable keys, in id order.
 fn part_identities(server: &ReadServer) -> Vec<(i64, i64, String)> {
-    let connection = server.sql();
-    let mut statement = connection
-        .prepare("SELECT draft_id,id,part_key FROM plan_draft_parts ORDER BY id")
-        .unwrap();
-    statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
+    triples(
+        server,
+        "SELECT draft_id,id,part_key FROM plan_draft_parts ORDER BY id",
+    )
 }
 
 #[tokio::test]

@@ -21,15 +21,13 @@ pub(super) async fn recompute(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(profile) = drafts_target(uri.path(), "recompute") else {
+    let Some((profile, key)) = keyed_plan(&uri, "recompute", &headers) else {
         return invalid_request();
     };
-    let apply_manifest = serde_json::from_slice::<Value>(&body)
+    let request = serde_json::from_slice::<Value>(&body)
         .ok()
-        .and_then(|body| body.get("apply_manifest")?.as_bool());
-    let request = idempotency_key(&headers)
-        .zip(apply_manifest)
-        .and_then(|(key, apply_manifest)| RecomputeRequest::new(key, apply_manifest).ok());
+        .and_then(|body| body.get("apply_manifest")?.as_bool())
+        .and_then(|apply_manifest| RecomputeRequest::new(key, apply_manifest).ok());
     let Some(request) = request else {
         return invalid_request();
     };
@@ -359,11 +357,18 @@ impl Accept {
     }
 }
 
-/// The Plan of `/plans/{id}/drafts/{action}`, at the root or under `/api/v2`.
-fn drafts_target(path: &str, action: &str) -> Option<PositiveId> {
+/// The Plan of `/plans/{id}/drafts/{action}`, at the root or under `/api/v2`,
+/// and its `Idempotency-Key`.
+fn keyed_plan<'h>(
+    uri: &Uri,
+    action: &str,
+    headers: &'h HeaderMap,
+) -> Option<(PositiveId, &'h str)> {
+    let path = uri.path();
     let path = path.strip_prefix("/api/v2").unwrap_or(path);
     let rest = path.strip_prefix("/plans/")?;
-    path_id(rest.strip_suffix(action)?.strip_suffix("/drafts/")?)
+    let profile = path_id(rest.strip_suffix(action)?.strip_suffix("/drafts/")?)?;
+    Some((profile, idempotency_key(headers)?))
 }
 
 /// Draft-only autosave (GRE-418): `POST /plans/{id}/drafts/save` with Node's
@@ -378,10 +383,7 @@ pub(super) async fn autosave(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(profile) = drafts_target(uri.path(), "save") else {
-        return invalid_request();
-    };
-    let Some(key) = idempotency_key(&headers) else {
+    let Some((profile, key)) = keyed_plan(&uri, "save", &headers) else {
         return invalid_request();
     };
     let request = match crate::problem::parse_body::<SavePlanChoicesRequest>(&body) {

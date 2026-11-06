@@ -10,9 +10,10 @@ use windows_sys::Win32::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             GetSecurityInfo, SDDL_REVISION_1, SE_OBJECT_TYPE,
         },
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetTokenInformation,
-        INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-        SetKernelObjectSecurity, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
+        CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+        GetTokenInformation, INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SECURITY_MAX_SID_SIZE, SetKernelObjectSecurity, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
+        TokenOwner, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     },
     System::{
         SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
@@ -82,6 +83,18 @@ impl TokenSid {
 pub(crate) struct CurrentUser {
     user: TokenSid,
     owner: TokenSid,
+    /// SYSTEM and Administrators: the accounts that, like root on Unix, can
+    /// take any file. Only [`Self::owns_privately_or_root`] accepts them.
+    root: [Vec<u64>; 2],
+}
+
+fn well_known(kind: i32) -> io::Result<Vec<u64>> {
+    let mut buffer = vec![0u64; (SECURITY_MAX_SID_SIZE as usize).div_ceil(8)];
+    let mut size = SECURITY_MAX_SID_SIZE;
+    check(unsafe {
+        CreateWellKnownSid(kind, ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size)
+    })?;
+    Ok(buffer)
 }
 
 impl CurrentUser {
@@ -89,6 +102,10 @@ impl CurrentUser {
         Ok(Self {
             user: TokenSid::query(TokenUser)?,
             owner: TokenSid::query(TokenOwner)?,
+            root: [
+                well_known(WinLocalSystemSid)?,
+                well_known(WinBuiltinAdministratorsSid)?,
+            ],
         })
     }
 
@@ -169,11 +186,33 @@ impl CurrentUser {
     }
 
     /// True when [`Self::owns`] holds and every ACE that grants access names
-    /// this user: no other account can open `object`.
+    /// this user: no other account can open `object`. Logs and the private
+    /// pipe get a DACL that grants only this user, so they must keep it.
     pub(crate) fn owns_privately(
         &self,
         object: &impl AsRawHandle,
         kind: SE_OBJECT_TYPE,
+    ) -> io::Result<bool> {
+        self.grants_only(object, kind, &[])
+    }
+
+    /// [`Self::owns_privately`], but ACEs for SYSTEM and Administrators are
+    /// also allowed. Only the desktop account pin uses it: the user's profile
+    /// folder passes inherited ACEs for both to the file, and both are
+    /// root-equivalent, as root can read a 0600 file on Unix.
+    pub(crate) fn owns_privately_or_root(
+        &self,
+        object: &impl AsRawHandle,
+        kind: SE_OBJECT_TYPE,
+    ) -> io::Result<bool> {
+        self.grants_only(object, kind, &self.root)
+    }
+
+    fn grants_only(
+        &self,
+        object: &impl AsRawHandle,
+        kind: SE_OBJECT_TYPE,
+        others: &[Vec<u64>],
     ) -> io::Result<bool> {
         let (owner, dacl, _descriptor) = Self::security(object, kind)?;
         if owner.is_null() || !self.may_own(owner) || dacl.is_null() {
@@ -202,7 +241,8 @@ impl CurrentUser {
             }
             let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
             let sid = unsafe { ptr::addr_of_mut!((*allowed).SidStart) }.cast::<c_void>();
-            if unsafe { EqualSid(sid, self.user()) } == 0 {
+            let named = |known: &Vec<u64>| unsafe { EqualSid(sid, known.as_ptr() as PSID) } != 0;
+            if unsafe { EqualSid(sid, self.user()) } == 0 && !others.iter().any(named) {
                 return Ok(false);
             }
         }
@@ -247,6 +287,10 @@ impl SavedDacl {
 
 /// A self-relative security descriptor from [`CurrentUser::private_descriptor`].
 pub(crate) struct PrivateDescriptor(Local);
+
+// The descriptor is immutable once built and only read by the system.
+unsafe impl Send for PrivateDescriptor {}
+unsafe impl Sync for PrivateDescriptor {}
 
 impl PrivateDescriptor {
     pub(crate) fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {

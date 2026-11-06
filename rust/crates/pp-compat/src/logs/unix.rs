@@ -143,7 +143,7 @@ pub(super) fn rename(directory: &Directory, from: &str, to: &str) -> std::io::Re
 }
 
 #[cfg(test)]
-pub(super) mod test_support {
+pub(crate) mod test_support {
     use std::{os::unix::fs::PermissionsExt, path::Path};
 
     pub(crate) fn identity(file: &std::fs::File) -> (u64, u64) {

@@ -38,12 +38,18 @@ async function setupFromParent(): Promise<unknown> {
   });
 }
 
+// Unix kills this process's whole group. On Windows this process only exits: the core
+// terminates what is left in its Job Object after reaping it, and the kernel ends the job
+// when the core closes the job handle.
+const exitDesktop = () =>
+  process.platform === "win32" ? process.exit(0) : process.kill(-process.pid, "SIGKILL");
+
 let stopping = false;
 let runtime: Awaited<ReturnType<typeof import("./app.js").startServer>> | null = null;
 const stop = async () => {
   if (stopping) return;
   stopping = true;
-  const deadline = setTimeout(() => process.kill(-process.pid, "SIGKILL"), 9000);
+  const deadline = setTimeout(exitDesktop, 9000);
   try {
     const setup = desktopContext();
     if (runtime && setup) {
@@ -61,7 +67,7 @@ const stop = async () => {
     clearTimeout(deadline);
     const setup = desktopContext();
     if (setup && process.ppid !== setup.parent_pid) releaseOrphanedDesktopOwner(setup);
-    process.kill(-process.pid, "SIGKILL");
+    exitDesktop();
   }
 };
 
@@ -93,7 +99,8 @@ try {
   config.databaseUrl = null;
   config.deployMode = "self-host";
   runtime = await startServer(config);
-  chmodSync(setup.socket_path, 0o600);
+  // A Windows named pipe has the DACL the core gave it.
+  if (process.platform !== "win32") chmodSync(setup.socket_path, 0o600);
   if (stopping) await stop();
 } catch {
   process.stderr.write('{"event":"desktop_start_failed"}\n');

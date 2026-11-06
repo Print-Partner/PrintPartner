@@ -1,6 +1,7 @@
+use crate::Child;
 use anyhow::{Context, Result};
 use std::{process::ExitStatus, time::Duration};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::ChildStdin;
 
 pub const SIGTERM_GRACE: Duration = Duration::from_secs(10);
 const GROUP_REAP: Duration = Duration::from_secs(2);
@@ -15,6 +16,8 @@ pub enum GroupExit {
 pub struct GroupStopReport {
     pub exit: GroupExit,
     pub eof_closed: bool,
+    /// SIGTERM went to the group. Always false on Windows, where the closed
+    /// stdin is the only stop request.
     pub sigterm_sent: bool,
     pub grace_exhausted: bool,
     pub elapsed: Duration,
@@ -27,28 +30,19 @@ pub fn restarts_allowed(shutting_down: bool) -> bool {
 }
 
 pub fn process_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    let result = unsafe { libc::kill(pid as i32, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    crate::platform::process_alive(pid)
 }
 
+/// No process of the child's group is left: its Unix process group, or its
+/// Windows Job Object.
 pub fn process_group_absent(pid: u32) -> bool {
-    !group_alive(pid)
+    !crate::platform::group_alive(pid)
 }
 
-/// Returns whether SIGKILL was delivered to an existing process group.
+/// Returns whether an existing group was killed: SIGKILL to the Unix process
+/// group, or termination of the Windows Job Object.
 pub fn reap_process_group(pid: u32) -> bool {
-    pid > 0 && unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0
-}
-
-fn group_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    let result = unsafe { libc::kill(-(pid as i32), 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    crate::platform::kill_group(pid)
 }
 
 pub fn reject_and_arm_eof(
@@ -91,8 +85,7 @@ pub async fn drive_shutdown_group(
     if let Some(status) = already_exited {
         exit = Some(GroupExit::Observed(status));
     } else {
-        reap_process_group_signal(pid, libc::SIGTERM);
-        sigterm_sent = true;
+        sigterm_sent = crate::platform::request_group_stop(pid);
         match tokio::time::timeout(grace, child.wait()).await {
             Ok(Ok(status)) => exit = Some(GroupExit::Observed(status)),
             Ok(Err(error)) => {
@@ -138,16 +131,10 @@ pub async fn drive_shutdown_group(
     })
 }
 
-fn reap_process_group_signal(pid: u32, signal: i32) {
-    if pid > 0 {
-        unsafe { libc::kill(-(pid as i32), signal) };
-    }
-}
-
 async fn wait_until_group_absent(pid: u32) -> Result<()> {
     tokio::time::timeout(GROUP_REAP, async {
         loop {
-            if !group_alive(pid) {
+            if process_group_absent(pid) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

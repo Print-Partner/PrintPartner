@@ -2,10 +2,12 @@ import { Navigate, type RouteObject } from "react-router";
 import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
 import { BuildsList } from "./builds/BuildsList";
 import { FarmScreen } from "./farm/FarmScreen";
+import { MatchReview } from "./farm/MatchReview";
 import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
 import { DestinationScreen, NotFound, StatesSpecimen } from "./screen/screens";
 import { PRINTER_DISPLAY_STATES, PrinterStatus } from "./status/PrinterStatus";
+import { TodayScreen } from "./today/TodayScreen";
 import { TypeSpecimen } from "./type/TypeSpecimen";
 
 function PrinterStates() {
@@ -34,6 +36,8 @@ export const routes: RouteObject[] = [
         element:
           d.path === "/builds" ? (
             <BuildsList />
+          ) : d.path === "/today" ? (
+            <TodayScreen />
           ) : d.path === "/farm" ? (
             <FarmScreen />
           ) : (
@@ -51,6 +55,7 @@ export const routes: RouteObject[] = [
           })),
         ],
       },
+      { path: "farm/match", element: <MatchReview /> },
       { path: "states/printers", element: <PrinterStates /> },
       { path: "states/:kind", element: <StatesSpecimen /> },
       { path: "type", element: <TypeSpecimen /> },

@@ -128,7 +128,10 @@ reads the farm settings plus the open (not archived) Builds' included part
 files, the Required units the prints name, each Build's current accepted
 Plates and the file names of checked-off print jobs, in the same deferred
 transaction. It writes nothing, and no job, timer or other route confirms a
-suggestion: the operator claims a print through Checkoff (GRE-1169). The
+suggestion. The operator claims a print through Checkoff (GRE-1169) or the
+Match prints review (`/farm/match`, GRE-1181), which claims a checked print for
+its suggested Build or dismisses it only when its group's Apply is pressed, through
+`POST /api/v2/printer-checkoff/unattributed/{id}/claim` and `.../dismiss`. The
 launcher test checks that production rows and settings are value-identical
 after the read.
 

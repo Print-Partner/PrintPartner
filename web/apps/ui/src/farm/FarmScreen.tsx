@@ -1,6 +1,7 @@
 import type { FarmPrinterList } from "@print-partner/rust-client";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
+import { Link } from "react-router";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
@@ -218,6 +219,11 @@ export function FarmScreen() {
           )}
           {stream.printers && <DetailsNotice query={printers} live={stream.status === "live"} />}
           <PrintersTable rows={rows} />
+          <p>
+            <Link to="/farm/match" className="pp-link">
+              Match prints the app could not match
+            </Link>
+          </p>
         </>
       )}
       empty={{ message: "No printers yet. Printers you add in Settings appear here." }}

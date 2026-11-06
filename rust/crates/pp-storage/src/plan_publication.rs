@@ -14,10 +14,10 @@ use crate::{
 };
 use anyhow::{Result, anyhow, ensure};
 use model::{Assignment, Prepared};
-pub use pp_contracts::publication::Outcome;
+pub use pp_contracts::publication::{ApplyRequest, Outcome};
 use pp_contracts::{
     autosave::{ApplyPlanDraftReceipt, PositiveId},
-    publication::{ApplyRequest, ReconciliationReason, UnmappableLink},
+    publication::{ReconciliationReason, UnmappableLink},
 };
 use rusqlite::{Connection, Transaction, params};
 use serde_json::{Value, json};
@@ -157,6 +157,10 @@ impl WriterOwner {
     }
 }
 impl PublicationClient {
+    pub(crate) fn new(shared: Arc<Shared>, policy: auth::AuthPolicy) -> Self {
+        Self { shared, policy }
+    }
+
     pub fn apply(
         &self,
         input: PublicationCommand,

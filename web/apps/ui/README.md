@@ -189,9 +189,11 @@ so a print that ends or a link that drops shows up without a reload.
   with its old receipt. The alert's Retry rereads the results first and follows
   the same rule while every sent unit is listed; once the reread no longer lists
   one, the write landed, so Retry sends the same request and key and the core replays the
-  receipt and Undo. Picks that only overlap a burst that got no answer reread
-  the results first: if that burst landed, it is resent with its key so the core
-  replays its receipt and Undo; if not, the picks go as a new burst. If the
+  receipt and Undo. Picks that only overlap bursts that got no answer reread
+  the results first: if one of those bursts landed, it is resent with its key so
+  the core replays its receipt and Undo; if none did, the picks the reread still
+  lists as pending go as a new burst. A replayed receipt of a burst undone
+  elsewhere leaves the picks picked. If the
   reread fails, nothing is sent, an alert says so, and that burst keeps its key,
   so confirming again can still reach its receipt and Undo. A reread cannot
   tell a write that never landed from one that landed and was undone elsewhere

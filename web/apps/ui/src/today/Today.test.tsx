@@ -1024,6 +1024,61 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
 
+  it("keeps the picks when a resent key replays a burst undone elsewhere", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED(), loseFirstAnswers: 3 });
+    const waiting = structuredClone(core.state.results);
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    core.state.results = waiting;
+    core.state.marked = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    await screen.findByText(/^Nothing was marked on Voron 2\.4/);
+    expect(unit("bracket.stl unit 2")).toHaveProperty("checked", true);
+    expect(core.state.marked).toBe(0);
+  });
+
+  it("replays whichever overlapping lost burst landed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    let neverLand = 3;
+    let loseAnswer = 0;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/printer-checkoff/verify-batch" && neverLand > 0) {
+        neverLand -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      const answer = await real(path, init);
+      if (path === "/api/v2/printer-checkoff/verify-batch" && loseAnswer > 0) {
+        loseAnswer -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      return answer;
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    loseAnswer = 3;
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Trident bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(loseAnswer).toBe(0));
+    expect(core.state.marked).toBe(2);
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    expect(await screen.findByText("Confirmed 2 units from Trident.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
+    expect(core.state.marked).toBe(2);
+  });
+
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ results: SHARED() });

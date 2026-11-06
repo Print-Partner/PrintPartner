@@ -2674,9 +2674,10 @@ seeds a lone surrogate and cuts a note across a pair to cover both directions.
 
 Not ported here: the route itself and its webhooks, unattributed-print claiming
 after verify, the Spoolman deduction Node runs after the response (and the
-storage-owned deduction intent GRE-411 adds), manual complete, unattributed claim
-and dismiss, file assignments, remote-file recheck, and the monitor that moves
-links to `awaiting_verify`. Those stay on Node until their whole operation moves.
+storage-owned deduction intent GRE-411 adds), file assignments, remote-file
+recheck, and the monitor that moves links to `awaiting_verify`. Those stay on
+Node until their whole operation moves. Manual complete moved with GRE-1169
+(below).
 
 The Node fixture replays the services on a copy of
 `rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db` with
@@ -2685,6 +2686,33 @@ synthetic links; generated IDs and times are normalized.
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/printer-checkoff-verify/generate.mjs --check
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_61_checkoff)'
+```
+
+### Manual complete (GRE-1169)
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the Checkoff
+router mounts Node's `POST /printer-checkoff/{id}/manual-complete` (and its
+`/api/v1` and `/api/v2` aliases) behind the same loopback, Host, Origin and
+credential gate as the bursts.
+`pp-storage::checkoff_progress::verify::manual_complete` runs in one writer
+transaction and matches Node:
+
+- 404 `Tracked print not found` when the link id is unknown.
+- 409 `This print is monitored by its printer host` unless the link's
+  `integration_id` is `manual:<printer_id>`.
+- 409 `Tracked print is no longer waiting to finish` unless the link is
+  `watching`.
+- Otherwise the link becomes `awaiting_verify` with `host_outcome: success`,
+  `saw_active: true`, `last_progress: 100` and a fresh `completed_at`, moves
+  to the end of the list before the terminal-history trim, and the response is
+  `{ link }`. Nothing is checked off; the operator still verifies the print.
+
+Node's handler has no side effects after the write, so this route owns the
+whole operation. Single-link verify and dismiss stay on Node: they deduct
+Spoolman stock, send webhooks and claim unattributed prints after the write.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_single_http
 ```
 
 ### Checkoff bursts (GRE-1090)

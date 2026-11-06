@@ -3,12 +3,12 @@ import { moonrakerHostSnapshot } from "./moonraker-host-snapshot.js";
 import {
   acquireDataDirectory,
   desktopContext,
-  dialDesktopPipe,
   desktopPrincipal,
   desktopRateLimit,
   mappedDesktopTenant,
   mappedDesktopDatabaseAvailable,
   registerDesktopBoundary,
+  serveDesktopPipe,
 } from "./desktop-context.js";
 import { rustOwnedCopy } from "./db/rust-owned.js";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -690,10 +690,7 @@ export async function startServer(config: ServerConfig) {
       app = await buildApp(config, ports);
       const desktop = desktopContext();
       if (desktop && process.platform === "win32") {
-        let stopDialing = () => {};
-        app.addHook("onClose", async () => stopDialing());
-        await app.ready();
-        stopDialing = dialDesktopPipe(app.server, desktop.socket_path);
+        await serveDesktopPipe(app, desktop.socket_path);
       } else {
         await app.listen(
           desktop ? { path: desktop.socket_path } : { host: config.host, port: config.port },

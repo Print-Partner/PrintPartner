@@ -1,5 +1,9 @@
+import { afterEach } from "vitest";
+import { FakeSocket, resetSockets } from "./testSockets";
+
 // jsdom has no layout, so it lacks the two browser APIs cmdk calls: ResizeObserver for
 // the list height and scrollIntoView for the active option. Node-environment tests skip.
+// The frame opens /ws/printers; tests get a fake socket instead of a network connection.
 if (typeof window !== "undefined") {
   window.ResizeObserver ??= class {
     observe() {}
@@ -7,4 +11,6 @@ if (typeof window !== "undefined") {
     disconnect() {}
   };
   Element.prototype.scrollIntoView ??= function scrollIntoView() {};
+  window.WebSocket = FakeSocket as unknown as typeof WebSocket;
+  afterEach(resetSockets);
 }

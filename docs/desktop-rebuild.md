@@ -19,7 +19,7 @@ Plan feature controls on the Plan page use the same capability gate. Each featur
 
 When `PP_DESKTOP_REBUILD` is exactly `1` or `true`, Node printer queue suggestions honor each queued item's Plan overrides. Plan choices override user choices, then default to false. Profileless items inherit user choices. The global `get_farm_status` operation through MCP and the assistant stays user-scoped. Authenticated `GET` and `PATCH /plans/:id/features` are available at the root, `/api/v1`, and `/api/v2` only with these exact flag values. A patch value of `null` clears the Plan override and restores inheritance. Optional modules gain Node admission guards in separate slices.
 
-With these exact flag values, Bambu and Spoolman inspection at `GET /api/v1/integrations/:id/status`, `GET /api/v1/integrations/:id/devices`, and `POST /api/v1/integrations/:id/test` requires the current tenant's matching `bambu` or `spoolman` choice to be enabled. Default or explicit opt-out returns 403 `FEATURE_DISABLED`. Malformed stored choices return 500 `FEATURE_TOGGLES_INVALID`. Admission runs after authentication and before status execution or adapter calls, including cached status reads. These tenant-global routes ignore Plan overrides. Saved connector metadata and editing remain available. Other integration types and flag-off inspection retain their existing behavior.
+With these exact flag values, Bambu and Spoolman inspection at `GET /api/v1/integrations/:id/status`, `GET /api/v1/integrations/:id/devices`, and `POST /api/v1/integrations/:id/test` requires the current tenant's matching `bambu` or `spoolman` choice to be enabled. Default or explicit opt-out returns 403 `FEATURE_DISABLED`. Malformed stored choices return 500 `FEATURE_TOGGLES_INVALID`. Admission runs after authentication and before status execution or adapter calls, including cached status reads. These tenant-global routes ignore Plan overrides. Saved connector metadata and editing remain available. Other integration types and flag-off inspection retain their existing behavior. This admission is Node's. The Rust-only runtime has no Bambu or Spoolman adapter yet: its `POST /api/v1/integrations/:id/test` answers 501 for those types without reading feature choices or contacting the host ([Printer-host reads](printer-host-reads.md)).
 
 With these exact flag values, `POST /printer-send-queue` and its `/api/v1` alias check Bambu feature access when the linked host is Bambu. The selected owned Plan override takes precedence over the tenant's Bambu choice, then defaults to off. Admission follows Plan ownership and fleet-host resolution. Default or explicit off returns 403 `FEATURE_DISABLED`; corrupt tenant or selected Plan choices return 500 `FEATURE_TOGGLES_INVALID` before enqueue. Enabled Bambu retains the existing 400 unsupported-host response. This adds no Bambu transport. Moonraker, PrusaLink, and flag-off admission retain their existing behavior.
 
@@ -152,6 +152,19 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
     --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
     -E 'binary(farm_log) | test(farm_log)'
+  ```
+
+- Printer-host reads (GRE-360): `GET /printers/{id}/capabilities`, `/files`
+  and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
+  Moonraker host on demand through the gateway's driver. They are read-only on
+  the printer: no upload, print start or retry. PrusaLink and Bambu read as
+  having no capabilities until their drivers are composed. See
+  [Printer-host reads](printer-host-reads.md).
+
+  ```sh
+  cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
+    --features pp-core/desktop_rebuild,pp-api/desktop_rebuild \
+    -E 'test(ticket_t_21)'
   ```
 
 - The gateway listener is loopback only and passes the peer address to the
@@ -2949,7 +2962,8 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   `WorkingDraftClient::rebase_and_select`. A rebased or existing draft is selected
   and answered as recompute's is. As in Node's `rebaseFailure`, a source whose
   lifecycle or digest changed is 409 `draft_changed` with the source's workspace,
-  and an open source is 409 `not_open` with its workspace. `merge_conflicts`
+  and a source whose state differs from `expected_source_state` is 409
+  `not_open` with its workspace. `merge_conflicts`
   is 422 `{ code, conflicts }`. `base_unchanged` is 409, alongside recompute's
   409s and 422s.
 - `POST /plans/{id}/drafts/{draft_id}/apply` (Accept) takes `ApplyRequest` and runs

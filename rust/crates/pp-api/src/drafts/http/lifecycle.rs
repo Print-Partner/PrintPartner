@@ -69,16 +69,11 @@ pub(super) async fn rebase(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some((profile, draft_id)) = write_target(uri.path(), "rebase") else {
-        return invalid_request();
-    };
-    let Some(key) = idempotency_key(&headers).map(str::to_owned) else {
-        return invalid_request();
-    };
-    let request = match crate::problem::parse_body::<RebaseRequest>(&body) {
-        Ok(request) => request,
-        Err(errors) => return invalid_body(&body, errors),
-    };
+    let (profile, draft_id, key, request) =
+        match keyed_body::<RebaseRequest>(&uri, "rebase", &headers, &body) {
+            Ok(parts) => parts,
+            Err(refused) => return *refused,
+        };
     let credential = presented.into_credential();
     let work = move |client: &WorkingDraftClient, flag, wait| {
         let args = RebaseArgs {
@@ -93,6 +88,22 @@ pub(super) async fn rebase(
         Ok(RebaseWorkspaceOutcome::Refused(outcome)) => present_rebase(outcome),
         Err(error) => write_failure(error, "rebase", profile, Some(draft_id)),
     }
+}
+
+/// The Plan, draft, `Idempotency-Key` and typed body of a keyed draft write.
+/// A bad target or key is 400 before the body is parsed.
+fn keyed_body<T: serde::de::DeserializeOwned>(
+    uri: &Uri,
+    action: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<(PositiveId, PositiveId, String, T), Box<Response>> {
+    let (profile, draft_id) =
+        write_target(uri.path(), action).ok_or_else(|| Box::new(invalid_request()))?;
+    let key = idempotency_key(headers).ok_or_else(|| Box::new(invalid_request()))?;
+    let request = crate::problem::parse_body::<T>(body)
+        .map_err(|errors| Box::new(invalid_body(body, errors)))?;
+    Ok((profile, draft_id, key.to_owned(), request))
 }
 
 /// Node's `rebaseFailure` through `sendFailure`, for refusals that carry no
@@ -130,16 +141,11 @@ pub(super) async fn apply(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some((profile, draft_id)) = write_target(uri.path(), "apply") else {
-        return invalid_request();
-    };
-    let Some(key) = idempotency_key(&headers).map(str::to_owned) else {
-        return invalid_request();
-    };
-    let request = match crate::problem::parse_body::<ApplyRequest>(&body) {
-        Ok(request) => request,
-        Err(errors) => return invalid_body(&body, errors),
-    };
+    let (profile, draft_id, key, request) =
+        match keyed_body::<ApplyRequest>(&uri, "apply", &headers, &body) {
+            Ok(parts) => parts,
+            Err(refused) => return *refused,
+        };
     let accept = Accept {
         presented,
         profile,

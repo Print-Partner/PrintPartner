@@ -692,6 +692,18 @@ fn archived(snapshot: &Snapshot) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
+/// An import against the Accepted Plan the caller observed.
+fn import_current(tx: &Transaction<'_>, tenant: &str, import: Import, repos: &Path) -> Outcome {
+    let snapshot = match current(tx, tenant, &import.expected, repos)? {
+        Ok(snapshot) => snapshot,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if archived(&snapshot) {
+        return Ok(Err(Refusal::Archived));
+    }
+    import_counts(tx, tenant, &snapshot, import)
+}
+
 fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let (mut snapshot, token, change) = match op {
         Op::Verify { link_id, body } => {
@@ -713,16 +725,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::BurstStatus { key } => return lookup::burst_status(tx, tenant, &key),
         #[cfg(feature = "desktop_rebuild")]
         Op::CheckoffLink { id } => return lookup::link(tx, tenant, &id),
-        Op::Import(import) => {
-            let snapshot = match current(tx, tenant, &import.expected, repos)? {
-                Ok(snapshot) => snapshot,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            if archived(&snapshot) {
-                return Ok(Err(Refusal::Archived));
-            }
-            return import_counts(tx, tenant, &snapshot, import);
-        }
+        Op::Import(import) => return import_current(tx, tenant, import, repos),
         Op::Unit {
             target: Target::Token { expected, token },
             change,

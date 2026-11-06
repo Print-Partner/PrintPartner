@@ -264,6 +264,7 @@ fn with_fleet(f: &Fixture) {
         {"id": "a1", "name": "Tight", "bed_width_mm": 10, "bed_depth_mm": 10, "bed_height_mm": 10, "margin_mm": 5},
         {"id": "h1", "name": "Hex", "bed_width_mm": "0xC8", "bed_depth_mm": [180], "bed_height_mm": "0b1010", "margin_mm": []},
         {"id": "n1", "name": "Pair", "bed_width_mm": [1, 2], "bed_height_mm": 10},
+        {"id": "z9", "name": "Huge", "bed_width_mm": 3_000_000, "bed_height_mm": 200},
     ]);
     f.sql()
         .execute(
@@ -317,6 +318,7 @@ fn ticket_t_61_plates_read_lists_the_head_layout_and_complete_printers() {
         json!([
             {"id": "h1", "name": "Hex", "model": "Hex", "bed_width_um": 200_000, "bed_depth_um": 180_000, "bed_height_um": 10_000, "margin_um": 0},
             {"id": "p2", "name": "Second", "model": "MK", "bed_width_um": 200_000, "bed_depth_um": 180_000, "bed_height_um": 150_000, "margin_um": 5000},
+            {"id": "z9", "name": "Huge", "model": "Huge", "bed_width_um": 3_000_000_000_i64, "bed_depth_um": 210_000, "bed_height_um": 200_000, "margin_um": 4000},
         ]),
         "JavaScript Number() reads radix strings and arrays; printers without a build height, with margins filling the bed or with NaN sizes are not offered"
     );
@@ -533,6 +535,17 @@ fn ticket_t_61_plates_read_and_transfer_to_a_new_printer_plate() {
         ),
         422,
         "printer_not_found",
+    );
+    refused(
+        &edit(
+            &f,
+            UnitEdit::Transfer,
+            FIRST,
+            2,
+            json!({"target_printer_id": "z9"}),
+        ),
+        422,
+        "outside_build_area",
     );
     refused(
         &edit(

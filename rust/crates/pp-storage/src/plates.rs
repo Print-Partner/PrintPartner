@@ -15,8 +15,8 @@ use crate::{
     Envelope, Shared, WriterOwner, auth, domain_events,
     production::{
         layout::{
-            LayoutFailure, Placement, PlateInput, PrinterGeometry, Spacing, UnitInput,
-            ValidatedPlate, layout_digest, validate_plates,
+            LayoutFailure, MAX_ACCEPTED_PLATES, Placement, PlateInput, PrinterGeometry, Spacing,
+            UnitInput, ValidatedPlate, layout_digest, validate_plates,
         },
         model::{
             Digest, DimensionUm, MAX_JS_SAFE_INTEGER, MAX_PLATE_UM, OffsetUm, PlateId,
@@ -949,7 +949,13 @@ fn transfer(
         (Target::Plate(id), _) => id,
         (Target::Printer(_), Some(printer)) => {
             let Some(geometry) = printer.geometry else {
-                return Ok(Decision::Refused(Refusal::InvalidUnits));
+                let emptied = source.is_some_and(|p| p.input.units.len() == 1);
+                let count = plates.len() + 1 - usize::from(emptied);
+                return Ok(Decision::Refused(if count > MAX_ACCEPTED_PLATES {
+                    Refusal::InvalidUnits
+                } else {
+                    Refusal::Geometry("outside_build_area")
+                }));
             };
             let mut bytes = [0u8; 16];
             getrandom::fill(&mut bytes).map_err(|_| anyhow!("Entropy unavailable"))?;

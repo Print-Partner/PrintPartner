@@ -46,7 +46,7 @@ Cargo features:
 
 - `tests/wire_props.rs`: `proptest` properties for the bounded values.
 - `tests/gcode_objects_parity.rs`: replays the TypeScript goldens in `fixtures/parity/gcode-objects` at the repo root. Regenerate them with `node fixtures/parity/gcode-objects/generate.mjs`.
-- `tests/print_file_parity.rs` (`desktop_rebuild`): replays the Node classifier goldens in `fixtures/parity/print-file-classification/cases.json` (82 inputs: the Node tests plus truncations, ZIP64 records, hostile ZIP entries and G-code edges). Regenerate from `web/` with `node --conditions=development --import tsx ../fixtures/parity/print-file-classification/generate.mjs`; `--check` verifies without writing.
+- `tests/print_file_parity.rs` (`desktop_rebuild`): replays the Node classifier goldens in `fixtures/parity/print-file-classification/cases.json` (85 inputs: the Node tests plus truncations, ZIP64 records, hostile ZIP entries and G-code edges). Regenerate from `web/` with `node --conditions=development --import tsx ../fixtures/parity/print-file-classification/generate.mjs`; `--check` verifies without writing.
 - `src/features/tests.rs`: unit tests for feature resolution; they run only with `desktop_rebuild`.
 
 ```sh

@@ -304,7 +304,8 @@ fn scan_three_mf(bytes: &[u8]) -> Result<ThreeMfKind, Rejection> {
         if (external >> 16) & 0xf000 == 0xa000 {
             return Err(ArchiveUnsafeEntry);
         }
-        let raw = String::from_utf8_lossy(&bytes[name_start..name_end]);
+        let decoded = String::from_utf8_lossy(&bytes[name_start..name_end]);
+        let raw = decoded.strip_prefix('\u{feff}').unwrap_or(&decoded);
         let directory = raw.ends_with('/');
         let name = raw.strip_suffix('/').unwrap_or(&raw).to_lowercase();
         if entry_name_is_unsafe(&name) {

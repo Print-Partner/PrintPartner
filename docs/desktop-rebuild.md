@@ -2842,9 +2842,9 @@ only, with Node's caps (2,000 entries, 1,024-byte names, 64 MiB per entry,
 never inflates an entry or parses XML. Binary G-code is checked structurally
 (header, version, checksum type, block chain) and never decoded.
 
-`fixtures/parity/print-file-classification/cases.json` holds 82 inputs and
+`fixtures/parity/print-file-classification/cases.json` holds 85 inputs and
 the Node classifier's answers: the Node unit-test inputs plus truncated 3MF and
-binary G-code, ZIP64 records, hostile ZIP entries and G-code edges.
+binary G-code, ZIP64 records, hostile ZIP entries (including names with a leading byte-order mark, which Node's `TextDecoder` drops) and G-code edges.
 
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/print-file-classification/generate.mjs --check

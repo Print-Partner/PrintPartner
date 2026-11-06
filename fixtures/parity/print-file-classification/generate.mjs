@@ -98,6 +98,10 @@ const cases = [
   ["3mf-ini-slicer-state", threeMf({ "3D/Objects/part.model": MODEL_XML, "Metadata/printer.ini": "x=1" })],
   ["3mf-directory-entry-only", hostileZip([{ name: "3D/3dmodel.model/" }])],
   ["3mf-unicode-name", hostileZip([{ name: "3D/Σ模型.model" }])],
+  // TextDecoder drops one leading byte-order mark, so these names lose it.
+  ["3mf-bom-model-name", hostileZip([{ name: "\ufeff3D/3dmodel.model" }])],
+  ["zip-bom-absolute-name", hostileZip([{ name: "\ufeff/plate.gcode" }])],
+  ["3mf-double-bom-name", hostileZip([{ name: "\ufeff\ufeff3D/3dmodel.model" }])],
   ["3mf-invalid-utf8-name", (() => {
     const zip = hostileZip([{ name: "3D/aa.model" }]);
     zip[30 + 46 + 3] = 0xff;

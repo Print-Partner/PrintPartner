@@ -120,7 +120,6 @@ async fn gre_1197_header_save_writes_the_open_draft_once_and_never_reaches_the_b
 
     // A retry under the same key writes nothing and answers the saved header.
     let after = logical_database(&server.sql());
-    let events = draft_events(&server);
     assert_eq!(
         json_reply(
             put(
@@ -134,26 +133,6 @@ async fn gre_1197_header_save_writes_the_open_draft_once_and_never_reaches_the_b
         saved
     );
     assert_eq!(logical_database(&server.sql()), after);
-    // The same header under a new key that observed no header leaves the
-    // header and the events alone; only that key's receipt is stored.
-    assert_eq!(
-        json_reply(
-            put(
-                &server,
-                Some("h-2"),
-                &body(open.clone(), Value::Null, acme())
-            ),
-            200
-        )
-        .await,
-        saved
-    );
-    assert_eq!(
-        draft_header(&server, 2),
-        Some(("Renamed build".into(), Some("2026-12-01".into()), 1))
-    );
-    assert_eq!(draft_events(&server), events);
-    let after = logical_database(&server.sql());
 
     // A different header that observed an older version is refused.
     let other = header("Other", Value::Null, Value::Null, Value::Null);
@@ -204,6 +183,27 @@ async fn gre_1197_header_receipts_replay_the_first_answer_and_refuse_a_reused_ke
     )
     .await;
     let other = header("Other", Value::Null, Value::Null, Value::Null);
+
+    // The same header under a new key that observed no header leaves the
+    // header and the events alone; only that key's receipt is stored.
+    let events = draft_events(&server);
+    assert_eq!(
+        json_reply(
+            put(
+                &server,
+                Some("k-0"),
+                &body(open.clone(), Value::Null, acme())
+            ),
+            200
+        )
+        .await,
+        first
+    );
+    assert_eq!(
+        draft_header(&server, 2),
+        Some(("Renamed build".into(), Some("2026-12-01".into()), 1))
+    );
+    assert_eq!(draft_events(&server), events);
 
     // The same key with a different payload is refused, even when it names
     // the current header version, and nothing is written.

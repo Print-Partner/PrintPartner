@@ -979,7 +979,6 @@ mod codegen {
         vec![ready, unresolved]
     }
 
-    /// An unchanged draft, and a changed one with every check filled.
     /// Draft header reads, saves and save bodies (GRE-1197).
     fn header_fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let full = BuildHeader {
@@ -1058,6 +1057,7 @@ mod codegen {
         ])
     }
 
+    /// An unchanged draft, and a changed one with every check filled.
     fn previews() -> Vec<(&'static str, AcceptPreview)> {
         let revision = |revision_id: Option<i64>| PreviewRevision {
             draft_id: MAX_SAFE,

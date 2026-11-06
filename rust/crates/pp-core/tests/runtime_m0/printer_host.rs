@@ -432,6 +432,25 @@ async fn streams(origin: &str, cookie: &str) {
     let snap = stream(origin, cookie, "/printers/p-prusa/cameras/view?id=cam1").await;
     assert_eq!(snap, (200, private(13), b"jpeg-snapshot".to_vec()));
 
+    // The gateway keeps the routes' guards against printer-served pages.
+    let (_, headers, _) = request(
+        origin,
+        "/printers/p-moon/files/content?path=plates%2Fbracket.gcode",
+        "GET",
+        Some(cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    for (name, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("content-security-policy", "default-src 'none'; sandbox"),
+        ("content-disposition", "attachment"),
+    ] {
+        assert_eq!(headers[name], value, "{name}");
+    }
+
     for (path, code, detail) in [
         (
             "p-moon/files/content?path=plates%2Fmissing.gcode",

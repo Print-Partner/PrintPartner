@@ -62,6 +62,7 @@ impl PrinterHostPort for Fake {
         let answer = answer_with(&printer, || match path.as_str() {
             "plates/plate.gcode" => Some(reply(200, "application/octet-stream")),
             "plates/removed.gcode" => Some(reply(404, "application/json")),
+            "plates/page.html" => Some(reply(200, "text/html")),
             "plates/broken.gcode" => Some(reply(500, "application/json")),
             _ => None,
         });
@@ -72,8 +73,12 @@ impl PrinterHostPort for Fake {
             .lock()
             .unwrap()
             .push(format!("camera_view {printer} {camera}"));
-        let answer = answer_with(&printer, || {
-            (camera == "0").then(|| reply(200, "image/jpeg"))
+        let answer = answer_with(&printer, || match camera.as_str() {
+            "0" => Some(reply(200, "image/jpeg")),
+            "mjpeg" => Some(reply(200, "multipart/x-mixed-replace; boundary=frame")),
+            "page" => Some(reply(200, "text/html")),
+            "svg" => Some(reply(200, "image/svg+xml")),
+            _ => None,
         });
         Box::pin(async move { answer })
     }
@@ -483,4 +488,58 @@ async fn ticket_t_21_streamed_routes_keep_nodes_twenty_per_minute_budgets() {
         200
     );
     assert_eq!(fake.calls.lock().unwrap().len(), 21);
+}
+
+/// The headers that keep a printer's reply from running as a page of the app.
+async fn guarded(response: Response) -> [Option<String>; 4] {
+    let header = |name| {
+        response
+            .headers()
+            .get(name)
+            .map(|value: &HeaderValue| value.to_str().unwrap().to_owned())
+    };
+    [
+        header(header::CONTENT_TYPE),
+        header(header::X_CONTENT_TYPE_OPTIONS),
+        header(header::CONTENT_SECURITY_POLICY),
+        header(header::CONTENT_DISPOSITION),
+    ]
+}
+
+#[tokio::test]
+async fn ticket_t_21_streamed_replies_never_run_as_pages_of_the_app() {
+    let (app, _) = app();
+    let sandbox = || Some("default-src 'none'; sandbox".to_owned());
+    let nosniff = || Some("nosniff".to_owned());
+    let file = file_content(
+        State(app.clone()),
+        Path("moon".into()),
+        content(Some("plates/page.html"), None),
+    )
+    .await;
+    assert_eq!(
+        guarded(file).await,
+        [
+            Some("text/html".into()),
+            nosniff(),
+            sandbox(),
+            Some("attachment".into())
+        ]
+    );
+    for (camera, served) in [
+        ("0", "image/jpeg"),
+        ("mjpeg", "multipart/x-mixed-replace; boundary=frame"),
+        ("page", "application/octet-stream"),
+        ("svg", "application/octet-stream"),
+    ] {
+        let query = Query(CameraQuery {
+            id: Some(camera.into()),
+        });
+        let view = camera_view(State(app.clone()), Path("moon".into()), query).await;
+        assert_eq!(
+            guarded(view).await,
+            [Some(served.into()), nosniff(), sandbox(), None],
+            "{camera}"
+        );
+    }
 }

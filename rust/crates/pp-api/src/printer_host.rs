@@ -288,10 +288,32 @@ async fn cameras(State(app): State<App>, Path(id): Path<String>) -> Response {
     }
 }
 
+/// What a proxied reply is served as.
+#[derive(Clone, Copy)]
+enum Served {
+    /// A print file: a download, never a page.
+    File,
+    /// A camera view for an `<img>`: only image and MJPEG types pass.
+    Camera,
+}
+
+/// Camera types a browser renders as an image without running script.
+const CAMERA_TYPES: [&str; 5] = [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "multipart/x-mixed-replace",
+];
+
 /// Node's `sendUpstreamResponse`: a 2xx reply streams through with its
 /// type and length and `private, no-store`; anything else is refused and its
-/// body is never read.
-fn proxied(stream: HostStream) -> Response {
+/// body is never read. Unlike Node, the reply comes from Print Partner's own
+/// origin with `nosniff` and a sandboxing CSP, a print file as an
+/// attachment, and a camera type outside `CAMERA_TYPES` as
+/// `application/octet-stream`, so printer-controlled HTML or SVG never runs
+/// as a page of the app.
+fn proxied(stream: HostStream, served: Served) -> Response {
     match stream.status {
         200..=299 => {}
         404 => return failure(StatusCode::NOT_FOUND, "Printer resource not found"),
@@ -304,11 +326,36 @@ fn proxied(stream: HostStream) -> Response {
     }
     let mut response = Response::new(stream.body);
     let headers = response.headers_mut();
-    if let Some(value) = stream
-        .content_type
-        .and_then(|value| HeaderValue::from_str(&value).ok())
-    {
+    let content_type = stream.content_type.filter(|value| match served {
+        Served::File => true,
+        Served::Camera => {
+            let essence = value.split(';').next().unwrap_or_default().trim();
+            CAMERA_TYPES
+                .iter()
+                .any(|allowed| essence.eq_ignore_ascii_case(allowed))
+        }
+    });
+    let content_type = match (content_type, served) {
+        (Some(value), _) => HeaderValue::from_str(&value).ok(),
+        (None, Served::Camera) => Some(HeaderValue::from_static("application/octet-stream")),
+        (None, Served::File) => None,
+    };
+    if let Some(value) = content_type {
         headers.insert(header::CONTENT_TYPE, value);
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    if let Served::File = served {
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment"),
+        );
     }
     if let Some(length) = stream.content_length {
         headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
@@ -354,7 +401,7 @@ async fn file_content(
         );
     };
     match app.port.file(id, path).await {
-        HostAnswer::Ok(Some(stream)) => proxied(stream),
+        HostAnswer::Ok(Some(stream)) => proxied(stream, Served::File),
         HostAnswer::Ok(None) => failure(StatusCode::NOT_FOUND, "Printer file not found"),
         other => refusal(other, || {
             failure(
@@ -385,7 +432,7 @@ async fn camera_view(
     }
     let missing = || failure(StatusCode::NOT_FOUND, "Printer camera not found");
     match app.port.camera_view(id, camera.to_owned()).await {
-        HostAnswer::Ok(Some(stream)) => proxied(stream),
+        HostAnswer::Ok(Some(stream)) => proxied(stream, Served::Camera),
         HostAnswer::Ok(None) => missing(),
         other => refusal(other, missing),
     }

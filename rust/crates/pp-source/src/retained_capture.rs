@@ -175,7 +175,9 @@ pub struct CaptureCandidate {
 /// below it is open, so a capture holds no handle below its phase directory
 /// (`candidate`, `frozen` or `deleting`) and reopens entries by name, checking
 /// this identity before it trusts or removes them. NTFS file IDs carry a
-/// sequence number, so a freed ID is not handed to a new file. Unix inode
+/// sequence number, so a freed ID is not handed to a new file; the vault
+/// refuses to open on any other Windows file system, such as FAT or exFAT,
+/// whose IDs come from reusable slots. Unix inode
 /// numbers can be reused once freed, so on Unix the entry also keeps an open
 /// descriptor that pins the inode; Unix renames ignore open descriptors.
 struct Owned {
@@ -460,8 +462,18 @@ impl RetainedOwnedInput {
 impl RetainedCaptureVault {
     pub fn open(data_dir: &Path) -> Result<Self> {
         let data = Directory::open_root(data_dir)?;
+        let parent = data.child(VAULT, true)?;
+        // Windows captures prove ownership by identity alone (see `Owned`),
+        // which holds only where freed identities are never reused.
+        #[cfg(windows)]
+        if !parent.identities_are_never_reused()? {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "retained capture on Windows needs an NTFS data volume",
+            )));
+        }
         Ok(Self {
-            parent: data.child(VAULT, true)?,
+            parent,
             trace: Trace::default(),
         })
     }

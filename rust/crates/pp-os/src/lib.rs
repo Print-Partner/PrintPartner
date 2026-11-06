@@ -300,6 +300,16 @@ impl Dir {
         self.inner.status()
     }
 
+    /// Whether the volume never gives a freed [`Identity`] to a new entry, so
+    /// an identity recorded without an open handle still names the same
+    /// object later. NTFS file IDs carry a sequence number that changes when
+    /// an ID is reused, so this is `true` on NTFS. FAT, exFAT and other
+    /// Windows file systems derive IDs from reusable slots, and Unix reuses
+    /// freed inode numbers, so both report `false`.
+    pub fn identities_are_never_reused(&self) -> io::Result<bool> {
+        self.inner.identities_are_never_reused()
+    }
+
     /// Inspect the entry `name` without following it.
     pub fn status_nofollow(&self, name: &str) -> io::Result<Status> {
         self.inner.status_nofollow(checked_name(name)?)

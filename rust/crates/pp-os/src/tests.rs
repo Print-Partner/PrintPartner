@@ -142,6 +142,17 @@ fn locks_exclude_a_second_open_file_until_unlocked() {
 }
 
 #[test]
+fn identity_reuse_follows_the_file_system() {
+    let root = scratch();
+    let reused = !Dir::open(root.path())
+        .unwrap()
+        .identities_are_never_reused()
+        .unwrap();
+    // Hosted Windows runners use NTFS.
+    assert_eq!(reused, cfg!(unix));
+}
+
+#[test]
 fn private_directories_are_created_once() {
     let root = scratch();
     let nested = root.path().join("a").join("b");

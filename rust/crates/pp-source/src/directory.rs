@@ -201,6 +201,11 @@ impl Directory {
         Ok(self.0.status()?.identity())
     }
 
+    #[cfg(windows)]
+    pub(crate) fn identities_are_never_reused(&self) -> Result<bool> {
+        Ok(self.0.identities_are_never_reused()?)
+    }
+
     /// Removes the regular file `name` only while it is still `owned`.
     pub(crate) fn remove_owned_file(&self, name: &str, owned: Identity) -> Result<()> {
         self.require_owned_file(name, owned)?;

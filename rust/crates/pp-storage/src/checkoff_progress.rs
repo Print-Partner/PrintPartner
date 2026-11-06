@@ -25,7 +25,7 @@ use std::{
 mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
-mod links;
+pub(crate) mod links;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
 mod unattributed;

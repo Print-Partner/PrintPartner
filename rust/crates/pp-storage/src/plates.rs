@@ -1,7 +1,8 @@
 //! Managed accepted Plates (GRE-419), as Node's `routes/accepted-plates.ts`
 //! and `db/accepted-plates.ts` serve them: the Plate workspace read, and the
-//! Plate-revision compare-and-set edits that move, pin, unplace and transfer a
-//! Required unit or restore the revision an arrange replaced.
+//! Plate-revision compare-and-set writes: initialize, arrange, and the edits
+//! that move, pin, unplace and transfer a Required unit or restore the
+//! revision an arrange replaced.
 //!
 //! Every edit checks the Accepted Plan the caller observed and the Plate
 //! revision it expects, then writes a new immutable revision, moves the head
@@ -12,6 +13,8 @@
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
 
 mod arrange;
+mod artifacts;
+mod initialize;
 
 use crate::{
     Envelope, Shared, WriterOwner, auth, domain_events,
@@ -74,6 +77,11 @@ pub enum Request {
     },
     /// `POST /plans/{profile}/plates/arrange`.
     Arrange {
+        profile: String,
+        body: Value,
+    },
+    /// `POST /plans/{profile}/plates/initialize`.
+    Initialize {
         profile: String,
         body: Value,
     },
@@ -220,6 +228,7 @@ enum Op {
         cmd: Expected,
         all: bool,
     },
+    Initialize(initialize::Command),
 }
 struct Expected {
     profile: i64,
@@ -305,6 +314,9 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
                 all,
             })
         }),
+        Request::Initialize { profile, body } => profile_id(&profile)
+            .and_then(|profile| initialize::Command::parse(profile, &body))
+            .map(Op::Initialize),
         Request::Unit {
             edit,
             profile,
@@ -487,6 +499,7 @@ fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Result<Respo
     match op {
         Op::Read(profile) => read(tx, tenant, profile, repos),
         Op::Arrange { cmd, all } => arrange::run(tx, tenant, repos, &cmd, all),
+        Op::Initialize(cmd) => initialize::run(tx, tenant, repos, &cmd),
         Op::Edit { cmd, edit } => {
             let restore = matches!(edit, Edit::Restore { .. });
             let profile = cmd.profile;
@@ -687,6 +700,33 @@ fn layout(
 }
 
 /// The tenant's Ready Accepted Plan, or why it cannot be read.
+/// The visible Build's current Accepted Plan for a Plate write, or Node's
+/// answer when there is none: `empty_plan`, 404 or 409.
+fn accepted_for_write(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    repos: &Path,
+) -> Result<std::result::Result<Snapshot, Response>> {
+    if !visible(tx, tenant, profile)? {
+        return Ok(Err(Refusal::ProfileNotFound.response()));
+    }
+    Ok(match accepted(tx, tenant, profile, repos)? {
+        Ok(snapshot) => Ok(snapshot),
+        Err(AcceptedRead::Empty { .. }) => Err(Response {
+            status: 200,
+            body: json!({"kind": "empty_plan"}),
+        }),
+        Err(AcceptedRead::Missing) => Err(Refusal::ProfileNotFound.response()),
+        Err(AcceptedRead::CompatibilityDirty | AcceptedRead::Uninitialized) => {
+            Err(Refusal::StateUnavailable.response())
+        }
+        Err(AcceptedRead::IntegrityFailure { .. } | AcceptedRead::Ready { .. }) => {
+            bail!(Integrity("accepted"))
+        }
+    })
+}
+
 fn accepted(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -765,20 +805,40 @@ fn edit_plates(
     if digest == layout_digest(&plates, LAYOUT_FORMAT) {
         return unchanged;
     }
-    write_revision(tx, tenant, cmd, &validated, &digest, None).map(Ok)
+    write_revision(
+        tx,
+        tenant,
+        cmd,
+        &validated,
+        &digest,
+        HeadWrite::Advance(None),
+    )
+    .map(Ok)
 }
 
-/// Writes `validated` as the next immutable revision, moves the head from
-/// the expected revision and appends `plates.revision_changed`. `undo_from`
-/// records the revision an arrange of every unit replaced, for restore.
+/// How a new revision becomes the head.
+enum HeadWrite {
+    /// The Build's first head (initialize before any revision).
+    Create,
+    /// Compare-and-set from `Expected::revision`, recording the revision an
+    /// arrange of every unit replaced, for restore.
+    Advance(Option<i64>),
+}
+
+/// Writes `validated` as the next immutable revision, makes it the head and
+/// appends `plates.revision_changed`.
 fn write_revision(
     tx: &Transaction<'_>,
     tenant: &str,
     cmd: &Expected,
     validated: &[ValidatedPlate],
     digest: &Digest,
-    undo_from: Option<i64>,
+    head: HeadWrite,
 ) -> Result<(i64, i64)> {
+    let undo_from = match head {
+        HeadWrite::Create => None,
+        HeadWrite::Advance(undo_from) => undo_from,
+    };
     let number: i64 = tx.query_row(
         "SELECT COALESCE(MAX(revision_number),0)+1 FROM accepted_plate_revisions WHERE tenant_id=?1 AND profile_id=?2",
         params![tenant, cmd.profile],
@@ -841,13 +901,17 @@ fn write_revision(
             )?;
         }
     }
-    ensure!(
-        tx.execute(
+    let moved = match head {
+        HeadWrite::Create => tx.execute(
+            "INSERT INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES(?1,?2,?3)",
+            params![tenant, cmd.profile, id],
+        )?,
+        HeadWrite::Advance(_) => tx.execute(
             "UPDATE accepted_plate_heads SET current_revision_id=?1 WHERE tenant_id=?2 AND profile_id=?3 AND current_revision_id=?4",
             params![id, tenant, cmd.profile, cmd.revision],
-        )? == 1,
-        "Accepted Plate head update failed"
-    );
+        )?,
+    };
+    ensure!(moved == 1, "Accepted Plate head update failed");
     domain_events::append(
         tx,
         tenant,

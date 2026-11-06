@@ -16,7 +16,7 @@ use crate::production::{
 };
 
 /// The unit and Printer Node names when a unit cannot fit.
-type TooLarge = (RequiredUnitToken, String);
+pub(super) type TooLarge = (RequiredUnitToken, String);
 
 pub(super) fn run(
     tx: &Transaction<'_>,
@@ -25,31 +25,18 @@ pub(super) fn run(
     cmd: &Expected,
     all: bool,
 ) -> Result<Response> {
-    let empty_plan = || {
-        Ok(Response {
-            status: 200,
-            body: json!({"kind": "empty_plan"}),
-        })
-    };
-    if !visible(tx, tenant, cmd.profile)? {
-        return Ok(Refusal::ProfileNotFound.response());
-    }
-    let snapshot = match accepted(tx, tenant, cmd.profile, repos)? {
+    let snapshot = match accepted_for_write(tx, tenant, cmd.profile, repos)? {
         Ok(snapshot) => snapshot,
-        Err(AcceptedRead::Empty { .. }) => return empty_plan(),
-        Err(AcceptedRead::Missing) => return Ok(Refusal::ProfileNotFound.response()),
-        Err(AcceptedRead::CompatibilityDirty | AcceptedRead::Uninitialized) => {
-            return Ok(Refusal::StateUnavailable.response());
-        }
-        Err(AcceptedRead::IntegrityFailure { .. } | AcceptedRead::Ready { .. }) => {
-            bail!(Integrity("accepted"))
-        }
+        Err(response) => return Ok(response),
     };
     let basis = Basis::of(&snapshot);
     let units = required(&snapshot);
     let stored = stored_layout(tx, tenant, cmd.profile, &basis, &snapshot)?;
     if units.is_empty() {
-        return empty_plan();
+        return Ok(Response {
+            status: 200,
+            body: json!({"kind": "empty_plan"}),
+        });
     }
     let Stored::Ready(current, plates) = stored else {
         return Ok(Refusal::RevisionChanged.response());
@@ -60,14 +47,7 @@ pub(super) fn run(
     if current.id != cmd.revision {
         return Ok(Refusal::RevisionChanged.response());
     }
-    let setup: Option<String> = tx
-        .query_row(
-            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
-            params![tenant, format!("production_setup:{}", cmd.profile)],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let rules = stored_rules(setup.as_deref(), cmd.profile);
+    let rules = production_rules(tx, tenant, cmd.profile)?;
     let next = match arranged(all, &basis, &plates, &units, &rules)? {
         Ok(next) => next,
         Err(too_large) => return Ok(unit_too_large(too_large)),
@@ -77,15 +57,7 @@ pub(super) fn run(
     }
     let validated = match validate_plates(next, &tokens(&snapshot)?, false, Spacing::Clearance) {
         Ok(validated) => validated,
-        Err(LayoutFailure::InvalidUnits) => {
-            return Ok(failure(
-                422,
-                "invalid_units",
-                "Accepted Plate units are invalid",
-                Map::new(),
-            ));
-        }
-        Err(other) => return Ok(Refusal::from(other).response()),
+        Err(refused) => return Ok(refused_layout(refused)),
     };
     let digest = layout_digest(&validated, LAYOUT_FORMAT);
     if digest.as_str() != current.layout_digest {
@@ -95,7 +67,7 @@ pub(super) fn run(
             cmd,
             &validated,
             &digest,
-            all.then_some(current.id),
+            HeadWrite::Advance(all.then_some(current.id)),
         )?;
     }
     let mut response = read(tx, tenant, cmd.profile, repos)?;
@@ -105,7 +77,7 @@ pub(super) fn run(
 
 /// Node answers with the packed layout, so each Plate lists its units in
 /// packing order rather than the stored order a read uses.
-fn in_packing_order(response: &mut Response, validated: &[ValidatedPlate]) {
+pub(super) fn in_packing_order(response: &mut Response, validated: &[ValidatedPlate]) {
     let Some(views) = response.body["plates"].as_array_mut() else {
         return;
     };
@@ -126,7 +98,21 @@ fn in_packing_order(response: &mut Response, validated: &[ValidatedPlate]) {
     }
 }
 
-fn unit_too_large((token, printer): TooLarge) -> Response {
+/// A packed layout validation refuses, with the detail Node's initialize and
+/// arrange routes give `invalid_units`.
+pub(super) fn refused_layout(refused: LayoutFailure) -> Response {
+    match refused {
+        LayoutFailure::InvalidUnits => failure(
+            422,
+            "invalid_units",
+            "Accepted Plate units are invalid",
+            Map::new(),
+        ),
+        other => Refusal::from(other).response(),
+    }
+}
+
+pub(super) fn unit_too_large((token, printer): TooLarge) -> Response {
     let mut fields = Map::new();
     fields.insert("token".into(), json!(token.as_str()));
     fields.insert("printer_id".into(), json!(printer));
@@ -138,6 +124,44 @@ fn unit_too_large((token, printer): TooLarge) -> Response {
     )
 }
 
+/// The Build's stored Production setup grouping rules.
+pub(super) fn production_rules(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+) -> Result<Vec<GroupRule>> {
+    let setup: Option<String> = tx
+        .query_row(
+            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
+            params![tenant, format!("production_setup:{profile}")],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(stored_rules(setup.as_deref(), profile))
+}
+
+/// A unit with the setup fields Node's `productionPackingBuckets` groups by.
+pub(super) fn group_unit(
+    part: &graph::Part,
+    row: &graph::Unit,
+    value: PackingUnit,
+) -> GroupUnit<PackingUnit> {
+    let setup = setup_unit(part, row);
+    let text = |key: &str| setup.get(key).and_then(Value::as_str).map(str::to_owned);
+    GroupUnit {
+        value: value.clone(),
+        token: value.token,
+        object_name: text("object_name").unwrap_or_default(),
+        filename: text("filename").unwrap_or_default(),
+        source_directory: text("source_directory").unwrap_or_default(),
+        source_layer: text("source_layer").unwrap_or_default(),
+        role: text("role").unwrap_or_default(),
+        filament_color_id: text("filament_color_id"),
+        filament_custom_hex: text("filament_custom_hex"),
+        material_type: None,
+    }
+}
+
 fn packing(unit: &UnitInput) -> PackingUnit {
     PackingUnit {
         token: unit.token.clone(),
@@ -147,7 +171,7 @@ fn packing(unit: &UnitInput) -> PackingUnit {
     }
 }
 
-fn placed(packed: PackedUnit, placement: Placement, pinned: bool) -> UnitInput {
+pub(super) fn placed(packed: PackedUnit, placement: Placement, pinned: bool) -> UnitInput {
     UnitInput {
         token: packed.unit.token,
         x_um: packed.x_um,
@@ -161,7 +185,7 @@ fn placed(packed: PackedUnit, placement: Placement, pinned: bool) -> UnitInput {
 }
 
 /// Node's `plateId` for a Plate an arrange adds.
-fn new_plate_id(basis: &Basis, printer: &str, units: &[PackedUnit]) -> Result<PlateId> {
+pub(super) fn new_plate_id(basis: &Basis, printer: &str, units: &[PackedUnit]) -> Result<PlateId> {
     let accepted = AcceptedPlanBasis {
         profile_id: basis.profile_id as u64,
         plan_version: basis.plan_version as u64,
@@ -277,20 +301,7 @@ fn repacked(
             let (part, row) = by_token
                 .get(unit.token.as_str())
                 .ok_or_else(|| anyhow!(Integrity("layout")))?;
-            let setup = setup_unit(part, row);
-            let text = |key: &str| setup.get(key).and_then(Value::as_str).map(str::to_owned);
-            members.push(GroupUnit {
-                value: packing(unit),
-                token: unit.token.clone(),
-                object_name: text("object_name").unwrap_or_default(),
-                filename: text("filename").unwrap_or_default(),
-                source_directory: text("source_directory").unwrap_or_default(),
-                source_layer: text("source_layer").unwrap_or_default(),
-                role: text("role").unwrap_or_default(),
-                filament_color_id: text("filament_color_id"),
-                filament_custom_hex: text("filament_custom_hex"),
-                material_type: None,
-            });
+            members.push(group_unit(part, row, packing(unit)));
         }
         let mut index = 0;
         for bucket in grouping_buckets(&members, rules) {

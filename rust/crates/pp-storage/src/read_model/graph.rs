@@ -120,7 +120,7 @@ pub struct Input {
     pub snapshot_root: Option<String>,
     pub source_synced_at: Option<String>,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Artifact {
     Tracked {

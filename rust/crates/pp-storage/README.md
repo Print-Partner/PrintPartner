@@ -57,6 +57,7 @@ Modules behind `#[cfg(feature = "desktop_rebuild")]`:
 | `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). |
 | `domain_events` | `domain_events`, `domain_events_with_policy` (`DomainEventsClient`): the transactional domain event log, cursor reads and live wake-ups ([Domain events](../../../docs/domain-events.md)). |
 | `features` | `features_with_policy` (`FeatureClient`), `View`, `Scope`. |
+| `send_queue` | The `printer_send_queue` table (schema 44). `WriterOwner::open` moves a clean legacy `printer.send_queue` setting into it and marks `sending` items interrupted; readers read the table, or the setting while it exists ([Send queue storage](../../../docs/send-queue.md)). `INTERRUPTED_ERROR`. |
 | `uploads` | `imports` (`ImportClient`), `import_repos_root`. |
 | `source_scan`, `source_sync` | Local scan and sync job state, driven through `ServerWorkerClient` (`observe_local_scan`, `open_source_sync`, ...). |
 | `native_secrets` | `native_secret_migration` (`NativeSecretMigrationClient`). |

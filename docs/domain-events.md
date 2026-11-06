@@ -19,14 +19,14 @@ sequence number, so cursor order is commit order.
 | `plan.revision_accepted` | 1 | `plan_publication::publish_in_transaction`, used by Accept and draft save-and-accept | `build`, the Build ID, version = new accepted Plan version | `{"revision_id": N}` |
 | `plan.draft_changed` | 1 | `working_drafts` and `required_units`, on every draft write: creation (recompute, rebase, and the new draft a save-and-accept creates), a Part edit, abandon, the other open drafts a recompute abandons, a rebase source it closes, the draft a save closes, the draft an autosave (`POST .../drafts/save`) writes, and every Required-unit selection (`PUT .../reconciliation`, the selection after an edit, recompute or rebase, and the selection inside a draft save or autosave). Accept consumes the draft and writes `plan.revision_accepted` instead | `build`, the Build ID, no version | `{"draft_id": N}` |
 | `checkoff.unattributed_resolved` | 1 | `checkoff_progress`, when an unattributed print is claimed (`POST .../unattributed/{id}/claim`, with its new printer Checkoff link, the claimed prints and the plan binding) or dismissed (`.../dismiss`) | `unattributed_print`, the print ID, no version | `{"profile_id": N, "link_id": "..."}` for a claim, `{"dismissed": true}` for a dismiss |
-| `plates.revision_changed` | 1 | `plates`, when a Plate edit (move, pin, unplace, transfer), an arrange or a restore writes a new accepted Plate revision and moves the head | `build`, the Build ID, no version | `{"plate_revision_id": N}` |
+| `plates.revision_changed` | 1 | `plates`, when an initialize, a Plate edit (move, pin, unplace, transfer), an arrange or a restore writes a new accepted Plate revision and moves the head | `build`, the Build ID, no version | `{"plate_revision_id": N}` |
 
 An idempotent replay of an Accept (`Existing` or `AlreadyApplied`) writes no
 event, and neither does a reconciliation replayed by its key or one refused or
 rolled back. Refused Checkoff requests write none, and neither does a Checkoff
 request that changes no row, such as assembling an unprinted unit,
-repeating a completion, or importing the counts already stored. A Plate edit, arrange or restore that is refused, or whose
-layout equals the head's, writes none.
+repeating a completion, or importing the counts already stored. A Plate initialize, edit, arrange or restore that is refused,
+or whose layout equals the head's, writes none.
 
 Each event carries a cursor, type, schema version, aggregate type, ID and
 version (`null` when the aggregate has none), a random 32-hex operation ID,
@@ -41,18 +41,16 @@ tells a client which queries to reload.
 The 41 to 42 step installs `domain_events` and its `(tenant, seq)` index from
 `domain_events/schema.sql`, validates them and stamps 42 in one transaction. A
 database below 42 with these objects is refused by preflight, before the
-opening copy or any write. The step only adds tables, so it writes no
-`pre-schema42.db` copy of its own: an upgrade from 41 keeps the copy taken at
-open, and an upgrade from an older version keeps the copies of its earlier
-steps. That keeps the interrupted-upgrade bound in `backup_retention.rs`
-(`LAST_COPIED_STEP`) at 41.
+opening copy or any write. Since schema 43 (GRE-1197) moved `LAST_COPIED_STEP`
+to 43, step 42 also writes a `pre-schema42.db` copy before it installs.
 
-An open from 41 skips backup retention. It may be the restart of an upgrade
+An open from 41 with no run marker skips backup retention. A release before
+schema 43 wrote no marker, so such an open may be the restart of an upgrade
 from 37 that stopped after step 41 committed, with copies 38 to 41 already on
-disk. Its opening `pre-schema42.db` would be a fifth name, and keeping three
-older copies would delete `pre-schema38.db`, the untouched schema-37 input.
-The compile-time assert beside `LAST_COPIED_STEP` stops a schema 43 step
-from landing without a run marker that restores retention for these opens.
+disk; pruning would delete `pre-schema38.db`, the untouched schema-37 input.
+Every other restart reads the marker in `backups/pre-schema-run`, and retention
+keeps the copy it names. [Draft header fields](draft-headers.md#schema-43)
+describes the marker.
 
 ## Cursors and reads
 

@@ -27,6 +27,7 @@ use std::{
 
 pub mod autosave;
 pub(crate) mod diff;
+pub mod header;
 pub mod observation;
 mod preparation;
 #[cfg(test)]
@@ -65,6 +66,10 @@ pub enum Request {
     },
     /// What accepting the draft would change, through Accept's own checks.
     AcceptPreview {
+        draft_id: PositiveId,
+    },
+    /// The draft's proposed header beside the Build's current one (GRE-1197).
+    Header {
         draft_id: PositiveId,
     },
 }
@@ -307,6 +312,9 @@ pub enum Outcome {
     },
     AcceptPreview {
         preview: crate::plan_publication::preview::PreviewOutcome,
+    },
+    Header {
+        header: header::HeaderView,
     },
     ProfileNotFound,
     DraftNotFound,
@@ -590,6 +598,12 @@ enum Operation {
         key: String,
         observations: Observations,
         reply: mpsc::Sender<Result<autosave::AutosaveOutcome>>,
+    },
+    Header {
+        request: header::SaveDraftHeaderRequest,
+        key: String,
+        observations: Observations,
+        reply: mpsc::Sender<Result<header::HeaderOutcome>>,
     },
 }
 enum RecomputeReply {
@@ -962,6 +976,10 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<O
             draft_origin(&draft.header)?;
             Outcome::Workspace { workspace: required_units::view::workspace(&tx, &tenant, &profile_row, &draft)? }
         }
+        Request::Header { draft_id } => {
+            let Some(draft) = load(draft_id)? else { return Ok(Outcome::DraftNotFound); };
+            Outcome::Header { header: header::view(&tx, &tenant, profile, num(&draft.header, "id")?)? }
+        }
         Request::AcceptPreview { draft_id } => Outcome::AcceptPreview {
             preview: crate::plan_publication::preview::preview(&tx, &tenant, profile, i64::try_from(draft_id.get())?)?,
         },
@@ -1020,6 +1038,26 @@ pub(super) fn write(
             let _ = reply.send(autosave::execute(
                 connection,
                 autosave::Args {
+                    credential: &credential,
+                    policy,
+                    profile,
+                    request: &request,
+                    key: &key,
+                    observations: &observations,
+                    cancelled: &cancelled,
+                },
+                admission,
+            ));
+        }
+        Operation::Header {
+            request,
+            key,
+            observations,
+            reply,
+        } => {
+            let _ = reply.send(header::execute(
+                connection,
+                header::Args {
                     credential: &credential,
                     policy,
                     profile,
@@ -1567,10 +1605,18 @@ fn recompute(
             "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE tenant_id=? AND profile_id=? AND state='open'",
             params![tenant, profile],
         )?;
-        for draft in open {
+        for &draft in &open {
             crate::domain_events::draft_changed(tx, &tenant, profile, draft)?;
         }
-        let id = insert_snapshot(tx, &tenant, &actor, profile, key, &prepared, None)?;
+        let id = insert_snapshot(
+            tx,
+            &tenant,
+            &actor,
+            profile,
+            key,
+            &prepared,
+            open.last().copied().map_or(Origin::New, Origin::Draft),
+        )?;
         let created = draft(tx, &tenant, profile, id)?
             .ok_or_else(|| anyhow!("Created Plan draft is missing"))?;
         Ok(RecomputeOutcome::Created {
@@ -1758,6 +1804,14 @@ fn carry_open_edits(
     Ok(changed)
 }
 
+/// The draft a new draft row comes from. Every origin but `New` carries that
+/// draft's header row forward.
+enum Origin<'a> {
+    New,
+    Draft(i64),
+    Rebased(&'a rebase::Source<'a>),
+}
+
 fn insert_snapshot(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -1765,8 +1819,13 @@ fn insert_snapshot(
     profile: i64,
     key: &str,
     prepared: &preparation::PreparedDraftSnapshot,
-    rebased_from: Option<&rebase::Source<'_>>,
+    origin: Origin<'_>,
 ) -> Result<i64> {
+    let (rebased_from, header_from) = match origin {
+        Origin::New => (None, None),
+        Origin::Draft(id) => (None, Some(id)),
+        Origin::Rebased(source) => (Some(source), Some(source.id)),
+    };
     tx.execute(
         "INSERT INTO plan_drafts (tenant_id,profile_id,base_revision_id,base_plan_version,state,digest_format,snapshot_digest,created_by,idempotency_key,created_at,rebased_from_draft_id,rebased_from_lifecycle_version,rebased_from_snapshot_digest) VALUES (?,?,?,?,'open','plan-draft-v1',?,?,?,?,?,?,?)",
         params![
@@ -1785,6 +1844,9 @@ fn insert_snapshot(
     )?;
     let id = tx.last_insert_rowid();
     crate::domain_events::draft_changed(tx, tenant, profile, id)?;
+    if let Some(from) = header_from {
+        header::carry(tx, tenant, from, id)?;
+    }
     for input in &prepared.capture.inputs {
         let mut values = vec![tenant.to_owned().into(), id.into()];
         for field in model::INPUT_FIELDS {
@@ -1846,6 +1908,7 @@ impl Outcome {
                     serde_json::to_vec(&refused)?,
                 ),
             },
+            Self::Header { header } => ("header", Some("header"), serde_json::to_vec(&header)?),
             Self::ProfileNotFound => ("profile_not_found", None, Vec::new()),
             Self::DraftNotFound => ("draft_not_found", None, Vec::new()),
         };

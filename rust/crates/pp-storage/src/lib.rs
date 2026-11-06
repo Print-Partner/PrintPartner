@@ -44,6 +44,8 @@ pub mod read_model;
 pub mod required_units;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
+pub mod send_queue;
+#[cfg(feature = "desktop_rebuild")]
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_sync;
@@ -609,6 +611,8 @@ impl WriterOwner {
         }
         let (mut connection, ready) = schema::initialize(&path, version, seed_timestamp)?;
         jobs::recover(&mut connection)?;
+        #[cfg(feature = "desktop_rebuild")]
+        send_queue::recover(&mut connection)?;
         #[cfg(feature = "desktop_rebuild")]
         let event_feed = domain_events::Feed::open(&connection)?;
         let mut idle = Vec::new();

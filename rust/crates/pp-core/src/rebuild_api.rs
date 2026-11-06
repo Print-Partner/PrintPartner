@@ -14,6 +14,7 @@ use pp_api::{
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpHttpConfig, mcp_router},
     planning::planning_router,
+    plates::plates_router,
     workflow::workflow_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
@@ -168,8 +169,8 @@ pub fn router(
 }
 
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
-/// Plan Checkoff and Spoolman shortfalls, Build history, Build planning and
-/// decisions, Build workflow and task feed, legal documents, custom filaments,
+/// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
+/// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
 /// the domain event stream and key-only MCP) from one
 /// `WriterOwner` when the stored rebuild setting is on. Aliases share that
 /// owner. Returns `None` before creating clients or mounting when the setting
@@ -202,6 +203,7 @@ pub fn read_router(
         admin_files,
         events_client,
         checkoff_client,
+        plates_client,
     ) = {
         let guard = owner
             .lock()
@@ -218,6 +220,7 @@ pub fn read_router(
             guard.admin_files()?,
             guard.domain_events_with_policy(policy)?,
             guard.checkoff_progress_with_policy(policy)?,
+            guard.accepted_plates(policy)?,
         )
     };
     // `_drafts` is opened with the bundle for GRE-818 parity; draft HTTP uses
@@ -262,6 +265,10 @@ pub fn read_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         checkoff_client,
     );
+    let plates = plates_router(
+        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        plates_client,
+    );
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
@@ -279,6 +286,7 @@ pub fn read_router(
             .merge(admin)
             .merge(events)
             .merge(checkoff)
+            .merge(plates)
             .merge(mcp),
     ))
 }
@@ -656,6 +664,11 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "SaveDraftHeaderRequest" => {
+                json!({"expected_base": {"revision_id": null, "plan_version": 0},
+                "expected_draft": null, "expected_header_version": null,
+                "header": {"name": "Client contract", "order_number": null, "customer": null, "due_date": null}})
+            }
             "ReconcileDraftRequest" => {
                 json!({"expected_snapshot_digest": "0".repeat(64), "decisions": []})
             }
@@ -806,8 +819,10 @@ mod tests {
             // A manual burst names an Accepted Plan basis no stored Build has.
             let handler_stale =
                 status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
+            // A draft header save on a Build with no layers can prepare no draft.
+            let handler_no_layers = status == 422 && body["code"] == "no_layers";
             assert!(
-                status == 200 || handler_not_found || handler_stale,
+                status == 200 || handler_not_found || handler_stale || handler_no_layers,
                 "{} {path}: {status} {body}",
                 route.method
             );

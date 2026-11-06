@@ -2945,3 +2945,6 @@ async fn ticket_t_61_autosave_refusals_write_nothing() {
     assert!(draft_events(&server).is_empty());
     server.close().await;
 }
+
+#[path = "tests/header.rs"]
+mod header;

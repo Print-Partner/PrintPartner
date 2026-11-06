@@ -350,13 +350,24 @@ pub(super) fn apply(
 /// A manual burst or its undo.
 pub(super) enum Op {
     Burst(ManualBurst),
-    Undo { profile: i64, token: String },
+    Undo {
+        profile: i64,
+        token: String,
+    },
+    /// `POST /printer-checkoff/{id}/manual-complete`: a print on a printer
+    /// tracked by hand has finished (GRE-1169).
+    #[cfg(feature = "desktop_rebuild")]
+    CompleteLink {
+        link_id: String,
+    },
 }
 
 pub(super) fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     match op {
         Op::Burst(burst) => apply(tx, tenant, burst, repos),
         Op::Undo { profile, token } => undo(tx, tenant, profile, &token, repos),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::CompleteLink { link_id } => super::verify::manual_complete(tx, tenant, &link_id),
     }
 }
 

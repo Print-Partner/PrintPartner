@@ -1,7 +1,8 @@
 #![cfg(feature = "desktop_rebuild")]
 //! T-61-plates (GRE-1189, GRE-1184): the Plate read and the Plate-revision
 //! edits on a disposable copy of the Node-written `accepted-plate-node.db`, through the
-//! public storage client, across a writer restart.
+//! public storage client, across a writer restart. The same client serves
+//! the Build's Production setup (GRE-421), replayed against Node's golden.
 use pp_storage::{
     Limits, WriterOwner,
     auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy},
@@ -777,16 +778,131 @@ fn table_state(sql: &Connection) -> Vec<(String, String)> {
 /// writes exactly what Node did, and the Plate rows end equal.
 #[test]
 fn ticket_t_61_plates_arrange_matches_node() {
+    replay_golden(
+        include_str!("../../../../fixtures/parity/plates-arrange/node.json"),
+        "plates-arrange/generate.mjs",
+    );
+}
+
+/// Node's initialize golden (`fixtures/parity/plates-initialize`): each phase
+/// writes the STL files its Parts are pinned to, seeds the re-pinned digests
+/// and the Printer fleet, then every initialize answers and writes exactly
+/// what Node did, and the Plate rows end equal.
+#[test]
+fn ticket_t_61_plates_initialize_matches_node() {
+    replay_golden(
+        include_str!("../../../../fixtures/parity/plates-initialize/node.json"),
+        "plates-initialize/generate.mjs",
+    );
+}
+
+/// Node's production-setup golden (`fixtures/parity/production-setup`): every GET and
+/// PATCH answers, changes the tables and stores the setup text exactly as
+/// Node did. Node registers no `/api/v2` alias, and its body parser answers
+/// unparseable and oversized bodies; `plates_http` covers both at the router.
+#[test]
+fn ticket_t_61_build_lifecycle_production_setup_matches_node() {
     let golden: Value = serde_json::from_str(include_str!(
-        "../../../../fixtures/parity/plates-arrange/node.json"
+        "../../../../fixtures/parity/production-setup/node.json"
     ))
     .unwrap();
     assert!(
         golden["generated"]
             .as_str()
             .unwrap()
-            .contains("plates-arrange/generate.mjs")
+            .contains("production-setup/generate.mjs")
     );
+    let stamp = |mut value: Value| {
+        if let Some(at) = value["updated_at"].as_str()
+            && at.len() == 24
+            && !at.starts_with("2026-10-01")
+        {
+            value["updated_at"] = json!("<now>");
+        }
+        value
+    };
+    let mut replayed = 0;
+    for phase in golden["phases"].as_array().unwrap() {
+        let name = phase["name"].as_str().unwrap();
+        let mut f = Fixture::new();
+        seed_phase(&f.sql(), phase, name);
+        for case in phase["cases"].as_array().unwrap() {
+            let id = case["id"].as_str().unwrap();
+            let status = case["node"]["status"].as_u64().unwrap() as u16;
+            let url = case["url"].as_str().unwrap();
+            let Some(path) = url.strip_prefix("/plans/") else {
+                assert_eq!(status, 404, "{name}/{id}");
+                continue;
+            };
+            let body = match (case["method"].as_str().unwrap(), &case["payload"]) {
+                ("GET", _) => None,
+                (_, Value::Null) => Some(case["body"].clone()),
+                (_, Value::String(text)) if text == "null" => Some(Value::Null),
+                _ => {
+                    assert!([400, 413].contains(&status), "{name}/{id}");
+                    continue;
+                }
+            };
+            let profile = path.split('/').next().unwrap().replace("%20", " ");
+            let sql = f.sql();
+            let setup = |sql: &Connection| {
+                sql.query_row(
+                    "SELECT value FROM app_settings WHERE key='production_setup:1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+            };
+            let (before, stored) = (table_state(&sql), setup(&sql));
+            let response = f.apply(Request::ProductionSetup { profile, body });
+            let after = table_state(&sql);
+            assert_eq!(
+                (response.status, stamp(response.body).to_string()),
+                (status, case["node"]["body"].to_string()),
+                "{name}/{id}"
+            );
+            let changed: Vec<&str> = before
+                .iter()
+                .zip(&after)
+                .filter(|(left, right)| left != right)
+                .map(|(left, _)| left.0.as_str())
+                .collect();
+            assert_eq!(json!(changed), case["changed"], "{name}/{id}");
+            let now = setup(&sql);
+            if case["setup"] == "unchanged" {
+                assert_eq!(now, stored, "{name}/{id}");
+            } else {
+                let now: Value = serde_json::from_str(&now.unwrap()).unwrap();
+                assert_eq!(
+                    stamp(now).to_string(),
+                    case["setup"].to_string(),
+                    "{name}/{id}"
+                );
+            }
+            replayed += 1;
+        }
+        if name == "commands" {
+            let last = f.apply(Request::ProductionSetup {
+                profile: "1".into(),
+                body: None,
+            });
+            f.restart();
+            let reopened = f.apply(Request::ProductionSetup {
+                profile: "1".into(),
+                body: None,
+            });
+            assert_eq!(reopened, last, "the saved setup survives a writer restart");
+        }
+    }
+    assert_eq!(replayed, 78);
+}
+
+/// Replays a Plate parity golden against Rust: per phase a fresh fixture,
+/// its files and seed, then each request's response, changed tables and
+/// event count, and the final Plate rows.
+fn replay_golden(text: &str, generator: &str) {
+    let golden: Value = serde_json::from_str(text).unwrap();
+    assert!(golden["generated"].as_str().unwrap().contains(generator));
     for phase in golden["phases"].as_array().unwrap() {
         let name = phase["name"].as_str().unwrap();
         let f = match phase["database"].as_str().unwrap() {
@@ -797,6 +913,10 @@ fn ticket_t_61_plates_arrange_matches_node() {
             ),
             other => panic!("{name}: {other}"),
         };
+        for file in phase["files"].as_array().into_iter().flatten() {
+            let path = f.dir.path().join(file["path"].as_str().unwrap());
+            std::fs::write(path, file["text"].as_str().unwrap()).unwrap();
+        }
         let sql = f.sql();
         seed_phase(&sql, phase, name);
         for case in phase["cases"].as_array().unwrap() {
@@ -804,10 +924,10 @@ fn ticket_t_61_plates_arrange_matches_node() {
             let path = case["path"].as_str().unwrap();
             let profile = path.split('/').nth(2).unwrap().to_owned();
             let body = case["body"].clone();
-            let request = if path.ends_with("/restore") {
-                Request::Restore { profile, body }
-            } else {
-                Request::Arrange { profile, body }
+            let request = match path.rsplit('/').next().unwrap() {
+                "restore" => Request::Restore { profile, body },
+                "initialize" => Request::Initialize { profile, body },
+                _ => Request::Arrange { profile, body },
             };
             let before = table_state(&sql);
             let events = f.events().len();
@@ -843,7 +963,7 @@ fn ticket_t_61_plates_arrange_matches_node() {
 /// Writes a golden phase's seed rows and seed SQL, with triggers dropped and
 /// foreign keys off, as Node's generator did.
 fn seed_phase(sql: &Connection, phase: &Value, name: &str) {
-    for (table, rows) in phase["seedRows"].as_object().unwrap() {
+    for (table, rows) in phase["seedRows"].as_object().into_iter().flatten() {
         if table == "accepted_plate_heads" {
             let head = &rows[0];
             sql.execute(
@@ -893,7 +1013,7 @@ fn seed_phase(sql: &Connection, phase: &Value, name: &str) {
             .unwrap();
         }
     }
-    if let Some(seed) = phase["seed"].as_str() {
+    if let Some(seed) = phase["seed"].as_str().filter(|seed| !seed.is_empty()) {
         let triggers: Vec<String> = sql
             .prepare("SELECT name FROM sqlite_schema WHERE type='trigger'")
             .unwrap()

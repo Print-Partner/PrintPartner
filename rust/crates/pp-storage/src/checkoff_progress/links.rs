@@ -26,9 +26,9 @@ pub(super) const REASONS: [&str; 10] = [
 
 /// A parsed link. Every field of the Node shape is present in Node's order;
 /// `Value::Null` stands for a JavaScript `undefined` and is never serialized.
-pub(super) type Link = Map<String, Value>;
+pub(crate) type Link = Map<String, Value>;
 
-pub(super) fn now() -> String {
+pub(crate) fn now() -> String {
     crate::auth::timestamp(0)
 }
 
@@ -523,7 +523,7 @@ pub(super) fn public(link: &Link) -> Value {
 }
 
 /// `loadPrinterCheckoffLinks`: unreadable settings and entries drop out.
-pub(super) fn load(tx: &Transaction<'_>, tenant: &str, now: &str) -> Result<Vec<Link>> {
+pub(crate) fn load(tx: &Transaction<'_>, tenant: &str, now: &str) -> Result<Vec<Link>> {
     let raw: Option<String> = tx
         .query_row(
             "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",

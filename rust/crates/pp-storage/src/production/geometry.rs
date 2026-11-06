@@ -1,7 +1,5 @@
+use super::model::{MAX_JS_SAFE_INTEGER, is_ecmascript_whitespace, trim_ecmascript};
 use anyhow::{Result, ensure};
-use pp_storage::production::model::{
-    MAX_JS_SAFE_INTEGER, is_ecmascript_whitespace, trim_ecmascript,
-};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeshBounds {

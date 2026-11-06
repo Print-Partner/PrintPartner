@@ -168,9 +168,11 @@ pub trait DomainPort: Send + Sync {
     fn apply_action(&self, action: &ProposedAction) -> Result<Value, String>;
     /// The settled result of an action this session no longer holds (applied
     /// already, or proposed before a restart), when the domain recorded it
-    /// under the action id. `None` answers Node's unknown-action error.
-    fn reconcile(&self, _action_id: &str) -> Option<Value> {
-        None
+    /// under the action id. `Ok(None)` answers Node's unknown-action error;
+    /// `Err` means the domain could not tell, so the confirm fails like an
+    /// apply that could not run instead of calling the action unknown.
+    fn reconcile(&self, _action_id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
     }
 }
 
@@ -356,7 +358,7 @@ impl<P: DomainPort> McpSession<P> {
         let id = js_string_or_empty(args.get("action_id"));
         // Taken before apply so a concurrent confirm cannot apply it twice.
         let Some(action) = self.take_pending(&id) else {
-            if let Some(result) = self.port.reconcile(&id) {
+            if let Some(result) = self.port.reconcile(&id)? {
                 let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
                 return Ok(ToolResult {
                     text: pretty(&result),

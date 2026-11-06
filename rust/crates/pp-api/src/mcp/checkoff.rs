@@ -149,17 +149,16 @@ impl DomainPort for CheckoffDomain {
         })
     }
 
-    fn reconcile(&self, action_id: &str) -> Option<Value> {
-        let Response {
-            status: 200,
-            body: Body::Receipt(burst),
-        } = self
-            .run(Request::BurstStatus {
-                key: format!("{KEY_PREFIX}{action_id}"),
-            })
-            .ok()?
-        else {
-            return None;
+    fn reconcile(&self, action_id: &str) -> Result<Option<Value>, String> {
+        let burst = match self.run(Request::BurstStatus {
+            key: format!("{KEY_PREFIX}{action_id}"),
+        })? {
+            Response {
+                status: 200,
+                body: Body::Receipt(burst),
+            } => burst,
+            Response { status: 404, .. } => return Ok(None),
+            _ => return Err(UNAVAILABLE.into()),
         };
         let (ok, detail) = match burst["state"].as_str() {
             Some("applied") => (true, "This action was already applied"),
@@ -168,15 +167,15 @@ impl DomainPort for CheckoffDomain {
                 false,
                 "This action was applied; its receipt is too old to return",
             ),
-            _ => return None,
+            _ => return Ok(None),
         };
-        Some(json!({
+        Ok(Some(json!({
             "ok": ok,
             "reconciled": true,
             "action_id": action_id,
             "detail": detail,
             "result": burst["receipt"],
             "undone_at": burst["undone_at"],
-        }))
+        })))
     }
 }

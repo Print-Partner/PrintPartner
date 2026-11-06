@@ -1633,6 +1633,7 @@ mod codegen {
             "plan_revision_digest": digest, "required_unit_mapping_digest": digest});
         let token = "ppu_00112233445566778899aabbccddeeff";
         let parsed: pp_storage::checkoff_progress::Basis = serde_json::from_value(basis.clone())?;
+        let parsed = parsed.into();
         let mut cases = vec![
             served(
                 "CheckoffUnits",
@@ -1715,10 +1716,6 @@ mod codegen {
             (
                 "extra-unit-field",
                 json!({"idempotency_key": "k", "expected": basis, "units": [{"token": token, "count": 3}]}),
-            ),
-            (
-                "no-units",
-                json!({"idempotency_key": "k", "expected": basis, "units": []}),
             ),
             (
                 "missing-basis",

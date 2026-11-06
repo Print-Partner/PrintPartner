@@ -261,7 +261,7 @@ pub fn checkoff_units(profile_id: i64, read: &AcceptedRead) -> Result<Value> {
                         .collect(),
                 })
                 .collect();
-            (Some(Basis::from(&**snapshot)), parts)
+            (Some(Basis::from(&**snapshot).into()), parts)
         }
         _ => (None, Vec::new()),
     };

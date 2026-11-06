@@ -130,8 +130,35 @@ pub struct CheckoffPart {
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct CheckoffUnits {
     pub profile_id: i64,
-    pub basis: Option<Basis>,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<AcceptedBasis>")
+    )]
+    pub basis: Option<AcceptedBasis>,
     pub parts: Vec<CheckoffPart>,
+}
+
+/// The Accepted Plan basis as a read serves it: the fields a write sends back
+/// as `expected`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct AcceptedBasis {
+    pub profile_id: i64,
+    pub plan_version: i64,
+    pub plan_revision_id: i64,
+    pub plan_revision_digest: String,
+    pub required_unit_mapping_digest: String,
+}
+impl From<Basis> for AcceptedBasis {
+    fn from(basis: Basis) -> Self {
+        Self {
+            profile_id: basis.profile_id,
+            plan_version: basis.plan_version,
+            plan_revision_id: basis.plan_revision_id,
+            plan_revision_digest: basis.plan_revision_digest,
+            required_unit_mapping_digest: basis.required_unit_mapping_digest,
+        }
+    }
 }
 
 /// One unit of a manual burst: the state it sets. Printing a unit prints

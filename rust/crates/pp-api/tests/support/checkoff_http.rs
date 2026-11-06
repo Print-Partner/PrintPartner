@@ -1,19 +1,15 @@
 //! Shared by the printer Checkoff HTTP tests: a disposable copy of a real
 //! SQLite fixture with the synthetic links of the verify parity fixture, the
 //! mounted Checkoff router, and loopback requests to it.
-use axum::{
-    Router,
-    body::Body,
-    extract::ConnectInfo,
-    http::{Request, StatusCode},
-};
+use axum::{Router, http::StatusCode};
+use loopback::ORIGIN;
 use pp_api::{accepted::AcceptedHttpConfig, checkoff::checkoff_router};
 use pp_storage::{Limits, WriterOwner};
 use serde_json::Value;
-use std::{net::SocketAddr, path::PathBuf};
-use tower::ServiceExt;
+use std::path::PathBuf;
 
-const ORIGIN: &str = "http://127.0.0.1:4100";
+#[path = "loopback.rs"]
+mod loopback;
 const NODE: &str = include_str!("../../../../../fixtures/parity/printer-checkoff-verify/node.json");
 const DATABASE: &[u8] =
     include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db");
@@ -62,26 +58,6 @@ pub async fn send(
     body: &str,
     cookie: bool,
 ) -> (StatusCode, Value) {
-    let mut request = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("host", "127.0.0.1:4100")
-        .header("origin", ORIGIN)
-        .header("content-type", "application/json");
-    if cookie {
-        request = request.header("cookie", "pp_session=required-unit-fixture-secret");
-    }
-    let mut request = request.body(Body::from(body.to_owned())).unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
-    let response = router.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+    let cookie = cookie.then_some("pp_session=required-unit-fixture-secret");
+    loopback::send(router, method, path, body, cookie).await
 }

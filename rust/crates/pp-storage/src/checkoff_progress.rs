@@ -413,12 +413,7 @@ impl WriterOwner {
         auth::validate_policy(policy)?;
         Ok(ProgressClient {
             shared: self.client.shared.clone(),
-            repos: self
-                .lease
-                .as_ref()
-                .ok_or_else(|| anyhow!("Storage owner is closed"))?
-                .data_dir()
-                .join("repos"),
+            repos: self.repos_dir()?,
             policy,
         })
     }

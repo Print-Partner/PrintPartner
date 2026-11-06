@@ -2810,6 +2810,37 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features des
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_manual_bursts_http
 ```
 
+### Accepted Plate workspace read (GRE-1189)
+
+`pp-storage::plates` serves Node's `GET /plans/{id}/plates`
+(`routes/accepted-plates.ts`, `readAcceptedPlateWorkspace`) in one deferred
+read transaction. `pp-api::plates::plates_router` serves it at `/` and
+`/api/v2` behind `accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
+
+The router is not mounted in `read_router` yet. Initialize, arrange and the
+Plate edits (GRE-419, GRE-1184) still run on Node and write the
+`accepted_plate_*` tables, so the Plate routes and their aliases switch to Rust
+together, as one operation.
+
+The read answers as Node does. A Build the caller cannot see is 404
+`profile_not_found`; an empty Accepted Plan, or one with no Required units, is
+`{"kind": "empty_plan"}`; a dirty or uninitialized compatibility state is 409
+`accepted_state_unavailable`. With no head, or a head revision stamped with
+another Accepted Plan basis, the answer is `setup` with the Required units and
+`expected_plate_revision_id` (`null` without a head). Otherwise it is `ready`:
+the head revision's layout, read in either stored layout format and checked
+against its counts, tenant and layout digest, with placed units per Plate,
+`unplaced` units, and `unassigned` Required units. `printers` lists the
+`printer.fleet` rows that Node's `acceptedPrinter` accepts (trimmed id, name
+and model, a positive build height, margins smaller than half the bed),
+sorted by UTF-8 id. Stored Plate data that contradicts its revision, and a
+stored Plate id that is not a generated `plate_` id, which Node's contract
+parser rejects, are 500 `internal_error`. A read writes nothing.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

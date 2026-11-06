@@ -26,7 +26,7 @@
 //! review. Storage owns both writes; there is no Node fallback.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Gate, failure, internal, ok_json, read_error},
+    accepted::{AcceptedHttpConfig, Gate, failure, storage_answer},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -238,26 +238,21 @@ async fn apply(
 
 async fn run(app: App, presented: PresentedCredential, request: Request) -> Response {
     let client = app.client;
-    let applied = app
-        .gate
-        .read(presented, move |credential, cancelled, wait| {
-            client.apply(credential, request, &cancelled, wait)
-        })
-        .await;
-    match applied {
-        Some(Ok(response)) => present(response),
-        Some(Err(error)) => read_error(&error),
-        None => internal(),
-    }
+    app.gate
+        .respond(
+            presented,
+            move |credential, cancelled, wait| client.apply(credential, request, &cancelled, wait),
+            present,
+        )
+        .await
 }
 
 fn present(response: pp_storage::checkoff_progress::Response) -> Response {
-    match (StatusCode::from_u16(response.status), response.body) {
-        (Ok(StatusCode::OK), body) => ok_json(&body),
-        (Ok(status), Body::Failure { detail, code }) => crate::problem::build(
+    storage_answer(response.status, response.body, |status, body| match body {
+        Body::Failure { detail, code } => Some(crate::problem::build(
             crate::problem::problem(status, &detail, code.as_deref()),
             serde_json::Map::new(),
-        ),
-        _ => internal(),
-    }
+        )),
+        _ => None,
+    })
 }

@@ -606,14 +606,15 @@ fn ticket_t_10_draftreads_trusted_policy_reads_a_user_folder() {
         .with_filesystem_policy(SourceFilesystemPolicy::TrustedSingleUser);
     let isolated = data.reads();
 
-    let canonical = fs::canonicalize(&outside).unwrap();
     let (logical, inventory) = scan(
         &trusted,
         &stl(StlPurpose::Untracked, 1, outside.to_str().unwrap()),
         &mut b,
     )
     .unwrap();
-    assert_eq!(logical.as_deref(), canonical.to_str());
+    // Node reports the stored spelling, not the canonical path. Windows temp
+    // paths can hold 8.3 short names, so the two differ there.
+    assert_eq!(logical.as_deref(), outside.to_str());
     assert_eq!(paths(inventory.as_ref()), [("part.stl".to_owned(), 0)]);
     assert_eq!(
         document(trusted.read_checkout_manifest(

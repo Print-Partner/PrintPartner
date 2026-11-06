@@ -131,6 +131,20 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   Plate for each unmatched print with confidence `exact`, `likely` or `none`
   and the evidence used. It is a read; nothing confirms a suggestion. See
   [Match suggestions](farm-reads.md#match-suggestions).
+- Claim and dismiss (GRE-1182):
+  `POST /api/v2/printer-checkoff/unattributed/{id}/claim` takes
+  `{"profile_id": N}` and optional `selected_stl_basenames`, attributes the
+  print's object names to incomplete Required units of that Build, and in one
+  transaction creates its printer Checkoff link awaiting verify, marks every
+  open print of that file on that integration claimed, records the printer's
+  plan binding and appends `checkoff.unattributed_resolved`.
+  `POST .../unattributed/{id}/dismiss` marks the print dismissed with the same
+  event. Refusals keep Node's status and detail (400 `profile_id is required`,
+  404 `Unattributed print not found`, 409 `Print already claimed`, `That print
+  file is already assigned`, and the rest of `materializeProblem`) and write
+  nothing. Node's per-IP rate limit is not carried over because the routes are
+  loopback-only. Tests: `pp-storage/tests/unattributed_claim.rs` and
+  `pp-api/tests/unattributed_claim_http.rs`.
 - Printer stream (GRE-1014): `GET /ws/printers` sends a snapshot of every
   configured printer, then each watcher transition in order with a strictly
   increasing sequence, heartbeats every 15 seconds, and resume by sequence.

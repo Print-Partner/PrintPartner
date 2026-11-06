@@ -26,6 +26,8 @@ mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
 mod links;
+#[cfg(feature = "desktop_rebuild")]
+mod unattributed;
 mod verify;
 pub mod wire;
 
@@ -182,6 +184,12 @@ pub enum Request {
     /// `POST /api/v2/farm-log/{id}/undo`.
     #[cfg(feature = "desktop_rebuild")]
     UndoFarmLogEntry { id: String },
+    /// `POST /printer-checkoff/unattributed/{id}/claim` with its raw JSON body.
+    #[cfg(feature = "desktop_rebuild")]
+    ClaimUnattributed { id: String, body: Value },
+    /// `POST /printer-checkoff/unattributed/{id}/dismiss`.
+    #[cfg(feature = "desktop_rebuild")]
+    DismissUnattributed { id: String },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -226,6 +234,15 @@ pub enum Body {
     FarmLog(Box<farm_log::FarmLogPage>),
     #[cfg(feature = "desktop_rebuild")]
     FarmLogEntry(Box<farm_log::FarmLogEntry>),
+    /// A claimed unattributed print: its new printer Checkoff link.
+    Claimed {
+        link: Value,
+        ok: bool,
+    },
+    /// A dismissed unattributed print.
+    Dismissed {
+        ok: bool,
+    },
     Failure {
         detail: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -344,6 +361,12 @@ enum Op {
     FarmLog(farm_log::Query),
     #[cfg(feature = "desktop_rebuild")]
     UndoFarmLogEntry {
+        id: String,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    ClaimUnattributed(unattributed::Claim),
+    #[cfg(feature = "desktop_rebuild")]
+    DismissUnattributed {
         id: String,
     },
 }
@@ -500,6 +523,12 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::UndoFarmLogEntry { id } => return Ok(Op::UndoFarmLogEntry { id }),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::ClaimUnattributed { id, body } => {
+            return unattributed::Claim::parse(id, &body).map(Op::ClaimUnattributed);
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -631,6 +660,10 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::FarmLog(query) => return farm_log::page(tx, tenant, &query, repos),
         #[cfg(feature = "desktop_rebuild")]
         Op::UndoFarmLogEntry { id } => return farm_log::undo_entry(tx, tenant, &id, repos),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::ClaimUnattributed(claim) => return unattributed::claim(tx, tenant, claim, repos),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::DismissUnattributed { id } => return unattributed::dismiss(tx, tenant, &id),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,

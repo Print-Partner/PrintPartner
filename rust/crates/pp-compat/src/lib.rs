@@ -2297,9 +2297,10 @@ if sys.argv[1] == "wait":
     const SPAWN_MEMBER: &str = concat!(
         "const {spawn}=require('node:child_process'); ",
         "const member=spawn(process.execPath, ['-e', ",
-        "\"const fs=require('node:fs'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0); }, 20)\", ",
-        "process.argv[1]], {stdio: 'ignore', detached: true}); member.unref(); ",
-        "console.log(member.pid); process.stdin.on('end', () => process.exit(0)); process.stdin.resume();",
+        "\"const fs=require('node:fs'); console.log('up'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0); }, 20)\", ",
+        "process.argv[1]], {stdio: ['ignore', 'pipe', 'ignore'], detached: true}); member.unref(); ",
+        "member.stdout.once('data', () => { member.stdout.destroy(); console.log(member.pid); }); ",
+        "process.stdin.on('end', () => process.exit(0)); process.stdin.resume();",
     );
 
     #[cfg(windows)]
@@ -2364,6 +2365,49 @@ if sys.argv[1] == "wait":
                 super::CompatExit::Forced,
                 "planned={planned}, already_exited={already_exited}"
             );
+        }
+    }
+
+    /// A job member that exits on its own shortly after its leader exits
+    /// cleanly, like the conhost.exe of Node's hidden console, does not turn the
+    /// clean exit into a forced one: the drain waits for the job to empty.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_leader_exit_with_short_lived_job_member_is_graceful() {
+        for (planned, already_exited) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
+            let release = member_release("settle");
+            let ((mut child, guard), member) = spawn_with_member(&release).await;
+            let leader = child.id().unwrap();
+            let releaser = tokio::spawn({
+                let release = release.clone();
+                async move {
+                    assert!(exits(leader).await, "leader did not exit on EOF");
+                    std::fs::write(&release, b"").unwrap();
+                }
+            });
+            let observed = observe_exit(&mut child, already_exited).await;
+            let cancelled = tokio_util::sync::CancellationToken::new();
+            if planned {
+                cancelled.cancel();
+            }
+            let stopped = stop_owned_child_with((child, guard), true, observed, cancelled).await;
+            releaser.await.unwrap();
+            assert!(exits(member).await, "job member outlived the stop");
+            assert!(stopped.group_absent);
+            assert!(stopped.rejected);
+            assert_eq!(
+                stopped.exit,
+                super::CompatExit::Graceful,
+                "planned={planned}, already_exited={already_exited}"
+            );
+            assert!(
+                stopped.elapsed < Duration::from_millis(500),
+                "{:?}",
+                stopped.elapsed
+            );
+            let _ = std::fs::remove_file(&release);
         }
     }
 

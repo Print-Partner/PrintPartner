@@ -42,15 +42,18 @@ use windows_sys::Win32::{
         OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, READ_CONTROL,
     },
     System::{
+        IO::{CreateIoCompletionPort, GetQueuedCompletionStatus},
         JobObjects::{
             CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
             JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
             QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         },
         Pipes::{
             CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
         },
+        SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO,
         Threading::{
             CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
@@ -87,7 +90,11 @@ fn check(ok: i32) -> std::io::Result<()> {
     }
 }
 
-struct Job(OwnedHandle);
+/// A Job Object and the completion port that receives its notifications.
+struct Job {
+    handle: OwnedHandle,
+    port: OwnedHandle,
+}
 
 impl Job {
     fn create() -> std::io::Result<Self> {
@@ -95,7 +102,28 @@ impl Job {
         if handle.is_null() {
             return Err(std::io::Error::last_os_error());
         }
-        let job = Self(unsafe { OwnedHandle::from_raw_handle(handle as _) });
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle as _) };
+        let port =
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        if port.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = Self {
+            handle,
+            port: unsafe { OwnedHandle::from_raw_handle(port as _) },
+        };
+        let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+            CompletionKey: std::ptr::null_mut(),
+            CompletionPort: job.port.as_raw_handle() as HANDLE,
+        };
+        check(unsafe {
+            SetInformationJobObject(
+                job.raw(),
+                JobObjectAssociateCompletionPortInformation,
+                (&association as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
+                size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
+            )
+        })?;
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         check(unsafe {
@@ -110,7 +138,35 @@ impl Job {
     }
 
     fn raw(&self) -> HANDLE {
-        self.0.as_raw_handle() as HANDLE
+        self.handle.as_raw_handle() as HANDLE
+    }
+
+    /// Block until the job has no active process, or until `bound` passes.
+    /// The kernel posts `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` to the port when
+    /// the last process starts terminating. Delivery of job messages is not
+    /// guaranteed, so a lost message only costs the bound.
+    fn wait_empty(&self, bound: Duration) {
+        let deadline = std::time::Instant::now() + bound;
+        while self.active() > 0 {
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return;
+            };
+            let mut message = 0;
+            let mut key = 0;
+            let mut overlapped = std::ptr::null_mut();
+            let dequeued = unsafe {
+                GetQueuedCompletionStatus(
+                    self.port.as_raw_handle() as HANDLE,
+                    &mut message,
+                    &mut key,
+                    &mut overlapped,
+                    u32::try_from(left.as_millis()).unwrap_or(u32::MAX).max(1),
+                )
+            };
+            if dequeued == 0 || message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO {
+                return;
+            }
+        }
     }
 
     /// Processes in the job that have not finished terminating.
@@ -549,6 +605,19 @@ pub(crate) fn spawn(command: &mut Command, setup: &ChildSetup) -> std::io::Resul
 /// its stdin closes, which planned shutdown does before this call.
 pub(crate) fn request_group_stop(_pid: u32) -> bool {
     false
+}
+
+/// Wait up to `bound` for the child's job to empty on its own after its leader
+/// exited. Node runs with `CREATE_NO_WINDOW`, so the job also holds the
+/// conhost.exe that serves Node's hidden console, and conhost exits only a
+/// moment after Node. Without this wait, the reap that follows a clean exit
+/// can find conhost still active, terminate the job, and report the exit as
+/// forced.
+pub(crate) async fn settle_group(pid: u32, bound: Duration) {
+    let Some(job) = job_of(pid) else {
+        return;
+    };
+    let _ = tokio::task::spawn_blocking(move || job.wait_empty(bound)).await;
 }
 
 /// Terminate every process in the child's job. True when one was running.

@@ -5,6 +5,13 @@ use tokio::process::ChildStdin;
 
 pub const SIGTERM_GRACE: Duration = Duration::from_secs(10);
 const GROUP_REAP: Duration = Duration::from_secs(2);
+/// How long a Windows job may take to empty on its own after its leader
+/// exited, before the reap terminates what is left and reports a forced exit.
+/// The job holds Node's conhost.exe, which exits a moment after Node; 500 ms
+/// covers that on loaded CI hosts, and a member that is really left behind is
+/// still terminated and reported as forced.
+#[cfg(windows)]
+const GROUP_SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 pub enum GroupExit {
@@ -106,6 +113,10 @@ pub async fn drive_shutdown_group(
                 }
             }
         }
+    }
+    #[cfg(windows)]
+    if matches!(exit, Some(GroupExit::Observed(_))) {
+        crate::platform::settle_group(pid, GROUP_SETTLE).await;
     }
     if reap_process_group(pid) {
         exit = exit.map(|exit| match exit {

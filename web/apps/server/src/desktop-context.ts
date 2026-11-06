@@ -149,15 +149,25 @@ export function installDesktopContext(input: unknown): void {
  * current user only, so this process dials in instead of listening. It keeps `lanes` dials
  * waiting for the core and hands each connected pipe to `server`; each one carries one request.
  * A dial is replaced as soon as the core sends a request on it, not when it closes, so
- * long-lived streams never use up the waiting dials. Returns a function that stops dialing,
- * closes the dials still waiting, waits for the requests in flight to finish, and then closes
- * the claimed connections: what `server.close()` does for a listening server.
+ * long-lived streams never use up the waiting dials.
+ *
+ * Returns a function that stops dialing and closes the dials still waiting. It then waits, at
+ * most `drainMs`, for every response still being computed, and closes every claimed connection.
+ * A response whose headers are already out is not waited for: it is a stream (an SSE or hijacked
+ * MCP reply) or a body already on its way, and closing its connection ends it, as the group
+ * SIGKILL does on Unix. Upgraded websocket connections are closed the same way.
  */
-export function dialDesktopPipe(server: Server, path: string, lanes = 4): () => Promise<void> {
+export function dialDesktopPipe(
+  server: Server,
+  path: string,
+  lanes = 4,
+  drainMs = 5000,
+): () => Promise<void> {
   let stopped = false;
   const waiting = new Set<Socket>();
   const claimed = new Set<Socket>();
-  let inFlight = 0;
+  const responses = new Set<ServerResponse>();
+  const computing = () => [...responses].some((response) => !response.headersSent);
   let drained = () => {};
   const claim = (request: IncomingMessage) => {
     const socket = request.socket;
@@ -168,10 +178,10 @@ export function dialDesktopPipe(server: Server, path: string, lanes = 4): () => 
   };
   const track = (request: IncomingMessage, response: ServerResponse) => {
     claim(request);
-    inFlight += 1;
+    responses.add(response);
     response.once("close", () => {
-      inFlight -= 1;
-      if (inFlight === 0) drained();
+      responses.delete(response);
+      if (!computing()) drained();
     });
   };
   const dial = () => {
@@ -199,7 +209,14 @@ export function dialDesktopPipe(server: Server, path: string, lanes = 4): () => 
     stopped = true;
     for (const socket of waiting) socket.destroy();
     waiting.clear();
-    if (inFlight > 0) await new Promise<void>((resolve) => (drained = resolve));
+    if (computing()) {
+      let timer: NodeJS.Timeout | undefined;
+      await new Promise<void>((resolve) => {
+        drained = resolve;
+        timer = setTimeout(resolve, drainMs);
+      });
+      clearTimeout(timer);
+    }
     server.off("request", track);
     server.off("upgrade", claim);
     for (const socket of claimed) socket.destroy();
@@ -208,7 +225,8 @@ export function dialDesktopPipe(server: Server, path: string, lanes = 4): () => 
 
 /**
  * Serve `app` on the core's private named pipe. Fastify never listens here, so its own close
- * cannot wait for requests; the pipe drains them before close moves on to the database.
+ * cannot wait for requests; the pipe drains them before close moves on to the database. The
+ * drain bound stays under the 9 s deadline in `desktop.ts`, so the database always closes.
  */
 export async function serveDesktopPipe(app: FastifyInstance, path: string): Promise<void> {
   let close = async () => {};

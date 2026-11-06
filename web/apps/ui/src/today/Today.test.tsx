@@ -380,7 +380,7 @@ describe("a burst names lower units that are still printing", () => {
     renderToday(core);
     await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
     const note =
-      "Lower units of these Parts are still printing: Annex K3: hinge.stl unit 1. Progress fills from the left, so the core refuses this until they come off and are confirmed.";
+      "Lower units of these Parts are still printing: Annex K3: hinge.stl unit 1. Progress fills from the left, so the core refuses this until they come off and are confirmed, unless they were completed another way.";
     expect(within(bed("Voron 2.4")).getByText(note)).toBeTruthy();
     fireEvent.click(within(bed("Voron 2.4")).getByRole("checkbox", { name: "hinge.stl unit 2" }));
     expect(within(screen.getByText(/^Will mark 1 unit/).closest("div")!).getByText(note)).toBeTruthy();

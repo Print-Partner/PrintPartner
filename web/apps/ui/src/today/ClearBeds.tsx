@@ -98,7 +98,7 @@ function Preview({
           )}
           {printing.length > 0 && (
             <p className="pp-burst-needs">
-              {`Lower units of these Parts are still printing: ${pickWords(printing)}. Progress fills from the left, so the core refuses this until they come off and are confirmed.`}
+              {`Lower units of these Parts are still printing: ${pickWords(printing)}. Progress fills from the left, so the core refuses this until they come off and are confirmed, unless they were completed another way.`}
             </p>
           )}
         </>
@@ -206,7 +206,7 @@ export function ClearBeds({
               )}
               {running.length > 0 && (
                 <p className="pp-muted">
-                  {`Lower units of these Parts are still printing: ${pickWords(running)}. Progress fills from the left, so the core refuses this until they come off and are confirmed.`}
+                  {`Lower units of these Parts are still printing: ${pickWords(running)}. Progress fills from the left, so the core refuses this until they come off and are confirmed, unless they were completed another way.`}
                 </p>
               )}
               <MutationButton primary onClick={() => confirm([{ bed, units: bed.pending }])}>

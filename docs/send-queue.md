@@ -116,7 +116,8 @@ The job settles its item in the transaction that saves the job: a finished or
 uploaded-only job makes it `done`; a failed job makes it `error` with the
 job's reason (`Upload failed` when it has none); a cancelled one `Send
 cancelled`; and a job whose printer outcome is unknown makes it `error` with
-the unknown-outcome text.
+the unknown-outcome text. That includes an attempt whose lease expired while
+the process kept running: only startup recovery uses the interrupted text.
 
 ## Unknown outcomes
 

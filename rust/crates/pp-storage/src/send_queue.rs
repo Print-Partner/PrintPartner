@@ -176,7 +176,7 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<()> {
 /// item, so an upload that left reconciliation by any path, including the
 /// generic job reconciliation, never leaves its item looking unsent.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord, event: &str) -> Result<()> {
+pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<()> {
     use crate::jobs::PersistentState;
     let from = if job.state.terminal() {
         "'sending','error'"
@@ -187,9 +187,6 @@ pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord, event: &str)
         PersistentState::Succeeded | PersistentState::UploadedOnly => None,
         PersistentState::Failed => Some(job.recovery.as_deref().unwrap_or("Upload failed")),
         PersistentState::Cancelled => Some("Send cancelled"),
-        PersistentState::ReconciliationRequired if event == "attempt_recovered" => {
-            Some(INTERRUPTED_ERROR)
-        }
         PersistentState::ReconciliationRequired => Some(UNKNOWN_OUTCOME_ERROR),
         _ => return Ok(()),
     };
@@ -203,6 +200,21 @@ pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord, event: &str)
             job.job_id,
         ],
     )?;
+    Ok(())
+}
+
+/// At startup, the item of an upload that job recovery left awaiting
+/// reconciliation says the restart interrupted it, as Node's restart does. A
+/// lease that expired while the process kept running keeps the
+/// unknown-outcome text [`settle`] gave it.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn interrupted(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<()> {
+    if job.state == crate::jobs::PersistentState::ReconciliationRequired {
+        tx.execute(
+            "UPDATE printer_send_queue SET error=?1 WHERE tenant_id=?2 AND upload_job_id=?3 AND state='error'",
+            params![INTERRUPTED_ERROR, job.tenant, job.job_id],
+        )?;
+    }
     Ok(())
 }
 

@@ -1673,7 +1673,7 @@ pub(crate) fn save(tx: &Transaction<'_>, job: &mut JobRecord, event: &str) -> Re
     )?;
     #[cfg(feature = "desktop_rebuild")]
     if job.kind == JobKind::PrinterUpload {
-        crate::send_queue::settle(tx, job, event)?;
+        crate::send_queue::settle(tx, job)?;
     }
     #[cfg(feature = "desktop_rebuild")]
     subscriptions::record(job);
@@ -1894,7 +1894,9 @@ fn recovery_decision(job: &JobRecord) -> (PersistentState, Option<&'static str>)
     }
 }
 
-fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord) -> Result<()> {
+/// `restart` is true at startup and false for a lease that expired while
+/// this process kept running.
+fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord, restart: bool) -> Result<()> {
     let (state, detail) = recovery_decision(&job);
     job.state = state;
     #[cfg(feature = "desktop_rebuild")]
@@ -1916,7 +1918,14 @@ fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord) -> Result<()> {
     if let Some(detail) = detail {
         job.recovery = Some(detail.into());
     }
-    save(tx, &mut job, "attempt_recovered")
+    save(tx, &mut job, "attempt_recovered")?;
+    #[cfg(feature = "desktop_rebuild")]
+    if restart && job.kind == JobKind::PrinterUpload {
+        crate::send_queue::interrupted(tx, &job)?;
+    }
+    #[cfg(not(feature = "desktop_rebuild"))]
+    let _ = restart;
+    Ok(())
 }
 
 fn recover_in(tx: &Transaction<'_>, all: bool) -> Result<()> {
@@ -1938,7 +1947,7 @@ fn recover_in(tx: &Transaction<'_>, all: bool) -> Result<()> {
         if !all && !lease_until.is_some_and(|until| until <= now()) {
             continue;
         }
-        if let Err(error) = recover_attempt(tx, job) {
+        if let Err(error) = recover_attempt(tx, job, all) {
             if !matches!(
                 error.downcast_ref::<JobFailure>(),
                 Some(JobFailure::JobDocTooLarge { .. })

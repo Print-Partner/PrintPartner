@@ -710,6 +710,37 @@ fn ticket_t_26_restart_interrupts_a_dispatched_item_and_never_starts_its_upload(
 }
 
 #[test]
+fn ticket_t_26_a_lease_lost_while_running_is_an_unknown_outcome_not_a_restart() {
+    let queue = Harness::open();
+    queue.seed(&[("admitted", "p-c", "queued", None)]);
+    let worker = queue.worker();
+    let job = queue.dispatch("admitted");
+    let mut attempt = claim(&worker);
+    worker
+        .update(
+            &mut attempt.lease,
+            WorkerOperation::BeginEffect(intent("p-c")),
+        )
+        .unwrap();
+    queue
+        .database()
+        .execute("UPDATE durable_jobs SET lease_until=1 WHERE id=?1", [&job])
+        .unwrap();
+    // The next claim recovers the expired attempt in this same process.
+    assert!(worker.claim().unwrap().is_none());
+    assert_eq!(queue.job(&job).0, "reconciliation_required");
+    assert_eq!(
+        queue.item("admitted"),
+        (
+            "error".into(),
+            Some(UNKNOWN_OUTCOME_ERROR.into()),
+            Some(job)
+        )
+    );
+    assert_eq!(queue.send("admitted"), OUTCOME_UNKNOWN);
+}
+
+#[test]
 fn ticket_t_26_reads_and_missing_files_follow_node() {
     let queue = Harness::open();
     queue.seed(&[

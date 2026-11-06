@@ -287,8 +287,9 @@ class PullRequestEditTests(unittest.TestCase):
         self.assertIn("edited", gate["on"]["pull_request_target"]["types"])
         self.assertNotIn("if", gate["jobs"]["review-gate"])
         group = gate["concurrency"]
-        self.assertIn("github.event.action != 'edited'", group["cancel-in-progress"])
+        self.assertEqual(group["cancel-in-progress"], "${{ github.run_attempt == '1' }}")
         self.assertIn("github.run_id", group["group"])
+        self.assertNotIn("edited", group["group"])
 
     def test_lint_evidence_reruns_on_edits_and_skips_only_drafts(self):
         evidence = self.workflow("pr-evidence.yml")

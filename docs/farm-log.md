@@ -35,7 +35,8 @@ by the item's `host_name`, or by its `printer_id` when it has none: `Queued`,
 `Sending`, `Sent`, `Send of … failed`, or `Cancelled send of …`.
 
 An idempotent replay of a burst returns its stored receipt before any write,
-so it appends nothing. A refused burst or refused undo rolls its transaction
+so it appends nothing; a resend of an undone burst's key is refused with 409
+`burst_undone` and appends nothing. A refused burst or refused undo rolls its transaction
 back and appends nothing. The log keeps the newest 10,000 entries
 (`MAX_ENTRIES`); sequence numbers keep increasing after older entries are
 dropped. The farm log adds no queue reflow, bulk move, requeue or redo.

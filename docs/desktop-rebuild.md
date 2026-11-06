@@ -2925,6 +2925,7 @@ With both gates on, `draft_router` serves these paths at the root and
 | PATCH | `/plans/{id}/drafts/{draft_id}/parts` | `edit` with typed `EditRequest` |
 | PUT | `/plans/{id}/drafts/{draft_id}/reconciliation` | `ReconciliationClient::reconcile` with typed `ReconciliationRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
+| POST | `/plans/{id}/drafts/save` | draft-only autosave, `WorkingDraftClient::autosave` (GRE-418) |
 
 `admit_draft_routes` buffers each body before routing, disables Axum's 2 MiB
 default, and applies the guard's limits: 16 KiB request target, 1 MiB for
@@ -3058,6 +3059,21 @@ With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1|true`, the Rust-only start
 progress import through `rebuild_api::product_router`, which merges the draft
 router into the read router that carries Checkoff. The flag-off default still
 serves those four from Node. Making Rust the default is the gateway cutover (GRE-593).
+
+### Draft-only autosave (GRE-418)
+
+`POST /plans/{id}/drafts/save` writes Plan choices into the observed open
+draft, or into a new final-state draft when none is open, with one
+Required-unit reconciliation whose row is the durable receipt, all in one
+immediate transaction. It needs an `Idempotency-Key` like the routes above,
+replays before the stale-base check, refuses a changed payload under a reused
+key, and never publishes. [Plan autosave](plan-autosave.md) has the contract.
+
+This is a separate operation from Node's `POST /plans/:id/save`, which
+publishes. That path stays on Node with its publishing semantics until UI
+slice 6 moves the browser to draft-then-Accept, and no Rust router mounts it,
+so Node and Rust never write the same operation. Node has no route at
+`/plans/{id}/drafts/save`, which is why the gateway manifests do not list it.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one

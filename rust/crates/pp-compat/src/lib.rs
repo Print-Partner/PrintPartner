@@ -1173,9 +1173,11 @@ impl Drop for Supervisor {
 #[cfg(all(test, unix))]
 mod ticket_t_2;
 
-#[cfg(all(test, windows))]
-mod tests {
-    pub(crate) fn node_binary() -> std::path::PathBuf {
+/// The native Node executable the test fixtures run.
+#[cfg(test)]
+fn test_node_binary() -> std::path::PathBuf {
+    static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    NODE.get_or_init(|| {
         let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
         let output = std::process::Command::new(configured)
             .args(["-p", "process.execPath"])
@@ -1183,24 +1185,18 @@ mod tests {
             .expect("Node must report its native executable");
         assert!(output.status.success());
         std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
-    }
+    })
+    .clone()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    pub(crate) use super::test_node_binary as node_binary;
 }
 
 #[cfg(all(test, unix))]
 mod tests {
-    pub(crate) fn node_binary() -> std::path::PathBuf {
-        static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        NODE.get_or_init(|| {
-            let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
-            let output = std::process::Command::new(configured)
-                .args(["-p", "process.execPath"])
-                .output()
-                .expect("Node must report its native executable");
-            assert!(output.status.success());
-            std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
-        })
-        .clone()
-    }
+    pub(crate) use super::test_node_binary as node_binary;
 
     fn pid_has_exited(pid: i32) -> bool {
         let result = unsafe { libc::kill(pid, 0) };

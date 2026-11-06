@@ -1,4 +1,4 @@
-import type { MatchSuggestionList } from "@print-partner/rust-client";
+import type { MatchSuggestionList, UnmatchedPrintList } from "@print-partner/rust-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link } from "react-router";
@@ -114,11 +114,12 @@ export function MatchReview() {
     let dismissed = 0;
     const rows = suggestions.data?.suggestions ?? [];
     // A claim claims every open print of the same file on the same integration, so reprints
-    // of one file are claimed together. The printer stands in only if that list is unreadable.
+    // of one file are claimed together. A failed read keeps the last list; the printer
+    // stands in only when there is none.
     const prints = await client
       .fetchQuery({ ...unmatchedQuery, staleTime: 0 })
-      .then((list) => list.prints)
-      .catch(() => []);
+      .catch(() => client.getQueryData<UnmatchedPrintList>(unmatchedQuery.queryKey))
+      .then((list) => list?.prints ?? []);
     const fileOf = (s: Suggestion) => {
       const integration = prints.find((p) => p.id === s.print_id)?.integration_id;
       return `${integration ?? `printer:${s.printer_id}`}:${baseName(s.filename)}`;

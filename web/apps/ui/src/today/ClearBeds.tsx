@@ -3,6 +3,7 @@ import { MutationButton } from "../screen/ScreenTemplate";
 import {
   listWords,
   lowerFirst,
+  MAX_BURST_BEDS,
   partName,
   pickWords,
   pickedPrinters,
@@ -56,10 +57,12 @@ function burstKey(key: string, slot: Slot, slots: readonly Slot[], selected: Rea
 function Preview({
   picks,
   needs,
+  printing,
   pickNeeds,
 }: {
   picks: readonly Pick[];
   needs: readonly Pick[];
+  printing: readonly Pick[];
   pickNeeds: () => void;
 }) {
   const units = picks.flatMap((p) => p.units);
@@ -88,6 +91,11 @@ function Preview({
               </button>
             </p>
           )}
+          {printing.length > 0 && (
+            <p className="pp-burst-needs">
+              {`Lower units of these Parts are still printing: ${pickWords(printing)}. Progress fills from the left, so the core refuses this until they come off and are confirmed.`}
+            </p>
+          )}
         </>
       )}
     </div>
@@ -101,12 +109,14 @@ function Preview({
  */
 export function ClearBeds({
   beds,
+  printing,
   linkNote,
   confirm,
 }: {
   beds: Bed[];
+  printing: Bed[];
   linkNote: (printerId: string) => string | null;
-  confirm: (picks: Pick[]) => void;
+  confirm: (picks: Pick[]) => boolean;
 }) {
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [anchor, setAnchor] = useState<string | null>(null);
@@ -116,6 +126,7 @@ export function ClearBeds({
   const selected = new Set([...picked].filter((key) => slots.some((s) => s.key === key)));
   const picks = picksOf(beds, selected);
   const needs = lowerFirst(beds, picks);
+  const stillPrinting = lowerFirst(printing, picks);
   const pickNeeds = () =>
     setPicked(
       new Set([...selected, ...needs.flatMap((p) => p.units.map((u) => slotKey(p.bed, u)))]),
@@ -151,10 +162,11 @@ export function ClearBeds({
     setAnchor(slot.key);
   };
 
+  // A send that did not start (one already in flight) keeps the picks.
   const confirmPicked = () => {
-    confirm(picks);
-    setPicked(new Set());
+    if (confirm(picks)) setPicked(new Set());
   };
+  const tooMany = picks.length > MAX_BURST_BEDS;
 
   return (
     <section className="pp-hero" aria-labelledby="pp-hero-title" onKeyDown={onKeyDown}>
@@ -163,6 +175,7 @@ export function ClearBeds({
       <ul className="pp-beds">
         {beds.map((bed) => {
           const first = lowerFirst(beds, [{ bed, units: bed.pending }]);
+          const running = lowerFirst(printing, [{ bed, units: bed.pending }]);
           return (
             <li key={bed.result.id} className="pp-bed" data-link={bed.result.id}>
               <h3>{bed.printer}</h3>
@@ -179,6 +192,11 @@ export function ClearBeds({
               {first.length > 0 && (
                 <p className="pp-muted">
                   {`Progress fills from the left, so confirm ${pickWords(first)} first, or pick those units with this bed below.`}
+                </p>
+              )}
+              {running.length > 0 && (
+                <p className="pp-muted">
+                  {`Lower units of these Parts are still printing: ${pickWords(running)}. Progress fills from the left, so the core refuses this until they come off and are confirmed.`}
                 </p>
               )}
               <MutationButton primary onClick={() => confirm([{ bed, units: bed.pending }])}>
@@ -206,8 +224,13 @@ export function ClearBeds({
         })}
       </ul>
       <div className="pp-burst">
-        <Preview picks={picks} needs={needs} pickNeeds={pickNeeds} />
-        {picks.length > 0 && (
+        <Preview picks={picks} needs={needs} printing={stillPrinting} pickNeeds={pickNeeds} />
+        {tooMany && (
+          <p className="pp-burst-needs">
+            {`One burst holds at most ${MAX_BURST_BEDS} beds, and ${picks.length} are picked. Untick some beds and confirm them in a second burst.`}
+          </p>
+        )}
+        {picks.length > 0 && !tooMany && (
           <MutationButton primary onClick={confirmPicked}>
             {`Confirm ${plural(
               picks.reduce((n, p) => n + p.units.length, 0),

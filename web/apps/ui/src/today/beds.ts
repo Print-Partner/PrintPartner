@@ -10,6 +10,9 @@ export interface Bed {
   pending: Unit[];
 }
 
+/** The most beds one verify-batch request may carry (the generated request schema). */
+export const MAX_BURST_BEDS = 50;
+
 /** Units of one bed that a burst confirms. */
 export interface Pick {
   bed: Bed;
@@ -19,13 +22,14 @@ export interface Pick {
 export const unitKey = (u: { part_id: number; unit_index: number }) =>
   `${u.part_id}:${u.unit_index}`;
 
-/** Results waiting for a person, oldest first, each with its pending units. */
-export function bedsToClear(
+/** Results in one state, oldest first, each with the units it has not resolved. */
+function bedsIn(
   results: readonly CheckoffResult[],
   printerName: (id: string) => string,
+  state: CheckoffResult["state"],
 ): Bed[] {
   return results
-    .filter((r) => r.state === "awaiting_verify")
+    .filter((r) => r.state === state)
     .map((result) => {
       const resolved = new Set(result.resolved_units.map(unitKey));
       return {
@@ -37,6 +41,18 @@ export function bedsToClear(
     .filter((bed) => bed.pending.length > 0)
     .sort((a, b) => a.result.created_at.localeCompare(b.result.created_at));
 }
+
+/** Results waiting for a person, oldest first, each with its pending units. */
+export const bedsToClear = (
+  results: readonly CheckoffResult[],
+  printerName: (id: string) => string,
+) => bedsIn(results, printerName, "awaiting_verify");
+
+/** Prints still running: their units cannot be confirmed until they come off. */
+export const bedsPrinting = (
+  results: readonly CheckoffResult[],
+  printerName: (id: string) => string,
+) => bedsIn(results, printerName, "watching");
 
 /** "A", "A and B", "A, B and C". */
 export const listWords = (words: readonly string[]) =>
@@ -65,8 +81,8 @@ export const pickedPrinters = (picks: readonly Pick[]) =>
   listWords([...new Set(picks.map((p) => p.bed.printer))]);
 
 /**
- * Pending units on the beds that confirming these picks also needs. Progress fills from the
- * left, so the core refuses a Part's unit while a lower one of that Part is still pending.
+ * Units on these beds (or running prints) that confirming the picks also needs. Progress
+ * fills from the left, so the core refuses a Part's unit while a lower one is incomplete.
  */
 export function lowerFirst(beds: readonly Bed[], picks: readonly Pick[]): Pick[] {
   const units = picks.flatMap((p) => p.units);

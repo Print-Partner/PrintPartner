@@ -8,12 +8,20 @@ import { useRef, useState } from "react";
 import { Link } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
-import { readCore, writeCore } from "../core/rust";
+import { readCore, RequestContractError, writeCore } from "../core/rust";
 import { tasksQuery, type Task } from "../core/workflow";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
-import { bedsToClear, pickedPrinters, plural, unitKey, type Pick } from "./beds";
+import {
+  bedsPrinting,
+  bedsToClear,
+  MAX_BURST_BEDS,
+  pickedPrinters,
+  plural,
+  unitKey,
+  type Pick,
+} from "./beds";
 import { ClearBeds } from "./ClearBeds";
 
 type CheckoffResult = CheckoffResultList["results"][number];
@@ -67,9 +75,12 @@ const tallyText = (t: Tally) =>
 
 // A send that never reached the core, or whose answer was lost, is resent with the same
 // key; the core answers a repeat with the first receipt and writes nothing.
-const lostSend = (error: Error) => !(error instanceof CoreError);
+// A body the client refused to send was not lost; resending it fails the same way.
+const lostSend = (error: Error) =>
+  !(error instanceof CoreError) && !(error instanceof RequestContractError);
 const retryLostSend = (failures: number, error: Error) => failures < 2 && lostSend(error);
-const resendable = (error: Error) => !(error instanceof CoreError && error.status < 500);
+const resendable = (error: Error) =>
+  !(error instanceof RequestContractError) && !(error instanceof CoreError && error.status < 500);
 // A resent undo whose first answer was lost finds the burst already undone.
 const ALREADY_UNDONE = "This Checkoff burst was already undone";
 
@@ -140,11 +151,13 @@ function useCheckoff() {
       return refresh();
     },
   });
+  /** Sends the picks as one burst; false when nothing was sent. */
   const confirmPicks = (picks: Pick[]) => {
-    if (confirm.isPending || picks.length === 0) return;
+    if (confirm.isPending || picks.length === 0 || picks.length > MAX_BURST_BEDS) return false;
     const key = unanswered.current.get(burstId(picks)) ?? crypto.randomUUID();
     unanswered.current.set(burstId(picks), key);
     confirm.mutate({ picks, key });
+    return true;
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
   const undoBurst = (tallied: Undo) => {
@@ -331,7 +344,12 @@ export function TodayScreen() {
           <>
             <CheckoffStatus checkoff={checkoff} />
             {beds.length > 0 ? (
-              <ClearBeds beds={beds} linkNote={linkNote} confirm={checkoff.confirmPicks} />
+              <ClearBeds
+                beds={beds}
+                printing={bedsPrinting(data.results, printerName)}
+                linkNote={linkNote}
+                confirm={checkoff.confirmPicks}
+              />
             ) : (
               top && <TopTask task={top} />
             )}

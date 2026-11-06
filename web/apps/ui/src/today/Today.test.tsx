@@ -364,6 +364,50 @@ describe("a burst names the lower units Progress needs first", () => {
   });
 });
 
+describe("a burst names lower units that are still printing", () => {
+  it("says a lower unit on a running print blocks the confirm", async () => {
+    const core = fakeCore({
+      results: [
+        result("link-voron", "voron", [[7, 1, "hinge.stl"]]),
+        result("link-annex", "annex", [[7, 0, "hinge.stl"]], {
+          state: "watching",
+          host_outcome: null,
+          completed_at: null,
+        }),
+      ],
+      printers: [printer("voron", "Voron 2.4"), printer("annex", "Annex K3")],
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    const note =
+      "Lower units of these Parts are still printing: Annex K3: hinge.stl unit 1. Progress fills from the left, so the core refuses this until they come off and are confirmed.";
+    expect(within(bed("Voron 2.4")).getByText(note)).toBeTruthy();
+    fireEvent.click(within(bed("Voron 2.4")).getByRole("checkbox", { name: "hinge.stl unit 2" }));
+    expect(within(screen.getByText(/^Will mark 1 unit/).closest("div")!).getByText(note)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pick them too" })).toBeNull();
+  });
+});
+
+describe("a burst stays inside the verify-batch contract", () => {
+  it("says to split a burst of more than 50 beds instead of offering Confirm", async () => {
+    const results = Array.from({ length: 51 }, (_, i) =>
+      result(`link-${i}`, "voron", [[9, i, "clip.stl"]]),
+    );
+    const core = fakeCore({ results });
+    renderToday(core);
+    const first = await screen.findByRole("checkbox", { name: "clip.stl unit 1" });
+    first.focus();
+    fireEvent.keyDown(first, { key: "f" });
+    expect(
+      screen.getByText(
+        "One burst holds at most 50 beds, and 51 are picked. Untick some beds and confirm them in a second burst.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Confirm \d+ picked units$/ })).toBeNull();
+    expect(core.posts).toHaveLength(0);
+  });
+});
+
 describe("the newest failed write is the one shown", () => {
   it("shows a failed Undo even after a refused confirm of another bed", async () => {
     const core = fakeCore();

@@ -57,6 +57,30 @@ fn inventory_key(path: &Path, root: &Path) -> Result<String> {
         .join("/"))
 }
 
+/// A junction must resolve to the package its module path names: the
+/// `package.json` `name` at its target equals the path after the last
+/// `node_modules/`, `@scope/name` included. A target without a readable
+/// `package.json` fails.
+fn verify_junction_package(junction: &Path, key: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Package {
+        name: String,
+    }
+    let module = key
+        .rsplit_once("node_modules/")
+        .map_or(key, |(_, module)| module);
+    let package: Package = std::fs::read(junction.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .with_context(|| format!("Dependency junction {key} has no readable package.json"))?;
+    ensure!(
+        package.name == module,
+        "Dependency junction {key} targets package {}",
+        package.name
+    );
+    Ok(())
+}
+
 fn verify_files(
     root: &Path,
     expected: &BTreeMap<String, String>,
@@ -309,7 +333,10 @@ fn verify_dependencies(
                     } else {
                         anyhow::bail!("Unexpected dependency link target");
                     }
-                } else if kind.is_dir() || junction {
+                } else if junction {
+                    verify_junction_package(&path, &key)?;
+                    pending.push(path);
+                } else if kind.is_dir() {
                     pending.push(path);
                 } else {
                     ensure!(kind.is_file(), "Unexpected dependency file type");
@@ -480,29 +507,58 @@ mod tests {
             hex::encode(rand::random::<[u8; 8]>())
         ));
         let web = root.join("web");
-        let modules = web.join("node_modules");
-        let package = web.join("packages/contracts");
-        std::fs::create_dir_all(&modules).unwrap();
-        std::fs::create_dir_all(&package).unwrap();
-        std::fs::write(package.join("index.js"), b"export {};\n").unwrap();
-        let link = modules.join("contracts");
-        junction(&package, &link);
+        let scope = web.join("node_modules/@pp");
+        std::fs::create_dir_all(&scope).unwrap();
+        let mut files = BTreeMap::new();
+        for name in ["contracts", "domain"] {
+            let package = web.join("packages").join(name);
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                format!(r#"{{"name":"@pp/{name}"}}"#),
+            )
+            .unwrap();
+            std::fs::write(package.join("index.js"), b"export {};\n").unwrap();
+            for file in ["package.json", "index.js"] {
+                files.insert(
+                    format!("web/packages/{name}/{file}"),
+                    measure(&package.join(file)).unwrap(),
+                );
+            }
+            junction(&package, &scope.join(name));
+        }
         let inventory = DependencyInventory {
             web_path: "web".into(),
             roots: vec!["web/node_modules".into()],
-            files: BTreeMap::from([(
-                "web/packages/contracts/index.js".into(),
-                measure(&package.join("index.js")).unwrap(),
-            )]),
+            files,
             links: Default::default(),
             unshipped_links: Default::default(),
         };
         let stop = CancellationToken::new();
         verify_dependencies(&web, &inventory, &stop).unwrap();
 
+        let link = scope.join("contracts");
+        std::fs::remove_dir(&link).unwrap();
+        junction(&web.join("packages/domain"), &link);
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Dependency junction web/node_modules/@pp/contracts targets package @pp/domain"
+        );
+
+        let bare = web.join("packages/bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        std::fs::remove_dir(&link).unwrap();
+        junction(&bare, &link);
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Dependency junction web/node_modules/@pp/contracts has no readable package.json"
+        );
+
         let outside = root.with_extension("outside");
         std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("index.js"), b"export {};\n").unwrap();
+        std::fs::write(outside.join("package.json"), br#"{"name":"@pp/contracts"}"#).unwrap();
         std::fs::remove_dir(&link).unwrap();
         junction(&outside, &link);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();

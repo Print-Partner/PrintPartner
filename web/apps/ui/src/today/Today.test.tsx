@@ -159,6 +159,11 @@ function fakeCore({
         units,
       });
       for (const bed of beds) {
+        const link = state.results.find((r) => r.id === bed.link_id)!;
+        if (link.state !== "awaiting_verify")
+          return json({ title: "Conflict", detail: "Link is not awaiting verify" }, 409);
+      }
+      for (const bed of beds) {
         const index = state.results.findIndex((r) => r.id === bed.link_id);
         const link = state.results[index]!;
         const resolved = [
@@ -543,7 +548,23 @@ describe("an uncertain write is reconciled, not repeated", () => {
     expect(core.state.marked).toBe(3);
   });
 
-  it("sends Retry with a new key once a reread no longer lists the bed", async () => {
+  it("resends Retry with its key when the write landed and the bed is gone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseFirstAnswers: 3 });
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Voron 2.4" })).toBeNull());
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
+    expect(core.state.marked).toBe(3);
+  });
+
+  it("sends Retry with a new key once a reread lists the bed waiting again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ loseFirstAnswers: 3 });
     const waiting = structuredClone(core.state.results);

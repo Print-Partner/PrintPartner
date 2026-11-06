@@ -62,6 +62,9 @@ interface Confirm {
 const burstId = (picks: readonly Pick[]) =>
   picks.map((p) => `${p.bed.result.id}=${p.units.map(unitKey).join(",")}`).join("|");
 
+/** One pending unit of one bed. */
+const pendingKey = (bed: Bed, u: Unit) => `${bed.result.id}=${unitKey(u)}`;
+
 interface Undo {
   printer: string;
   receipt: VerifyBatchReceipt;
@@ -95,14 +98,15 @@ function useCheckoff() {
   // A saved key lasts only while a reread still lists every unit of its burst as pending.
   // Once one is gone, confirming the same units later is a new write with a new key, so a
   // burst that was undone elsewhere is never answered with its old receipt.
+  const listed = useRef(new Set<string>());
   const keepWaiting = useCallback((beds: readonly Bed[]) => {
-    const pendingKey = (bed: Bed, u: Unit) => `${bed.result.id}=${unitKey(u)}`;
     const waiting = new Set(beds.flatMap((bed) => bed.pending.map((u) => pendingKey(bed, u))));
+    listed.current = waiting;
     for (const [id, { picks }] of unanswered.current) {
-      const listed = picks.every(({ bed, units }) =>
+      const stillPending = picks.every(({ bed, units }) =>
         units.every((u) => waiting.has(pendingKey(bed, u))),
       );
-      if (!listed) unanswered.current.delete(id);
+      if (!stillPending) unanswered.current.delete(id);
     }
   }, []);
   const refresh = () =>
@@ -189,28 +193,40 @@ function useCheckoff() {
     unanswered.current.set(burstId(picks), { key, picks });
     confirm.mutate({ picks, key }, { onSuccess: onConfirmed });
   };
+  // Retry of a confirm that got no answer. While the last reread lists every sent unit as
+  // pending, it goes through `confirmPicks` and its saved-key rule. Once one is gone, the
+  // write most likely landed, so the same request and key go again and the core replays
+  // the receipt.
+  const retryConfirm = () => {
+    const sent = confirm.variables!;
+    const waiting = sent.picks.every(({ bed, units }) =>
+      units.every((u) => listed.current.has(pendingKey(bed, u))),
+    );
+    if (waiting) confirmPicks(sent.picks);
+    else confirm.mutate(sent);
+  };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
   const undoBurst = (tallied: Undo) => {
     if (undo.isPending) return;
     confirm.reset();
     undo.mutate(tallied);
   };
-  return { confirm, confirmPicks, keepWaiting, undo, undoBurst, tally };
+  return { confirm, confirmPicks, keepWaiting, retryConfirm, undo, undoBurst, tally };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
 
 /**
- * The live tally, Undo, and a Retry. A confirm's Retry goes through `confirmPicks`, so it
- * reuses the saved key only while a reread still lists that bed waiting.
+ * The live tally, Undo, and a Retry (`retryConfirm` for a confirm, the same request and
+ * key for an Undo).
  */
 function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
-  const { confirm, confirmPicks, undo, undoBurst, tally } = checkoff;
+  const { confirm, retryConfirm, undo, undoBurst, tally } = checkoff;
   const failure = confirm.isError
     ? {
         what: "Could not confirm what came off.",
         error: confirm.error,
-        resend: () => confirmPicks(confirm.variables!.picks),
+        resend: retryConfirm,
       }
     : undo.isError
       ? {

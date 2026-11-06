@@ -432,5 +432,11 @@ async fn verify_batch_lookup_reports_expired_and_unknown_keys() {
         unknown_action["error"],
         "Unknown, in-flight, or already applied/dismissed action_id"
     );
+    let (overlong, is_error) = mcp.confirm(&"x".repeat(200)).await;
+    assert!(is_error);
+    assert_eq!(
+        overlong["error"],
+        "Unknown, in-flight, or already applied/dismissed action_id"
+    );
     served.stop().await;
 }

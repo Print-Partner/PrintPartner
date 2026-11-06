@@ -157,7 +157,9 @@ impl DomainPort for CheckoffDomain {
                 status: 200,
                 body: Body::Receipt(burst),
             } => burst,
-            Response { status: 404, .. } => return Ok(None),
+            Response {
+                status: 400 | 404, ..
+            } => return Ok(None),
             _ => return Err(UNAVAILABLE.into()),
         };
         let (ok, detail) = match burst["state"].as_str() {

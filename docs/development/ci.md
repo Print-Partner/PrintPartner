@@ -526,7 +526,6 @@ Jobs run on GitHub-hosted runners (`ubuntu-latest`, `ubuntu-24.04`, `macos-26`,
 and the short jobs below. Each hosted job gets a fresh VM.
 
 ### Short jobs on pp-local
-### Short jobs on pp-local
 
 GitHub-hosted concurrency is the CI bottleneck: on 2026-11-06 43 runs were queued
 against about 11 running, and a Review gate job waited 35 minutes, while the

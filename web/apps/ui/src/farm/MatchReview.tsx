@@ -19,6 +19,12 @@ const suggestionsQuery = {
 } as const;
 
 /** Printer names, so a row says "Voron 2.4" rather than its id. */
+/** The unmatched prints, for each print's integration: a claim's scope in the core. */
+const unmatchedQuery = {
+  queryKey: ["core", "unmatched-prints"],
+  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listUnmatchedPrints", {}, signal),
+} as const;
+
 const printersQuery = {
   queryKey: ["core", "printers"],
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinters", {}, signal),
@@ -49,13 +55,10 @@ const basisText = (s: Suggestion) =>
     ? "Nothing points to one Build."
     : `From ${s.evidence.basis.map((b) => BASIS_WORDS[b]).join(", ")}.`;
 
-/**
- * The file a print came from, as the core compares it: a claim claims every open print of
- * the same file on the same printer, so reprints of one file are claimed together.
- */
-const fileOf = (s: Suggestion) => {
-  const name = s.filename.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  return `${s.printer_id}:${name.slice(name.lastIndexOf("/") + 1).toLowerCase()}`;
+/** A file name as the core compares it: trimmed basename, lower case. */
+const baseName = (filename: string) => {
+  const name = filename.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  return name.slice(name.lastIndexOf("/") + 1).toLowerCase();
 };
 
 /** Whether Apply claims a checked row for its Build; otherwise it dismisses the row. */
@@ -82,6 +85,13 @@ export function MatchReview() {
   const client = useQueryClient();
   const suggestions = useQuery({ ...suggestionsQuery, enabled: farm?.state === "on" });
   const printers = useQuery({ ...printersQuery, enabled: farm?.state === "on" });
+  const unmatched = useQuery({ ...unmatchedQuery, enabled: farm?.state === "on" });
+  // A claim claims every open print of the same file on the same integration, so reprints
+  // of one file are claimed together. Before the integrations load, the printer stands in.
+  const fileOf = (s: Suggestion) => {
+    const integration = unmatched.data?.prints.find((p) => p.id === s.print_id)?.integration_id;
+    return `${integration ?? `printer:${s.printer_id}`}:${baseName(s.filename)}`;
+  };
   const printerName = (id: string) => printers.data?.printers.find((p) => p.id === id)?.name ?? id;
   // Prints an Apply resolved, hidden at once so a stale row is never offered again.
   const [resolved, setResolved] = useState<ReadonlySet<string>>(new Set());

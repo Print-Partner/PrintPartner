@@ -67,7 +67,13 @@ const health = (farm: "on" | "off"): Health => ({
 
 /** A Rust core with the claim and dismiss routes: each resolves the print and drops its row. */
 function fakeCore({ farm = "on" as "on" | "off", claimed = new Set<string>() } = {}) {
-  const state = { suggestions: BACKLOG(), claimed, dismissed: new Set<string>() };
+  const state = {
+    suggestions: BACKLOG(),
+    claimed,
+    dismissed: new Set<string>(),
+    // Each print's integration; the core claims per integration, not per printer.
+    integration: (s: Suggestion) => `int-${s.printer_id}`,
+  };
   const posts: { path: string; body: unknown }[] = [];
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (init?.method === "POST") {
@@ -82,9 +88,9 @@ function fakeCore({ farm = "on" as "on" | "off", claimed = new Set<string>() } =
       }
       if (state.claimed.has(id!))
         return json({ title: "Conflict", detail: "Print already claimed" }, 409);
-      // Like the core, a claim claims every open print of the same file on that printer.
+      // Like the core, a claim claims every open print of the same file on that integration.
       const same = state.suggestions.filter(
-        (s) => s.printer_id === row!.printer_id && s.filename === row!.filename,
+        (s) => state.integration(s) === state.integration(row!) && s.filename === row!.filename,
       );
       for (const s of same) state.claimed.add(s.print_id);
       state.suggestions = state.suggestions.filter((s) => !same.includes(s));
@@ -102,6 +108,18 @@ function fakeCore({ farm = "on" as "on" | "off", claimed = new Set<string>() } =
     if (path === "/health") return json(health(farm));
     if (path === "/api/v2/printer-checkoff/unattributed/suggestions")
       return json({ suggestions: state.suggestions });
+    if (path === "/api/v2/printer-checkoff/unattributed")
+      return json({
+        prints: state.suggestions.map((s) => ({
+          id: s.print_id,
+          printer_id: s.printer_id,
+          integration_id: state.integration(s),
+          filename: s.filename,
+          completed_at: s.completed_at,
+          object_count: 2,
+          candidate_count: 0,
+        })),
+      });
     if (path === "/api/v2/printers") return json({ printers: [printer] });
     return json({ title: "Not Found" }, 404);
   });
@@ -283,6 +301,21 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     expect(await within(result()).findByText("Applied: claimed 2 prints.")).toBeTruthy();
     expect(core.posts).toHaveLength(1);
     expect(core.state.claimed).toEqual(new Set(["bracket", "bracket-reprint"]));
+  });
+
+  it("counts reprints on another printer of the same integration as claimed too", async () => {
+    const core = fakeCore();
+    core.state.integration = () => "int-shared";
+    core.state.suggestions.push({
+      ...suggestion("bracket", "likely", { id: 22, name: "Voron 2.4 kit" }),
+      print_id: "bracket-elsewhere",
+      printer_id: "voron-2",
+    });
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Apply Exact: claim 1 print" }));
+    expect(await within(result()).findByText("Applied: claimed 2 prints.")).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /^bracket\.gcode on voron-2/ })).toBeNull();
+    expect(core.posts).toHaveLength(1);
   });
 
   it("says the Farm module is off instead of reading suggestions", async () => {

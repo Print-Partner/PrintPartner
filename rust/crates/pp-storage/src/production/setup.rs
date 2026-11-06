@@ -18,11 +18,11 @@ pub fn stored_rules(raw: Option<&str>, profile: i64) -> Vec<GroupRule> {
 }
 
 /// Zod's `z.string().trim().min(1).max(max)`: the trimmed text, counted in
-/// code points.
+/// UTF-16 units as JavaScript's `length` does.
 fn text(value: Option<&Value>, max: usize) -> Option<String> {
     let text = trim_ecmascript(value?.as_str()?);
     (1..=max)
-        .contains(&text.chars().count())
+        .contains(&text.encode_utf16().count())
         .then(|| text.to_owned())
 }
 
@@ -255,6 +255,18 @@ mod tests {
             .unwrap()
             .remove("preferred_slicer_instance_id");
         assert!(stored_rules(Some(&missing.to_string()), 1).is_empty());
+        for (id, kept) in [
+            ("\u{1F600}".repeat(50), true),
+            ("\u{1F600}".repeat(51), false),
+        ] {
+            let mut astral = setup.clone();
+            astral["rules"][0]["id"] = Value::String(id);
+            assert_eq!(
+                stored_rules(Some(&astral.to_string()), 1).is_empty(),
+                !kept,
+                "a rule id is at most 100 UTF-16 units"
+            );
+        }
         assert!(stored_rules(Some("not json"), 1).is_empty());
         assert!(stored_rules(None, 1).is_empty());
     }

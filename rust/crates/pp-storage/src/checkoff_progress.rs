@@ -199,7 +199,7 @@ pub enum Request {
     /// `POST /printer-checkoff/unattributed/{id}/dismiss`.
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed { id: String },
-    /// `GET /printer-checkoff/verify-batch/{idempotency_key}`: what a burst
+    /// `GET /printer-checkoff/verify-batch?idempotency_key=...`: what a burst
     /// key settled to. Reads only.
     #[cfg(feature = "desktop_rebuild")]
     BurstStatus { key: String },

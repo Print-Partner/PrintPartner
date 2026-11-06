@@ -168,15 +168,17 @@ fn source_handle_survives_repos_path_replacement_without_following_it() {
     let mut source = fixture.repos().source(42).unwrap();
     // Windows refuses to rename a directory while a handle below it is open,
     // so the open Source keeps its path from being replaced at all.
-    let pinned = match fs::rename(fixture.0.join("repos"), fixture.0.join("original")) {
-        Ok(()) => {
-            fs::create_dir(fixture.0.join("repos")).unwrap();
-            "original"
-        }
-        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
-            "repos"
-        }
-        Err(error) => panic!("{error}"),
+    let renamed = fs::rename(fixture.0.join("repos"), fixture.0.join("original"));
+    let pinned = if cfg!(windows) {
+        assert_eq!(
+            renamed.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        "repos"
+    } else {
+        renamed.unwrap();
+        fs::create_dir(fixture.0.join("repos")).unwrap();
+        "original"
     };
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
     let receipt = source.materialize(request(), &input, budget()).unwrap();

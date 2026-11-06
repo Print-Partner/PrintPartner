@@ -201,15 +201,17 @@ fn input_file_and_source_roots_remain_pinned_after_path_replacement() {
     fs::write(fixture.0.join("input/upload.zip"), b"not a zip").unwrap();
     // Windows refuses to rename a directory while a handle below it is open,
     // so the open Source keeps its path from being replaced at all.
-    let pinned = match fs::rename(fixture.0.join("repos"), fixture.0.join("original-repos")) {
-        Ok(()) => {
-            fs::create_dir(fixture.0.join("repos")).unwrap();
-            "original-repos"
-        }
-        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
-            "repos"
-        }
-        Err(error) => panic!("{error}"),
+    let renamed = fs::rename(fixture.0.join("repos"), fixture.0.join("original-repos"));
+    let pinned = if cfg!(windows) {
+        assert_eq!(
+            renamed.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        "repos"
+    } else {
+        renamed.unwrap();
+        fs::create_dir(fixture.0.join("repos")).unwrap();
+        "original-repos"
     };
     let candidate = fixture
         .0

@@ -417,9 +417,9 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         job = workflow["jobs"]["review-gate"]
         self.assertNotIn("if", job)
         group = workflow["concurrency"]
-        self.assertIn("github.event.action != 'edited'", group["cancel-in-progress"])
-        self.assertIn("github.event.changes.base != null", group["cancel-in-progress"])
+        self.assertEqual(group["cancel-in-progress"], "${{ github.run_attempt == '1' }}")
         self.assertIn("github.run_id", group["group"])
+        self.assertNotIn("edited", group["group"])
         self.assertEqual(job["permissions"], {"actions": "read", "checks": "read", "contents": "read",
                                               "pull-requests": "read"})
         self.assertNotIn("uses:", text)

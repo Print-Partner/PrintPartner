@@ -2832,10 +2832,8 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop
 read transaction. `pp-api::plates::plates_router` serves it at `/` and
 `/api/v2` behind `accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
 
-The router is not mounted in `read_router` yet. Initialize and arrange
-(GRE-419) still run on Node and write the
-`accepted_plate_*` tables, so the Plate routes and their aliases switch to Rust
-together, as one operation.
+`read_router` mounts it with every other Plate route; see
+[Accepted Plate routes in Rust](#accepted-plate-routes-in-rust-gre-419).
 
 The read answers as Node does. A Build the caller cannot see is 404
 `profile_not_found`; an empty Accepted Plan, or one with no Required units, is
@@ -2861,10 +2859,8 @@ parser rejects, are 500 `internal_error`. A read writes nothing.
 `pp-api::plates::plates_router` serves them at `/` and `/api/v2` behind
 `accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
 
-The router is not mounted in `read_router` yet. Every Plate write (edits,
-arrange and initialize) now has a Rust port, and the Plate routes and their
-aliases switch to Rust together in one change (GRE-419), never with one runtime
-writing beside the other.
+`read_router` mounts them with every other Plate route; see
+[Accepted Plate routes in Rust](#accepted-plate-routes-in-rust-gre-419).
 
 Each edit is one immediate writer transaction. It checks, in Node's order, the
 target Printer (transfer only, 422 `printer_not_found`), that the Build is
@@ -2900,7 +2896,7 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 (`arrangeAcceptedPlates` in `services/accepted-plate-workspace.ts`) as
 `Request::Arrange`. The body is `expected`, `expected_plate_revision_id` and
 `mode`, which is `unplaced` or `all`; anything else is 400
-`invalid_request`. Like the edits, it is not mounted yet.
+`invalid_request`. `read_router` mounts it with the other Plate routes.
 
 Arrange is one immediate writer transaction. It checks, in Node's order, that
 the Build is visible (404 `profile_not_found`), that it has an Accepted Plan
@@ -3001,6 +2997,34 @@ unit tests cover the limits, a linked file, a linked snapshot directory, an
 ambiguous case and paths outside the repositories. The walk starts from
 `repos/<locator>` as stored, not the canonical snapshot path the accepted read
 checks, so a snapshot directory replaced by a link is refused as Node refuses it.
+
+### Accepted Plate routes in Rust (GRE-419)
+
+`pp_core::rebuild_api::read_router` mounts `pp_api::plates::plates_router`, so
+with `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true` the Rust-only start
+(`rebuild_api::product_router`) serves every Plate route Node registers, at
+`/` and `/api/v2` as Node does:
+
+- `GET /plans/{id}/plates`
+- `POST /plans/{id}/plates/initialize`, `.../arrange` and `.../restore`
+- `PATCH /plans/{id}/plates/{plateId}/units/{token}` and `.../pin`
+- `POST /plans/{id}/plates/{plateId}/units/{token}/unplace` and `.../transfer`
+
+They move together because they all write the same `accepted_plate_*` tables.
+A request is one storage transaction on the single writer. Nothing falls back
+to Node, and no Plate route is left on Node beside a Rust one. Bodies follow
+Node's limits: 8 MiB for initialize (`MAX_BULK_JSON_BODY_BYTES`) and 1 MiB for
+the other writes (`MAX_JSON_BODY_BYTES`). A larger body is 413 `Request body too
+large` before storage runs. The flag-off default still serves these routes
+from Node, and the gateway manifests still name Node as their owner. Making
+Rust the default is the gateway cutover (GRE-593).
+
+`plates_http` drives initialize, its replay, arrange, the body limits and the
+flag through the router.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
+```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 

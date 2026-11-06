@@ -31,7 +31,7 @@ use axum::{
 };
 use pp_storage::checkoff_progress::{
     AssignedLink, Assignment, Body, FileRequest, FileRoute, ProgressClient, Request,
-    print_file::{Inspected, SnapshotStore},
+    print_file::{Inspected, SNAPSHOT_EXPIRED, SnapshotStore},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -39,8 +39,6 @@ use std::sync::Arc;
 /// Node's `rateLimit` and JSON body limit for both routes.
 const LIMIT: u32 = 20;
 const BODY_LIMIT: usize = 1024 * 1024;
-const EXPIRED: &str =
-    "This file preview expired or its source changed. Cancel and reopen the file.";
 const UPLOAD_GONE: &str = "That upload is no longer available; upload the print file again";
 const UNPORTED: &str = "Reading a print file off a printer is not available in this runtime yet; reopen the file from its preview";
 
@@ -92,7 +90,7 @@ fn inspect(snapshots: &SnapshotStore, parsed: &FileRequest) -> Inspection {
     if let (Some(token), Some(scope)) = (&parsed.snapshot_token, parsed.scope()) {
         return snapshots
             .read(token, &scope, parsed.printer.source.as_deref())
-            .map_or(Inspection::Refused(EXPIRED), Inspection::Inspected);
+            .map_or(Inspection::Refused(SNAPSHOT_EXPIRED), Inspection::Inspected);
     }
     if parsed.remote_path.is_some() {
         return if parsed.printer.host_files {
@@ -208,10 +206,28 @@ async fn assign(
     let Some(input) = parsed.assign.clone() else {
         return crate::accepted::internal();
     };
+    // A redeemed snapshot is held for this assignment alone, so a concurrent
+    // one cannot record the same file, and returns if this one fails.
+    let reservation = match (&parsed.snapshot_token, parsed.scope()) {
+        (Some(token), Some(scope)) => {
+            match app
+                .snapshots
+                .reserve(token, &scope, parsed.printer.source.as_deref())
+            {
+                Some(reservation) => Some(reservation),
+                None => return conflict(SNAPSHOT_EXPIRED),
+            }
+        }
+        _ => None,
+    };
+    let inspection = match reservation.as_ref().and_then(|held| held.inspected()) {
+        Some(held) => Inspection::Inspected(held.clone()),
+        None => inspect(&app.snapshots, &parsed),
+    };
     // The bytes decide. A file recorded as already printed is evidence of
     // what was made, so only a file PrintPartner might still print must be
     // print-ready.
-    let inspected = match inspect(&app.snapshots, &parsed) {
+    let inspected = match inspection {
         Inspection::Refused(detail) => return conflict(detail),
         Inspection::Unported => return failure(StatusCode::NOT_IMPLEMENTED, UNPORTED),
         Inspection::Unreadable => None,
@@ -227,7 +243,6 @@ async fn assign(
             "PrintPartner has to read a 3MF to tell whether it holds printer instructions; upload the file so PrintPartner can read it",
         );
     }
-    let snapshot_token = parsed.snapshot_token.clone();
     let assignment = Assignment {
         profile_id: parsed.profile_id,
         plan_revision_id: input.plan_revision_id,
@@ -247,15 +262,16 @@ async fn assign(
                 .map(|inspected| json!(inspected.classification)),
             remote_identity: inspected.map(|inspected| inspected.identity),
         },
+        snapshot_source: reservation.as_ref().and(parsed.printer.source.clone()),
     };
     let response = match storage(&app, presented, Request::AssignFile(Box::new(assignment))).await {
         Ok(response) => response,
         Err(response) => return *response,
     };
     if response.status == 200
-        && let Some(token) = snapshot_token
+        && let Some(held) = reservation
     {
-        app.snapshots.consume(&token);
+        held.spend();
     }
     crate::checkoff::present(response)
 }

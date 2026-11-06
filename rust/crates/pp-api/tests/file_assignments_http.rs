@@ -7,10 +7,16 @@ use checkoff_http::{Fixture, post};
 use pp_api::file_assignments::file_assignments_router;
 use pp_storage::{
     SettingsClient,
+    auth::Secret,
     checkoff_progress::print_file::{CAPTURE_UNAVAILABLE, Scope, SnapshotStore, file_source},
+    checkoff_progress::{AssignedLink, Assignment, Request, attribution::Unit},
+    read_model::Credential,
 };
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 #[allow(dead_code)]
 #[path = "support/checkoff_http.rs"]
@@ -468,6 +474,75 @@ fn one_capture_at_a_time_and_a_dropped_capture_releases_the_store() {
     assert_eq!(held.identity["mtime"], 1);
     assert_eq!(held.identity["size_bytes"], 4);
     assert!(store.read(&token, &scope("c.gcode"), None).is_none());
-    store.consume(&token);
+    let reserved = store.reserve(&token, &scope("c.gcode"), Some("s")).unwrap();
+    assert!(
+        store
+            .reserve(&token, &scope("c.gcode"), Some("s"))
+            .is_none(),
+        "one assignment at a time holds a token"
+    );
     assert!(store.read(&token, &scope("c.gcode"), Some("s")).is_none());
+    drop(reserved);
+    let reserved = store.reserve(&token, &scope("c.gcode"), Some("s")).unwrap();
+    assert_eq!(reserved.inspected().unwrap().identity["size_bytes"], 4);
+    reserved.spend();
+    assert!(store.read(&token, &scope("c.gcode"), Some("s")).is_none());
+}
+
+/// The assignment transaction itself rechecks the host a snapshot was
+/// redeemed against, so a settings write between the route's read and the
+/// write cannot record stale evidence.
+#[tokio::test]
+async fn the_assignment_transaction_refuses_a_host_changed_since_redemption() {
+    let fixture = fixture();
+    let store = Arc::new(SnapshotStore::default());
+    let (owner, _router) = open(&fixture, "1", &store);
+    let stale = file_source(&owner.client(), Duration::from_secs(1), "sim-1").unwrap();
+    setting(
+        &fixture,
+        "integrations",
+        &integrations("http://127.0.0.1:10"),
+    );
+    let current = file_source(&owner.client(), Duration::from_secs(1), "sim-1").unwrap();
+    assert_ne!(stale, current);
+    let apply = |source: Option<String>| {
+        let assignment = Assignment {
+            profile_id: 1,
+            plan_revision_id: 1,
+            object_names: vec!["gear.stl".into()],
+            units: vec![Unit::at(3, 0)],
+            mappings: None,
+            retain_unmatched: false,
+            completed: false,
+            link: AssignedLink {
+                integration_id: "sim-moonraker".into(),
+                printer_id: "sim-1".into(),
+                host_name: "Printer sim-1".into(),
+                filename: "gear.gcode".into(),
+                remote_path: Some(PATH.into()),
+                remote_identity: None,
+                classification: None,
+            },
+            snapshot_source: source,
+        };
+        owner
+            .checkoff_progress()
+            .unwrap()
+            .apply(
+                Credential::Session(Secret::new("required-unit-fixture-secret".into())),
+                Request::AssignFile(Box::new(assignment)),
+                &AtomicBool::new(false),
+                Duration::from_secs(5),
+            )
+            .unwrap()
+    };
+    let before = links(&fixture);
+    let refused = serde_json::to_value(apply(stale)).unwrap();
+    assert_eq!(
+        (&refused["status"], &refused["body"]["detail"]),
+        (&json!(409), &json!(EXPIRED))
+    );
+    assert_eq!(links(&fixture), before);
+    assert_eq!(apply(current).status, 200);
+    owner.shutdown().unwrap();
 }

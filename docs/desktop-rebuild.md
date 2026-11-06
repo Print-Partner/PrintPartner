@@ -2924,7 +2924,11 @@ its 1 MiB JSON limit.
   printer's linked integration is unchanged; anything else is 409 `This file
   preview expired or its source changed. Cancel and reopen the file.` A
   redeemed file is not re-observed for drift, and a successful assignment
-  spends the token.
+  spends the token. Node redeems and records in one synchronous step; here the
+  assignment reserves the token, so a concurrent assignment of the same token
+  is refused and a failed one puts it back, and the writer transaction checks
+  the printer's host fingerprint again, so a settings change after the route's
+  read refuses with the same 409.
 - An `upload_token` answers Node's unknown-upload 409 `That upload is no longer
   available; upload the print file again`, because this runtime serves no
   upload route yet. A `remote_path` without a snapshot on a Moonraker or

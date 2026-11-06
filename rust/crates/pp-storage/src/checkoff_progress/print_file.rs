@@ -212,7 +212,17 @@ pub(super) enum Op {
 
 pub(super) fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     match op {
-        Op::Assign(assignment) => super::assign::assign(tx, tenant, *assignment, repos),
+        Op::Assign(assignment) => {
+            if let Some(expected) = &assignment.snapshot_source {
+                let fleet = setting_list(tx, tenant, FLEET_KEY)?;
+                let integrations = setting_list(tx, tenant, INTEGRATIONS_KEY)?;
+                let current = source(&fleet, &integrations, &assignment.link.printer_id);
+                if current.as_ref() != Some(expected) {
+                    return Ok(Ok(Response::failure(409, SNAPSHOT_EXPIRED, None)));
+                }
+            }
+            super::assign::assign(tx, tenant, *assignment, repos)
+        }
         Op::Request { body, route } => request(tx, tenant, &body, route, repos),
     }
 }
@@ -593,6 +603,10 @@ const MAX_READY: usize = 128;
 #[derive(Default)]
 pub struct SnapshotStore(Mutex<Held>);
 
+/// Node's answer when a `snapshot_token` does not redeem.
+pub const SNAPSHOT_EXPIRED: &str =
+    "This file preview expired or its source changed. Cancel and reopen the file.";
+
 /// Node's capture refusal.
 pub const CAPTURE_UNAVAILABLE: &str =
     "File inspection unavailable. Finish the current file, then reopen this file.";
@@ -643,9 +657,54 @@ impl SnapshotStore {
             .then(|| saved.inspected.clone())
     }
 
-    /// Drop a token once its link records what the bytes said.
-    pub fn consume(&self, token: &str) {
-        self.held().ready.remove(token);
+    /// Take the token for one assignment, as [`Self::read`] matches it. No
+    /// other request can read or take it until the reservation is spent or
+    /// dropped; dropping it puts the snapshot back.
+    pub fn reserve(
+        self: &Arc<Self>,
+        token: &str,
+        scope: &Scope,
+        current: Option<&str>,
+    ) -> Option<Reservation> {
+        let mut held = self.held();
+        let saved = held.ready.get(token)?;
+        if Some(saved.source.as_str()) != current || saved.scope != *scope {
+            return None;
+        }
+        Some(Reservation {
+            store: Arc::clone(self),
+            token: token.to_owned(),
+            saved: held.ready.remove(token),
+        })
+    }
+}
+
+/// A snapshot one assignment holds while it records the print.
+pub struct Reservation {
+    store: Arc<SnapshotStore>,
+    token: String,
+    saved: Option<Saved>,
+}
+
+impl Reservation {
+    pub fn inspected(&self) -> Option<&Inspected> {
+        self.saved.as_ref().map(|saved| &saved.inspected)
+    }
+
+    /// The link now records what the bytes said, so the snapshot is gone.
+    pub fn spend(mut self) {
+        self.saved = None;
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved.take() {
+            self.store
+                .held()
+                .ready
+                .insert(std::mem::take(&mut self.token), saved);
+        }
     }
 }
 

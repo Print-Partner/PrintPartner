@@ -193,6 +193,16 @@ function fakeCore({
     if (state.undone.has(token))
       return json({ title: "Conflict", detail: "This Checkoff burst was already undone" }, 409);
     const prior = before.get(key)!;
+    // Like the core, a burst cannot be undone once a later live burst touched its links.
+    const keys = [...before.keys()];
+    const later = keys.slice(keys.indexOf(key) + 1).filter((k) => !state.undone.has(`undo-${k}`));
+    const touched = later.flatMap((k) => before.get(k)!.links.map((l) => l.id));
+    const changed = prior.links.find((l) => touched.includes(l.id));
+    if (changed)
+      return json(
+        { title: "Conflict", detail: `Checkoff link ${changed.id} changed since this burst` },
+        409,
+      );
     state.results = state.results.map((r) => prior.links.find((l) => l.id === r.id) ?? r);
     state.marked -= prior.units;
     state.undone.add(token);
@@ -970,6 +980,14 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
       },
     ]);
     expect(core.state.marked).toBe(4);
+    // The newer burst on the same link is undone first, or the core refuses the older one.
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(
+      await screen.findByText(
+        "Undid the Voron 2.4 and Trident confirmation. 4 units are waiting again.",
+      ),
+    ).toBeTruthy();
+    expect(core.state.marked).toBe(0);
   });
 
   it("sends a changed selection as a new burst when the lost one never landed", async () => {
@@ -1313,8 +1331,8 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     await screen.findByText("Confirmed 5 units from Voron 2.4 and Trident.");
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(await screen.findByText("Could not undo the confirmation.")).toBeTruthy();
-    expect(within(status()).getByText(/^Confirmed 2 units from Trident\./)).toBeTruthy();
-    expect(core.state.marked).toBe(2);
+    expect(within(status()).getByText(/^Confirmed 3 units from Voron 2\.4\./)).toBeTruthy();
+    expect(core.state.marked).toBe(3);
   });
 
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {

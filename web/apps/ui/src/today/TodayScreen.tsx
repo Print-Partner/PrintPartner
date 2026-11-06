@@ -148,10 +148,11 @@ function useCheckoff() {
       client.invalidateQueries({ queryKey: tasksQuery.queryKey }),
     ]);
   const undo = useMutation({
-    // One token at a time. If a later one fails, the tally keeps only the bursts still
-    // confirmed, so it never offers or names a burst that is already undone.
+    // One token at a time, newest first: the core refuses to undo a burst once a later
+    // write touched the same link or Parts. If one fails, the tally keeps only the bursts
+    // still confirmed, so it never offers or names a burst that is already undone.
     mutationFn: async (undos: Undo[]) => {
-      for (const [i, { receipt }] of undos.entries()) {
+      for (const [i, { receipt }] of [...undos].reverse().entries()) {
         try {
           await writeCore("undoCheckoffBurst", {}, { undo_token: receipt.undo_token });
         } catch (error) {
@@ -160,7 +161,7 @@ function useCheckoff() {
             error.status === 409 &&
             error.detail === ALREADY_UNDONE
           )) {
-            if (i > 0) setTally({ kind: "confirmed", undos: undos.slice(i) });
+            if (i > 0) setTally({ kind: "confirmed", undos: undos.slice(0, undos.length - i) });
             throw error;
           }
         }

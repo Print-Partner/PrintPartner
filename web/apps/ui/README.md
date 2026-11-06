@@ -214,7 +214,8 @@ so a print that ends or a link that drops shows up without a reload.
   gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo
-  button. When the tally covers several bursts, Undo sends their tokens one by one;
+  button. When the tally covers several bursts, Undo sends their tokens one by one,
+  newest first, because the core refuses to undo a burst a later write depends on;
   if one fails, the tally keeps only the bursts still confirmed. Undo sends the receipt's `undo_token` to
   `POST /api/v2/printer-checkoff/verify-batch/undo`; the core restores the
   links, progress and outcomes, or refuses with 409 and a reason.

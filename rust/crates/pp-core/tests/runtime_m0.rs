@@ -249,7 +249,7 @@ async fn protected_real_node_lifecycle() {
     assert!(receipt.compat_reaped && receipt.storage_released);
     assert!(!data.join(".desktop-owner.json").exists());
     assert!(!pp_core::process_alive(child_pid));
-    let second = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    let second = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(second.origin(), origin);
     second.shutdown().await;
     println!(
@@ -263,13 +263,7 @@ async fn authenticated_logout_requests_complete_shutdown() {
     use fs2::FileExt;
 
     let data = temporary("logout");
-    let mut runtime = match CoreRuntime::start(launch(data.clone())).await {
-        Ok(runtime) => runtime,
-        Err(error) => panic!(
-            "real Node reaches verified readiness: {error:#}\n{}",
-            pp_core::recent_logs(&data).unwrap_or_else(|error| error.to_string())
-        ),
-    };
+    let mut runtime = started(CoreRuntime::start(launch(data.clone())).await, &data);
     let origin = runtime.origin().to_owned();
     let target = runtime.take_launch_target().unwrap().into_url();
     let bootstrap = target.strip_prefix(&origin).unwrap();
@@ -683,7 +677,7 @@ async fn occupied_saved_port_recovers_before_child_start() {
     );
     assert!(runtime.shutdown().await.complete());
     assert!(!data.join(".desktop-owner.json").exists());
-    let runtime = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    let runtime = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(runtime.origin(), origin);
     assert_eq!(runtime.origin_change(), None);
     assert!(handle.browser_preferences().await.is_err());
@@ -874,6 +868,17 @@ async fn desktop_cookie(runtime: &mut CoreRuntime) -> String {
     desktop.split(';').next().unwrap().to_owned()
 }
 
+/// The started runtime, or a panic that carries the redacted recent logs, so
+/// a hosted failure shows why the child never became ready.
+fn started<E: std::fmt::Display>(result: Result<CoreRuntime, E>, data: &Path) -> CoreRuntime {
+    result.unwrap_or_else(|error| {
+        panic!(
+            "runtime start failed: {error:#}\n{}",
+            pp_core::recent_logs(data).unwrap_or_else(|error| error.to_string())
+        )
+    })
+}
+
 fn temporary(case: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "pp-{case}-{}",
@@ -928,9 +933,7 @@ async fn source_sync_receipt_is_admitted_before_desktop_effects() {
     let identity = pp_os::status_follow(&receipt).unwrap().identity();
     let shutdown = first.shutdown().await;
     assert!(shutdown.complete(), "{shutdown:?}");
-    let second = CoreRuntime::start(launch(data.clone()))
-        .await
-        .expect("restart reuses the Source Sync receipt");
+    let second = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(std::fs::read(&receipt).unwrap(), bytes);
     assert_eq!(pp_os::status_follow(&receipt).unwrap().identity(), identity);
     let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1021,6 +1024,10 @@ async fn changed_or_missing_built_artifacts_are_rejected() {
     );
 }
 
+// Unix only: it fails cleanup by planting a directory at the channel socket.
+// The Windows channel is a named pipe with no file to plant over; see
+// `ticket_t_12_windows_channel_leaves_nothing_to_clean`.
+#[cfg(unix)]
 #[tokio::test]
 async fn cleanup_error_publishes_failed_and_preserves_failure() {
     let data = temporary("compat-cleanup-status");
@@ -1209,9 +1216,7 @@ async fn same_process_restart_retries_failed_storage_release_without_double_owne
 
     std::fs::remove_file(blocker).unwrap();
     std::fs::remove_dir(&marker).unwrap();
-    let restarted = CoreRuntime::start(launch(data.clone()))
-        .await
-        .expect("same-process restart retries the retained failed release");
+    let restarted = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert!(lease.is_file());
     assert!(lock.try_lock_exclusive().is_err());
     assert!(CoreRuntime::start(launch(data.clone())).await.is_err());
@@ -1288,6 +1293,9 @@ fn drop_after_caller_runtime_teardown_reaps_writer_and_descendant() {
     );
 }
 
+// Unix only, for the reason given on
+// `cleanup_error_publishes_failed_and_preserves_failure`.
+#[cfg(unix)]
 #[tokio::test]
 async fn compatibility_cleanup_failure_reports_failed_instead_of_ready() {
     let data = temporary("compat-cleanup-failure");
@@ -1313,6 +1321,30 @@ async fn compatibility_cleanup_failure_reports_failed_instead_of_ready() {
         .err()
         .expect("unproved child closure must prevent same-process restart");
     assert!(error.to_string().contains("Closure was not proved"));
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+/// Windows counterpart of the two socket cleanup failure tests: the channel
+/// is a named pipe, so the runtime directory holds no entry for it, and
+/// shutdown proves the child closed.
+#[cfg(windows)]
+#[tokio::test]
+async fn ticket_t_12_windows_channel_leaves_nothing_to_clean() {
+    let data = temporary("compat-pipe-cleanup");
+    let runtime = started(CoreRuntime::start(launch(data.clone())).await, &data);
+    let state = compat(&runtime);
+    assert!(matches!(*state.borrow(), CoreStatus::Ready { .. }));
+    let runtime_dir = runtime.runtime_dir().to_owned();
+    assert!(std::fs::read_dir(&runtime_dir).unwrap().all(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "sock")
+    }));
+    let receipt = runtime.shutdown().await;
+    assert!(receipt.compat_reaped);
+    assert!(receipt.complete(), "{receipt:?}");
     std::fs::remove_dir_all(data).unwrap();
 }
 
@@ -1510,9 +1542,10 @@ fn core_death_terminates_stopped_node_and_allows_recovery() {
             "Node group member outlived its owner"
         );
         let caller = tokio::runtime::Runtime::new().unwrap();
-        let runtime = caller
-            .block_on(CoreRuntime::start(launch(data.clone())))
-            .expect("dead owner and terminated Node allow recovery");
+        let runtime = started(
+            caller.block_on(CoreRuntime::start(launch(data.clone()))),
+            &data,
+        );
         let state = compat(&runtime).borrow().clone();
         let CoreStatus::Ready { pid: new_pid, .. } = state else {
             panic!("not ready")
@@ -2167,7 +2200,7 @@ async fn ticket_t_5_staged_release_reuses_the_persisted_desktop_identity() {
     assert_eq!(health["version"], expected_version);
     let persisted = std::fs::read(data.join("desktop.toml")).unwrap();
     assert!(runtime.shutdown().await.complete());
-    let reopened = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    let reopened = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(reopened.origin(), origin);
     assert_eq!(std::fs::read(data.join("desktop.toml")).unwrap(), persisted);
     assert!(reopened.shutdown().await.complete());

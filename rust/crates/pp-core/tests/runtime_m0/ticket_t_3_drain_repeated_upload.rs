@@ -359,7 +359,7 @@ async fn ticket_t_3_drain_runtime_repeated_start_stop_eof_upload_no_duplicate_or
     assert_eq!(event_count(&data, "compat_starting"), 1);
 
     predecessors_are_dead(&pids);
-    let mut runtime = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    let mut runtime = super::started(CoreRuntime::start(launch(data.clone())).await, &data);
     let second = pid(&runtime);
     assert_ne!(second, first);
     pids.push(second);

@@ -40,7 +40,7 @@ async fn isolated_case_for(name: &str, rebuild: bool, limit: Duration) -> Option
     assert!(stdout.contains("1 passed"), "child ran no tests");
     if name.contains("timeout") {
         assert!(!data.join(CUTOVER_FILE).exists());
-        let runtime = CoreRuntime::start(launch(data.clone())).await.unwrap();
+        let runtime = super::started(CoreRuntime::start(launch(data.clone())).await, &data);
         let receipt = runtime.shutdown().await;
         assert!(receipt.complete(), "{receipt:?}");
         println!(
@@ -131,7 +131,7 @@ async fn ticket_t_3_drain_runtime_cancels_rejects_and_restarts() {
         "{}",
         json!({"case": "cooperative", "shutdown": receipt, "old_child_absent": true})
     );
-    let restarted = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    let restarted = super::started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_ne!(pid(&restarted), child);
     assert!(CoreRuntime::start(launch(data)).await.is_err());
     let next_child = pid(&restarted);

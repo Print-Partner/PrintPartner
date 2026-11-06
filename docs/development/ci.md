@@ -13,7 +13,7 @@ On ready PRs, the jobs are selected as follows:
 - `rust (macos)` uses the same path selection. It runs only when relevant inputs change and the PR has the exact `macos` label and is not a draft. Adding or removing the label, marking the PR ready for review and converting it to a draft each start a new run.
 - When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (Windows excludes every reverse dependent of pp-core, for example) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
 
-Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a new push to `main` cancels the older `main` run (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
+Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a push to `main` never cancels another `main` run (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
@@ -584,15 +584,25 @@ is new.
 
 ### Superseded runs
 
-Every CI workflow that runs on pushes to `main` groups those pushes by workflow
-and ref and cancels the older run when a newer push arrives, except the ast-grep
-ratchet above and the [duplication check](#duplicated-code). Both compare each
-push with the commit it replaced. The newest `main` run tests every earlier merge, so a burst of
-merges no longer queues one full run per merge. The cost is attribution: a
-cancelled merge has no result of its own. To find the merge that broke `main`,
-dispatch the workflow on each candidate SHA. Reruns (attempt 2 and later, which
-`main-red` starts) keep their own group so they never cancel the newer run. Tag
-pushes, merge groups, the schedule and manual runs never cancel each other.
+Only pull request runs cancel superseded runs. Every CI workflow groups a pull
+request by workflow and ref (or PR number) with `cancel-in-progress: true`, so a
+new push replaces the older run. Every other event, pushes to `main` included,
+gets a group of its own (`github.run_id`) with cancelling off, so the validation
+of one merge is never killed by the next. This changed on 2026-11-06 (GRE-1228):
+a sample of 60 `main` push runs had 25 cancelled, 23 succeeded and 12 in progress,
+because a newer merge cancelled each older run and left that merge with no result.
+
+The run count stays bounded because `main` only receives merges of reviewed pull
+requests, one `push` event each, and a workflow starts at most one run per event.
+The path filters still skip jobs that a merge cannot affect. Reruns (attempt 2 and
+later, which `main-red` starts), tag pushes, merge groups, the schedule and manual
+runs each have their own group too.
+
+| Event | Group | `cancel-in-progress` |
+| --- | --- | --- |
+| `pull_request` | workflow and ref (or PR number) | `true` |
+| `push` to `main` | `run_id` | `false` |
+| `push` of a tag, `merge_group`, `schedule`, `workflow_dispatch`, rerun | `run_id` | `false` |
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.
 

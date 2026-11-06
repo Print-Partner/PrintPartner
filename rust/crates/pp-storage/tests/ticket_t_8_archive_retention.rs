@@ -274,23 +274,7 @@ fn ticket_t_8_archive_retention_never_deletes_below_three_verified_or_without_an
 #[cfg(feature = "desktop_rebuild")]
 #[test]
 fn ticket_t_8_archive_retention_restart_from_41_keeps_the_interrupted_upgrade_input() {
-    let data = Scratch::new("pp-t8-retention-restart-41");
-    upgrade(&data);
-    let backups = data.join("backups");
-    std::fs::remove_dir_all(&backups).unwrap();
-    std::fs::create_dir(&backups).unwrap();
-    Connection::open(data.join("print-partner.db"))
-        .unwrap()
-        .execute_batch(
-            "DROP TABLE domain_events; UPDATE app_settings SET value='41' WHERE tenant_id='default' AND key='schema_version'",
-        )
-        .unwrap();
-    for (index, step) in (38..=41).enumerate() {
-        verified_copy(
-            &backups.join(format!("pre-schema{step}.db")),
-            hour(4 - index as u64),
-        );
-    }
+    let (data, backups) = interrupted("pp-t8-retention-restart-41", 41);
     let (owner, ready) = WriterOwner::open(&data, Limits::default()).unwrap();
     owner.shutdown().unwrap();
     assert_eq!(ready.previous_version, 41);
@@ -330,4 +314,93 @@ fn domain_events_objects_below_42_are_refused_by_preflight_before_any_write() {
         "{error:#}"
     );
     assert_eq!(contents(&data), before);
+}
+
+/// Sets up a 37 to 43 upgrade interrupted after step `at` committed: the
+/// live database is at `at` and copies 38 to `at` are on disk, oldest first.
+#[cfg(feature = "desktop_rebuild")]
+fn interrupted(name: &str, at: u64) -> (Scratch, PathBuf) {
+    let data = Scratch::new(name);
+    upgrade(&data);
+    let backups = data.join("backups");
+    std::fs::remove_dir_all(&backups).unwrap();
+    std::fs::create_dir(&backups).unwrap();
+    let events = if at < 42 {
+        "DROP TABLE domain_events;"
+    } else {
+        ""
+    };
+    Connection::open(data.join("print-partner.db"))
+        .unwrap()
+        .execute_batch(&format!(
+            "DROP TABLE plan_draft_headers; DROP TABLE build_profile_details; {events} UPDATE app_settings SET value='{at}' WHERE tenant_id='default' AND key='schema_version'"
+        ))
+        .unwrap();
+    for (index, step) in (38..=at).enumerate() {
+        verified_copy(
+            &backups.join(format!("pre-schema{step}.db")),
+            hour(at - 37 - index as u64),
+        );
+    }
+    (data, backups)
+}
+
+/// The restart of an interrupted upgrade finds the run marker naming that
+/// upgrade's input copy, so retention keeps it, and the marker goes once the
+/// upgrade commits.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn ticket_t_8_archive_retention_restart_from_42_keeps_the_marked_upgrade_input() {
+    let (data, backups) = interrupted("pp-t8-retention-marker-42", 42);
+    std::fs::write(backups.join("pre-schema-run"), "pre-schema38.db\n").unwrap();
+    let (owner, ready) = WriterOwner::open(&data, Limits::default()).unwrap();
+    owner.shutdown().unwrap();
+    assert_eq!(ready.previous_version, 42);
+    assert_eq!(ready.backup, Some(backups.join("pre-schema43.db")));
+    assert!(backups.join("pre-schema38.db").exists());
+    assert!(backups.join("pre-schema43.db").exists());
+    assert!(
+        !ready
+            .pruned_backups
+            .contains(&backups.join("pre-schema38.db")),
+        "{:?}",
+        ready.pruned_backups
+    );
+    assert!(!backups.join("pre-schema-run").exists());
+}
+
+/// Without a marker the same restart is an ordinary upgrade from 42, so
+/// retention may prune the oldest copy. This is the case the marker exists
+/// to tell apart.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn ticket_t_8_archive_retention_restart_from_42_without_a_marker_prunes_as_usual() {
+    let (data, backups) = interrupted("pp-t8-retention-unmarked-42", 42);
+    let (owner, ready) = WriterOwner::open(&data, Limits::default()).unwrap();
+    owner.shutdown().unwrap();
+    assert_eq!(ready.previous_version, 42);
+    assert!(
+        ready
+            .pruned_backups
+            .contains(&backups.join("pre-schema38.db")),
+        "{:?}",
+        ready.pruned_backups
+    );
+    assert!(backups.join("pre-schema43.db").exists());
+    assert!(!backups.join("pre-schema-run").exists());
+}
+
+/// A marker that names no pre-upgrade copy is refused before any write.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn ticket_t_8_archive_retention_refuses_a_marker_naming_no_copy() {
+    let (data, backups) = interrupted("pp-t8-retention-bad-marker", 42);
+    std::fs::write(backups.join("pre-schema-run"), "print-partner.db\n").unwrap();
+    let database = std::fs::read(data.join("print-partner.db")).unwrap();
+    let error = WriterOwner::open(&data, Limits::default()).err().unwrap();
+    assert!(
+        format!("{error:#}").contains("names no pre-upgrade copy"),
+        "{error:#}"
+    );
+    assert!(std::fs::read(data.join("print-partner.db")).unwrap() == database);
 }

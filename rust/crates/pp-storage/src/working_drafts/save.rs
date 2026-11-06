@@ -7,7 +7,10 @@ use crate::plan_publication::{
     RequiredUnitTokenAllocator,
 };
 use pp_contracts::{
-    autosave::{ApplyPlanDraftReceipt, PlanChoice, SavePlanChoicesRequest},
+    autosave::{
+        ApplyPlanDraftReceipt, PlanChoice, PlanDraftBasis, PlanDraftIdentity,
+        SavePlanChoicesRequest,
+    },
     publication::ApplyRequest,
 };
 use serde::Serialize;
@@ -274,13 +277,28 @@ pub(super) fn changes(decisions: &[PlanChoice]) -> Vec<Value> {
 
 pub(super) type Checked<T> = std::result::Result<T, Refusal>;
 
+/// The credential's tenant and its actor, trimmed as JavaScript trims.
+pub(super) fn tenant_actor(
+    tx: &Transaction<'_>,
+    credential: &Credential,
+    policy: auth::AuthPolicy,
+) -> Result<(String, String)> {
+    let (tenant, actor) =
+        auth::authority::queries::observe_reconciliation_actor(tx, credential, policy)?;
+    let actor = JsText::scalar(&actor)
+        .trim_ecmascript()
+        .as_scalar()
+        .ok_or_else(|| anyhow!("Invalid draft actor"))?;
+    Ok((tenant, actor))
+}
+
 /// Refuses an archived Plan, a missing baseline or a stale base, and
 /// otherwise returns the Accepted base.
 pub(super) fn accepted_base(
     tx: &Transaction<'_>,
     tenant: &str,
     p: &Value,
-    request: &SavePlanChoicesRequest,
+    expected: &PlanDraftBasis,
 ) -> Result<Checked<Value>> {
     if !p["archivedAt"].is_null() {
         return Ok(Err(Refusal::BuildArchived));
@@ -289,8 +307,8 @@ pub(super) fn accepted_base(
         return Ok(Err(Refusal::AcceptedBaselineRequired));
     }
     let base = json!({"baseRevisionId":p["acceptedPlanRevisionId"],"basePlanVersion":p["acceptedPlanVersion"]});
-    if base["baseRevisionId"] != json!(request.expected_base().revision_id())
-        || base["basePlanVersion"] != json!(request.expected_base().plan_version())
+    if base["baseRevisionId"] != json!(expected.revision_id())
+        || base["basePlanVersion"] != json!(expected.plan_version())
     {
         return Ok(Err(Refusal::BaseChanged));
     }
@@ -304,10 +322,10 @@ pub(super) fn observed_draft(
     tenant: &str,
     profile: i64,
     base: &Value,
-    request: &SavePlanChoicesRequest,
+    expected: Option<&PlanDraftIdentity>,
     budget: &mut observation::PreparationBudget<'_>,
 ) -> Result<Checked<Option<Draft>>> {
-    let Some(expected) = request.expected_draft() else {
+    let Some(expected) = expected else {
         let open = one(
             tx,
             "SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' LIMIT 1",
@@ -499,13 +517,20 @@ fn transact(
             tx, tenant, &prior,
         )?));
     }
-    let base = match accepted_base(tx, tenant, &p, request)? {
+    let base = match accepted_base(tx, tenant, &p, request.expected_base())? {
         Ok(base) => base,
         Err(reason) => return Ok(TransactionResult::Refused(reason)),
     };
     let mut budget = observation::PreparationBudget::new(&c.cancelled, c.observations.limits)?;
     budget.check()?;
-    let source = match observed_draft(tx, tenant, profile, &base, request, &mut budget)? {
+    let source = match observed_draft(
+        tx,
+        tenant,
+        profile,
+        &base,
+        request.expected_draft(),
+        &mut budget,
+    )? {
         Ok(source) => source,
         Err(reason) => return Ok(TransactionResult::Refused(reason)),
     };
@@ -547,7 +572,10 @@ fn transact(
             parts,
             digest: digest.clone(),
         },
-        None,
+        match &source {
+            Some(d) => Origin::Draft(num(&d.header, "id")?),
+            None => Origin::New,
+        },
     )?;
     let inserted = storage::draft_checked(tx, tenant, profile, id, &|| Ok(budget.check()?))?
         .ok_or_else(|| anyhow!("Inserted Save draft missing"))?;

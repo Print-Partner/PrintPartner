@@ -9,20 +9,27 @@ use std::{
 };
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 42;
-/// The newest step that writes its own `pre-schema{N}.db` copy. Later steps
-/// only add tables, so the copy taken at open covers them.
+pub(crate) const CURRENT_VERSION: u64 = 43;
+/// The newest step that writes its own `pre-schema{N}.db` copy. Every step
+/// from 38 does.
 ///
-/// An open from this version still takes an opening copy named for the next
-/// step, outside the names an interrupted upgrade can leave. That open may be
-/// the restart of an upgrade from below 38, so it skips retention: pruning
-/// there could delete that upgrade's untouched input copy.
+/// An interrupted upgrade can leave more step copies than retention keeps, so
+/// every upgrade names its rollback copy in the run marker
+/// (`backup_retention::RUN_MARKER`) before its first step, and a restart keeps
+/// that copy. A restart from 41 may come from a release before the marker,
+/// whose run left `pre-schema38.db` to `pre-schema41.db` and no marker, so an
+/// open from 41 without a marker skips retention.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const LAST_COPIED_STEP: u64 = 41;
-// A second uncopied step would let a restart from an uncopied version name
-// another copy; it needs a run marker first.
+pub(crate) const LAST_COPIED_STEP: u64 = 43;
 #[cfg(feature = "desktop_rebuild")]
-const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP + 1);
+const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP);
+/// The last step a release without the run marker installs. Its interrupted
+/// runs can stop at most at 41 with four step copies.
+#[cfg(feature = "desktop_rebuild")]
+const UNMARKED_RESTART: u64 = 41;
+/// The step that installs the draft header tables.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) const DRAFT_HEADER_STEP: u64 = 43;
 #[cfg(not(feature = "desktop_rebuild"))]
 pub(crate) const CURRENT_VERSION: u64 = 35;
 
@@ -226,7 +233,7 @@ pub(crate) fn preflight(
     #[cfg(feature = "desktop_rebuild")]
     crate::source_sync::validate_schema(&conn, version)?;
     #[cfg(feature = "desktop_rebuild")]
-    validate_domain_events(&conn, version)?;
+    validate_side_schemas(&conn, version)?;
     Ok(version)
 }
 
@@ -347,6 +354,16 @@ pub(crate) fn initialize(
     } else {
         None
     };
+    // The rollback copy of the run this open continues, named by its marker,
+    // or this run's own copy, named in a new marker before any step writes.
+    #[cfg(feature = "desktop_rebuild")]
+    let pinned = match &backup_path {
+        Some(rollback) => crate::backup_retention::begin_run(rollback)?,
+        None => {
+            crate::backup_retention::end_run(&path.with_file_name("backups"))?;
+            None
+        }
+    };
     configure(&conn, false)?;
     let data: SchemaData = serde_json::from_str(include_str!("../data/schema.json"))?;
     for sql in &data.migrations {
@@ -419,7 +436,7 @@ pub(crate) fn initialize(
         crate::uploads::validate_schema(&conn, CURRENT_VERSION)?;
         crate::source_scan::validate_schema(&conn, CURRENT_VERSION)?;
         crate::source_sync::validate_schema(&conn, CURRENT_VERSION)?;
-        validate_domain_events(&conn, CURRENT_VERSION)?;
+        validate_side_schemas(&conn, CURRENT_VERSION)?;
     }
     // Node's fixture builder connects once to create the input and again to
     // create the expected database. The first Rust open must repeat that
@@ -473,13 +490,24 @@ pub(crate) fn initialize(
     // earlier upgrades. This upgrade's copies all stay, including the
     // from-version copy, the only one the previous release opens.
     #[cfg(feature = "desktop_rebuild")]
-    let retains = version < LAST_COPIED_STEP;
+    let (retains, kept) = (
+        version != UNMARKED_RESTART || pinned.is_some(),
+        step_copies
+            .iter()
+            .cloned()
+            .chain(pinned)
+            .collect::<Vec<_>>(),
+    );
     #[cfg(not(feature = "desktop_rebuild"))]
-    let retains = true;
+    let (retains, kept) = (true, step_copies);
     let pruned = match &backup_path {
-        Some(rollback) if retains => crate::backup_retention::prune(rollback, &step_copies),
+        Some(rollback) if retains => crate::backup_retention::prune(rollback, &kept),
         _ => Default::default(),
     };
+    #[cfg(feature = "desktop_rebuild")]
+    if backup_path.is_some() {
+        crate::backup_retention::end_run(&path.with_file_name("backups"))?;
+    }
     Ok((
         conn,
         SchemaReady {
@@ -511,10 +539,14 @@ fn install_steps(
         |connection| Ok(connection.execute_batch(include_str!("source_sync/schema.sql"))?);
     let install_events: fn(&Connection) -> Result<()> =
         |connection| Ok(connection.execute_batch(include_str!("domain_events/schema.sql"))?);
+    let install_headers: fn(&Connection) -> Result<()> = |connection| {
+        Ok(connection.execute_batch(include_str!("working_drafts/header_schema.sql"))?)
+    };
     for (step, install) in crate::uploads::SCHEMA_STEPS.into_iter().chain([
         (40, install_scan),
         (41, install_sync),
         (crate::domain_events::SCHEMA_STEP, install_events),
+        (DRAFT_HEADER_STEP, install_headers),
     ]) {
         if version < step {
             let target = (populated && step <= LAST_COPIED_STEP)
@@ -530,7 +562,7 @@ fn install_steps(
             crate::uploads::validate_schema(&tx, step)?;
             crate::source_scan::validate_schema(&tx, step)?;
             crate::source_sync::validate_schema(&tx, step)?;
-            validate_domain_events(&tx, step)?;
+            validate_side_schemas(&tx, step)?;
             tx.execute(
                 "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='schema_version'",
                 [step.to_string()],
@@ -542,29 +574,46 @@ fn install_steps(
     Ok((first, written))
 }
 
-/// The domain event objects must match `domain_events/schema.sql` from step
-/// 42 and be absent before it.
+/// Rust-only side tables: each step's objects must match its reference SQL
+/// from that step on and be absent before it.
 #[cfg(feature = "desktop_rebuild")]
-fn validate_domain_events(connection: &Connection, version: u64) -> Result<()> {
-    let catalog = |connection: &Connection| -> rusqlite::Result<Vec<(String, Option<String>)>> {
-        connection
-            .prepare(
-                "SELECT name,sql FROM sqlite_master WHERE name LIKE 'domain_event%' ORDER BY name",
-            )?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
-    };
-    let actual = catalog(connection)?;
-    if version < crate::domain_events::SCHEMA_STEP {
-        ensure!(actual.is_empty(), "Unexpected domain event schema");
-        return Ok(());
+const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 2] = [
+    (
+        crate::domain_events::SCHEMA_STEP,
+        "name LIKE 'domain_event%'",
+        include_str!("domain_events/schema.sql"),
+        "Unexpected domain event schema",
+        "Domain event schema mismatch",
+    ),
+    (
+        DRAFT_HEADER_STEP,
+        "tbl_name IN ('plan_draft_headers','build_profile_details')",
+        include_str!("working_drafts/header_schema.sql"),
+        "Unexpected draft header schema",
+        "Draft header schema mismatch",
+    ),
+];
+
+#[cfg(feature = "desktop_rebuild")]
+fn validate_side_schemas(connection: &Connection, version: u64) -> Result<()> {
+    for (step, filter, reference, unexpected, mismatch) in SIDE_SCHEMAS {
+        let catalog = |connection: &Connection| -> rusqlite::Result<Vec<(String, Option<String>)>> {
+            connection
+                .prepare(&format!(
+                    "SELECT name,sql FROM sqlite_master WHERE {filter} ORDER BY name"
+                ))?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        };
+        let actual = catalog(connection)?;
+        if version < step {
+            ensure!(actual.is_empty(), unexpected);
+            continue;
+        }
+        let expected = Connection::open_in_memory()?;
+        expected.execute_batch(reference)?;
+        ensure!(actual == catalog(&expected)?, mismatch);
     }
-    let expected = Connection::open_in_memory()?;
-    expected.execute_batch(include_str!("domain_events/schema.sql"))?;
-    ensure!(
-        actual == catalog(&expected)?,
-        "Domain event schema mismatch"
-    );
     Ok(())
 }
 

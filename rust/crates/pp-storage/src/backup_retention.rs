@@ -10,15 +10,13 @@
 //! newer rollback.
 //!
 //! A step copy written by an attempt that was interrupted before the upgrade
-//! committed is an ordinary candidate, because step names carry no run
-//! marker. That is safe while an interrupted run can leave at most
-//! [`KEEP_VERIFIED`] such copies: they are then the newest, assuming the
-//! clock does not go back between attempts, so the first one survives. A
-//! compile-time assert below holds that bound; a copied step past 41 needs a
-//! run marker or a larger [`KEEP_VERIFIED`] first. Step 42 writes no copy of
-//! its own, and an open from 41 skips retention because its opening
-//! `pre-schema42.db` would be a fifth name (`LAST_COPIED_STEP` in
-//! `schema.rs`).
+//! committed is an ordinary candidate. The run marker ([`RUN_MARKER`]) keeps
+//! the one copy that matters: before its first step, an upgrade names its
+//! rollback copy there, and every restart of that upgrade keeps the named copy
+//! until the upgrade commits and the marker is removed. Releases before the
+//! marker copied at most steps 38 to 41, so a restart from 41 without a marker
+//! may hold four copies with the untouched input the oldest; `schema.rs`
+//! skips retention there.
 //!
 //! Only this crate's own files are candidates: Node's pre-update and manual
 //! `.tar.gz` archives, temporary `.backup-*.db` files and SQLite sidecars are
@@ -35,11 +33,62 @@ use std::{
 
 pub(crate) const KEEP_VERIFIED: usize = 3;
 
-// A step copy gets a new name only after the previous step commits, so the
-// interrupted attempts of one upgrade leave at most LAST_COPIED_STEP - 38
-// copies before the run that commits.
+/// Names the rollback copy of the upgrade in progress, one file name per line
+/// of text, in the backups directory.
 #[cfg(feature = "desktop_rebuild")]
-const _: () = assert!(crate::schema::LAST_COPIED_STEP - 38 <= KEEP_VERIFIED as u64);
+pub(crate) const RUN_MARKER: &str = "pre-schema-run";
+
+/// Starts or continues an upgrade whose rollback copy is `rollback`. Returns
+/// the copy an earlier, interrupted attempt named, which retention must keep;
+/// otherwise names `rollback` in a new marker, durably, and returns `None`.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn begin_run(rollback: &Path) -> anyhow::Result<Option<PathBuf>> {
+    use anyhow::Context;
+    let directory = rollback
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Backup parent missing"))?;
+    let marker = directory.join(RUN_MARKER);
+    match std::fs::read_to_string(&marker) {
+        Ok(name) => {
+            let name = name.trim();
+            anyhow::ensure!(
+                parse(name).is_some(),
+                "Upgrade run marker {} names no pre-upgrade copy",
+                marker.display()
+            );
+            return Ok(Some(directory.join(name)));
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(error).context("backup_retention: read the upgrade run marker");
+        }
+        Err(_) => {}
+    }
+    let name = rollback
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Rollback copy name is not UTF-8"))?;
+    let temp = directory.join(format!(
+        ".{RUN_MARKER}-{}",
+        hex::encode(rand::random::<[u8; 8]>())
+    ));
+    std::fs::write(&temp, format!("{name}\n")).context("backup_retention: write the run marker")?;
+    pp_os::sync_file(&temp).context("backup_retention: sync the run marker")?;
+    pp_os::publish_rename(&temp, &marker).context("backup_retention: publish the run marker")?;
+    pp_os::sync_directory(directory).context("backup_retention: sync the backups directory")?;
+    Ok(None)
+}
+
+/// Ends the upgrade run in `directory`: its marker goes once the upgrade has
+/// committed, or when an open finds nothing to upgrade.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn end_run(directory: &Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+    match std::fs::remove_file(directory.join(RUN_MARKER)) {
+        Ok(()) => pp_os::sync_directory(directory).context("backup_retention: sync after the run"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("backup_retention: remove the upgrade run marker"),
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct Pruned {

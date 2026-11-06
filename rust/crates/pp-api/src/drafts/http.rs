@@ -292,6 +292,7 @@ fn mount(
             "/plans/{id}/drafts/{draft_id}/accept-preview",
             get(accept_preview),
         )
+        .route("/plans/{id}/drafts/{draft_id}/header", get(header))
         .route("/plans/{id}/drafts/{draft_id}/parts", patch(edit))
         .route(
             "/plans/{id}/drafts/{draft_id}/reconciliation",
@@ -300,6 +301,7 @@ fn mount(
         .route("/plans/{id}/drafts/{draft_id}/abandon", post(abandon))
         .route("/plans/{id}/drafts/recompute", post(lifecycle::recompute))
         .route("/plans/{id}/drafts/save", post(lifecycle::autosave))
+        .route("/plans/{id}/drafts/header", put(lifecycle::save_header))
         .route(
             "/plans/{id}/drafts/{draft_id}/rebase",
             post(lifecycle::rebase),
@@ -335,7 +337,8 @@ async fn authorize(
         Request::List => ("list", None),
         Request::Read { draft_id }
         | Request::Diff { draft_id }
-        | Request::Workspace { draft_id } => ("read", Some(*draft_id)),
+        | Request::Workspace { draft_id }
+        | Request::Header { draft_id } => ("read", Some(*draft_id)),
         Request::AcceptPreview { draft_id } => ("accept_preview", Some(*draft_id)),
     };
     match load(&app, presented, profile, operation).await {
@@ -444,6 +447,7 @@ fn read_target(path: &str) -> Option<(PositiveId, Request)> {
             let request = match parts.next() {
                 None => Request::Workspace { draft_id },
                 Some("accept-preview") => Request::AcceptPreview { draft_id },
+                Some("header") => Request::Header { draft_id },
                 Some(_) => return None,
             };
             parts.next().is_none().then_some((profile, request))
@@ -469,6 +473,15 @@ async fn list(Extension(read): Extension<Authorized>) -> Response {
 async fn workspace(Extension(read): Extension<Authorized>) -> Response {
     match read.outcome.as_ref() {
         Outcome::Workspace { workspace } => json_response(StatusCode::OK, workspace),
+        Outcome::ProfileNotFound => profile_missing(),
+        Outcome::DraftNotFound => draft_missing(),
+        _ => internal_error(),
+    }
+}
+
+async fn header(Extension(read): Extension<Authorized>) -> Response {
+    match read.outcome.as_ref() {
+        Outcome::Header { header } => json_response(StatusCode::OK, header),
         Outcome::ProfileNotFound => profile_missing(),
         Outcome::DraftNotFound => draft_missing(),
         _ => internal_error(),
@@ -614,10 +627,11 @@ fn idempotency_key(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// The writes Node refuses without an `Idempotency-Key`: reconciliation,
-/// recompute, rebase and Accept, and the Rust-only draft autosave.
+/// recompute, rebase and Accept, and the Rust-only draft autosave and draft
+/// header save.
 fn keyed_write(method: &Method, path: &str) -> bool {
     match *method {
-        Method::PUT => path.ends_with("/reconciliation"),
+        Method::PUT => path.ends_with("/reconciliation") || path.ends_with("/drafts/header"),
         Method::POST => ["/recompute", "/rebase", "/apply", "/drafts/save"]
             .iter()
             .any(|action| path.ends_with(action)),

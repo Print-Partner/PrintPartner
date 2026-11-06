@@ -109,6 +109,23 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("EditDraftPartsRequest"),
         "DraftWorkspace",
     ),
+    route(
+        "readDraftHeader",
+        "GET",
+        "/api/v2/plans/{id}/drafts/{draft_id}/header",
+        None,
+        "DraftHeaderView",
+    ),
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
+            "saveDraftHeader",
+            "PUT",
+            "/api/v2/plans/{id}/drafts/header",
+            Some("SaveDraftHeaderRequest"),
+            "DraftHeaderSaved",
+        )
+    },
     ClientRoute {
         headers: &["Idempotency-Key"],
         ..route(
@@ -329,7 +346,13 @@ mod codegen {
             AcceptedReference, Change, ConflictView, Diff, DraftBase, DraftIdentity,
             DraftListResponse, PartView, ReconciliationRequest, ReconciliationView, Workspace,
         },
-        working_drafts::{AbandonRequest, EditRequest},
+        working_drafts::{
+            AbandonRequest, EditRequest,
+            header::{
+                BuildHeader, DraftHeaderReceipt, DraftHeaderSaved, DraftHeaderState, HeaderView,
+                SaveDraftHeaderRequest,
+            },
+        },
     };
     use pp_storage::{
         features::modules::{Module, ModuleOffReason},
@@ -361,6 +384,12 @@ mod codegen {
         schema("DraftWorkspace", schemars::schema_for!(Workspace))?;
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
         schema("DraftAcceptPreview", schemars::schema_for!(AcceptPreview))?;
+        schema("DraftHeaderView", schemars::schema_for!(HeaderView))?;
+        schema(
+            "SaveDraftHeaderRequest",
+            schemars::schema_for!(SaveDraftHeaderRequest),
+        )?;
+        schema("DraftHeaderSaved", schemars::schema_for!(DraftHeaderSaved))?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema(
@@ -951,6 +980,84 @@ mod codegen {
     }
 
     /// An unchanged draft, and a changed one with every check filled.
+    /// Draft header reads, saves and save bodies (GRE-1197).
+    fn header_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        let full = BuildHeader {
+            name: UNICODE.into(),
+            order_number: Some("PO-7".into()),
+            customer: Some(UNICODE.into()),
+            due_date: Some("2026-12-31".into()),
+        };
+        let empty = BuildHeader {
+            name: "Build".into(),
+            order_number: None,
+            customer: None,
+            due_date: None,
+        };
+        let state = DraftHeaderState {
+            header_version: 2_147_483_647,
+            header: full.clone(),
+            updated_at: "2026-11-06T12:00:00.000Z".into(),
+        };
+        let proposed = HeaderView {
+            draft_id: MAX_SAFE,
+            build: empty.clone(),
+            draft: Some(state.clone()),
+        };
+        let body = |header: Value, version: Value| {
+            json!({"expected_base": {"revision_id": null, "plan_version": 0},
+                "expected_draft": null, "expected_header_version": version, "header": header})
+        };
+        let save = |name: &str, value: Value| {
+            request::<SaveDraftHeaderRequest>("SaveDraftHeaderRequest", name, value)
+        };
+        Ok(vec![
+            served(
+                "DraftHeaderView",
+                "unchanged",
+                HeaderView {
+                    draft_id: 1,
+                    build: full.clone(),
+                    draft: None,
+                },
+            )?,
+            served("DraftHeaderView", "proposed", &proposed)?,
+            served(
+                "DraftHeaderSaved",
+                "saved",
+                DraftHeaderSaved {
+                    receipt: DraftHeaderReceipt {
+                        profile_id: MAX_SAFE,
+                        draft_id: MAX_SAFE,
+                        header: state,
+                    },
+                    header: proposed,
+                },
+            )?,
+            save("full", body(serde_json::to_value(&full)?, json!(1))),
+            save("cleared", body(serde_json::to_value(&empty)?, Value::Null)),
+            save(
+                "missing-due-date",
+                body(
+                    json!({"name": "Build", "order_number": null, "customer": null}),
+                    Value::Null,
+                ),
+            ),
+            save(
+                "extra-field",
+                body(
+                    json!({"name": "Build", "order_number": null, "customer": null,
+                    "due_date": null, "notes": "x"}),
+                    Value::Null,
+                ),
+            ),
+            save(
+                "negative-version",
+                body(serde_json::to_value(&empty)?, json!(-1)),
+            ),
+        ])
+    }
+
     fn previews() -> Vec<(&'static str, AcceptPreview)> {
         let revision = |revision_id: Option<i64>| PreviewRevision {
             draft_id: MAX_SAFE,
@@ -1440,6 +1547,7 @@ mod codegen {
         for (name, value) in previews() {
             cases.push(served("DraftAcceptPreview", name, value)?);
         }
+        cases.extend(header_fixtures()?);
         for (index, value) in workspaces.into_iter().enumerate() {
             cases.push(served(
                 "DraftWorkspace",

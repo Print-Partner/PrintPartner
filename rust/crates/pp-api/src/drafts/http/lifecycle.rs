@@ -6,7 +6,8 @@ use pp_storage::{
     working_drafts::{
         RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome, RecomputeOutcome,
         RecomputeRequest, RecomputeWorkspaceOutcome,
-        autosave::{AutosaveCommand, AutosaveOutcome, SavePlanChoicesRequest},
+        autosave::{AutosaveCommand, AutosaveOutcome},
+        header::{HeaderCommand, HeaderOutcome, HeaderRefusal},
         save::Refusal as SaveRefusal,
     },
 };
@@ -99,9 +100,7 @@ fn keyed_body<T: serde::de::DeserializeOwned>(
     let (profile, draft_id) =
         write_target(uri.path(), action).ok_or_else(|| Box::new(invalid_request()))?;
     let key = idempotency_key(headers).ok_or_else(|| Box::new(invalid_request()))?;
-    let request = crate::problem::parse_body::<T>(body)
-        .map_err(|errors| Box::new(invalid_body(body, errors)))?;
-    Ok((profile, draft_id, key.to_owned(), request))
+    Ok((profile, draft_id, key.to_owned(), typed_body::<T>(body)?))
 }
 
 /// Node's `rebaseFailure` through `sendFailure`, for refusals that carry no
@@ -357,6 +356,25 @@ impl Accept {
     }
 }
 
+/// The Plan of a keyed Plan write and its storage command, built from the
+/// typed body, or the 400 it answers.
+fn keyed_command<T: serde::de::DeserializeOwned, C>(
+    (uri, action, headers, body): (&Uri, &str, &HeaderMap, &[u8]),
+    presented: PresentedCredential,
+    command: impl FnOnce(pp_storage::read_model::Credential, PositiveId, T, &str) -> anyhow::Result<C>,
+) -> Result<(PositiveId, C), Box<Response>> {
+    let (profile, key) =
+        keyed_plan(uri, action, headers).ok_or_else(|| Box::new(invalid_request()))?;
+    let request = typed_body::<T>(body)?;
+    let command = command(presented.into_credential(), profile, request, key)
+        .map_err(|_| Box::new(invalid_request()))?;
+    Ok((profile, command))
+}
+
+fn typed_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Box<Response>> {
+    crate::problem::parse_body::<T>(body).map_err(|errors| Box::new(invalid_body(body, errors)))
+}
+
 /// The Plan of `/plans/{id}/drafts/{action}`, at the root or under `/api/v2`,
 /// and its `Idempotency-Key`.
 fn keyed_plan<'h>(
@@ -383,16 +401,10 @@ pub(super) async fn autosave(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some((profile, key)) = keyed_plan(&uri, "save", &headers) else {
-        return invalid_request();
-    };
-    let request = match crate::problem::parse_body::<SavePlanChoicesRequest>(&body) {
-        Ok(request) => request,
-        Err(errors) => return invalid_body(&body, errors),
-    };
-    let Ok(command) = AutosaveCommand::new(presented.into_credential(), profile, request, key)
-    else {
-        return invalid_request();
+    let target = (&uri, "save", &headers, &body[..]);
+    let (profile, command) = match keyed_command(target, presented, AutosaveCommand::new) {
+        Ok(command) => command,
+        Err(response) => return *response,
     };
     let work = move |client: &WorkingDraftClient, flag, wait| client.autosave(command, flag, wait);
     match run_write(&app, work).await {
@@ -402,6 +414,43 @@ pub(super) async fn autosave(
         ),
         Ok(AutosaveOutcome::Refused { reason }) => present_autosave(reason),
         Err(error) => write_failure(error, "autosave", profile, None),
+    }
+}
+
+/// Draft header save (GRE-1197): `PUT /plans/{id}/drafts/header` with a
+/// `SaveDraftHeaderRequest` and an `Idempotency-Key`. The header lands in
+/// the observed open draft, or a new draft when none is open. Nothing reaches
+/// the Build until Accept.
+pub(super) async fn save_header(
+    Extension(app): Extension<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let target = (&uri, "header", &headers, &body[..]);
+    let (profile, command) = match keyed_command(target, presented, HeaderCommand::new) {
+        Ok(command) => command,
+        Err(response) => return *response,
+    };
+    let work =
+        move |client: &WorkingDraftClient, flag, wait| client.save_header(command, flag, wait);
+    match run_write(&app, work).await {
+        Ok(HeaderOutcome::Saved(saved)) => json_response(StatusCode::OK, saved),
+        Ok(HeaderOutcome::Refused { reason }) => match reason {
+            HeaderRefusal::Invalid { field, detail } => refusal(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_header",
+                [("field", json!(field)), ("reason", json!(detail))],
+            ),
+            HeaderRefusal::HeaderChanged { current } => refusal(
+                StatusCode::CONFLICT,
+                "header_changed",
+                [("header", json!(current))],
+            ),
+            HeaderRefusal::Draft(reason) => present_autosave(reason),
+        },
+        Err(error) => write_failure(error, "draft header", profile, None),
     }
 }
 

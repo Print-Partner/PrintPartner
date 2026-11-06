@@ -78,6 +78,7 @@ pub struct DesktopLaunch {
 }
 
 pub use pp_compat::SupervisorConfig;
+pub use pp_compat::spawn_child;
 pub use pp_compat::{Bundle as VerifiedBundle, Status as CoreStatus};
 /// The shared scrub policy for log files, the Logs view and opt-in Sentry.
 pub use pp_compat::{CoreLog, redact};

@@ -480,29 +480,38 @@ pub(crate) fn spawn(command: &mut Command, setup: &ChildSetup) -> std::io::Resul
         startup.StartupInfo.hStdOutput = inherited[1];
         startup.StartupInfo.hStdError = inherited[2];
         startup.lpAttributeList = list;
-        for handle in inherited {
-            check(unsafe {
-                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
-            })?;
-        }
         let mut information = PROCESS_INFORMATION::default();
         let program = wide(program.as_os_str());
-        let created = check(unsafe {
-            CreateProcessW(
-                program.as_ptr(),
-                line.as_mut_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1,
-                CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
-                environment.as_ptr().cast(),
-                directory
-                    .as_ref()
-                    .map_or(std::ptr::null(), |directory| directory.as_ptr()),
-                &startup.StartupInfo,
-                &mut information,
-            )
-        });
+        let _spawning = crate::SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let created = inherited
+            .iter()
+            .try_for_each(|&handle| {
+                check(unsafe {
+                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
+                })
+            })
+            .and_then(|()| {
+                check(unsafe {
+                    CreateProcessW(
+                        program.as_ptr(),
+                        line.as_mut_ptr(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        1,
+                        CREATE_UNICODE_ENVIRONMENT
+                            | EXTENDED_STARTUPINFO_PRESENT
+                            | CREATE_NO_WINDOW,
+                        environment.as_ptr().cast(),
+                        directory
+                            .as_ref()
+                            .map_or(std::ptr::null(), |directory| directory.as_ptr()),
+                        &startup.StartupInfo,
+                        &mut information,
+                    )
+                })
+            });
         for handle in inherited {
             unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
         }

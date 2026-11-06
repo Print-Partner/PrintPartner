@@ -67,6 +67,21 @@ impl Bundle {
     }
 }
 
+static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Start `command` while no compat spawn holds inheritable handles. On
+/// Windows a child created with handle inheritance gets every inheritable
+/// handle in the process, and Node's pipe ends are inheritable for the length
+/// of its `CreateProcessW` call; a child that keeps them would hide stdin EOF
+/// from Node and the log readers. Every other child the process starts goes
+/// through here.
+pub fn spawn_child(command: &mut Command) -> std::io::Result<tokio::process::Child> {
+    let _spawning = SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    command.spawn()
+}
+
 #[cfg(test)]
 pub type BeforeSetup = Box<dyn Fn(&Path, u32) -> Result<()> + Send + Sync>;
 

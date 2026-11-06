@@ -137,23 +137,22 @@ def main():
 
     require(proof("baseline")[0] == 0, "full built startup baseline failed")
     if args.negative_control:
-        tracked_source = REPO / "rust/crates/pp-compat/src/lib.rs"
+        tracked_source = REPO / "rust/crates/pp-compat/src/unix.rs"
         original_source = tracked_source.read_bytes()
         isolated_rust = stage / "negative-source/rust"
         shutil.copytree(REPO / "rust", isolated_rust, ignore=shutil.ignore_patterns("target"))
-        source = isolated_rust / "crates/pp-compat/src/lib.rs"
+        source = isolated_rust / "crates/pp-compat/src/unix.rs"
         require(source.read_bytes() == original_source, "isolated production source differs")
         negative_command = command.copy()
         negative_command[negative_command.index("--manifest-path") + 1] = str(isolated_rust / "Cargo.toml")
         separator = negative_command.index("--")
         negative_command[separator:separator] = ["--target-dir", str(stage / "negative-target")]
-        measured_source, shell = original_source.split(b"    async fn spawn_shell(", 1)
-        before = b"let (parent_read, parent_death) ="
-        require(measured_source.count(before) == 1, "ambiguous production guard declaration")
-        measured_source = measured_source.replace(before, b"let (parent_read, mut parent_death) =", 1)
-        before = b"        drop(parent_read);\n"
-        require(measured_source.count(before) == 1, "ambiguous production guard disarm point")
-        changed = measured_source.replace(before, before + b"        parent_death.release();\n", 1) + b"    async fn spawn_shell(" + shell
+        before = b"    _guard: &mut ParentDeathGuard,\n"
+        require(original_source.count(before) == 1, "ambiguous production guard declaration")
+        changed = original_source.replace(before, b"    guard: &mut ParentDeathGuard,\n", 1)
+        before = b"    drop(setup);\n"
+        require(changed.count(before) == 1, "ambiguous production guard disarm point")
+        changed = changed.replace(before, before + b"    guard.release();\n", 1)
         try:
             source.write_bytes(changed)
             write_json(evidence / "negative-isolation.json", {

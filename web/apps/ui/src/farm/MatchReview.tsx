@@ -85,13 +85,6 @@ export function MatchReview() {
   const client = useQueryClient();
   const suggestions = useQuery({ ...suggestionsQuery, enabled: farm?.state === "on" });
   const printers = useQuery({ ...printersQuery, enabled: farm?.state === "on" });
-  const unmatched = useQuery({ ...unmatchedQuery, enabled: farm?.state === "on" });
-  // A claim claims every open print of the same file on the same integration, so reprints
-  // of one file are claimed together. Before the integrations load, the printer stands in.
-  const fileOf = (s: Suggestion) => {
-    const integration = unmatched.data?.prints.find((p) => p.id === s.print_id)?.integration_id;
-    return `${integration ?? `printer:${s.printer_id}`}:${baseName(s.filename)}`;
-  };
   const printerName = (id: string) => printers.data?.printers.find((p) => p.id === id)?.name ?? id;
   // Prints an Apply resolved, hidden at once so a stale row is never offered again.
   const [resolved, setResolved] = useState<ReadonlySet<string>>(new Set());
@@ -120,6 +113,16 @@ export function MatchReview() {
     let already = 0;
     let dismissed = 0;
     const rows = suggestions.data?.suggestions ?? [];
+    // A claim claims every open print of the same file on the same integration, so reprints
+    // of one file are claimed together. The printer stands in only if that list is unreadable.
+    const prints = await client
+      .ensureQueryData(unmatchedQuery)
+      .then((list) => list.prints)
+      .catch(() => []);
+    const fileOf = (s: Suggestion) => {
+      const integration = prints.find((p) => p.id === s.print_id)?.integration_id;
+      return `${integration ?? `printer:${s.printer_id}`}:${baseName(s.filename)}`;
+    };
     for (const s of picked) {
       if (done.includes(s.print_id)) continue;
       try {

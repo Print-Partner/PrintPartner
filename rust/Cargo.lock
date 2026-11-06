@@ -3346,6 +3346,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "pp-os",
  "rand 0.9.5",
  "regex",
  "serde",

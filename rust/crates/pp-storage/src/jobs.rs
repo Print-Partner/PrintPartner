@@ -1682,13 +1682,15 @@ pub(crate) fn save(tx: &Transaction<'_>, job: &mut JobRecord, event: &str) -> Re
 /// Fails the printer upload `job_id` when it is queued or its outcome is
 /// unknown, so it never runs and no longer reserves its printer, and returns
 /// whether it did. The send queue calls this when the user removes the item
-/// the upload was dispatched for, and at open for an upload that never
-/// started. Any other job, or an id with no Rust job (a send Node started),
-/// is left alone.
+/// the upload was dispatched for (`subject` names the user), and at open for
+/// an upload that never started. An unknown outcome is closed as
+/// [`close_unresolved_upload`] records it. Any other job, or an id with no
+/// Rust job (a send Node started), is left alone.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn release_printer_upload(
     tx: &Transaction<'_>,
     tenant: &str,
+    subject: &str,
     job_id: &str,
     reason: &str,
     event: &str,
@@ -1701,10 +1703,8 @@ pub(crate) fn release_printer_upload(
     if !stored {
         return Ok(false);
     }
-    let mut job = owned(tx, job_id, tenant)?;
-    job.state = PersistentState::Failed;
-    job.recovery = Some(reason.into());
-    save(tx, &mut job, event)?;
+    let job = owned(tx, job_id, tenant)?;
+    close_unresolved_upload(tx, job, subject, "UserRemoved", false, reason, event)?;
     Ok(true)
 }
 /// The state of the tenant's printer upload `job_id`, or `None` when no Rust
@@ -1726,9 +1726,7 @@ pub(crate) fn printer_upload_state(
     Ok(Some(owned(tx, job_id, tenant)?.state))
 }
 /// Records the user's answer for a printer upload awaiting reconciliation:
-/// it printed (succeeded) or it did not (failed). The answer is kept in the
-/// reconciliation history against the last effect, and the job stops
-/// reserving its printer. Nothing is resent.
+/// it printed (succeeded) or it did not (failed). Nothing is resent.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn reconcile_printer_upload(
     tx: &Transaction<'_>,
@@ -1737,45 +1735,84 @@ pub(crate) fn reconcile_printer_upload(
     job_id: &str,
     printed: bool,
 ) -> Result<()> {
-    let mut job = owned(tx, job_id, tenant)?;
+    let job = owned(tx, job_id, tenant)?;
     ensure!(
         job.kind == JobKind::PrinterUpload && job.state == PersistentState::ReconciliationRequired,
         "Printer upload is not awaiting reconciliation"
     );
-    let effect = job
-        .effects
-        .last()
-        .ok_or_else(|| anyhow!("Reconciliation effect required"))?;
-    let decision = if printed {
-        "UserPrinted"
+    let (decision, recovery) = if printed {
+        ("UserPrinted", "You reconciled this send: it printed")
     } else {
-        "UserDidNotPrint"
+        (
+            "UserDidNotPrint",
+            "You reconciled this send: it did not print",
+        )
     };
-    tx.execute(
-        "INSERT INTO durable_job_reconciliations(job_id,version,subject,generation,effect_hash,basis_hash,target,decision,receipt,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'null',?9)",
-        params![
-            job.job_id,
-            job.state_version + 1,
-            subject,
-            job.generation,
-            effect.intent.content_hash,
-            effect.intent.basis_hash,
-            effect.intent.target,
-            decision,
-            now()
-        ],
-    )?;
+    close_unresolved_upload(
+        tx,
+        job,
+        subject,
+        decision,
+        printed,
+        recovery,
+        &format!("reconciled:{decision}"),
+    )
+}
+/// Ends a queued or unresolved printer upload as succeeded (`printed`) or
+/// failed, so it stops reserving its printer. For an unresolved one the
+/// decision goes into the reconciliation history against the last effect. A
+/// receipt kept from an attempt whose authority was refused is confirmed when
+/// it printed; otherwise it is moved into that history record, since a
+/// finished job cannot hold an unconfirmed receipt.
+#[cfg(feature = "desktop_rebuild")]
+fn close_unresolved_upload(
+    tx: &Transaction<'_>,
+    mut job: JobRecord,
+    subject: &str,
+    decision: &str,
+    printed: bool,
+    recovery: &str,
+    event: &str,
+) -> Result<()> {
+    if job.state == PersistentState::ReconciliationRequired {
+        let mut observed = None;
+        for effect in &mut job.effects {
+            if effect.confirmed || effect.no_effect || effect.receipt.is_none() {
+                continue;
+            }
+            if printed {
+                effect.confirmed = true;
+            } else {
+                observed = effect.receipt.take();
+            }
+        }
+        let effect = job
+            .effects
+            .last()
+            .ok_or_else(|| anyhow!("Reconciliation effect required"))?;
+        tx.execute(
+            "INSERT INTO durable_job_reconciliations(job_id,version,subject,generation,effect_hash,basis_hash,target,decision,receipt,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                job.job_id,
+                job.state_version + 1,
+                subject,
+                job.generation,
+                effect.intent.content_hash,
+                effect.intent.basis_hash,
+                effect.intent.target,
+                decision,
+                serde_json::to_string(&observed)?,
+                now()
+            ],
+        )?;
+    }
     job.state = if printed {
         PersistentState::Succeeded
     } else {
         PersistentState::Failed
     };
-    job.recovery = Some(if printed {
-        "You reconciled this send: it printed".into()
-    } else {
-        "You reconciled this send: it did not print".into()
-    });
-    save(tx, &mut job, &format!("reconciled:{decision}"))
+    job.recovery = Some(recovery.into());
+    save(tx, &mut job, event)
 }
 /// True when a queued, running or unresolved job holds `printer_id`.
 #[cfg(feature = "desktop_rebuild")]

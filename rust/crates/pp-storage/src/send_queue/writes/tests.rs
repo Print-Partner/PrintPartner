@@ -85,14 +85,44 @@ impl Harness {
     }
 
     fn apply(&self, request: Request) -> Reply {
+        self.apply_as(&self.token, request)
+    }
+
+    fn apply_as(&self, token: &str, request: Request) -> Reply {
         self.client
             .apply(
-                Credential::Session(Secret::new(self.token.clone())),
+                Credential::Session(Secret::new(token.into())),
                 request,
                 &AtomicBool::new(false),
                 Duration::from_secs(5),
             )
             .unwrap()
+    }
+
+    fn auth(&self, request: AuthRequest) -> AuthOutcome {
+        self.owner
+            .auth_with_policy(POLICY)
+            .unwrap()
+            .submit(
+                request,
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(5),
+            )
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap()
+    }
+
+    /// A second session for the same user.
+    fn login(&self) -> String {
+        let AuthOutcome::Session { token, .. } = self.auth(AuthRequest::Login {
+            email: "queue@example.com".into(),
+            password: Secret::new("ordinary-password".into()),
+        }) else {
+            panic!("session expected")
+        };
+        token.expose().into()
     }
 
     fn database(&self) -> Connection {
@@ -389,6 +419,7 @@ fn ticket_t_26_it_printed_finishes_the_item_and_node_interrupted_sends_reconcile
     queue.seed(&[
         ("q3", "p-b", "queued", None),
         ("node", "p-c", "error", Some("job-node")),
+        ("after", "p-c", "queued", None),
     ]);
     queue
         .database()
@@ -419,6 +450,11 @@ fn ticket_t_26_it_printed_finishes_the_item_and_node_interrupted_sends_reconcile
     );
 
     assert_eq!(queue.send("node"), OUTCOME_UNKNOWN);
+    // Node's interrupted send holds its printer for every other item too.
+    assert_eq!(
+        queue.send("after"),
+        refused(409, "Another send to this printer is still unresolved")
+    );
     assert!(matches!(
         queue.apply(Request::Reconcile {
             id: "node".into(),
@@ -427,6 +463,151 @@ fn ticket_t_26_it_printed_finishes_the_item_and_node_interrupted_sends_reconcile
         Reply::Item(_)
     ));
     assert!(matches!(queue.send("node"), Reply::Dispatched { .. }));
+}
+
+/// Dispatches the item under a second session that is revoked after the
+/// upload is admitted, so the printer's receipt is kept only as observed.
+fn observed_upload(
+    queue: &Harness,
+    worker: &ServerWorkerClient,
+    id: &str,
+    printer: &str,
+) -> String {
+    let session = queue.login();
+    let Reply::Dispatched { job_id, .. } = queue.apply_as(
+        &session,
+        Request::Dispatch {
+            id: id.into(),
+            host_name: "Micron".into(),
+        },
+    ) else {
+        panic!("dispatch refused")
+    };
+    let mut attempt = claim(worker);
+    worker
+        .update(
+            &mut attempt.lease,
+            WorkerOperation::BeginEffect(intent(printer)),
+        )
+        .unwrap();
+    queue.auth(AuthRequest::Logout {
+        token: Secret::new(session),
+    });
+    assert!(
+        worker
+            .update(
+                &mut attempt.lease,
+                WorkerOperation::ConfirmEffect(receipt(printer))
+            )
+            .is_err()
+    );
+    let (state, document) = queue.job(&job_id);
+    assert_eq!(state, "reconciliation_required");
+    assert_eq!(document["effects"][0]["receipt"]["receipt_id"], "upload-1");
+    assert_eq!(document["effects"][0]["confirmed"], false);
+    job_id
+}
+
+fn receipt(printer: &str) -> ResultArtifact {
+    ResultArtifact {
+        receipt_id: "upload-1".into(),
+        content_hash: "b".repeat(64),
+        target: printer.into(),
+    }
+}
+
+#[test]
+fn ticket_t_26_reconcile_and_remove_resolve_a_receipt_kept_after_a_refused_authority() {
+    let queue = Harness::open();
+    queue.seed(&[
+        ("printed", "p-a", "queued", None),
+        ("removed", "p-b", "queued", None),
+    ]);
+    let worker = queue.worker();
+
+    let printed = observed_upload(&queue, &worker, "printed", "p-a");
+    assert_eq!(queue.send("printed"), OUTCOME_UNKNOWN);
+    assert!(matches!(
+        queue.apply(Request::Reconcile {
+            id: "printed".into(),
+            printed: true,
+        }),
+        Reply::Item(_)
+    ));
+    let (state, document) = queue.job(&printed);
+    assert_eq!(state, "succeeded");
+    assert_eq!(document["effects"][0]["confirmed"], true);
+    assert_eq!(queue.item("printed").0, "done");
+
+    let removed = observed_upload(&queue, &worker, "removed", "p-b");
+    assert!(matches!(
+        queue.apply(Request::Remove {
+            id: "removed".into()
+        }),
+        Reply::Item(_)
+    ));
+    let (state, document) = queue.job(&removed);
+    assert_eq!(state, "failed");
+    assert!(document["effects"][0]["receipt"].is_null());
+    let (decision, kept): (String, String) = queue
+        .database()
+        .query_row(
+            "SELECT decision,receipt FROM durable_job_reconciliations WHERE job_id=?1",
+            [&removed],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(decision, "UserRemoved");
+    assert_eq!(
+        serde_json::from_str::<Value>(&kept).unwrap()["receipt_id"],
+        "upload-1"
+    );
+    assert!(!jobs_reserve(&queue, "p-b"));
+}
+
+fn jobs_reserve(queue: &Harness, printer: &str) -> bool {
+    let reserved: i64 = queue
+        .database()
+        .query_row(
+            "SELECT COUNT(*) FROM durable_jobs WHERE resource=?1 AND state IN ('queued','running','effect_admitted','reconciliation_required')",
+            [format!("printer:{printer}")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    reserved > 0
+}
+
+#[test]
+fn ticket_t_26_a_generic_job_reconciliation_finishes_the_item_it_sent() {
+    let queue = Harness::open();
+    queue.seed(&[("q1", "p-a", "queued", None)]);
+    let worker = queue.worker();
+    let job = queue.unknown_outcome(&worker, "q1", "p-a");
+    let (_, document) = queue.job(&job);
+    let outcome = queue
+        .owner
+        .jobs(POLICY)
+        .unwrap()
+        .submit(
+            jobs::Credential::Session(Secret::new(queue.token.clone())),
+            UserOperation::Reconcile {
+                job_id: job.clone(),
+                expected_version: document["state_version"].as_i64().unwrap(),
+                expected_generation: document["generation"].as_i64().unwrap(),
+                effect_hash: "b".repeat(64),
+                decision: jobs::Decision::ConfirmSucceeded,
+                receipt: Some(receipt("p-a")),
+            },
+            &AtomicBool::new(false),
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .receive()
+        .unwrap();
+    assert!(matches!(outcome, jobs::Outcome::Job(..)));
+    assert_eq!(queue.job(&job).0, "succeeded");
+    assert_eq!(queue.item("q1"), ("done".into(), None, Some(job)));
+    assert_eq!(queue.send("q1"), refused(409, "Item is not dispatchable"));
 }
 
 #[test]

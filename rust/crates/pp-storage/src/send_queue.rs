@@ -153,6 +153,7 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<()> {
         if crate::jobs::release_printer_upload(
             &tx,
             &tenant,
+            "open",
             &job,
             NOT_STARTED_ERROR,
             "send_queue_interrupted",
@@ -169,12 +170,19 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// Settle the `sending` item that `job` was dispatched for, in the
-/// transaction that saves the job: a finished upload is `done`, and a
-/// failed, cancelled or uncertain one is `error` with a resend choice.
+/// Settle the item that `job` was dispatched for, in the transaction that
+/// saves the job: a finished upload is `done`, and a failed, cancelled or
+/// uncertain one is `error`. A finished state also applies to an `error`
+/// item, so an upload that left reconciliation by any path, including the
+/// generic job reconciliation, never leaves its item looking unsent.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord, event: &str) -> Result<()> {
     use crate::jobs::PersistentState;
+    let from = if job.state.terminal() {
+        "'sending','error'"
+    } else {
+        "'sending'"
+    };
     let error = match job.state {
         PersistentState::Succeeded | PersistentState::UploadedOnly => None,
         PersistentState::Failed => Some(job.recovery.as_deref().unwrap_or("Upload failed")),
@@ -186,7 +194,7 @@ pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord, event: &str)
         _ => return Ok(()),
     };
     tx.execute(
-        "UPDATE printer_send_queue SET state=?1,error=?2,updated_at=?3 WHERE tenant_id=?4 AND upload_job_id=?5 AND state='sending'",
+        &format!("UPDATE printer_send_queue SET state=?1,error=?2,updated_at=?3 WHERE tenant_id=?4 AND upload_job_id=?5 AND state IN ({from})"),
         params![
             if error.is_some() { "error" } else { "done" },
             error.map(|error| utf16_prefix(error, 500)),

@@ -252,7 +252,7 @@ fn transact(
             Request::Dispatch { id, host_name } => {
                 dispatch(&tx, &tenant, &subject, authority, &id, &host_name)?
             }
-            Request::Remove { id } => remove(&tx, &tenant, &id)?,
+            Request::Remove { id } => remove(&tx, &tenant, &subject, &id)?,
             Request::Missing { id } => missing(&tx, &tenant, &id)?,
             Request::Reconcile { id, printed } => reconcile(&tx, &tenant, &subject, &id, printed)?,
         }
@@ -319,6 +319,28 @@ fn resendable(tx: &Connection, tenant: &str, id: &str) -> Result<Result<Stored, 
     })
 }
 
+/// True when another item of `printer_id` holds a send Node started whose
+/// outcome is unknown. Node's sends have no Rust job to reserve the printer,
+/// so the item itself does until the user reconciles or removes it.
+fn node_send_unresolved(tx: &Transaction<'_>, tenant: &str, printer_id: &str) -> Result<bool> {
+    let sends = tx
+        .prepare("SELECT upload_job_id FROM printer_send_queue WHERE tenant_id=?1 AND printer_id=?2 AND state='error' AND error=?3")?
+        .query_map(params![tenant, printer_id, super::INTERRUPTED_ERROR], |row| {
+            row.get::<_, Option<String>>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for job in sends {
+        match job {
+            None => return Ok(true),
+            Some(job) if jobs::printer_upload_state(tx, tenant, &job)?.is_none() => {
+                return Ok(true);
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(false)
+}
+
 fn dispatch(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -346,7 +368,9 @@ fn dispatch(
             code: None,
         });
     }
-    if jobs::printer_reserved(tx, tenant, &stored.printer_id)? {
+    if jobs::printer_reserved(tx, tenant, &stored.printer_id)?
+        || node_send_unresolved(tx, tenant, &stored.printer_id)?
+    {
         return Ok(Reply::Refused {
             status: 409,
             detail: "Another send to this printer is still unresolved",
@@ -420,7 +444,7 @@ fn dispatch(
     })
 }
 
-fn remove(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Reply> {
+fn remove(tx: &Transaction<'_>, tenant: &str, subject: &str, id: &str) -> Result<Reply> {
     let stored = match resendable(tx, tenant, id)? {
         Ok(stored) => stored,
         Err(Reply::Refused { status: 409, .. }) => {
@@ -433,7 +457,7 @@ fn remove(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Reply> {
         Err(refusal) => return Ok(refusal),
     };
     if let Some(job) = &stored.upload_job_id {
-        jobs::release_printer_upload(tx, tenant, job, REMOVED, "send_queue_removed")?;
+        jobs::release_printer_upload(tx, tenant, subject, job, REMOVED, "send_queue_removed")?;
     }
     tx.execute(
         "UPDATE printer_send_queue SET state='cancelled',error=NULL,updated_at=?1 WHERE tenant_id=?2 AND id=?3",

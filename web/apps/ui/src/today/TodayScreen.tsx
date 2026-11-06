@@ -132,8 +132,10 @@ function useCheckoff() {
   // A saved key lasts only while a reread still lists its bed with the same pending units.
   // Once the bed is gone, confirming it later is a new write with a new key, so a burst
   // that was undone elsewhere is never answered with its old receipt.
+  const listed = useRef(new Set<string>());
   const keepWaiting = useCallback((beds: readonly Bed[]) => {
     const waiting = new Set(beds.map(bedId));
+    listed.current = waiting;
     for (const id of unanswered.current.keys()) {
       if (!waiting.has(id)) unanswered.current.delete(id);
     }
@@ -207,28 +209,36 @@ function useCheckoff() {
     unanswered.current.set(bedId(bed), key);
     confirm.mutate({ bed, key });
   };
+  // Retry of a confirm that got no answer. While the last reread lists the bed waiting, it
+  // goes through `confirmBed` and its saved-key rule. Once the bed is gone, the write most
+  // likely landed, so the same request and key go again and the core replays the receipt.
+  const retryConfirm = () => {
+    const sent = confirm.variables!;
+    if (listed.current.has(bedId(sent.bed))) confirmBed(sent.bed);
+    else confirm.mutate(sent);
+  };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
   const undoBurst = (tallied: Undo) => {
     if (undo.isPending) return;
     confirm.reset();
     undo.mutate(tallied);
   };
-  return { confirm, confirmBed, keepWaiting, undo, undoBurst, tally };
+  return { confirm, confirmBed, keepWaiting, retryConfirm, undo, undoBurst, tally };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
 
 /**
- * The live tally, Undo, and a Retry. A confirm's Retry goes through `confirmBed`, so it
- * reuses the saved key only while a reread still lists that bed waiting.
+ * The live tally, Undo, and a Retry (`retryConfirm` for a confirm, the same request and
+ * key for an Undo).
  */
 function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
-  const { confirm, confirmBed, undo, undoBurst, tally } = checkoff;
+  const { confirm, retryConfirm, undo, undoBurst, tally } = checkoff;
   const failure = confirm.isError
     ? {
         what: "Could not confirm the bed.",
         error: confirm.error,
-        resend: () => confirmBed(confirm.variables!.bed),
+        resend: retryConfirm,
       }
     : undo.isError
       ? {

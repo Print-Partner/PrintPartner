@@ -3,6 +3,7 @@
 //! copy of the Node-written `accepted-plate-node.db`: admission, the flag,
 //! the root and `/api/v2` aliases, and Node's `{ detail, code }` failures.
 //! GRE-1196: the Checkoff units read names each unit's head Plate.
+//! GRE-419: initialize and arrange, and Node's body limits.
 use axum::{Router, http::StatusCode};
 use loopback::ORIGIN;
 use pp_api::{
@@ -244,6 +245,136 @@ async fn plates_http_moves_a_unit_once_and_answers_node_failures() {
     let (owner, router) = open(&root, "0");
     assert_eq!(
         send(&router, "PATCH", &path, &body(2), true).await.0,
+        StatusCode::NOT_FOUND
+    );
+    owner.shutdown().unwrap();
+}
+
+/// The `no_head` phase of Node's initialize golden on a fresh data dir: its
+/// STL files, re-pinned digests and fleet, and its `creates_head` body.
+fn initialize_fixture(root: &Path) -> Value {
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/parity/plates-initialize/node.json"
+    ))
+    .unwrap();
+    let phase = golden["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|phase| phase["name"] == "no_head")
+        .unwrap();
+    for file in phase["files"].as_array().unwrap() {
+        std::fs::write(
+            root.join(file["path"].as_str().unwrap()),
+            file["text"].as_str().unwrap(),
+        )
+        .unwrap();
+    }
+    let sql = rusqlite::Connection::open(root.join("print-partner.db")).unwrap();
+    let triggers: Vec<String> = sql
+        .prepare("SELECT name FROM sqlite_schema WHERE type='trigger'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    for trigger in triggers {
+        sql.execute_batch(&format!("DROP TRIGGER \"{trigger}\""))
+            .unwrap();
+    }
+    sql.execute_batch(&format!(
+        "PRAGMA foreign_keys=OFF; {}",
+        phase["seed"].as_str().unwrap()
+    ))
+    .unwrap();
+    phase["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["id"] == "creates_head")
+        .unwrap()["body"]
+        .clone()
+}
+
+#[tokio::test]
+async fn plates_http_initializes_then_arranges_within_node_body_limits() {
+    let dir = data_dir();
+    let root = dir.path();
+    let mut body = initialize_fixture(root);
+    let (owner, router) = open(root, "1");
+
+    let initialize = "/plans/1/plates/initialize";
+    assert_eq!(
+        send(&router, "POST", initialize, &body, false).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Node's 8 MiB initialize limit admits a body past axum's 2 MiB default.
+    body["padding"] = json!("x".repeat(3 * 1024 * 1024));
+    let (status, ready) = send(
+        &router,
+        "POST",
+        &format!("/api/v2{initialize}"),
+        &body,
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, &ready["kind"], &ready["plate_revision_id"]),
+        (StatusCode::OK, &json!("ready"), &json!(2)),
+        "{ready}"
+    );
+    let (status, replay) = send(&router, "POST", initialize, &body, true).await;
+    assert_eq!(
+        (status, &replay),
+        (StatusCode::OK, &ready),
+        "a replay writes nothing"
+    );
+
+    let arrange = json!({
+        "expected": body["expected"],
+        "expected_plate_revision_id": 2,
+        "mode": "all",
+    });
+    let (status, arranged) = send(&router, "POST", "/plans/1/plates/arrange", &arrange, true).await;
+    assert_eq!(
+        (status, &arranged["plate_revision_id"]),
+        (StatusCode::OK, &json!(2)),
+        "the packed layout is already the head: {arranged}"
+    );
+    let mut large = arrange.clone();
+    large["padding"] = json!("x".repeat(1024 * 1024));
+    let (status, refused) = send(
+        &router,
+        "POST",
+        "/api/v2/plans/1/plates/arrange",
+        &large,
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, &refused["detail"]),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &json!("Request body too large")
+        )
+    );
+    let (status, stale) = send(
+        &router,
+        "POST",
+        "/plans/1/plates/arrange",
+        &json!({"expected": body["expected"], "expected_plate_revision_id": 1, "mode": "unplaced"}),
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, &stale["code"]),
+        (StatusCode::CONFLICT, &json!("plate_revision_changed"))
+    );
+    owner.shutdown().unwrap();
+
+    let (owner, router) = open(root, "0");
+    assert_eq!(
+        send(&router, "POST", initialize, &body, true).await.0,
         StatusCode::NOT_FOUND
     );
     owner.shutdown().unwrap();

@@ -50,6 +50,7 @@ impl Fixture {
                     source_revision_id: Some(1),
                     manifest_digest: Some("manifest".into()),
                     snapshot_root: Some(source.to_str().unwrap().into()),
+                    snapshot_path: Some(source.to_str().unwrap().into()),
                     source_synced_at: None,
                 }],
             },
@@ -82,6 +83,7 @@ impl Fixture {
                     source_id: 1,
                     source_revision_id: 1,
                     snapshot_root: source.to_str().unwrap().into(),
+                    snapshot_path: source.to_str().unwrap().into(),
                     relative_path: "part.stl".into(),
                     expected_sha256:
                         "4e6931576efead51995a7cd8d36d2ef2aae3d1bf36e6f1827c71e32dde079ba7".into(),

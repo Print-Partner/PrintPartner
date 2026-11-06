@@ -1549,9 +1549,12 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 41 (`LAST_COPIED_STEP`)
-writes `backups/pre-schema{N}.db`, where N is the step's target version; step 42
-only adds a table and writes no copy of its own. Each step validates its objects
+repair's writes to `source_revisions`. Each step through 43 (`LAST_COPIED_STEP`)
+writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
+the first step writes, the open names its rollback copy in the run marker
+`backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
+and retention keeps that copy. The marker goes once the upgrade commits, or when
+an open finds nothing to upgrade. Each step validates its objects
 and columns, and then commits them with its version stamp in one transaction. For a database at 37 the
 first backup, `pre-schema38.db`, is the untouched input. `pre-schema39.db` is taken
 after step 2, so it can include that pass's repairs. An
@@ -1561,7 +1564,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-42.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-43.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -2858,10 +2861,10 @@ parser rejects, are 500 `internal_error`. A read writes nothing.
 `pp-api::plates::plates_router` serves them at `/` and `/api/v2` behind
 `accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
 
-The router is not mounted in `read_router` yet. Initialize (GRE-419) still
-runs on Node and writes the same `accepted_plate_*` tables, so the Plate routes
-and their aliases, arrange included, switch to Rust together with it, as one
-operation, and never with one runtime writing beside the other.
+The router is not mounted in `read_router` yet. Every Plate write (edits,
+arrange and initialize) now has a Rust port, and the Plate routes and their
+aliases switch to Rust together in one change (GRE-419), never with one runtime
+writing beside the other.
 
 Each edit is one immediate writer transaction. It checks, in Node's order, the
 target Printer (transfer only, 422 `printer_not_found`), that the Build is
@@ -2897,7 +2900,7 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 (`arrangeAcceptedPlates` in `services/accepted-plate-workspace.ts`) as
 `Request::Arrange`. The body is `expected`, `expected_plate_revision_id` and
 `mode`, which is `unplaced` or `all`; anything else is 400
-`invalid_request`. Like the edits, it is not mounted until initialize moves.
+`invalid_request`. Like the edits, it is not mounted yet.
 
 Arrange is one immediate writer transaction. It checks, in Node's order, that
 the Build is visible (404 `profile_not_found`), that it has an Accepted Plan
@@ -2928,6 +2931,76 @@ head, a foreign Plan, several Printers, grouping rules and keep-together rules).
 Regenerate it with `node fixtures/parity/plates-arrange/generate.mjs` and check it
 with `--check`. `ticket_t_61_plates_arrange_matches_node` replays every case and
 compares responses, changed tables, events and final Plate rows.
+
+### Accepted Plate initialize (GRE-1202)
+
+`pp-storage::plates` serves Node's `POST /plans/{id}/plates/initialize`
+(`initializeAcceptedPlates` and `publishAcceptedPlatesInternal`) as
+`Request::Initialize`. The body is `expected`, `expected_plate_revision_id`
+(`null` before any Plate revision) and `assignments`, a list of
+`{token, printer_id}` where `printer_id` is `null` or trimmed text of 1 to 200
+UTF-16 units. Anything else is 400 `invalid_request`.
+
+Initialize is one immediate writer transaction. Node reads, measures and
+publishes in three steps; Rust holds the writer while it reads the STL files,
+so no other write can land between the checks and the publish. In Node's
+order it checks:
+
+1. The Build is visible and has an Accepted Plan (404 `profile_not_found`,
+   `{"kind": "empty_plan"}`, or 409 `accepted_state_unavailable`), and the basis
+   is current (409 `accepted_plan_changed`).
+2. The expected head. A head on an older Accepted Plan counts as the setup
+   head. A mismatch with no current layout is 409 `plate_revision_changed`.
+3. The assignments: 422 `unknown_unit_token`, `duplicate_assignment`,
+   `missing_assignment` (an empty list) or `unassigned_units`, each with
+   `tokens` in UTF-8 order. Units left out of the list stay unassigned.
+4. The Printers in the stored fleet: 422 `printer_not_found` or
+   `missing_printer_geometry` with `printer_ids`. While the head does not match,
+   each of these refusals is 409 `plate_revision_changed` instead.
+5. A replay: when the head moved but the stored layout is exactly what these
+   assignments pack to with the stored dimensions, the answer is the current
+   workspace and nothing is written. Otherwise 409 `plate_revision_changed`.
+6. Each assigned unit's STL, by `plates::artifacts`: found inside its Source
+   snapshot one segment at a time, case-insensitively, without following
+   links, and checked against its accepted SHA-256. A failure is 409 with
+   Node's reason as the code (`missing`, `unsafe_path`, `ambiguous_case`,
+   `symlink`, `not_file`, `empty`, `io_error`, `digest_mismatch`, `legacy` or
+   `untracked_source`) and `token`, 409 `invalid_stl`, or 422
+   `degenerate_geometry`. The route limits are 10,000 units, 256 MiB of
+   distinct STL bytes and 5,000,000 triangles counted once per unit (413
+   `limit_exceeded` with `limit`). An STL shared by several units is read once.
+7. Packing: each Printer in UTF-8 id order packs its units in Plan order,
+   split by the Production setup's grouping buckets, onto Plates with Node's
+   deterministic ids (422 `unit_too_large` with `token` and `printer_id`).
+8. The publish: 409 `plan_archived`, then the clearance rule. A layout equal
+   to the head of the same Accepted Plan writes nothing. Otherwise it writes
+   a new revision, creates or moves the head, and appends
+   `plates.revision_changed`. The answer is the workspace with units in packing
+   order and `arrange_undo_revision_id` `null`, as Node answers.
+
+STL geometry (`production::geometry`) moved from `pp-core` to `pp-storage` for
+this; `pp-core::production::geometry` re-exports it.
+
+One case differs from Node on purpose: a replay that names a unit the stored
+layout does not hold is 409 `plate_revision_changed`, where Node throws and
+answers 500. A Printer whose bed is past the stored Plate range (more than
+2,147,483,647 µm) cannot be packed in the Plate types, so its units are only
+checked against that bed while every other Printer packs, and a unit that does
+not fit, on that Printer or another, is still 422 `unit_too_large`. After that an archived Build is 409
+`plan_archived` and any other Build is 422 `outside_build_area`, the codes
+Node gives for the same requests.
+
+`fixtures/parity/plates-initialize/node.json` is Node's answer for 44 cases in
+18 phases. Each phase writes box STLs into the pinned Source snapshot and
+seeds SQL that re-pins those Parts to the files' SHA-256 and restamps the
+revision digest with Node's `digestPlanRevisionParts`, because the fixtures pin
+digests whose files do not exist. Regenerate it with
+`node fixtures/parity/plates-initialize/generate.mjs` and check it with `--check`.
+`ticket_t_61_plates_initialize_matches_node` replays it. The `plates::artifacts`
+unit tests cover the limits, a linked file, a linked snapshot directory, an
+ambiguous case and paths outside the repositories. The walk starts from
+`repos/<locator>` as stored, not the canonical snapshot path the accepted read
+checks, so a snapshot directory replaced by a link is refused as Node refuses it.
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
@@ -3076,6 +3149,8 @@ With both gates on, `draft_router` serves these paths at the root and
 | PUT | `/plans/{id}/drafts/{draft_id}/reconciliation` | `ReconciliationClient::reconcile` with typed `ReconciliationRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
 | POST | `/plans/{id}/drafts/save` | draft-only autosave, `WorkingDraftClient::autosave` (GRE-418) |
+| GET | `/plans/{id}/drafts/{draft_id}/header` | draft header beside the Build's header (GRE-1197) |
+| PUT | `/plans/{id}/drafts/header` | draft header save, `WorkingDraftClient::save_header` (GRE-1197) |
 
 `admit_draft_routes` buffers each body before routing, disables Axum's 2 MiB
 default, and applies the guard's limits: 16 KiB request target, 1 MiB for
@@ -3242,6 +3317,16 @@ publishes. That path stays on Node with its publishing semantics until UI
 slice 6 moves the browser to draft-then-Accept, and no Rust router mounts it,
 so Node and Rust never write the same operation. Node has no route at
 `/plans/{id}/drafts/save`, which is why the gateway manifests do not list it.
+
+### Draft header fields (GRE-1197)
+
+`PUT /plans/{id}/drafts/header` saves a Build's name, order number, customer
+and due date into the observed open draft, or into a new draft when none is
+open, in one immediate transaction. It needs an `Idempotency-Key`, writes
+nothing to the Build, and Accept publishes it (part B, not yet built).
+`GET /plans/{id}/drafts/{draft_id}/header` reads the draft's header beside the
+Build's current one. [Draft header fields](draft-headers.md) has the contract,
+schema step 43, and the draft paths that carry the header forward.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one

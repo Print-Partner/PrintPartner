@@ -20,6 +20,12 @@ const themeAttrs = (name) => THEMES.find((t) => t.name === name).attrs;
 
 const key = (init) =>
   `document.dispatchEvent(new KeyboardEvent("keydown", ${JSON.stringify({ ...init, bubbles: true })}));`;
+// P on the gear's first unit: previews its Plate's units before anything is recorded.
+const PLATE_KEY = `
+  while (!document.querySelector("[data-token]")) await sleep(50);
+  const unit = document.querySelector('[aria-label="fixture_gear.stl unit 1"]');
+  unit.focus();
+  unit.dispatchEvent(new KeyboardEvent("keydown", { key: "p", bubbles: true }));`;
 const STATES = ["loading", "empty", "error", "module-off", "offline", "ready"];
 // [name, path, setup]. "?core=down" makes /health fail for that page, so the frame is offline.
 const PAGES = [
@@ -27,7 +33,9 @@ const PAGES = [
   ...STATES.map((s) => [`states-${s}`, `/states/${s}`, ""]),
   ["offline-frame", "/builds?core=down", ""],
   ["build-overview", "/builds/3", ""],
-  ["build-tab", "/builds/3/checkoff", ""],
+  ["build-tab", "/builds/3/history", ""],
+  ["build-checkoff", "/builds/3/checkoff", ""],
+  ["build-checkoff-plate", "/builds/3/checkoff", PLATE_KEY],
   ["printer-states", "/states/printers", ""],
   ["palette", "/today", key({ key: "k", ctrlKey: true })],
   ["shortcuts", "/today", key({ key: "?" })],

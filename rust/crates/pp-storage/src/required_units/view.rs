@@ -166,6 +166,20 @@ pub enum ConflictView {
     },
 }
 
+/// A stored draft header row as the wire names it.
+pub(crate) fn draft_identity(h: &Value) -> Result<DraftIdentity> {
+    Ok(DraftIdentity {
+        draft_id: num(h, "id")?,
+        state: text(h, "state")?.into(),
+        lifecycle_version: num(h, "lifecycleVersion")?,
+        snapshot_digest: text(h, "snapshotDigest")?.into(),
+        base: DraftBase {
+            revision_id: optional_num(h, "baseRevisionId")?,
+            plan_version: num(h, "basePlanVersion")?,
+        },
+    })
+}
+
 fn part_view(p: &DraftPart) -> Result<PartView> {
     Ok(PartView {
         draft_part_id: num(p, "id")?,
@@ -332,16 +346,7 @@ pub(crate) fn workspace(
     normalize_parts(&mut previous)?;
     Ok(Box::new(Workspace {
         profile_id: num(h, "profileId")?,
-        draft: DraftIdentity {
-            draft_id: num(h, "id")?,
-            state: text(h, "state")?.into(),
-            lifecycle_version: num(h, "lifecycleVersion")?,
-            snapshot_digest: text(h, "snapshotDigest")?.into(),
-            base: DraftBase {
-                revision_id: optional_num(h, "baseRevisionId")?,
-                plan_version: num(h, "basePlanVersion")?,
-            },
-        },
+        draft: draft_identity(h)?,
         parts: d.parts.iter().map(part_view).collect::<Result<_>>()?,
         diff: diff(
             &previous,

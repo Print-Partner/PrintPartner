@@ -522,3 +522,34 @@ fn source_budget_and_cancellation_leave_database_unchanged() {
     assert_eq!(before, f.state());
     owner.shutdown().unwrap();
 }
+
+/// GRE-1197: Save writes a new draft from the observed one, which carries the
+/// observed draft's header row.
+#[test]
+fn save_carries_the_source_draft_header() {
+    let f = Fixture::new();
+    let owner = f.open();
+    f.sql().execute("INSERT INTO plan_draft_headers (draft_id,tenant_id,name,order_number,customer,due_date,header_version,updated_at) VALUES (2,'default','Renamed','PO-7','Acme','2026-12-01',3,'2026-11-06T00:00:00.000Z')", []).unwrap();
+    let first = saved(f.save(&owner, f.request(true), "header").unwrap());
+    assert_eq!(first["closed_draft_ids"], json!([2]));
+    let header = |draft: i64| {
+        f.sql()
+            .query_row(
+                "SELECT tenant_id,name,order_number,customer,due_date,header_version,updated_at FROM plan_draft_headers WHERE draft_id=?1",
+                [draft],
+                |row| {
+                    (0..7)
+                        .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                },
+            )
+            .unwrap()
+    };
+    let created: i64 = f
+        .sql()
+        .query_row("SELECT max(id) FROM plan_drafts", [], |row| row.get(0))
+        .unwrap();
+    assert!(created > 2);
+    assert_eq!(header(created), header(2));
+    owner.shutdown().unwrap();
+}

@@ -229,6 +229,7 @@ fn assert_retry_succeeds(fixture: &Fixture, directory: &Path) {
         snapshot(immutable(&directory.join("backups/pre-schema40.db"))),
         input
     );
+    assert!(!directory.join("backups/pre-schema-run").exists());
     let at40 = directory.join("backups/pre-schema41.db");
     assert_eq!(version(immutable(&at40)), "40");
     for path in [&database, &at40] {
@@ -256,7 +257,11 @@ fn failed_schema40_rolls_back_from39_and_retries() {
     assert_eq!(snapshot(read_only(&database)), input);
     assert_eq!(snapshot(immutable(&backup)), input);
     let backups = backup_bytes(&directory);
-    assert_eq!(backups.keys().collect::<Vec<_>>(), ["pre-schema40.db"]);
+    assert_eq!(
+        backups.keys().collect::<Vec<_>>(),
+        ["pre-schema-run", "pre-schema40.db"]
+    );
+    assert_eq!(backups["pre-schema-run"], b"pre-schema40.db\n");
 
     assert_stamp_refused(&directory);
     assert_eq!(snapshot(read_only(&database)), input);
@@ -289,8 +294,14 @@ fn failed_schema40_preserves_committed38_and39_and_their_backups() {
     let backups = backup_bytes(&directory);
     assert_eq!(
         backups.keys().collect::<Vec<_>>(),
-        ["pre-schema38.db", "pre-schema39.db", "pre-schema40.db"]
+        [
+            "pre-schema-run",
+            "pre-schema38.db",
+            "pre-schema39.db",
+            "pre-schema40.db"
+        ]
     );
+    assert_eq!(backups["pre-schema-run"], b"pre-schema38.db\n");
     assert_stamp_refused(&directory);
     assert_eq!(
         snapshot(read_only(&directory.join("print-partner.db"))),

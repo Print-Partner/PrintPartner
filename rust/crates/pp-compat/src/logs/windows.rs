@@ -5,7 +5,7 @@
 //! component. Access control is a protected DACL that grants only the current
 //! user, the equivalent of modes 0600 and 0700.
 
-use crate::windows_security::{CurrentUser, SE_FILE_OBJECT};
+use crate::windows_security::{CurrentUser, SE_FILE_OBJECT, SavedDacl};
 use std::{
     fs::{File, Metadata},
     os::windows::{
@@ -171,25 +171,15 @@ pub(super) fn secure_archive(directory: &Directory, name: &str) -> std::io::Resu
     ) {
         Ok(file) => secure_log(&file),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            repair_archive(&path)?;
-            secure_log(&open(
-                &path,
-                READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
-                share,
-                OPEN_EXISTING,
-                0,
-            )?)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => repair_archive(&path),
         Err(error) => Err(error),
     }
 }
 
 /// An archive whose DACL denies this user even attribute reads. Its owner
-/// still holds `READ_CONTROL` and `WRITE_DAC`, so a regular file with one
-/// link that this user owns gets the private DACL back. The directory listing
-/// supplies the attributes the handle cannot read; `FileStandardInfo` needs
-/// no access right.
+/// still holds @@READ_CONTROL@@ and @@WRITE_DAC@@, so it gets the private DACL,
+/// is reopened and checked as every log is. A check that fails puts the old
+/// DACL back, so a hard link to an outside file leaves that file unchanged.
 fn repair_archive(path: &Path) -> std::io::Result<()> {
     let mut found = WIN32_FIND_DATAW::default();
     let search = unsafe { FindFirstFileW(wide(path).as_ptr(), &mut found) };
@@ -200,18 +190,26 @@ fn repair_archive(path: &Path) -> std::io::Result<()> {
     if found.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0 {
         return Err(invalid());
     }
-    let file = open(
-        path,
-        READ_CONTROL | WRITE_DAC,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        OPEN_EXISTING,
-        0,
-    )?;
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let file = open(path, READ_CONTROL | WRITE_DAC, share, OPEN_EXISTING, 0)?;
     let user = CurrentUser::query()?;
-    if standard(&file)?.NumberOfLinks != 1 || !user.owns(&file, SE_FILE_OBJECT)? {
+    if !user.owns(&file, SE_FILE_OBJECT)? {
         return Err(invalid());
     }
-    user.restrict(&file, SE_FILE_OBJECT, false)
+    let saved = SavedDacl::of(&file, SE_FILE_OBJECT)?;
+    user.restrict(&file, SE_FILE_OBJECT, false)?;
+    let checked = open(
+        path,
+        READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
+        share,
+        OPEN_EXISTING,
+        0,
+    )
+    .and_then(|reopened| secure_log(&reopened));
+    if checked.is_err() {
+        saved.restore(&file, SE_FILE_OBJECT)?;
+    }
+    checked
 }
 
 fn standard(file: &File) -> std::io::Result<FILE_STANDARD_INFO> {

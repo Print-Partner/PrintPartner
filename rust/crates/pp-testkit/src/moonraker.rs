@@ -85,3 +85,82 @@ impl Drop for RecordedPrinter {
         }
     }
 }
+
+/// A loopback Moonraker that answers by request target (path and query):
+/// each listed target gets its recorded status and body, anything else 404.
+/// `{ORIGIN}` in a body becomes this printer's origin. Like
+/// [`RecordedPrinter`] it only answers and never initiates a connection.
+pub struct RoutedPrinter {
+    url: String,
+    lines: Arc<Mutex<Vec<String>>>,
+    stopped: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RoutedPrinter {
+    /// `routes` maps a request target to its status and body.
+    pub fn start(routes: Vec<(String, u16, Vec<u8>)>) -> std::io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let url = format!("http://localhost:{}", listener.local_addr()?.port());
+        let routes: Vec<_> = routes
+            .into_iter()
+            .map(|(target, status, body)| {
+                let body = String::from_utf8_lossy(&body).replace("{ORIGIN}", &url);
+                (target, status, body.into_bytes())
+            })
+            .collect();
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (logged, stop) = (lines.clone(), stopped.clone());
+        let thread = std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut socket) = socket else { continue };
+                let mut bytes = [0; 4096];
+                let len = socket.read(&mut bytes).unwrap_or(0);
+                let request = String::from_utf8_lossy(&bytes[..len]);
+                let line = request.lines().next().unwrap_or_default().to_owned();
+                let target = line.split(' ').nth(1).unwrap_or_default();
+                let (status, body) = routes
+                    .iter()
+                    .find(|(listed, _, _)| listed == target)
+                    .map_or((404, &b"{}"[..]), |(_, status, body)| (*status, &body[..]));
+                logged.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+                let head = format!(
+                    "HTTP/1.1 {status} Recorded\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes());
+                let _ = socket.write_all(body);
+            }
+        });
+        Ok(Self {
+            url,
+            lines,
+            stopped,
+            thread: Some(thread),
+        })
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// The request line of every request so far, in order.
+    pub fn request_lines(&self) -> Vec<String> {
+        self.lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+impl Drop for RoutedPrinter {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        let port = self.url.rsplit(':').next().unwrap_or_default();
+        let _ = TcpStream::connect(format!("127.0.0.1:{port}"));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}

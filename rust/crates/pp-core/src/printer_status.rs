@@ -3,15 +3,18 @@
 //! expose their cached statuses to the authenticated `pp-api` status route and
 //! farm reads. No adapter writes: monitoring never changes Checkoff or
 //! dispatches a send.
+use crate::printer_host::StoredPrinterHosts;
 use anyhow::Result;
 use axum::Router;
 use pp_api::{
     accepted::AcceptedHttpConfig,
     admin::AdminHttpConfig,
     farm::{FarmObservations, farm_router},
+    printer_host::printer_host_router,
     printer_status::{PrinterStatusPort, StatusLookup, printer_status_router},
     printer_stream::{HEARTBEAT, PrinterStream, printer_stream_router},
 };
+use pp_gateway::printer_host::MoonrakerReads;
 use pp_gateway::{
     HTTPS_UNAVAILABLE, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
     PrinterHostState, PrinterHostStatus, PrinterObservations, REDIRECT_UNAVAILABLE,
@@ -214,6 +217,7 @@ pub struct StatusRoutes {
     farm: FarmClient,
     stream_config: AcceptedHttpConfig,
     settings: SettingsClient,
+    reads: MoonrakerReads,
 }
 
 impl StatusRoutes {
@@ -227,6 +231,7 @@ impl StatusRoutes {
             farm: owner.farm_reads(policy)?,
             stream_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
             settings: owner.client(),
+            reads: MoonrakerReads::new()?,
         })
     }
 
@@ -234,14 +239,20 @@ impl StatusRoutes {
         let stream = PrinterStream::new(HEARTBEAT);
         let producer = stream.clone();
         let settings = self.settings;
+        let hosts = StoredPrinterHosts::new(settings.clone(), self.reads);
         status.spawn_observer(move |observations, cancelled| {
             produce(settings, producer, observations, cancelled)
         });
         printer_status_router(
-            self.config,
-            self.client,
+            self.config.clone(),
+            self.client.clone(),
             Arc::new(WatchedStatus(status.clone())),
         )
+        .merge(printer_host_router(
+            self.config,
+            self.client,
+            Arc::new(hosts),
+        ))
         .merge(farm_router(
             self.farm_config,
             self.farm.clone(),

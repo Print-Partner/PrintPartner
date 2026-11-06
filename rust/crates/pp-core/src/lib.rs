@@ -37,6 +37,8 @@ pub use preferences::{BrowserPreference, BrowserPreferences, PrinterPollInterval
 pub mod layout;
 
 #[cfg(feature = "desktop_rebuild")]
+mod printer_host;
+#[cfg(feature = "desktop_rebuild")]
 pub mod printer_status;
 
 #[cfg(feature = "desktop_rebuild")]

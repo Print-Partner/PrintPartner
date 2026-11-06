@@ -157,8 +157,9 @@ Two limits remain:
 - **Web client.** `applyPlanDraft` in `web/apps/web/src/api/endpoints/planDrafts.ts`
   sends no `expected_header_version`, so Accept from the web UI answers
   `draft_changed` for a draft that has a header row. No UI flow creates a
-  header row today; GRE-1120's Accept gate shows the preview, header included,
-  and sends its `revision`.
+  header row today, and no web code calls the Accept preview yet. GRE-1120,
+  not built yet, adds the Accept gate. It must show the preview, header
+  included, and send that preview's `revision` as the Accept body.
 
 ## Schema 44
 

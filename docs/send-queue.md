@@ -71,7 +71,11 @@ schema 44, so no Node process writes the setting afterwards.
    Accept reads, and Accept still refuses such a queue as it does today.
 3. A tenant whose table already holds items keeps both: the setting is read,
    and the rows are never merged with it.
-4. Every `sending` item in the table becomes `error` with Node's
+4. Each tenant moves inside its own savepoint. If the table refuses an item
+   (for example an id over 128 characters), that tenant's inserts roll back
+   and its setting stays; startup and the other tenants are unaffected.
+5. A `sending` item moves as `error`, and every `sending` row already in
+   the table becomes `error`, with Node's
    `INTERRUPTED_PRINTER_SEND_ERROR` text and a new `updated_at`. The process
    that started the upload is gone, so the outcome is unknown; the item is
    never sent again automatically, and only the user may send it again.

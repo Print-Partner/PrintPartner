@@ -699,7 +699,6 @@ fn layout(
     Ok(current)
 }
 
-/// The tenant's Ready Accepted Plan, or why it cannot be read.
 /// The visible Build's current Accepted Plan for a Plate write, or Node's
 /// answer when there is none: `empty_plan`, 404 or 409.
 fn accepted_for_write(
@@ -727,6 +726,7 @@ fn accepted_for_write(
     })
 }
 
+/// The tenant's Ready Accepted Plan, or why it cannot be read.
 fn accepted(
     tx: &Transaction<'_>,
     tenant: &str,

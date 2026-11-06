@@ -67,13 +67,13 @@ fn profiles(directory: &Path) -> Vec<(String, i64, String)> {
 struct Server {
     origin: String,
     client: Client,
-    serving: Option<pp_api::fixtures::Serving>,
+    serving: Option<pp_api::serving::Serving>,
 }
 
 impl Server {
     async fn spawn(listener: tokio::net::TcpListener, router: axum::Router) -> Self {
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let serving = pp_api::fixtures::Serving::start(listener, router);
+        let serving = pp_api::serving::Serving::start(listener, router);
         Self {
             origin,
             client: Client::builder()

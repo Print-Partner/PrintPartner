@@ -632,8 +632,8 @@ mod tests {
 
     /// Serves `router` on `listener`; `Serving::stop` returns once no connection
     /// holds the router, so the owner can then be taken back.
-    fn serve(listener: tokio::net::TcpListener, router: axum::Router) -> pp_api::fixtures::Serving {
-        pp_api::fixtures::Serving::start(listener, router)
+    fn serve(listener: tokio::net::TcpListener, router: axum::Router) -> pp_api::serving::Serving {
+        pp_api::serving::Serving::start(listener, router)
     }
 
     /// Registers the first account and returns its session cookie.

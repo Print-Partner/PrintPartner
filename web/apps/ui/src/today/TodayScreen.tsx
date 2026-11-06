@@ -209,11 +209,18 @@ function useCheckoff() {
     unanswered.current.set(bedId(bed), key);
     confirm.mutate({ bed, key });
   };
-  // Retry of a confirm that got no answer. While the last reread lists the bed waiting, it
-  // goes through `confirmBed` and its saved-key rule. Once the bed is gone, the write most
-  // likely landed, so the same request and key go again and the core replays the receipt.
-  const retryConfirm = () => {
+  // Retry of a confirm that got no answer. It rereads the results first. While the bed is
+  // listed waiting, it goes through `confirmBed` and its saved-key rule, so a burst undone
+  // elsewhere becomes a new write. Once the bed is gone, the write landed, so the same
+  // request and key go again and the core replays the receipt.
+  const retryConfirm = async () => {
     const sent = confirm.variables!;
+    try {
+      const fresh = await client.fetchQuery({ ...checkoffQuery, staleTime: 0 });
+      keepWaiting(bedsToClear(fresh.results, String));
+    } catch {
+      // An unreadable reread keeps the last one.
+    }
     if (listed.current.has(bedId(sent.bed))) confirmBed(sent.bed);
     else confirm.mutate(sent);
   };

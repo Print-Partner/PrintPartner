@@ -99,6 +99,8 @@ fn handle(
     uploads: &Mutex<Vec<HeldUpload>>,
     stop: &AtomicBool,
 ) -> std::io::Result<()> {
+    // Windows hands back accepted sockets non-blocking like their listener.
+    stream.set_nonblocking(false)?;
     let _ = socket2::SockRef::from(&stream).set_recv_buffer_size(4096);
     stream.set_read_timeout(Some(Duration::from_secs(20)))?;
     let (start, headers, mut body) = read_head(&mut stream)?;

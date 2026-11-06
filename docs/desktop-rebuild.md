@@ -2716,7 +2716,11 @@ different request returns 409. The newest 100 receipts are kept. A dropped
 receipt leaves the SHA-256 of its key in `printer.checkoff_bursts_retired` (the
 newest 5,000), and replaying that key returns 409 instead of running again, so an
 undone burst cannot be counted again by a late retry. A replay of an undone burst
-that still has its receipt returns the original receipt and writes nothing.
+that still has its receipt (GRE-1190) returns 409 with a detail that starts
+`burst_undone:`, writes nothing and appends no event, so a client is never told
+a burst applied when its progress was undone. The receipt stays as it was, apart
+from the `undone_at` mark undo wrote. To apply the same beds again the client
+sends a new idempotency key.
 
 Undo takes `{ "undo_token" }` and is a compensating write: it restores each
 link at its original position, the progress rows and the outcome rows the burst

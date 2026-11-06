@@ -11,9 +11,10 @@ use windows_sys::Win32::{
             GetSecurityInfo, SDDL_REVISION_1, SE_OBJECT_TYPE, SetSecurityInfo,
         },
         CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-        GetSecurityDescriptorDacl, GetTokenInformation, INHERIT_ONLY_ACE,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, SECURITY_MAX_SID_SIZE, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
+        INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_MAX_SID_SIZE, TOKEN_OWNER,
+        TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser, UNPROTECTED_DACL_SECURITY_INFORMATION,
         WinBuiltinAdministratorsSid, WinLocalSystemSid,
     },
     System::{
@@ -234,6 +235,65 @@ impl CurrentUser {
             }
         }
         Ok(true)
+    }
+}
+
+/// The DACL an object had, to put back after a change that turned out wrong.
+pub(crate) struct SavedDacl {
+    dacl: *mut ACL,
+    protected: bool,
+    _descriptor: Local,
+}
+
+impl SavedDacl {
+    /// The handle needs `READ_CONTROL`.
+    pub(crate) fn of(object: &impl AsRawHandle, kind: SE_OBJECT_TYPE) -> io::Result<Self> {
+        let mut dacl: *mut ACL = ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        win32(unsafe {
+            GetSecurityInfo(
+                object.as_raw_handle() as HANDLE,
+                kind,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut dacl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        })?;
+        let descriptor = Local(descriptor);
+        let (mut control, mut revision) = (0u16, 0u32);
+        check(unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) })?;
+        Ok(Self {
+            dacl,
+            protected: control & SE_DACL_PROTECTED != 0,
+            _descriptor: descriptor,
+        })
+    }
+
+    /// The handle needs `WRITE_DAC`.
+    pub(crate) fn restore(
+        &self,
+        object: &impl AsRawHandle,
+        kind: SE_OBJECT_TYPE,
+    ) -> io::Result<()> {
+        let protection = if self.protected {
+            PROTECTED_DACL_SECURITY_INFORMATION
+        } else {
+            UNPROTECTED_DACL_SECURITY_INFORMATION
+        };
+        win32(unsafe {
+            SetSecurityInfo(
+                object.as_raw_handle() as HANDLE,
+                kind,
+                DACL_SECURITY_INFORMATION | protection,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                self.dacl,
+                ptr::null(),
+            )
+        })
     }
 }
 

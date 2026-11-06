@@ -94,6 +94,16 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+/// Node takes Unix paths as they are.
+pub(crate) fn node_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+/// `--import` takes an absolute Unix path.
+pub(crate) fn import_specifier(path: &Path) -> std::ffi::OsString {
+    path.into()
+}
+
 /// Junctions exist only on Windows.
 pub(crate) fn is_junction(_path: &Path) -> std::io::Result<bool> {
     Ok(false)

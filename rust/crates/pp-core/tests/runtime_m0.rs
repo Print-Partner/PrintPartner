@@ -263,9 +263,13 @@ async fn authenticated_logout_requests_complete_shutdown() {
     use fs2::FileExt;
 
     let data = temporary("logout");
-    let mut runtime = CoreRuntime::start(launch(data.clone()))
-        .await
-        .expect("real Node reaches verified readiness");
+    let mut runtime = match CoreRuntime::start(launch(data.clone())).await {
+        Ok(runtime) => runtime,
+        Err(error) => panic!(
+            "real Node reaches verified readiness: {error:#}\n{}",
+            pp_core::recent_logs(&data).unwrap_or_else(|error| error.to_string())
+        ),
+    };
     let origin = runtime.origin().to_owned();
     let target = runtime.take_launch_target().unwrap().into_url();
     let bootstrap = target.strip_prefix(&origin).unwrap();

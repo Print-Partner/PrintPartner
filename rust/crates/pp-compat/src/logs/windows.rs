@@ -466,8 +466,8 @@ pub(crate) mod test_support {
     pub(crate) fn junction(target: &Path, link: &Path) {
         let status = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
+            .arg(link.components().collect::<std::path::PathBuf>())
+            .arg(target.components().collect::<std::path::PathBuf>())
             .stdout(std::process::Stdio::null())
             .status()
             .unwrap();

@@ -1180,11 +1180,13 @@ fn queued_send(value: &Value) -> Option<QueuedSend> {
 }
 
 mod suggestions;
+mod tasks;
 pub use suggestions::{
     FileNameEvidence, MatchBasis, MatchConfidence, MatchEvidence, MatchLibrary, MatchSuggestion,
     MatchSuggestionList, ObjectListEvidence, SuggestedBuild, SuggestedPlate, TIME_WINDOW_HOURS,
     TimeWindowEvidence,
 };
+pub(crate) use tasks::FarmTasks;
 
 #[cfg(test)]
 mod tests;

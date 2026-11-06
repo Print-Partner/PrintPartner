@@ -2412,6 +2412,34 @@ if sys.argv[1] == "wait":
         }
     }
 
+    /// Fifty job members that started and exited during the generation leave
+    /// nothing behind that delays or forces a clean stop.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_many_finished_job_members_still_stop_gracefully() {
+        let mut child = test_support::spawn_group(&mut test_shell(concat!(
+            "const {spawnSync}=require('node:child_process'); ",
+            "for (let i = 0; i < 50; i++) { if (spawnSync('cmd.exe', ['/d', '/c', 'exit']).status !== 0) process.exit(9); } ",
+            "process.stdin.on('end', () => process.exit(0)); process.stdin.resume(); console.log('ready');",
+        )));
+        let (_stdout, line) = first_line(child.0.stdout.take().unwrap()).await;
+        assert_eq!(
+            line,
+            "ready
+"
+        );
+        let outcome = stop_owned_child(child, true).await;
+        assert_eq!(outcome.intent, super::StopIntent::PlannedShutdown);
+        assert_eq!(outcome.exit, super::CompatExit::Graceful);
+        assert!(
+            outcome.elapsed < Duration::from_secs(3),
+            "{:?}",
+            outcome.elapsed
+        );
+        assert!(outcome.rejected);
+        assert!(outcome.group_absent);
+    }
+
     /// A leader that is already gone when the drain starts does not keep the
     /// drain from terminating the rest of its job.
     #[cfg(windows)]

@@ -90,11 +90,7 @@ fn check(ok: i32) -> std::io::Result<()> {
     }
 }
 
-/// A Job Object and the completion port that receives its notifications.
-struct Job {
-    handle: OwnedHandle,
-    port: OwnedHandle,
-}
+struct Job(OwnedHandle);
 
 impl Job {
     fn create() -> std::io::Result<Self> {
@@ -102,28 +98,7 @@ impl Job {
         if handle.is_null() {
             return Err(std::io::Error::last_os_error());
         }
-        let handle = unsafe { OwnedHandle::from_raw_handle(handle as _) };
-        let port =
-            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
-        if port.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        let job = Self {
-            handle,
-            port: unsafe { OwnedHandle::from_raw_handle(port as _) },
-        };
-        let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
-            CompletionKey: std::ptr::null_mut(),
-            CompletionPort: job.port.as_raw_handle() as HANDLE,
-        };
-        check(unsafe {
-            SetInformationJobObject(
-                job.raw(),
-                JobObjectAssociateCompletionPortInformation,
-                (&association as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
-                size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
-            )
-        })?;
+        let job = Self(unsafe { OwnedHandle::from_raw_handle(handle as _) });
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         check(unsafe {
@@ -138,25 +113,59 @@ impl Job {
     }
 
     fn raw(&self) -> HANDLE {
-        self.handle.as_raw_handle() as HANDLE
+        self.0.as_raw_handle() as HANDLE
+    }
+
+    /// Point the job's notifications at `port`, or detach them with a null port.
+    fn associate(&self, port: HANDLE) -> std::io::Result<()> {
+        let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+            CompletionKey: std::ptr::null_mut(),
+            CompletionPort: port,
+        };
+        check(unsafe {
+            SetInformationJobObject(
+                self.raw(),
+                JobObjectAssociateCompletionPortInformation,
+                (&association as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
+                size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
+            )
+        })
     }
 
     /// Block until the job has no active process, or until `bound` passes.
-    /// The kernel posts `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` to the port when
-    /// the last process starts terminating. Delivery of job messages is not
-    /// guaranteed, so a lost message only costs the bound.
+    ///
+    /// The completion port exists only for this wait. Associated at creation,
+    /// it would queue a `NEW_PROCESS` and an `EXIT_PROCESS` packet for every
+    /// process Node starts during the whole generation, and nothing reads it
+    /// until the final drain. A job takes one port, and detaching it (a null
+    /// port, Windows 8 and later) lets a later wait associate a new one.
+    ///
+    /// The count is read after the port is associated: a job that empties
+    /// before the association is seen as empty, and one that empties after it
+    /// posts `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`, which ends the wait. Other
+    /// messages are skipped. Job messages are not guaranteed to arrive, so a
+    /// lost one only costs the bound.
     fn wait_empty(&self, bound: Duration) {
         let deadline = std::time::Instant::now() + bound;
+        let port =
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        if port.is_null() {
+            return;
+        }
+        let port = unsafe { OwnedHandle::from_raw_handle(port as _) };
+        if self.associate(port.as_raw_handle() as HANDLE).is_err() {
+            return;
+        }
         while self.active() > 0 {
             let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
-                return;
+                break;
             };
             let mut message = 0;
             let mut key = 0;
             let mut overlapped = std::ptr::null_mut();
             let dequeued = unsafe {
                 GetQueuedCompletionStatus(
-                    self.port.as_raw_handle() as HANDLE,
+                    port.as_raw_handle() as HANDLE,
                     &mut message,
                     &mut key,
                     &mut overlapped,
@@ -164,9 +173,10 @@ impl Job {
                 )
             };
             if dequeued == 0 || message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO {
-                return;
+                break;
             }
         }
+        let _ = self.associate(std::ptr::null_mut());
     }
 
     /// Processes in the job that have not finished terminating.

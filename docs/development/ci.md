@@ -437,6 +437,10 @@ A test that fails at random goes on the flaky list, the override with `retries =
 
 The list is empty while no flaky ticket is open.
 
+### Taking storage back after an HTTP test
+
+A test that serves a router built from a shared `Arc<Mutex<WriterOwner>>` must not call `Arc::into_inner` or `Arc::try_unwrap` on the owner after `axum::serve`'s graceful shutdown alone (GRE-1195). In axum 0.8.9, `serve` returns once each connection task drops its shutdown receiver, but the task still holds its clone of the router, and the router holds the owner, until the task ends. The result is a `routers dropped` panic in about 1 of 10 hosted runs. Serve with `pp_api::fixtures::Serving` (or `Served`) and call `stop`: it returns only after every connection has dropped its router clone, so taking the owner back needs no retry or sleep.
+
 ## Keep platform code in cfg modules
 
 Put code that differs by OS in one module for each platform, and select the module once:

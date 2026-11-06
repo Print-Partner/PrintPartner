@@ -52,6 +52,19 @@ pub fn reap_process_group(pid: u32) -> bool {
     crate::platform::kill_group(pid)
 }
 
+/// [`reap_process_group`], after letting a Windows job empty on its own for up
+/// to `GROUP_SETTLE` when its leader exited by itself, so a member that is
+/// already exiting does not turn a clean exit into a forced one.
+pub async fn reap_settled_group(pid: u32, leader_exited: bool) -> bool {
+    #[cfg(windows)]
+    if leader_exited {
+        crate::platform::settle_group(pid, GROUP_SETTLE).await;
+    }
+    #[cfg(not(windows))]
+    let _ = leader_exited;
+    reap_process_group(pid)
+}
+
 pub fn reject_and_arm_eof(
     eof_watchdog: bool,
     stdin: &mut Option<ChildStdin>,
@@ -114,11 +127,7 @@ pub async fn drive_shutdown_group(
             }
         }
     }
-    #[cfg(windows)]
-    if matches!(exit, Some(GroupExit::Observed(_))) {
-        crate::platform::settle_group(pid, GROUP_SETTLE).await;
-    }
-    if reap_process_group(pid) {
+    if reap_settled_group(pid, matches!(exit, Some(GroupExit::Observed(_)))).await {
         exit = exit.map(|exit| match exit {
             GroupExit::Observed(status) | GroupExit::Forced(status) => GroupExit::Forced(status),
         });

@@ -806,7 +806,8 @@ impl Process {
                     }
                 }
             }
-            if drain::reap_process_group(pid) {
+            let leader_exited = matches!(outcome, Some(StopOutcome::Observed(_)));
+            if drain::reap_settled_group(pid, leader_exited).await {
                 outcome = outcome.map(|outcome| match outcome {
                     StopOutcome::Observed(status) | StopOutcome::Forced(status) => {
                         StopOutcome::Forced(status)

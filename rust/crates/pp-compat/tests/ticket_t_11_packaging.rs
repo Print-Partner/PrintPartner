@@ -58,7 +58,9 @@ impl Assets {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .replace("\r\n", "\n"),
             "{\"assets\": 3, \"encoding\": \"gzip\"}\n"
         );
     }

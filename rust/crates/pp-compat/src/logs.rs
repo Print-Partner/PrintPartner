@@ -20,6 +20,9 @@ mod windows;
 #[cfg(windows)]
 use windows as platform;
 
+#[cfg(test)]
+pub(crate) use platform::test_support;
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FailureReason {

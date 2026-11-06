@@ -263,7 +263,7 @@ pub(super) fn rename(directory: &Directory, from: &str, to: &str) -> std::io::Re
 }
 
 #[cfg(test)]
-pub(super) mod test_support {
+pub(crate) mod test_support {
     use super::{CurrentUser, SE_FILE_OBJECT, information, open};
     use std::{
         fs::File,
@@ -447,10 +447,18 @@ pub(super) mod test_support {
     }
 
     pub(crate) fn symlink_file(target: &Path, link: &Path) {
-        std::os::windows::fs::symlink_file(target, link).unwrap();
+        std::os::windows::fs::symlink_file(
+            target.components().collect::<std::path::PathBuf>(),
+            link,
+        )
+        .unwrap();
     }
 
     pub(crate) fn symlink_dir(target: &Path, link: &Path) {
-        std::os::windows::fs::symlink_dir(target, link).unwrap();
+        std::os::windows::fs::symlink_dir(
+            target.components().collect::<std::path::PathBuf>(),
+            link,
+        )
+        .unwrap();
     }
 }

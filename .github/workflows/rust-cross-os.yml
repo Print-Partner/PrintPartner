@@ -502,7 +502,7 @@ jobs:
       # Unix-only crates; remove each exclusion when its port ticket is fixed.
       CARGO_SCOPE: >-
         --workspace
-        --exclude pp-compat --exclude pp-core
+        --exclude pp-core
         --exclude pp-api --exclude pp-gateway --exclude pp-server
         --exclude pp-desktop
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}

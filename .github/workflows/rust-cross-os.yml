@@ -501,7 +501,7 @@ jobs:
       RUST_OS: windows
       # Unix-only crates; remove each exclusion when its port ticket is fixed.
       CARGO_SCOPE: >-
-        -p pp-compat --lib
+        -p pp-compat -p pp-os --lib
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}
     timeout-minutes: 90
     steps: *rust-steps

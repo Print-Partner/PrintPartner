@@ -6,6 +6,7 @@ import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
 import { DestinationScreen, NotFound, StatesSpecimen } from "./screen/screens";
 import { PRINTER_DISPLAY_STATES, PrinterStatus } from "./status/PrinterStatus";
+import { TodayScreen } from "./today/TodayScreen";
 import { TypeSpecimen } from "./type/TypeSpecimen";
 
 function PrinterStates() {
@@ -34,6 +35,8 @@ export const routes: RouteObject[] = [
         element:
           d.path === "/builds" ? (
             <BuildsList />
+          ) : d.path === "/today" ? (
+            <TodayScreen />
           ) : d.path === "/farm" ? (
             <FarmScreen />
           ) : (

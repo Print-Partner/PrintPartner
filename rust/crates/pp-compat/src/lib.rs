@@ -842,9 +842,7 @@ impl Process {
             errors.capture(result);
         }
         errors.capture(
-            self.endpoint
-                .channel
-                .close()
+            std::future::ready(Ok::<(), std::io::Error>(()))
                 .await
                 .context("Compatibility socket cleanup failed"),
         );

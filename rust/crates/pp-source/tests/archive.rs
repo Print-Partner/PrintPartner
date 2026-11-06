@@ -5,7 +5,7 @@ use pp_source::{
 };
 use std::{
     fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -64,45 +64,26 @@ impl Fixture {
     }
 }
 
-/// Sets `cancel` when the copy asks for its second chunk. The first chunk is
-/// already in the stage by then, so the cancel check at the top of the copy
-/// loop trips after a partial copy on every OS, with no polling or sleeping.
-struct CancelAfterFirstChunk {
-    file: File,
-    reads: u32,
-    staged: PathBuf,
-    cancel: Arc<AtomicBool>,
-    staged_len: Arc<AtomicU64>,
-}
-impl Read for CancelAfterFirstChunk {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.reads == 1 {
-            self.staged_len
-                .store(fs::metadata(&self.staged).unwrap().len(), Ordering::SeqCst);
-            self.cancel.store(true, Ordering::SeqCst);
-        }
-        self.reads += 1;
-        self.file.read(buf)
-    }
-}
-impl Seek for CancelAfterFirstChunk {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.file.seek(pos)
-    }
-}
 impl Fixture {
+    /// Sets `cancel` before the copy's second read. The first chunk is already
+    /// in the stage by then, so the cancel check at the top of the copy loop
+    /// trips after a partial copy on every OS, with no polling or sleeping.
     /// Returns the input and the staged length seen when cancel was raised.
     fn cancelling_input(
         &self,
         cancel: &Arc<AtomicBool>,
-    ) -> (ZipInput<CancelAfterFirstChunk>, Arc<AtomicU64>) {
+    ) -> (ZipInput<impl FnMut()>, Arc<AtomicU64>) {
         let staged_len = Arc::new(AtomicU64::new(0));
-        let input = self.input().map_reader(|file| CancelAfterFirstChunk {
-            file,
-            reads: 0,
-            staged: self.candidate().join("archive.zip"),
-            cancel: cancel.clone(),
-            staged_len: staged_len.clone(),
+        let observed = staged_len.clone();
+        let cancel = cancel.clone();
+        let staged = self.candidate().join("archive.zip");
+        let mut reads = 0;
+        let input = self.input().on_read(move || {
+            if reads == 1 {
+                observed.store(fs::metadata(&staged).unwrap().len(), Ordering::SeqCst);
+                cancel.store(true, Ordering::SeqCst);
+            }
+            reads += 1;
         });
         (input, staged_len)
     }

@@ -12,11 +12,13 @@ use rusqlite::OptionalExtension;
 
 /// The Source layers of the Accepted Plan revision `previous` in the payload's
 /// `layers` shape, or `None` when there is nothing Node's restore can bring
-/// back: no Accepted Plan, a revision with no input set, an input set with no
-/// rows (restore would clear every layer), or an input set migrated by schema
-/// v18 whose `legacy:<id>` rows name no layer type (restore would treat each
-/// as an addon and drop the base). Accept then saves no
-/// snapshot, and the preview reports `saved_before_accept` from the same answer.
+/// back as recorded: no Accepted Plan, a revision with no input set, an input
+/// whose Source row is gone (restore resolves layers by Source name), or an
+/// input set migrated by schema v18 whose `legacy:<id>` rows name no layer
+/// type (restore would treat each as an addon and drop the base). An input set
+/// with no rows is a Plan with no Source layers, and restoring `[]` brings
+/// that back. Accept saves no snapshot for `None`, and the preview reports
+/// `saved_before_accept` from the same answer.
 pub(super) fn replaced_layers(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -39,26 +41,29 @@ pub(super) fn replaced_layers(
     };
     let layers = tx
         .prepare(
-            "SELECT input.source_layer,input.source_id,source.name,input.layer_order FROM plan_revision_inputs input JOIN projects source ON source.tenant_id=input.tenant_id AND source.id=input.source_id WHERE input.tenant_id=?1 AND input.input_set_id=?2 ORDER BY input.layer_order,input.source_id",
+            "SELECT input.source_layer,input.source_id,source.name,input.layer_order FROM plan_revision_inputs input LEFT JOIN projects source ON source.tenant_id=input.tenant_id AND source.id=input.source_id WHERE input.tenant_id=?1 AND input.input_set_id=?2 ORDER BY input.layer_order,input.source_id",
         )?
         .query_map(params![tenant, input_set], |row| {
             let layer: String = row.get(0)?;
             let layer_type = layer.split_once(':').map_or(layer.as_str(), |(kind, _)| kind);
-            Ok(json!({
-                "layer_type": layer_type,
-                "project_id": row.get::<_, i64>(1)?,
-                "source_name": row.get::<_, String>(2)?,
-                "tag": null,
-                "branch": null,
-                "order": row.get::<_, i64>(3)?,
-            }))
+            let project_id: i64 = row.get(1)?;
+            let source_name: Option<String> = row.get(2)?;
+            let order: i64 = row.get(3)?;
+            Ok(source_name
+                .filter(|_| matches!(layer_type, "base" | "addon"))
+                .map(|name| {
+                    json!({
+                        "layer_type": layer_type,
+                        "project_id": project_id,
+                        "source_name": name,
+                        "tag": null,
+                        "branch": null,
+                        "order": order,
+                    })
+                }))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let restorable = !layers.is_empty()
-        && layers
-            .iter()
-            .all(|layer| matches!(layer["layer_type"].as_str(), Some("base" | "addon")));
-    Ok(restorable.then_some(layers))
+        .collect::<rusqlite::Result<Option<Vec<_>>>>()?;
+    Ok(layers)
 }
 
 /// Inserts one `pre_apply` `plan_snapshots` row for Build `profile` inside

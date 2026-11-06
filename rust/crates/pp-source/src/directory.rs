@@ -170,6 +170,9 @@ fn regular(file: File) -> Result<File> {
 }
 
 #[cfg(feature = "desktop_rebuild")]
+use pp_os::Identity;
+
+#[cfg(feature = "desktop_rebuild")]
 impl Directory {
     pub(crate) fn create_child_exclusive(&self, name: &str) -> Result<Self> {
         self.0.create_dir(name)?;
@@ -194,33 +197,51 @@ impl Directory {
         Ok(())
     }
 
-    /// Takes the handle so it closes as soon as the entry is gone. Without
-    /// POSIX delete semantics (FAT on Windows) a removed entry keeps its name
-    /// until its last handle closes, which would block removing the parent.
-    pub(crate) fn remove_owned_file(&self, name: &str, owned: File) -> Result<()> {
-        self.require_owned_file(name, &owned)?;
+    pub(crate) fn identity(&self) -> Result<Identity> {
+        Ok(self.0.status()?.identity())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn identities_are_never_reused(&self) -> Result<bool> {
+        Ok(self.0.identities_are_never_reused()?)
+    }
+
+    /// Removes the regular file `name` only while it is still `owned`.
+    pub(crate) fn remove_owned_file(&self, name: &str, owned: Identity) -> Result<()> {
+        self.require_owned_file(name, owned)?;
         self.0.remove_file(name)?;
         Ok(())
     }
 
-    pub(crate) fn require_owned_file(&self, name: &str, owned: &File) -> Result<()> {
+    pub(crate) fn require_owned_file(&self, name: &str, owned: Identity) -> Result<()> {
         let current = pp_os::status_of(&self.file(name, false)?)?;
-        if !current.is_file() || current.identity() != pp_os::status_of(owned)?.identity() {
+        if !current.is_file() || current.identity() != owned {
             return Err(Error::CorruptSnapshot);
         }
         Ok(())
     }
 
-    /// Takes the handle for the reason [`Directory::remove_owned_file`] does.
+    /// Takes the handle so it closes as soon as the entry is gone. Without
+    /// POSIX delete semantics (FAT on Windows) a removed entry keeps its name
+    /// until its last handle closes, which would block removing the parent.
     pub(crate) fn remove_owned_empty_directory(&self, name: &str, owned: Directory) -> Result<()> {
-        self.require_owned_directory(name, &owned)?;
+        self.remove_empty_directory_owned_as(name, owned.identity()?)
+    }
+
+    /// Removes the empty directory `name` only while it is still `owned`.
+    pub(crate) fn remove_empty_directory_owned_as(
+        &self,
+        name: &str,
+        owned: Identity,
+    ) -> Result<()> {
+        self.require_owned_directory(name, owned)?;
         self.0.remove_dir(name)?;
         Ok(())
     }
 
-    pub(crate) fn require_owned_directory(&self, name: &str, owned: &Directory) -> Result<()> {
+    pub(crate) fn require_owned_directory(&self, name: &str, owned: Identity) -> Result<()> {
         let current = self.child(name, false)?.0.status()?;
-        if !current.is_dir() || current.identity() != owned.0.status()?.identity() {
+        if !current.is_dir() || current.identity() != owned {
             return Err(Error::CorruptSnapshot);
         }
         Ok(())

@@ -171,7 +171,10 @@ const golden = {
   }),
 };
 assert.equal(new Set(golden.cases.map((entry) => entry.id)).size, golden.cases.length);
-const body = `${JSON.stringify(golden, null, 1)}\n`;
+// One case per line keeps the golden reviewable and its diffs small.
+const body = `{"_generated": ${JSON.stringify(golden._generated)},\n"source": ${JSON.stringify(golden.source)},\n"cases": [\n${golden.cases
+  .map((entry) => JSON.stringify(entry))
+  .join(",\n")}\n]}\n`;
 if (check) {
   assert.equal(readFileSync(out, "utf8"), body, "cases.json is stale; rerun without --check");
   console.log(`print-file-classification: ${golden.cases.length} cases match`);

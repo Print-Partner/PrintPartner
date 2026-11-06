@@ -472,6 +472,41 @@ impl Gate {
             .await
             .ok()
     }
+
+    /// Runs `read` like [`Gate::read`] and answers with `present`, or with
+    /// the read's failure.
+    pub(crate) async fn respond<T: Send + 'static>(
+        &self,
+        presented: PresentedCredential,
+        read: impl FnOnce(
+            pp_storage::read_model::Credential,
+            Arc<AtomicBool>,
+            Duration,
+        ) -> anyhow::Result<T>
+        + Send
+        + 'static,
+        present: impl FnOnce(T) -> Response,
+    ) -> Response {
+        match self.read(presented, read).await {
+            Some(Ok(value)) => present(value),
+            Some(Err(error)) => read_error(&error),
+            None => internal(),
+        }
+    }
+}
+
+/// 200 with a storage answer's body as JSON; for another status, the
+/// problem `failure` builds from the body, or 500 when it builds none.
+pub(crate) fn storage_answer<B: serde::Serialize>(
+    status: u16,
+    body: B,
+    failure: impl FnOnce(StatusCode, B) -> Option<Response>,
+) -> Response {
+    match StatusCode::from_u16(status) {
+        Ok(StatusCode::OK) => ok_json(&body),
+        Ok(status) => failure(status, body).unwrap_or_else(internal),
+        Err(_) => internal(),
+    }
 }
 
 /// 200 with `value` as JSON.

@@ -2,6 +2,10 @@ use pp_gateway::ownership::{
     AdmissionError, Owner, SOURCE_SYNC_PARTICIPANTS, admit_bundled_source_sync, admit_observed,
     admit_planted_sections, boot_source_sync, fingerprint_tree,
 };
+#[cfg(unix)]
+use std::os::unix::fs::symlink as symlink_file;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -292,17 +296,15 @@ fn ticket_t_7_ownership_resource_mismatch_preserves_tree() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn ticket_t_7_ownership_planted_temporaries_do_not_overwrite_targets() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     for kind in ["symlink", "hardlink"] {
         let dir = scratch(&format!("ticket_t_7_ownership_temporary_{kind}"));
         let target = dir.join("unrelated.txt");
         fs::write(&target, "untouched data").unwrap();
         let planted = dir.join(".source-sync-admission.json.tmp");
         if kind == "symlink" {
-            symlink(&target, &planted).unwrap();
+            symlink_file(&target, &planted).unwrap();
         } else {
             fs::hard_link(&target, &planted).unwrap();
         }
@@ -310,8 +312,12 @@ fn ticket_t_7_ownership_planted_temporaries_do_not_overwrite_targets() {
         assert_eq!(read(&target), "untouched data");
         let metadata = fs::symlink_metadata(dir.join("source-sync-admission.json")).unwrap();
         assert!(metadata.is_file());
-        assert_eq!(metadata.nlink(), 1);
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            assert_eq!(metadata.nlink(), 1);
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
         let temporary_count = fs::read_dir(&dir)
             .unwrap()
             .filter(|item| {
@@ -326,17 +332,17 @@ fn ticket_t_7_ownership_planted_temporaries_do_not_overwrite_targets() {
     }
 }
 
-#[cfg(unix)]
+/// Unix also plants a socket and a FIFO, which Windows directories cannot hold.
 #[test]
 fn ticket_t_7_ownership_non_regular_receipts_are_preserved() {
-    use std::os::unix::fs::{MetadataExt, symlink};
-    for kind in [
-        "dangling-symlink",
-        "valid-symlink",
-        "directory",
-        "socket",
-        "fifo",
-    ] {
+    #[cfg(unix)]
+    let platform_kinds = ["socket", "fifo"];
+    #[cfg(windows)]
+    let platform_kinds = [];
+    for kind in ["dangling-symlink", "valid-symlink", "directory"]
+        .into_iter()
+        .chain(platform_kinds)
+    {
         let dir = if kind == "socket" {
             let dir = PathBuf::from("/tmp").join(format!(
                 "pp-receipt-{}",
@@ -353,9 +359,10 @@ fn ticket_t_7_ownership_non_regular_receipts_are_preserved() {
         let target_bytes = fs::read(&target).unwrap();
         let receipt_path = dir.join("source-sync-admission.json");
         match kind {
-            "dangling-symlink" => symlink(outside.join("missing"), &receipt_path).unwrap(),
-            "valid-symlink" => symlink(&target, &receipt_path).unwrap(),
+            "dangling-symlink" => symlink_file(outside.join("missing"), &receipt_path).unwrap(),
+            "valid-symlink" => symlink_file(&target, &receipt_path).unwrap(),
             "directory" => fs::create_dir(&receipt_path).unwrap(),
+            #[cfg(unix)]
             "fifo" => {
                 use std::os::unix::ffi::OsStrExt;
                 let path = std::ffi::CString::new(receipt_path.as_os_str().as_bytes()).unwrap();
@@ -364,11 +371,9 @@ fn ticket_t_7_ownership_non_regular_receipts_are_preserved() {
             }
             _ => {}
         }
-        let _socket = if kind == "socket" {
-            Some(std::os::unix::net::UnixListener::bind(&receipt_path).unwrap())
-        } else {
-            None
-        };
+        #[cfg(unix)]
+        let _socket = (kind == "socket")
+            .then(|| std::os::unix::net::UnixListener::bind(&receipt_path).unwrap());
         let entry = fs::symlink_metadata(&receipt_path).unwrap();
         let error = boot_source_sync(&dir, bundled_text()).unwrap_err();
         assert!(
@@ -376,10 +381,17 @@ fn ticket_t_7_ownership_non_regular_receipts_are_preserved() {
             "{kind}: {error}"
         );
         let after = fs::symlink_metadata(&receipt_path).unwrap();
-        assert_eq!(after.ino(), entry.ino());
-        assert_eq!(after.mode(), entry.mode());
+        assert_eq!(after.file_type(), entry.file_type());
+        assert_eq!(after.modified().unwrap(), entry.modified().unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(after.ino(), entry.ino());
+            assert_eq!(after.mode(), entry.mode());
+        }
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         assert_eq!(fs::read(&target).unwrap(), target_bytes);
+        #[cfg(unix)]
         if kind == "socket" {
             drop(_socket);
             fs::remove_dir_all(&dir).unwrap();

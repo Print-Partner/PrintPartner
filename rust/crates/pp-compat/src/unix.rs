@@ -153,6 +153,24 @@ impl Channel {
     }
 }
 
+/// A test child's end of the channel: it binds `<dir>/node.sock` and accepts
+/// the connections the core dials, as Node does.
+pub(crate) struct FakeChild(tokio::net::UnixListener);
+
+pub(crate) type FakeStream = Stream;
+
+pub(crate) fn fake_channel(dir: &Path) -> std::io::Result<(Channel, FakeChild)> {
+    let path = dir.join("node.sock");
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    Ok((Channel::unbound(path), FakeChild(listener)))
+}
+
+impl FakeChild {
+    pub(crate) async fn accept(&mut self) -> std::io::Result<FakeStream> {
+        Ok(self.0.accept().await?.0)
+    }
+}
+
 /// The interpreter for test child scripts: `/bin/sh -c` with a fixed `PATH`.
 #[cfg(test)]
 pub(crate) fn test_shell(script: &str) -> Command {

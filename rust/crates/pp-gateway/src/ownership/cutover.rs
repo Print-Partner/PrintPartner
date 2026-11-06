@@ -600,6 +600,11 @@ fn append_evidence_with_directory_sync(
     options
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
     let mut file = options.open(data_dir.join(EVIDENCE_FILE))?;
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::new(
@@ -715,10 +720,10 @@ mod tests {
                 append_evidence_with_directory_sync(&dir, &Evidence::Cutover(&receipt), |path| {
                     assert_eq!(path, &*dir);
                     assert_eq!(fs::read(path.join(EVIDENCE_FILE)).unwrap(), expected_log);
-                    Err(std::io::Error::from_raw_os_error(libc::EIO))
+                    Err(std::io::Error::other("injected directory sync failure"))
                 })
                 .unwrap_err();
-            assert_eq!(error.raw_os_error(), Some(libc::EIO));
+            assert_eq!(error.to_string(), "injected directory sync failure");
             assert_eq!(fs::read(dir.join(CUTOVER_FILE)).unwrap(), authority);
         }
         let (owners, boot) = recover(&dir, Some(&index)).unwrap();
@@ -754,7 +759,7 @@ mod tests {
             },
             |path| {
                 assert_eq!(fs::read(path.join(CUTOVER_FILE)).unwrap(), expected);
-                Err(std::io::Error::from_raw_os_error(libc::EIO))
+                Err(std::io::Error::other("injected directory sync failure"))
             },
         );
         assert_eq!(fs::read(dir.join(CUTOVER_FILE)).unwrap(), expected);

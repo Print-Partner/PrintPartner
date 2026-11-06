@@ -48,6 +48,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Unit tests in `src/lib.rs`, `src/logs.rs`, `src/redact.rs`, `src/release.rs`, `src/settings.rs`, `src/account_pin.rs`, and `src/ticket_t_2.rs` (with `src/tests/built_startup.rs`). Node fixtures are in `src/fixtures/` and `tests/fixtures/`. Child tests use `PP_TEST_NODE`, else `node`.
 - `tests/ticket_t_10_draftreads_bundle.rs`: `Bundle::community_manifests_dir`. `tests/ticket_t_11_packaging.rs`: runs `rust/scripts/precompress-spa.py`. `tests/installed_bundle_lifecycle.rs`: macOS only.
 - `tests/process-group-cleanup.md` records why one drain fixture runs in its own process.
+- `Endpoint::fake` gives other crates' tests an endpoint with no child process and a `FakeChild` that answers in Node's place: it accepts on a Unix socket, or on Windows dials the core's named pipe and keeps one dial queued, as Node does.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-compat

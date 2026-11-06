@@ -34,9 +34,9 @@ pp-server --data /tmp/pp-data --web ./web --node "$(command -v node)" --commit "
 ## Effects and flags
 
 - Starts `CoreRuntime`, which takes the storage lease, binds a loopback port, and spawns Node (see `pp-core`).
-- Registers `SIGTERM` and `SIGINT` before printing the origin. Stops on either signal or on a gateway shutdown request (`POST /auth/logout`). Exits non-zero when the receipt is incomplete.
+- Registers `SIGTERM` and `SIGINT` (on Windows, Ctrl+C, Ctrl+Break and console close) before printing the origin. Stops on any of them or on a gateway shutdown request (`POST /auth/logout`). Exits non-zero when the receipt is incomplete.
 - Reads no environment variables itself. `pp-core` reads `PP_DESKTOP_REBUILD`; `pp-compat` passes `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, and `TZ` to the Node child.
-- Cargo features: none. It does not enable `pp-core/desktop_rebuild`, so `PP_DESKTOP_REBUILD` has no effect on a `-p pp-server` build. Unix only.
+- Cargo features: none. It does not enable `pp-core/desktop_rebuild`, so `PP_DESKTOP_REBUILD` has no effect on a `-p pp-server` build.
 - The current `Dockerfile` still runs Node directly, not `pp-server`.
 
 ## Tests

@@ -1712,10 +1712,11 @@ mod ticket_t_10_fixtures {
     /// directory Plan 1 names. A seed runs with every trigger dropped and
     /// foreign keys off, as the generator ran it.
     fn open_accepted(sandbox: &Sandbox, seed: Option<&str>) -> WriterOwner {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
+        let builder = &mut std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
+        builder
             .recursive(true)
-            .mode(0o700)
             .create(sandbox.path().join("repos/1/revisions/accepted"))
             .unwrap();
         let path = sandbox.path().join("print-partner.db");

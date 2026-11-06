@@ -25,14 +25,14 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+    net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions},
     process::{ChildStderr, ChildStdin, ChildStdout, Command},
     sync::watch,
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED, HANDLE,
-        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
+        CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED,
+        HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     },
     Security::{Authorization::SE_FILE_OBJECT, SECURITY_ATTRIBUTES},
@@ -793,6 +793,32 @@ impl Channel {
     pub(crate) async fn close(&self) -> std::io::Result<()> {
         self.listener.lock().await.take();
         Ok(())
+    }
+}
+
+/// A test child's end of the channel. Like Node, it keeps one dial queued:
+/// each accept opens the core's listening instance, waiting while the core
+/// still holds the previous dial there.
+pub(crate) struct FakeChild(PathBuf);
+
+pub(crate) type FakeStream = NamedPipeClient;
+
+pub(crate) fn fake_channel(dir: &Path) -> std::io::Result<(Channel, FakeChild)> {
+    let channel = Channel::bind(dir, &hex::encode(rand::random::<[u8; 16]>()))?;
+    let name = channel.name().to_path_buf();
+    Ok((channel, FakeChild(name)))
+}
+
+impl FakeChild {
+    pub(crate) async fn accept(&mut self) -> std::io::Result<FakeStream> {
+        loop {
+            match ClientOptions::new().open(&self.0) {
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                result => return result,
+            }
+        }
     }
 }
 

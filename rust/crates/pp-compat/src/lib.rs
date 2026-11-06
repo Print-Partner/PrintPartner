@@ -122,6 +122,19 @@ pub struct Endpoint {
     connections: Arc<Connections>,
 }
 
+/// The Node child's end of an [`Endpoint::fake`] channel.
+pub struct FakeChild(platform::FakeChild);
+
+/// One connection a [`FakeChild`] accepted.
+pub type FakeStream = platform::FakeStream;
+
+impl FakeChild {
+    /// The next connection the endpoint opens to its child.
+    pub async fn accept(&mut self) -> std::io::Result<FakeStream> {
+        self.0.accept().await
+    }
+}
+
 struct Connections {
     closed: Mutex<bool>,
     tasks: TaskTracker,
@@ -196,8 +209,20 @@ impl Endpoint {
 
     /// Socket endpoint with no child. Tests drop publication while a refresh is blocked on it.
     pub fn bound_to(socket: impl Into<PathBuf>) -> Arc<Self> {
+        Self::without_child(platform::Channel::unbound(socket.into()))
+    }
+
+    /// Endpoint with no child process, for tests. The returned [`FakeChild`]
+    /// stands in for Node on a channel in `dir`: a Unix socket, or a named pipe
+    /// on Windows.
+    pub fn fake(dir: &Path) -> std::io::Result<(Arc<Self>, FakeChild)> {
+        let (channel, child) = platform::fake_channel(dir)?;
+        Ok((Self::without_child(channel), FakeChild(child)))
+    }
+
+    fn without_child(channel: platform::Channel) -> Arc<Self> {
         Arc::new(Self {
-            channel: Arc::new(platform::Channel::unbound(socket.into())),
+            channel: Arc::new(channel),
             generation: "test-generation".into(),
             key: [9; 32],
             connections: Arc::new(Connections::new()),

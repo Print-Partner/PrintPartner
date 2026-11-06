@@ -47,6 +47,7 @@ mod schema;
 pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_sync;
+pub mod sqlite_uri;
 #[cfg(feature = "desktop_rebuild")]
 pub mod uploads;
 #[cfg(feature = "desktop_rebuild")]

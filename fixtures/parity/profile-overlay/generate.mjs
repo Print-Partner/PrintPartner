@@ -6,8 +6,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const NODE_VERSION = "v22.23.3";
@@ -101,7 +101,7 @@ function render(cases) {
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
-const { createSelfHostPorts } = await import(join(server, "src/adapters/self-host/index.ts"));
+const { createSelfHostPorts } = await import(pathToFileURL(join(server, "src/adapters/self-host/index.ts")).href);
 const cases = [];
 for (const test of matrix) {
   const directory = mkdtempSync(join(tmpdir(), "pp-profile-overlay-"));
@@ -115,7 +115,10 @@ for (const test of matrix) {
   try {
     const apply = (sql) => {
       raw.exec(sql);
-      setup.push(sql.replaceAll(directory, "/overlay-root"));
+      // Record Source paths with "/" so the fixture is the same on every OS.
+      setup.push(
+        sql.replaceAll(join(directory, "sources") + sep, "/overlay-root/sources/").replaceAll(directory, "/overlay-root"),
+      );
     };
     apply("INSERT INTO build_profiles(id,tenant_id,name,accepted_plan_version) VALUES(3,'default','Overlay Build',0)");
     let sourceId = 10;

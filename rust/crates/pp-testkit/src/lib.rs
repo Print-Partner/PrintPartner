@@ -18,6 +18,7 @@
 //! ```
 
 pub mod moonraker;
+pub mod node_path;
 pub mod node_schema;
 
 use std::{

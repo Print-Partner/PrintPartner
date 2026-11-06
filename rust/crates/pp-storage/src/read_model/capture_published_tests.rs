@@ -47,6 +47,11 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        // Windows cannot delete a database file while a connection holds it.
+        drop(std::mem::replace(
+            &mut self.connection,
+            Connection::open_in_memory().unwrap(),
+        ));
         std::fs::remove_dir_all(&self.root).unwrap();
     }
 }

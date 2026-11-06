@@ -166,6 +166,12 @@ pub trait DomainPort: Send + Sync {
     fn invoke_tool(&self, name: &str, args: &Map<String, Value>) -> Result<ToolInvocation, String>;
     /// `applyAssistantAction`: a JSON object with an `ok` boolean. `Err` is a thrown error.
     fn apply_action(&self, action: &ProposedAction) -> Result<Value, String>;
+    /// The settled result of an action this session no longer holds (applied
+    /// already, or proposed before a restart), when the domain recorded it
+    /// under the action id. `None` answers Node's unknown-action error.
+    fn reconcile(&self, _action_id: &str) -> Option<Value> {
+        None
+    }
 }
 
 /// A port with no domain tools. Every product tool reports that it has no Rust port.
@@ -350,6 +356,13 @@ impl<P: DomainPort> McpSession<P> {
         let id = js_string_or_empty(args.get("action_id"));
         // Taken before apply so a concurrent confirm cannot apply it twice.
         let Some(action) = self.take_pending(&id) else {
+            if let Some(result) = self.port.reconcile(&id) {
+                let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                return Ok(ToolResult {
+                    text: pretty(&result),
+                    is_error: !ok,
+                });
+            }
             return Ok(ToolResult::error(
                 json!({ "ok": false, "error": UNKNOWN_ACTION, "action_id": id }),
             ));

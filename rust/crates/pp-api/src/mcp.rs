@@ -5,6 +5,8 @@
 //! cookie alone is refused, and so is a key the auth worker does not resolve
 //! to that tenant (unknown, revoked or expired). Host and Origin must match
 //! the listener exactly. Write tools only propose; `confirm_apply` applies.
+//! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
+//! (GRE-1170, `mcp/checkoff.rs`).
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -18,8 +20,10 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
-use pp_services::mcp_domain::{McpSession, ToolResult, UnportedDomain, server_info};
+use checkoff::CheckoffDomain;
+use pp_services::mcp_domain::{McpSession, ToolResult, server_info};
 use pp_storage::build_graph::PositiveId;
+use pp_storage::checkoff_progress::ProgressClient;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
     read_model::build_workflow::{Outcome, Request, WorkflowClient},
@@ -76,20 +80,24 @@ struct Guard {
 }
 
 /// The read `get_build_workflow` answers from: the same client as
-/// `GET /plans/{id}/workflow`.
+/// `GET /plans/{id}/workflow`. `progress` applies confirmed Checkoff
+/// proposals.
 #[derive(Clone)]
 struct Reads {
     workflow: WorkflowClient,
+    progress: ProgressClient,
     wait: Duration,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
 /// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
-/// `workflow` with the request's API key.
+/// `workflow` with the request's API key; Checkoff proposals apply through
+/// `progress`.
 pub fn mcp_router(
     config: McpHttpConfig,
     auth: RebuildAuthClient,
     workflow: WorkflowClient,
+    progress: ProgressClient,
 ) -> Router {
     if !config.enabled {
         return Router::new();
@@ -101,6 +109,7 @@ pub fn mcp_router(
         .with_allowed_origins([config.origin.clone()]);
     let reads = Reads {
         workflow,
+        progress,
         wait: config.wait,
     };
     let service = StreamableHttpService::new(
@@ -197,17 +206,40 @@ fn failure(status: StatusCode, detail: &str) -> Response {
 }
 
 /// One MCP session: its own pending proposals, product tools from the catalog.
+/// `turn` runs one session tool call at a time, so the caller's key set on
+/// the domain belongs to the call that uses it.
 struct ProductMcp {
-    session: McpSession<UnportedDomain>,
+    session: Arc<McpSession<CheckoffDomain>>,
+    turn: tokio::sync::Mutex<()>,
     reads: Reads,
 }
 
 impl ProductMcp {
     fn new(reads: Reads) -> Self {
         Self {
-            session: McpSession::new(UnportedDomain, None),
+            session: Arc::new(McpSession::new(
+                CheckoffDomain::new(reads.progress.clone(), reads.wait),
+                None,
+            )),
+            turn: tokio::sync::Mutex::new(()),
             reads,
         }
+    }
+
+    /// A catalog or session tool, on a blocking thread with the caller's key.
+    async fn session_tool(
+        &self,
+        name: String,
+        arguments: Value,
+        presented: Option<PresentedCredential>,
+    ) -> Result<ToolResult, ErrorData> {
+        let _turn = self.turn.lock().await;
+        self.session.port().set_caller(presented);
+        let session = self.session.clone();
+        let result =
+            tokio::task::spawn_blocking(move || session.call_tool(&name, &arguments)).await;
+        self.session.port().set_caller(None);
+        result.map_err(internal)?.map_err(|error| internal(error.0))
     }
 
     /// `get_build_workflow`: the Build's workflow, read with the caller's key
@@ -236,7 +268,7 @@ impl ProductMcp {
         else {
             return error("plan_id required");
         };
-        let Reads { workflow, wait } = self.reads.clone();
+        let Reads { workflow, wait, .. } = self.reads.clone();
         let read = tokio::task::spawn_blocking(move || {
             workflow.read(
                 presented.into_credential(),
@@ -299,20 +331,25 @@ impl ServerHandler for ProductMcp {
             .and_then(|parts| parts.extensions.get::<KeyPrincipal>())
             .ok_or_else(|| internal("MCP request has no resolved API key"))?;
         let arguments = request.arguments.map(Value::Object).unwrap_or(Value::Null);
-        let result = match parts.and_then(|parts| parts.extensions.get::<PresentedCredential>()) {
+        let presented = parts
+            .and_then(|parts| parts.extensions.get::<PresentedCredential>())
+            .cloned();
+        let result = match presented {
             Some(presented) if request.name == "get_build_workflow" => {
-                self.build_workflow(&arguments, presented.clone()).await
+                self.build_workflow(&arguments, presented).await
             }
-            _ => self
-                .session
-                .call_tool(&request.name, &arguments)
-                .map_err(|error| internal(error.0))?,
+            presented => {
+                self.session_tool(request.name.to_string(), arguments, presented)
+                    .await?
+            }
         };
         let result: CallToolResult = serde_json::from_value(result.to_json()).map_err(internal)?;
         Ok(result.into())
     }
 }
 
+#[path = "mcp/checkoff.rs"]
+mod checkoff;
 #[cfg(test)]
 #[path = "mcp/tests.rs"]
 mod tests;

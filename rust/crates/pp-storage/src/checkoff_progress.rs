@@ -26,6 +26,8 @@ mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
 mod links;
+#[cfg(feature = "desktop_rebuild")]
+mod lookup;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
 mod unattributed;
@@ -197,6 +199,13 @@ pub enum Request {
     /// `POST /printer-checkoff/unattributed/{id}/dismiss`.
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed { id: String },
+    /// `GET /printer-checkoff/verify-batch/{idempotency_key}`: what a burst
+    /// key settled to. Reads only.
+    #[cfg(feature = "desktop_rebuild")]
+    BurstStatus { key: String },
+    /// One printer Checkoff link by id, for MCP proposals. Reads only.
+    #[cfg(feature = "desktop_rebuild")]
+    CheckoffLink { id: String },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -377,6 +386,14 @@ enum Op {
     DismissUnattributed {
         id: String,
     },
+    #[cfg(feature = "desktop_rebuild")]
+    BurstStatus {
+        key: String,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    CheckoffLink {
+        id: String,
+    },
 }
 enum Target {
     Token { expected: Basis, token: String },
@@ -544,6 +561,18 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::BurstStatus { key } => {
+            return lookup::key(&key).map(|key| Op::BurstStatus { key });
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Request::CheckoffLink { id } => {
+            let id = links::js_trim(&id).to_owned();
+            if id.is_empty() {
+                return Err(Response::failure(400, "link_id is required", None));
+            }
+            return Ok(Op::CheckoffLink { id });
+        }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -680,6 +709,10 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::ClaimUnattributed(claim) => return unattributed::claim(tx, tenant, claim, repos),
         #[cfg(feature = "desktop_rebuild")]
         Op::DismissUnattributed { id } => return unattributed::dismiss(tx, tenant, &id),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::BurstStatus { key } => return lookup::burst_status(tx, tenant, &key),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::CheckoffLink { id } => return lookup::link(tx, tenant, &id),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,

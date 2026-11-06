@@ -14,7 +14,7 @@ const NODE: &str = include_str!("../../../../../fixtures/parity/printer-checkoff
 const DATABASE: &[u8] =
     include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db");
 
-pub struct Fixture(PathBuf);
+pub struct Fixture(pub PathBuf);
 
 impl Fixture {
     pub fn new() -> Self {

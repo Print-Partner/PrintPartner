@@ -260,12 +260,13 @@ pub fn read_router(
     );
     let checkoff = checkoff_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        checkoff_client,
+        checkoff_client.clone(),
     );
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
         workflow_client,
+        checkoff_client,
     );
     let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
     Ok(Some(

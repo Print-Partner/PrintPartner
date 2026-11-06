@@ -2991,8 +2991,10 @@ revision digest with Node's `digestPlanRevisionParts`, because the fixtures pin
 digests whose files do not exist. Regenerate it with
 `node fixtures/parity/plates-initialize/generate.mjs` and check it with `--check`.
 `ticket_t_61_plates_initialize_matches_node` replays it. The `plates::artifacts`
-unit tests cover the limits, links, an ambiguous case and paths outside the
-repositories.
+unit tests cover the limits, a linked file, a linked snapshot directory, an
+ambiguous case and paths outside the repositories. The walk starts from
+`repos/<locator>` as stored, not the canonical snapshot path the accepted read
+checks, so a snapshot directory replaced by a link is refused as Node refuses it.
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 

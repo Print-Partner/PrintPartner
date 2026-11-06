@@ -155,7 +155,9 @@ export function generate(document) {
     const params = [...route.path.matchAll(/\{([a-z_]+)\}/g)].map((match) => match[1]);
     const textParams = route.text_params ?? [];
     for (const param of textParams) assert(params.includes(param), `Route ${route.name} names unknown text parameter ${param}`);
-    return `  ${route.name}: {method: ${quote(route.method)}, path: ${quote(route.path)}, params: ${quote(params)}, textParams: ${quote(textParams)}, auth: ${quote(route.auth)}, request: ${route.request ? `dto.${identifier(route.request)}` : "null"}, response: dto.${identifier(route.response)}},`;
+    const headers = route.headers ?? [];
+    for (const name of headers) assert(/^[A-Za-z][A-Za-z-]*$/.test(name), `Route ${route.name} names invalid header ${name}`);
+    return `  ${route.name}: {method: ${quote(route.method)}, path: ${quote(route.path)}, params: ${quote(params)}, textParams: ${quote(textParams)}, headers: ${quote(headers)}, auth: ${quote(route.auth)}, request: ${route.request ? `dto.${identifier(route.request)}` : "null"}, response: dto.${identifier(route.response)}},`;
   });
   const routes = `import type { z } from "zod";
 import * as dto from "./schemas.generated.js";

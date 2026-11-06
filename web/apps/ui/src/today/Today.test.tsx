@@ -338,8 +338,12 @@ describe("a burst names the lower units Progress needs first", () => {
   it("names a lower unit on another bed and picks it on request, sending one request", async () => {
     const core = fakeCore({
       results: [
-        result("link-voron", "voron", [[7, 1, "hinge.stl"]], { created_at: "2026-11-05T18:00:00.000Z" }),
-        result("link-trident", "trident", [[7, 0, "hinge.stl"]], { created_at: "2026-11-05T18:30:00.000Z" }),
+        result("link-voron", "voron", [[7, 1, "hinge.stl"]], {
+          created_at: "2026-11-05T18:00:00.000Z",
+        }),
+        result("link-trident", "trident", [[7, 0, "hinge.stl"]], {
+          created_at: "2026-11-05T18:30:00.000Z",
+        }),
       ],
     });
     renderToday(core);
@@ -351,7 +355,11 @@ describe("a burst names the lower units Progress needs first", () => {
     ).toBeTruthy();
     expect(within(bed("Trident")).queryByText(/Progress fills from the left/)).toBeNull();
     fireEvent.click(within(bed("Voron 2.4")).getByRole("checkbox", { name: "hinge.stl unit 2" }));
-    expect(screen.getByText(/the core refuses this until these lower units are picked too: Trident: hinge.stl unit 1\./)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /the core refuses this until these lower units are picked too: Trident: hinge.stl unit 1\./,
+      ),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Pick them too" }));
     expect(screen.queryByText(/lower units are picked too/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
@@ -383,7 +391,9 @@ describe("a burst names lower units that are still printing", () => {
       "Lower units of these Parts are still printing: Annex K3: hinge.stl unit 1. Progress fills from the left, so the core refuses this until they come off and are confirmed, unless they were completed another way.";
     expect(within(bed("Voron 2.4")).getByText(note)).toBeTruthy();
     fireEvent.click(within(bed("Voron 2.4")).getByRole("checkbox", { name: "hinge.stl unit 2" }));
-    expect(within(screen.getByText(/^Will mark 1 unit/).closest("div")!).getByText(note)).toBeTruthy();
+    expect(
+      within(screen.getByText(/^Will mark 1 unit/).closest("div")!).getByText(note),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Pick them too" })).toBeNull();
   });
 });
@@ -393,7 +403,10 @@ describe("a burst names lower units no bed can confirm", () => {
     const core = fakeCore({
       results: [
         result("link-voron", "voron", [[7, 2, "hinge.stl"]]),
-        result("link-annex", "annex", [[7, 0, "hinge.stl"]], { state: "host_failed", host_outcome: "failed" }),
+        result("link-annex", "annex", [[7, 0, "hinge.stl"]], {
+          state: "host_failed",
+          host_outcome: "failed",
+        }),
         result("link-old", "trident", [[7, 1, "hinge.stl"]], {
           state: "awaiting_verify",
           resolved_units: [{ part_id: 7, unit_index: 1, result: "rejected" }],
@@ -405,7 +418,11 @@ describe("a burst names lower units no bed can confirm", () => {
           resolved_unit_count: 1,
         }),
       ],
-      printers: [printer("voron", "Voron 2.4"), printer("annex", "Annex K3"), printer("trident", "Trident")],
+      printers: [
+        printer("voron", "Voron 2.4"),
+        printer("annex", "Annex K3"),
+        printer("trident", "Trident"),
+      ],
     });
     renderToday(core);
     await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
@@ -628,6 +645,21 @@ describe("UI4-04 with printer links down Today offers manual checkoff and loses 
     // The read fails, then react-query's three backed-off retries (1 + 2 + 4 s).
     await act(() => vi.advanceTimersByTimeAsync(8_000));
     expect(await within(bed("voron")).findByText(/Printer links could not be read/)).toBeTruthy();
+  });
+
+  it("says the Farm module is off instead of a failed read when farm is off", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/health"
+        ? json({ ...health, modules: [{ module: "farm", state: "off", reason: "turned_off" }] })
+        : real(path, init),
+    );
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "voron" });
+    expect(await within(bed("voron")).findByText(/The Farm module is off/)).toBeTruthy();
+    expect(within(bed("voron")).queryByText(/could not be read/)).toBeNull();
+    expect(core.fetchMock.mock.calls.some(([path]) => path === "/api/v2/printers")).toBe(false);
   });
 });
 

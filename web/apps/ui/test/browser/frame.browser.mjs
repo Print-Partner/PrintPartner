@@ -28,6 +28,7 @@ const PAGES = [
   ["offline-frame", "/builds?core=down", ""],
   ["build-overview", "/builds/3", ""],
   ["build-tab", "/builds/3/checkoff", ""],
+  ["printer-states", "/states/printers", ""],
   ["palette", "/today", key({ key: "k", ctrlKey: true })],
   ["shortcuts", "/today", key({ key: "?" })],
 ];

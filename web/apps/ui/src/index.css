@@ -42,7 +42,31 @@ body {
 }
 
 .pp-pulse {
+  display: flex;
   flex: 1 1 12rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+}
+
+.pp-pulse-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text);
+}
+
+.pp-pulse-counts li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pp-pulse-stale {
+  color: var(--status-attention);
 }
 
 .pp-pulse,
@@ -301,7 +325,8 @@ body {
     padding: 16px;
   }
 
-  .pp-builds-table :is(th, td) {
+  .pp-builds-table :is(th, td),
+  .pp-farm-table :is(th, td) {
     padding: 4px;
     overflow-wrap: anywhere;
   }
@@ -338,9 +363,28 @@ body {
   margin: 0 0 4px;
 }
 
-.pp-builds-table {
+.pp-builds-table,
+.pp-farm-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.pp-farm-table :is(th, td) {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  font-weight: var(--font-weight-regular);
+}
+
+.pp-farm-table thead th {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.pp-farm-table tbody th {
+  font-weight: var(--font-weight-medium);
 }
 
 .pp-builds-table :is(th, td) {

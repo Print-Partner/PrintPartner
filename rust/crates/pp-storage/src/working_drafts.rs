@@ -665,6 +665,11 @@ impl WorkingDraftClient {
             }
         })
     }
+    /// The Required-unit reconciliation client on this client's writer and
+    /// auth policy, for Node's `PUT .../drafts/:draftId/reconciliation`.
+    pub fn reconciliation(&self) -> required_units::ReconciliationClient {
+        required_units::ReconciliationClient::new(self.shared.clone(), self.policy)
+    }
     /// Abandons an open draft as Node's `PlanDraftWorkspaceService.abandon`
     /// does.
     pub fn abandon(

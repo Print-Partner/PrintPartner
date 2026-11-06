@@ -72,6 +72,25 @@ fn failed(error: anyhow::Error) -> HostAnswer<Value> {
     HostAnswer::Failed(error.to_string())
 }
 
+impl StoredPrinterHosts {
+    /// A print-file browse of `path`, or the camera list when `path` is `None`.
+    fn read(&self, printer: String, path: Option<String>) -> Answer<Value> {
+        let (settings, reads) = (self.settings.clone(), self.reads.clone());
+        Box::pin(async move {
+            let target = match linked(&settings, printer).await {
+                Ok(Host::Moonraker(target)) => target,
+                Ok(Host::Unported) => return HostAnswer::Unsupported,
+                Err(answer) => return answer,
+            };
+            match path {
+                Some(path) => reads.browse(&target, &path).await,
+                None => reads.cameras(&target).await,
+            }
+            .map_or_else(failed, HostAnswer::Ok)
+        })
+    }
+}
+
 impl PrinterHostPort for StoredPrinterHosts {
     fn capabilities(&self, printer: String) -> Answer<Capabilities> {
         let settings = self.settings.clone();
@@ -89,31 +108,11 @@ impl PrinterHostPort for StoredPrinterHosts {
     }
 
     fn files(&self, printer: String, path: String) -> Answer<Value> {
-        let (settings, reads) = (self.settings.clone(), self.reads.clone());
-        Box::pin(async move {
-            match linked(&settings, printer).await {
-                Ok(Host::Moonraker(target)) => reads
-                    .browse(&target, &path)
-                    .await
-                    .map_or_else(failed, HostAnswer::Ok),
-                Ok(Host::Unported) => HostAnswer::Unsupported,
-                Err(answer) => answer,
-            }
-        })
+        self.read(printer, Some(path))
     }
 
     fn cameras(&self, printer: String) -> Answer<Value> {
-        let (settings, reads) = (self.settings.clone(), self.reads.clone());
-        Box::pin(async move {
-            match linked(&settings, printer).await {
-                Ok(Host::Moonraker(target)) => reads
-                    .cameras(&target)
-                    .await
-                    .map_or_else(failed, HostAnswer::Ok),
-                Ok(Host::Unported) => HostAnswer::Unsupported,
-                Err(answer) => answer,
-            }
-        })
+        self.read(printer, None)
     }
 
     fn test(&self, integration: String) -> Answer<Value> {

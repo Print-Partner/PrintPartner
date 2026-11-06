@@ -173,7 +173,7 @@ An edit to a pull request body, title or base can start workflows. This matrix c
 | Event | `review-gate` | `Lint Evidence block` | `droid.yml`, `linear-pr-sync.yml` |
 | --- | --- | --- | --- |
 | Push (`synchronize`) | runs and waits for the Claude review | runs | do not start |
-| Body or title edit (`edited`) | edit run: judges the head in its own group, cancels nothing, and waits while a Claude job is running or has not appeared yet (up to two minutes) | runs; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
+| Body or title edit (`edited`) | edit run: judges the head in its own group, cancels nothing, and waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
 | Base change (`edited`) | edit run: judges the head against the new base | runs | same as above |
 | Comment with a `pp-review-gate` marker | rerun by `review-gate-rerun.yml` | does not run | `droid.yml` starts on the comment and skips unless it contains `@droid` |
 | Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | do not start |

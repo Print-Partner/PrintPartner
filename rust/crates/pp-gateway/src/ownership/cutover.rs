@@ -445,7 +445,7 @@ fn write_record(data_dir: &Path, record: &CutoverRecord) -> std::io::Result<()> 
         file.write_all(&encoded)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&temporary, data_dir.join(CUTOVER_FILE))
+        pp_os::publish_rename(&temporary, &data_dir.join(CUTOVER_FILE))
     })();
     if written.is_err() {
         let _ = fs::remove_file(&temporary);

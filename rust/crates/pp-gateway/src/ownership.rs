@@ -883,7 +883,9 @@ fn publish_receipt(
     receipt: AdmissionReceipt,
     admitted: &AdmittedOperation,
 ) -> Result<AdmissionReceipt, AdmissionError> {
-    match fs::hard_link(temporary, receipt_path) {
+    // A link on Unix, a write-through move on Windows; neither replaces a
+    // concurrent winner.
+    match pp_os::publish_new(temporary, receipt_path) {
         Ok(()) => Ok(receipt),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             read_existing_receipt(receipt_path, admitted)?.ok_or_else(|| {
@@ -932,8 +934,12 @@ fn write_or_reuse_receipt(
             .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
         drop(file);
         let receipt = publish_receipt(&temporary, &receipt_path, receipt, admitted)?;
-        fs::remove_file(&temporary)
-            .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
+        match fs::remove_file(&temporary) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(AdmissionError::Malformed(error.to_string()));
+            }
+            _ => {}
+        }
         pp_os::sync_directory(data_dir)
             .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
         Ok(receipt)
@@ -961,6 +967,17 @@ mod receipt_publication_tests {
         fs::write(&path, "{replacement")?;
         assert_eq!(read_opened_receipt(file, &admitted)?, winner);
         assert_eq!(fs::read_to_string(&path)?, "{replacement");
+        Ok(())
+    }
+
+    #[test]
+    fn publication_consumes_its_temporary() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = Scratch::new("pp-receipt-publish-");
+        boot_source_sync(&dir, BUNDLED_SOURCE_SYNC_MANIFEST)?;
+        assert!(dir.join(RECEIPT_FILE).is_file());
+        for entry in fs::read_dir(dir.join("."))? {
+            assert!(!entry?.file_name().to_string_lossy().ends_with(".tmp"));
+        }
         Ok(())
     }
 

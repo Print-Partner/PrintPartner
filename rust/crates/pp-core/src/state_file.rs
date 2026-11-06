@@ -74,7 +74,12 @@ pub(super) fn publish_with(
             boundary(Boundary::Rename)?;
             pp_os::publish_rename(&temporary, &owner.data_dir().join(name))?;
         } else {
+            #[cfg(unix)]
             std::fs::hard_link(&temporary, owner.data_dir().join(name))?;
+            // A write-through move: Windows cannot flush the directory
+            // afterwards, so the publication itself must be durable.
+            #[cfg(windows)]
+            pp_os::publish_new(&temporary, &owner.data_dir().join(name))?;
             boundary(Boundary::HardLink)?;
         }
         Ok(())
@@ -88,4 +93,56 @@ pub(super) fn publish_with(
     boundary(Boundary::DirectorySync)?;
     pp_os::sync_directory(owner.data_dir())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leftovers(directory: &std::path::Path) -> Vec<std::ffi::OsString> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".new"))
+            .collect()
+    }
+
+    #[test]
+    fn first_publication_never_replaces_a_concurrent_winner() {
+        let directory = std::env::temp_dir().join(format!(
+            "pp-state-file-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        pp_os::create_private_dir_all(&directory).unwrap();
+        let owner = StorageLease::acquire(&directory).unwrap();
+        std::fs::write(directory.join("desktop.toml"), b"winner").unwrap();
+        let error = publish(&owner, "desktop.toml", b"loser", None).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(
+            std::fs::read(directory.join("desktop.toml")).unwrap(),
+            b"winner"
+        );
+        assert_eq!(leftovers(&directory), Vec::<std::ffi::OsString>::new());
+
+        let previous = read(&owner, "desktop.toml").unwrap().unwrap();
+        publish(&owner, "desktop.toml", b"next", Some(&previous)).unwrap();
+        assert_eq!(
+            std::fs::read(directory.join("desktop.toml")).unwrap(),
+            b"next"
+        );
+        assert_eq!(leftovers(&directory), Vec::<std::ffi::OsString>::new());
+
+        std::fs::remove_file(directory.join("desktop.toml")).unwrap();
+        publish(&owner, "desktop.toml", b"first", None).unwrap();
+        assert_eq!(
+            std::fs::read(directory.join("desktop.toml")).unwrap(),
+            b"first"
+        );
+        assert_eq!(leftovers(&directory), Vec::<std::ffi::OsString>::new());
+    }
 }

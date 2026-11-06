@@ -753,8 +753,8 @@ fn run_crash_child(test: &str, fixture: &Fixture, case: usize, new_bytes: &str) 
 async fn ticket_t_12_first_origin_crash_relaunch_publishes_one_complete_config() {
     use crate::state_file::{self, Boundary};
 
-    // First publication has no previous file, so it links instead of
-    // renaming and never reaches Recheck or Rename.
+    // First publication has no previous file, so it never reaches Recheck or
+    // Rename. Unix links the temporary file; Windows moves it write-through.
     let cases = [
         (Boundary::HardLink, true),
         (Boundary::Write, false),
@@ -805,7 +805,18 @@ async fn ticket_t_12_first_origin_crash_relaunch_publishes_one_complete_config()
             index,
             &crashed_bytes,
         );
-        if checkpoint == Boundary::HardLink {
+        if checkpoint == Boundary::HardLink && cfg!(windows) {
+            assert!(
+                std::fs::read_dir(&fixture.0).unwrap().all(|entry| {
+                    entry
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_none_or(|extension| extension != "new")
+                }),
+                "the write-through move left its temporary file"
+            );
+        } else if checkpoint == Boundary::HardLink {
             let temporary = std::fs::read_dir(&fixture.0)
                 .unwrap()
                 .map(|entry| entry.unwrap().path())

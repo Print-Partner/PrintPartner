@@ -8,13 +8,11 @@ use windows_sys::Win32::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SDDL_REVISION_1, SE_OBJECT_TYPE, SetSecurityInfo,
+            GetSecurityInfo, SDDL_REVISION_1, SE_OBJECT_TYPE,
         },
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
-        INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
-        TokenOwner, TokenUser, UNPROTECTED_DACL_SECURITY_INFORMATION,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetTokenInformation,
+        INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SetKernelObjectSecurity, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
     },
     System::{
         SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
@@ -127,26 +125,18 @@ impl CurrentUser {
     }
 
     /// Replace the DACL of `object` with [`Self::private_descriptor`]. The
-    /// handle needs `WRITE_DAC`.
-    pub(crate) fn restrict(
-        &self,
-        object: &impl AsRawHandle,
-        kind: SE_OBJECT_TYPE,
-        inherit: bool,
-    ) -> io::Result<()> {
+    /// handle needs `WRITE_DAC`. The kernel call changes this object only:
+    /// unlike `SetSecurityInfo`, it never rewrites the inherited ACEs of
+    /// existing children, which may be hard links to files elsewhere.
+    pub(crate) fn restrict(&self, object: &impl AsRawHandle, inherit: bool) -> io::Result<()> {
         let descriptor = self.private_descriptor(inherit)?;
-        let status = unsafe {
-            SetSecurityInfo(
+        check(unsafe {
+            SetKernelObjectSecurity(
                 object.as_raw_handle() as HANDLE,
-                kind,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                descriptor.dacl()?,
-                ptr::null(),
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_ptr(),
             )
-        };
-        win32(status)
+        })
     }
 
     fn security(
@@ -220,17 +210,13 @@ impl CurrentUser {
     }
 }
 
-/// The DACL an object had, to put back after a change that turned out wrong.
-pub(crate) struct SavedDacl {
-    dacl: *mut ACL,
-    protected: bool,
-    _descriptor: Local,
-}
+/// The DACL an object had, with its protection and inheritance flags, to put
+/// back exactly after a change that turned out wrong.
+pub(crate) struct SavedDacl(Local);
 
 impl SavedDacl {
     /// The handle needs `READ_CONTROL`.
     pub(crate) fn of(object: &impl AsRawHandle, kind: SE_OBJECT_TYPE) -> io::Result<Self> {
-        let mut dacl: *mut ACL = ptr::null_mut();
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
         win32(unsafe {
             GetSecurityInfo(
@@ -239,41 +225,21 @@ impl SavedDacl {
                 DACL_SECURITY_INFORMATION,
                 ptr::null_mut(),
                 ptr::null_mut(),
-                &mut dacl,
+                ptr::null_mut(),
                 ptr::null_mut(),
                 &mut descriptor,
             )
         })?;
-        let descriptor = Local(descriptor);
-        let (mut control, mut revision) = (0u16, 0u32);
-        check(unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) })?;
-        Ok(Self {
-            dacl,
-            protected: control & SE_DACL_PROTECTED != 0,
-            _descriptor: descriptor,
-        })
+        Ok(Self(Local(descriptor)))
     }
 
     /// The handle needs `WRITE_DAC`.
-    pub(crate) fn restore(
-        &self,
-        object: &impl AsRawHandle,
-        kind: SE_OBJECT_TYPE,
-    ) -> io::Result<()> {
-        let protection = if self.protected {
-            PROTECTED_DACL_SECURITY_INFORMATION
-        } else {
-            UNPROTECTED_DACL_SECURITY_INFORMATION
-        };
-        win32(unsafe {
-            SetSecurityInfo(
+    pub(crate) fn restore(&self, object: &impl AsRawHandle) -> io::Result<()> {
+        check(unsafe {
+            SetKernelObjectSecurity(
                 object.as_raw_handle() as HANDLE,
-                kind,
-                DACL_SECURITY_INFORMATION | protection,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                self.dacl,
-                ptr::null(),
+                DACL_SECURITY_INFORMATION,
+                self.0.0,
             )
         })
     }
@@ -285,15 +251,6 @@ pub(crate) struct PrivateDescriptor(Local);
 impl PrivateDescriptor {
     pub(crate) fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
         self.0.0
-    }
-
-    fn dacl(&self) -> io::Result<*mut ACL> {
-        let (mut present, mut defaulted) = (0, 0);
-        let mut dacl: *mut ACL = ptr::null_mut();
-        check(unsafe {
-            GetSecurityDescriptorDacl(self.as_ptr(), &mut present, &mut dacl, &mut defaulted)
-        })?;
-        Ok(dacl)
     }
 }
 

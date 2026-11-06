@@ -116,7 +116,7 @@ export function MatchReview() {
     // A claim claims every open print of the same file on the same integration, so reprints
     // of one file are claimed together. The printer stands in only if that list is unreadable.
     const prints = await client
-      .ensureQueryData(unmatchedQuery)
+      .fetchQuery({ ...unmatchedQuery, staleTime: 0 })
       .then((list) => list.prints)
       .catch(() => []);
     const fileOf = (s: Suggestion) => {

@@ -1259,7 +1259,8 @@ mod codegen {
     }
 
     /// Workflows resolved by the projection itself: a new Build, a saved
-    /// draft, blocked Production with a stock shortfall, and a finished Build.
+    /// draft, blocked Production with a stock shortfall, a finished Build, a
+    /// Build with a bed to clear and one with suggested unmatched prints.
     fn build_workflows() -> Result<Vec<BuildWorkflow>, serde_json::Error> {
         let facts = |id: i64, sources, accepted_plan, working_plan, failed: u64, stock| Facts {
             build: Build {
@@ -1280,6 +1281,8 @@ mod codegen {
                 awaiting_verification: failed,
                 failed_verifications: 0,
                 printer_links: failed,
+                beds_to_clear: 0,
+                match_suggestions: 0,
             },
             stock,
         };
@@ -1292,6 +1295,24 @@ mod codegen {
         let stale = Sources::Stale {
             attached_count: 2,
             issue_count: 1,
+        };
+        let farm = |id: i64, awaiting: u64, beds_to_clear: u64, match_suggestions: u64| {
+            let mut facts = facts(
+                id,
+                Sources::Ready { attached_count: 1 },
+                accepted(2),
+                Working::None,
+                0,
+                Stock::NotReady,
+            );
+            facts.checkoff = Checkoff {
+                awaiting_verification: awaiting,
+                failed_verifications: 0,
+                printer_links: awaiting,
+                beds_to_clear,
+                match_suggestions,
+            };
+            facts
         };
         [
             facts(
@@ -1329,6 +1350,8 @@ mod codegen {
                 0,
                 Stock::Ready { shortfalls: 0 },
             ),
+            farm(4, 2, 1, 0),
+            farm(5, 0, 0, 2),
         ]
         .iter()
         .map(|facts| {

@@ -574,6 +574,8 @@ fn ticket_t_61_read_model_workflow_rejects_unsafe_numbers() {
             awaiting_verification: 0,
             failed_verifications: 0,
             printer_links: 0,
+            beds_to_clear: 0,
+            match_suggestions: 0,
         },
         stock: Default::default(),
     };

@@ -829,6 +829,8 @@ fn jobs(
         awaiting_verification: 0,
         failed_verifications: 0,
         printer_links: 0,
+        beds_to_clear: 0,
+        match_suggestions: 0,
     };
     for (key, link) in [
         ("printer.send_queue", false),

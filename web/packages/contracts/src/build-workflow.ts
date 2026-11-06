@@ -225,7 +225,9 @@ const rustNextActionSchema = z.strictObject({
   kind: z.enum([
     "review_failed_prints",
     "recover_printer_jobs",
+    "clear_beds",
     "verify_prints",
+    "match_prints",
     "monitor_production",
     "review_production_queue",
     "review_plan_status",

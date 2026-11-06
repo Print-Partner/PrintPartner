@@ -123,6 +123,12 @@ pub struct StoredIntegration {
     pub kind: String,
     pub base_url: String,
     pub api_key: Option<String>,
+    /// PrusaLink's `username ?? user`, as JavaScript's `String()` reads it.
+    pub username: String,
+    /// PrusaLink's `password ?? api_key` when it is a string.
+    pub password: Option<String>,
+    /// PrusaLink's pinned `storage ?? storage_path` when it is a string.
+    pub storage: Option<String>,
     /// False only when `config.enabled` is exactly `false`.
     pub enabled: bool,
 }
@@ -215,6 +221,15 @@ fn find_integration(items: &Value, id: &str) -> Option<StoredIntegration> {
             .unwrap_or_default()
             .to_owned(),
         api_key: field(["api_key", "apiKey"])
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        username: field(["username", "user"])
+            .and_then(js_string)
+            .unwrap_or_default(),
+        password: field(["password", "api_key"])
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        storage: field(["storage", "storage_path"])
             .and_then(Value::as_str)
             .map(str::to_owned),
         enabled: config.and_then(|config| config.get("enabled")) != Some(&Value::Bool(false)),
@@ -339,11 +354,27 @@ mod tests {
                 kind: "moonraker".into(),
                 base_url: "http://p.test".into(),
                 api_key: Some("k".into()),
+                username: String::new(),
+                password: None,
+                storage: None,
                 enabled: true,
             },
             "the first matching row wins, and a null field falls back to its alias"
         );
         assert!(!find_integration(&items, "off").unwrap().enabled);
+        let prusa = json!([{"id": "mk4", "type": "prusalink", "config": {
+            "user": 42, "username": null, "password": "secret", "api_key": "key",
+            "storage_path": "/usb/", "storage": 7}}]);
+        let prusa = find_integration(&prusa, "mk4").unwrap();
+        assert_eq!(
+            (
+                prusa.username.as_str(),
+                prusa.password.as_deref(),
+                prusa.storage
+            ),
+            ("42", Some("secret"), None),
+            "a present non-string storage wins over storage_path, as with ??"
+        );
         let odd = find_integration(&items, "odd").unwrap();
         assert_eq!((odd.kind.as_str(), odd.enabled), ("", true));
         assert_eq!(

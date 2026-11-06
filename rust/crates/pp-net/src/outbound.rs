@@ -5,7 +5,7 @@
 use anyhow::{Context, Result, ensure};
 use axum::http::{Request, Uri};
 use http_body_util::{BodyExt, Empty, Limited};
-use hyper::body::{Body, Bytes, Frame, SizeHint};
+use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper_util::rt::TokioIo;
 use std::{
     future::Future,
@@ -25,6 +25,11 @@ use tokio::{
 
 /// Uploads take longer than status reads; this caps `HttpGuard::post`.
 pub const MAX_POST_DEADLINE: Duration = Duration::from_secs(120);
+/// The largest buffered reply a guard built by `HttpGuard::new` accepts.
+pub const MAX_BODY: usize = 2 * 1024 * 1024;
+/// The largest buffered reply `HttpGuard::with_body_limit` allows: Node's
+/// PrusaLink directory listing cap.
+pub const MAX_LISTING_BODY: usize = 8 * 1024 * 1024;
 
 pub type Resolution = Pin<Box<dyn Future<Output = Result<Vec<IpAddr>>> + Send>>;
 pub trait Resolver: Send + Sync {
@@ -212,10 +217,7 @@ impl HttpGuard {
             !deadline.is_zero() && deadline <= Duration::from_secs(30),
             "Invalid deadline"
         );
-        ensure!(
-            max_body > 0 && max_body <= 2 * 1024 * 1024,
-            "Invalid body limit"
-        );
+        ensure!(max_body > 0 && max_body <= MAX_BODY, "Invalid body limit");
         Ok(Self {
             resolver,
             deadline,
@@ -223,11 +225,86 @@ impl HttpGuard {
             clock: Arc::new(SystemClock),
         })
     }
+    /// The same guard with a buffered reply limit up to `MAX_LISTING_BODY`.
+    pub fn with_body_limit(&self, max_body: usize) -> Result<Self> {
+        ensure!(
+            max_body > 0 && max_body <= MAX_LISTING_BODY,
+            "Invalid body limit"
+        );
+        Ok(Self {
+            max_body,
+            ..self.clone()
+        })
+    }
+
+    /// One GET whose reply body is not buffered: the reply head must arrive
+    /// within `deadline`, then the body reads follow `body`.
+    /// Extra headers follow `HttpGuard::request`'s rules; no API key is sent.
+    /// The connection closes when the returned body is dropped.
+    pub async fn stream(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        deadline: Duration,
+        body: BodyDeadline,
+    ) -> Result<StreamReply> {
+        ensure!(
+            !deadline.is_zero()
+                && deadline <= MAX_POST_DEADLINE
+                && body != BodyDeadline::Idle(Duration::ZERO),
+            "Invalid deadline"
+        );
+        let limit = match body {
+            BodyDeadline::Total => Limit::Until(tokio::time::Instant::now() + deadline),
+            BodyDeadline::Idle(idle) => Limit::Idle(idle),
+        };
+        let owned = ["host", "connection", "content-length", "content-type"];
+        ensure!(
+            !headers
+                .iter()
+                .any(|(name, _)| owned.iter().any(|o| o.eq_ignore_ascii_case(name))),
+            "Reserved request header"
+        );
+        let written = AtomicBool::new(false);
+        let empty = Empty::<Bytes>::new();
+        let (response, connection) = self
+            .bounded(
+                deadline,
+                self.open("GET", url, headers, None, empty, &written),
+            )
+            .await?;
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        Ok(StreamReply {
+            status: response.status().as_u16(),
+            content_type: header("content-type"),
+            content_length: header("content-length").and_then(|value| value.parse().ok()),
+            www_authenticate: challenges(&response),
+            body: ReplyBody {
+                body: response.into_body(),
+                limit,
+                _connection: connection,
+            },
+        })
+    }
+
     pub async fn get(&self, url: &str, api_key: Option<&str>) -> Result<HttpReply> {
         let written = AtomicBool::new(false);
         let key = key_header(api_key);
         let headers = with_key(&key, &[]);
-        let request = self.send("GET", url, &headers, None, Empty::<Bytes>::new(), &written);
+        let empty = Empty::<Bytes>::new();
+        let request = async {
+            self.reply(
+                self.open("GET", url, &headers, None, empty, &written)
+                    .await?,
+            )
+            .await
+        };
         self.bounded(self.deadline, request).await
     }
 
@@ -297,12 +374,24 @@ impl HttpGuard {
                     failed: failed.clone(),
                 };
                 let header = Some((body.content_type, body.length));
-                let request = self.send(method, url, &headers, header, reader, &written);
+                let request = async {
+                    self.reply(
+                        self.open(method, url, &headers, header, reader, &written)
+                            .await?,
+                    )
+                    .await
+                };
                 self.bounded(deadline, request).await
             }
             None => {
                 let empty = Empty::<Bytes>::new();
-                let request = self.send(method, url, &headers, None, empty, &written);
+                let request = async {
+                    self.reply(
+                        self.open(method, url, &headers, None, empty, &written)
+                            .await?,
+                    )
+                    .await
+                };
                 self.bounded(deadline, request).await
             }
         };
@@ -317,11 +406,11 @@ impl HttpGuard {
         })
     }
 
-    async fn bounded(
+    async fn bounded<T>(
         &self,
         timeout: Duration,
-        request: impl Future<Output = Result<HttpReply>>,
-    ) -> Result<HttpReply> {
+        request: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
         let deadline = self.clock.now() + timeout;
         // Tokio's monotonic clock may pause during system sleep. Also bound wall
         // time, so resumed requests are dropped instead of publishing stale data.
@@ -345,8 +434,36 @@ impl HttpGuard {
         result
     }
 
-    /// `written` turns true just before the request is handed to the connection.
-    async fn send<B>(
+    /// Buffers an opened reply under `max_body`; the connection lives until
+    /// the body is read.
+    async fn reply(
+        &self,
+        (response, _connection): (axum::http::Response<Incoming>, Connection),
+    ) -> Result<HttpReply> {
+        let status = response.status().as_u16();
+        let www_authenticate = challenges(&response);
+        if response.status().is_redirection() {
+            return Ok(HttpReply {
+                status,
+                body: Vec::new(),
+                www_authenticate,
+            });
+        }
+        let body = Limited::new(response.into_body(), self.max_body)
+            .collect()
+            .await
+            .map_err(|_| anyhow::anyhow!("HTTP body unavailable or oversized"))?
+            .to_bytes()
+            .to_vec();
+        Ok(HttpReply {
+            status,
+            body,
+            www_authenticate,
+        })
+    }
+
+    /// Sends one request and returns the reply head with its unread body.
+    async fn open<B>(
         &self,
         method: &str,
         url: &str,
@@ -354,7 +471,7 @@ impl HttpGuard {
         content: Option<(String, u64)>,
         body: B,
         written: &AtomicBool,
-    ) -> Result<HttpReply>
+    ) -> Result<(axum::http::Response<Incoming>, Connection)>
     where
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -403,15 +520,7 @@ impl HttpGuard {
         .await?;
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake::<_, B>(TokioIo::new(stream)).await?;
-        let task = tokio::spawn(connection);
-        // Abort on body/read timeout, cancellation, errors, and successful completion.
-        struct Connection(tokio::task::JoinHandle<Result<(), hyper::Error>>);
-        impl Drop for Connection {
-            fn drop(&mut self) {
-                self.0.abort();
-            }
-        }
-        let _connection = Connection(task);
+        let connection = Connection(tokio::spawn(connection));
         let mut builder = Request::builder()
             .method(method)
             .uri(uri.path_and_query().map_or("/", |p| p.as_str()))
@@ -430,33 +539,110 @@ impl HttpGuard {
         let request = builder.body(body)?;
         written.store(true, Ordering::SeqCst);
         let response = sender.send_request(request).await?;
-        let status = response.status().as_u16();
-        // Repeated values are joined with ", ", as fetch's `Headers.get` does.
-        let challenges: Vec<_> = response
-            .headers()
-            .get_all("www-authenticate")
-            .iter()
-            .filter_map(|value| value.to_str().ok())
-            .collect();
-        let www_authenticate = (!challenges.is_empty()).then(|| challenges.join(", "));
-        if response.status().is_redirection() {
-            return Ok(HttpReply {
-                status,
-                body: Vec::new(),
-                www_authenticate,
-            });
+        Ok((response, connection))
+    }
+}
+
+/// The connection task behind one request. Dropping it aborts the task, so a
+/// timeout, cancellation, error or finished read releases the socket.
+struct Connection(tokio::task::JoinHandle<Result<(), hyper::Error>>);
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Repeated values are joined with ", ", as fetch's `Headers.get` does.
+fn challenges<T>(response: &axum::http::Response<T>) -> Option<String> {
+    let values: Vec<_> = response
+        .headers()
+        .get_all("www-authenticate")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
+/// A reply head from `HttpGuard::stream`, with its body still unread.
+pub struct StreamReply {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub content_length: Option<u64>,
+    /// As in `HttpReply`.
+    pub www_authenticate: Option<String>,
+    pub body: ReplyBody,
+}
+
+/// The idle deadline of a streamed reply passed with no new body bytes.
+#[derive(Debug)]
+pub struct IdleTimeout;
+
+impl std::fmt::Display for IdleTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTP body idle deadline")
+    }
+}
+
+impl std::error::Error for IdleTimeout {}
+
+/// How long a streamed reply body may take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyDeadline {
+    /// The head deadline also covers the whole body, as fetch with
+    /// `AbortSignal.timeout` does.
+    Total,
+    /// Each chunk must arrive within this long of the last; the error is then
+    /// `IdleTimeout`.
+    Idle(Duration),
+}
+
+enum Limit {
+    Until(tokio::time::Instant),
+    Idle(Duration),
+}
+
+/// A streamed reply body, read under its `BodyDeadline`. Dropping it closes
+/// the connection.
+pub struct ReplyBody {
+    body: Incoming,
+    limit: Limit,
+    _connection: Connection,
+}
+
+impl ReplyBody {
+    /// The next non-empty data chunk, or `None` at the end of the body.
+    pub async fn chunk(&mut self) -> Result<Option<Bytes>> {
+        loop {
+            let frame = match self.limit {
+                Limit::Until(at) => tokio::time::timeout_at(at, self.body.frame())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("HTTP body deadline"))?,
+                Limit::Idle(idle) => tokio::time::timeout(idle, self.body.frame())
+                    .await
+                    .map_err(|_| IdleTimeout)?,
+            };
+            let Some(frame) = frame else {
+                return Ok(None);
+            };
+            if let Ok(data) = frame?.into_data()
+                && !data.is_empty()
+            {
+                return Ok(Some(data));
+            }
         }
-        let body = Limited::new(response.into_body(), self.max_body)
-            .collect()
-            .await
-            .map_err(|_| anyhow::anyhow!("HTTP body unavailable or oversized"))?
-            .to_bytes()
-            .to_vec();
-        Ok(HttpReply {
-            status,
-            body,
-            www_authenticate,
-        })
+    }
+
+    /// At most the first `limit` bytes; the rest is never read.
+    pub async fn prefix(mut self, limit: usize) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        while bytes.len() < limit {
+            let Some(chunk) = self.chunk().await? else {
+                break;
+            };
+            let take = chunk.len().min(limit - bytes.len());
+            bytes.extend_from_slice(&chunk[..take]);
+        }
+        Ok(bytes)
     }
 }
 

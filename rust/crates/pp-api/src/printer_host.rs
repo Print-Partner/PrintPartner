@@ -7,9 +7,11 @@
 //! - `POST /api/v1/integrations/{id}/test`, under `/api/v1` only, as in Node
 //!
 //! Every route is read-only on the printer: it lists, describes or probes,
-//! once per request, and never uploads, starts, deletes, retries or touches
-//! Checkoff. `pp-core` implements [`PrinterHostPort`] over storage's
-//! integration settings and the gateway's Moonraker driver. Admission and
+//! and never uploads, starts, deletes or touches Checkoff. The drivers'
+//! request counts and the PrusaLink 401 resend are described in
+//! docs/printer-host-reads.md. `pp-core` implements [`PrinterHostPort`] over
+//! storage's integration settings and the gateway's Moonraker and PrusaLink
+//! drivers. Admission and
 //! the credential proof are the admin routes' (`AdminHttpConfig`).
 
 use crate::accepted::failure;

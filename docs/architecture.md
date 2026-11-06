@@ -149,7 +149,12 @@ Windows guarantees differ; on Windows it reports no POSIX owner or mode, so
 `Dir` handle shares delete, so the directory can be renamed or removed while it
 is open, as on Unix, and entries are opened, inspected, created and deleted
 with `NtCreateFile` relative to that handle, the counterpart of the Unix `*at`
-calls. NTFS refuses byte-range locks on a directory, so a directory lock on
+calls. NTFS refuses to rename a directory while a handle to any entry below it
+is open, so `pp-source` closes every handle below a snapshot candidate or a
+retained-capture phase directory before renaming it, and retained captures
+prove they still own an entry by its recorded `pp-os` identity, rechecked by
+name, instead of by a held handle; Unix also keeps a descriptor per entry so
+an inode number cannot be reused. NTFS refuses byte-range locks on a directory, so a directory lock on
 Windows is a lock on a regular file inside the directory. Storage keeps installation lease
 lifetime, migration ordering and SQL transactions. Source keeps snapshot policy.
 Native shell behavior and worker/signal orchestration stay with their owners.

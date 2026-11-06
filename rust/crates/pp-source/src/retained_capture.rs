@@ -2,6 +2,7 @@ use crate::{
     Directory, Error, LocalFiles, MAX_ENTRIES, PathCollisions, Result, SourcePath,
     local_selection::InputFile,
 };
+use pp_os::Identity;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -158,7 +159,7 @@ pub struct CaptureCandidate {
     parent: Directory,
     slot: Directory,
     candidate: Directory,
-    input: Directory,
+    input: Owned,
     id: RetainedCaptureId,
     paths: Vec<SourcePath>,
     written: Vec<InputFile>,
@@ -169,22 +170,52 @@ pub struct CaptureCandidate {
     trace: Trace,
 }
 
-struct OwnedFile {
-    parent: Directory,
-    file: File,
-    name: String,
+/// An entry this capture created or checked, recorded by identity instead of
+/// by an open handle. Windows refuses to rename a directory while any handle
+/// below it is open, so a capture holds no handle below its phase directory
+/// (`candidate`, `frozen` or `deleting`) and reopens entries by name, checking
+/// this identity before it trusts or removes them. NTFS file IDs carry a
+/// sequence number, so a freed ID is not handed to a new file. Unix inode
+/// numbers can be reused once freed, so on Unix the entry also keeps an open
+/// descriptor that pins the inode; Unix renames ignore open descriptors.
+struct Owned {
+    identity: Identity,
+    #[cfg(unix)]
+    _pin: File,
 }
 
-struct OwnedDirectory {
-    parent: Directory,
-    directory: Directory,
-    name: String,
+impl Owned {
+    fn file(file: &File) -> Result<Self> {
+        Ok(Self {
+            identity: pp_os::status_of(file)?.identity(),
+            #[cfg(unix)]
+            _pin: file.try_clone()?,
+        })
+    }
+
+    fn directory(directory: &Directory) -> Result<Self> {
+        Ok(Self {
+            identity: directory.identity()?,
+            #[cfg(unix)]
+            _pin: {
+                use std::os::fd::AsFd;
+                File::from(directory.0.as_fd().try_clone_to_owned()?)
+            },
+        })
+    }
+}
+
+/// An owned entry named by its `/`-separated path below the phase directory,
+/// which keeps naming it after the phase directory is renamed.
+struct OwnedEntry {
+    path: String,
+    owned: Owned,
 }
 
 #[derive(Default)]
 struct OwnedTree {
-    files: Vec<OwnedFile>,
-    directories: Vec<OwnedDirectory>,
+    files: Vec<OwnedEntry>,
+    directories: Vec<OwnedEntry>,
 }
 
 #[derive(Default)]
@@ -196,47 +227,48 @@ enum ExpectedEntry {
 }
 
 impl OwnedTree {
-    fn validate(&self) -> Result<()> {
-        for owned in &self.files {
-            owned.parent.require_owned_file(&owned.name, &owned.file)?;
+    /// Checks that every recorded path below `root` still names the entry
+    /// this capture recorded there.
+    fn validate(&self, root: &Directory) -> Result<()> {
+        for entry in &self.files {
+            let (parent, name) = root.parent(&entry.path, false)?;
+            parent.require_owned_file(&name, entry.owned.identity)?;
         }
-        for owned in &self.directories {
-            owned
-                .parent
-                .require_owned_directory(&owned.name, &owned.directory)?;
-        }
-        Ok(())
-    }
-
-    fn remove(self) -> Result<()> {
-        self.validate()?;
-        for OwnedFile { parent, file, name } in self.files.into_iter().rev() {
-            parent.remove_owned_file(&name, file)?;
-        }
-        for owned in self.directories.into_iter().rev() {
-            let OwnedDirectory {
-                parent,
-                directory,
-                name,
-            } = owned;
-            parent.remove_owned_empty_directory(&name, directory)?;
+        for entry in &self.directories {
+            let (parent, name) = root.parent(&entry.path, false)?;
+            parent.require_owned_directory(&name, entry.owned.identity)?;
         }
         Ok(())
     }
 
-    fn open_exact(root: &Directory, paths: &[SourcePath]) -> Result<Self> {
+    fn remove(self, root: &Directory) -> Result<()> {
+        self.validate(root)?;
+        for entry in self.files.into_iter().rev() {
+            let (parent, name) = root.parent(&entry.path, false)?;
+            parent.remove_owned_file(&name, entry.owned.identity)?;
+        }
+        for entry in self.directories.into_iter().rev() {
+            let (parent, name) = root.parent(&entry.path, false)?;
+            parent.remove_empty_directory_owned_as(&name, entry.owned.identity)?;
+        }
+        Ok(())
+    }
+
+    /// Records the tree below `input`, which must hold exactly `paths`.
+    fn open_exact(input: &Directory, paths: &[SourcePath]) -> Result<Self> {
         let mut expected = ExpectedDirectory::default();
         for path in paths {
             expected.insert(path)?;
         }
         let mut owned = Self::default();
-        owned.open_directory(root, &expected)?;
+        owned.open_directory(input, &format!("{INPUT}/"), &expected)?;
         Ok(owned)
     }
 
     fn open_directory(
         &mut self,
         directory: &Directory,
+        prefix: &str,
         expected: &ExpectedDirectory,
     ) -> Result<()> {
         let mut actual = directory.entries()?;
@@ -246,28 +278,33 @@ impl OwnedTree {
             return Err(Error::CorruptSnapshot);
         }
         for (name, entry) in &expected.0 {
+            let path = format!("{prefix}{name}");
             match entry {
                 ExpectedEntry::File => {
-                    let file = directory.file(name, false)?;
-                    self.files.push(OwnedFile {
-                        parent: directory.try_clone()?,
-                        file,
-                        name: name.clone(),
-                    });
+                    let owned = Owned::file(&directory.file(name, false)?)?;
+                    self.files.push(OwnedEntry { path, owned });
                 }
                 ExpectedEntry::Directory(expected) => {
                     let child = directory.child(name, false)?;
-                    self.directories.push(OwnedDirectory {
-                        parent: directory.try_clone()?,
-                        directory: child.try_clone()?,
-                        name: name.clone(),
+                    self.directories.push(OwnedEntry {
+                        path: path.clone(),
+                        owned: Owned::directory(&child)?,
                     });
-                    self.open_directory(&child, expected)?;
+                    self.open_directory(&child, &format!("{path}/"), expected)?;
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Opens the phase directory's `input` only while it is still `owned`.
+fn open_input(phase: &Directory, owned: &Owned) -> Result<Directory> {
+    let input = phase.child(INPUT, false)?;
+    if input.identity()? != owned.identity {
+        return Err(Error::CorruptSnapshot);
+    }
+    Ok(input)
 }
 
 impl ExpectedDirectory {
@@ -302,7 +339,7 @@ pub struct FrozenCapture {
     parent: Directory,
     slot: Directory,
     frozen: Directory,
-    input: Directory,
+    input: Owned,
     id: RetainedCaptureId,
     owned_tree: Option<OwnedTree>,
     trace: Trace,
@@ -487,7 +524,7 @@ impl RetainedCaptureVault {
                 self.trace.before("slot_sync")?;
                 slot.sync()?;
                 self.trace.before("input_create")?;
-                let input = candidate.create_child_exclusive(INPUT)?;
+                let input = Owned::directory(&candidate.create_child_exclusive(INPUT)?)?;
                 self.trace.before("candidate_sync")?;
                 candidate.sync()?;
                 Ok(CaptureCandidate {
@@ -531,7 +568,7 @@ impl RetainedCaptureVault {
         if entries != [MANIFEST.to_owned(), INPUT.to_owned()] {
             return Err(Error::CorruptSnapshot);
         }
-        let input = frozen.child(INPUT, false)?;
+        let input = Owned::directory(&frozen.child(INPUT, false)?)?;
         Ok(FrozenCapture {
             parent: self.parent.try_clone()?,
             slot,
@@ -692,29 +729,30 @@ impl CaptureCandidate {
         }
         self.collisions.insert(&path, false)?;
 
-        let mut parent = self.input.try_clone()?;
+        let mut parent = open_input(&self.candidate, &self.input)?;
+        let mut relative = INPUT.to_owned();
         let mut segments = path.as_str().split('/').peekable();
         let file_name = loop {
             let segment = segments.next().ok_or(Error::UnsafePath)?;
+            relative.push('/');
+            relative.push_str(segment);
             if segments.peek().is_none() {
                 break segment;
             }
             let (next, created) = parent.create_child_unsynced(segment)?;
             if created {
-                self.owned_tree.directories.push(OwnedDirectory {
-                    parent: parent.try_clone()?,
-                    directory: next.try_clone()?,
-                    name: segment.to_owned(),
+                self.owned_tree.directories.push(OwnedEntry {
+                    path: relative.clone(),
+                    owned: Owned::directory(&next)?,
                 });
             }
             parent = next;
         };
 
         let mut file = parent.file_exclusive(file_name)?;
-        self.owned_tree.files.push(OwnedFile {
-            parent: parent.try_clone()?,
-            file: file.try_clone()?,
-            name: file_name.to_owned(),
+        self.owned_tree.files.push(OwnedEntry {
+            path: relative,
+            owned: Owned::file(&file)?,
         });
         let mut hash = Sha256::new();
         let mut size = 0u64;
@@ -753,7 +791,7 @@ impl CaptureCandidate {
 
     pub fn inventory(&self, max_bytes: u64) -> Result<Vec<InputFile>> {
         LocalFiles {
-            root: self.input.try_clone()?,
+            root: open_input(&self.candidate, &self.input)?,
         }
         .inventory(&self.paths, max_bytes)
     }
@@ -778,8 +816,8 @@ impl CaptureCandidate {
             trace.before("slot_sync")?;
             slot.sync()?;
             require_only_entry(&slot, DELETING)?;
-            owned_tree.remove()?;
-            candidate.remove_owned_empty_directory(INPUT, input)?;
+            owned_tree.remove(&candidate)?;
+            candidate.remove_empty_directory_owned_as(INPUT, input.identity)?;
             trace.before("tree_remove")?;
             slot.remove_owned_empty_directory(DELETING, candidate)?;
             trace.before_slot_remove(&slot)?;
@@ -807,10 +845,11 @@ impl CaptureCandidate {
             }
             require_only_entry(&candidate.slot, CANDIDATE)?;
             require_only_entry(&candidate.candidate, INPUT)?;
-            OwnedTree::open_exact(&candidate.input, &candidate.paths)?;
-            candidate.owned_tree.validate()?;
+            let input = open_input(&candidate.candidate, &candidate.input)?;
+            OwnedTree::open_exact(&input, &candidate.paths)?;
+            candidate.owned_tree.validate(&candidate.candidate)?;
             let actual = LocalFiles {
-                root: candidate.input.try_clone()?,
+                root: input.try_clone()?,
             }
             .inventory(&candidate.paths, candidate.bytes)?;
             if actual != candidate.written {
@@ -819,21 +858,23 @@ impl CaptureCandidate {
 
             for owned in candidate.owned_tree.directories.iter().rev() {
                 candidate.trace.before("directory_sync")?;
-                owned.directory.sync()?;
+                let (parent, name) = candidate.candidate.parent(&owned.path, false)?;
+                parent.child(&name, false)?.sync()?;
             }
             candidate.trace.before("input_sync")?;
-            candidate.input.sync()?;
+            input.sync()?;
+            drop(input);
 
             candidate.trace.before("manifest_create")?;
             let mut manifest_file = candidate.candidate.file_exclusive(MANIFEST)?;
-            candidate.owned_tree.files.push(OwnedFile {
-                parent: candidate.candidate.try_clone()?,
-                file: manifest_file.try_clone()?,
-                name: MANIFEST.to_owned(),
+            candidate.owned_tree.files.push(OwnedEntry {
+                path: MANIFEST.to_owned(),
+                owned: Owned::file(&manifest_file)?,
             });
             manifest_file.write_all(manifest)?;
             candidate.trace.before("manifest_sync")?;
             manifest_file.sync_all()?;
+            drop(manifest_file);
             candidate.trace.before("candidate_sync")?;
             candidate.candidate.sync()?;
             let mut entries = candidate.candidate.entries()?;
@@ -905,14 +946,14 @@ impl FrozenCapture {
         {
             return Err(Error::CorruptSnapshot);
         }
-        self.input.sync()?;
+        open_input(&self.frozen, &self.input)?.sync()?;
         self.frozen.sync()?;
         self.slot.sync()
     }
 
     pub fn inventory(&self, paths: &[SourcePath], max_bytes: u64) -> Result<Vec<InputFile>> {
         LocalFiles {
-            root: self.input.try_clone()?,
+            root: open_input(&self.frozen, &self.input)?,
         }
         .inventory(paths, max_bytes)
     }
@@ -922,7 +963,7 @@ impl FrozenCapture {
         transfer: RetainedInputTransfer<'_>,
     ) -> Result<RetainedOwnedInput> {
         let local = LocalFiles {
-            root: self.input.try_clone()?,
+            root: open_input(&self.frozen, &self.input)?,
         };
         let (_owned, inventory) = local.capture(
             transfer.paths,
@@ -941,12 +982,10 @@ impl FrozenCapture {
         if frozen_entries != [MANIFEST.to_owned(), INPUT.to_owned()] {
             return Err(Error::CorruptSnapshot);
         }
-        let mut observed = OwnedTree::open_exact(&self.input, paths)?;
-        let manifest = self.frozen.file(MANIFEST, false)?;
-        observed.files.push(OwnedFile {
-            parent: self.frozen.try_clone()?,
-            file: manifest,
-            name: MANIFEST.to_owned(),
+        let mut observed = OwnedTree::open_exact(&open_input(&self.frozen, &self.input)?, paths)?;
+        observed.files.push(OwnedEntry {
+            path: MANIFEST.to_owned(),
+            owned: Owned::file(&self.frozen.file(MANIFEST, false)?)?,
         });
         let owned = self.owned_tree.unwrap_or(observed);
         self.trace.before("deleting_rename")?;
@@ -954,9 +993,9 @@ impl FrozenCapture {
         self.trace.before("slot_sync")?;
         self.slot.sync()?;
         require_only_entry(&self.slot, DELETING)?;
-        owned.remove()?;
+        owned.remove(&self.frozen)?;
         self.frozen
-            .remove_owned_empty_directory(INPUT, self.input)?;
+            .remove_empty_directory_owned_as(INPUT, self.input.identity)?;
         self.trace.before("tree_remove")?;
         self.slot
             .remove_owned_empty_directory(DELETING, self.frozen)?;
@@ -1066,6 +1105,63 @@ mod tests {
             };
             assert_eq!(state.events, observed);
             drop(state);
+        }
+    }
+
+    #[test]
+    fn retained_capture_holds_no_handle_below_its_phase_directory() {
+        let (root, vault, _state) = traced_vault("phase-handles");
+        let candidate = candidate_with(&vault, "a/part.stl", b"mesh");
+        let slot = root.join(VAULT).join(candidate.capture_id().as_str());
+        // Windows refuses these renames while any handle below the moved
+        // directory is open.
+        fs::rename(slot.join(CANDIDATE), slot.join("moved")).unwrap();
+        fs::rename(slot.join("moved"), slot.join(CANDIDATE)).unwrap();
+        let frozen = freeze(candidate, b"manifest");
+        fs::rename(slot.join(FROZEN), slot.join("moved")).unwrap();
+        fs::rename(slot.join("moved"), slot.join(FROZEN)).unwrap();
+        frozen
+            .remove(&[SourcePath::try_from("a/part.stl".to_owned()).unwrap()])
+            .unwrap();
+        assert!(vault.scan().unwrap().is_empty());
+    }
+
+    #[test]
+    fn retained_frozen_remove_refuses_replaced_owned_entries() {
+        let paths = [SourcePath::try_from("a/part.stl".to_owned()).unwrap()];
+        for replaced in ["input/a/part.stl", "input/a", "input", MANIFEST] {
+            let (root, vault, _state) = traced_vault("replaced-owned-entry");
+            let frozen = freeze(candidate_with(&vault, "a/part.stl", b"mesh"), b"manifest");
+            let phase = root
+                .join(VAULT)
+                .join(frozen.capture_id().as_str())
+                .join(FROZEN);
+            // Same name and contents, different object: only the recorded
+            // identity tells them apart.
+            let original = phase.join(replaced);
+            let moved = root.join("moved-original");
+            fs::rename(&original, &moved).unwrap();
+            if replaced == MANIFEST {
+                fs::write(&original, b"manifest").unwrap();
+            } else {
+                let file = phase.join("input/a/part.stl");
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(&file, b"mesh").unwrap();
+            }
+            assert!(
+                matches!(frozen.remove(&paths), Err(Error::CorruptSnapshot)),
+                "{replaced}"
+            );
+            // A replaced input stops removal before the deleting rename; a
+            // replacement below it stops removal before any unlink.
+            let phase = if replaced == "input" {
+                phase
+            } else {
+                phase.with_file_name(DELETING)
+            };
+            assert_eq!(fs::read(phase.join("input/a/part.stl")).unwrap(), b"mesh");
+            assert_eq!(fs::read(phase.join(MANIFEST)).unwrap(), b"manifest");
+            assert!(moved.exists());
         }
     }
 

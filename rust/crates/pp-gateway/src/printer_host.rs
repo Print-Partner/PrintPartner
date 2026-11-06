@@ -16,12 +16,13 @@ use pp_drivers::{
 use pp_net::outbound::{HttpGuard, MAX_BODY, ReplyBody, StreamReply, SystemResolver};
 use serde_json::Value;
 use std::{
+    future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Node's Moonraker connection test allows 8 s; Moonraker browse and camera
 /// reads share it. The PrusaLink driver sets its own per-request deadlines.
@@ -55,8 +56,12 @@ pub struct Opened {
 }
 
 /// Chunks a pump task reads from the printer, a few at a time, so the
-/// printer is read only as fast as the client takes the body.
-struct Pumped(mpsc::Receiver<std::io::Result<Bytes>>);
+/// printer is read only as fast as the client takes the body. `stopped`
+/// fires when the pump gives up on a client that stopped reading.
+struct Pumped {
+    chunks: mpsc::Receiver<std::io::Result<Bytes>>,
+    stopped: oneshot::Receiver<std::io::Error>,
+}
 
 impl http_body::Body for Pumped {
     type Data = Bytes;
@@ -66,39 +71,63 @@ impl http_body::Body for Pumped {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-        self.0
+        if let Poll::Ready(Ok(error)) = Pin::new(&mut self.stopped).poll(cx) {
+            return Poll::Ready(Some(Err(error)));
+        }
+        self.chunks
             .poll_recv(cx)
             .map(|next| next.map(|chunk| chunk.map(Frame::data)))
     }
 }
 
 /// Streams `body` until it ends, fails or the client goes away. A failure
-/// ends the client's body with an error instead of a clean end, and dropping
-/// the printer body closes its connection.
+/// ends the client's body with an error instead of a clean end. Waiting for a
+/// slow client counts against the body's deadline, and a dropped client body
+/// stops a pending printer read at once; either way the printer body is
+/// dropped, which closes its connection.
 fn pump(mut body: ReplyBody) -> Body {
-    let (sender, receiver) = mpsc::channel(4);
+    let (sender, chunks) = mpsc::channel(4);
+    let (stop, stopped) = oneshot::channel();
     tokio::spawn(async move {
         loop {
-            let chunk = match body.chunk().await {
+            let chunk = tokio::select! {
+                biased;
+                () = sender.closed() => return,
+                chunk = body.chunk() => chunk,
+            };
+            let chunk = match chunk {
                 Ok(Some(chunk)) => Ok(chunk),
-                Ok(None) => break,
+                Ok(None) => return,
                 Err(error) => Err(std::io::Error::other(error.to_string())),
             };
             let failed = chunk.is_err();
-            if sender.send(chunk).await.is_err() || failed {
-                break;
+            match body.within(sender.send(chunk)).await {
+                Ok(Ok(())) if !failed => {}
+                Ok(_) => return,
+                Err(error) => {
+                    let _ = stop.send(std::io::Error::other(error.to_string()));
+                    return;
+                }
             }
         }
     });
-    Body::new(Pumped(receiver))
+    Body::new(Pumped { chunks, stopped })
 }
 
+/// Only a 2xx body is streamed. Any other reply's body is dropped unread,
+/// which closes the printer connection, as Node's `sendUpstreamResponse`
+/// cancels it.
 fn opened(reply: StreamReply) -> Opened {
+    let body = if (200..300).contains(&reply.status) {
+        pump(reply.body)
+    } else {
+        Body::empty()
+    };
     Opened {
         status: reply.status,
         content_type: reply.content_type,
         content_length: reply.content_length,
-        body: pump(reply.body),
+        body,
     }
 }
 
@@ -207,5 +236,140 @@ impl HostReads {
             Driver::PrusaLink(driver) => driver.cameras().await?,
         };
         Ok(serde_json::to_value(cameras)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pp_net::outbound::BodyDeadline;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+
+    /// A loopback printer that answers one request with a streamed head and
+    /// `body`, then hands the socket back.
+    async fn printer(body: &'static [u8]) -> (String, tokio::task::JoinHandle<TcpStream>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/stream",
+            listener.local_addr().unwrap().port()
+        );
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = [0; 2048];
+            let _ = socket.read(&mut head).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            socket.write_all(body).await.unwrap();
+            socket
+        });
+        (url, task)
+    }
+
+    async fn open(url: &str, deadline: Duration) -> Body {
+        let guard =
+            HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(5), MAX_BODY).unwrap();
+        let reply = guard
+            .stream(url, &[], deadline, BodyDeadline::Total)
+            .await
+            .unwrap();
+        pump(reply.body)
+    }
+
+    /// Whether the printer sees its connection closed within `limit`.
+    async fn closed_within(socket: &mut TcpStream, limit: Duration) -> bool {
+        let chunk = vec![b'x'; 64 * 1024];
+        let frame = format!("{:x}\r\n", chunk.len());
+        let (mut reader, mut writer) = socket.split();
+        tokio::time::timeout(limit, async {
+            loop {
+                let mut read = [0; 1];
+                tokio::select! {
+                    read = reader.read(&mut read) => if matches!(read, Ok(0) | Err(_)) { return },
+                    written = async {
+                        writer.write_all(frame.as_bytes()).await?;
+                        writer.write_all(&chunk).await?;
+                        writer.write_all(b"\r\n").await
+                    } => if written.is_err() { return },
+                }
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    #[tokio::test]
+    async fn ticket_t_21_a_refused_reply_is_dropped_unread() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/missing",
+            listener.local_addr().unwrap().port()
+        );
+        let printer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = [0; 2048];
+            let _ = socket.read(&mut head).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 404 Not Found\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            socket
+        });
+        let guard =
+            HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(5), MAX_BODY).unwrap();
+        let deadline = Duration::from_secs(30);
+        let reply = guard
+            .stream(&url, &[], deadline, BodyDeadline::Total)
+            .await
+            .unwrap();
+        let opened = opened(reply);
+        assert_eq!(opened.status, 404);
+        let mut socket = printer.await.unwrap();
+        // The printer never sends a body; the connection still closes at once.
+        let mut read = [0; 1];
+        let closed = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut read)).await;
+        assert!(
+            matches!(closed, Ok(Ok(0) | Err(_))),
+            "the printer connection stayed open"
+        );
+        assert!(
+            axum::body::to_bytes(opened.body, 16)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn ticket_t_21_dropped_client_body_closes_a_stalled_printer_read() {
+        let (url, printer) = printer(b"").await;
+        let body = open(&url, Duration::from_secs(60)).await;
+        let mut socket = printer.await.unwrap();
+        drop(body);
+        let mut read = [0; 1];
+        let closed = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut read)).await;
+        assert!(
+            matches!(closed, Ok(Ok(0) | Err(_))),
+            "the printer connection stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn ticket_t_21_a_client_that_stops_reading_still_hits_the_total_deadline() {
+        let (url, printer) = printer(b"").await;
+        let body = open(&url, Duration::from_millis(500)).await;
+        let mut socket = printer.await.unwrap();
+        // The client holds the body but never reads it, so the pump fills its
+        // channel and waits on the client.
+        assert!(
+            closed_within(&mut socket, Duration::from_secs(5)).await,
+            "the printer connection outlived the stream deadline"
+        );
+        let error = axum::body::to_bytes(body, usize::MAX).await.unwrap_err();
+        assert!(error.to_string().contains("deadline"), "{error}");
     }
 }

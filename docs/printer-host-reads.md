@@ -28,14 +28,14 @@ Every route is read-only on the printer and sends only GETs. It never uploads, s
 
 - PrusaLink status. The status route, farm reads and `/ws/printers` read only the Moonraker watchers, so PrusaLink printers read as Manual there.
 - Bambu reads (GRE-362). Bambu reads as having no capabilities.
-- The print-file snapshot for a Build. Node's `files/content?profile_id=` saves the bytes it streams and returns an `X-PrintPartner-Snapshot` token that only the print-file assignment route redeems. That route is not served here yet (GRE-1169), so a request with `profile_id` answers 501 `Print-file inspection for a Build is not available in this runtime yet` and never reaches the printer.
+- The print-file snapshot for a Build. Node's `files/content?profile_id=` saves the bytes it streams and returns an `X-PrintPartner-Snapshot` token that only the print-file assignment route redeems. That route is not served here yet (GRE-1210 builds the snapshot store; GRE-1214 wires it in), so a request with `profile_id` answers 501 `Print-file inspection for a Build is not available in this runtime yet` and never reaches the printer.
 - Uploads and the send queue (GRE-365). Uploading needs an explicit user send and durable effect records (GRE-354). No Rust route calls `upload_file`.
 
 ## Streamed downloads and camera views
 
 `files/content` and `cameras/view` stream the printer's reply as Node's `sendUpstreamResponse` does. A 2xx reply streams through with its `Content-Type`, `Content-Length` and `Cache-Control: private, no-store` (the gateway then sets `no-store` on every admitted reply). A 404 from the printer answers 404 `Printer resource not found`; any other status answers 502 `Printer host returned HTTP <status>`. Neither reads the printer's body. A failed driver request answers 502 with its message, as the other routes do.
 
-`pp_gateway::printer_host::HostReads` reads the body on a task through a four-chunk channel, so the printer is read only as fast as the client takes the bytes. A read error ends the client's body with an error instead of a clean end. A client that goes away drops the printer connection.
+`pp_gateway::printer_host::HostReads` reads the body on a task through a four-chunk channel, so the printer is read only as fast as the client takes the bytes. A read error ends the client's body with an error instead of a clean end. Time spent waiting for a slow client counts against the printer body's deadline (the same absolute deadline, or the same idle allowance), so a client that stops reading cannot hold the printer connection past it; the client's body then ends with an error. A client that goes away stops a pending printer read at once and drops the printer connection. A non-2xx reply is never pumped: its body is dropped unread, which closes the connection.
 
 The Moonraker driver opens these with its API key:
 

@@ -632,6 +632,20 @@ impl ReplyBody {
         }
     }
 
+    /// Runs `wait` under the body's deadline, so time spent waiting on a
+    /// consumer counts as it would waiting on the printer: the same absolute
+    /// deadline, or the same idle allowance.
+    pub async fn within<T>(&self, wait: impl Future<Output = T>) -> Result<T> {
+        match self.limit {
+            Limit::Until(at) => tokio::time::timeout_at(at, wait)
+                .await
+                .map_err(|_| anyhow::anyhow!("HTTP body deadline")),
+            Limit::Idle(idle) => tokio::time::timeout(idle, wait)
+                .await
+                .map_err(|_| IdleTimeout.into()),
+        }
+    }
+
     /// At most the first `limit` bytes; the rest is never read.
     pub async fn prefix(mut self, limit: usize) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();

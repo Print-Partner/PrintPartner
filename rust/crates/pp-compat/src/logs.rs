@@ -322,10 +322,10 @@ fn open_log_observed(
 
 impl LogFile {
     fn open(directory: &Path, stream: Stream) -> std::io::Result<Self> {
-        let directory = platform::open_directory(directory)?;
-        platform::secure_directory(&directory)?;
-        secure_archives(&directory, stream)?;
-        let file = open_log(&directory, stream)?;
+        let directory = platform::open_directory(directory).inspect_err(|e| eprintln!("DIAG open_directory {e:?}"))?;
+        platform::secure_directory(&directory).inspect_err(|e| eprintln!("DIAG secure_directory {e:?}"))?;
+        secure_archives(&directory, stream).inspect_err(|e| eprintln!("DIAG secure_archives {e:?}"))?;
+        let file = open_log(&directory, stream).inspect_err(|e| eprintln!("DIAG open_log {e:?}"))?;
         let bytes = file.metadata()?.len();
         Ok(Self {
             stream,

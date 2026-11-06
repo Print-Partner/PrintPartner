@@ -1,6 +1,5 @@
 use std::{
     io::{Read, Write},
-    os::fd::AsRawFd,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -100,16 +99,7 @@ fn handle(
     uploads: &Mutex<Vec<HeldUpload>>,
     stop: &AtomicBool,
 ) -> std::io::Result<()> {
-    let size: libc::c_int = 4096;
-    unsafe {
-        libc::setsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_RCVBUF,
-            &size as *const libc::c_int as *const libc::c_void,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        );
-    }
+    let _ = socket2::SockRef::from(&stream).set_recv_buffer_size(4096);
     stream.set_read_timeout(Some(Duration::from_secs(20)))?;
     let (start, headers, mut body) = read_head(&mut stream)?;
     let target = start.split_whitespace().nth(1).unwrap_or("").to_owned();

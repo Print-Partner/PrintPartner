@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::tests::platform;
 use pp_storage::read_model::{Input, Part, Profile};
 use serde_json::json;
 
@@ -193,10 +194,10 @@ fn review_rejects_traversal_and_symlink_artifacts() {
     *f.artifact_mut().1 = "part.stl".into();
     fs::remove_file(f.source().join("part.stl")).unwrap();
     fs::write(f.root.join("outside.stl"), "solid test").unwrap();
-    std::os::unix::fs::symlink(f.root.join("outside.stl"), f.source().join("part.stl")).unwrap();
+    platform::symlink_file(f.root.join("outside.stl"), f.source().join("part.stl")).unwrap();
     assert!(f.observe().media_by_part_id[&9].artifact_missing);
     fs::create_dir(f.root.join("outside")).unwrap();
-    std::os::unix::fs::symlink(f.root.join("outside"), f.root.join("repos/link")).unwrap();
+    platform::symlink_dir(f.root.join("outside"), f.root.join("repos/link")).unwrap();
     *f.artifact_mut().0 = f.root.join("repos/link").to_str().unwrap().into();
     assert!(f.observe().media_by_part_id[&9].artifact_missing);
     *f.artifact_mut().0 = f.root.to_str().unwrap().into();
@@ -450,6 +451,10 @@ fn filament_config_rejects_ambiguous_urls_and_limit_expansion() {
     assert!(config.with_limits(Duration::from_secs(9), 1024, 1).is_err());
 }
 
+/// Mode bits only exist on Unix. Windows pins Source roots by handle; its
+/// counterpart is the linked-root case in
+/// `review_rejects_traversal_and_symlink_artifacts`.
+#[cfg(unix)]
 #[test]
 fn review_regression_unpinned_roots_are_unavailable() {
     use std::os::unix::fs::PermissionsExt;
@@ -642,6 +647,8 @@ fn review_preserves_unicode16_persisted_path_identity() {
     }
 }
 
+/// Windows counterpart: `review_never_reads_an_alternate_data_stream`.
+#[cfg(unix)]
 #[test]
 fn review_reads_accepted_unix_colon_names() {
     let mut f = Fixture::new();
@@ -653,6 +660,19 @@ fn review_reads_accepted_unix_colon_names() {
     .unwrap();
     *f.artifact_mut().1 = "parts/body:v2.stl".into();
     assert!(!f.observe().media_by_part_id[&9].artifact_missing);
+}
+
+/// NTFS reads `body:v2.stl` as the stream `v2.stl` of the file `body`, so
+/// a colon name is missing on Windows instead of naming that stream.
+#[cfg(windows)]
+#[test]
+fn review_never_reads_an_alternate_data_stream() {
+    let mut f = Fixture::new();
+    fs::create_dir(f.source().join("parts")).unwrap();
+    fs::rename(f.source().join("part.stl"), f.source().join("parts/body")).unwrap();
+    fs::write(f.source().join("parts/body:v2.stl"), "solid test").unwrap();
+    *f.artifact_mut().1 = "parts/body:v2.stl".into();
+    assert!(f.observe().media_by_part_id[&9].artifact_missing);
 }
 
 #[test]

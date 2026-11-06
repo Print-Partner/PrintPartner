@@ -1,5 +1,5 @@
 use super::*;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use crate::tests::platform;
 use std::path::PathBuf;
 
 struct Fixture(PathBuf);
@@ -9,11 +9,7 @@ impl Fixture {
             "pp-desktop-settings-{}",
             hex::encode(rand::random::<[u8; 8]>())
         ));
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&path)
-            .unwrap();
+        pp_os::create_private_dir_all(&path).unwrap();
         Self(path)
     }
 }
@@ -67,14 +63,7 @@ fn ticket_t_33_desktop_settings_roundtrip_clear_and_reach_the_child_env() {
         std::fs::read(fixture.0.join("desktop.toml")).unwrap(),
         b"port = 45678\n"
     );
-    assert_eq!(
-        std::fs::metadata(fixture.0.join(FILE))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    platform::assert_private_file(&fixture.0.join(FILE));
 }
 
 #[test]

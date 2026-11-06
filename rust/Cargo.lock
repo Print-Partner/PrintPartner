@@ -3297,6 +3297,7 @@ dependencies = [
  "http-body",
  "lettre",
  "log",
+ "pp-os",
  "pp-services",
  "pp-storage",
  "reqwest",
@@ -3384,6 +3385,7 @@ dependencies = [
  "pp-compat",
  "pp-gateway",
  "pp-net",
+ "pp-os",
  "pp-perf",
  "pp-source",
  "pp-storage",
@@ -3396,11 +3398,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "tempfile",
  "tokio",
  "tokio-util",
  "tower",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,11 +1,10 @@
 #![cfg(test)]
 
-use std::os::unix::{ffi::OsStrExt, fs::DirBuilderExt};
-
 use super::*;
 use crate::origin::persist_initial_origin;
+use crate::tests::platform::{self, symlink_file as symlink};
 use std::net::Ipv4Addr;
-use std::{os::unix::fs::symlink, path::Path};
+use std::path::Path;
 use tokio::net::TcpListener;
 
 struct Fixture(PathBuf);
@@ -14,11 +13,7 @@ impl Fixture {
     fn new() -> Self {
         let path =
             std::env::temp_dir().join(format!("pp-t12-{}", hex::encode(rand::random::<[u8; 8]>())));
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&path)
-            .unwrap();
+        pp_os::create_private_dir_all(&path).unwrap();
         Self(path)
     }
 
@@ -113,7 +108,6 @@ async fn ticket_t_12_oversized_config_is_refused_and_preserved() {
 
 #[tokio::test]
 async fn ticket_t_12_missing_config_persists_private_port_and_reuses_it() {
-    use std::os::unix::fs::PermissionsExt;
     if std::env::var_os("PP_T12_ORIGIN_CHILD").is_none() {
         run_child(
             "origin_tests::ticket_t_12_missing_config_persists_private_port_and_reuses_it",
@@ -132,14 +126,7 @@ async fn ticket_t_12_missing_config_persists_private_port_and_reuses_it() {
     assert_ne!(address.port(), 0);
     let bytes = std::fs::read(fixture.config()).unwrap();
     assert_eq!(bytes, format!("port = {}\n", address.port()).as_bytes());
-    assert_eq!(
-        std::fs::metadata(fixture.config())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    platform::assert_private_file(&fixture.config());
     drop(listener);
     let (listener, change) = bind_origin(&owner).await.unwrap();
     assert_eq!(change, None);
@@ -168,14 +155,13 @@ async fn ticket_t_12_corrupt_config_preserves_data() {
 
 #[tokio::test]
 async fn ticket_t_12_unreadable_config_is_refused_without_replacement() {
-    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
     std::fs::write(fixture.config(), "port = 12345\n").unwrap();
-    std::fs::set_permissions(fixture.config(), std::fs::Permissions::from_mode(0o000)).unwrap();
+    platform::deny_read(&fixture.config());
     let readable = std::fs::File::open(fixture.config());
     if readable.is_ok() {
-        std::fs::set_permissions(fixture.config(), std::fs::Permissions::from_mode(0o600)).unwrap();
-        eprintln!("permission-denial case skipped: this process can read mode 000 files");
+        platform::allow_read(&fixture.config());
+        eprintln!("permission-denial case skipped: this process can read unreadable files");
         return;
     }
     assert_eq!(
@@ -184,7 +170,7 @@ async fn ticket_t_12_unreadable_config_is_refused_without_replacement() {
     );
     let owner = StorageLease::acquire(&fixture.0).unwrap();
     let result = bind_origin(&owner).await;
-    std::fs::set_permissions(fixture.config(), std::fs::Permissions::from_mode(0o600)).unwrap();
+    platform::allow_read(&fixture.config());
     assert_eq!(
         result
             .unwrap_err()
@@ -247,8 +233,7 @@ fn ticket_t_12_fifo_config_does_not_block_startup() {
         return;
     }
     let fixture = Fixture::new();
-    let path = std::ffi::CString::new(fixture.config().as_os_str().as_encoded_bytes()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    platform::special_entry(&fixture.config());
     run_child(
         "origin_tests::ticket_t_12_fifo_config_does_not_block_startup",
         "PP_T12_FIFO_CHILD",
@@ -454,7 +439,6 @@ fn reexec_work_deadline_starts_when_the_child_enters() {
 
 #[tokio::test]
 async fn occupied_origin_recovers_with_disclosure_and_preserves_portable_data() {
-    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
     let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let old_port = occupied.local_addr().unwrap().port();
@@ -488,14 +472,7 @@ async fn occupied_origin_recovers_with_disclosure_and_preserves_portable_data() 
         format!("port = {}\n", address.port()).as_bytes()
     );
     assert_eq!(std::fs::read(alias).unwrap(), old_bytes.as_bytes());
-    assert_eq!(
-        std::fs::metadata(fixture.config())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    platform::assert_private_file(&fixture.config());
     assert!(TcpListener::bind(address).await.is_err());
     drop(owner);
     let owner = StorageLease::acquire(&fixture.0).unwrap();
@@ -646,7 +623,7 @@ async fn ticket_t_12_origin_crash_relaunch_reuses_complete_published_config() {
         let owner = StorageLease::acquire(path).unwrap();
         std::fs::write(
             path.join("crash-runtime"),
-            owner.runtime_dir().as_os_str().as_encoded_bytes(),
+            owner.runtime_dir().to_str().unwrap(),
         )
         .unwrap();
         let previous = state_file::read(&owner, "desktop.toml").unwrap().unwrap();
@@ -657,7 +634,7 @@ async fn ticket_t_12_origin_crash_relaunch_reuses_complete_published_config() {
             Some(&previous),
             |boundary| {
                 if boundary == cases[case].boundary {
-                    kill_self();
+                    platform::kill_self();
                 }
                 Ok(())
             },
@@ -733,21 +710,9 @@ async fn rebind_reserved(
     .unwrap()
 }
 
-/// SIGKILLs this process without running any more of its code. `kill` may
-/// return before delivery (seen on macOS), and unwinding would drop the lease
-/// and clean up state a real crash leaves behind.
-fn kill_self() -> ! {
-    assert_eq!(unsafe { libc::kill(libc::getpid(), libc::SIGKILL) }, 0);
-    loop {
-        std::thread::park();
-    }
-}
-
-/// Re-runs `test` in a child that SIGKILLs itself at publication checkpoint
+/// Re-runs `test` in a child that kills itself at publication checkpoint
 /// `case`, then removes the runtime directory the killed lease left behind.
 fn run_crash_child(test: &str, fixture: &Fixture, case: usize, new_bytes: &str) {
-    use std::os::unix::process::ExitStatusExt;
-
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", test, "--nocapture"])
         .env("PP_T12_ORIGIN_CRASH_STORE", &fixture.0)
@@ -768,11 +733,11 @@ fn run_crash_child(test: &str, fixture: &Fixture, case: usize, new_bytes: &str) 
     };
     // A child that failed before taking the lease leaves no runtime record;
     // let the status assertions below report that failure instead.
-    if let Ok(runtime) = std::fs::read(fixture.path("crash-runtime")) {
-        std::fs::remove_dir(std::ffi::OsStr::from_bytes(&runtime)).unwrap();
+    if let Ok(runtime) = std::fs::read_to_string(fixture.path("crash-runtime")) {
+        std::fs::remove_dir(runtime).unwrap();
     }
     assert!(!timed_out, "publication child exceeded its crash deadline");
-    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert!(platform::killed(&status), "{status}");
 }
 
 #[tokio::test]
@@ -797,13 +762,13 @@ async fn ticket_t_12_first_origin_crash_relaunch_publishes_one_complete_config()
         let owner = StorageLease::acquire(path).unwrap();
         std::fs::write(
             path.join("crash-runtime"),
-            owner.runtime_dir().as_os_str().as_encoded_bytes(),
+            owner.runtime_dir().to_str().unwrap(),
         )
         .unwrap();
         assert!(state_file::read(&owner, "desktop.toml").unwrap().is_none());
         state_file::publish_with(&owner, "desktop.toml", bytes.as_bytes(), None, |boundary| {
             if boundary == cases[case].0 {
-                kill_self();
+                platform::kill_self();
             }
             Ok(())
         })
@@ -832,17 +797,15 @@ async fn ticket_t_12_first_origin_crash_relaunch_publishes_one_complete_config()
             &crashed_bytes,
         );
         if checkpoint == Boundary::HardLink {
-            use std::os::unix::fs::MetadataExt;
             let temporary = std::fs::read_dir(&fixture.0)
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
                 .find(|path| path.extension().is_some_and(|extension| extension == "new"))
                 .unwrap();
-            let config = std::fs::metadata(fixture.config()).unwrap();
-            let temporary_metadata = std::fs::symlink_metadata(&temporary).unwrap();
-            assert!(temporary_metadata.is_file());
-            assert_eq!(temporary_metadata.dev(), config.dev());
-            assert_eq!(temporary_metadata.ino(), config.ino());
+            let config = pp_os::status_follow(&fixture.config()).unwrap();
+            let temporary_status = pp_os::status_nofollow(&temporary).unwrap();
+            assert!(temporary_status.is_file());
+            assert_eq!(temporary_status.identity(), config.identity());
             assert_eq!(std::fs::read(temporary).unwrap(), crashed_bytes.as_bytes());
         }
         if published {
@@ -890,7 +853,6 @@ async fn ticket_t_12_first_origin_crash_relaunch_publishes_one_complete_config()
 #[tokio::test]
 async fn failed_recovery_closes_selected_listener_before_returning() {
     use crate::state_file::Boundary;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let fixture = Fixture::new();
     let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
     std::fs::write(
@@ -915,54 +877,31 @@ async fn failed_recovery_closes_selected_listener_before_returning() {
             let selected = &selected;
             async move {
                 let listener = TcpListener::bind(address).await?;
-                if address.port() == 0 {
-                    let fd = listener.as_raw_fd();
-                    let held = unsafe { libc::dup(fd) };
-                    assert!(held >= 0, "dup failed");
-                    *selected.borrow_mut() = Some((fd, unsafe { OwnedFd::from_raw_fd(held) }));
+                if address.port() != 0 {
+                    return Ok(listener);
                 }
-                Ok(listener)
+                let listener = listener.into_std()?;
+                let held = listener.try_clone()?;
+                *selected.borrow_mut() = Some((platform::raw_socket(&listener), held));
+                TcpListener::from_std(listener)
             }
         },
     )
     .await;
     assert!(result.is_err());
-    let (fd, held) = selected.into_inner().unwrap();
-    let held = std::net::TcpListener::from(held);
+    let (raw, held) = selected.into_inner().unwrap();
     let address = held.local_addr().unwrap();
     assert_eq!(
         std::fs::read(fixture.config()).unwrap(),
         format!("port = {}\n", address.port()).as_bytes()
     );
-    // The selected descriptor is closed, or was reused by something that
-    // cannot be a stream socket bound to the held address. The socket type
-    // is part of the identity because a reused UDP socket can bind the same
-    // address and port as the held TCP listener.
-    let name = |fd| {
-        let mut kind: libc::c_int = 0;
-        let mut kind_len = std::mem::size_of_val(&kind) as libc::socklen_t;
-        let kind_status = unsafe {
-            libc::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_TYPE,
-                (&raw mut kind).cast(),
-                &mut kind_len,
-            )
-        };
-        let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-        let mut len = std::mem::size_of_val(&storage) as libc::socklen_t;
-        let status = unsafe { libc::getsockname(fd, (&raw mut storage).cast(), &mut len) };
-        (kind_status == 0 && status == 0).then(|| {
-            let bytes = unsafe {
-                std::slice::from_raw_parts((&raw const storage).cast::<u8>(), len as usize)
-            };
-            (kind, bytes.to_vec())
-        })
-    };
-    let held_name = name(held.as_raw_fd());
+    // The selected socket is closed, or its handle was reused by something
+    // that cannot be a stream socket bound to the held address. The socket
+    // type is part of the identity because a reused UDP socket can bind the
+    // same address and port as the held TCP listener.
+    let held_name = platform::socket_name(platform::raw_socket(&held));
     assert!(held_name.is_some());
-    assert_ne!(name(fd), held_name);
+    assert_ne!(platform::socket_name(raw), held_name);
     assert_no_temporary(&fixture);
 }
 
@@ -1039,9 +978,8 @@ async fn ticket_t_12_origin_cleanup_removes_only_owned_regular_temporary_files()
         symlink("print-partner.db", &linked).unwrap();
         let dangling = fixture.path("desktop.toml-3333333333333333.new");
         symlink("absent", &dangling).unwrap();
-        let fifo = fixture.path("desktop.toml-4444444444444444.new");
-        let fifo_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+        let special = fixture.path("desktop.toml-4444444444444444.new");
+        platform::special_entry(&special);
         let owner = StorageLease::acquire(&fixture.0).unwrap();
         let result = if config == "valid" {
             Ok(rebind_reserved(&owner, reserved).await)
@@ -1082,12 +1020,6 @@ async fn ticket_t_12_origin_cleanup_removes_only_owned_regular_temporary_files()
             Path::new("print-partner.db")
         );
         assert_eq!(std::fs::read_link(dangling).unwrap(), Path::new("absent"));
-        use std::os::unix::fs::FileTypeExt;
-        assert!(
-            std::fs::symlink_metadata(fifo)
-                .unwrap()
-                .file_type()
-                .is_fifo()
-        );
+        platform::assert_special_entry(&special);
     }
 }

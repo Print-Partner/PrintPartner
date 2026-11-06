@@ -213,9 +213,19 @@ fn source_import_client_refuses_invalid_directory_input() {
     let fixture = Fixture::open();
     fixture.write("part.stl", b"solid a");
     let link = fixture.supplied().join("link.stl");
-    std::os::unix::fs::symlink(fixture.supplied().join("part.stl"), &link).unwrap();
-    assert_eq!(os_error(&fixture.supplied()), Some(libc::ELOOP));
-    assert_eq!(os_error(&fixture.root.join("missing")), Some(libc::ENOENT));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(fixture.supplied().join("part.stl"), &link).unwrap();
+        assert_eq!(os_error(&fixture.supplied()), Some(libc::ELOOP));
+        assert_eq!(os_error(&fixture.root.join("missing")), Some(libc::ENOENT));
+    }
+    // pp-os refuses a Windows reparse point without an OS error code.
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(fixture.supplied().join("part.stl"), &link).unwrap();
+        assert_eq!(os_error(&fixture.supplied()), None);
+        assert_eq!(os_error(&fixture.root.join("missing")), Some(2));
+    }
     std::fs::remove_file(link).unwrap();
     let before = fixture.files();
     let rows = fixture.rows();

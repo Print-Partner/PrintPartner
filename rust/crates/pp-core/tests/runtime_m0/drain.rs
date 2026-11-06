@@ -638,7 +638,7 @@ async fn ticket_t_3_drain_runtime_forced_compat_refuses_cutover() {
     };
     let runtime = CoreRuntime::start(launch(data.clone())).await.unwrap();
     let child = pid(&runtime);
-    assert_eq!(unsafe { libc::kill(child as i32, libc::SIGSTOP) }, 0);
+    crate::process::stop(child);
     let started = tokio::time::Instant::now();
     let (shutdown, cutover) = runtime
         .shutdown_with_cutover(OPERATION, &parity())
@@ -839,10 +839,10 @@ async fn ticket_t_3_drain_legal_summary_alias_parity() {
             struct Resume(u32);
             impl Drop for Resume {
                 fn drop(&mut self) {
-                    unsafe { libc::kill(self.0 as i32, libc::SIGCONT) };
+                    crate::process::resume(self.0);
                 }
             }
-            assert_eq!(unsafe { libc::kill(child as i32, libc::SIGSTOP) }, 0);
+            crate::process::stop(child);
             let resume = Resume(child);
             let response = tokio::time::timeout(
                 Duration::from_secs(5),
@@ -1431,10 +1431,10 @@ async fn ticket_t_3_drain_legal_summary_representation_parity() {
         struct Resume(u32);
         impl Drop for Resume {
             fn drop(&mut self) {
-                unsafe { libc::kill(self.0 as i32, libc::SIGCONT) };
+                crate::process::resume(self.0);
             }
         }
-        assert_eq!(unsafe { libc::kill(child as i32, libc::SIGSTOP) }, 0);
+        crate::process::stop(child);
         let resume = Resume(child);
         let actual = tokio::time::timeout(
             Duration::from_secs(30),

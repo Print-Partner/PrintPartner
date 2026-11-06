@@ -15,7 +15,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     io::Read,
-    os::unix::fs::OpenOptionsExt,
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
@@ -348,10 +347,8 @@ impl SnapshotReviewObserver {
             return Ok(true);
         }
         let payload = format!("accepted-thumbnail-v3\0thumbnail\0{expected_sha256}\0{role}\0{hex}");
-        let candidate = root.join(format!(
-            "{}.png",
-            hex::encode(Sha256::digest(payload.as_bytes()))
-        ));
+        let name = format!("{}.png", hex::encode(Sha256::digest(payload.as_bytes())));
+        let candidate = root.join(&name);
         for _ in 0..8 {
             budget.check()?;
             let before = match fs::symlink_metadata(&candidate) {
@@ -362,10 +359,8 @@ impl SnapshotReviewObserver {
                 }
                 _ => return Ok(true),
             };
-            let mut file = match fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(&candidate)
+            let mut file = match pp_os::Dir::open(root)
+                .and_then(|directory| directory.open_read_nofollow(&name))
             {
                 Ok(value) => value,
                 Err(_) => continue,

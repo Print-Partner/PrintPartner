@@ -86,18 +86,19 @@ read beside it. Both routes are in the generated `@print-partner/rust-client`
 
 ## Draft paths that carry the header
 
-Every new draft row goes through `insert_snapshot`, which takes the draft
-whose header it carries (`header_from`). A new caller must name it, so a
-draft path cannot skip the choice silently.
+Every new draft row goes through `insert_snapshot`, which takes an `Origin`:
+`New`, `Draft(id)` or `Rebased(source)`. Every origin but `New` carries that
+draft's header row forward. The argument has no default, so a new draft path
+must choose.
 
 | Path | Header source | Test that fails without the carry |
 | --- | --- | --- |
-| Recompute | the open draft it abandons | `gre_1197_recompute_carries_the_open_draft_header` (pp-api) |
+| Recompute | the open draft it abandons | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` (pp-api) |
 | Rebase | the source draft | `rebase_carries_the_source_draft_header` (`working_draft_rebase.rs`) |
 | Save (publishing) | the observed draft | `save_carries_the_source_draft_header` (`working_draft_save.rs`) |
-| Autosave | none: it writes into the open draft in place, or creates a draft when none is open | `gre_1197_autosave_keeps_the_draft_header` checks the row survives |
+| Autosave | none: it writes into the open draft in place, or creates a draft when none is open | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` checks the row survives |
 | Header save | writes its own row | `gre_1197_header_save_creates_a_draft_when_none_is_open` |
 | Restore as draft (GRE-1094, not built) | the restored revision's header, through `insert_snapshot` | GRE-1094 adds its test |
 
-Replacing `header_from` with `None` in recompute, rebase or Save makes the
-matching test fail; this was checked by hand for this change.
+Passing `Origin::New` in recompute or Save, or dropping the carry for
+`Rebased`, makes the matching test fail; this was checked by hand for this change.

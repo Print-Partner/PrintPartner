@@ -157,7 +157,10 @@ so a print that ends or a link that drops shows up without a reload.
   A refusal from the core (4xx) shows its detail and no Retry. Until a bed's
   confirm gets an answer, confirming that bed again reuses its key, so a write
   that landed while its answer was lost replays its receipt and Undo instead of
-  being refused as already verified. A resent Undo whose first answer was lost
+  being refused as already verified. The key is kept only while a reread still
+  lists that bed with the same pending units; once the bed is gone, confirming
+  it later uses a new key, so a burst undone elsewhere is not answered with its
+  old receipt. A resent Undo whose first answer was lost
   gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printer>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo

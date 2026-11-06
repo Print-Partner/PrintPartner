@@ -4,7 +4,7 @@ import type {
   VerifyBatchReceipt,
 } from "@print-partner/rust-client";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
@@ -49,6 +49,9 @@ interface Bed {
 }
 
 const unitKey = (u: { part_id: number; unit_index: number }) => `${u.part_id}:${u.unit_index}`;
+
+/** A bed's link and the pending units a confirm of it sends. */
+const bedId = (bed: Bed) => `${bed.result.id}=${bed.pending.map(unitKey).join(",")}`;
 
 /** Results waiting for a person, oldest first, each with its pending units. */
 function bedsToClear(
@@ -122,9 +125,19 @@ const ALREADY_UNDONE = "This Checkoff burst was already undone";
 function useCheckoff() {
   const client = useQueryClient();
   const [tally, setTally] = useState<Tally | null>(null);
-  // The key of each bed's confirm that has no answer yet. Confirming that bed again reuses
-  // it, so a write that landed while its answer was lost replays its receipt and Undo.
+  // The key of each bed's confirm that has no answer yet, by `bedId`. Confirming that bed
+  // again reuses it, so a write that landed while its answer was lost replays its receipt
+  // and Undo.
   const unanswered = useRef(new Map<string, string>());
+  // A saved key lasts only while a reread still lists its bed with the same pending units.
+  // Once the bed is gone, confirming it later is a new write with a new key, so a burst
+  // that was undone elsewhere is never answered with its old receipt.
+  const keepWaiting = useCallback((beds: readonly Bed[]) => {
+    const waiting = new Set(beds.map(bedId));
+    for (const id of unanswered.current.keys()) {
+      if (!waiting.has(id)) unanswered.current.delete(id);
+    }
+  }, []);
   const refresh = () =>
     Promise.all([
       client.invalidateQueries({ queryKey: checkoffQuery.queryKey }),
@@ -178,11 +191,11 @@ function useCheckoff() {
     onMutate: () => undo.reset(),
     onError: (error, { bed }) => {
       if (lostSend(error)) return;
-      unanswered.current.delete(bed.result.id);
+      unanswered.current.delete(bedId(bed));
       return refresh();
     },
     onSuccess: (receipt, { bed }) => {
-      unanswered.current.delete(bed.result.id);
+      unanswered.current.delete(bedId(bed));
       undo.reset();
       setTally({ kind: "confirmed", undo: { printer: bed.printer, receipt } });
       return refresh();
@@ -190,8 +203,8 @@ function useCheckoff() {
   });
   const confirmBed = (bed: Bed) => {
     if (confirm.isPending) return;
-    const key = unanswered.current.get(bed.result.id) ?? crypto.randomUUID();
-    unanswered.current.set(bed.result.id, key);
+    const key = unanswered.current.get(bedId(bed)) ?? crypto.randomUUID();
+    unanswered.current.set(bedId(bed), key);
     confirm.mutate({ bed, key });
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
@@ -200,7 +213,7 @@ function useCheckoff() {
     confirm.reset();
     undo.mutate(tallied);
   };
-  return { confirm, confirmBed, undo, undoBurst, tally };
+  return { confirm, confirmBed, keepWaiting, undo, undoBurst, tally };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
@@ -395,6 +408,10 @@ export function TodayScreen() {
   const checkoff = useCheckoff();
   const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));
   const printerName = (id: string) => byId.get(id)?.name ?? id;
+  const { keepWaiting } = checkoff;
+  useEffect(() => {
+    if (results.data) keepWaiting(bedsToClear(results.data.results, String));
+  }, [results.data, keepWaiting]);
   // Why a printer's link cannot report a finished print, or null when it can. A failed,
   // pending or switched-off farm read says nothing about links, so it never counts as up
   // or as down.

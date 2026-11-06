@@ -4,7 +4,7 @@ import type {
   Health,
   TaskFeed,
 } from "@print-partner/rust-client";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -417,6 +417,27 @@ describe("an uncertain write is reconciled, not repeated", () => {
     expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
     expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
+    expect(core.state.marked).toBe(3);
+  });
+
+  it("drops the unanswered key once a reread no longer lists the bed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseFirstAnswers: 3 });
+    const waiting = structuredClone(core.state.results);
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    // The write landed, so the 30 s reread drops the bed.
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Voron 2.4" })).toBeNull());
+    // The burst is undone somewhere else, and the next reread lists the bed again.
+    core.state.results = waiting;
+    core.state.marked = 0;
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(2);
     expect(core.state.marked).toBe(3);
   });
 });

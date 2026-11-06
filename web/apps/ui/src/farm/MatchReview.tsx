@@ -131,18 +131,23 @@ export function MatchReview() {
     // A claim claims every open print of the same file on the same integration, so reprints
     // of one file are claimed together. A failed read keeps the last list; the printer
     // stands in only when there is none.
-    const prints = await client
-      .fetchQuery({ ...unmatchedQuery, staleTime: 0 })
-      .catch(() => client.getQueryData<UnmatchedPrintList>(unmatchedQuery.queryKey))
-      .then((list) => list?.prints ?? []);
+    const read = await client.fetchQuery({ ...unmatchedQuery, staleTime: 0 }).then(
+      (list) => ({ list, fresh: true }),
+      () => ({
+        list: client.getQueryData<UnmatchedPrintList>(unmatchedQuery.queryKey),
+        fresh: false,
+      }),
+    );
+    const prints = read.list?.prints ?? [];
     const fileOf = (s: Suggestion) => {
       const integration = prints.find((p) => p.id === s.print_id)?.integration_id;
       return `${integration ?? `printer:${s.printer_id}`}:${baseName(s.filename)}`;
     };
     // A file this Apply claimed covers a later "already claimed" answer on the same integration,
-    // or on the same file name when that print's integration could not be read.
+    // or on the same file name when the list could not be read and that print is not in the
+    // last one. A print missing from a fresh list is no longer open, so it was claimed elsewhere.
     const claimKey = (s: Suggestion) =>
-      prints.some((p) => p.id === s.print_id) ? fileOf(s) : baseName(s.filename);
+      read.fresh || prints.some((p) => p.id === s.print_id) ? fileOf(s) : baseName(s.filename);
     const claimedFiles = new Set<string>();
     for (const s of picked) {
       if (done.includes(s.print_id)) continue;

@@ -254,7 +254,8 @@ the Farm screen. No screen polls for printer state.
   file are counted as claimed by the Apply that claimed them, with one request.
   If that list cannot be read, a reprint answered "Print already claimed" after
   this Apply claimed the same file name is still counted as claimed by it. A print
-  of the same name on another integration is reported as already claimed. Applying one group
+  of the same name on another integration, or one missing from a list that was
+  read, is reported as already claimed. Applying one group
   leaves the other groups' checks and reasons as they were, and the outcome stays
   shown when the last print is resolved. The list rereads after every Apply. Farm module off shows the Module-off state; a core that lists no Farm
   module is read as on, as Farm does.

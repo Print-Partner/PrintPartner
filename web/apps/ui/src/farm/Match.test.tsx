@@ -358,6 +358,29 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     ).toBeTruthy();
   });
 
+  it("reports a print claimed elsewhere and gone from the list as already claimed", async () => {
+    const core = fakeCore();
+    core.state.suggestions.push({
+      ...suggestion("bracket", "exact", { id: 22, name: "Voron 2.4 kit" }),
+      print_id: "bracket-elsewhere",
+      printer_id: "voron-2",
+    });
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path.endsWith("/bracket-elsewhere/claim"))
+        return json({ title: "Conflict", detail: "Print already claimed" }, 409);
+      const answer = await real(path, init);
+      if (path !== "/api/v2/printer-checkoff/unattributed") return answer;
+      const list = (await answer.json()) as { prints: { id: string }[] };
+      return json({ ...list, prints: list.prints.filter((p) => p.id !== "bracket-elsewhere") });
+    });
+    renderMatch(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Apply Exact: claim 2 prints" }));
+    expect(
+      await within(result()).findByText("Applied: claimed 1 print. 1 print was already claimed."),
+    ).toBeTruthy();
+  });
+
   it("counts a reprint as claimed by this Apply when the integrations cannot be read", async () => {
     const core = fakeCore();
     core.state.integration = () => "int-shared";

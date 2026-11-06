@@ -146,7 +146,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Assistant decisions | `GET /plans/:id/decisions` | Exists in Rust behind `desktop_rebuild` (GRE-1119); History lists them too |
 | Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker observed; PrusaLink and Bambu read as Manual until they have Rust status watchers (GRE-1175, GRE-362). See [Farm reads](../farm-reads.md) |
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
-| Send queue | `GET /api/v2/printer-send-queue` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
+| Send queue | `GET /api/v2/printer-send-queue`; `POST .../{id}/dispatch`, `.../drain`, `.../{id}/reconcile`, `DELETE .../{id}` | Exists in Rust behind `desktop_rebuild`: the read (GRE-1125), plus Send now, Send ready, Reconcile and Remove with the upload worker (GRE-365). Adding to the queue is still Node only. Reconcile has no UI yet (GRE-1219). See [Send queue](../send-queue.md) |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |
 | Spoolman shortfalls | `GET /plans/:id/filament-shortfalls` (Rust-only) | Exists; grams needed reads `unknown` (`grams_not_recorded`) until the GRE-1165 writer records grams per print (slicer estimate at send, measured at finish); basis is `measured`, `estimated` or `unknown` with a reason. The workflow projection consumes it next |
 | Accept | `POST /plans/:id/drafts/:draftId/apply` | Port |

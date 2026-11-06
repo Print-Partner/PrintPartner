@@ -250,7 +250,10 @@ enum Backend {
         writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
         status: Arc<tokio::sync::watch::Sender<RustStatus>>,
         /// The send worker's stop flag and task.
-        sends: (Arc<std::sync::atomic::AtomicBool>, tokio::task::JoinHandle<()>),
+        sends: (
+            Arc<std::sync::atomic::AtomicBool>,
+            tokio::task::JoinHandle<()>,
+        ),
     },
 }
 
@@ -858,7 +861,10 @@ async fn stop_rust(
     gateway: Gateway,
     gate: ShutdownGate,
     writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
-    (stop_sends, sends): (Arc<std::sync::atomic::AtomicBool>, tokio::task::JoinHandle<()>),
+    (stop_sends, sends): (
+        Arc<std::sync::atomic::AtomicBool>,
+        tokio::task::JoinHandle<()>,
+    ),
 ) -> ShutdownReceipt {
     let (tracked_idle, gateway_idle) = drain::reject_and_wait(
         MUTATION_DRAIN,

@@ -50,7 +50,10 @@ impl Farm {
         };
         let database = farm.database();
         for (key, value) in [
-            ("printer.fleet", json!([{"id": "p-moon", "name": "Micron", "integration_id": "moon"}])),
+            (
+                "printer.fleet",
+                json!([{"id": "p-moon", "name": "Micron", "integration_id": "moon"}]),
+            ),
             (
                 "integrations",
                 json!([{"id": "moon", "name": "Micron host", "type": "moonraker",
@@ -65,7 +68,11 @@ impl Farm {
                 .unwrap();
         }
         for (position, (id, start, staged)) in items.iter().enumerate() {
-            let path = farm.exports().join("printer-uploads").join(id).join("a.gcode");
+            let path = farm
+                .exports()
+                .join("printer-uploads")
+                .join(id)
+                .join("a.gcode");
             if *staged {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(&path, b"G28\nG1 X10\n").unwrap();
@@ -151,14 +158,21 @@ async fn ticket_t_26_upload_only_send_uploads_once_and_never_calls_print_start()
     let printer = printer(&[(UPLOAD, 201)]);
     let farm = Farm::open(printer.url(), &[("q1", false, true)]);
     let worker = farm.worker();
-    assert_eq!(worker.run_next().await.unwrap(), None, "nothing is sent before a dispatch");
+    assert_eq!(
+        worker.run_next().await.unwrap(),
+        None,
+        "nothing is sent before a dispatch"
+    );
     assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
     assert_eq!(worker.run_next().await.unwrap(), Some(Sent::Done));
     let lines = printer.request_lines();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].starts_with(&format!("POST {UPLOAD}")));
     let (state, error, job, result) = farm.outcome("q1");
-    assert_eq!((state.as_str(), error, job.as_str()), ("done", None, "succeeded"));
+    assert_eq!(
+        (state.as_str(), error, job.as_str()),
+        ("done", None, "succeeded")
+    );
     assert_eq!(result["printer_name"], "Micron");
     assert_eq!(result["host_name"], "Micron host");
     assert_eq!(result["integration_type"], "moonraker");
@@ -167,11 +181,17 @@ async fn ticket_t_26_upload_only_send_uploads_once_and_never_calls_print_start()
     assert_eq!(result["checkoff_link_id"], link["id"]);
     assert_eq!(result["checkoff_units"], 1);
     assert_eq!(
-        (link["profile_id"].clone(), link["state"].clone(), link["started"].clone()),
+        (
+            link["profile_id"].clone(),
+            link["state"].clone(),
+            link["started"].clone()
+        ),
         (json!(7), json!("watching"), json!(false))
     );
     assert_eq!(worker.run_next().await.unwrap(), None);
     assert_eq!(printer.request_lines().len(), 1);
+    // As Node does after a queued send, the staged directory is deleted.
+    assert!(!farm.exports().join("printer-uploads").join("q1").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -185,22 +205,34 @@ async fn ticket_t_26_upload_and_start_sends_both_requests_once() {
     assert_eq!(lines.len(), 2, "{lines:?}");
     assert!(lines[1].starts_with(&format!("POST {start}")));
     let (state, _, job, result) = farm.outcome("q1");
-    assert_eq!((state.as_str(), job.as_str(), result["started"].clone()), ("done", "succeeded", json!(true)));
+    assert_eq!(
+        (state.as_str(), job.as_str(), result["started"].clone()),
+        ("done", "succeeded", json!(true))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_26_a_refused_upload_or_start_fails_the_send_and_frees_the_printer() {
     let start = "/printer/print/start?filename=a.gcode";
     let printer = printer(&[(UPLOAD, 201), (start, 503)]);
-    let farm = Farm::open(printer.url(), &[("started", true, true), ("next", false, true)]);
+    let farm = Farm::open(
+        printer.url(),
+        &[("started", true, true), ("next", false, true)],
+    );
     let worker = farm.worker();
     farm.send("started");
     let Some(Sent::Failed(reason)) = worker.run_next().await.unwrap() else {
         panic!("start refusal expected")
     };
-    assert!(reason.starts_with("Uploaded, but start failed (HTTP 503)"), "{reason}");
+    assert!(
+        reason.starts_with("Uploaded, but start failed (HTTP 503)"),
+        "{reason}"
+    );
     let (state, error, job, _) = farm.outcome("started");
-    assert_eq!((state.as_str(), error.as_deref(), job.as_str()), ("error", Some(reason.as_str()), "failed"));
+    assert_eq!(
+        (state.as_str(), error.as_deref(), job.as_str()),
+        ("error", Some(reason.as_str()), "failed")
+    );
     // Nothing printed, so the printer is free for the next explicit send.
     assert!(matches!(farm.send("next"), Reply::Dispatched { .. }));
 
@@ -254,27 +286,50 @@ async fn ticket_t_26_an_unknown_upload_outcome_is_never_resent() {
     };
     let (state, error, job, _) = farm.outcome("q1");
     assert_eq!(state, "error");
-    assert_eq!(error.as_deref(), Some(pp_storage::send_queue::UNKNOWN_OUTCOME_ERROR));
+    assert_eq!(
+        error.as_deref(),
+        Some(pp_storage::send_queue::UNKNOWN_OUTCOME_ERROR)
+    );
     assert_eq!(job, "reconciliation_required");
     assert_eq!(worker.run_next().await.unwrap(), None);
     assert!(matches!(
         farm.send("q1"),
-        Reply::Refused { code: Some("send_outcome_unknown"), .. }
+        Reply::Refused {
+            code: Some("send_outcome_unknown"),
+            ..
+        }
     ));
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(host.join().unwrap(), 1, "the host saw exactly one connection");
+    assert_eq!(
+        host.join().unwrap(),
+        1,
+        "the host saw exactly one connection"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_26_a_missing_or_foreign_file_fails_without_contacting_the_printer() {
     let printer = printer(&[(UPLOAD, 201)]);
-    let farm = Farm::open(printer.url(), &[("gone", false, false), ("foreign", false, false)]);
+    let farm = Farm::open(
+        printer.url(),
+        &[
+            ("gone", false, false),
+            ("foreign", false, false),
+            ("model", false, true),
+        ],
+    );
     let outside = farm.root.path().join("elsewhere.gcode");
     std::fs::write(&outside, b"G28\n").unwrap();
     farm.database()
         .execute(
             "UPDATE printer_send_queue SET artifact_path=?1 WHERE id='foreign'",
             [outside.to_string_lossy()],
+        )
+        .unwrap();
+    farm.database()
+        .execute(
+            "UPDATE printer_send_queue SET filename='a.stl' WHERE id='model'",
+            [],
         )
         .unwrap();
     let worker = farm.worker();
@@ -289,7 +344,16 @@ async fn ticket_t_26_a_missing_or_foreign_file_fails_without_contacting_the_prin
             "{id}"
         );
         let (state, error, job, _) = farm.outcome(id);
-        assert_eq!((state.as_str(), error.as_deref(), job.as_str()), ("error", Some(reason), "failed"));
+        assert_eq!(
+            (state.as_str(), error.as_deref(), job.as_str()),
+            ("error", Some(reason), "failed")
+        );
     }
+    // Storage never enqueues an upload of a file that is not sliced.
+    assert!(matches!(
+        farm.send("model"),
+        Reply::Refused { status: 400, .. }
+    ));
+    assert_eq!(worker.run_next().await.unwrap(), None);
     assert!(printer.request_lines().is_empty());
 }

@@ -152,10 +152,65 @@ A receipt kept from an attempt whose authority was refused counts as
 confirmed when the user says it printed. Otherwise the receipt is moved into
 the reconciliation record, which keeps it as evidence.
 
-The upload worker and the HTTP routes come in the next change.
+## Routes (GRE-365)
+
+`pp_api::send_queue` serves the user actions in the Rust-only runtime, under
+`/api/v2`, behind `PP_DESKTOP_REBUILD` and the accepted gate (loopback, exact
+Host and Origin, and a session or API key). `pp-core` mounts them with the
+status routes. Node's add-to-queue route (`POST /printer-send-queue`, a
+multipart upload) is not ported yet.
+
+| Route | Answer |
+| --- | --- |
+| `POST /printer-send-queue/{id}/dispatch` (Send now) | 200 `{item, job_id}`. Body `{"force": true}` skips the idle check. |
+| `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`. Optional `printer_id` must be a non-empty string. |
+| `POST /printer-send-queue/{id}/reconcile` | 200 `{item}`. Body `{"printed": true}` or `{"printed": false}`; anything else is 400. |
+| `DELETE /printer-send-queue/{id}` (Remove) | 200 `{item}`, and the item's staged directory is deleted. |
+
+Send now checks storage first, so an unknown outcome is always 409
+`send_outcome_unknown`. Then it checks the printer without contacting it:
+
+- the file name must end in `.gcode`, `.bgcode` or `.gco` (400);
+- the staged file must be under `exports` in a `printer-uploads` directory
+  (400 `Invalid artifact path`). A missing file makes the item `error` with
+  `Artifact file missing on disk` and answers 409;
+- the printer must be in the fleet (404) and be linked to an enabled
+  Moonraker or PrusaLink host (400);
+- an item with `wait_for_idle` needs the status watcher's latest state to
+  be idle or complete, unless the request forces it (409 `Printer is printing
+  — wait for Idle or force dispatch`). Only Moonraker has a watcher here, so
+  a PrusaLink item with `wait_for_idle` needs `force`.
+
+Send ready does the same for each queued item it reads (up to 8), sends at
+most one per printer, and skips an item refused with 409. That item stays as
+it is.
+
+## Upload worker (GRE-365, GRE-1215)
+
+`pp_core::send_worker::SendWorker` is the only code that uploads to a
+printer, and only `printer-upload` jobs that a dispatch enqueued. It starts
+with the Rust-only runtime. Shutdown lets an upload in flight finish for up
+to the mutation drain bound. For each job it:
+
+1. checks the job's original authority, resolves the host, and reads the
+   staged file (at most 64 MiB);
+2. admits one effect (`printer_upload`, or `printer_upload_and_start`)
+   before any request;
+3. sends once through the Moonraker or PrusaLink driver. An upload-only send
+   never calls `print/start`. A confirmed send finishes the job with the
+   printer, host and remote path, creates the Build's Checkoff link, and
+   deletes the staged directory, as Node does. A definite refusal, including
+   a start the printer refused after the upload, denies the effect, so the
+   job fails, the item is `error` with the reason, and the printer is free.
+   An unknown outcome (for example a connection closed with no answer) leaves
+   the job awaiting reconciliation. Nothing is retried.
+
+A job that fails before the effect (unlinked printer, missing or foreign
+file) fails with its reason and contacts no printer.
 
 ## Tests
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(ticket_t_26) | test(remapped_queue_rows_match_literal_node_results)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core --features pp-api/desktop_rebuild,pp-core/desktop_rebuild -E 'test(ticket_t_26)'
 ```

@@ -22,7 +22,6 @@ use pp_gateway::{
 };
 use pp_storage::{
     SettingsClient, WriterOwner, printer_hosts,
-    send_queue::writes::SendQueueClient,
     read_model::{
         ReadClient,
         farm::{
@@ -30,6 +29,7 @@ use pp_storage::{
             iso_time, read_settings,
         },
     },
+    send_queue::writes::SendQueueClient,
 };
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::RecvError;

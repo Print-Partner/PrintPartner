@@ -3577,7 +3577,10 @@ fn advance(
         }
         WorkerOperation::Finish(result) => finish(&mut job, result)?,
         #[cfg(feature = "desktop_rebuild")]
-        WorkerOperation::FinishPublic { artifact, mut result } => {
+        WorkerOperation::FinishPublic {
+            artifact,
+            mut result,
+        } => {
             ensure!(result.kind() == job.kind, "Completed result kind mismatch");
             let event = finish(&mut job, artifact)?;
             if let CompletedResult::PrinterUpload(upload) = result.as_mut() {

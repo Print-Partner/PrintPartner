@@ -202,7 +202,11 @@ pub struct SendLabels {
 }
 
 /// The labels for fleet printer `printer_id`.
-pub fn send_labels(client: &SettingsClient, wait: Duration, printer_id: &str) -> Result<SendLabels> {
+pub fn send_labels(
+    client: &SettingsClient,
+    wait: Duration,
+    printer_id: &str,
+) -> Result<SendLabels> {
     let fleet = setting(client, wait, FLEET_KEY)?;
     let Some(printer) = fleet
         .as_array()

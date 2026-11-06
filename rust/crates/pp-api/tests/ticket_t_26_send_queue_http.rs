@@ -141,7 +141,9 @@ fn detail(body: &Value) -> &str {
 #[tokio::test]
 async fn ticket_t_26_send_queue_routes_mount_only_with_the_flag_and_need_a_session() {
     let queue = Queue::open("0", Targets::default(), &[("q1", "p-a", "queued", None)]);
-    let (status, _) = queue.send("POST", "/api/v2/printer-send-queue/q1/dispatch", "").await;
+    let (status, _) = queue
+        .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(queue.item("q1").0, "queued");
 
@@ -174,34 +176,66 @@ async fn ticket_t_26_send_now_enqueues_one_upload_and_waits_for_an_idle_printer(
             ("gone", "p-c", "queued", None),
         ],
     );
-    let (status, body) = queue.send("POST", "/api/v2/printer-send-queue/q1/dispatch", "").await;
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["item"]["state"], "sending");
     assert_eq!(body["item"]["host_name"], "p-a host");
     assert!(body["job_id"].is_string());
-    assert_eq!(queue.item("q1"), ("sending".into(), None, Some("queued".into())));
-    let (status, body) = queue.send("POST", "/api/v2/printer-send-queue/q1/dispatch", "").await;
-    assert_eq!((status, detail(&body)), (StatusCode::CONFLICT, "Item is not dispatchable"));
+    assert_eq!(
+        queue.item("q1"),
+        ("sending".into(), None, Some("queued".into()))
+    );
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
+        .await;
+    assert_eq!(
+        (status, detail(&body)),
+        (StatusCode::CONFLICT, "Item is not dispatchable")
+    );
 
-    let (status, body) = queue.send("POST", "/api/v2/printer-send-queue/busy/dispatch", "{}").await;
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/busy/dispatch", "{}")
+        .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(detail(&body).starts_with("Printer is printing"), "{body}");
     assert_eq!(queue.item("busy"), ("queued".into(), None, None));
     let (status, _) = queue
-        .send("POST", "/api/v2/printer-send-queue/busy/dispatch", r#"{"force":true}"#)
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/busy/dispatch",
+            r#"{"force":true}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, body) = queue.send("POST", "/api/v2/printer-send-queue/gone/dispatch", "").await;
-    assert_eq!((status, detail(&body)), (StatusCode::CONFLICT, "Artifact file missing on disk"));
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/gone/dispatch", "")
+        .await;
+    assert_eq!(
+        (status, detail(&body)),
+        (StatusCode::CONFLICT, "Artifact file missing on disk")
+    );
     assert_eq!(
         queue.item("gone"),
-        ("error".into(), Some("Artifact file missing on disk".into()), None)
+        (
+            "error".into(),
+            Some("Artifact file missing on disk".into()),
+            None
+        )
     );
 
-    let (status, body) = queue.send("POST", "/api/v2/printer-send-queue/nope/dispatch", "").await;
-    assert_eq!((status, detail(&body)), (StatusCode::NOT_FOUND, "Queue item not found"));
-    let (status, _) = queue.send("POST", "/api/v2/printer-send-queue/q1/dispatch", "[]").await;
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/nope/dispatch", "")
+        .await;
+    assert_eq!(
+        (status, detail(&body)),
+        (StatusCode::NOT_FOUND, "Queue item not found")
+    );
+    let (status, _) = queue
+        .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "[]")
+        .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -223,18 +257,28 @@ async fn ticket_t_26_send_ready_sends_one_item_per_idle_printer() {
         ],
     );
     let (status, _) = queue
-        .send("POST", "/api/v2/printer-send-queue/drain", r#"{"printer_id":""}"#)
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/drain",
+            r#"{"printer_id":""}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, body) = queue
-        .send("POST", "/api/v2/printer-send-queue/drain", r#"{"printer_id":"p-b"}"#)
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/drain",
+            r#"{"printer_id":"p-b"}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     let results = body["results"].as_array().unwrap();
     assert_eq!(results.len(), 1, "{body}");
     assert_eq!(results[0]["item_id"], "b1");
 
-    let (status, body) = queue.send("POST", "/api/v2/printer-send-queue/drain", "").await;
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/drain", "")
+        .await;
     assert_eq!(status, StatusCode::OK);
     let sent: Vec<_> = body["results"]
         .as_array()
@@ -266,15 +310,24 @@ async fn ticket_t_26_an_unknown_outcome_is_refused_until_the_user_reconciles() {
         ],
     );
     // Storage's refusal wins over the printer check.
-    let (status, body) = queue.send("POST", "/api/v2/printer-send-queue/lost/dispatch", "").await;
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/lost/dispatch", "")
+        .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "send_outcome_unknown", "{body}");
     let (status, body) = queue
-        .send("POST", "/api/v2/printer-send-queue/next/dispatch", r#"{"force":true}"#)
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/next/dispatch",
+            r#"{"force":true}"#,
+        )
         .await;
     assert_eq!(
         (status, detail(&body)),
-        (StatusCode::CONFLICT, "Another send to this printer is still unresolved")
+        (
+            StatusCode::CONFLICT,
+            "Another send to this printer is still unresolved"
+        )
     );
 
     for bad in ["", r#"{"printed":"no"}"#] {
@@ -284,11 +337,19 @@ async fn ticket_t_26_an_unknown_outcome_is_refused_until_the_user_reconciles() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
     }
     let (status, _) = queue
-        .send("POST", "/api/v2/printer-send-queue/next/reconcile", r#"{"printed":false}"#)
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/next/reconcile",
+            r#"{"printed":false}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
     let (status, body) = queue
-        .send("POST", "/api/v2/printer-send-queue/lost/reconcile", r#"{"printed":false}"#)
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/lost/reconcile",
+            r#"{"printed":false}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["item"]["state"], "error");
@@ -296,7 +357,11 @@ async fn ticket_t_26_an_unknown_outcome_is_refused_until_the_user_reconciles() {
     // Only a new, explicit Send now sends it again.
     assert_eq!(queue.item("lost").0, "error");
     let (status, body) = queue
-        .send("POST", "/api/v2/printer-send-queue/lost/dispatch", r#"{"force":true}"#)
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/lost/dispatch",
+            r#"{"force":true}"#,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
@@ -308,17 +373,30 @@ async fn ticket_t_26_remove_cancels_a_waiting_item_and_deletes_its_staged_file()
         Targets::default(),
         &[("q1", "p-a", "queued", None), ("q2", "p-b", "queued", None)],
     );
-    let (status, body) = queue.send("DELETE", "/api/v2/printer-send-queue/q1", "").await;
+    let (status, body) = queue
+        .send("DELETE", "/api/v2/printer-send-queue/q1", "")
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["item"]["state"], "cancelled");
     assert_eq!(*queue.targets.discarded.lock().unwrap(), ["q1"]);
-    let (status, body) = queue.send("DELETE", "/api/v2/printer-send-queue/q1", "").await;
-    assert_eq!((status, detail(&body)), (StatusCode::CONFLICT, "Item not cancellable"));
-    let (status, _) = queue.send("DELETE", "/api/v2/printer-send-queue/nope", "").await;
+    let (status, body) = queue
+        .send("DELETE", "/api/v2/printer-send-queue/q1", "")
+        .await;
+    assert_eq!(
+        (status, detail(&body)),
+        (StatusCode::CONFLICT, "Item not cancellable")
+    );
+    let (status, _) = queue
+        .send("DELETE", "/api/v2/printer-send-queue/nope", "")
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    queue.send("POST", "/api/v2/printer-send-queue/q2/dispatch", "").await;
-    let (status, _) = queue.send("DELETE", "/api/v2/printer-send-queue/q2", "").await;
+    queue
+        .send("POST", "/api/v2/printer-send-queue/q2/dispatch", "")
+        .await;
+    let (status, _) = queue
+        .send("DELETE", "/api/v2/printer-send-queue/q2", "")
+        .await;
     assert_eq!(status, StatusCode::CONFLICT, "a sending item stays");
     assert_eq!(*queue.targets.discarded.lock().unwrap(), ["q1"]);
 }

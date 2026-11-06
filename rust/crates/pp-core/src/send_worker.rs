@@ -26,8 +26,9 @@ use pp_storage::{
     SettingsClient, WriterOwner,
     auth::AuthPolicy,
     jobs::{
-        AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobKind, Payload,
-        PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission, WorkerOperation,
+        AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobKind,
+        Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission,
+        WorkerOperation,
     },
     printer_hosts::{self, PrinterLink},
     read_model::farm::{HostState, Observation},
@@ -49,6 +50,18 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const READER_WAIT: Duration = Duration::from_millis(500);
 const INVALID_ARTIFACT: &str = "Invalid artifact path";
 const SETTINGS_UNAVAILABLE: &str = "Printer settings unavailable";
+/// Node's `isAllowedPrinterUploadFilename` refusal: only sliced files print.
+/// Storage refuses to enqueue any other upload; the route says why first.
+const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
+
+fn sliced(filename: &str) -> bool {
+    Path::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["gcode", "bgcode", "gco"].contains(&extension.to_ascii_lowercase().as_str())
+        })
+}
 /// Longer than one upload and start (120 s and 15 s in the drivers).
 const LEASE_SECONDS: u32 = 300;
 
@@ -145,84 +158,83 @@ impl SendWorker {
         else {
             return Err(anyhow!("Printer worker claimed another job kind"));
         };
-        let authorized = {
-            let worker = self.worker.clone();
-            let attempt = lease.clone();
-            tokio::task::spawn_blocking(move || worker.authorize(&attempt)).await?
-        };
-        if authorized.is_err() {
+        let (worker, attempt) = (self.worker.clone(), lease.clone());
+        if tokio::task::spawn_blocking(move || worker.authorize(&attempt))
+            .await?
+            .is_err()
+        {
             return Ok(Sent::Refused);
         }
         let prepared = self.prepare(&printer_id, &artifact_path).await;
         let (target, kind, integration_id, file) = match prepared {
             Ok(prepared) => prepared,
             Err(reason) => {
-                self.advance(&mut lease, WorkerOperation::FailWith(reason.clone())).await?;
+                self.advance(&mut lease, WorkerOperation::FailWith(reason.clone()))
+                    .await?;
                 return Ok(Sent::Failed(reason));
             }
         };
         let content_hash = hex::encode(Sha256::digest(&file));
-        let basis_hash = hex::encode(Sha256::digest(format!(
-            "{}\n{printer_id}\n{filename}\n{start}",
-            job.job_id
-        )));
-        let intent = EffectIntent {
-            operation: if start {
-                EffectOperation::PrinterUploadAndStart
-            } else {
-                EffectOperation::PrinterUpload
-            },
-            basis_hash,
-            content_hash: content_hash.clone(),
-            target: printer_id.clone(),
-        };
-        if self.advance(&mut lease, WorkerOperation::BeginEffect(intent)).await.is_err() {
+        let intent = intent(&job.job_id, &printer_id, &filename, start, &content_hash);
+        if self
+            .advance(&mut lease, WorkerOperation::BeginEffect(intent))
+            .await
+            .is_err()
+        {
             return Ok(Sent::Refused);
         }
         let result = self.sends.upload(&target, file, &filename, start).await;
         let sent = classify(&result, start);
         match &sent {
             Sent::Done => {
-                let remote_path = result.remote_path.clone().unwrap_or_else(|| filename.clone());
-                self.advance(&mut lease, WorkerOperation::ConfirmEffect(ResultArtifact {
-                    receipt_id: receipt_id(&remote_path),
-                    content_hash,
-                    target: printer_id.clone(),
-                }))
+                let remote_path = result
+                    .remote_path
+                    .clone()
+                    .unwrap_or_else(|| filename.clone());
+                self.advance(
+                    &mut lease,
+                    WorkerOperation::ConfirmEffect(ResultArtifact {
+                        receipt_id: receipt_id(&remote_path),
+                        content_hash,
+                        target: printer_id.clone(),
+                    }),
+                )
                 .await?;
-                let labels = {
-                    let settings = self.settings.clone();
-                    let printer = printer_id.clone();
-                    tokio::task::spawn_blocking(move || {
-                        printer_hosts::send_labels(&settings, READER_WAIT, &printer)
-                    })
-                    .await??
-                };
+                let (settings, printer) = (self.settings.clone(), printer_id.clone());
+                let labels = tokio::task::spawn_blocking(move || {
+                    printer_hosts::send_labels(&settings, READER_WAIT, &printer)
+                })
+                .await??;
                 let host_name = host_name
                     .or(labels.host_name)
                     .unwrap_or_else(|| "Printer".into());
-                self.advance(&mut lease, WorkerOperation::FinishPublic {
-                    artifact: None,
-                    result: Box::new(CompletedResult::PrinterUpload(PrinterUploadResult {
-                        printer_name: labels.printer_name.unwrap_or_else(|| printer_id.clone()),
-                        printer_id,
-                        integration_id,
-                        integration_type: kind,
-                        host_name,
-                        filename,
-                        remote_path,
-                        started: result.started.unwrap_or(false),
-                        message: Some(result.message.clone()),
-                        checkoff_link_id: None,
-                        checkoff_units: 0,
-                    })),
-                })
+                self.advance(
+                    &mut lease,
+                    WorkerOperation::FinishPublic {
+                        artifact: None,
+                        result: Box::new(CompletedResult::PrinterUpload(PrinterUploadResult {
+                            printer_name: labels.printer_name.unwrap_or_else(|| printer_id.clone()),
+                            printer_id,
+                            integration_id,
+                            integration_type: kind,
+                            host_name,
+                            filename,
+                            remote_path,
+                            started: result.started.unwrap_or(false),
+                            message: Some(result.message.clone()),
+                            checkoff_link_id: None,
+                            checkoff_units: 0,
+                        })),
+                    },
+                )
                 .await?;
                 let exports = self.exports.clone();
-                let _ = tokio::task::spawn_blocking(move || discard(&exports, &artifact_path)).await;
+                let _ =
+                    tokio::task::spawn_blocking(move || discard(&exports, &artifact_path)).await;
             }
             Sent::Failed(reason) => {
-                self.advance(&mut lease, WorkerOperation::DenyEffect(reason.clone())).await?;
+                self.advance(&mut lease, WorkerOperation::DenyEffect(reason.clone()))
+                    .await?;
             }
             Sent::Unknown(_) => {
                 self.advance(&mut lease, WorkerOperation::Fail).await?;
@@ -252,8 +264,15 @@ impl SendWorker {
         &self,
         printer_id: &str,
         artifact_path: &str,
-    ) -> std::result::Result<(pp_gateway::printer_host::HostTarget, String, String, Vec<u8>), String>
-    {
+    ) -> std::result::Result<
+        (
+            pp_gateway::printer_host::HostTarget,
+            String,
+            String,
+            Vec<u8>,
+        ),
+        String,
+    > {
         let settings = self.settings.clone();
         let printer = printer_id.to_owned();
         let link = tokio::task::spawn_blocking(move || {
@@ -288,7 +307,11 @@ fn staged(exports: &Path, path: &Path) -> std::result::Result<PathBuf, &'static 
         && file
             .ancestors()
             .take_while(|ancestor| *ancestor != root)
-            .any(|ancestor| ancestor.file_name().is_some_and(|name| name == "printer-uploads"));
+            .any(|ancestor| {
+                ancestor
+                    .file_name()
+                    .is_some_and(|name| name == "printer-uploads")
+            });
     if !inside {
         return Err(INVALID_ARTIFACT);
     }
@@ -329,6 +352,9 @@ impl SendTargets for QueueTargets {
             status,
             detail: detail.to_owned(),
         };
+        if !sliced(item["filename"].as_str().unwrap_or_default()) {
+            return refused(StatusCode::BAD_REQUEST, NOT_SLICED);
+        }
         let path = Path::new(item["artifact_path"].as_str().unwrap_or_default());
         match staged(&self.exports, path) {
             Ok(_) => {}
@@ -361,13 +387,25 @@ impl SendTargets for QueueTargets {
         }
         if idle {
             let wait = "wait for Idle or force dispatch";
-            let busy = match (kind.as_str(), crate::printer_status::observed(&self.status, &id)) {
-                ("moonraker", Observation::Seen { state: HostState::Idle | HostState::Complete, .. }) => None,
-                ("moonraker", Observation::Seen { state, .. }) => {
-                    Some(format!("Printer is {} — {wait}", format!("{state:?}").to_lowercase()))
-                }
+            let busy = match (
+                kind.as_str(),
+                crate::printer_status::observed(&self.status, &id),
+            ) {
+                (
+                    "moonraker",
+                    Observation::Seen {
+                        state: HostState::Idle | HostState::Complete,
+                        ..
+                    },
+                ) => None,
+                ("moonraker", Observation::Seen { state, .. }) => Some(format!(
+                    "Printer is {} — {wait}",
+                    format!("{state:?}").to_lowercase()
+                )),
                 ("moonraker", _) => Some(format!("Printer status is unavailable — {wait}")),
-                _ => Some(format!("Printer status is not watched for {kind} hosts — {wait}")),
+                _ => Some(format!(
+                    "Printer status is not watched for {kind} hosts — {wait}"
+                )),
             };
             if let Some(detail) = busy {
                 return refused(StatusCode::CONFLICT, &detail);
@@ -382,7 +420,10 @@ impl SendTargets for QueueTargets {
     }
 
     fn discard(&self, item: &Value) {
-        discard(&self.exports, item["artifact_path"].as_str().unwrap_or_default());
+        discard(
+            &self.exports,
+            item["artifact_path"].as_str().unwrap_or_default(),
+        );
     }
 }
 
@@ -394,6 +435,29 @@ fn discard(exports: &Path, path: &str) {
         && directory.parent().and_then(Path::file_name) == Some("printer-uploads".as_ref())
     {
         let _ = std::fs::remove_dir_all(directory);
+    }
+}
+
+/// The effect one send admits: the upload, or the upload and its start,
+/// bound to this job's printer, file and choice.
+fn intent(
+    job_id: &str,
+    printer_id: &str,
+    filename: &str,
+    start: bool,
+    content_hash: &str,
+) -> EffectIntent {
+    EffectIntent {
+        operation: if start {
+            EffectOperation::PrinterUploadAndStart
+        } else {
+            EffectOperation::PrinterUpload
+        },
+        basis_hash: hex::encode(Sha256::digest(format!(
+            "{job_id}\n{printer_id}\n{filename}\n{start}"
+        ))),
+        content_hash: content_hash.to_owned(),
+        target: printer_id.to_owned(),
     }
 }
 

@@ -48,10 +48,15 @@ pub trait SendTargets: Send + Sync + 'static {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Prepared {
-    Ready { host_name: String },
+    Ready {
+        host_name: String,
+    },
     /// The staged file is gone: the item becomes an error.
     Missing,
-    Refused { status: StatusCode, detail: String },
+    Refused {
+        status: StatusCode,
+        detail: String,
+    },
 }
 
 #[derive(Clone)]
@@ -96,7 +101,10 @@ fn object(body: &[u8]) -> Option<Map<String, Value>> {
 }
 
 fn not_object() -> Response {
-    failure(StatusCode::BAD_REQUEST, "Request body must be a JSON object")
+    failure(
+        StatusCode::BAD_REQUEST,
+        "Request body must be a JSON object",
+    )
 }
 
 /// The storage writes one request makes, on a blocking thread.
@@ -119,7 +127,12 @@ impl Writes<'_> {
 
     /// Send now: storage's own refusals first, so an unknown outcome is
     /// always `send_outcome_unknown`, then the printer, then the claim.
-    fn dispatch(&self, targets: &dyn SendTargets, id: String, force: bool) -> anyhow::Result<Reply> {
+    fn dispatch(
+        &self,
+        targets: &dyn SendTargets,
+        id: String,
+        force: bool,
+    ) -> anyhow::Result<Reply> {
         let item = match self.apply(Request::Check { id: id.clone() })? {
             Reply::Item(item) => item,
             refused => return Ok(refused),
@@ -207,7 +220,12 @@ async fn dispatch(
     };
     let id = id.trim().to_owned();
     let force = body.get("force") == Some(&Value::Bool(true));
-    present(writes(&app, presented, move |writes, targets| writes.dispatch(targets, id, force)).await)
+    present(
+        writes(&app, presented, move |writes, targets| {
+            writes.dispatch(targets, id, force)
+        })
+        .await,
+    )
 }
 
 async fn reconcile(
@@ -223,7 +241,12 @@ async fn reconcile(
         return failure(StatusCode::BAD_REQUEST, "printed must be true or false");
     };
     let id = id.trim().to_owned();
-    present(writes(&app, presented, move |writes, _| writes.apply(Request::Reconcile { id, printed })).await)
+    present(
+        writes(&app, presented, move |writes, _| {
+            writes.apply(Request::Reconcile { id, printed })
+        })
+        .await,
+    )
 }
 
 async fn remove(
@@ -298,11 +321,10 @@ async fn drain(
                     used.insert(printer.to_owned());
                     results.push(json!({ "item_id": id, "job_id": job_id }));
                 }
-                Reply::Refused { status: 409, .. } => {}
-                Reply::Refused { detail, .. } => {
+                Reply::Refused { status, detail, .. } if status != 409 => {
                     results.push(json!({ "item_id": id, "error": detail }));
                 }
-                Reply::Item(_) | Reply::Items(_) => {}
+                Reply::Refused { .. } | Reply::Item(_) | Reply::Items(_) => {}
             }
         }
         Ok(Ok(results))
@@ -326,4 +348,3 @@ fn unsettled(error: &anyhow::Error) -> &'static str {
         _ => "This item's send could not be confirmed; reread the queue",
     }
 }
-

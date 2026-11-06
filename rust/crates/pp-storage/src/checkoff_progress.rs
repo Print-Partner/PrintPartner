@@ -594,13 +594,20 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
 /// watching link for the Build named in `raw`, appended to the tenant's links.
 /// `None` when Node creates none: no file name, integration or printer.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn link_upload(tx: &Transaction<'_>, tenant: &str, raw: &Value) -> Result<Option<String>> {
+pub(crate) fn link_upload(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    raw: &Value,
+) -> Result<Option<String>> {
     let present = |key: &str| {
         raw[key]
             .as_str()
             .is_some_and(|text| !links::js_trim(text).is_empty())
     };
-    if !["filename", "integration_id", "printer_id"].into_iter().all(present) {
+    if !["filename", "integration_id", "printer_id"]
+        .into_iter()
+        .all(present)
+    {
         return Ok(None);
     }
     let now = links::now();
@@ -619,7 +626,8 @@ pub(crate) fn link_upload(tx: &Transaction<'_>, tenant: &str, raw: &Value) -> Re
     {
         link["unlabeled_names"] = Value::Null;
     }
-    let link = links::parse(&link, &now).ok_or_else(|| anyhow!("Printer upload link creation failed"))?;
+    let link =
+        links::parse(&link, &now).ok_or_else(|| anyhow!("Printer upload link creation failed"))?;
     let id = links::js_string(&link["id"]);
     let mut all = links::load(tx, tenant, &now)?;
     all.push(link);

@@ -122,8 +122,9 @@ jobs:
                           seen.setdefault(item["name"], []).append(item["status"])
               current = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
                                                   capture_output=True, text=True).stdout)
-              if current["head"]["sha"] != HEAD:
-                  print(f"::error::The PR head moved from {HEAD}; the run for the new head judges it.")
+              if current["head"]["sha"] != HEAD or current["base"]["ref"] != pr_base:
+                  print(f"::error::The PR head or base moved while waiting for {HEAD}; the run for the "
+                        "change judges it.")
                   sys.exit(1)
               waiting = [name for name in CLAUDE_JOBS
                          if any(status != "completed" for status in seen.get(name, []))

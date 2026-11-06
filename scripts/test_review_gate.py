@@ -47,8 +47,13 @@ def out(value):
 if path.endswith("/pulls/7/files") and slurp:
     out([[{"filename": item, "status": "modified"} if isinstance(item, str) else item for item in state["files"]]])
 elif path.endswith("/pulls/7") and not slurp:
-    out({"changed_files": state["changed_files"], "base": {"ref": state["pr_base"]},
-         "head": {"sha": state.get("moved_to", state["head"])}})
+    counter = os.environ["FAKE_GH_STATE"] + ".pulls"
+    calls = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(calls + 1))
+    later = calls > 0
+    out({"changed_files": state["changed_files"],
+         "base": {"ref": state.get("moved_base") if later and state.get("moved_base") else state["pr_base"]},
+         "head": {"sha": state.get("moved_to", state["head"]) if later else state["head"]}})
 elif path.endswith(f"/commits/{state['head']}/check-runs") and slurp and query["filter"] == ["all"]:
     seq = state.get("checks_seq")
     if seq:
@@ -112,11 +117,12 @@ class ReviewGateStepTests(unittest.TestCase):
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
     def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None, pr_base="main",
-             droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0", moved_to=None):
+             droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0", moved_to=None, moved_base=None):
         state = self.folder / "state.json"
         state.write_text(json.dumps({
             "head": HEAD, "checks": [run("review-gate", None), *checks], "pages": pages or [[]],
-            "droid_log": droid_log, "pr_base": pr_base, "checks_seq": checks_seq, **({"moved_to": moved_to} if moved_to else {}), "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
+            "droid_log": droid_log, "pr_base": pr_base, "checks_seq": checks_seq, **({"moved_to": moved_to} if moved_to else {}),
+            **({"moved_base": moved_base} if moved_base else {}), "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
             "suites": {str(key): value for key, value in SUITES.items()},
             "blobs": {f"{DROID}@{HEAD}": "d1", f"{DROID}@main": "d1", f"{CLAUDE}@{HEAD}": "c1",
                       f"{CLAUDE}@main": "c1"} if blobs is None else blobs}))
@@ -204,7 +210,14 @@ class ReviewGateStepTests(unittest.TestCase):
         review = [run("claude-code-review", None), run("claude-security-review", None)]
         result = self.gate(checks_seq=[review], checks=review, wait="5", moved_to=OLD)
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn("The PR head moved", result.stdout)
+        self.assertIn("head or base moved", result.stdout)
+
+    def test_a_waiting_gate_stops_when_the_base_moves(self):
+        review = [run("claude-code-review", None, suite=12), run("claude-security-review", None, suite=12)]
+        done = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
+        result = self.gate(checks_seq=[review, done], checks=done, wait="5", pr_base="release", moved_base="main")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("head or base moved", result.stdout)
 
     def test_waiting_cannot_create_a_pass_from_a_spoofed_run(self):
         review = [run("claude-code-review", None, suite=9), run("claude-security-review", None)]

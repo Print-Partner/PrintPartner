@@ -223,8 +223,9 @@ it never rewinds Checkoff or a printer command.
 
 This separation remains implementation work. The baseline
 `WorkingDraftClient::save` creates a draft, reconciles it and calls
-`publish_in_transaction`; it is not draft-only autosave. The draft router does
-not mount `/save` or `/apply` either. Deliver durable draft-only saving and an
+`publish_in_transaction`; it is not draft-only autosave, and the draft router
+does not mount `/save`. Accept is `POST /plans/{id}/drafts/{draft_id}/apply`
+on the draft router (GRE-417), the only route that publishes. Deliver durable draft-only saving and an
 explicitly authorized Accept operation through the shared family interfaces.
 Reuse allocation and reconciliation, but prove accepted-state isolation and
 snapshot/history atomicity rather than treating a rename as delivery.

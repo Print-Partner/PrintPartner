@@ -482,7 +482,10 @@ impl ReadServer {
             .unwrap()
             .with_limits(body_limit, Duration::from_millis(100))
             .unwrap();
-        let client = owner.working_drafts_with_policy(policy()).unwrap();
+        let reads = Arc::new(owner.source_reads().unwrap());
+        let client = owner
+            .working_drafts_with_observations(policy(), reads, Default::default())
+            .unwrap();
         let auth = owner
             .rebuild_auth_with_policy(policy(), Default::default())
             .unwrap();
@@ -613,10 +616,7 @@ async fn listing_and_workspace_have_literal_wire_contracts() {
         );
     }
     for path in [
-        "/plans/1/drafts/recompute",
-        "/plans/1/drafts/2/rebase",
         "/plans/1/drafts/2/reconciliation",
-        "/plans/1/drafts/2/apply",
         "/plans/1/save",
         "/plans/1/review",
         "/api/v1/plans/1/review",
@@ -2385,5 +2385,251 @@ async fn reconciliation_without_a_key_is_refused_before_its_body_is_read() {
         .unwrap();
     let response = String::from_utf8_lossy(&response[..read]);
     assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    server.close().await;
+}
+
+fn keyed(server: &ReadServer, path: &str, key: Option<&str>) -> reqwest::RequestBuilder {
+    let request = server.request(Method::POST, path);
+    match key {
+        Some(key) => request.header("Idempotency-Key", key),
+        None => request,
+    }
+}
+
+fn apply_body(digest: &str, lifecycle: u32) -> Value {
+    json!({"expected_snapshot_digest":digest,"expected_lifecycle_version":lifecycle,"expected_base":{"revision_id":1,"plan_version":1}})
+}
+
+fn rebase_body(state: &str, lifecycle: u32) -> Value {
+    json!({"expected_source_state":state,"expected_source_lifecycle_version":lifecycle,"expected_source_snapshot_digest":DIGEST})
+}
+
+/// The fixture Source's pinned revision directory, empty, so a preparation
+/// keeps the accepted Parts.
+fn with_source_revision(server: &ReadServer) {
+    std::fs::create_dir_all(server.directory.join("repos/1/revisions/fixture")).unwrap();
+}
+
+#[tokio::test]
+async fn ticket_t_61_publication_lifecycle_routes_refuse_bad_keys_bodies_and_targets_without_writing()
+ {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    let before = logical_database(&server.sql());
+    let invalid = json!({"detail":"Request is invalid","code":"invalid_request"});
+    let long = "k".repeat(161);
+    let cases = [
+        ("/plans/1/drafts/recompute", json!({"apply_manifest":false})),
+        ("/api/v2/plans/1/drafts/2/rebase", rebase_body("open", 0)),
+        ("/plans/1/drafts/2/apply", apply_body(DIGEST, 0)),
+    ];
+    for (path, body) in &cases {
+        for key in [None, Some(""), Some("  "), Some(long.as_str())] {
+            assert_eq!(
+                json_reply(keyed(&server, path, key).json(body), 400).await,
+                invalid,
+                "{path} {key:?}"
+            );
+        }
+        for bad in ["{", "[]", "{}", "{\"apply_manifest\":\"yes\"}"] {
+            let mut problem =
+                json_reply(keyed(&server, path, Some("bad")).body(bad.to_owned()), 400).await;
+            problem.as_object_mut().unwrap().remove("errors");
+            assert_eq!(problem, invalid, "{path} {bad}");
+        }
+    }
+    let plan_missing = json!({"detail":"Plan not found","code":"profile_not_found"});
+    let draft_missing = json!({"detail":"Plan draft not found","code":"draft_not_found"});
+    for (path, body, expected) in [
+        (
+            "/plans/7/drafts/recompute",
+            json!({"apply_manifest":true}),
+            &plan_missing,
+        ),
+        (
+            "/plans/7/drafts/2/rebase",
+            rebase_body("open", 0),
+            &plan_missing,
+        ),
+        (
+            "/plans/1/drafts/9/rebase",
+            rebase_body("open", 0),
+            &draft_missing,
+        ),
+        (
+            "/plans/7/drafts/2/apply",
+            apply_body(DIGEST, 0),
+            &plan_missing,
+        ),
+        (
+            "/plans/1/drafts/9/apply",
+            apply_body(DIGEST, 0),
+            &draft_missing,
+        ),
+    ] {
+        assert_eq!(
+            json_reply(keyed(&server, path, Some("missing")).json(&body), 404).await,
+            *expected,
+            "{path}"
+        );
+    }
+    assert_eq!(logical_database(&server.sql()), before);
+    assert!(draft_events(&server).is_empty());
+    server.close().await;
+}
+
+#[tokio::test]
+async fn ticket_t_61_publication_recompute_creates_and_selects_a_draft_once_per_key() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    let body = json!({"apply_manifest":false});
+    let created = json_reply(
+        keyed(&server, "/api/v2/plans/1/drafts/recompute", Some(" r-1 ")).json(&body),
+        200,
+    )
+    .await;
+    assert_eq!(created["draft"]["draft_id"], 3);
+    assert_eq!(created["draft"]["state"], "open");
+    assert_eq!(created["reconciliation"]["kind"], "ready");
+    assert_eq!(
+        json_reply(server.request(Method::GET, "/plans/1/drafts/3"), 200).await,
+        created
+    );
+    let events = [2, 3, 3].map(|draft| {
+        (
+            "plan.draft_changed".to_owned(),
+            "1".to_owned(),
+            format!("{{\"draft_id\":{draft}}}"),
+        )
+    });
+    assert_eq!(draft_events(&server), events);
+    let states = json_reply(server.request(Method::GET, "/plans/1/drafts"), 200).await;
+    let states: Vec<_> = states["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|draft| (draft["draft_id"].clone(), draft["state"].clone()))
+        .collect();
+    assert!(
+        states.contains(&(json!(2), json!("abandoned"))),
+        "{states:?}"
+    );
+    let before = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(
+            keyed(&server, "/plans/1/drafts/recompute", Some("r-1")).json(&body),
+            200
+        )
+        .await,
+        created
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    assert_eq!(draft_events(&server), events);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn ticket_t_61_publication_rebase_refusals_carry_node_workspaces_without_writing() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    with_source_revision(&server);
+    let workspace = json_reply(server.request(Method::GET, "/plans/1/drafts/2"), 200).await;
+    let before = logical_database(&server.sql());
+    let path = "/plans/1/drafts/2/rebase";
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("rb-1")).json(&rebase_body("abandoned", 0)),
+            409
+        )
+        .await,
+        json!({"code":"not_open","workspace":workspace})
+    );
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("rb-2")).json(&rebase_body("open", 3)),
+            409
+        )
+        .await,
+        json!({"code":"draft_changed","workspace":workspace})
+    );
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("rb-3")).json(&rebase_body("open", 0)),
+            409
+        )
+        .await,
+        json!({"code":"base_unchanged"})
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    assert!(draft_events(&server).is_empty());
+    server.close().await;
+}
+
+#[tokio::test]
+async fn ticket_t_61_publication_accept_selects_an_unselected_draft_and_publishes_once() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let path = "/api/v2/plans/1/drafts/2/apply";
+    let workspace = json_reply(server.request(Method::GET, "/plans/1/drafts/2"), 200).await;
+    let before = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("a-0")).json(&apply_body(DIGEST, 5)),
+            409
+        )
+        .await,
+        json!({"code":"draft_changed","workspace":workspace})
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    let receipt = json_reply(
+        keyed(&server, path, Some("a-1")).json(&apply_body(DIGEST, 0)),
+        200,
+    )
+    .await;
+    assert_eq!(
+        (
+            &receipt["profile_id"],
+            &receipt["draft_id"],
+            &receipt["revision_id"]
+        ),
+        (&json!(1), &json!(2), &json!(2))
+    );
+    assert_eq!(
+        (
+            &receipt["plan_version"],
+            &receipt["draft_lifecycle_version"]
+        ),
+        (&json!(2), &json!(1))
+    );
+    let events = vec![
+        (
+            "plan.draft_changed".to_owned(),
+            "1".to_owned(),
+            "{\"draft_id\":2}".to_owned(),
+        ),
+        (
+            "plan.revision_accepted".to_owned(),
+            "1".to_owned(),
+            "{\"revision_id\":2}".to_owned(),
+        ),
+    ];
+    assert_eq!(draft_events(&server), events);
+    let after = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(
+            keyed(&server, "/plans/1/drafts/2/apply", Some("a-1")).json(&apply_body(DIGEST, 0)),
+            200
+        )
+        .await,
+        receipt
+    );
+    assert_eq!(
+        json_reply(
+            keyed(&server, path, Some("a-1")).json(&apply_body(DIGEST, 4)),
+            409
+        )
+        .await,
+        json!({"code":"idempotency_conflict"})
+    );
+    assert_eq!(logical_database(&server.sql()), after);
+    assert_eq!(draft_events(&server), events);
     server.close().await;
 }

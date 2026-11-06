@@ -251,14 +251,15 @@ fn ticket_t_61_publication_service_abandon_replay_preserves_lifecycle() {
     let open = json!({"draft_id":2,"state":"open","lifecycle_version":0,"snapshot_digest":digest,"base":{"revision_id":1,"plan_version":1}});
     let (owner, client) = f.open();
 
-    // Abandon closes the draft and starts no Required-unit selection.
+    // Abandon closes the draft, records one `plan.draft_changed` event and
+    // starts no Required-unit selection.
     let before = f.tables();
     let committed = abandon(&client, 0);
     let mut abandoned = open.clone();
     abandoned["state"] = json!("abandoned");
     abandoned["lifecycle_version"] = json!(1);
     assert_eq!(committed, json!({"kind":"ready","draft":abandoned}));
-    assert_eq!(f.changed(&before), ["plan_drafts"]);
+    assert_eq!(f.changed(&before), ["domain_events", "plan_drafts"]);
     assert_eq!(f.draft(2), ("abandoned".into(), 1, None, digest.clone()));
 
     // Replays return the committed lifecycle; later versions are not open.

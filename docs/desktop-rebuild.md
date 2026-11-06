@@ -3026,6 +3026,53 @@ flag through the router.
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
 ```
 
+### Production setup in Rust (GRE-1209)
+
+GRE-421's first part. `pp_storage::plates` serves Node's `GET` and
+`PATCH /plans/{id}/production-setup` as `Request::ProductionSetup`, and
+`pp_api::plates::plates_router` mounts both at `/` only, because Node
+registers no `/api/v2` alias for them. With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone runs the command that writes
+`production_setup:<id>`. Rust already deletes the key with its Build. Node's
+duplicate still copies it to the new Build's own key until the duplicate part
+of GRE-421 moves, so the two runtimes never write the same key.
+
+The route checks in Node's order:
+
+1. The id is `Number(id)` as a positive integer (so `0x1` and `" 1 "` name
+   Build 1), else 400 `invalid Build id`.
+2. The Build must exist in the tenant, else 404 `Build not found`. An archived
+   Build still saves, as in Node.
+3. The PATCH body must be one `productionSetupCommandSchema` command, else 400
+   `Invalid production setup` with Zod's `issues`: the same paths and
+   messages, in Zod's order.
+4. A `set_route` that changes a route already chosen is 409
+   `production_method_locked` when a Printer Checkoff link of this Build that
+   is not dismissed names, after the slicer's instance suffix, a Required unit
+   the next package makes. The next package is the custom selection's available
+   tokens, or every incomplete unit. When the Accepted Plan state cannot be
+   read, it is 503.
+
+A stored setup that fails `productionSetupSchema`, or names another Build, reads
+as Node's default. A saved setup is Zod's output: trimmed text, unknown keys
+dropped, and the schema's key order. Node retries its setting compare-and-set
+and answers 409 after eight conflicts. Here the read, the lock check and the
+write share one immediate transaction on the single writer, so no conflict can
+occur. The body limit is Node's 8 MiB (`MAX_BULK_JSON_BODY_BYTES`), and a body
+that is not JSON is 400 `Invalid JSON body`.
+
+`fixtures/parity/production-setup/node.json` is Node's answer for 82 cases in
+22 phases. `ticket_t_61_build_lifecycle_production_setup_matches_node` replays
+the 78 that reach storage and compares the status, the body, the changed tables
+and the stored text, then reopens the writer. The other four are the
+`/api/v2` alias and Fastify's body parser, which `plates_http` covers at the
+router. Regenerate the golden with
+`node fixtures/parity/production-setup/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

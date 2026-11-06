@@ -46,6 +46,17 @@ fn measure(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// The manifest's name for `path` under `root`: its components joined with
+/// `/` on every platform.
+fn inventory_key(path: &Path, root: &Path) -> Result<String> {
+    Ok(path
+        .strip_prefix(root)?
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
 fn verify_files(
     root: &Path,
     expected: &BTreeMap<String, String>,
@@ -68,13 +79,7 @@ fn verify_files(
                 if entry.file_type()?.is_dir() {
                     pending.push(entry.path());
                 } else {
-                    actual.insert(
-                        entry
-                            .path()
-                            .strip_prefix(&root)?
-                            .to_string_lossy()
-                            .into_owned(),
-                    );
+                    actual.insert(inventory_key(&entry.path(), &root)?);
                 }
             }
         }
@@ -141,7 +146,8 @@ impl std::ops::Deref for MeasuredBundle {
     }
 }
 
-#[cfg(test)]
+// GRE-1194 ports the supervisor tests that use this to Windows.
+#[cfg(all(test, unix))]
 impl MeasuredBundle {
     /// Test fixtures whose spawns are meant to fail. The first spawn trusts this value without
     /// measuring it; later spawns still measure it.
@@ -282,7 +288,7 @@ fn verify_dependencies(
             for entry in std::fs::read_dir(directory)? {
                 let entry = entry?;
                 let path = entry.path();
-                let key = path.strip_prefix(&root)?.to_string_lossy().into_owned();
+                let key = inventory_key(&path, &root)?;
                 let kind = entry.file_type()?;
                 if kind.is_symlink() {
                     actual_links.insert(key.clone());
@@ -292,8 +298,7 @@ fn verify_dependencies(
                     let target = path.canonicalize()?;
                     ensure!(target.starts_with(&root), "Dependency link escaped package");
                     if target.is_file() {
-                        actual_files
-                            .insert(target.strip_prefix(&root)?.to_string_lossy().into_owned());
+                        actual_files.insert(inventory_key(&target, &root)?);
                     } else if target.is_dir() {
                         pending.push(target);
                     } else {
@@ -328,7 +333,7 @@ fn verify_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use crate::logs::test_support::{symlink_dir, symlink_file};
 
     #[test]
     fn cancelled_verification_stops_before_hashing() {
@@ -364,7 +369,7 @@ mod tests {
         std::fs::write(&framework, b"measured native addon").unwrap();
         let alias = modules.join("addon.node");
         let target = Path::new("../../../../Frameworks/addon.node");
-        symlink(target, &alias).unwrap();
+        symlink_file(target, &alias);
         let inventory = DependencyInventory {
             web_path: "Resources/desktop-runtime/web".into(),
             roots: vec![
@@ -400,7 +405,7 @@ mod tests {
         assert!(verify_dependencies(&web, &inventory, &CancellationToken::new()).is_err());
         std::fs::remove_dir_all(&nearer).unwrap();
         std::fs::remove_file(&alias).unwrap();
-        symlink("/usr/bin/node", &alias).unwrap();
+        symlink_file(Path::new("/usr/bin/node"), &alias);
         assert!(verify_dependencies(&web, &inventory, &CancellationToken::new()).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -420,7 +425,7 @@ mod tests {
         std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
         std::fs::write(&library, b"module.exports = 1;\n").unwrap();
         std::fs::write(web.join("apps/ui/package.json"), b"{}").unwrap();
-        symlink("../../apps/ui", scope.join("ui")).unwrap();
+        symlink_dir(Path::new("../../apps/ui"), &scope.join("ui"));
         let link = "web/node_modules/@print-partner/ui".to_string();
         let mut inventory = DependencyInventory {
             web_path: "web".into(),
@@ -451,8 +456,11 @@ mod tests {
         inventory.links.insert(link.clone(), "../../apps/ui".into());
 
         std::fs::create_dir_all(web.join("apps/other")).unwrap();
-        std::fs::remove_file(scope.join("ui")).unwrap();
-        symlink("../../apps/other", scope.join("ui")).unwrap();
+        let ui = scope.join("ui");
+        std::fs::remove_dir(&ui)
+            .or_else(|_| std::fs::remove_file(&ui))
+            .unwrap();
+        symlink_dir(Path::new("../../apps/other"), &ui);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Dependency link changed");
         std::fs::remove_dir_all(root).unwrap();

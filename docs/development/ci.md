@@ -437,6 +437,10 @@ A test that fails at random goes on the flaky list, the override with `retries =
 
 The list is empty while no flaky ticket is open.
 
+### Taking storage back after an HTTP test
+
+A test that serves a router built from a shared `Arc<Mutex<WriterOwner>>` must not call `Arc::into_inner` or `Arc::try_unwrap` on the owner after `axum::serve`'s graceful shutdown alone (GRE-1195). In axum 0.8.9, `serve` returns once each connection task drops its shutdown receiver, but the task still holds its clone of the router, and the router holds the owner, until the task ends. The result is a `routers dropped` panic in about 1 of 10 hosted runs. Serve with `pp_api::serving::Serving` (or `pp_api::fixtures::Served`) and call `stop`: it returns only after every connection has dropped its router clone, so taking the owner back needs no retry or sleep.
+
 ## Keep platform code in cfg modules
 
 Put code that differs by OS in one module for each platform, and select the module once:
@@ -463,13 +467,11 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
-| `pp-source` | GRE-653 | Its file mechanics go through `pp-os`, but NTFS refuses to rename a directory while handles to entries inside it are open, and snapshot publication and retained capture rename under such handles. |
-| `pp-compat` | GRE-654 | The Node child supervisor uses Unix sockets, process groups, signals and file modes. |
-| `pp-core` | GRE-654 | It depends on `pp-compat` and `pp-storage`. |
+| `pp-core` | GRE-1188 | Its runtime and its tests are not yet ported to Windows. |
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
 | `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |
 
-`pp-os` and `pp-storage` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. The Windows job builds and tests `pp-os`, including
+`pp-os`, `pp-storage`, `pp-source` and `pp-compat` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests still build only on Unix until GRE-1194. The Windows job builds and tests `pp-os`, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
 tests for symbolic links, junctions, directory locks, write-through renames,

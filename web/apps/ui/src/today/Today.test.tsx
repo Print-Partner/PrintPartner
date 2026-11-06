@@ -116,7 +116,7 @@ function fakeCore({
     results,
     printers,
     marked: 0,
-    receipts: new Map<string, unknown>(),
+    receipts: new Map<string, { undo_token: string }>(),
     undone: new Set<string>(),
   };
   const before = new Map<string, { links: Result[]; units: number }>();
@@ -148,6 +148,14 @@ function fakeCore({
     if (path === "/api/v2/printer-checkoff/verify-batch") {
       const key = body.idempotency_key as string;
       const seen = state.receipts.get(key);
+      if (seen && state.undone.has(seen.undo_token))
+        return json(
+          {
+            title: "Conflict",
+            detail: "burst_undone: this Checkoff burst was undone; send a new idempotency_key",
+          },
+          409,
+        );
       if (seen) return json(seen);
       const beds = body.beds as {
         link_id: string;
@@ -675,6 +683,7 @@ describe("an uncertain write is reconciled, not repeated", () => {
     // Undone elsewhere before Today rereads: the core keeps the receipt for that key.
     core.state.results = waiting;
     core.state.marked = 0;
+    for (const r of core.state.receipts.values()) core.state.undone.add(r.undo_token);
     fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
     expect(
       await screen.findByText(
@@ -1117,6 +1126,7 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     await screen.findByRole("alert");
     core.state.results = waiting;
     core.state.marked = 0;
+    for (const r of core.state.receipts.values()) core.state.undone.add(r.undo_token);
     fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
     await screen.findByText(/^Nothing was marked on Voron 2\.4/);
     expect(unit("bracket.stl unit 2")).toHaveProperty("checked", true);
@@ -1188,6 +1198,31 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     ).toBeTruthy();
     expect(core.posts.filter((p) => p.path.endsWith("/undo"))).toHaveLength(2);
     expect(core.state.marked).toBe(0);
+  });
+
+  it("names a burst undone elsewhere when another resent burst replays its receipt", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED(), loseFirstAnswers: 6 });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Trident bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(core.state.marked).toBe(5));
+    // The Voron burst is undone elsewhere before Today rereads; the Trident burst stands.
+    core.state.undone.add([...core.state.receipts.values()][0]!.undo_token);
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    expect(await screen.findByText("Confirmed 2 units from Trident.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Nothing was marked on Voron 2.4: that confirm had already been undone elsewhere. Confirm the bed again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(1);
   });
 
   it("says nothing was sent when no picked unit is still waiting", async () => {

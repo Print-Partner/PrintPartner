@@ -1,11 +1,6 @@
 use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
-use std::{
-    fs::OpenOptions,
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
-};
+use std::{io::Read, path::Path};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DesktopAccountPin {
@@ -19,21 +14,14 @@ impl DesktopAccountPin {
         if !cfg!(feature = "desktop_rebuild") || !enabled {
             return Ok(Self::Disabled);
         }
-        let file = match OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(data_dir.join("desktop-account.json"))
-        {
+        let file = match crate::platform::open_nofollow(&data_dir.join("desktop-account.json")) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::Missing),
             Err(error) => return Err(error.into()),
         };
         let metadata = file.metadata()?;
         ensure!(
-            metadata.is_file()
-                && metadata.uid() == unsafe { libc::geteuid() }
-                && metadata.mode() & 0o7777 == 0o600
-                && metadata.len() <= 4096,
+            crate::platform::private_file(&file)? && metadata.len() <= 4096,
             "Desktop account mapping must be a private regular file owned by the current user"
         );
         let mut bytes = Vec::new();
@@ -62,9 +50,8 @@ impl DesktopAccountPin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "desktop_rebuild")]
-    use std::os::unix::fs::PermissionsExt;
-    use std::{fs, os::unix::fs::symlink};
+    use crate::logs::test_support::symlink_file;
+    use std::fs;
 
     struct Fixture(std::path::PathBuf);
     impl Fixture {
@@ -78,7 +65,7 @@ mod tests {
         fn write(&self, bytes: &[u8]) {
             let path = self.0.join("desktop-account.json");
             fs::write(&path, bytes).unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+            crate::logs::test_support::restrict(&path);
         }
     }
     impl Drop for Fixture {
@@ -90,7 +77,7 @@ mod tests {
     #[test]
     fn disabled_does_not_read_or_change_setup() {
         let fixture = Fixture::new();
-        symlink("absent", fixture.0.join("desktop-account.json")).unwrap();
+        symlink_file(Path::new("absent"), &fixture.0.join("desktop-account.json"));
         let pin = DesktopAccountPin::capture(&fixture.0, false).unwrap();
         assert_eq!(pin, DesktopAccountPin::Disabled);
         let mut setup = serde_json::json!({"version":1});
@@ -105,7 +92,7 @@ mod tests {
     #[test]
     fn compile_gate_off_does_not_read_or_enable_mapping() {
         let fixture = Fixture::new();
-        symlink("absent", fixture.0.join("desktop-account.json")).unwrap();
+        symlink_file(Path::new("absent"), &fixture.0.join("desktop-account.json"));
         assert_eq!(
             DesktopAccountPin::capture(&fixture.0, true).unwrap(),
             DesktopAccountPin::Disabled
@@ -159,7 +146,7 @@ mod tests {
         let fixture = Fixture::new();
         let path = fixture.0.join("desktop-account.json");
         fixture.write(b"{}");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        crate::logs::test_support::widen(&path);
         assert!(DesktopAccountPin::capture(&fixture.0, true).is_err());
         fixture.write(&vec![0; 4097]);
         assert!(DesktopAccountPin::capture(&fixture.0, true).is_err());
@@ -167,13 +154,24 @@ mod tests {
         fs::create_dir(&path).unwrap();
         assert!(DesktopAccountPin::capture(&fixture.0, true).is_err());
         fs::remove_dir(&path).unwrap();
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap()
-                .success()
-        );
+        let target = fixture.0.join("target.json");
+        fs::write(&target, b"{}").unwrap();
+        crate::logs::test_support::restrict(&target);
+        symlink_file(&target, &path);
         assert!(DesktopAccountPin::capture(&fixture.0, true).is_err());
+        fs::remove_file(&path).unwrap();
+        // Windows has no FIFO in the file system; the link above is its
+        // special-file case.
+        #[cfg(unix)]
+        {
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(DesktopAccountPin::capture(&fixture.0, true).is_err());
+        }
     }
 }

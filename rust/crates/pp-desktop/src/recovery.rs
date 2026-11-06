@@ -129,17 +129,17 @@ async fn reveal_logs(mut opener: Command, data: PathBuf) -> bool {
 }
 
 async fn open(mut command: Command) -> bool {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .status(),
-    )
-    .await
-    .is_ok_and(|result| result.is_ok_and(|status| status.success()))
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let Ok(mut child) = pp_core::spawn_child(&mut command) else {
+        return false;
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .is_ok_and(|result| result.is_ok_and(|status| status.success()))
 }
 
 /// Tray Open in browser: mint a fresh bootstrap, check it targets this

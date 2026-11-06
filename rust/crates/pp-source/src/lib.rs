@@ -894,9 +894,13 @@ impl SourceRoot {
         {
             return Err(Error::Limit);
         }
-        let mut file = candidate.file(MANIFEST, true)?;
-        file.write_all(&encoded)?;
-        file.sync_all()?;
+        // Windows refuses to rename a directory while a handle below it is
+        // open, so the manifest closes before publication on every OS.
+        {
+            let mut file = candidate.file(MANIFEST, true)?;
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+        }
         let mut paths = BTreeSet::new();
         tree_paths(candidate, "", &mut paths, 0, TreeIdentity::Unicode17)?;
         if paths != expected_paths(&manifest.files, TreeIdentity::Unicode17) {

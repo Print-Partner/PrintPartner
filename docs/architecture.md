@@ -70,9 +70,14 @@ protection and Spoolman shortfall tasks in this program. These stay out:
 
 ## Current state and transition
 
-The shipped gateway still supervises Node through `pp-compat` and a private Unix
-socket. Rust owns the directory lock and process lifetime; Node owns live domain
-operations. Rust storage, HTTP routers, and jobs already have substantial tested
+The shipped gateway still supervises Node through `pp-compat` and a private
+channel: a Unix socket on macOS and Linux, and on Windows a named pipe that Rust
+creates with a current-user DACL and `PIPE_REJECT_REMOTE_CLIENTS` and Node dials
+into. Rust owns the directory lock and process lifetime; Node owns live domain
+operations. On Unix, Node runs in its own process group with a parent-death
+watcher; on Windows it is created inside a Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the kernel terminates it and its
+children when the core exits, however it exits. Rust storage, HTTP routers, and jobs already have substantial tested
 implementations behind `desktop_rebuild`. With both gates on, `pp-server` and
 `pp-desktop` now start without a Node child and mount the read, draft and jobs
 routers in the gateway as a sibling router composed by `pp-core`
@@ -107,7 +112,7 @@ Keep the existing operation crates and deepen their private family modules.
 Do not require a blanket split, consolidation or rename, or freeze the crate
 count. Keep `pp-services`, `pp-source`, `pp-contracts`, and `pp-perf` initially.
 The narrow `pp-os` filesystem crate, specified in ADR 0015, exists with
-`pp-storage` and `pp-source` as its consumers. This is not a move of all
+`pp-storage`, `pp-source` and `pp-compat` as its consumers. This is not a move of all
 platform code into one crate.
 
 The following allowed workspace dependencies reflect
@@ -127,7 +132,7 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-source`](../rust/crates/pp-source/README.md) | Immutable Source revision bytes, bounded extraction/materialization; no catalog SQL | `pp-os` |
 | [`pp-api`](../rust/crates/pp-api/README.md) | Thin authenticated HTTP/MCP/event adapters over family handles | `pp-storage`; `pp-services` gated |
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net` |
-| [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | none |
+| [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | `pp-os` (Windows log entries) |
 | [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`; `pp-source`, `pp-net`, `pp-api` gated |
 | [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
@@ -140,7 +145,11 @@ The table is the implemented graph, not a manifest for the amendment.
 uses it for the data-directory lease's file mechanics, preflight opens, backup
 reads and durable backup publication. `pp-source` uses it for every Source
 directory operation: the pinned root walk, staging, enumeration, publication by
-no-replace rename and its directory locks. `pp-core` is the next consumer; add
+no-replace rename and its directory locks. `pp-compat` uses it on Windows for
+its log writes relative to the pinned log directory: append opens,
+exclusive creates, the archive security open and the replacing rotation
+rename. Read-only tail reads still open by path. Its Unix logs still call `openat` and `renameat` through libc.
+`pp-core` is the next consumer; add
 its edge to the checker and manifests only with its migration. It supplies directory-relative handle access,
 identity/no-follow checks, lock primitives and durable file publication. The
 crate documentation in `rust/crates/pp-os/src/lib.rs` lists where the Unix and
@@ -149,7 +158,12 @@ Windows guarantees differ; on Windows it reports no POSIX owner or mode, so
 `Dir` handle shares delete, so the directory can be renamed or removed while it
 is open, as on Unix, and entries are opened, inspected, created and deleted
 with `NtCreateFile` relative to that handle, the counterpart of the Unix `*at`
-calls. NTFS refuses byte-range locks on a directory, so a directory lock on
+calls. NTFS refuses to rename a directory while a handle to any entry below it
+is open, so `pp-source` closes every handle below a snapshot candidate or a
+retained-capture phase directory before renaming it, and retained captures
+prove they still own an entry by its recorded `pp-os` identity, rechecked by
+name, instead of by a held handle; Unix also keeps a descriptor per entry so
+an inode number cannot be reused. NTFS refuses byte-range locks on a directory, so a directory lock on
 Windows is a lock on a regular file inside the directory. Windows locks are
 mandatory for the range they cover, so `pp-os` locks only the byte at offset
 `i64::MAX` and other handles can still read a held lease file. Storage keeps installation lease

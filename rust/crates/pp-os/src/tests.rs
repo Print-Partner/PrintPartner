@@ -5,6 +5,42 @@ fn scratch() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
+/// The replacing rename moves the entry itself over an existing file, even
+/// one held open, and appends land in the renamed file.
+#[test]
+fn rename_replace_overwrites_an_existing_entry() {
+    let root = scratch();
+    let dir = Dir::open(root.path()).unwrap();
+    let mut log = dir.open_file("log", FileOpen::CreateAppend).unwrap();
+    log.write_all(b"one").unwrap();
+    assert_eq!(
+        dir.open_file("log", FileOpen::CreateAppend)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    drop(dir.create_new_nofollow("archive").unwrap());
+    let held = dir.open_read_nofollow("archive").unwrap();
+    dir.rename_replace("log", "archive").unwrap();
+    log.write_all(b"two").unwrap();
+    drop((log, held));
+    assert_eq!(
+        std::fs::read(root.path().join("archive")).unwrap(),
+        b"onetwo"
+    );
+    assert!(!root.path().join("log").exists());
+    let mut again = dir.open_file("archive", FileOpen::Append).unwrap();
+    again.write_all(b"three").unwrap();
+    assert_eq!(
+        std::fs::read(root.path().join("archive")).unwrap(),
+        b"onetwothree"
+    );
+    assert_eq!(
+        dir.rename_replace("log", "archive").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+}
+
 #[test]
 fn entry_names_must_be_one_component() {
     let root = scratch();
@@ -139,6 +175,17 @@ fn locks_exclude_a_second_open_file_until_unlocked() {
     try_lock(&second).unwrap();
     drop(second);
     try_lock(&first).unwrap();
+}
+
+#[test]
+fn identity_reuse_follows_the_file_system() {
+    let root = scratch();
+    let reused = !Dir::open(root.path())
+        .unwrap()
+        .identities_are_never_reused()
+        .unwrap();
+    // Hosted Windows runners use NTFS.
+    assert_eq!(reused, cfg!(unix));
 }
 
 #[test]
@@ -909,19 +956,24 @@ mod windows {
 
         let source = dir.inner.rename_source("first").unwrap();
         assert_eq!(
-            nt_result(rename_classic(&source, handle, "second").unwrap())
+            nt_result(rename_classic(&source, handle, "second", false).unwrap())
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::AlreadyExists
         );
-        nt_result(rename_classic(&source, handle, "renamed").unwrap()).unwrap();
+        nt_result(rename_classic(&source, handle, "renamed", false).unwrap()).unwrap();
         drop(source);
         assert!(dir.status_nofollow("renamed").unwrap().is_file());
+        drop(dir.create_new_nofollow("first").unwrap());
+        let source = dir.inner.rename_source("first").unwrap();
+        nt_result(rename_classic(&source, handle, "second", true).unwrap()).unwrap();
+        drop(source);
+        assert!(!root.path().join("first").exists());
         assert!(!root.path().join("first").exists());
 
         dir.create_dir("empty").unwrap();
         let source = dir.inner.rename_source("empty").unwrap();
-        nt_result(rename_classic(&source, handle, "moved").unwrap()).unwrap();
+        nt_result(rename_classic(&source, handle, "moved", false).unwrap()).unwrap();
         drop(source);
         assert!(dir.status_nofollow("moved").unwrap().is_dir());
 

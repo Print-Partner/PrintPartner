@@ -14,6 +14,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { connect, type Socket } from "node:net";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
@@ -122,10 +124,16 @@ export function installDesktopContext(input: unknown): void {
   const parsed = setupSchema.parse(input);
   const dataDir = realpathSync(parsed.data_dir);
   if (process.env.PP_STORAGE_CORE_LOCK !== "1") throw new Error("Core storage lock required");
-  const inherited = fstatSync(198);
-  const ownerLock = statSync(join(dataDir, "printpartner.lock"));
-  if (!inherited.isFile() || inherited.dev !== ownerLock.dev || inherited.ino !== ownerLock.ino)
-    throw new Error("Inherited storage lock rejected");
+  // On Windows the core keeps printpartner.lock instead of passing it as descriptor 198. A
+  // Windows byte-range lock belongs to the process that took it, so an inherited handle would
+  // not hold it. The core runs this process in a Job Object that kills it when the core exits,
+  // so the core's lock covers every moment this process runs.
+  if (process.platform !== "win32") {
+    const inherited = fstatSync(198);
+    const ownerLock = statSync(join(dataDir, "printpartner.lock"));
+    if (!inherited.isFile() || inherited.dev !== ownerLock.dev || inherited.ino !== ownerLock.ino)
+      throw new Error("Inherited storage lock rejected");
+  }
   if (parsed.parent_pid !== process.ppid || parsed.data_dir !== dataDir)
     throw new Error("Desktop storage owner rejected");
   account = admitDesktopAccount(
@@ -134,6 +142,97 @@ export function installDesktopContext(input: unknown): void {
   );
   context = parsed;
   admitDesktopDataDirectory(dataDir);
+}
+
+/**
+ * Serve the core's private named pipe on Windows. The core creates the pipe with a DACL for the
+ * current user only, so this process dials in instead of listening. It keeps `lanes` dials
+ * waiting for the core and hands each connected pipe to `server`; each one carries one request.
+ * A dial is replaced as soon as the core sends a request on it, not when it closes, so
+ * long-lived streams never use up the waiting dials.
+ *
+ * Returns a function that stops dialing and closes the dials still waiting. It then waits, at
+ * most `drainMs`, for every response still being computed, and closes every claimed connection.
+ * A response whose headers are already out is not waited for: it is a stream (an SSE or hijacked
+ * MCP reply) or a body already on its way, and closing its connection ends it, as the group
+ * SIGKILL does on Unix. Upgraded websocket connections are closed the same way.
+ */
+export function dialDesktopPipe(
+  server: Server,
+  path: string,
+  lanes = 4,
+  drainMs = 5000,
+): () => Promise<void> {
+  let stopped = false;
+  const waiting = new Set<Socket>();
+  const claimed = new Set<Socket>();
+  const responses = new Set<ServerResponse>();
+  const computing = () => [...responses].some((response) => !response.headersSent);
+  let drained = () => {};
+  const claim = (request: IncomingMessage) => {
+    const socket = request.socket;
+    if (!waiting.delete(socket)) return;
+    claimed.add(socket);
+    socket.once("close", () => claimed.delete(socket));
+    dial();
+  };
+  const track = (request: IncomingMessage, response: ServerResponse) => {
+    claim(request);
+    responses.add(response);
+    response.once("close", () => {
+      responses.delete(response);
+      if (!computing()) drained();
+    });
+  };
+  const dial = () => {
+    if (stopped) return;
+    let connected = false;
+    const socket = connect(path);
+    socket.once("error", () => {
+      if (connected) return;
+      socket.destroy();
+      setTimeout(dial, 50).unref();
+    });
+    socket.once("connect", () => {
+      connected = true;
+      waiting.add(socket);
+      socket.once("close", () => {
+        if (waiting.delete(socket)) dial();
+      });
+      server.emit("connection", socket);
+    });
+  };
+  server.on("request", track);
+  server.on("upgrade", claim);
+  for (let lane = 0; lane < lanes; lane += 1) dial();
+  return async () => {
+    stopped = true;
+    for (const socket of waiting) socket.destroy();
+    waiting.clear();
+    if (computing()) {
+      let timer: NodeJS.Timeout | undefined;
+      await new Promise<void>((resolve) => {
+        drained = resolve;
+        timer = setTimeout(resolve, drainMs);
+      });
+      clearTimeout(timer);
+    }
+    server.off("request", track);
+    server.off("upgrade", claim);
+    for (const socket of claimed) socket.destroy();
+  };
+}
+
+/**
+ * Serve `app` on the core's private named pipe. Fastify never listens here, so its own close
+ * cannot wait for requests; the pipe drains them before close moves on to the database. The
+ * drain bound stays under the 9 s deadline in `desktop.ts`, so the database always closes.
+ */
+export async function serveDesktopPipe(app: FastifyInstance, path: string): Promise<void> {
+  let close = async () => {};
+  app.addHook("preClose", () => close());
+  await app.ready();
+  close = dialDesktopPipe(app.server, path);
 }
 
 /** Remove the private socket after the desktop parent dies. */

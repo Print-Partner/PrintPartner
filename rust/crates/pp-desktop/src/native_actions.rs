@@ -105,13 +105,13 @@ async fn open_fixed_sponsor() -> Result<(), &'static str> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn run_browser(mut command: Command, timeout: Duration) -> Result<(), &'static str> {
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| "Could not start the browser")?;
+        .kill_on_drop(true);
+    let mut child =
+        pp_core::spawn_child(&mut command).map_err(|_| "Could not start the browser")?;
     match tokio::time::timeout(timeout, child.wait()).await {
         Ok(Ok(status)) if status.success() => Ok(()),
         Ok(Ok(_)) => Err("Could not open the browser"),

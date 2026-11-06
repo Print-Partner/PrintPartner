@@ -647,7 +647,7 @@ impl ReplyBody {
 }
 
 /// The header an API key travels in: a JWT as a bearer token, else `x-api-key`.
-fn key_header(api_key: Option<&str>) -> Option<(&'static str, String)> {
+pub fn key_header(api_key: Option<&str>) -> Option<(&'static str, String)> {
     let key = api_key.filter(|key| !key.is_empty() && *key != "****")?;
     let jwt = key.split('.').count() == 3
         && key.split('.').all(|segment| {

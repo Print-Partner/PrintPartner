@@ -18,25 +18,63 @@ fn answer(printer: &str) -> HostAnswer<Value> {
     }
 }
 
+/// The printer's answer with its success replaced by `ok`.
+fn answer_with<T>(printer: &str, ok: impl FnOnce() -> T) -> HostAnswer<T> {
+    match answer(printer) {
+        HostAnswer::Ok(_) => HostAnswer::Ok(ok()),
+        HostAnswer::NotFound => HostAnswer::NotFound,
+        HostAnswer::NotLinked => HostAnswer::NotLinked,
+        HostAnswer::Unavailable => HostAnswer::Unavailable,
+        HostAnswer::Unsupported => HostAnswer::Unsupported,
+        HostAnswer::Failed(detail) => HostAnswer::Failed(detail),
+        HostAnswer::Busy => HostAnswer::Busy,
+    }
+}
+
+/// A printer reply with `status` and a five-byte body.
+fn reply(status: u16, content_type: &str) -> HostStream {
+    HostStream {
+        status,
+        content_type: Some(content_type.into()),
+        content_length: Some(5),
+        body: Body::from("G28\n\n"),
+    }
+}
+
 impl PrinterHostPort for Fake {
     fn capabilities(&self, printer: String) -> Answer<Capabilities> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("capabilities {printer}"));
-        let answer = match answer(&printer) {
-            HostAnswer::Ok(_) => HostAnswer::Ok(Capabilities {
-                files: true,
-                cameras: true,
-                status: true,
-            }),
-            HostAnswer::NotFound => HostAnswer::NotFound,
-            HostAnswer::NotLinked => HostAnswer::NotLinked,
-            HostAnswer::Unavailable => HostAnswer::Unavailable,
-            HostAnswer::Unsupported => HostAnswer::Unsupported,
-            HostAnswer::Failed(detail) => HostAnswer::Failed(detail),
-            HostAnswer::Busy => HostAnswer::Busy,
-        };
+        let answer = answer_with(&printer, || Capabilities {
+            files: true,
+            cameras: true,
+            status: true,
+        });
+        Box::pin(async move { answer })
+    }
+    fn file(&self, printer: String, path: String) -> Answer<Option<HostStream>> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("file {printer} {path}"));
+        let answer = answer_with(&printer, || match path.as_str() {
+            "plates/plate.gcode" => Some(reply(200, "application/octet-stream")),
+            "plates/removed.gcode" => Some(reply(404, "application/json")),
+            "plates/broken.gcode" => Some(reply(500, "application/json")),
+            _ => None,
+        });
+        Box::pin(async move { answer })
+    }
+    fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("camera_view {printer} {camera}"));
+        let answer = answer_with(&printer, || {
+            (camera == "0").then(|| reply(200, "image/jpeg"))
+        });
         Box::pin(async move { answer })
     }
     fn files(&self, printer: String, path: String) -> Answer<Value> {
@@ -265,4 +303,184 @@ async fn ticket_t_21_root_and_api_v1_mounts_keep_separate_budgets() {
         "the /api/v1 alias has its own window"
     );
     assert_eq!(fake.calls.lock().unwrap().len(), CAMERAS_LIMIT as usize + 1);
+}
+
+fn content(path: Option<&str>, profile_id: Option<&str>) -> Query<ContentQuery> {
+    Query(ContentQuery {
+        path: path.map(Into::into),
+        profile_id: profile_id.map(Into::into),
+    })
+}
+
+/// Status, the three proxied headers and the body text.
+async fn streamed(response: Response) -> (u16, [Option<String>; 3], String) {
+    let status = response.status().as_u16();
+    let header = |name| {
+        response
+            .headers()
+            .get(name)
+            .map(|value: &HeaderValue| value.to_str().unwrap().to_owned())
+    };
+    let headers = [
+        header(header::CONTENT_TYPE),
+        header(header::CONTENT_LENGTH),
+        header(header::CACHE_CONTROL),
+    ];
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn ticket_t_21_file_content_streams_a_listed_file_like_node() {
+    let (app, fake) = app();
+    let open = |id: &str, query| file_content(State(app.clone()), Path(id.into()), query);
+    assert_eq!(
+        streamed(open("moon", content(Some(" /plates/plate.gcode/ "), None)).await).await,
+        (
+            200,
+            [
+                Some("application/octet-stream".into()),
+                Some("5".into()),
+                Some("private, no-store".into())
+            ],
+            "G28\n\n".into()
+        )
+    );
+    assert_eq!(
+        fake.calls.lock().unwrap().drain(..).collect::<Vec<_>>(),
+        ["file moon plates/plate.gcode"]
+    );
+    let refused = [
+        (content(None, None), 400, "path is required"),
+        (content(Some("  "), None), 400, "path is required"),
+        (
+            content(Some("../etc"), None),
+            400,
+            "path is not a valid printer storage path",
+        ),
+        (
+            content(Some("a//b"), None),
+            400,
+            "path is not a valid printer storage path",
+        ),
+        (
+            content(Some("plates/plate.gcode"), Some("1")),
+            501,
+            "Print-file inspection for a Build is not available in this runtime yet",
+        ),
+    ];
+    for (query, status, detail) in refused {
+        let (got, problem) = body(open("moon", query).await).await;
+        assert_eq!((got, &problem["detail"]), (status, &json!(detail)));
+    }
+    assert!(fake.calls.lock().unwrap().is_empty());
+    for (printer, path, status, detail) in [
+        ("moon", "plates/other.gcode", 404, "Printer file not found"),
+        (
+            "moon",
+            "plates/removed.gcode",
+            404,
+            "Printer resource not found",
+        ),
+        (
+            "moon",
+            "plates/broken.gcode",
+            502,
+            "Printer host returned HTTP 500",
+        ),
+        ("gone", "a.gcode", 404, "Printer not found"),
+        ("manual", "a.gcode", 409, "Printer is not linked to a host"),
+        ("off", "a.gcode", 503, "Printer host is unavailable"),
+        (
+            "spool",
+            "a.gcode",
+            501,
+            "Printer host does not support file browsing",
+        ),
+        (
+            "down",
+            "a.gcode",
+            502,
+            "Moonraker directory listing returned HTTP 500",
+        ),
+        ("busy", "a.gcode", 503, "Printer settings are unavailable"),
+    ] {
+        let (got, problem) = body(open(printer, content(Some(path), None)).await).await;
+        assert_eq!(
+            (got, &problem["detail"]),
+            (status, &json!(detail)),
+            "{printer} {path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ticket_t_21_camera_view_streams_a_listed_camera_like_node() {
+    let (app, fake) = app();
+    let view = |id: &str, camera: Option<&str>| {
+        camera_view(
+            State(app.clone()),
+            Path(id.into()),
+            Query(CameraQuery {
+                id: camera.map(Into::into),
+            }),
+        )
+    };
+    let (status, headers, text) = streamed(view("moon", Some(" 0 ")).await).await;
+    assert_eq!(
+        (status, headers[0].as_deref(), text.as_str()),
+        (200, Some("image/jpeg"), "G28\n\n")
+    );
+    assert_eq!(headers[2].as_deref(), Some("private, no-store"));
+    for camera in [None, Some(""), Some("  ")] {
+        let (got, problem) = body(view("moon", camera).await).await;
+        assert_eq!((got, &problem["detail"]), (400, &json!("id is required")));
+    }
+    for (printer, camera, status, detail) in [
+        ("moon", "9", 404, "Printer camera not found"),
+        ("spool", "0", 404, "Printer camera not found"),
+        ("gone", "0", 404, "Printer not found"),
+        ("manual", "0", 409, "Printer is not linked to a host"),
+        (
+            "down",
+            "0",
+            502,
+            "Moonraker directory listing returned HTTP 500",
+        ),
+    ] {
+        let (got, problem) = body(view(printer, Some(camera)).await).await;
+        assert_eq!(
+            (got, &problem["detail"]),
+            (status, &json!(detail)),
+            "{printer} {camera}"
+        );
+    }
+    assert_eq!(fake.calls.lock().unwrap()[0], "camera_view moon 0");
+}
+
+#[tokio::test]
+async fn ticket_t_21_streamed_routes_keep_nodes_twenty_per_minute_budgets() {
+    let (app, fake) = app();
+    for _ in 0..20 {
+        let query = content(Some("plates/plate.gcode"), None);
+        let response = file_content(State(app.clone()), Path("moon".into()), query).await;
+        assert_eq!(response.status(), 200);
+    }
+    let query = content(Some("plates/plate.gcode"), None);
+    let response = file_content(State(app.clone()), Path("moon".into()), query).await;
+    assert_eq!(response.status(), 429);
+    assert!(response.headers().contains_key(header::RETRY_AFTER));
+    // The camera view has its own window.
+    let query = Query(CameraQuery {
+        id: Some("0".into()),
+    });
+    assert_eq!(
+        camera_view(State(app), Path("moon".into()), query)
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(fake.calls.lock().unwrap().len(), 21);
 }

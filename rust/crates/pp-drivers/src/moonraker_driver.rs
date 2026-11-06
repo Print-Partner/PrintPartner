@@ -6,7 +6,7 @@
 use crate::moonraker::{QUERY, recorded_status};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pp_api_types::printer_status::PrinterHostStatus as Status;
-use pp_net::outbound::{HttpGuard, PostBody, PostError};
+use pp_net::outbound::{BodyDeadline, HttpGuard, PostBody, PostError, StreamReply, key_header};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::{
@@ -24,6 +24,11 @@ const GCODES_ROOT: &str = "gcodes";
 const INVALID_PATH: &str = "Invalid Moonraker print-file path";
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(120);
 const START_DEADLINE: Duration = Duration::from_secs(15);
+/// Node's `files.open` aborts the whole download after 120 s.
+const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(120);
+/// Node's `CAMERA_VIEW_TIMEOUT_MS`: an MJPEG stream never ends on its own, so
+/// one proxied view holds the connection for at most a minute.
+const CAMERA_VIEW_DEADLINE: Duration = Duration::from_secs(60);
 const MAX_ERROR_TEXT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -236,8 +241,8 @@ impl Driver {
         status.is_object().then_some(status)
     }
 
-    pub async fn cameras(&self) -> Result<Vec<Camera>> {
-        let base = self.base()?;
+    /// The webcam database rows; none when Moonraker has no webcam API.
+    async fn webcams(&self) -> Result<Vec<Map<String, Value>>> {
         let reply = self.fetch("/server/webcams/list").await?;
         if reply.status == 404 {
             return Ok(Vec::new());
@@ -253,9 +258,69 @@ impl Driver {
             .into_iter()
             .flatten()
             .filter_map(Value::as_object)
-            .enumerate()
-            .filter_map(|(index, camera)| list_camera(base, index, camera))
+            .cloned()
             .collect())
+    }
+
+    pub async fn cameras(&self) -> Result<Vec<Camera>> {
+        let base = self.base()?.to_owned();
+        Ok(self
+            .webcams()
+            .await?
+            .iter()
+            .enumerate()
+            .filter_map(|(index, camera)| list_camera(&base, index, camera))
+            .collect())
+    }
+
+    /// One GET with the API key whose body is not buffered. The head and the
+    /// whole body share `deadline`, as fetch with `AbortSignal.timeout` does.
+    async fn stream(&self, url: &str, deadline: Duration) -> Result<StreamReply> {
+        let key = key_header(self.api_key.as_deref().map(str::trim));
+        let headers: Vec<(&str, &str)> = key
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
+        self.guard
+            .stream(url, &headers, deadline, BodyDeadline::Total)
+            .await
+    }
+
+    /// Open one print file under the `gcodes` root for download, as Node's
+    /// `files.open`. The reply comes back as is, body unread.
+    pub async fn open_file(&self, path: &str) -> Result<StreamReply> {
+        let relative = safe_storage_path(path).context(INVALID_PATH)?;
+        let encoded: Vec<String> = format!("{GCODES_ROOT}/{relative}")
+            .split('/')
+            .map(encode_uri_component)
+            .collect();
+        let url = self.url(&format!("/server/files/{}", encoded.join("/")))?;
+        self.stream(&url, DOWNLOAD_DEADLINE).await
+    }
+
+    /// Open one enabled camera's browser view, as Node's `cameras.open`: its
+    /// MJPEG stream, else its snapshot. A cross-origin URL in either field
+    /// refuses the camera. The reply comes back as is, body unread.
+    pub async fn open_camera(&self, camera_id: &str) -> Result<StreamReply> {
+        self.url("")?;
+        let base = self.base()?.to_owned();
+        let webcams = self.webcams().await?;
+        let camera = webcams
+            .iter()
+            .enumerate()
+            .find(|(index, camera)| list_camera_id(*index, camera) == camera_id)
+            .map(|(_, camera)| camera)
+            .filter(|camera| camera.get("enabled") != Some(&Value::Bool(false)))
+            .context("Camera not found")?;
+        ensure!(
+            ["stream_url", "snapshot_url"]
+                .iter()
+                .all(|key| same_origin(&base, text(camera, key)).is_some()),
+            "Moonraker advertised a cross-origin camera URL"
+        );
+        let (_, url) =
+            camera_view(&base, camera).context("Camera has no browser-compatible view")?;
+        self.stream(&url, CAMERA_VIEW_DEADLINE).await
     }
 
     /// Browse one directory of the `gcodes` root via `/server/files/directory`,
@@ -557,12 +622,20 @@ fn list_camera(base: &str, index: usize, camera: &Map<String, Value>) -> Option<
     let (view, _url) = camera_view(base, camera)?;
     let nonempty = |value: &str| (!value.is_empty()).then(|| value.to_owned());
     Some(Camera {
-        id: nonempty(text(camera, "uid")).unwrap_or_else(|| format!("camera-{index}")),
+        id: list_camera_id(index, camera),
         name: nonempty(text(camera, "name")).unwrap_or_else(|| format!("Camera {}", index + 1)),
         view,
         service: nonempty(text(camera, "service")),
         aspect_ratio: nonempty(text(camera, "aspect_ratio")),
     })
+}
+
+/// Node's `cameraId`: the trimmed `uid`, else `camera-{index}`.
+fn list_camera_id(index: usize, camera: &Map<String, Value>) -> String {
+    match text(camera, "uid") {
+        "" => format!("camera-{index}"),
+        uid => uid.to_owned(),
+    }
 }
 
 /// Pick a browser-renderable view, or None. Moonraker replays whatever a camera

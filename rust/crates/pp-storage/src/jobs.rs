@@ -1672,8 +1672,146 @@ pub(crate) fn save(tx: &Transaction<'_>, job: &mut JobRecord, event: &str) -> Re
         ],
     )?;
     #[cfg(feature = "desktop_rebuild")]
+    if job.kind == JobKind::PrinterUpload {
+        crate::send_queue::settle(tx, job, event)?;
+    }
+    #[cfg(feature = "desktop_rebuild")]
     subscriptions::record(job);
     Ok(())
+}
+/// Fails the printer upload `job_id` when it is queued or its outcome is
+/// unknown, so it never runs and no longer reserves its printer, and returns
+/// whether it did. The send queue calls this when the user removes the item
+/// the upload was dispatched for, and at open for an upload that never
+/// started. Any other job, or an id with no Rust job (a send Node started),
+/// is left alone.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn release_printer_upload(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    job_id: &str,
+    reason: &str,
+    event: &str,
+) -> Result<bool> {
+    let stored: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM durable_jobs WHERE id=?1 AND tenant=?2 AND kind=?3 AND state IN ('queued','reconciliation_required'))",
+        params![job_id, tenant, JobKind::PrinterUpload.name()],
+        |row| row.get(0),
+    )?;
+    if !stored {
+        return Ok(false);
+    }
+    let mut job = owned(tx, job_id, tenant)?;
+    job.state = PersistentState::Failed;
+    job.recovery = Some(reason.into());
+    save(tx, &mut job, event)?;
+    Ok(true)
+}
+/// The state of the tenant's printer upload `job_id`, or `None` when no Rust
+/// job has that id (a send Node started).
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn printer_upload_state(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    job_id: &str,
+) -> Result<Option<PersistentState>> {
+    let stored: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM durable_jobs WHERE id=?1 AND tenant=?2 AND kind=?3)",
+        params![job_id, tenant, JobKind::PrinterUpload.name()],
+        |row| row.get(0),
+    )?;
+    if !stored {
+        return Ok(None);
+    }
+    Ok(Some(owned(tx, job_id, tenant)?.state))
+}
+/// Records the user's answer for a printer upload awaiting reconciliation:
+/// it printed (succeeded) or it did not (failed). The answer is kept in the
+/// reconciliation history against the last effect, and the job stops
+/// reserving its printer. Nothing is resent.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn reconcile_printer_upload(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    subject: &str,
+    job_id: &str,
+    printed: bool,
+) -> Result<()> {
+    let mut job = owned(tx, job_id, tenant)?;
+    ensure!(
+        job.kind == JobKind::PrinterUpload && job.state == PersistentState::ReconciliationRequired,
+        "Printer upload is not awaiting reconciliation"
+    );
+    let effect = job
+        .effects
+        .last()
+        .ok_or_else(|| anyhow!("Reconciliation effect required"))?;
+    let decision = if printed {
+        "UserPrinted"
+    } else {
+        "UserDidNotPrint"
+    };
+    tx.execute(
+        "INSERT INTO durable_job_reconciliations(job_id,version,subject,generation,effect_hash,basis_hash,target,decision,receipt,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'null',?9)",
+        params![
+            job.job_id,
+            job.state_version + 1,
+            subject,
+            job.generation,
+            effect.intent.content_hash,
+            effect.intent.basis_hash,
+            effect.intent.target,
+            decision,
+            now()
+        ],
+    )?;
+    job.state = if printed {
+        PersistentState::Succeeded
+    } else {
+        PersistentState::Failed
+    };
+    job.recovery = Some(if printed {
+        "You reconciled this send: it printed".into()
+    } else {
+        "You reconciled this send: it did not print".into()
+    });
+    save(tx, &mut job, &format!("reconciled:{decision}"))
+}
+/// True when a queued, running or unresolved job holds `printer_id`.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn printer_reserved(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    printer_id: &str,
+) -> Result<bool> {
+    let resource = format!("printer:{printer_id}");
+    Ok(reserved_resources(tx, tenant, true)?
+        .iter()
+        .any(|reserved| resources_overlap(&resource, reserved)))
+}
+/// Collects the job changes another family's transaction makes, so they
+/// publish like a job command's once that transaction commits.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn begin_job_collection() {
+    subscriptions::begin_collection();
+}
+/// Publishes the collected changes when the transaction committed. A commit
+/// with an unknown outcome stops every stream, as a job command's does.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn end_job_collection(
+    subscriptions: &JobSubscriptions,
+    committed: bool,
+    error: Option<&anyhow::Error>,
+) {
+    if committed {
+        subscriptions::mark_committed();
+        subscriptions.publish(subscriptions::finish_collection());
+        return;
+    }
+    subscriptions::finish_collection();
+    if error.is_some_and(|error| matches!(error.downcast_ref(), Some(JobFailure::CommitUnknown))) {
+        subscriptions.stop();
+    }
 }
 fn quarantine(tx: &Transaction<'_>, id: &str) -> Result<()> {
     // Preserve the original document and resource; only the attempt index changes.

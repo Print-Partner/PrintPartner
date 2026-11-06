@@ -232,6 +232,11 @@ impl Dir {
         crate::unlock(&self.directory)
     }
 
+    /// Unix reuses freed inode numbers.
+    pub(crate) fn identities_are_never_reused(&self) -> io::Result<bool> {
+        Ok(false)
+    }
+
     pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
         self.directory.as_fd()
     }

@@ -154,15 +154,15 @@ function fakeCore({
         decisions: { part_id: number; unit_index: number }[];
       }[];
       const units = beds.reduce((n, b) => n + b.decisions.length, 0);
-      before.set(key, {
-        links: beds.map((b) => state.results.find((r) => r.id === b.link_id)!),
-        units,
-      });
       for (const bed of beds) {
         const link = state.results.find((r) => r.id === bed.link_id)!;
         if (link.state !== "awaiting_verify")
           return json({ title: "Conflict", detail: "Link is not awaiting verify" }, 409);
       }
+      before.set(key, {
+        links: beds.map((b) => state.results.find((r) => r.id === b.link_id)!),
+        units,
+      });
       for (const bed of beds) {
         const index = state.results.findIndex((r) => r.id === bed.link_id);
         const link = state.results[index]!;

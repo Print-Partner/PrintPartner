@@ -13,7 +13,8 @@ use std::{
     path::{Path, PathBuf},
     process::ExitStatus,
 };
-use tokio::process::{Child, Command};
+pub use tokio::process::Child;
+use tokio::process::Command;
 
 pub(crate) use crate::parent_death::ParentDeathGuard;
 
@@ -30,6 +31,10 @@ pub(crate) fn configure_child(
     storage_lock: &File,
 ) -> std::io::Result<(ChildSetup, ParentDeathGuard)> {
     crate::parent_death::configure_child(command, storage_lock.as_raw_fd())
+}
+
+pub(crate) fn spawn(command: &mut Command, _setup: &ChildSetup) -> std::io::Result<Child> {
+    command.spawn()
 }
 
 /// Close the watcher pipe's read end in the parent. `pre_exec` already put

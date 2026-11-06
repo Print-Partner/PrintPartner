@@ -18,6 +18,8 @@ mod windows;
 use windows as platform;
 #[cfg(windows)]
 mod windows_security;
+/// The supervised child process.
+pub use platform::Child;
 use platform::ParentDeathGuard;
 mod release;
 use anyhow::{Context, Result, bail, ensure};
@@ -39,7 +41,7 @@ use std::{
 };
 use tokio::{
     io::AsyncWriteExt,
-    process::{Child, ChildStdin, Command},
+    process::{ChildStdin, Command},
     sync::{mpsc, watch},
     task::JoinHandle,
 };
@@ -552,7 +554,8 @@ impl Process {
         let (child_setup, mut parent_death) =
             platform::configure_child(&mut command, &spec.storage_lock)
                 .context("Could not arm parent-death watcher")?;
-        let mut child = command.spawn().context("Could not start bundled Node")?;
+        let mut child =
+            platform::spawn(&mut command, &child_setup).context("Could not start bundled Node")?;
         if let Err(error) = platform::adopt(child_setup, &mut parent_death, &child) {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -627,7 +630,8 @@ impl Process {
             .kill_on_drop(true);
         let lease = std::fs::File::open(if cfg!(windows) { "NUL" } else { "/dev/null" })?;
         let (child_setup, mut parent_death) = platform::configure_child(&mut command, &lease)?;
-        let mut child = command.spawn().context("Could not start test child")?;
+        let mut child =
+            platform::spawn(&mut command, &child_setup).context("Could not start test child")?;
         if let Err(error) = platform::adopt(child_setup, &mut parent_death, &child) {
             let _ = child.kill().await;
             let _ = child.wait().await;

@@ -29,15 +29,19 @@ pub fn node_path(path: &Path) -> PathBuf {
 
 /// A `file:` URL for the absolute `path`, as Node's `pathToFileURL` spells
 /// it: `/` separators, `file:///C:/x` for a drive path and every byte outside
-/// the unreserved set, `/` and `:` escaped.
-pub fn file_url(path: &Path) -> String {
-    let text = node_path(path).to_str().expect("UTF-8 path").to_owned();
+/// the unreserved set, `/` and `:` escaped. `None` when the path is not UTF-8.
+pub fn file_url(path: &Path) -> Option<String> {
+    let text = node_path(path).to_str()?.to_owned();
     let text = if cfg!(windows) {
         text.replace('\\', "/")
     } else {
         text
     };
-    let mut url = String::from(if text.starts_with('/') {
+    // A UNC path keeps its host as the URL authority, as pathToFileURL
+    // spells it: \\host\share\x becomes file://host/share/x.
+    let mut url = String::from(if text.starts_with("//") {
+        "file:"
+    } else if text.starts_with('/') {
         "file://"
     } else {
         "file:///"
@@ -49,7 +53,7 @@ pub fn file_url(path: &Path) -> String {
             url.push_str(&format!("%{byte:02X}"));
         }
     }
-    url
+    Some(url)
 }
 
 #[cfg(test)]
@@ -73,12 +77,16 @@ mod tests {
             Path::new(r"\\?\Volume{1}\x")
         );
         assert_eq!(
-            file_url(Path::new(r"\\?\D:\a\loader.mjs")),
+            file_url(Path::new(r"\\?\D:\a\loader.mjs")).unwrap(),
             "file:///D:/a/loader.mjs"
         );
         assert_eq!(
-            file_url(Path::new(r"D:\a b\x.mjs")),
+            file_url(Path::new(r"D:\a b\x.mjs")).unwrap(),
             "file:///D:/a%20b/x.mjs"
+        );
+        assert_eq!(
+            file_url(Path::new(r"\\?\UNC\host\share\x.mjs")).unwrap(),
+            "file://host/share/x.mjs"
         );
     }
 
@@ -90,9 +98,12 @@ mod tests {
             Path::new(r"/tmp/\\?\C:")
         );
         assert_eq!(
-            file_url(Path::new("/tmp/a b#c.mjs")),
+            file_url(Path::new("/tmp/a b#c.mjs")).unwrap(),
             "file:///tmp/a%20b%23c.mjs"
         );
-        assert_eq!(file_url(Path::new(r"/tmp/a\b")), "file:///tmp/a%5Cb");
+        assert_eq!(
+            file_url(Path::new(r"/tmp/a\b")).unwrap(),
+            "file:///tmp/a%5Cb"
+        );
     }
 }

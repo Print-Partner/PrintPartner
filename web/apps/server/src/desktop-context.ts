@@ -14,8 +14,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { connect } from "node:net";
-import type { Server } from "node:http";
+import { connect, type Socket } from "node:net";
+import type { IncomingMessage, Server } from "node:http";
 import { dirname, join } from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
@@ -146,12 +146,17 @@ export function installDesktopContext(input: unknown): void {
 
 /**
  * Serve the core's private named pipe on Windows. The core creates the pipe with a DACL for the
- * current user only, so this process dials in instead of listening. It keeps `lanes` connects
- * pending and hands each connected pipe to `server`; each one carries one request. Returns a
- * function that stops dialing.
+ * current user only, so this process dials in instead of listening. It keeps `lanes` dials
+ * waiting for the core and hands each connected pipe to `server`; each one carries one request.
+ * A dial is replaced as soon as the core sends a request on it, not when it closes, so
+ * long-lived streams never use up the waiting dials. Returns a function that stops dialing.
  */
 export function dialDesktopPipe(server: Server, path: string, lanes = 4): () => void {
   let stopped = false;
+  const waiting = new WeakSet<Socket>();
+  const claim = (request: IncomingMessage) => {
+    if (waiting.delete(request.socket)) dial();
+  };
   const dial = () => {
     if (stopped) return;
     let connected = false;
@@ -163,13 +168,20 @@ export function dialDesktopPipe(server: Server, path: string, lanes = 4): () => 
     });
     socket.once("connect", () => {
       connected = true;
-      socket.once("close", dial);
+      waiting.add(socket);
+      socket.once("close", () => {
+        if (waiting.delete(socket)) dial();
+      });
       server.emit("connection", socket);
     });
   };
+  server.on("request", claim);
+  server.on("upgrade", claim);
   for (let lane = 0; lane < lanes; lane += 1) dial();
   return () => {
     stopped = true;
+    server.off("request", claim);
+    server.off("upgrade", claim);
   };
 }
 

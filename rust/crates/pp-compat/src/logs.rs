@@ -266,7 +266,8 @@ pub(crate) struct Logs {
 struct LogFile {
     stream: Stream,
     directory: platform::Directory,
-    file: File,
+    /// `None` after an unlinked log was closed and its replacement failed.
+    file: Option<File>,
     day: u64,
     bytes: u64,
 }
@@ -330,7 +331,7 @@ impl LogFile {
         Ok(Self {
             stream,
             directory,
-            file,
+            file: Some(file),
             day: now_secs() / 86400,
             bytes,
         })
@@ -344,7 +345,10 @@ impl LogFile {
         if platform::secure_directory(&self.directory).is_err() {
             return;
         }
-        if platform::unlinked(&self.file) {
+        if self.file.as_ref().is_none_or(platform::unlinked) {
+            // Close first: a classic Windows delete keeps the name taken while
+            // a handle is open, so the replacement could not be created.
+            self.file = None;
             let Ok(file) = open_log(&self.directory, stream) else {
                 return;
             };
@@ -353,9 +357,13 @@ impl LogFile {
             };
             self.bytes = metadata.len();
             self.day = now / 86400;
-            self.file = file;
+            self.file = Some(file);
         }
-        if platform::secure_log(&self.file).is_err() {
+        if self
+            .file
+            .as_ref()
+            .is_none_or(|file| platform::secure_log(file).is_err())
+        {
             return;
         }
         if self.day != now / 86400 || self.bytes + row.len() as u64 > FILE_BYTES {
@@ -375,7 +383,7 @@ impl LogFile {
                         _ => {}
                     }
                 }
-                self.file = open_log(&self.directory, stream)?;
+                self.file = Some(open_log(&self.directory, stream)?);
                 self.bytes = 0;
                 self.day = now / 86400;
                 Ok(())
@@ -384,7 +392,9 @@ impl LogFile {
                 return;
             }
         }
-        if self.file.write_all(row).is_ok() {
+        if let Some(file) = self.file.as_mut()
+            && file.write_all(row).is_ok()
+        {
             self.bytes += row.len() as u64;
         }
     }
@@ -698,7 +708,8 @@ impl tracing::Subscriber for CoreLog {
 mod tests {
     use super::*;
     use platform::test_support::{
-        identity, path_identity, private, restrict, symlink_dir, symlink_file, widen, widened,
+        access, identity, path_identity, private, restrict, symlink_dir, symlink_file, widen,
+        widened,
     };
 
     struct Scratch(PathBuf);
@@ -757,6 +768,53 @@ mod tests {
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(row["event"], "compat_ready");
             assert!(private(&path));
+        }
+    }
+
+    /// The classic delete leaves the open log pending deletion under its name,
+    /// so recovery must close it before creating the replacement.
+    #[cfg(windows)]
+    #[test]
+    fn ticket_t_2_delete_pending_active_log_recovers_without_restart() {
+        for rotation in [None, Some(false), Some(true)] {
+            let scratch = Scratch::new();
+            let directory = scratch.0.join("logs");
+            let path = directory.join("desktop.jsonl");
+            let logs = Logs::open(directory).unwrap();
+            logs.event(Event::Starting, 30);
+            platform::test_support::delete_pending(&path);
+            assert!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .is_err()
+            );
+            if let Some(size) = rotation {
+                force_rotation(&logs, size);
+            }
+            logs.event(Event::Ready, 30);
+            let row: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(row["event"], "compat_ready");
+            assert!(private(&path));
+        }
+    }
+
+    /// Securing the log directory never touches the access of an entry that
+    /// is a hard link to a file elsewhere, and the entry is refused.
+    #[test]
+    fn ticket_t_2_hardlinked_logs_leave_outside_access_unchanged() {
+        for name in ["desktop.jsonl", "desktop.1.jsonl"] {
+            let scratch = Scratch::new();
+            let target = scratch.0.join("outside");
+            std::fs::write(&target, b"private history\n").unwrap();
+            widen(&target);
+            let before = access(&target);
+            std::fs::hard_link(&target, scratch.0.join("logs").join(name)).unwrap();
+            assert!(Logs::open(scratch.0.join("logs")).is_err());
+            assert_eq!(access(&target), before);
+            assert_eq!(std::fs::read(&target).unwrap(), b"private history\n");
         }
     }
 

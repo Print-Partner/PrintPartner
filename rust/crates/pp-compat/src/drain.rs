@@ -1,6 +1,7 @@
+use crate::Child;
 use anyhow::{Context, Result};
 use std::{process::ExitStatus, time::Duration};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::ChildStdin;
 
 pub const SIGTERM_GRACE: Duration = Duration::from_secs(10);
 const GROUP_REAP: Duration = Duration::from_secs(2);

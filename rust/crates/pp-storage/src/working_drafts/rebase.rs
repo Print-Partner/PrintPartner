@@ -355,7 +355,15 @@ pub(super) fn rebase(connection: &mut Connection, args: Args<'_>) -> Result<Reba
         if open {
             crate::domain_events::draft_changed(tx, &tenant, profile, source.id)?;
         }
-        let id = insert_snapshot(tx, &tenant, &actor, profile, key, &prepared, Some(&source))?;
+        let id = insert_snapshot(
+            tx,
+            &tenant,
+            &actor,
+            profile,
+            key,
+            &prepared,
+            Origin::Rebased(&source),
+        )?;
         let rebased = load(tx, &tenant, profile, id, &mut budget)?
             .filter(|d| {
                 d.header["snapshotDigest"] == prepared.digest.as_str()

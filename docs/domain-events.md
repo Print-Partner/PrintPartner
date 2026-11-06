@@ -41,18 +41,16 @@ tells a client which queries to reload.
 The 41 to 42 step installs `domain_events` and its `(tenant, seq)` index from
 `domain_events/schema.sql`, validates them and stamps 42 in one transaction. A
 database below 42 with these objects is refused by preflight, before the
-opening copy or any write. The step only adds tables, so it writes no
-`pre-schema42.db` copy of its own: an upgrade from 41 keeps the copy taken at
-open, and an upgrade from an older version keeps the copies of its earlier
-steps. That keeps the interrupted-upgrade bound in `backup_retention.rs`
-(`LAST_COPIED_STEP`) at 41.
+opening copy or any write. Since schema 43 (GRE-1197) moved `LAST_COPIED_STEP`
+to 43, step 42 also writes a `pre-schema42.db` copy before it installs.
 
-An open from 41 skips backup retention. It may be the restart of an upgrade
+An open from 41 with no run marker skips backup retention. A release before
+schema 43 wrote no marker, so such an open may be the restart of an upgrade
 from 37 that stopped after step 41 committed, with copies 38 to 41 already on
-disk. Its opening `pre-schema42.db` would be a fifth name, and keeping three
-older copies would delete `pre-schema38.db`, the untouched schema-37 input.
-The compile-time assert beside `LAST_COPIED_STEP` stops a schema 43 step
-from landing without a run marker that restores retention for these opens.
+disk; pruning would delete `pre-schema38.db`, the untouched schema-37 input.
+Every other restart reads the marker in `backups/pre-schema-run`, and retention
+keeps the copy it names. [Draft header fields](draft-headers.md#schema-43)
+describes the marker.
 
 ## Cursors and reads
 

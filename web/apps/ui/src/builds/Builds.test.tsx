@@ -464,10 +464,10 @@ describe("UI2-02 Build Overview", () => {
   });
 
   it("other tabs say what they will hold in a later slice and keep the tab bar", async () => {
-    renderAt("/builds/2/checkoff", core(plans));
-    expect(screen.getByRole("heading", { level: 1, name: "Checkoff" })).toBeTruthy();
+    renderAt("/builds/2/history", core(plans));
+    expect(screen.getByRole("heading", { level: 1, name: "History" })).toBeTruthy();
     expect(screen.getByText(/This tab arrives in a later slice/)).toBeTruthy();
     const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole("link");
-    expect(tabs.find((t) => t.getAttribute("aria-current") === "page")?.textContent).toBe("Checkoff");
+    expect(tabs.find((t) => t.getAttribute("aria-current") === "page")?.textContent).toBe("History");
   });
 });

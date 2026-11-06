@@ -664,6 +664,11 @@ mod tests {
             "EditDraftPartsRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
                 "decision": {"kind": "set_included", "draft_part_ids": [1], "value": true}}),
             "AbandonDraftRequest" => json!({"expected_lifecycle_version": 0}),
+            "SaveDraftHeaderRequest" => {
+                json!({"expected_base": {"revision_id": null, "plan_version": 0},
+                "expected_draft": null, "expected_header_version": null,
+                "header": {"name": "Client contract", "order_number": null, "customer": null, "due_date": null}})
+            }
             "ReconcileDraftRequest" => {
                 json!({"expected_snapshot_digest": "0".repeat(64), "decisions": []})
             }
@@ -814,8 +819,10 @@ mod tests {
             // A manual burst names an Accepted Plan basis no stored Build has.
             let handler_stale =
                 status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";
+            // A draft header save on a Build with no layers can prepare no draft.
+            let handler_no_layers = status == 422 && body["code"] == "no_layers";
             assert!(
-                status == 200 || handler_not_found || handler_stale,
+                status == 200 || handler_not_found || handler_stale || handler_no_layers,
                 "{} {path}: {status} {body}",
                 route.method
             );

@@ -1,4 +1,5 @@
 import { Navigate, type RouteObject } from "react-router";
+import { BuildCheckoff } from "./builds/BuildCheckoff";
 import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
 import { BuildsList } from "./builds/BuildsList";
 import { FarmScreen } from "./farm/FarmScreen";
@@ -51,7 +52,12 @@ export const routes: RouteObject[] = [
           { index: true, element: <BuildOverview /> },
           ...BUILD_TABS.filter((t) => t.path).map((t) => ({
             path: t.path,
-            element: <LaterTab label={t.label} holds={t.holds} />,
+            element:
+              t.path === "checkoff" ? (
+                <BuildCheckoff />
+              ) : (
+                <LaterTab label={t.label} holds={t.holds} />
+              ),
           })),
         ],
       },

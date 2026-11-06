@@ -13,7 +13,9 @@ use super::arrange::{
 };
 use super::artifacts::{self, Failure, LIMITS};
 use super::*;
-use crate::production::layout::{GroupRule, PackResult, PackingUnit, grouping_buckets, pack_units};
+use crate::production::layout::{
+    GroupRule, MeasuredUnit, PackResult, PackingUnit, first_too_large, grouping_buckets, pack_units,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Width, depth and height in micrometres, by token.
@@ -158,11 +160,16 @@ fn geometry_failure(failure_kind: Failure) -> Response {
 
 /// What packing the assigned units produced.
 enum Packed {
-    Plates(Vec<PlateInput>),
+    /// `outside` when an assigned Printer's bed is past the stored Plate
+    /// range and every unit fits it. Node packs that Printer's units onto it
+    /// and then refuses the layout as `outside_build_area`, after the
+    /// archived check, so its units are left out here and the other Printers
+    /// still pack.
+    Plates {
+        plates: Vec<PlateInput>,
+        outside: bool,
+    },
     TooLarge(TooLarge),
-    /// A Printer whose bed is past the stored Plate range, which Node's
-    /// layout validation refuses as `outside_build_area`.
-    OutsideBuildArea,
 }
 
 struct Packing<'a> {
@@ -184,10 +191,8 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
         .map(|(token, printer)| (token.as_str(), printer.as_deref()))
         .collect();
     let mut plates = Vec::new();
+    let mut outside = false;
     for (printer_id, printer) in input.printers {
-        let Some(geometry) = &printer.geometry else {
-            return Ok(Some(Packed::OutsideBuildArea));
-        };
         let mut members = Vec::new();
         for (part, row) in input.units {
             if printer_of.get(row.token.as_str()).copied().flatten() != Some(*printer_id) {
@@ -197,23 +202,34 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
                 return Ok(None);
             };
             let token = RequiredUnitToken::parse(row.token.clone())?;
-            let dimension = |value: u64| {
-                i64::try_from(value)
-                    .ok()
-                    .and_then(|v| DimensionUm::parse(v).ok())
-            };
-            let [Some(width_um), Some(depth_um), Some(height_um)] = size.map(dimension) else {
-                return Ok(Some(Packed::TooLarge((token, (*printer_id).to_owned()))));
-            };
-            let value = PackingUnit {
-                token,
-                width_um,
-                depth_um,
-                height_um,
-            };
-            members.push(group_unit(part, row, value));
+            let value: MeasuredUnit = (token.clone(), *size);
+            members.push(group_unit(part, row, token, value));
         }
         for bucket in grouping_buckets(&members, input.rules) {
+            if let Some(token) = first_too_large(printer.um, &bucket) {
+                return Ok(Some(Packed::TooLarge((token, (*printer_id).to_owned()))));
+            }
+            let Some(geometry) = &printer.geometry else {
+                outside = true;
+                continue;
+            };
+            let bucket = bucket
+                .into_iter()
+                .map(|(token, size)| {
+                    let [width_um, depth_um, height_um] = size.map(|value| {
+                        i64::try_from(value)
+                            .ok()
+                            .and_then(|v| DimensionUm::parse(v).ok())
+                            .ok_or_else(|| anyhow!("a fitted unit is past the stored Plate range"))
+                    });
+                    Ok(PackingUnit {
+                        token,
+                        width_um: width_um?,
+                        depth_um: depth_um?,
+                        height_um: height_um?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
             let packed = match pack_units(geometry, &bucket) {
                 PackResult::Packed(packed) => packed,
                 PackResult::UnitTooLarge(token) => {
@@ -235,7 +251,7 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
             }
         }
     }
-    Ok(Some(Packed::Plates(plates)))
+    Ok(Some(Packed::Plates { plates, outside }))
 }
 
 /// The fleet Printer of each assigned id, as Node's `fleetById` keeps the
@@ -348,9 +364,10 @@ pub(super) fn run(
             })
             .collect();
         let replayed = match packing(&dimensions)? {
-            Some(Packed::Plates(plates)) => {
-                plates.iter().eq(current.iter().map(|plate| &plate.input))
-            }
+            Some(Packed::Plates {
+                plates,
+                outside: false,
+            }) => plates.iter().eq(current.iter().map(|plate| &plate.input)),
             _ => false,
         };
         return if replayed {
@@ -372,13 +389,15 @@ pub(super) fn run(
         Ok(dimensions) => dimensions,
         Err(refused) => return Ok(geometry_failure(refused)),
     };
-    let plates = match packing(&dimensions)?
+    let (plates, outside) = match packing(&dimensions)?
         .ok_or_else(|| anyhow!("Accepted artifact geometry is missing"))?
     {
-        Packed::Plates(plates) => plates,
+        Packed::Plates { plates, outside } => (plates, outside),
         Packed::TooLarge(too_large) => return Ok(unit_too_large(too_large)),
-        Packed::OutsideBuildArea => return Ok(Refusal::Geometry("outside_build_area").response()),
     };
+    if outside && snapshot.profile.archived_at.is_none() {
+        return Ok(Refusal::Geometry("outside_build_area").response());
+    }
     publish(tx, tenant, repos, cmd, &stored, plates, &snapshot)
 }
 

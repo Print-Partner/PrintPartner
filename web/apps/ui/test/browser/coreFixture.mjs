@@ -68,6 +68,51 @@ const CHECKOFF = [
   checkoffResult("fixture-plate-b", "fixture-trident", [{ part_id: 3, unit_index: 4, part_filename: "fixture_gear.stl" }]),
 ];
 
+// The Checkoff tab's units: two Parts across two Plates, one unit on no Plate.
+const fixtureToken = (n) => `ppu_${String(n).padStart(32, "0")}`;
+const fixturePlate = (ordinal, printer) => ({ plate_id: `plate_${String(ordinal).padStart(32, "0")}`, ordinal, printer_name: printer });
+const checkoffUnit = (n, index, printed, plate) => ({
+  token: fixtureToken(n),
+  unit_index: index,
+  object_name: `fixture unit ${n}`,
+  printed,
+  assembled: false,
+  plate,
+});
+const checkoffPart = (id, filename, units) => ({
+  part_id: id,
+  filename,
+  relative_path: filename,
+  source_layer: "base",
+  role: "part",
+  quantity: units.length,
+  printed_count: units.filter((u) => u.printed).length,
+  assembled_count: 0,
+  units,
+});
+const checkoffUnits = (id) => ({
+  profile_id: id,
+  basis: {
+    profile_id: id,
+    plan_version: 1,
+    plan_revision_id: 1,
+    plan_revision_digest: "sha256:fixture",
+    required_unit_mapping_digest: "sha256:fixture",
+  },
+  plate_revision_id: 1,
+  parts: [
+    checkoffPart(1, "fixture_bracket.stl", [
+      checkoffUnit(1, 0, true, fixturePlate(1, "Voron 2.4")),
+      checkoffUnit(2, 1, false, fixturePlate(1, "Voron 2.4")),
+      checkoffUnit(3, 2, false, fixturePlate(2, "Trident")),
+    ]),
+    checkoffPart(2, "fixture_gear.stl", [
+      checkoffUnit(4, 0, false, fixturePlate(1, "Voron 2.4")),
+      checkoffUnit(5, 1, false, null),
+    ]),
+  ],
+});
+
 const nextAction = (id) => ({
   kind: "verify_prints",
   label: "Verify prints",
@@ -155,11 +200,12 @@ export function fakeCore(count, { orders = "on" } = {}) {
     if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks, unavailable: [] } };
     if (pathname === "/api/v2/printer-checkoff") return { status: 200, body: { results: CHECKOFF } };
     if (pathname === "/api/v2/printers") return { status: 200, body: { printers: PRINTERS } };
-    const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow)?$/.exec(pathname);
+    const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow|\/checkoff\/units)?$/.exec(pathname);
     const found = match && builds[Number(match[1]) - 1];
     if (!found) return undefined;
     if (!match[2]) return { status: 200, body: found };
     if (match[2] === "/workflow") return { status: 200, body: workflow(found) };
+    if (match[2] === "/checkoff/units") return { status: 200, body: checkoffUnits(found.id) };
     return {
       status: 200,
       body: {

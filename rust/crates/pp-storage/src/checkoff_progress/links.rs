@@ -11,7 +11,7 @@ use serde_json::{Map, Number, Value, json};
 pub(super) const KEY: &str = "printer.checkoff_links";
 const MAX_LINKS: usize = 200;
 const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
-const REASONS: [&str; 10] = [
+pub(super) const REASONS: [&str; 10] = [
     "bed_adhesion",
     "layer_shift",
     "warping",

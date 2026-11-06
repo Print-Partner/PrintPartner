@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
+import { PrinterStreamProvider } from "../farm/printerStream";
+import { PulseLine } from "../farm/PulseLine";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { ConnectionProvider, useConnection } from "./connection";
 import { DESTINATIONS, shortcutLabel } from "./destinations";
@@ -64,18 +66,6 @@ function ConnectionLine() {
     <p role="status" className="pp-connection" data-status={status}>
       {label}
     </p>
-  );
-}
-
-/**
- * The pulse line slot: printer counts by state, on every screen. The counts arrive
- * with the Farm slice; until then the slot says so instead of showing zeros.
- */
-function PulseLine() {
-  return (
-    <section aria-label="Printer pulse" className="pp-pulse">
-      <span className="pp-pulse-empty">Printer counts not loaded</span>
-    </section>
   );
 }
 
@@ -164,11 +154,13 @@ function FrameBody() {
   );
 }
 
-/** The app frame: header with the pulse line slot, the rail, and the current screen. */
+/** The app frame: header with the pulse line, the rail, and the current screen. */
 export function Frame() {
   return (
     <ConnectionProvider>
-      <FrameBody />
+      <PrinterStreamProvider>
+        <FrameBody />
+      </PrinterStreamProvider>
     </ConnectionProvider>
   );
 }

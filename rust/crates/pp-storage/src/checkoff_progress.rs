@@ -27,6 +27,7 @@ mod burst;
 pub mod farm_log;
 mod links;
 mod verify;
+pub mod wire;
 
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_IMPORT: i64 = 10_000;

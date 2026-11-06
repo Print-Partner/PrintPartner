@@ -189,6 +189,39 @@ pub enum HostOutcome {
     Cancelled,
 }
 
+/// A verify decision on one unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub enum UnitResult {
+    Confirmed,
+    Rejected,
+}
+
+/// One Progress unit a print holds: what confirming its bed would mark.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct CheckoffUnit {
+    pub part_id: i64,
+    pub unit_index: u32,
+    /// The Part's file name, or null when the Part is gone or the read did not
+    /// name it (the `/ws/printers` producer never does).
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
+    pub part_filename: Option<String>,
+}
+
+/// A unit a verify already decided.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct ResolvedUnit {
+    pub part_id: i64,
+    pub unit_index: u32,
+    pub result: UnitResult,
+}
+
 /// One print a send linked to a Build, as the printer reported it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
@@ -206,6 +239,10 @@ pub struct CheckoffResult {
     pub host_outcome: Option<HostOutcome>,
     pub unit_count: u32,
     pub resolved_unit_count: u32,
+    /// The stored units with a valid Part ID and unit index, in stored order.
+    pub units: Vec<CheckoffUnit>,
+    /// The stored decisions with a valid Part ID, unit index and result.
+    pub resolved_units: Vec<ResolvedUnit>,
     pub created_at: String,
     #[cfg_attr(
         feature = "codegen",
@@ -474,6 +511,7 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
     if command.match_library {
         farm.library = Some(MatchLibrary::read(&tx, &tenant, &farm)?);
     }
+    farm.name_parts(&tx, &tenant)?;
     tx.commit()?;
     Ok(farm)
 }
@@ -661,6 +699,32 @@ impl Farm {
             queue: queue.iter().filter_map(queued_send).collect(),
             library: None,
         }
+    }
+
+    /// Fills each result unit's Part file name from the tenant's `parts` rows,
+    /// in the read's own transaction. A Part that is gone, or has an empty file
+    /// name, stays null.
+    fn name_parts(&mut self, tx: &Transaction<'_>, tenant: &str) -> Result<()> {
+        let mut names: HashMap<i64, Option<String>> = HashMap::new();
+        let mut query = tx.prepare("SELECT filename FROM parts WHERE tenant_id=?1 AND id=?2")?;
+        for unit in self
+            .results
+            .iter_mut()
+            .flat_map(|result| result.units.iter_mut())
+        {
+            unit.part_filename = match names.entry(unit.part_id) {
+                std::collections::hash_map::Entry::Occupied(known) => known.get().clone(),
+                std::collections::hash_map::Entry::Vacant(slot) => slot
+                    .insert(
+                        query
+                            .query_row(params![tenant, unit.part_id], |row| row.get::<_, String>(0))
+                            .optional()?
+                            .filter(|name| !name.is_empty()),
+                    )
+                    .clone(),
+            };
+        }
+        Ok(())
     }
 
     pub fn checkoff(&self) -> CheckoffResultList {
@@ -1009,10 +1073,45 @@ fn result(value: &Value) -> Option<CheckoffResult> {
         host_outcome,
         unit_count: count(&value["units"]),
         resolved_unit_count: count(&value["resolved_units"]),
+        units: entries(value, "units")
+            .filter_map(|unit| {
+                let (part_id, unit_index) = unit_key(unit)?;
+                Some(CheckoffUnit {
+                    part_id,
+                    unit_index,
+                    part_filename: None,
+                })
+            })
+            .collect(),
+        resolved_units: entries(value, "resolved_units")
+            .filter_map(|unit| {
+                let (part_id, unit_index) = unit_key(unit)?;
+                let result = match unit["result"].as_str()? {
+                    "confirmed" => UnitResult::Confirmed,
+                    "rejected" => UnitResult::Rejected,
+                    _ => return None,
+                };
+                Some(ResolvedUnit {
+                    part_id,
+                    unit_index,
+                    result,
+                })
+            })
+            .collect(),
         created_at: text(value, "created_at")?,
         completed_at: text(value, "completed_at").or_else(|| text(value, "applied_at")),
         applied_at: text(value, "applied_at"),
     })
+}
+
+fn entries<'a>(value: &'a Value, key: &str) -> impl Iterator<Item = &'a Value> {
+    value[key].as_array().into_iter().flatten()
+}
+
+/// A unit's Part ID and index, when both are whole numbers in range.
+fn unit_key(unit: &Value) -> Option<(i64, u32)> {
+    let index = u32::try_from(unit["unit_index"].as_u64()?).ok()?;
+    Some((positive_id(&unit["part_id"])?, index))
 }
 
 /// Open entries only: not claimed and not dismissed.

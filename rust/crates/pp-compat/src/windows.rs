@@ -695,6 +695,79 @@ pub(crate) fn test_shell(script: &str) -> Command {
     command
 }
 
+/// Fixtures for the supervision tests in `lib.rs`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{
+        Channel, Child, JOB_KILL_EXIT_CODE, ParentDeathGuard, adopt, configure_child, spawn,
+    };
+    use std::{
+        fs::{File, OpenOptions},
+        os::windows::process::ExitStatusExt,
+        path::Path,
+        process::ExitStatus,
+    };
+    use tokio::process::Command;
+
+    /// Exits 0 at once.
+    pub(crate) const EXITS: &str = "process.exit(0)";
+
+    /// Exits 0 after printing `terminated` when its stdin closes, the only stop
+    /// request on Windows, and prints `ready` once it listens for that.
+    pub(crate) const COOPERATIVE: &str = concat!(
+        "process.stdin.on('end', () => { console.log('terminated'); process.exit(0); }); ",
+        "process.stdin.resume(); console.log('ready');",
+    );
+
+    /// Ignores stdin closing.
+    pub(crate) const STUBBORN: &str = "setInterval(() => {}, 1e9)";
+
+    pub(crate) fn exited(code: u8) -> ExitStatus {
+        ExitStatus::from_raw(u32::from(code))
+    }
+
+    /// `STATUS_STACK_BUFFER_OVERRUN`, the code `abort()` ends a process with.
+    pub(crate) fn crashed() -> ExitStatus {
+        ExitStatus::from_raw(0xC000_0409)
+    }
+
+    /// Ended by the core's job termination.
+    pub(crate) fn killed() -> ExitStatus {
+        ExitStatus::from_raw(JOB_KILL_EXIT_CODE)
+    }
+
+    /// The core forces no stop other than the job termination.
+    pub(crate) fn terminated() -> ExitStatus {
+        killed()
+    }
+
+    /// Create `command` inside its own kill-on-close job, adopted so the
+    /// PID-based group helpers reach the job. The guard owns the job.
+    pub(crate) fn spawn_group(command: &mut Command) -> (Child, Option<ParentDeathGuard>) {
+        let lease = File::open("NUL").unwrap();
+        let (setup, mut guard) = configure_child(command, &lease).unwrap();
+        let child = spawn(command, &setup).unwrap();
+        adopt(setup, &mut guard, &child).unwrap();
+        (child, Some(guard))
+    }
+
+    /// The bound pipe needs no separate listener.
+    pub(crate) struct Listener;
+
+    pub(crate) fn channel(runtime_dir: &Path, generation: &str) -> (Channel, Listener) {
+        (Channel::bind(runtime_dir, generation).unwrap(), Listener)
+    }
+
+    /// Dial the channel's pipe and hold the connection unanswered.
+    pub(crate) async fn hold_connection(_listener: Listener, name: &Path) -> File {
+        let name = name.to_path_buf();
+        tokio::task::spawn_blocking(move || OpenOptions::new().read(true).write(true).open(name))
+            .await
+            .unwrap()
+            .unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

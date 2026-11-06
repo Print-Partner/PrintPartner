@@ -1168,42 +1168,34 @@ impl Drop for Supervisor {
     }
 }
 
-// GRE-1187 ports the Unix-mechanism tests; until then Windows builds only the
-// platform tests in `windows.rs` and `logs.rs`.
+// GRE-1194 ports these supervisor tests to Windows.
 #[cfg(all(test, unix))]
 mod ticket_t_2;
 
-/// The native Node executable the test fixtures run.
 #[cfg(test)]
-fn test_node_binary() -> std::path::PathBuf {
-    static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    NODE.get_or_init(|| {
-        let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
-        let output = std::process::Command::new(configured)
-            .args(["-p", "process.execPath"])
-            .output()
-            .expect("Node must report its native executable");
-        assert!(output.status.success());
-        std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
-    })
-    .clone()
-}
-
-#[cfg(all(test, windows))]
 mod tests {
-    pub(crate) use super::test_node_binary as node_binary;
-}
+    pub(crate) fn node_binary() -> std::path::PathBuf {
+        static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        NODE.get_or_init(|| {
+            let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
+            let output = std::process::Command::new(configured)
+                .args(["-p", "process.execPath"])
+                .output()
+                .expect("Node must report its native executable");
+            assert!(output.status.success());
+            std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+        })
+        .clone()
+    }
 
-#[cfg(all(test, unix))]
-mod tests {
-    pub(crate) use super::test_node_binary as node_binary;
-
+    #[cfg(unix)]
     fn pid_has_exited(pid: i32) -> bool {
         let result = unsafe { libc::kill(pid, 0) };
         (result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH))
             || matches!(linux_proc_state(pid as u32), Some('Z' | 'X'))
     }
 
+    #[cfg(unix)]
     fn group_snapshot(group: u32) -> String {
         let output = match std::process::Command::new("ps")
             .args(["-e", "-o", "pid,ppid,pgid,stat,comm"])
@@ -1229,12 +1221,14 @@ mod tests {
 
     /// `kill(pid, 0)` is true for a zombie. A preserved peer has to still be
     /// running: `try_wait` has not reaped it, and Linux does not report `Z`.
+    #[cfg(unix)]
     fn peer_is_running(peer: &mut std::process::Child) -> bool {
         let state = linux_proc_state(peer.id());
         let unreaped = peer.try_wait().unwrap().is_none();
         unreaped && state.is_none_or(|state| state != 'Z' && state != 'X')
     }
 
+    #[cfg(unix)]
     fn linux_proc_state(pid: u32) -> Option<char> {
         #[cfg(target_os = "linux")]
         {
@@ -1249,6 +1243,10 @@ mod tests {
         }
     }
 
+    /// Windows counterparts of the parent-death tests below:
+    /// `windows::tests::ticket_t_3_drain_job_object_kills_children_when_core_is_killed`
+    /// and `windows::tests::ticket_t_3_drain_job_object_kills_child_when_core_exits_at_spawn`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn parent_death_fixture() {
         let Some(pidfile) = std::env::var_os("PP_COMPAT_DEATH_PIDFILE") else {
@@ -1274,6 +1272,7 @@ mod tests {
         child.wait().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn separate_group_child_dies_with_force_killed_parent() {
         use std::os::unix::process::CommandExt;
@@ -1408,6 +1407,9 @@ mod tests {
         assert!(descendant_gone, "Node subprocess outlived its owner");
     }
 
+    /// Windows has no watcher process; its counterpart is
+    /// `windows::tests::ticket_t_3_drain_job_object_kills_child_when_core_exits_at_spawn`.
+    #[cfg(unix)]
     #[test]
     fn watcher_is_isolated_before_node_can_spawn() {
         let lease = std::fs::File::open("/dev/null").unwrap();
@@ -1425,8 +1427,8 @@ mod tests {
         }
     }
 
+    use super::platform::{test_shell, test_support};
     use std::{
-        os::unix::process::ExitStatusExt,
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -1449,7 +1451,7 @@ mod tests {
 
         assert!(
             super::classify_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(libc::SIGABRT)),
+                super::StopOutcome::Observed(test_support::crashed()),
                 &cancelled,
             )
             .is_err()
@@ -1463,7 +1465,7 @@ mod tests {
 
         assert_eq!(
             super::classify_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(0)),
+                super::StopOutcome::Observed(test_support::exited(0)),
                 &cancelled,
             )
             .unwrap(),
@@ -1477,7 +1479,7 @@ mod tests {
 
         assert_eq!(
             super::classify_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(libc::SIGABRT)),
+                super::StopOutcome::Observed(test_support::crashed()),
                 &active,
             )
             .unwrap(),
@@ -1491,7 +1493,7 @@ mod tests {
 
         assert_eq!(
             super::classify_stop_outcome(
-                super::StopOutcome::Forced(std::process::ExitStatus::from_raw(libc::SIGKILL)),
+                super::StopOutcome::Forced(test_support::killed()),
                 &active,
             )
             .unwrap(),
@@ -1499,57 +1501,97 @@ mod tests {
         );
     }
 
-    /// An endpoint on a fresh runtime directory, with a listener bound at its
-    /// socket so the stop under test has a file to remove.
+    /// An endpoint on a fresh runtime directory whose channel is bound, so the
+    /// stop under test has a channel to close.
     struct TestEndpoint {
         runtime_dir: std::path::PathBuf,
-        socket: std::path::PathBuf,
-        listener: tokio::net::UnixListener,
+        listener: test_support::Listener,
         connections: Arc<super::Connections>,
         endpoint: Arc<super::Endpoint>,
     }
 
-    fn test_endpoint(generation: &str) -> TestEndpoint {
-        let runtime_dir = std::env::temp_dir().join(format!(
-            "pp-compat-{generation}-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+    fn test_endpoint(label: &str) -> TestEndpoint {
+        let generation = format!("{label}-{:016x}", rand::random::<u64>());
+        let runtime_dir =
+            std::env::temp_dir().join(format!("pp-compat-{generation}-{}", std::process::id()));
         std::fs::create_dir(&runtime_dir).unwrap();
-        let socket = runtime_dir.join("compat.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let (channel, listener) = test_support::channel(&runtime_dir, &generation);
         let connections = Arc::new(super::Connections::new());
         let endpoint = Arc::new(super::Endpoint {
-            channel: Arc::new(super::platform::Channel::unbound(socket.clone())),
-            generation: generation.to_owned(),
+            channel: Arc::new(channel),
+            generation,
             key: [0; 32],
             connections: connections.clone(),
         });
         TestEndpoint {
             runtime_dir,
-            socket,
             listener,
             connections,
             endpoint,
         }
     }
 
+    /// A child and the guard that owns its group, as `Process` holds them.
+    type Spawned = (
+        super::platform::Child,
+        Option<super::platform::ParentDeathGuard>,
+    );
+
+    /// When `exit` is set, close the child's stdin and reap it, as a stop
+    /// that finds the leader already gone sees it.
+    async fn observe_exit(
+        child: &mut super::platform::Child,
+        exit: bool,
+    ) -> Option<(u32, std::process::ExitStatus)> {
+        if !exit {
+            return None;
+        }
+        let pid = child.id().unwrap();
+        drop(child.stdin.take());
+        Some((pid, child.wait().await.unwrap()))
+    }
+
+    /// Read the child's first line of output, waiting at most 5 s.
+    async fn first_line(
+        stdout: tokio::process::ChildStdout,
+    ) -> (tokio::io::BufReader<tokio::process::ChildStdout>, String) {
+        use tokio::io::AsyncBufReadExt;
+        let mut stdout = tokio::io::BufReader::new(stdout);
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), stdout.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        (stdout, line)
+    }
+
+    fn assert_forced_after_grace(outcome: &OwnedStop) {
+        assert_eq!(outcome.intent, super::StopIntent::PlannedShutdown);
+        assert_eq!(outcome.exit, super::CompatExit::Forced);
+        assert!(
+            outcome.elapsed >= Duration::from_secs(10) && outcome.elapsed < Duration::from_secs(13),
+            "{:?}",
+            outcome.elapsed
+        );
+        assert!(outcome.rejected);
+        assert!(outcome.group_absent);
+    }
+
     #[tokio::test]
     async fn process_stop_continues_cleanup_after_log_join_error() {
-        let mut command = tokio::process::Command::new("sh");
-        command.arg("-c").arg("exit 0").process_group(0);
-        let mut child = command.spawn().unwrap();
+        let (mut child, parent_death) =
+            test_support::spawn_group(&mut test_shell(test_support::EXITS));
         let pid = child.id().unwrap();
         let observed = child.wait().await.unwrap();
         assert!(observed.success());
 
         let TestEndpoint {
             runtime_dir,
-            socket,
-            listener,
+            listener: _listener,
             connections,
             endpoint,
         } = test_endpoint("stop-regression");
+        let channel = endpoint.channel.clone();
 
         let first_log = tokio::spawn(std::future::pending::<()>());
         first_log.abort();
@@ -1573,7 +1615,7 @@ mod tests {
             stdin: None,
             endpoint,
             logs: vec![first_log, later_log],
-            parent_death: None,
+            parent_death,
         };
         let active = tokio_util::sync::CancellationToken::new();
         let error = process
@@ -1583,9 +1625,8 @@ mod tests {
 
         let error_message = error.to_string();
         let later_cleanup_attempted = later_attempted.load(Ordering::SeqCst);
-        let socket_absent = !socket.exists();
-        let process_group_absent = unsafe { libc::kill(-(pid as i32), 0) } < 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        let channel_closed = channel.connect().await.is_err();
+        let process_group_absent = super::drain::process_group_absent(pid);
         let connections_closed = *connections.closed.lock().unwrap();
 
         later_release.cancel();
@@ -1596,15 +1637,11 @@ mod tests {
         })
         .await
         .unwrap();
-        drop(listener);
-        if socket.exists() {
-            std::fs::remove_file(&socket).unwrap();
-        }
-        std::fs::remove_dir(&runtime_dir).unwrap();
+        std::fs::remove_dir_all(&runtime_dir).unwrap();
 
         assert!(error_message.contains("Log reader join failed"));
         assert!(later_cleanup_attempted);
-        assert!(socket_absent);
+        assert!(channel_closed);
         assert!(process_group_absent);
         assert!(connections_closed);
     }
@@ -1613,56 +1650,56 @@ mod tests {
     fn planned_shutdown_accepts_term_or_forced_group_exit() {
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(0)),
+                super::StopOutcome::Observed(test_support::exited(0)),
                 super::StopIntent::PlannedShutdown,
             )
             .is_ok()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(libc::SIGKILL)),
+                super::StopOutcome::Observed(test_support::killed()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_ok()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(libc::SIGTERM)),
+                super::StopOutcome::Observed(test_support::terminated()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_ok()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(libc::SIGABRT)),
+                super::StopOutcome::Observed(test_support::crashed()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_err()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(7 << 8)),
+                super::StopOutcome::Observed(test_support::exited(7)),
                 super::StopIntent::PlannedShutdown,
             )
             .is_err()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Forced(std::process::ExitStatus::from_raw(libc::SIGKILL)),
+                super::StopOutcome::Forced(test_support::killed()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_ok()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Forced(std::process::ExitStatus::from_raw(libc::SIGTERM)),
+                super::StopOutcome::Forced(test_support::terminated()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_ok()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Forced(std::process::ExitStatus::from_raw(libc::SIGABRT)),
+                super::StopOutcome::Forced(test_support::crashed()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_err()
@@ -1673,14 +1710,14 @@ mod tests {
     fn ticket_t_3_drain_planned_shutdown_accepts_sigterm_at_the_grace_boundary() {
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Forced(std::process::ExitStatus::from_raw(libc::SIGTERM)),
+                super::StopOutcome::Forced(test_support::terminated()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_ok()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Forced(std::process::ExitStatus::from_raw(libc::SIGABRT)),
+                super::StopOutcome::Forced(test_support::crashed()),
                 super::StopIntent::PlannedShutdown,
             )
             .is_err()
@@ -1689,8 +1726,11 @@ mod tests {
 
     #[test]
     fn ticket_t_3_drain_forced_stop_outcome_reports_forced_exit() {
-        for status in [libc::SIGKILL, libc::SIGTERM, 0] {
-            let status = std::process::ExitStatus::from_raw(status);
+        for status in [
+            test_support::killed(),
+            test_support::terminated(),
+            test_support::exited(0),
+        ] {
             assert_eq!(
                 super::StopOutcome::Forced(status).exit(),
                 super::CompatExit::Forced
@@ -1706,14 +1746,14 @@ mod tests {
     fn unplanned_observed_exit_preserves_recovery_path() {
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Observed(std::process::ExitStatus::from_raw(libc::SIGABRT)),
+                super::StopOutcome::Observed(test_support::crashed()),
                 super::StopIntent::Restart,
             )
             .is_ok()
         );
         assert!(
             super::validate_stop_outcome(
-                super::StopOutcome::Forced(std::process::ExitStatus::from_raw(libc::SIGKILL)),
+                super::StopOutcome::Forced(test_support::killed()),
                 super::StopIntent::Restart,
             )
             .is_ok()
@@ -1736,12 +1776,12 @@ mod tests {
         group_absent: bool,
     }
 
-    async fn stop_owned_child(child: tokio::process::Child, eof_watchdog: bool) -> OwnedStop {
+    async fn stop_owned_child(child: Spawned, eof_watchdog: bool) -> OwnedStop {
         stop_owned_child_at(child, eof_watchdog, None).await
     }
 
     async fn stop_owned_child_at(
-        child: tokio::process::Child,
+        child: Spawned,
         eof_watchdog: bool,
         cancel_after: Option<Duration>,
     ) -> OwnedStop {
@@ -1759,7 +1799,7 @@ mod tests {
     }
 
     async fn stop_owned_child_with(
-        mut child: tokio::process::Child,
+        (mut child, parent_death): Spawned,
         eof_watchdog: bool,
         observed: Option<(u32, std::process::ExitStatus)>,
         cancelled: tokio_util::sync::CancellationToken,
@@ -1768,7 +1808,7 @@ mod tests {
         let stdin = child.stdin.take();
         let TestEndpoint {
             runtime_dir,
-            listener,
+            listener: _listener,
             connections,
             endpoint,
             ..
@@ -1779,7 +1819,7 @@ mod tests {
             stdin,
             endpoint,
             logs: Vec::new(),
-            parent_death: None,
+            parent_death,
         };
         let started = std::time::Instant::now();
         let (intent, exit) = process
@@ -1787,9 +1827,7 @@ mod tests {
             .await
             .unwrap();
         let rejected = connections.admit().is_err();
-        let group_absent = unsafe { libc::kill(-(pid as i32), 0) } < 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        drop(listener);
+        let group_absent = super::drain::process_group_absent(pid);
         let _ = std::fs::remove_dir_all(&runtime_dir);
         OwnedStop {
             intent,
@@ -1841,6 +1879,9 @@ mod tests {
         Ok(())
     }
 
+    /// Checks the re-exec harness of the Linux-only subreaper fixture. Windows
+    /// needs no re-exec because its job sees every descendant; see
+    /// `ticket_t_3_drain_leader_exit_with_live_job_member_reports_forced`.
     #[cfg(target_os = "linux")]
     #[test]
     fn subreaper_reexec_runs_exactly_one_fixture() {
@@ -1879,6 +1920,7 @@ mod tests {
         );
     }
 
+    /// Windows counterpart: `ticket_t_3_drain_leader_exit_with_live_job_member_reports_forced`.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn ticket_t_3_drain_leader_exit_with_forced_descendant_reports_forced() {
@@ -1941,13 +1983,7 @@ if sys.argv[1] == "wait":
                 .unwrap()
                 .unwrap();
             let descendant: i32 = line.trim().parse().unwrap();
-            let observed = if already_exited {
-                let pid = child.id().unwrap();
-                drop(child.stdin.take());
-                Some((pid, child.wait().await.unwrap()))
-            } else {
-                None
-            };
+            let observed = observe_exit(&mut child, already_exited).await;
             let cancelled = tokio_util::sync::CancellationToken::new();
             if planned {
                 cancelled.cancel();
@@ -1981,7 +2017,7 @@ if sys.argv[1] == "wait":
                 .await
                 .unwrap()
             });
-            let stopped = stop_owned_child_with(child, false, observed, cancelled).await;
+            let stopped = stop_owned_child_with((child, None), false, observed, cancelled).await;
             eof_task.await.unwrap();
             let status = reaper.await.unwrap();
             assert!(libc::WIFSIGNALED(status));
@@ -1997,31 +2033,11 @@ if sys.argv[1] == "wait":
         }
     }
 
-    /// Spawns a shell that exits 0 on SIGTERM and returns once the trap is set.
-    /// The group SIGTERM can land in a forked child before it execs `sleep`; the
-    /// child's inherited trap swallows it and a `sleep 30` then outlives the
-    /// grace period (GRE-719). Short sleeps bound that to 0.1 s, and the shell
-    /// still runs its own trap once the current sleep ends.
-    async fn spawn_cooperative_child() -> (
-        tokio::process::Child,
-        tokio::io::BufReader<tokio::process::ChildStdout>,
-    ) {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        let mut command = tokio::process::Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg("trap 'echo terminated; exit 0' TERM; echo ready; while :; do sleep 0.1; done")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-        let mut child = command.spawn().unwrap();
-        let mut line = String::new();
-        let mut stdout = BufReader::new(child.stdout.take().unwrap());
-        tokio::time::timeout(Duration::from_secs(5), stdout.read_line(&mut line))
-            .await
-            .unwrap()
-            .unwrap();
+    /// Spawns [`test_support::COOPERATIVE`] and returns once it is ready to stop.
+    async fn spawn_cooperative_child()
+    -> (Spawned, tokio::io::BufReader<tokio::process::ChildStdout>) {
+        let mut child = test_support::spawn_group(&mut test_shell(test_support::COOPERATIVE));
+        let (stdout, line) = first_line(child.0.stdout.take().unwrap()).await;
         assert_eq!(line, "ready\n");
         (child, stdout)
     }
@@ -2041,6 +2057,8 @@ if sys.argv[1] == "wait":
         assert!(outcome.group_absent);
     }
 
+    /// Windows counterpart: `ticket_t_3_drain_restart_cleanup_becomes_planned_stop_when_shutdown_starts`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn ticket_t_3_drain_restart_cleanup_switches_to_sigterm_when_shutdown_starts() {
         use tokio::io::AsyncBufReadExt;
@@ -2064,32 +2082,23 @@ if sys.argv[1] == "wait":
         assert!(outcome.group_absent);
     }
 
+    /// Restart cleanup has already closed stdin, the only stop request on
+    /// Windows, so a child that ignores it is terminated with its job once the
+    /// grace runs out, and the stop still counts as a planned shutdown.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_restart_cleanup_becomes_planned_stop_when_shutdown_starts() {
+        let child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
+        let outcome = stop_owned_child_at(child, false, Some(Duration::from_millis(100))).await;
+        assert_forced_after_grace(&outcome);
+    }
+
     #[tokio::test]
     async fn ticket_t_3_drain_process_stop_force_kills_after_sigterm_grace() {
-        let mut command = tokio::process::Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg("trap '' TERM; while true; do sleep 30; done")
-            .stdin(std::process::Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-        let child = command.spawn().unwrap();
+        let child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
         tokio::time::sleep(Duration::from_millis(50)).await;
         let outcome = stop_owned_child(child, false).await;
-        assert_eq!(outcome.intent, super::StopIntent::PlannedShutdown);
-        assert_eq!(outcome.exit, super::CompatExit::Forced);
-        assert!(
-            outcome.elapsed >= Duration::from_secs(10),
-            "{:?}",
-            outcome.elapsed
-        );
-        assert!(
-            outcome.elapsed < Duration::from_secs(13),
-            "{:?}",
-            outcome.elapsed
-        );
-        assert!(outcome.rejected);
-        assert!(outcome.group_absent);
+        assert_forced_after_grace(&outcome);
     }
 
     #[test]
@@ -2107,28 +2116,24 @@ if sys.argv[1] == "wait":
 
     #[tokio::test]
     async fn ticket_t_3_drain_ready_probe_returns_when_shutdown_cancels() {
-        let dir = std::env::temp_dir().join(format!("pp-t3-ready-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir(&dir).unwrap();
-        let socket = dir.join("compat.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let TestEndpoint {
+            runtime_dir,
+            listener,
+            endpoint,
+            ..
+        } = test_endpoint("t3-ready");
+        let name = endpoint.channel.name().to_path_buf();
         let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
         let held = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            let stream = test_support::hold_connection(listener, &name).await;
             let _ = accepted_tx.send(());
             tokio::time::sleep(Duration::from_secs(30)).await;
             drop(stream);
         });
-        let endpoint = super::Endpoint {
-            channel: Arc::new(super::platform::Channel::unbound(socket)),
-            generation: "t3-drain".to_owned(),
-            key: [0; 32],
-            connections: Arc::new(super::Connections::new()),
-        };
         let bundle = super::Bundle {
             node: std::path::PathBuf::from("node"),
             entry: std::path::PathBuf::from("entry"),
-            web_root: dir.clone(),
+            web_root: runtime_dir.clone(),
             runtime_version: "0".to_owned(),
             commit: "0".to_owned(),
         };
@@ -2147,11 +2152,14 @@ if sys.argv[1] == "wait":
             "health probe kept running after cancel: {elapsed:?}"
         );
         held.abort();
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&runtime_dir);
     }
 
+    /// Windows counterpart: `ticket_t_3_drain_reaps_job_when_leader_is_already_gone`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn ticket_t_3_drain_reaps_group_when_leader_wait_fails() {
+        use std::os::unix::process::ExitStatusExt;
         use tokio::io::{AsyncBufReadExt, BufReader};
 
         let cases = if cfg!(target_os = "macos") { 50 } else { 1 };
@@ -2257,6 +2265,98 @@ if sys.argv[1] == "wait":
         eprintln!("completed {cases} failed-leader-wait process-group cases");
     }
 
+    /// Starts a job member that exits once the file named by its argument
+    /// exists, prints the member's PID, and exits when its stdin closes.
+    #[cfg(windows)]
+    const SPAWN_MEMBER: &str = concat!(
+        "const {spawn}=require('node:child_process'); ",
+        "const member=spawn(process.execPath, ['-e', ",
+        "\"const fs=require('node:fs'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0); }, 20)\", ",
+        "process.argv[1]], {stdio: 'ignore', detached: true}); member.unref(); ",
+        "console.log(member.pid); process.stdin.on('end', () => process.exit(0)); process.stdin.resume();",
+    );
+
+    #[cfg(windows)]
+    async fn spawn_with_member(release: &std::path::Path) -> (Spawned, u32) {
+        let mut command = test_shell(SPAWN_MEMBER);
+        command.arg(release);
+        let mut spawned = test_support::spawn_group(&mut command);
+        let (_, line) = first_line(spawned.0.stdout.take().unwrap()).await;
+        (spawned, line.trim().parse().unwrap())
+    }
+
+    #[cfg(windows)]
+    fn member_release(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "pp-compat-{label}-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ))
+    }
+
+    /// A job member that outlives its leader keeps the job alive, so the stop
+    /// terminates the job and reports a forced exit.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_leader_exit_with_live_job_member_reports_forced() {
+        for (planned, already_exited) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
+            let ((mut child, guard), member) = spawn_with_member(&member_release("leader")).await;
+            let observed = observe_exit(&mut child, already_exited).await;
+            let cancelled = tokio_util::sync::CancellationToken::new();
+            if planned {
+                cancelled.cancel();
+            }
+            let stopped = stop_owned_child_with((child, guard), true, observed, cancelled).await;
+            assert!(
+                !super::drain::process_alive(member),
+                "job member outlived the stop"
+            );
+            assert!(stopped.group_absent);
+            assert!(stopped.rejected);
+            assert_eq!(
+                stopped.intent,
+                if planned {
+                    super::StopIntent::PlannedShutdown
+                } else {
+                    super::StopIntent::Restart
+                }
+            );
+            assert_eq!(
+                stopped.exit,
+                super::CompatExit::Forced,
+                "planned={planned}, already_exited={already_exited}"
+            );
+        }
+    }
+
+    /// A leader that is already gone when the drain starts does not keep the
+    /// drain from terminating the rest of its job.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_reaps_job_when_leader_is_already_gone() {
+        let ((mut child, _guard), member) = spawn_with_member(&member_release("gone")).await;
+        let pid = child.id().unwrap();
+        child.start_kill().unwrap();
+        let status = child.wait().await.unwrap();
+        let started = std::time::Instant::now();
+        let report = super::drain::drive_shutdown_group(
+            &mut child,
+            pid,
+            false,
+            Duration::from_secs(2),
+            Some(status),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(report.exit, super::drain::GroupExit::Forced(_)));
+        assert!(report.group_absent);
+        assert!(!super::drain::process_alive(member));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Windows counterpart: `ticket_t_3_drain_job_remains_until_every_member_exits`.
     #[cfg(target_os = "macos")]
     #[test]
     fn ticket_t_3_drain_zombie_group_remains_until_owned_child_is_reaped() {
@@ -2319,6 +2419,30 @@ if sys.argv[1] == "wait":
         assert_eq!(probe, -1);
         assert_eq!(errno, Some(libc::ESRCH));
         assert!(super::drain::process_group_absent(pid));
+    }
+
+    /// The job counts as present until every member has exited, not only the
+    /// leader.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_job_remains_until_every_member_exits() {
+        let release = member_release("remains");
+        let ((mut child, _guard), member) = spawn_with_member(&release).await;
+        let pid = child.id().unwrap();
+        drop(child.stdin.take());
+        assert!(child.wait().await.unwrap().success());
+        assert!(super::drain::process_alive(member));
+        assert!(!super::drain::process_group_absent(pid));
+        std::fs::write(&release, b"").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !super::drain::process_group_absent(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!super::drain::process_alive(member));
+        std::fs::remove_file(&release).unwrap();
     }
 
     #[test]

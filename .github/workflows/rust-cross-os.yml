@@ -503,7 +503,7 @@ jobs:
       CARGO_SCOPE: >-
         --workspace
         --exclude pp-source
-        --exclude pp-compat --exclude pp-core
+        --exclude pp-core
         --exclude pp-api --exclude pp-gateway --exclude pp-server
         --exclude pp-desktop
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}

@@ -785,6 +785,30 @@ describe("UI5-01 P, F, digits, Space and Shift pick units and preview them befor
 });
 
 describe("UI5-02 one burst is one request and one undo entry", () => {
+  it("keeps units picked while a burst is in flight after it succeeds", async () => {
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    let answer: (() => void) | null = null;
+    core.fetchMock.mockImplementation((path: string, init?: RequestInit) =>
+      path === "/api/v2/printer-checkoff/verify-batch"
+        ? new Promise<Response>((resolve) => {
+            answer = () => resolve(real(path, init));
+          })
+        : real(path, init),
+    );
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    await waitFor(() => expect(answer).not.toBeNull());
+    await act(async () => answer!());
+    expect(await screen.findByText("Confirmed 1 unit from Voron 2.4.")).toBeTruthy();
+    expect(
+      within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }),
+    ).toHaveProperty("checked", true);
+  });
+
   it("keeps the picks when the core refuses the burst", async () => {
     const core = fakeCore({ results: SHARED() });
     const real = core.fetchMock.getMockImplementation()!;

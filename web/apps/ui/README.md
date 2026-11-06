@@ -170,8 +170,9 @@ so a print that ends or a link that drops shows up without a reload.
   result is unknown to the UI; the core's 400 detail shows instead.
 - **Burst limit.** One verify-batch carries at most 50 beds. A bigger pick shows
   that limit in place of Confirm. A send refused by the client contract is never
-  resent. Picks stay picked until the core confirms the burst, so a click while
-  another confirm is in flight, or a refusal, leaves them to fix and send again.
+  resent. Sent picks stay picked until the core confirms the burst, so a click
+  while another confirm is in flight, or a refusal, leaves them to fix and send
+  again; units picked while a burst is in flight stay picked after it succeeds.
 - **Retry.** A send that fails without an answer from the core (a network error
   or a lost answer) is resent up to twice with the same key, and the alert's
   Retry resends it again with the same key. The core answers a repeated key

@@ -168,9 +168,13 @@ export function ClearBeds({
     setAnchor(slot.key);
   };
 
-  // The picks stay until the core confirms the burst, so a send that did not start or a
-  // refusal leaves them to fix and send again.
-  const confirmPicked = () => confirm(picks, () => setPicked(new Set()));
+  // The sent picks stay until the core confirms the burst, so a send that did not start
+  // or a refusal leaves them to fix and send again. Units picked while it was in flight
+  // stay picked after it succeeds.
+  const confirmPicked = () => {
+    const sent = new Set(picks.flatMap((p) => p.units.map((u) => slotKey(p.bed, u))));
+    confirm(picks, () => setPicked((now) => new Set([...now].filter((key) => !sent.has(key)))));
+  };
   const tooMany = picks.length > MAX_BURST_BEDS;
 
   return (

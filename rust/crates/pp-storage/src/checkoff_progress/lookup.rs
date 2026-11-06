@@ -26,8 +26,9 @@ pub(super) fn key(raw: &str) -> std::result::Result<String, Response> {
 
 /// `applied` or `undone` with the stored receipt, `expired` when the receipt
 /// was trimmed (the burst ran and its key cannot run again), or 404
-/// `burst_not_found` when no burst used the key, so nothing was applied and
-/// resending the same request with the same key is safe.
+/// `burst_not_found` when no burst in the kept history used the key. The
+/// history is the newest 100 receipts plus 5,000 retired keys, the same window
+/// replay checks, so within it a resend with the same key cannot apply twice.
 pub(super) fn burst_status(tx: &Transaction<'_>, tenant: &str, key: &str) -> Outcome {
     let status = |state: &str, receipt: Option<&Value>| {
         let receipt = receipt.unwrap_or(&Value::Null);
@@ -53,7 +54,7 @@ pub(super) fn burst_status(tx: &Transaction<'_>, tenant: &str, key: &str) -> Out
     }
     Ok(Ok(Response::failure(
         404,
-        "No Checkoff burst used this idempotency_key, so nothing was applied. Resend the same request with the same key.",
+        "No Checkoff burst in the kept history (the newest 5,100 bursts) used this idempotency_key. Resend the same request with the same key; within that history it cannot apply twice.",
         Some("burst_not_found"),
     )))
 }

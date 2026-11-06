@@ -2755,7 +2755,7 @@ state; as on every route, an API key's `last_used_at` may be recorded.
 | `applied` | `{idempotency_key, state, applied_at, undone_at: null, receipt}` | The burst committed; `receipt` is the stored response |
 | `undone` | the same with `undone_at` | The burst committed and was undone |
 | `expired` | `applied_at`, `undone_at` and `receipt` are null | The burst committed, its receipt was trimmed, and the key cannot run again |
-| 404 `burst_not_found` | problem body | No burst used the key, so nothing was applied. Resending the same request with the same key is safe |
+| 404 `burst_not_found` | problem body | No burst in the kept history used the key: the newest 100 receipts and 5,000 retired keys, the same window replay checks. Resending the same request with the same key is safe within that window. A key older than 5,100 later bursts is forgotten by both the lookup and replay |
 
 #### MCP `propose_verify_printer_checkoff` (GRE-1170)
 

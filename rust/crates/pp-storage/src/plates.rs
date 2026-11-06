@@ -721,7 +721,13 @@ fn edit_plates(
     let expected = tokens(&snapshot)?;
     let plates = layout(tx, tenant, &current, &expected)?;
     let unchanged = Ok(Ok((current.id, current.number)));
-    let next = match decide(tx, tenant, cmd, &current, &plates, &expected, edit, printer)? {
+    let decision = match edit {
+        Edit::Restore { revision: restore } => {
+            restore_layout(tx, tenant, cmd, &current, &expected, restore)?
+        }
+        edit => decide(&plates, edit, printer)?,
+    };
+    let next = match decision {
         Decision::Changed(next) => next,
         Decision::Unchanged => return unchanged,
         Decision::Refused(refusal) => return Ok(Err(refusal)),
@@ -874,17 +880,7 @@ fn change_unit(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decide(
-    tx: &Transaction<'_>,
-    tenant: &str,
-    cmd: &Expected,
-    current: &Revision,
-    plates: &[ValidatedPlate],
-    expected: &HashSet<RequiredUnitToken>,
-    edit: Edit,
-    printer: Option<Printer>,
-) -> Result<Decision> {
+fn decide(plates: &[ValidatedPlate], edit: Edit, printer: Option<Printer>) -> Result<Decision> {
     Ok(match edit {
         Edit::Move { plate, token, x, y } => change_unit(plates, &plate, &token, |unit| {
             let changed = unit.x_um != x || unit.y_um != y;
@@ -913,20 +909,32 @@ fn decide(
             token,
             target,
         } => transfer(plates, &plate, &token, target, printer)?,
-        Edit::Restore { revision: restore } => {
-            if current.undo_from != Some(restore) {
-                return Ok(Decision::Refused(Refusal::UnitNotFound));
-            }
-            let Some(prior) = revision(tx, tenant, cmd.profile, restore)? else {
-                return Ok(Decision::Refused(Refusal::UnitNotFound));
-            };
-            if !cmd.basis.stamps(&prior) {
-                return Ok(Decision::Refused(Refusal::Stale));
-            }
-            let plates = layout(tx, tenant, &prior, expected)?;
-            Decision::Changed(plates.into_iter().map(|plate| plate.input).collect())
-        }
+        Edit::Restore { .. } => unreachable!("restore is decided by restore_layout"),
     })
+}
+
+/// Node's undo of an arrange: the head returns to the layout it replaced.
+fn restore_layout(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    cmd: &Expected,
+    current: &Revision,
+    expected: &HashSet<RequiredUnitToken>,
+    restore: i64,
+) -> Result<Decision> {
+    if current.undo_from != Some(restore) {
+        return Ok(Decision::Refused(Refusal::UnitNotFound));
+    }
+    let Some(prior) = revision(tx, tenant, cmd.profile, restore)? else {
+        return Ok(Decision::Refused(Refusal::UnitNotFound));
+    };
+    if !cmd.basis.stamps(&prior) {
+        return Ok(Decision::Refused(Refusal::Stale));
+    }
+    let plates = layout(tx, tenant, &prior, expected)?;
+    Ok(Decision::Changed(
+        plates.into_iter().map(|plate| plate.input).collect(),
+    ))
 }
 
 /// Node's `transferAcceptedPlateUnitInternal`: the unit leaves its Plate,

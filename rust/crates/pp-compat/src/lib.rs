@@ -335,11 +335,7 @@ impl CompatHandle {
 }
 
 pub struct Supervisor {
-    #[cfg(test)]
-    #[cfg_attr(
-        windows,
-        allow(dead_code, reason = "read by the Unix tests until GRE-1187")
-    )]
+    #[cfg(all(test, unix))]
     health_probes_completed: watch::Receiver<usize>,
     pub handle: CompatHandle,
     stop: CancellationToken,
@@ -950,7 +946,7 @@ impl Supervisor {
         let logs = logs::Logs::open(source.data_dir().join("logs"))?;
         let (endpoints, endpoint) = watch::channel(None);
         let (states, status) = watch::channel(Status::Starting);
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let (probe_completions, health_probes_completed) = watch::channel(0);
         let (recover, mut recovery) = mpsc::channel(1);
         let stop = CancellationToken::new();
@@ -1004,7 +1000,7 @@ impl Supervisor {
                             match probe {
                                 None => break,
                                 Some(probe_ready) => {
-                                    #[cfg(test)]
+                                    #[cfg(all(test, unix))]
                                     probe_completions.send_modify(|count| *count += 1);
                                     ready = startup_probe_publishes(
                                         restarts_blocked(&cancelled, &disarmed),
@@ -1044,7 +1040,7 @@ impl Supervisor {
                                 },
                                 _ = tokio::time::sleep(Duration::from_secs(10)) => {
                                     if process.endpoint.ready(source.bundle(), &cancelled).await { failures = 0; } else { failures += 1; }
-                                    #[cfg(test)]
+                                    #[cfg(all(test, unix))]
                                     probe_completions.send_modify(|count| *count += 1);
                                     if failures >= 3 { break; }
                                 }
@@ -1140,7 +1136,7 @@ impl Supervisor {
             Ok(exit)
         });
         Ok(Self {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             health_probes_completed,
             handle: CompatHandle {
                 endpoint,

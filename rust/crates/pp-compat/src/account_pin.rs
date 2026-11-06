@@ -47,6 +47,7 @@ impl DesktopAccountPin {
     }
 }
 
+// GRE-1187 ports these tests to Windows.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

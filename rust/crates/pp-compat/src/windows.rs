@@ -239,7 +239,7 @@ impl Child {
 
     pub(crate) fn start_kill(&mut self) -> std::io::Result<()> {
         if self.try_wait()?.is_none() {
-            check(unsafe { TerminateProcess(self.raw(), 1) })?;
+            check(unsafe { TerminateProcess(self.raw(), JOB_KILL_EXIT_CODE) })?;
         }
         Ok(())
     }
@@ -253,7 +253,7 @@ impl Child {
 impl Drop for Child {
     fn drop(&mut self) {
         if self.status.is_none() {
-            unsafe { TerminateProcess(self.raw(), 1) };
+            unsafe { TerminateProcess(self.raw(), JOB_KILL_EXIT_CODE) };
         }
     }
 }
@@ -659,7 +659,8 @@ impl Channel {
     /// Take the connection the child dialed into the listening instance and
     /// create the next instance. The child keeps a dial queued, so a wait past
     /// [`CONNECT_TIMEOUT`] means it stopped dialing and fails the request
-    /// instead of holding it forever.
+    /// instead of holding it forever. If the next instance cannot be created,
+    /// the connected one is still returned and later connects fail.
     pub(crate) async fn connect(&self) -> std::io::Result<Stream> {
         let mut listener = self.listener.lock().await;
         let (Some(server), Some(descriptor)) = (listener.as_ref(), self.descriptor.as_ref()) else {
@@ -668,10 +669,11 @@ impl Channel {
         tokio::time::timeout(CONNECT_TIMEOUT, server.connect())
             .await
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
-        let next = create_instance(&self.name, false, descriptor)?;
-        listener
-            .replace(next)
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        let connected = match create_instance(&self.name, false, descriptor) {
+            Ok(next) => listener.replace(next),
+            Err(_) => listener.take(),
+        };
+        connected.ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
     }
 
     pub(crate) async fn close(&self) -> std::io::Result<()> {
@@ -925,6 +927,43 @@ mod tests {
         }
         drop((leader, grandchild));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A child that ignores its stdin closing past the grace period is
+    /// terminated through its job, and the stop still counts as planned:
+    /// the job termination and the leader's own termination both exit with
+    /// `JOB_KILL_EXIT_CODE`, so whichever lands first, the code is the core's.
+    #[tokio::test]
+    async fn ticket_t_3_drain_forced_stop_after_grace_is_planned_shutdown() {
+        let mut command = test_shell("setInterval(() => {}, 1e9)");
+        let lease = File::open("NUL").unwrap();
+        let (setup, mut guard) = configure_child(&mut command, &lease).unwrap();
+        let mut child = spawn(&mut command, &setup).unwrap();
+        adopt(setup, &mut guard, &child).unwrap();
+        let pid = child.id().unwrap();
+        drop(child.stdin.take());
+        let report = crate::drain::drive_shutdown_group(
+            &mut child,
+            pid,
+            true,
+            Duration::from_millis(500),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(report.grace_exhausted);
+        assert!(report.group_absent);
+        let crate::drain::GroupExit::Forced(status) = report.exit else {
+            panic!("a child that ignores stdin must be forced");
+        };
+        assert_eq!(status.code(), Some(JOB_KILL_EXIT_CODE as i32));
+        assert!(
+            crate::validate_stop_outcome(
+                crate::StopOutcome::Forced(status),
+                crate::StopIntent::PlannedShutdown,
+            )
+            .is_ok()
+        );
     }
 
     #[tokio::test]

@@ -21,10 +21,10 @@ use windows_sys::{
             FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
             FILE_INFORMATION_CLASS, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF,
             FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
-            FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH, FileDispositionInformation,
-            FileDispositionInformationEx, FileRenameInformation, FileRenameInformationEx,
-            NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile,
-            NtSetInformationFile,
+            FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH,
+            FileDispositionInformation, FileDispositionInformationEx, FileRenameInformation,
+            FileRenameInformationEx, NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS,
+            NtCreateFile, NtSetInformationFile,
         },
     },
     Win32::{
@@ -34,15 +34,16 @@ use windows_sys::{
             STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
         },
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY,
-            FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_READ,
-            FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-            FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileFullDirectoryInfo,
-            GetFileInformationByHandle, GetFileInformationByHandleEx,
+            BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ACCESS_RIGHTS, FILE_APPEND_DATA,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO,
+            FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FileFullDirectoryInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
             GetVolumeInformationByHandleW, LOCK_FILE_FLAGS, LOCKFILE_EXCLUSIVE_LOCK,
             LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVE_FILE_FLAGS, MOVEFILE_REPLACE_EXISTING,
-            MOVEFILE_WRITE_THROUGH, MoveFileExW, SYNCHRONIZE, UnlockFileEx,
+            MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE, UnlockFileEx,
+            WRITE_DAC,
         },
         System::IO::{IO_STATUS_BLOCK, OVERLAPPED},
     },
@@ -254,6 +255,10 @@ pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
 /// object while this one is open, as on Unix.
 const SHARE_ALL: FILE_SHARE_MODE = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
+/// Appending, attribute reads, and reading and changing the DACL.
+const APPEND_ACCESS: FILE_ACCESS_RIGHTS =
+    FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC;
+
 pub(crate) fn nt_result(status: NTSTATUS) -> io::Result<()> {
     if status >= 0 {
         return Ok(());
@@ -342,11 +347,16 @@ pub(crate) fn delete_classic(file: &File) -> io::Result<NTSTATUS> {
     )
 }
 
-/// A `FILE_RENAME_INFORMATION` naming `to` relative to `root`, without
-/// replace, and its length in bytes. The zeroed union is the classic
-/// `ReplaceIfExists = false`; `posix` sets `FILE_RENAME_POSIX_SEMANTICS` for
-/// the extended class.
-fn rename_information(root: HANDLE, to: &str, posix: bool) -> io::Result<(Vec<u64>, usize)> {
+/// A `FILE_RENAME_INFORMATION` naming `to` relative to `root`, and its length
+/// in bytes. `posix` sets `FILE_RENAME_POSIX_SEMANTICS` for the extended
+/// class; `replace` sets `FILE_RENAME_REPLACE_IF_EXISTS` there, or the classic
+/// `ReplaceIfExists`, which the zeroed union otherwise leaves false.
+fn rename_information(
+    root: HANDLE,
+    to: &str,
+    posix: bool,
+    replace: bool,
+) -> io::Result<(Vec<u64>, usize)> {
     let name: Vec<u16> = OsStr::new(to).encode_wide().collect();
     let name_bytes = name.len() * 2;
     let name_length = u32::try_from(name_bytes)
@@ -360,7 +370,14 @@ fn rename_information(root: HANDLE, to: &str, posix: bool) -> io::Result<(Vec<u6
     // the fixed fields followed by room for every unit of `name`.
     unsafe {
         if posix {
-            (*information).Anonymous.Flags = FILE_RENAME_POSIX_SEMANTICS;
+            (*information).Anonymous.Flags = FILE_RENAME_POSIX_SEMANTICS
+                | if replace {
+                    FILE_RENAME_REPLACE_IF_EXISTS
+                } else {
+                    0
+                };
+        } else {
+            (*information).Anonymous.ReplaceIfExists = replace;
         }
         (*information).RootDirectory = root;
         (*information).FileNameLength = name_length;
@@ -373,8 +390,8 @@ fn rename_information(root: HANDLE, to: &str, posix: bool) -> io::Result<(Vec<u6
     Ok((buffer, length))
 }
 
-fn rename_posix(source: &File, root: HANDLE, to: &str) -> io::Result<NTSTATUS> {
-    let (buffer, length) = rename_information(root, to, true)?;
+fn rename_posix(source: &File, root: HANDLE, to: &str, replace: bool) -> io::Result<NTSTATUS> {
+    let (buffer, length) = rename_information(root, to, true, replace)?;
     set_information(
         source,
         buffer.as_ptr().cast(),
@@ -383,8 +400,13 @@ fn rename_posix(source: &File, root: HANDLE, to: &str) -> io::Result<NTSTATUS> {
     )
 }
 
-pub(crate) fn rename_classic(source: &File, root: HANDLE, to: &str) -> io::Result<NTSTATUS> {
-    let (buffer, length) = rename_information(root, to, false)?;
+pub(crate) fn rename_classic(
+    source: &File,
+    root: HANDLE,
+    to: &str,
+    replace: bool,
+) -> io::Result<NTSTATUS> {
+    let (buffer, length) = rename_information(root, to, false, replace)?;
     set_information(
         source,
         buffer.as_ptr().cast(),
@@ -414,6 +436,10 @@ impl Dir {
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path)?;
         Ok(Self::from_file(directory))
+    }
+
+    pub(crate) fn from_open(directory: File) -> Self {
+        Self::from_file(directory)
     }
 
     fn from_file(directory: File) -> Self {
@@ -453,6 +479,25 @@ impl Dir {
         options: NTCREATEFILE_CREATE_OPTIONS,
         share: FILE_SHARE_MODE,
     ) -> io::Result<File> {
+        self.open_entry_exact(
+            name,
+            access | SYNCHRONIZE,
+            disposition,
+            options | FILE_SYNCHRONOUS_IO_NONALERT,
+            share,
+        )
+    }
+
+    /// The open with exactly `access` and `options`; the handle is
+    /// synchronous only when the caller asks for it.
+    fn open_entry_exact(
+        &self,
+        name: &str,
+        access: FILE_ACCESS_RIGHTS,
+        disposition: NTCREATEFILE_CREATE_DISPOSITION,
+        options: NTCREATEFILE_CREATE_OPTIONS,
+        share: FILE_SHARE_MODE,
+    ) -> io::Result<File> {
         let mut wide: Vec<u16> = OsStr::new(name).encode_wide().collect();
         let bytes = u16::try_from(wide.len() * 2)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "entry name is too long"))?;
@@ -476,14 +521,14 @@ impl Dir {
         let status = unsafe {
             NtCreateFile(
                 &mut handle,
-                access | SYNCHRONIZE,
+                access,
                 &attributes,
                 &mut status_block,
                 std::ptr::null(),
                 FILE_ATTRIBUTE_NORMAL,
                 share,
                 disposition,
-                options | FILE_SYNCHRONOUS_IO_NONALERT,
+                options,
                 std::ptr::null(),
                 0,
             )
@@ -612,7 +657,24 @@ impl Dir {
             FileOpen::CreateWriteOnly => {
                 self.create_new(name, FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES)
             }
+            FileOpen::Append => refuse_link(self.open_entry(
+                name,
+                APPEND_ACCESS,
+                FILE_OPEN,
+                FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            )?),
+            FileOpen::CreateAppend => self.create_new(name, APPEND_ACCESS),
         }
+    }
+
+    pub(crate) fn open_security_nofollow(&self, name: &str) -> io::Result<File> {
+        self.open_entry_exact(
+            name,
+            READ_CONTROL | WRITE_DAC,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            SHARE_ALL,
+        )
     }
 
     /// `FILE_WRITE_THROUGH` makes the creation durable before this returns;
@@ -635,11 +697,19 @@ impl Dir {
     /// source is opened with `FILE_WRITE_THROUGH`, so the new name is durable
     /// before this returns.
     pub(crate) fn rename_no_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        self.rename_entry(from, to, false)
+    }
+
+    pub(crate) fn rename_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        self.rename_entry(from, to, true)
+    }
+
+    fn rename_entry(&self, from: &str, to: &str, replace: bool) -> io::Result<()> {
         let source = self.rename_source(from)?;
         let root = self.directory.as_raw_handle();
         with_fallback(
-            || rename_posix(&source, root, to),
-            || rename_classic(&source, root, to),
+            || rename_posix(&source, root, to, replace),
+            || rename_classic(&source, root, to, replace),
         )
     }
 

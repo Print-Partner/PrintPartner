@@ -1173,9 +1173,11 @@ impl Drop for Supervisor {
 #[cfg(all(test, unix))]
 mod ticket_t_2;
 
-#[cfg(all(test, windows))]
-mod tests {
-    pub(crate) fn node_binary() -> std::path::PathBuf {
+/// The native Node executable the test fixtures run.
+#[cfg(test)]
+fn test_node_binary() -> std::path::PathBuf {
+    static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    NODE.get_or_init(|| {
         let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
         let output = std::process::Command::new(configured)
             .args(["-p", "process.execPath"])
@@ -1183,24 +1185,18 @@ mod tests {
             .expect("Node must report its native executable");
         assert!(output.status.success());
         std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
-    }
+    })
+    .clone()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    pub(crate) use super::test_node_binary as node_binary;
 }
 
 #[cfg(all(test, unix))]
 mod tests {
-    pub(crate) fn node_binary() -> std::path::PathBuf {
-        static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        NODE.get_or_init(|| {
-            let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
-            let output = std::process::Command::new(configured)
-                .args(["-p", "process.execPath"])
-                .output()
-                .expect("Node must report its native executable");
-            assert!(output.status.success());
-            std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
-        })
-        .clone()
-    }
+    pub(crate) use super::test_node_binary as node_binary;
 
     fn pid_has_exited(pid: i32) -> bool {
         let result = unsafe { libc::kill(pid, 0) };
@@ -1503,17 +1499,19 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn process_stop_continues_cleanup_after_log_join_error() {
-        let mut command = tokio::process::Command::new("sh");
-        command.arg("-c").arg("exit 0").process_group(0);
-        let mut child = command.spawn().unwrap();
-        let pid = child.id().unwrap();
-        let observed = child.wait().await.unwrap();
-        assert!(observed.success());
+    /// An endpoint on a fresh runtime directory, with a listener bound at its
+    /// socket so the stop under test has a file to remove.
+    struct TestEndpoint {
+        runtime_dir: std::path::PathBuf,
+        socket: std::path::PathBuf,
+        listener: tokio::net::UnixListener,
+        connections: Arc<super::Connections>,
+        endpoint: Arc<super::Endpoint>,
+    }
 
+    fn test_endpoint(generation: &str) -> TestEndpoint {
         let runtime_dir = std::env::temp_dir().join(format!(
-            "pp-compat-stop-{}-{}",
+            "pp-compat-{generation}-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
@@ -1523,10 +1521,35 @@ mod tests {
         let connections = Arc::new(super::Connections::new());
         let endpoint = Arc::new(super::Endpoint {
             channel: Arc::new(super::platform::Channel::unbound(socket.clone())),
-            generation: "stop-regression".to_owned(),
+            generation: generation.to_owned(),
             key: [0; 32],
             connections: connections.clone(),
         });
+        TestEndpoint {
+            runtime_dir,
+            socket,
+            listener,
+            connections,
+            endpoint,
+        }
+    }
+
+    #[tokio::test]
+    async fn process_stop_continues_cleanup_after_log_join_error() {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("exit 0").process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let observed = child.wait().await.unwrap();
+        assert!(observed.success());
+
+        let TestEndpoint {
+            runtime_dir,
+            socket,
+            listener,
+            connections,
+            endpoint,
+        } = test_endpoint("stop-regression");
 
         let first_log = tokio::spawn(std::future::pending::<()>());
         first_log.abort();
@@ -1743,21 +1766,13 @@ mod tests {
     ) -> OwnedStop {
         let pid = observed.map(|(pid, _)| pid).or_else(|| child.id()).unwrap();
         let stdin = child.stdin.take();
-        let runtime_dir = std::env::temp_dir().join(format!(
-            "pp-t3-stop-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        std::fs::create_dir(&runtime_dir).unwrap();
-        let socket = runtime_dir.join("compat.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let connections = Arc::new(super::Connections::new());
-        let endpoint = Arc::new(super::Endpoint {
-            channel: Arc::new(super::platform::Channel::unbound(socket.clone())),
-            generation: "t3-drain".to_owned(),
-            key: [0; 32],
-            connections: connections.clone(),
-        });
+        let TestEndpoint {
+            runtime_dir,
+            listener,
+            connections,
+            endpoint,
+            ..
+        } = test_endpoint("t3-drain");
         let process = super::Process {
             child,
             pid,

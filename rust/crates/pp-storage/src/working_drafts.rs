@@ -25,6 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod autosave;
 pub(crate) mod diff;
 pub mod observation;
 mod preparation;
@@ -279,6 +280,17 @@ pub enum RecomputeWorkspaceOutcome {
     Refused(RecomputeOutcome),
 }
 
+/// Node's `PlanDraftWorkspaceService.rebase` result.
+#[derive(Debug)]
+pub enum RebaseWorkspaceOutcome {
+    /// Node's `autoReconcile` over the rebased or existing draft, or a
+    /// refusal Node reports with a workspace: `draft_changed` with the source
+    /// draft's for `source_conflict`, and `not_open` for `not_abandoned`.
+    Workspace(WorkspaceOutcome),
+    /// Any other `rebasePlanDraft` result, which Node's `rebaseFailure` maps.
+    Refused(RebaseOutcome),
+}
+
 #[derive(Debug)]
 pub enum Outcome {
     Listed {
@@ -376,6 +388,10 @@ pub struct DraftDocument {
 impl DraftDocument {
     pub fn identity(&self) -> &DraftIdentity {
         &self.identity
+    }
+    /// Whether the draft has a selected Required-unit reconciliation.
+    pub fn has_required_unit_selection(&self) -> bool {
+        !self.ordinary["requiredUnitReconciliation"].is_null()
     }
     pub fn into_json_body(self) -> DraftJsonBody {
         let mut output = Value::Object(self.ordinary).to_string().into_bytes();
@@ -567,12 +583,22 @@ enum Operation {
         idempotency_key: String,
         request: RebaseRequest,
         observations: Observations,
-        reply: mpsc::Sender<Result<RebaseOutcome>>,
+        reply: RebaseReply,
+    },
+    Autosave {
+        request: pp_contracts::autosave::SavePlanChoicesRequest,
+        key: String,
+        observations: Observations,
+        reply: mpsc::Sender<Result<autosave::AutosaveOutcome>>,
     },
 }
 enum RecomputeReply {
     Draft(mpsc::Sender<Result<RecomputeOutcome>>),
     Workspace(mpsc::Sender<Result<RecomputeWorkspaceOutcome>>),
+}
+enum RebaseReply {
+    Draft(mpsc::Sender<Result<RebaseOutcome>>),
+    Workspace(mpsc::Sender<Result<RebaseWorkspaceOutcome>>),
 }
 impl WriterOwner {
     pub fn working_drafts_with_policy(
@@ -670,6 +696,11 @@ impl WorkingDraftClient {
     pub fn reconciliation(&self) -> required_units::ReconciliationClient {
         required_units::ReconciliationClient::new(self.shared.clone(), self.policy)
     }
+    /// The Accept (publication) client on this client's writer and auth
+    /// policy, for Node's `POST .../drafts/:draftId/apply`.
+    pub fn publication(&self) -> crate::plan_publication::PublicationClient {
+        crate::plan_publication::PublicationClient::new(self.shared.clone(), self.policy)
+    }
     /// Abandons an open draft as Node's `PlanDraftWorkspaceService.abandon`
     /// does.
     pub fn abandon(
@@ -747,25 +778,17 @@ impl WorkingDraftClient {
         wait: Duration,
         reply: fn(mpsc::Sender<Result<T>>) -> RecomputeReply,
     ) -> Result<T> {
-        let observations = self
-            .observations
-            .clone()
-            .ok_or_else(|| anyhow!("Working-draft observations are not configured"))?;
-        self.enqueue(cancelled, wait, |sender, cancelled| {
-            Envelope::WorkingDraftWrite {
-                command: Write {
-                    credential,
-                    profile,
-                    policy: self.policy,
-                    cancelled,
-                    operation: Operation::Recompute {
-                        request,
-                        observations,
-                        reply: reply(sender),
-                    },
-                },
-            }
-        })
+        self.enqueue_observed(
+            credential,
+            profile,
+            cancelled,
+            wait,
+            |observations, sender| Operation::Recompute {
+                request,
+                observations,
+                reply: reply(sender),
+            },
+        )
     }
     /// Creates an open draft from a fresh preparation carrying the source
     /// draft's Part decisions, as Node's `rebasePlanDraft` does. An open
@@ -779,12 +802,74 @@ impl WorkingDraftClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<RebaseOutcome> {
+        self.enqueue_rebase(
+            credential,
+            profile,
+            args,
+            cancelled,
+            wait,
+            RebaseReply::Draft,
+        )
+    }
+    /// Rebases as Node's `PlanDraftWorkspaceService.rebase` does, including
+    /// its automatic Required-unit selection of the rebased draft. The rebase
+    /// commits before the selection starts.
+    pub fn rebase_and_select(
+        &self,
+        credential: Credential,
+        profile: PositiveId,
+        args: RebaseArgs<'_>,
+        cancelled: Arc<AtomicBool>,
+        wait: Duration,
+    ) -> Result<RebaseWorkspaceOutcome> {
+        self.enqueue_rebase(
+            credential,
+            profile,
+            args,
+            cancelled,
+            wait,
+            RebaseReply::Workspace,
+        )
+    }
+    fn enqueue_rebase<T>(
+        &self,
+        credential: Credential,
+        profile: PositiveId,
+        args: RebaseArgs<'_>,
+        cancelled: Arc<AtomicBool>,
+        wait: Duration,
+        reply: fn(mpsc::Sender<Result<T>>) -> RebaseReply,
+    ) -> Result<T> {
         let RebaseArgs {
             draft_id,
             idempotency_key,
             request,
         } = args;
         let idempotency_key = self::idempotency_key(idempotency_key)?;
+        self.enqueue_observed(
+            credential,
+            profile,
+            cancelled,
+            wait,
+            |observations, sender| Operation::Rebase {
+                draft_id,
+                idempotency_key,
+                request,
+                observations,
+                reply: reply(sender),
+            },
+        )
+    }
+    /// Queues a write that reads Plan sources through the configured
+    /// observations.
+    fn enqueue_observed<T>(
+        &self,
+        credential: Credential,
+        profile: PositiveId,
+        cancelled: Arc<AtomicBool>,
+        wait: Duration,
+        operation: impl FnOnce(Observations, mpsc::Sender<Result<T>>) -> Operation,
+    ) -> Result<T> {
         let observations = self
             .observations
             .clone()
@@ -796,13 +881,7 @@ impl WorkingDraftClient {
                     profile,
                     policy: self.policy,
                     cancelled,
-                    operation: Operation::Rebase {
-                        draft_id,
-                        idempotency_key,
-                        request,
-                        observations,
-                        reply,
-                    },
+                    operation: operation(observations, reply),
                 },
             }
         })
@@ -932,6 +1011,26 @@ pub(super) fn write(
                 admission,
             ));
         }
+        Operation::Autosave {
+            request,
+            key,
+            observations,
+            reply,
+        } => {
+            let _ = reply.send(autosave::execute(
+                connection,
+                autosave::Args {
+                    credential: &credential,
+                    policy,
+                    profile,
+                    request: &request,
+                    key: &key,
+                    observations: &observations,
+                    cancelled: &cancelled,
+                },
+                admission,
+            ));
+        }
         Operation::Edit {
             draft_id,
             request,
@@ -990,7 +1089,7 @@ pub(super) fn write(
             observations,
             reply,
         } => {
-            let _ = reply.send(rebase::rebase(
+            let rebased = rebase::rebase(
                 connection,
                 rebase::Args {
                     credential: &credential,
@@ -1002,7 +1101,19 @@ pub(super) fn write(
                     observations: &observations,
                     cancelled: &cancelled,
                 },
-            ));
+            );
+            match reply {
+                RebaseReply::Draft(reply) => {
+                    let _ = reply.send(rebased);
+                }
+                RebaseReply::Workspace(reply) => {
+                    let _ = reply.send(rebased.and_then(|outcome| {
+                        rebase_workspace(
+                            connection, credential, policy, profile, draft_id, &cancelled, outcome,
+                        )
+                    }));
+                }
+            }
         }
     }
 }
@@ -1020,6 +1131,66 @@ fn select_recomputed(
         RecomputeOutcome::Created { draft } | RecomputeOutcome::Existing { draft } => draft,
         refused => return Ok(RecomputeWorkspaceOutcome::Refused(refused)),
     };
+    select_draft(connection, credential, policy, profile, cancelled, draft)
+        .map(RecomputeWorkspaceOutcome::Selected)
+}
+/// Node's `rebase` after `rebasePlanDraft`: `autoReconcile` for a rebased or
+/// existing draft, and `rebaseFailure`'s workspace for a source conflict or a
+/// source that is not abandoned.
+fn rebase_workspace(
+    connection: &mut Connection,
+    credential: Credential,
+    policy: auth::AuthPolicy,
+    profile: PositiveId,
+    source: PositiveId,
+    cancelled: &Arc<AtomicBool>,
+    outcome: RebaseOutcome,
+) -> Result<RebaseWorkspaceOutcome> {
+    let mut read = |credential, draft_id| {
+        let read = Command {
+            credential,
+            profile,
+            request: Request::Workspace { draft_id },
+            policy,
+            cancelled: cancelled.clone(),
+        };
+        Ok::<_, anyhow::Error>(match execute(connection, read)? {
+            Outcome::Workspace { workspace } => Some(workspace),
+            _ => None,
+        })
+    };
+    Ok(match outcome {
+        RebaseOutcome::Rebased { draft } | RebaseOutcome::Existing { draft } => {
+            RebaseWorkspaceOutcome::Workspace(select_draft(
+                connection, credential, policy, profile, cancelled, draft,
+            )?)
+        }
+        RebaseOutcome::SourceConflict { draft } => {
+            let workspace = read(credential, draft.identity.draft_id)?
+                .ok_or_else(|| anyhow!("Plan draft rebase source is missing"))?;
+            RebaseWorkspaceOutcome::Workspace(WorkspaceOutcome::DraftChanged {
+                workspace: Some(workspace),
+            })
+        }
+        RebaseOutcome::NotAbandoned { state } => match read(credential, source)? {
+            Some(workspace) => {
+                RebaseWorkspaceOutcome::Workspace(WorkspaceOutcome::NotOpen { workspace })
+            }
+            None => RebaseWorkspaceOutcome::Refused(RebaseOutcome::NotAbandoned { state }),
+        },
+        refused => RebaseWorkspaceOutcome::Refused(refused),
+    })
+}
+/// Node's `autoReconcile`: a draft that already has a selection returns its
+/// workspace from a read transaction; otherwise it is selected.
+fn select_draft(
+    connection: &mut Connection,
+    credential: Credential,
+    policy: auth::AuthPolicy,
+    profile: PositiveId,
+    cancelled: &Arc<AtomicBool>,
+    draft: DraftDocument,
+) -> Result<WorkspaceOutcome> {
     let draft_id = draft.identity.draft_id;
     if !draft.ordinary["requiredUnitReconciliation"].is_null() {
         let read = Command {
@@ -1030,10 +1201,8 @@ fn select_recomputed(
             cancelled: cancelled.clone(),
         };
         return match execute(connection, read)? {
-            Outcome::Workspace { workspace } => Ok(RecomputeWorkspaceOutcome::Selected(
-                WorkspaceOutcome::Ready { workspace },
-            )),
-            _ => Err(anyhow!("Recomputed Plan draft is missing")),
+            Outcome::Workspace { workspace } => Ok(WorkspaceOutcome::Ready { workspace }),
+            _ => Err(anyhow!("Selected Plan draft is missing")),
         };
     }
     auto_select(
@@ -1045,7 +1214,6 @@ fn select_recomputed(
         &draft.identity.snapshot_digest,
         cancelled,
     )
-    .map(RecomputeWorkspaceOutcome::Selected)
 }
 /// Node's `autoReconcile` for an unselected draft: a selection with no
 /// decisions, keyed by the snapshot digest.
@@ -1058,13 +1226,7 @@ fn auto_select(
     digest: &Digest,
     cancelled: &AtomicBool,
 ) -> Result<WorkspaceOutcome> {
-    let command = ReconciliationCommand::new(
-        profile,
-        draft_id,
-        serde_json::from_value(json!({"expected_snapshot_digest":digest, "decisions":[]}))?,
-        &format!("auto-{}", digest.as_str()),
-        credential,
-    )?;
+    let command = ReconciliationCommand::automatic(profile, draft_id, digest, credential)?;
     // Node's selection is a separate transaction with its own busy wait.
     let admission = writer_admission::Deadline::at_dequeue();
     transact(connection, admission, cancelled, |tx| {
@@ -1181,6 +1343,7 @@ fn edit(
             )? == 1,
             "Plan draft edit lost its draft"
         );
+        crate::domain_events::draft_changed(tx, &tenant, profile, id)?;
         for decision in &request.decisions {
             for part_id in decision.ids() {
                 let part_id = i64::try_from(part_id.get())?;
@@ -1272,6 +1435,7 @@ fn abandon(
         )? == 1,
         "Plan draft transition lost its draft"
     );
+    crate::domain_events::draft_changed(tx, &tenant, profile, id)?;
     let after = draft(tx, &tenant, profile, id)?
         .ok_or_else(|| anyhow!("Transitioned Plan draft is missing"))?;
     let after = DraftIdentity::from_header(&after.header)?;
@@ -1395,10 +1559,17 @@ fn recompute(
             prepared.digest =
                 model::planning(&prepared.base, &prepared.capture.inputs, &prepared.parts)?;
         }
+        let open: Vec<i64> = tx
+            .prepare("SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' ORDER BY id")?
+            .query_map(params![tenant, profile], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         tx.execute(
             "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE tenant_id=? AND profile_id=? AND state='open'",
             params![tenant, profile],
         )?;
+        for draft in open {
+            crate::domain_events::draft_changed(tx, &tenant, profile, draft)?;
+        }
         let id = insert_snapshot(tx, &tenant, &actor, profile, key, &prepared, None)?;
         let created = draft(tx, &tenant, profile, id)?
             .ok_or_else(|| anyhow!("Created Plan draft is missing"))?;
@@ -1613,6 +1784,7 @@ fn insert_snapshot(
         ],
     )?;
     let id = tx.last_insert_rowid();
+    crate::domain_events::draft_changed(tx, tenant, profile, id)?;
     for input in &prepared.capture.inputs {
         let mut values = vec![tenant.to_owned().into(), id.into()];
         for field in model::INPUT_FIELDS {

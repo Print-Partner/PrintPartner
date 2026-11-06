@@ -138,26 +138,18 @@ impl WorkingDraftClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<Outcome> {
-        let observations = self
-            .observations
-            .clone()
-            .ok_or_else(|| anyhow!("Working-draft observations are not configured"))?;
-        self.enqueue(cancelled, wait, |reply, cancelled| {
-            Envelope::WorkingDraftWrite {
-                command: Write {
-                    credential: input.credential,
-                    profile: input.profile,
-                    policy: self.policy,
-                    cancelled,
-                    operation: Operation::Save {
-                        request: input.request,
-                        key: input.key,
-                        observations,
-                        reply,
-                    },
-                },
-            }
-        })
+        self.enqueue_observed(
+            input.credential,
+            input.profile,
+            cancelled,
+            wait,
+            |observations, reply| Operation::Save {
+                request: input.request,
+                key: input.key,
+                observations,
+                reply,
+            },
+        )
     }
 }
 pub(super) struct Command {
@@ -166,7 +158,7 @@ pub(super) struct Command {
     pub(super) observations: Observations,
     pub(super) cancelled: Arc<AtomicBool>,
 }
-fn copy_credential(credential: &Credential) -> Credential {
+pub(super) fn copy_credential(credential: &Credential) -> Credential {
     match credential {
         Credential::Session(secret) => {
             Credential::Session(auth::Secret::new(secret.expose().to_owned()))
@@ -253,14 +245,7 @@ fn keys(c: &SaveCommand, actor: &str) -> (String, String) {
         None => json!({"kind":"empty","planVersion":base.plan_version()}),
     };
     let expected_draft = c.request.expected_draft().map(|d| json!({"id":d.draft_id(),"snapshotDigest":d.snapshot_digest(),"lifecycleVersion":d.lifecycle_version()}));
-    let changes: Vec<_> = c.request.decisions().iter().map(|choice| {
-        let t = choice.target();
-        let (kind, value) = match choice {
-            PlanChoice::SetIncluded { value, .. } => ("set_included",json!(value)),
-            PlanChoice::SetQuantityOverride { value, .. } => ("set_quantity_override",json!(value)),
-        };
-        json!({"target":{"partKey":t.part_key(),"relativePath":t.relative_path(),"sourceLayer":t.source_layer()},"kind":kind,"value":value})
-    }).collect();
+    let changes = changes(c.request.decisions());
     let payload = json!({"profileId":c.profile,"actorId":actor,"idempotencyKey":c.key,"expectedBase":expected_base,"expectedDraft":expected_draft,"remapCheckoffLinks":c.request.remap_checkoff_links(),"changes":changes});
     (
         key,
@@ -270,6 +255,123 @@ fn keys(c: &SaveCommand, actor: &str) -> (String, String) {
         ),
     )
 }
+/// The choices as a receipt payload names them.
+pub(super) fn changes(decisions: &[PlanChoice]) -> Vec<Value> {
+    decisions
+        .iter()
+        .map(|choice| {
+            let t = choice.target();
+            let (kind, value) = match choice {
+                PlanChoice::SetIncluded { value, .. } => ("set_included", json!(value)),
+                PlanChoice::SetQuantityOverride { value, .. } => {
+                    ("set_quantity_override", json!(value))
+                }
+            };
+            json!({"target":{"partKey":t.part_key(),"relativePath":t.relative_path(),"sourceLayer":t.source_layer()},"kind":kind,"value":value})
+        })
+        .collect()
+}
+
+pub(super) type Checked<T> = std::result::Result<T, Refusal>;
+
+/// Refuses an archived Plan, a missing baseline or a stale base, and
+/// otherwise returns the Accepted base.
+pub(super) fn accepted_base(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    p: &Value,
+    request: &SavePlanChoicesRequest,
+) -> Result<Checked<Value>> {
+    if !p["archivedAt"].is_null() {
+        return Ok(Err(Refusal::BuildArchived));
+    }
+    if baseline_required(tx, tenant, p)? {
+        return Ok(Err(Refusal::AcceptedBaselineRequired));
+    }
+    let base = json!({"baseRevisionId":p["acceptedPlanRevisionId"],"basePlanVersion":p["acceptedPlanVersion"]});
+    if base["baseRevisionId"] != json!(request.expected_base().revision_id())
+        || base["basePlanVersion"] != json!(request.expected_base().plan_version())
+    {
+        return Ok(Err(Refusal::BaseChanged));
+    }
+    Ok(Ok(base))
+}
+
+/// Loads the open draft the caller observed and checks it is unchanged, or
+/// checks that no draft is open when the caller observed none.
+pub(super) fn observed_draft(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    base: &Value,
+    request: &SavePlanChoicesRequest,
+    budget: &mut observation::PreparationBudget<'_>,
+) -> Result<Checked<Option<Draft>>> {
+    let Some(expected) = request.expected_draft() else {
+        let open = one(
+            tx,
+            "SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' LIMIT 1",
+            &[&tenant, &profile],
+        )?;
+        return Ok(if open.is_some() {
+            Err(Refusal::DraftChanged)
+        } else {
+            Ok(None)
+        });
+    };
+    let id = i64::try_from(expected.draft_id().get())?;
+    let Some(d) = load(tx, tenant, profile, id, budget)? else {
+        return Ok(Err(Refusal::DraftChanged));
+    };
+    if d.header["state"] != "open"
+        || d.header["snapshotDigest"] != expected.snapshot_digest().as_str()
+        || d.header["lifecycleVersion"] != expected.lifecycle_version().get()
+    {
+        return Ok(Err(Refusal::DraftChanged));
+    }
+    if d.header["baseRevisionId"] != base["baseRevisionId"]
+        || d.header["basePlanVersion"] != base["basePlanVersion"]
+    {
+        return Ok(Err(Refusal::BaseChanged));
+    }
+    Ok(Ok(Some(d)))
+}
+
+/// Prepares a new draft from the Plan's sources against the Accepted base.
+pub(super) fn prepare_new(
+    tx: &mut Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    base: &Value,
+    observations: &Observations,
+    budget: &mut observation::PreparationBudget<'_>,
+) -> Result<Checked<preparation::PreparedDraftSnapshot>> {
+    let options = preparation::PreparationOptions {
+        apply_manifest: false,
+        prefer_accepted: true,
+        ..Default::default()
+    };
+    match preparation::prepare(
+        tx,
+        tenant,
+        profile,
+        base.clone(),
+        preparation::PreparationContext {
+            options: &options,
+            repos: &observations.repos,
+        },
+        observations.reads.as_ref(),
+        budget,
+    ) {
+        Ok(prepared) => Ok(Ok(prepared)),
+        Err(error) => match error.downcast_ref::<preparation::Failure>() {
+            Some(preparation::Failure::NoLayers) => Ok(Err(Refusal::NoLayers)),
+            Some(preparation::Failure::NoStls) => Ok(Err(Refusal::NoStls)),
+            _ => Err(error),
+        },
+    }
+}
+
 fn normalized(value: &str) -> String {
     value
         .replace('\\', "/")
@@ -277,7 +379,7 @@ fn normalized(value: &str) -> String {
         .trim_matches('/')
         .into()
 }
-fn choices(
+pub(super) fn choices(
     parts: &mut [crate::manifest_text::DraftPart],
     changes: &[PlanChoice],
     budget: &mut observation::PreparationBudget<'_>,
@@ -397,48 +499,15 @@ fn transact(
             tx, tenant, &prior,
         )?));
     }
-    if !p["archivedAt"].is_null() {
-        return Ok(TransactionResult::Refused(Refusal::BuildArchived));
-    }
-    if baseline_required(tx, tenant, &p)? {
-        return Ok(TransactionResult::Refused(
-            Refusal::AcceptedBaselineRequired,
-        ));
-    }
-    let base = json!({"baseRevisionId":p["acceptedPlanRevisionId"],"basePlanVersion":p["acceptedPlanVersion"]});
-    if base["baseRevisionId"] != json!(request.expected_base().revision_id())
-        || base["basePlanVersion"] != json!(request.expected_base().plan_version())
-    {
-        return Ok(TransactionResult::Refused(Refusal::BaseChanged));
-    }
+    let base = match accepted_base(tx, tenant, &p, request)? {
+        Ok(base) => base,
+        Err(reason) => return Ok(TransactionResult::Refused(reason)),
+    };
     let mut budget = observation::PreparationBudget::new(&c.cancelled, c.observations.limits)?;
     budget.check()?;
-    let source = if let Some(expected) = request.expected_draft() {
-        let Some(d) = load(
-            tx,
-            tenant,
-            profile,
-            expected.draft_id().get() as i64,
-            &mut budget,
-        )?
-        else {
-            return Ok(TransactionResult::Refused(Refusal::DraftChanged));
-        };
-        if d.header["state"] != "open"
-            || d.header["snapshotDigest"] != expected.snapshot_digest().as_str()
-            || d.header["lifecycleVersion"] != expected.lifecycle_version().get()
-        {
-            return Ok(TransactionResult::Refused(Refusal::DraftChanged));
-        }
-        if d.header["baseRevisionId"] != base["baseRevisionId"]
-            || d.header["basePlanVersion"] != base["basePlanVersion"]
-        {
-            return Ok(TransactionResult::Refused(Refusal::BaseChanged));
-        }
-        Some(d)
-    } else {
-        if one(tx,"SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' LIMIT 1",&[&tenant,&profile])?.is_some(){return Ok(TransactionResult::Refused(Refusal::DraftChanged));}
-        None
+    let source = match observed_draft(tx, tenant, profile, &base, request, &mut budget)? {
+        Ok(source) => source,
+        Err(reason) => return Ok(TransactionResult::Refused(reason)),
     };
     let (mut capture, mut parts) = if let Some(d) = &source {
         let current = preparation::capture(
@@ -453,37 +522,10 @@ fn transact(
         }
         (current, d.parts.clone())
     } else {
-        let options = preparation::PreparationOptions {
-            apply_manifest: false,
-            prefer_accepted: true,
-            ..Default::default()
-        };
-        let prepared = match preparation::prepare(
-            tx,
-            tenant,
-            profile,
-            base.clone(),
-            preparation::PreparationContext {
-                options: &options,
-                repos: &c.observations.repos,
-            },
-            c.observations.reads.as_ref(),
-            &mut budget,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                return match e.downcast_ref::<preparation::Failure>() {
-                    Some(preparation::Failure::NoLayers) => {
-                        Ok(TransactionResult::Refused(Refusal::NoLayers))
-                    }
-                    Some(preparation::Failure::NoStls) => {
-                        Ok(TransactionResult::Refused(Refusal::NoStls))
-                    }
-                    _ => Err(e),
-                };
-            }
-        };
-        (prepared.capture, prepared.parts)
+        match prepare_new(tx, tenant, profile, &base, &c.observations, &mut budget)? {
+            Ok(prepared) => (prepared.capture, prepared.parts),
+            Err(reason) => return Ok(TransactionResult::Refused(reason)),
+        }
     };
     if let Some(reason) = choices(&mut parts, request.decisions(), &mut budget)? {
         return Ok(TransactionResult::Refused(reason));
@@ -599,6 +641,7 @@ fn transact(
         if changed != 1 {
             return Ok(TransactionResult::Refused(Refusal::DraftChanged));
         }
+        crate::domain_events::draft_changed(tx, tenant, profile, num(&d.header, "id")?)?;
         let after = storage::draft_checked(tx, tenant, profile, num(&d.header, "id")?, &|| {
             Ok(budget.check()?)
         })?
@@ -614,7 +657,7 @@ fn transact(
     Ok(TransactionResult::Saved(receipt))
 }
 
-fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
+pub(super) fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
     let mut inputs: Vec<_> = inputs
         .iter()
         .map(|input| model::project(input, model::INPUT_FIELDS))
@@ -623,7 +666,7 @@ fn canonical_inputs(inputs: &[Value]) -> Vec<Value> {
     inputs
 }
 
-fn load(
+pub(super) fn load(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,

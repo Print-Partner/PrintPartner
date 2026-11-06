@@ -47,6 +47,14 @@ macro_rules! hex_identity {
 hex_identity!(RequiredUnitToken, "ppu_", 36);
 hex_identity!(PlateId, "plate_", 38);
 
+impl PlateId {
+    /// A Plate id as stored. Node generates `plate_` ids but keeps any trimmed
+    /// text of 1 to 200 UTF-16 units (its `normalizedText`).
+    pub fn stored(value: &str) -> Option<Self> {
+        trimmed_text(value).map(Self)
+    }
+}
+
 impl Digest {
     pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(hex::encode(bytes))

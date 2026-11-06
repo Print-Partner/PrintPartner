@@ -6,11 +6,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import Fastify from "fastify";
+import { describe, expect, it, vi } from "vitest";
 import {
   acquireDataDirectory,
   dialDesktopPipe,
   releaseOrphanedDesktopOwner,
+  serveDesktopPipe,
   verifyDesktopPrincipal,
 } from "./desktop-context.js";
 import { processIdentity } from "./storage-lease.js";
@@ -64,7 +66,7 @@ describe("Windows private pipe dial-in", () => {
       expect(await request("/second")).toContain("served /second");
       expect(await request("/third")).toContain("served /third");
     } finally {
-      stop();
+      void stop();
       for (const socket of accepted) socket.destroy();
       core.close();
       http.closeAllConnections();
@@ -115,10 +117,58 @@ describe("Windows private pipe dial-in", () => {
       }
       await send(await take(), "/health", "healthy");
     } finally {
-      stop();
+      void stop();
       for (const socket of [...held, ...accepted]) socket.destroy();
       core.close();
       http.closeAllConnections();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes a request in flight before close lets the database go", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pp-dial-"));
+    const path =
+      process.platform === "win32"
+        ? String.raw`\\.\pipe\pp-dial-drain-${process.pid}`
+        : join(directory, "core.sock");
+    const accepted: Socket[] = [];
+    const core = createNetServer((socket) => accepted.push(socket));
+    core.listen(path);
+    await once(core, "listening");
+    const events: string[] = [];
+    let release = () => {};
+    let started = () => {};
+    const handlerStarted = new Promise<void>((resolve) => (started = resolve));
+    const app = Fastify();
+    app.post("/plans/1/save", async () => {
+      started();
+      await new Promise<void>((resolve) => (release = resolve));
+      events.push("handler finished");
+      return { saved: true };
+    });
+    await serveDesktopPipe(app, path);
+    try {
+      await vi.waitFor(() => expect(accepted.length).toBeGreaterThan(0));
+      const socket = accepted.shift()!;
+      let body = "";
+      socket.on("data", (chunk) => (body += chunk));
+      socket.write(
+        "POST /plans/1/save HTTP/1.1\r\nHost: desktop-compat\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+      );
+      await handlerStarted;
+      const databaseClosed = app
+        .close()
+        .then(() => events.push("app closed"))
+        .then(() => events.push("database closed"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(events).toEqual([]);
+      release();
+      await databaseClosed;
+      expect(events).toEqual(["handler finished", "app closed", "database closed"]);
+      await vi.waitFor(() => expect(body).toContain('{"saved":true}'));
+    } finally {
+      for (const socket of accepted) socket.destroy();
+      core.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });

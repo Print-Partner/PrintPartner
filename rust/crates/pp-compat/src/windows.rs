@@ -657,18 +657,31 @@ impl Channel {
     }
 
     /// Take the connection the child dialed into the listening instance and
-    /// create the next instance. The child keeps a dial queued, so a wait past
+    /// create the next instance. A dial that closed before it was taken, for
+    /// example when Node's `headersTimeout` reaped it while idle, leaves the
+    /// instance dead (`ERROR_NO_DATA`); it is replaced and the wait goes on for
+    /// the child's redial. The child keeps a dial queued, so a wait past
     /// [`CONNECT_TIMEOUT`] means it stopped dialing and fails the request
     /// instead of holding it forever. If the next instance cannot be created,
     /// the connected one is still returned and later connects fail.
     pub(crate) async fn connect(&self) -> std::io::Result<Stream> {
         let mut listener = self.listener.lock().await;
-        let (Some(server), Some(descriptor)) = (listener.as_ref(), self.descriptor.as_ref()) else {
+        let Some(descriptor) = self.descriptor.as_ref() else {
             return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
         };
-        tokio::time::timeout(CONNECT_TIMEOUT, server.connect())
-            .await
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+        tokio::time::timeout(CONNECT_TIMEOUT, async {
+            loop {
+                let server = listener
+                    .as_ref()
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+                if server.connect().await.is_ok() {
+                    return Ok::<(), std::io::Error>(());
+                }
+                listener.replace(create_instance(&self.name, false, descriptor)?);
+            }
+        })
+        .await
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
         let connected = match create_instance(&self.name, false, descriptor) {
             Ok(next) => listener.replace(next),
             Err(_) => listener.take(),
@@ -966,6 +979,27 @@ mod tests {
         );
     }
 
+    /// Dial the pipe the way the child does.
+    fn dial_pipe(name: &Path) -> std::io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .access_mode(FILE_GENERIC_READ | READ_CONTROL | GENERIC_WRITE)
+            .open(name)
+    }
+
+    async fn ping_pong(server: &mut Stream, client: &mut File) {
+        use std::io::{Read, Write};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        server.write_all(b"ping").await.unwrap();
+        let mut received = [0; 4];
+        client.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"ping");
+        client.write_all(b"pong").unwrap();
+        server.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"pong");
+    }
+
     #[tokio::test]
     async fn private_pipe_is_first_instance_owner_only_and_serves_each_connect() {
         let generation = format!("test-{}", rand::random::<u64>());
@@ -974,13 +1008,7 @@ mod tests {
         assert!(Channel::bind(&runtime, &generation).is_err());
         for _ in 0..2 {
             let name = channel.name().to_path_buf();
-            let client = tokio::task::spawn_blocking(move || {
-                OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .access_mode(FILE_GENERIC_READ | READ_CONTROL | GENERIC_WRITE)
-                    .open(name)
-            });
+            let client = tokio::task::spawn_blocking(move || dial_pipe(&name));
             let mut server = channel.connect().await.unwrap();
             let mut client = client.await.unwrap().unwrap();
             assert!(
@@ -989,17 +1017,33 @@ mod tests {
                     .owns_privately(&client, SE_FILE_OBJECT)
                     .unwrap()
             );
-            use std::io::{Read, Write};
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            server.write_all(b"ping").await.unwrap();
-            let mut received = [0; 4];
-            client.read_exact(&mut received).unwrap();
-            assert_eq!(&received, b"ping");
-            client.write_all(b"pong").unwrap();
-            server.read_exact(&mut received).await.unwrap();
-            assert_eq!(&received, b"pong");
+            ping_pong(&mut server, &mut client).await;
         }
         channel.close().await.unwrap();
         assert!(channel.connect().await.is_err());
+    }
+
+    /// A dial that closes before the core takes it, as when Node reaps an idle
+    /// socket, leaves the listening instance dead. The request that finds it
+    /// replaces the instance and still connects to the child's redial.
+    #[tokio::test]
+    async fn private_pipe_connect_survives_a_dial_closed_before_it_was_taken() {
+        let generation = format!("test-{}", rand::random::<u64>());
+        let channel = Channel::bind(&std::env::temp_dir(), &generation).unwrap();
+        let name = channel.name().to_path_buf();
+        drop(dial_pipe(&name).unwrap());
+        let redial = tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            loop {
+                match dial_pipe(&name) {
+                    Ok(client) => return client,
+                    Err(error) if started.elapsed() > CONNECT_TIMEOUT => panic!("{error}"),
+                    Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
+        });
+        let mut server = channel.connect().await.unwrap();
+        let mut client = redial.await.unwrap();
+        ping_pong(&mut server, &mut client).await;
     }
 }

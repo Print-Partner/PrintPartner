@@ -49,6 +49,8 @@ Each file starts with a `Content SHA256` header over the rest of the file.
 | `GET /api/v2/printer-checkoff/unattributed/suggestions` | | `MatchSuggestionList` |
 | `POST /api/v2/printer-checkoff/verify-batch` | `VerifyBatchRequest` | `VerifyBatchReceipt` |
 | `POST /api/v2/printer-checkoff/verify-batch/undo` | `UndoBatchRequest` | `UndoBatchReceipt` |
+| `POST /api/v2/printer-checkoff/unattributed/{id}/claim` | `ClaimUnattributedRequest` | `ClaimUnattributedReceipt` |
+| `POST /api/v2/printer-checkoff/unattributed/{id}/dismiss` | `DismissUnattributedRequest` | `DismissUnattributedReceipt` |
 | `GET /api/v2/printer-send-queue` | | `SendQueue` |
 | `GET /api/v2/farm-log` (query `cursor`, `limit`) | | `FarmLogPage` |
 | `POST /api/v2/farm-log/{id}/undo` | | `FarmLogEntry` |

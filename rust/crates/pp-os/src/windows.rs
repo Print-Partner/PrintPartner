@@ -696,20 +696,19 @@ impl Dir {
     /// source is opened with `FILE_WRITE_THROUGH`, so the new name is durable
     /// before this returns.
     pub(crate) fn rename_no_replace(&self, from: &str, to: &str) -> io::Result<()> {
-        let source = self.rename_source(from)?;
-        let root = self.directory.as_raw_handle();
-        with_fallback(
-            || rename_posix(&source, root, to, false),
-            || rename_classic(&source, root, to, false),
-        )
+        self.rename_entry(from, to, false)
     }
 
     pub(crate) fn rename_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        self.rename_entry(from, to, true)
+    }
+
+    fn rename_entry(&self, from: &str, to: &str, replace: bool) -> io::Result<()> {
         let source = self.rename_source(from)?;
         let root = self.directory.as_raw_handle();
         with_fallback(
-            || rename_posix(&source, root, to, true),
-            || rename_classic(&source, root, to, true),
+            || rename_posix(&source, root, to, replace),
+            || rename_classic(&source, root, to, replace),
         )
     }
 

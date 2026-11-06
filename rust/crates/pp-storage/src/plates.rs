@@ -10,11 +10,15 @@
 //! An edit that changes nothing writes nothing. A stale basis or revision is
 //! refused without touching history.
 //!
+//! The client also serves the Build's Production setup (GRE-421), which
+//! Plates are packed by and whose route change reads the Accepted Plan.
+//!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
 
 mod arrange;
 mod artifacts;
 mod initialize;
+mod setup;
 
 use crate::{
     Envelope, Shared, WriterOwner, auth, domain_events,
@@ -84,6 +88,11 @@ pub enum Request {
     Initialize {
         profile: String,
         body: Value,
+    },
+    /// `GET /plans/{profile}/production-setup`, or its `PATCH` with a body.
+    ProductionSetup {
+        profile: String,
+        body: Option<Value>,
     },
 }
 
@@ -229,6 +238,11 @@ enum Op {
         all: bool,
     },
     Initialize(initialize::Command),
+    /// Validated in the transaction: Node checks the Build before the body.
+    Setup {
+        profile: String,
+        body: Option<Value>,
+    },
 }
 struct Expected {
     profile: i64,
@@ -317,6 +331,7 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         Request::Initialize { profile, body } => profile_id(&profile)
             .and_then(|profile| initialize::Command::parse(profile, &body))
             .map(Op::Initialize),
+        Request::ProductionSetup { profile, body } => Some(Op::Setup { profile, body }),
         Request::Unit {
             edit,
             profile,
@@ -470,18 +485,21 @@ pub(crate) fn execute(
         repos,
         policy,
     } = command;
-    let begun = match op {
-        Op::Read(_) => connection
+    let reads = matches!(op, Op::Read(_) | Op::Setup { body: None, .. });
+    let begun = if reads {
+        connection
             .transaction_with_behavior(TransactionBehavior::Deferred)
-            .map_err(Into::into),
-        _ => crate::writer_admission::begin_immediate(connection, admission),
+            .map_err(Into::into)
+    } else {
+        crate::writer_admission::begin_immediate(connection, admission)
     };
     let Ok(tx) = begun else {
         return Ok(unavailable());
     };
-    let tenant = match &op {
-        Op::Read(_) => read_tenant(&tx, &credential, policy)?,
-        _ => auth::authority::queries::reconciliation_actor_ref(&tx, &credential, policy)?.0,
+    let tenant = if reads {
+        read_tenant(&tx, &credential, policy)?
+    } else {
+        auth::authority::queries::reconciliation_actor_ref(&tx, &credential, policy)?.0
     };
     let response = match run(&tx, &tenant, op, &repos) {
         Ok(response) => response,
@@ -500,6 +518,7 @@ fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Result<Respo
         Op::Read(profile) => read(tx, tenant, profile, repos),
         Op::Arrange { cmd, all } => arrange::run(tx, tenant, repos, &cmd, all),
         Op::Initialize(cmd) => initialize::run(tx, tenant, repos, &cmd),
+        Op::Setup { profile, body } => setup::run(tx, tenant, repos, &profile, body),
         Op::Edit { cmd, edit } => {
             let restore = matches!(edit, Edit::Restore { .. });
             let profile = cmd.profile;

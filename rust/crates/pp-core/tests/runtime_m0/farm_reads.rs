@@ -182,10 +182,23 @@ async fn farm_reads_rust_only_runtime_in_child() {
     let data = proof_data();
     let printer = RecordedPrinter::start(vec![(200, SUCCESS)]).unwrap();
     seed_farm(&data, printer.url());
-    let rows = production_rows(&data);
-    let settings = settings_rows(&data);
 
     let (runtime, origin, desktop) = start_rust_only(&data).await;
+    // Opening the writer moved the seeded queue into `printer_send_queue`
+    // (GRE-1208); the reads below must leave that state as they found it.
+    let rows = production_rows(&data);
+    let settings = settings_rows(&data);
+    assert!(
+        !settings
+            .as_deref()
+            .unwrap_or("")
+            .contains("printer.send_queue")
+    );
+    assert!(
+        rows.iter()
+            .any(|(table, values)| table == "printer_send_queue" && values.len() == 1),
+        "{rows:?}"
+    );
     for path in ROUTES {
         let (code, body) = read(&origin, &desktop, path).await;
         assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}: {body}");

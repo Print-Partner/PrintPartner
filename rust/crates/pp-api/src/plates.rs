@@ -5,6 +5,9 @@
 //!
 //! `pp_core::rebuild_api::read_router` mounts every route and alias together,
 //! so no Plate write runs on Node and Rust at once.
+//!
+//! The router also serves `GET` and `PATCH /plans/{id}/production-setup`
+//! (GRE-421) at `/` only, where Node registers them.
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, storage_answer},
@@ -66,7 +69,11 @@ pub fn plates_router(config: AcceptedHttpConfig, client: PlatesClient) -> Router
             &format!("{path}/transfer"),
             post(|s, c, p, b| unit(s, c, p, b, UnitEdit::Transfer)),
         );
-    gate.guard(routes.clone().nest("/api/v2", routes))
+    let setup = Router::new().route(
+        "/plans/{id}/production-setup",
+        get(read_setup).patch(update_setup),
+    );
+    gate.guard(routes.clone().nest("/api/v2", routes).merge(setup))
         .with_state(App { gate, client })
 }
 
@@ -76,6 +83,42 @@ async fn read(
     Path(profile): Path<String>,
 ) -> Response {
     run(app, presented, Request::Read { profile }).await
+}
+
+async fn read_setup(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(profile): Path<String>,
+) -> Response {
+    run(
+        app,
+        presented,
+        Request::ProductionSetup {
+            profile,
+            body: None,
+        },
+    )
+    .await
+}
+
+/// Node's Fastify parser answers a body that is not JSON before the route.
+async fn update_setup(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(profile): Path<String>,
+    body: Body,
+) -> Response {
+    let Ok(bytes) = to_bytes(body, BULK_BODY_LIMIT).await else {
+        return too_large();
+    };
+    let Ok(body) = serde_json::from_slice(&bytes) else {
+        return crate::problem::response(StatusCode::BAD_REQUEST, crate::problem::INVALID_JSON);
+    };
+    let request = Request::ProductionSetup {
+        profile,
+        body: Some(body),
+    };
+    run(app, presented, request).await
 }
 
 /// A write on the whole Plan's Plates.
@@ -152,16 +195,20 @@ async fn run(
     .await
 }
 
-/// Node's `{ detail, code }` failure body, with any other fields kept.
+/// Node's `{ detail, code }` failure body, with any other fields kept. Some
+/// Production setup failures carry no code.
 fn present(response: pp_storage::plates::Response) -> Response {
     storage_answer(response.status, response.body, |status, body| {
         let Value::Object(mut fields) = body else {
             return None;
         };
         let detail = fields.remove("detail")?;
-        let code = fields.remove("code")?;
+        let code = match fields.remove("code") {
+            Some(code) => Some(code.as_str()?.to_owned()),
+            None => None,
+        };
         Some(crate::problem::build(
-            crate::problem::problem(status, detail.as_str()?, Some(code.as_str()?)),
+            crate::problem::problem(status, detail.as_str()?, code.as_deref()),
             fields,
         ))
     })

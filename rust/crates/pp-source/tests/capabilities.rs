@@ -166,23 +166,36 @@ fn root_walk_rejects_symlink_ancestors_and_selected_roots() {
 fn source_handle_survives_repos_path_replacement_without_following_it() {
     let fixture = Fixture::new();
     let mut source = fixture.repos().source(42).unwrap();
-    fs::rename(fixture.0.join("repos"), fixture.0.join("original")).unwrap();
-    fs::create_dir(fixture.0.join("repos")).unwrap();
+    // Windows refuses to rename a directory while a handle below it is open,
+    // so the open Source keeps its path from being replaced at all.
+    let pinned = match fs::rename(fixture.0.join("repos"), fixture.0.join("original")) {
+        Ok(()) => {
+            fs::create_dir(fixture.0.join("repos")).unwrap();
+            "original"
+        }
+        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            "repos"
+        }
+        Err(error) => panic!("{error}"),
+    };
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
     let receipt = source.materialize(request(), &input, budget()).unwrap();
     assert_eq!(receipt.publication, Publication::Created);
     assert!(
         fixture
             .0
-            .join("original/42/revisions/caller-uuid/part.stl")
+            .join(pinned)
+            .join("42/revisions/caller-uuid/part.stl")
             .is_file()
     );
-    assert!(
-        fs::read_dir(fixture.0.join("repos"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    if pinned == "original" {
+        assert!(
+            fs::read_dir(fixture.0.join("repos"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
 }
 
 #[test]

@@ -199,25 +199,37 @@ fn input_file_and_source_roots_remain_pinned_after_path_replacement() {
     )
     .unwrap();
     fs::write(fixture.0.join("input/upload.zip"), b"not a zip").unwrap();
-    fs::rename(fixture.0.join("repos"), fixture.0.join("original-repos")).unwrap();
-    fs::create_dir(fixture.0.join("repos")).unwrap();
+    // Windows refuses to rename a directory while a handle below it is open,
+    // so the open Source keeps its path from being replaced at all.
+    let pinned = match fs::rename(fixture.0.join("repos"), fixture.0.join("original-repos")) {
+        Ok(()) => {
+            fs::create_dir(fixture.0.join("repos")).unwrap();
+            "original-repos"
+        }
+        Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
+            "repos"
+        }
+        Err(error) => panic!("{error}"),
+    };
+    let candidate = fixture
+        .0
+        .join(pinned)
+        .join("42/revisions/.pp-source-archives/.candidate");
     let extracted = source
         .extract_zip(input, ArchiveLimits::default(), &AtomicBool::new(false))
         .unwrap();
     assert_eq!(extracted.receipt().inflated_bytes, 65536);
-    assert!(
-        fs::read_dir(fixture.0.join("repos"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(candidate.is_dir());
+    if pinned == "original-repos" {
+        assert!(
+            fs::read_dir(fixture.0.join("repos"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
     extracted.discard().unwrap();
-    assert!(
-        !fixture
-            .0
-            .join("original-repos/42/revisions/.pp-source-archives/.candidate")
-            .exists()
-    );
+    assert!(!candidate.exists());
 }
 
 #[cfg(unix)]

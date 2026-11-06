@@ -25,6 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub mod autosave;
 pub(crate) mod diff;
 pub mod observation;
 mod preparation;
@@ -584,6 +585,12 @@ enum Operation {
         observations: Observations,
         reply: RebaseReply,
     },
+    Autosave {
+        request: pp_contracts::autosave::SavePlanChoicesRequest,
+        key: String,
+        observations: Observations,
+        reply: mpsc::Sender<Result<autosave::AutosaveOutcome>>,
+    },
 }
 enum RecomputeReply {
     Draft(mpsc::Sender<Result<RecomputeOutcome>>),
@@ -771,25 +778,17 @@ impl WorkingDraftClient {
         wait: Duration,
         reply: fn(mpsc::Sender<Result<T>>) -> RecomputeReply,
     ) -> Result<T> {
-        let observations = self
-            .observations
-            .clone()
-            .ok_or_else(|| anyhow!("Working-draft observations are not configured"))?;
-        self.enqueue(cancelled, wait, |sender, cancelled| {
-            Envelope::WorkingDraftWrite {
-                command: Write {
-                    credential,
-                    profile,
-                    policy: self.policy,
-                    cancelled,
-                    operation: Operation::Recompute {
-                        request,
-                        observations,
-                        reply: reply(sender),
-                    },
-                },
-            }
-        })
+        self.enqueue_observed(
+            credential,
+            profile,
+            cancelled,
+            wait,
+            |observations, sender| Operation::Recompute {
+                request,
+                observations,
+                reply: reply(sender),
+            },
+        )
     }
     /// Creates an open draft from a fresh preparation carrying the source
     /// draft's Part decisions, as Node's `rebasePlanDraft` does. An open
@@ -847,24 +846,42 @@ impl WorkingDraftClient {
             request,
         } = args;
         let idempotency_key = self::idempotency_key(idempotency_key)?;
+        self.enqueue_observed(
+            credential,
+            profile,
+            cancelled,
+            wait,
+            |observations, sender| Operation::Rebase {
+                draft_id,
+                idempotency_key,
+                request,
+                observations,
+                reply: reply(sender),
+            },
+        )
+    }
+    /// Queues a write that reads Plan sources through the configured
+    /// observations.
+    fn enqueue_observed<T>(
+        &self,
+        credential: Credential,
+        profile: PositiveId,
+        cancelled: Arc<AtomicBool>,
+        wait: Duration,
+        operation: impl FnOnce(Observations, mpsc::Sender<Result<T>>) -> Operation,
+    ) -> Result<T> {
         let observations = self
             .observations
             .clone()
             .ok_or_else(|| anyhow!("Working-draft observations are not configured"))?;
-        self.enqueue(cancelled, wait, |sender, cancelled| {
+        self.enqueue(cancelled, wait, |reply, cancelled| {
             Envelope::WorkingDraftWrite {
                 command: Write {
                     credential,
                     profile,
                     policy: self.policy,
                     cancelled,
-                    operation: Operation::Rebase {
-                        draft_id,
-                        idempotency_key,
-                        request,
-                        observations,
-                        reply: reply(sender),
-                    },
+                    operation: operation(observations, reply),
                 },
             }
         })
@@ -991,6 +1008,26 @@ pub(super) fn write(
                     cancelled,
                 },
                 tokens,
+                admission,
+            ));
+        }
+        Operation::Autosave {
+            request,
+            key,
+            observations,
+            reply,
+        } => {
+            let _ = reply.send(autosave::execute(
+                connection,
+                autosave::Args {
+                    credential: &credential,
+                    policy,
+                    profile,
+                    request: &request,
+                    key: &key,
+                    observations: &observations,
+                    cancelled: &cancelled,
+                },
                 admission,
             ));
         }

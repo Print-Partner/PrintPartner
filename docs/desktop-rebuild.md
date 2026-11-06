@@ -3038,12 +3038,18 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   Accepted Plan.
   Before it publishes, Accept saves the snapshot its preview promises: one
   `plan_snapshots` row, `source` `pre_apply`, named `Before accepting draft
-  <draft_id>`, in the same transaction. Its payload has Node's
-  `capturePlanSnapshotPayload` shape (`layers`, `kit_manifest`,
-  `captured_at`, with `recipe_summary` `null` because Rust does not derive the
-  recipe yet) plus `accepted_plan_revision_id` and `accepted_plan_version` of
-  the Plan it replaces. A replay, an already consumed draft and every refusal
-  save none.
+  <draft_id>`, in the same transaction. It holds the Accepted Plan being
+  replaced. Its `layers` come from that revision's `plan_revision_inputs`
+  (type, Source id, current Source name and order), not from
+  `profile_layers`: Accept publishes the working layers, so they already
+  match the new Plan. The payload has Node's `capturePlanSnapshotPayload`
+  shape plus `accepted_plan_revision_id` and `accepted_plan_version`.
+  Accepted revisions record no kit manifest, Source tag or branch, so
+  `kit_manifest`, `tag`, `branch` and `recipe_summary` are `null`, and
+  restoring the row brings back the replaced Plan's Source layers while
+  keeping the current kit manifest and Source refs. The first Accept, a
+  replaced revision with no recorded inputs, a replay, an already consumed
+  draft and every refusal save none.
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500

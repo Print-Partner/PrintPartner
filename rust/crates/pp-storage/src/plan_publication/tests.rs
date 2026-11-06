@@ -1054,67 +1054,104 @@ mod transaction {
         });
         assert_eq!(events, Vec::from_iter(expected), "{}", case["id"]);
     }
-    /// An applied Accept saves one `pre_apply` snapshot of the Plan it
-    /// replaces in the same transaction; any other outcome saves none.
+    /// An applied Accept that replaces a Plan saves one `pre_apply` snapshot
+    /// of that Plan's recorded inputs in the same transaction; the first Accept
+    /// and every other outcome save none.
     fn assert_pre_accept_snapshot(c: &Connection, case: &Value, actual: &Value) {
-        let rows: Vec<(i64, String, String, String)> = c
-            .prepare("SELECT profile_id,source,created_at,payload_json FROM plan_snapshots WHERE source='pre_apply'")
+        let rows: Vec<(i64, String, String)> = c
+            .prepare("SELECT profile_id,created_at,payload_json FROM plan_snapshots WHERE source='pre_apply'")
             .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        if actual["kind"] != "applied" {
+        let input = &case["input"];
+        let previous = &input["expectedBase"]["revisionId"];
+        if actual["kind"] != "applied" || previous.is_null() {
             assert_eq!(rows, vec![], "{}", case["id"]);
             return;
         }
-        let [(profile, _, created_at, payload)] = rows.as_slice() else {
+        let [(profile, created_at, payload)] = rows.as_slice() else {
             panic!("{}: {rows:?}", case["id"]);
         };
         let payload: Value = serde_json::from_str(payload).unwrap();
-        let input = &case["input"];
         assert_eq!(json!(profile), input["profileId"], "{}", case["id"]);
-        assert_eq!(
-            (
-                &payload["accepted_plan_revision_id"],
-                &payload["accepted_plan_version"],
-                &payload["captured_at"],
-            ),
-            (
-                &input["expectedBase"]
-                    .get("revisionId")
-                    .cloned()
-                    .unwrap_or(Value::Null),
-                &input["expectedBase"]["planVersion"],
-                &json!(created_at),
-            ),
-            "{}",
-            case["id"]
-        );
-        let mut layers: Vec<&Value> = case["before"]["profile_layers"]
-            .as_array()
-            .map(|rows| {
-                rows.iter()
-                    .filter(|row| row["profile_id"] == input["profileId"])
-                    .collect()
+        let before = &case["before"];
+        let rows = |table: &str| before[table].as_array().cloned().unwrap_or_default();
+        let set = rows("plan_revisions")
+            .into_iter()
+            .find(|row| &row["id"] == previous)
+            .unwrap()["input_set_id"]
+            .clone();
+        let mut inputs: Vec<Value> = rows("plan_revision_inputs")
+            .into_iter()
+            .filter(|row| row["input_set_id"] == set)
+            .collect();
+        inputs.sort_by_key(|row| (row["layer_order"].as_i64(), row["source_id"].as_i64()));
+        let layers: Vec<Value> = inputs
+            .iter()
+            .map(|row| {
+                let name = rows("projects")
+                    .into_iter()
+                    .find(|project| project["id"] == row["source_id"])
+                    .unwrap()["name"]
+                    .clone();
+                let kind = row["source_layer"].as_str().unwrap().split_once(':').unwrap().0;
+                json!({"layer_type":kind,"project_id":row["source_id"],"source_name":name,"tag":null,"branch":null,"order":row["layer_order"]})
             })
-            .unwrap_or_default();
-        layers.sort_by_key(|row| (row["layer_order"].as_i64(), row["id"].as_i64()));
+            .collect();
+        assert!(!layers.is_empty(), "{}", case["id"]);
         assert_eq!(
-            payload["layers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|layer| (&layer["layer_type"], &layer["project_id"], &layer["order"]))
-                .collect::<Vec<_>>(),
-            layers
-                .iter()
-                .map(|row| (&row["layer_type"], &row["project_id"], &row["layer_order"]))
-                .collect::<Vec<_>>(),
+            payload,
+            json!({
+                "layers": layers,
+                "kit_manifest": null,
+                "recipe_summary": null,
+                "captured_at": created_at,
+                "accepted_plan_revision_id": previous,
+                "accepted_plan_version": input["expectedBase"]["planVersion"],
+            }),
             "{}",
             case["id"]
         );
-        assert!(payload["kit_manifest"]["selections"].is_object());
+    }
+    /// The snapshot holds the replaced Plan's recorded inputs, not the working
+    /// `profile_layers`: a working layer with no Source, which Accept does not
+    /// publish, stays out of it.
+    #[test]
+    fn transaction_snapshot_holds_the_replaced_plan_inputs() {
+        let fixture = fixture();
+        let mut case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == "changed")
+            .unwrap()
+            .clone();
+        let mut extra = case["before"]["profile_layers"][0].clone();
+        extra["id"] = json!(99);
+        extra["layer_type"] = json!("addon");
+        extra["project_id"] = Value::Null;
+        extra["layer_order"] = json!(1);
+        case["before"]["profile_layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(extra);
+        let mut c = database(&fixture, &case);
+        let tx = c.transaction().unwrap();
+        let actual = publish(
+            &tx,
+            &case,
+            &mut Tokens(case["allocationStart"].as_u64().unwrap().into()),
+        );
+        tx.commit().unwrap();
+        assert_eq!(actual["kind"], "applied");
+        assert_pre_accept_snapshot(&c, &case, &actual);
+        let payload: String = c
+            .query_row("SELECT payload_json FROM plan_snapshots", [], |r| r.get(0))
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["layers"].as_array().unwrap().len(), 1);
     }
     #[test]
     fn transaction_replays_node_outcomes_receipts_and_persisted_rows() {

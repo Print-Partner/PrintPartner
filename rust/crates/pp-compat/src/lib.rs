@@ -2411,6 +2411,20 @@ if sys.argv[1] == "wait":
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn scratch_stress_clean_exit_reporting() {
+        for _ in 0..200 {
+            ticket_t_3_drain_process_stop_sigterms_cooperative_child();
+        }
+        for _ in 0..25 {
+            ticket_t_3_drain_leader_exit_with_short_lived_job_member_is_graceful();
+        }
+        for _ in 0..5 {
+            ticket_t_3_drain_leader_exit_with_live_job_member_reports_forced();
+        }
+    }
+
     /// A leader that is already gone when the drain starts does not keep the
     /// drain from terminating the rest of its job.
     #[cfg(windows)]

@@ -2269,6 +2269,14 @@ fn startup_owner_death_cycles(
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn scratch_stress_repeated_eof_joins_unread_response_body() {
+    for _ in 0..60 {
+        ticket_t_3_drain_repeated_eof_joins_unread_response_body();
+    }
+}
+
 #[tokio::test]
 async fn ticket_t_3_drain_repeated_eof_joins_unread_response_body() {
     use axum::{body::Body, http::Request};

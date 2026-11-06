@@ -142,6 +142,13 @@ const PHASES = [
   { name: "multi_overflow", database: multi, files: { "bracket.stl": same(box(100, 100, 20)), "gear.stl": same(box(100, 90, 10)) }, requests: [
     init("multi_overflows_to_new_plates", MULTI_ALL("p-b"), { revision: null }),
   ] },
+  { name: "outside_bed_too_deep", database: single, files: one(same(box(20, 250, 10))),
+    seed: NO_HEAD + "UPDATE build_profiles SET archived_at='2026-10-03T00:00:00.000Z' WHERE id=1;", requests: [
+    init("too_large_before_archived_outside_bed", assign([TOKEN, "p-huge"]), { revision: null }),
+  ] },
+  { name: "multi_outside_bed_too_deep", database: multi, files: { "bracket.stl": same(box(40, 250, 20)), "gear.stl": same(box(25, 25, 10)) }, requests: [
+    init("too_large_on_outside_bed", MULTI_ALL("p-huge"), { revision: null }),
+  ] },
   { name: "multi_outside_bed", database: multi, files: { "bracket.stl": same(box(40, 30, 20)), "gear.stl": same(box(25, 25, 10)) }, requests: [
     init("multi_too_large_after_outside_bed", assign(...[1, 2, 3].map((n) => [ppu(n), "p-huge"]), ...[5, 6].map((n) => [ppu(n), "p-tiny"])), { revision: null }),
     init("multi_outside_bed_refused", assign(...[1, 2, 3].map((n) => [ppu(n), "p-huge"]), ...[5, 6].map((n) => [ppu(n), "p-a"])), { revision: null }),

@@ -2981,14 +2981,14 @@ this; `pp-core::production::geometry` re-exports it.
 One case differs from Node on purpose: a replay that names a unit the stored
 layout does not hold is 409 `plate_revision_changed`, where Node throws and
 answers 500. A Printer whose bed is past the stored Plate range (more than
-2,147,483,647 µm) cannot be packed in the Plate types, so its units are left
-unpacked while every other Printer packs, and an oversized unit elsewhere is
-still 422 `unit_too_large`. After that an archived Build is 409
+2,147,483,647 µm) cannot be packed in the Plate types, so its units are only
+checked against that bed while every other Printer packs, and a unit that does
+not fit, on that Printer or another, is still 422 `unit_too_large`. After that an archived Build is 409
 `plan_archived` and any other Build is 422 `outside_build_area`, the codes
 Node gives for the same requests.
 
-`fixtures/parity/plates-initialize/node.json` is Node's answer for 41 cases in
-15 phases. Each phase writes box STLs into the pinned Source snapshot and
+`fixtures/parity/plates-initialize/node.json` is Node's answer for 43 cases in
+17 phases. Each phase writes box STLs into the pinned Source snapshot and
 seeds SQL that re-pins those Parts to the files' SHA-256 and restamps the
 revision digest with Node's `digestPlanRevisionParts`, because the fixtures pin
 digests whose files do not exist. Regenerate it with

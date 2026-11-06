@@ -13,7 +13,9 @@ use super::arrange::{
 };
 use super::artifacts::{self, Failure, LIMITS};
 use super::*;
-use crate::production::layout::{GroupRule, PackResult, PackingUnit, grouping_buckets, pack_units};
+use crate::production::layout::{
+    GroupRule, PackResult, PackingUnit, first_too_large, grouping_buckets, pack_units,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Width, depth and height in micrometres, by token.
@@ -159,9 +161,10 @@ fn geometry_failure(failure_kind: Failure) -> Response {
 /// What packing the assigned units produced.
 enum Packed {
     /// `outside` when an assigned Printer's bed is past the stored Plate
-    /// range. Node packs that Printer's units onto it and then refuses the
-    /// layout as `outside_build_area`, after the archived check, so its
-    /// units are left out here and the other Printers still pack.
+    /// range and every unit fits it. Node packs that Printer's units onto it
+    /// and then refuses the layout as `outside_build_area`, after the
+    /// archived check, so its units are left out here and the other Printers
+    /// still pack.
     Plates {
         plates: Vec<PlateInput>,
         outside: bool,
@@ -190,10 +193,6 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
     let mut plates = Vec::new();
     let mut outside = false;
     for (printer_id, printer) in input.printers {
-        let Some(geometry) = &printer.geometry else {
-            outside = true;
-            continue;
-        };
         let mut members = Vec::new();
         for (part, row) in input.units {
             if printer_of.get(row.token.as_str()).copied().flatten() != Some(*printer_id) {
@@ -220,6 +219,13 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
             members.push(group_unit(part, row, value));
         }
         for bucket in grouping_buckets(&members, input.rules) {
+            let Some(geometry) = &printer.geometry else {
+                if let Some(token) = first_too_large(printer.um, &bucket) {
+                    return Ok(Some(Packed::TooLarge((token, (*printer_id).to_owned()))));
+                }
+                outside = true;
+                continue;
+            };
             let packed = match pack_units(geometry, &bucket) {
                 PackResult::Packed(packed) => packed,
                 PackResult::UnitTooLarge(token) => {

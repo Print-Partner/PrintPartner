@@ -291,6 +291,22 @@ fn fits(printer: &PrinterGeometry, unit: &PackingUnit) -> bool {
         && unit.depth_um.get() <= usable_depth
         && unit.height_um.get() <= printer.bed_height_um.get()
 }
+/// The first unit, in packing order, that does not fit a bed given as
+/// width, depth, height and margin in micrometres. Node runs this check on a
+/// bed too large for `PrinterGeometry` before its layout is refused.
+pub fn first_too_large(bed_um: [i64; 4], units: &[PackingUnit]) -> Option<RequiredUnitToken> {
+    let [width, depth, height, margin] = bed_um;
+    let mut units = units.to_vec();
+    sort_units(&mut units);
+    units
+        .into_iter()
+        .find(|unit| {
+            i64::from(unit.width_um.get()) > width - 2 * margin
+                || i64::from(unit.depth_um.get()) > depth - 2 * margin
+                || i64::from(unit.height_um.get()) > height
+        })
+        .map(|unit| unit.token)
+}
 fn sort_units(units: &mut [PackingUnit]) {
     units.sort_by(|left, right| {
         let longest = right

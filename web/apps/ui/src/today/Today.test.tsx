@@ -1013,7 +1013,7 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
     expect(
       await screen.findByText(
-        "Nothing was sent: could not reread the results to check the earlier confirm on Voron 2.4 and Trident.",
+        "Nothing was sent: could not reread the results to check the earlier confirm on Voron 2.4 and Trident. Confirm again once the core answers.",
       ),
     ).toBeTruthy();
     expect(core.posts).toHaveLength(3);
@@ -1077,6 +1077,73 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
     expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
     expect(core.state.marked).toBe(2);
+  });
+
+  it("replays every overlapping lost burst that landed, with one Undo for all of them", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED(), loseFirstAnswers: 6 });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Trident bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(core.state.marked).toBe(5));
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    expect(await screen.findByText("Confirmed 5 units from Voron 2.4 and Trident.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(2);
+    expect(core.state.marked).toBe(5);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(
+      await screen.findByText(
+        "Undid the Voron 2.4 and Trident confirmation. 5 units are waiting again.",
+      ),
+    ).toBeTruthy();
+    expect(core.posts.filter((p) => p.path.endsWith("/undo"))).toHaveLength(2);
+    expect(core.state.marked).toBe(0);
+  });
+
+  it("says nothing was sent when no picked unit is still waiting", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    let drops = 3;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/printer-checkoff/verify-batch" && drops > 0) {
+        drops -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      return real(path, init);
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    // Another window confirms unit 3 before Today rereads.
+    await real("/api/v2/printer-checkoff/verify-batch", {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: "elsewhere",
+        beds: [
+          {
+            link_id: "link-voron",
+            decisions: [{ part_id: 1, unit_index: 2, result: "confirmed" }],
+          },
+        ],
+      }),
+    });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(unit("bracket.stl unit 3"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    expect(
+      await screen.findByText("Nothing was sent: the picked units are no longer waiting."),
+    ).toBeTruthy();
+    expect(core.posts.filter((p) => p.body.idempotency_key !== "elsewhere")).toHaveLength(0);
   });
 
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {

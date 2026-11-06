@@ -777,16 +777,30 @@ fn table_state(sql: &Connection) -> Vec<(String, String)> {
 /// writes exactly what Node did, and the Plate rows end equal.
 #[test]
 fn ticket_t_61_plates_arrange_matches_node() {
-    let golden: Value = serde_json::from_str(include_str!(
-        "../../../../fixtures/parity/plates-arrange/node.json"
-    ))
-    .unwrap();
-    assert!(
-        golden["generated"]
-            .as_str()
-            .unwrap()
-            .contains("plates-arrange/generate.mjs")
+    replay_golden(
+        include_str!("../../../../fixtures/parity/plates-arrange/node.json"),
+        "plates-arrange/generate.mjs",
     );
+}
+
+/// Node's initialize golden (`fixtures/parity/plates-initialize`): each phase
+/// writes the STL files its Parts are pinned to, seeds the re-pinned digests
+/// and the Printer fleet, then every initialize answers and writes exactly
+/// what Node did, and the Plate rows end equal.
+#[test]
+fn ticket_t_61_plates_initialize_matches_node() {
+    replay_golden(
+        include_str!("../../../../fixtures/parity/plates-initialize/node.json"),
+        "plates-initialize/generate.mjs",
+    );
+}
+
+/// Replays a Plate parity golden against Rust: per phase a fresh fixture,
+/// its files and seed, then each request's response, changed tables and
+/// event count, and the final Plate rows.
+fn replay_golden(text: &str, generator: &str) {
+    let golden: Value = serde_json::from_str(text).unwrap();
+    assert!(golden["generated"].as_str().unwrap().contains(generator));
     for phase in golden["phases"].as_array().unwrap() {
         let name = phase["name"].as_str().unwrap();
         let f = match phase["database"].as_str().unwrap() {
@@ -797,6 +811,10 @@ fn ticket_t_61_plates_arrange_matches_node() {
             ),
             other => panic!("{name}: {other}"),
         };
+        for file in phase["files"].as_array().into_iter().flatten() {
+            let path = f.dir.path().join(file["path"].as_str().unwrap());
+            std::fs::write(path, file["text"].as_str().unwrap()).unwrap();
+        }
         let sql = f.sql();
         seed_phase(&sql, phase, name);
         for case in phase["cases"].as_array().unwrap() {
@@ -804,10 +822,10 @@ fn ticket_t_61_plates_arrange_matches_node() {
             let path = case["path"].as_str().unwrap();
             let profile = path.split('/').nth(2).unwrap().to_owned();
             let body = case["body"].clone();
-            let request = if path.ends_with("/restore") {
-                Request::Restore { profile, body }
-            } else {
-                Request::Arrange { profile, body }
+            let request = match path.rsplit('/').next().unwrap() {
+                "restore" => Request::Restore { profile, body },
+                "initialize" => Request::Initialize { profile, body },
+                _ => Request::Arrange { profile, body },
             };
             let before = table_state(&sql);
             let events = f.events().len();

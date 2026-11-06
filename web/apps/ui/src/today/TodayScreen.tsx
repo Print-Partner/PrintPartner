@@ -176,25 +176,34 @@ function useCheckoff() {
     },
   });
   const confirm = useMutation({
+    // Several landed bursts resent together: a refusal of one keeps the receipts of the
+    // others, so their Undo is not lost. A lost answer fails the whole resend, which is
+    // safe to repeat because every burst keeps its key.
     mutationFn: async ({ bursts }: Confirm) => {
-      const receipts: VerifyBatchReceipt[] = [];
+      const receipts: (VerifyBatchReceipt | Error)[] = [];
       for (const { picks, key } of bursts) {
-        receipts.push(
-          await writeCore(
-            "verifyCheckoffBurst",
-            {},
-            {
-              idempotency_key: key,
-              beds: picks.map(({ bed, units }) => ({
-                link_id: bed.result.id,
-                decisions: units.map((u) => ({
-                  part_id: u.part_id,
-                  unit_index: u.unit_index,
-                  result: "confirmed" as const,
-                })),
+        const sent = writeCore(
+          "verifyCheckoffBurst",
+          {},
+          {
+            idempotency_key: key,
+            beds: picks.map(({ bed, units }) => ({
+              link_id: bed.result.id,
+              decisions: units.map((u) => ({
+                part_id: u.part_id,
+                unit_index: u.unit_index,
+                result: "confirmed" as const,
               })),
-            },
-          ),
+            })),
+          },
+        );
+        receipts.push(
+          bursts.length === 1
+            ? await sent
+            : await sent.catch((error: Error) => {
+                if (lostSend(error)) throw error;
+                return error;
+              }),
         );
       }
       return receipts;
@@ -228,12 +237,25 @@ function useCheckoff() {
       const replayed = ({ picks }: Burst) =>
         pending !== null &&
         picks.every(({ bed, units }) => units.every((u) => pending.has(pendingKey(bed, u))));
-      const undos = bursts.flatMap((burst, i) =>
-        replayed(burst) ? [] : [{ printer: pickedPrinters(burst.picks), receipt: receipts[i]! }],
+      const answered = bursts.flatMap((burst, i) => {
+        const receipt = receipts[i]!;
+        return receipt instanceof Error ? [] : [{ burst, receipt }];
+      });
+      const refused = bursts.filter((_, i) => receipts[i] instanceof Error);
+      if (refused.length > 0) {
+        const reason = (receipts.find((r) => r instanceof Error) as Error).message;
+        setNotice(`Not marked on ${pickedPrinters(refused.flatMap((b) => b.picks))}: ${reason}`);
+      }
+      if (answered.length === 0) return;
+      const undos = answered.flatMap(({ burst, receipt }) =>
+        replayed(burst) ? [] : [{ printer: pickedPrinters(burst.picks), receipt }],
       );
       setTally(
         undos.length === 0
-          ? { kind: "replayed", printer: pickedPrinters(bursts.flatMap((b) => b.picks)) }
+          ? {
+              kind: "replayed",
+              printer: pickedPrinters(answered.flatMap(({ burst }) => burst.picks)),
+            }
           : { kind: "confirmed", undos },
       );
       if (undos.length > 0) onConfirmed?.();

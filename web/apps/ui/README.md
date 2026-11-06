@@ -191,7 +191,9 @@ so a print that ends or a link that drops shows up without a reload.
   one, the write landed, so Retry sends the same request and key and the core replays the
   receipt and Undo. Picks that only overlap bursts that got no answer reread
   the results first: every one of those bursts that landed is resent with its
-  key, so the core replays each receipt, and one Undo undoes them all; if none did, the picks the reread still
+  key, so the core replays each receipt, and one Undo undoes them all (if the
+  core refuses one of them, the others keep their receipts and Undo, and an alert
+  names the refused printer); if none did, the picks the reread still
   lists as pending go as a new burst. A replayed receipt of a burst undone
   elsewhere leaves the picks picked. If the
   reread fails, nothing is sent, an alert says so, and that burst keeps its key,

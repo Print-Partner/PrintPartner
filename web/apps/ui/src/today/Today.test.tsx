@@ -1146,6 +1146,57 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(core.posts.filter((p) => p.body.idempotency_key !== "elsewhere")).toHaveLength(0);
   });
 
+  it("keeps a replayed burst's Undo when another resent burst is refused", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    let mode: "lose" | "drop" | "pass" = "lose";
+    let left = 3;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path !== "/api/v2/printer-checkoff/verify-batch" || mode === "pass" || left === 0)
+        return real(path, init);
+      left -= 1;
+      if (mode === "drop") throw new TypeError("Failed to fetch");
+      await real(path, init);
+      throw new TypeError("Failed to fetch");
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    mode = "drop";
+    left = 3;
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Trident bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(left).toBe(0));
+    mode = "pass";
+    // Another window confirms the whole Trident bed before Today rereads.
+    await real("/api/v2/printer-checkoff/verify-batch", {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: "elsewhere",
+        beds: [
+          {
+            link_id: "link-trident",
+            decisions: [
+              { part_id: 3, unit_index: 1, result: "confirmed" },
+              { part_id: 2, unit_index: 0, result: "confirmed" },
+            ],
+          },
+        ],
+      }),
+    });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(screen.getByText(/^Not marked on Trident: /)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText(/^Undid the Voron 2\.4 confirmation\./)).toBeTruthy();
+    expect(core.state.marked).toBe(2);
+  });
+
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ results: SHARED() });

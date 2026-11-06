@@ -9,6 +9,12 @@
 //! `idempotency_key`, which returns the stored receipt. Admission is
 //! `accepted::Gate`: loopback, exact Host and Origin, and a session or API key.
 //!
+//! Node's `POST /printer-checkoff/{id}/manual-complete` (GRE-1169) shares it
+//! too: it marks a watching print on a hand-tracked printer finished and
+//! checks nothing off. Node's single-link verify and dismiss stay on Node,
+//! because they deduct Spoolman stock, send webhooks and claim unattributed
+//! prints after the write, and Rust has none of that yet.
+//!
 //! Node's accepted Progress import (`POST /plans/{id}/progress/import`)
 //! shares the router and the same writer transaction rules.
 //!
@@ -57,6 +63,10 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         return Router::new();
     };
     let routes = Router::new()
+        .route(
+            "/printer-checkoff/{id}/manual-complete",
+            post(manual_complete),
+        )
         .route("/printer-checkoff/verify-batch", post(verify_batch))
         .route("/printer-checkoff/verify-batch/undo", post(undo_batch))
         .route("/farm-log", get(farm_log))
@@ -80,6 +90,15 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         );
     gate.guard(routes.clone().nest("/api/v2", routes))
         .with_state(App { gate, client })
+}
+
+/// Node's `POST /printer-checkoff/{id}/manual-complete`.
+async fn manual_complete(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+) -> Response {
+    run(app, presented, Request::ManualComplete { id }).await
 }
 
 async fn verify_batch(

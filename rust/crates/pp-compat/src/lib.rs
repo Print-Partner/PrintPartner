@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(dead_code))]
 mod account_pin;
 pub use account_pin::DesktopAccountPin;
 pub mod drain;
@@ -1164,10 +1165,23 @@ impl Drop for Supervisor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod ticket_t_2;
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod tests {
+    pub(crate) fn node_binary() -> std::path::PathBuf {
+        let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
+        let output = std::process::Command::new(configured)
+            .args(["-p", "process.execPath"])
+            .output()
+            .expect("Node must report its native executable");
+        assert!(output.status.success());
+        std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     pub(crate) fn node_binary() -> std::path::PathBuf {
         static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

@@ -325,7 +325,7 @@ fn verify_dependencies(
     verify_files(&root, &inventory.files, false, stop)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;

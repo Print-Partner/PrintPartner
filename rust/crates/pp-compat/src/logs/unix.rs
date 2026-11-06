@@ -179,6 +179,11 @@ pub(super) mod test_support {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    /// The permission bits of `path`.
+    pub(crate) fn access(path: &Path) -> String {
+        format!("{:o}", mode(path))
+    }
+
     /// The access `widen` gave is still in place.
     pub(crate) fn widened(path: &Path) -> bool {
         mode(path) & 0o064 == 0o064

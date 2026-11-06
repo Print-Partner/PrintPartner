@@ -3,6 +3,8 @@
 rust/** text=auto eol=lf
 # Node parity fixtures are compared byte for byte with generator output.
 fixtures/** text=auto eol=lf
+# Parity generators hash web sources; Prettier already writes LF.
+web/** text=auto eol=lf
 # Pinned historical schema sources are hashed byte for byte (pp-testkit, pp-storage
 # tests). Keep them exactly as committed on every OS, with no line-ending conversion.
 rust/crates/pp-storage/data/historical/** -text

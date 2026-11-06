@@ -480,7 +480,7 @@ device-name refusal and the FAT fallbacks.
 These rules came out of the pp-storage Windows port (GRE-1154). New tests follow them too:
 
 - Locks from `pp_os::try_lock` and `Dir::lock` cover one byte at offset `i64::MAX` on Windows, so other handles can read and copy a held lease file. A whole-file lock (`std::fs::File::lock`, `fs4`) still conflicts with them.
-- `.gitattributes` checks out `rust/**` and `fixtures/**` with LF endings on every OS. Schema SQL, JSON fixtures and generator output are compared byte for byte, and a CRLF checkout made them differ.
+- `.gitattributes` checks out `rust/**`, `fixtures/**` and `web/**` with LF endings on every OS. Schema SQL, JSON fixtures, generator output and the web source hashes that parity fixtures record are compared byte for byte, and a CRLF checkout made them differ.
 - Build SQLite `file:` URIs with `pp_storage::sqlite_uri::immutable_uri`. SQLite on Windows cannot open a URI that holds a verbatim `\\?\` prefix.
 - Hand Node a path from `pp_testkit::node_path::node_path`, and an `--import` or `import()` target as a `file:` URL (`pp_testkit::node_path::file_url`, or `pathToFileURL` in scripts). Node cannot resolve verbatim paths, and its ESM loader refuses a bare `C:\` path.
 - Close every connection and file under a directory before removing it. Windows refuses to delete an open file.

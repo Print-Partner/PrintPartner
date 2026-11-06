@@ -76,6 +76,17 @@ impl Fixture {
         ));
     }
 
+    fn setting(&self, key: &str, value: &serde_json::Value) {
+        let db = rusqlite::Connection::open(self.root.join("print-partner.db")).unwrap();
+        db.busy_timeout(Duration::from_secs(3)).unwrap();
+        db.execute(
+            "INSERT INTO app_settings (tenant_id,key,value) VALUES ('default',?1,?2)
+             ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![key, value.to_string()],
+        )
+        .unwrap();
+    }
+
     fn read(&self, inputs: Inputs, secret: &str, request: Request) -> anyhow::Result<Outcome> {
         let policy = AuthPolicy {
             registration: RegistrationPolicy::Open,
@@ -416,6 +427,8 @@ fn build_workflow_prepared_plates_without_printer_link_are_manual_checkoff() {
             awaiting_verification: 0,
             failed_verifications: 0,
             printer_links,
+            beds_to_clear: 0,
+            match_suggestions: 0,
         },
         stock: Stock::NotReady,
     };
@@ -587,4 +600,234 @@ fn task_feed_writes_nothing() {
     }
     assert_eq!(task_feed_logical_database(&f), database);
     assert_eq!(task_feed_files(&f), files);
+}
+
+fn bed_link(id: &str, printer: &str, state: &str, created_at: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "profile_id": 1,
+        "integration_id": "moonraker-1",
+        "printer_id": printer,
+        "filename": format!("{id}.gcode"),
+        "state": state,
+        "created_at": created_at,
+    })
+}
+
+#[test]
+fn task_feed_clear_beds_until_the_printer_moves_on() {
+    let f = Fixture::new();
+    let mut links = vec![
+        bed_link("a", "voron", "awaiting_verify", "2026-11-06T10:00:00.000Z"),
+        bed_link(
+            "b",
+            "trident",
+            "awaiting_verify",
+            "2026-11-06T10:05:00.000Z",
+        ),
+    ];
+    f.setting("printer.checkoff_links", &serde_json::json!(links));
+    let workspace = f.workspace(Inputs::default(), 1);
+    let action = &workspace.next_action;
+    assert_eq!(action.kind, ActionKind::ClearBeds);
+    assert_eq!(action.label, "Clear 2 beds");
+    assert_eq!(
+        action.reason,
+        "2 finished prints from this Build are still on their beds. Clear them and confirm what came off."
+    );
+    assert_eq!(action.item_count, Some(2));
+    assert_eq!(
+        action.target,
+        Target {
+            plan_id: 1,
+            tab: StageId::Checkoff,
+            draft_id: None,
+        }
+    );
+    let feed = f.tasks(Inputs::default());
+    assert_eq!(feed.tasks.len(), 1);
+    assert!(feed.tasks[0].attention);
+    assert_eq!(feed.tasks[0].next_action, workspace.next_action);
+
+    // A later print started on the Voron, so its bed was cleared to start it.
+    links.push(bed_link(
+        "c",
+        "voron",
+        "watching",
+        "2026-11-06T11:00:00.000Z",
+    ));
+    f.setting("printer.checkoff_links", &serde_json::json!(links));
+    let action = f.workspace(Inputs::default(), 1).next_action;
+    assert_eq!(action.kind, ActionKind::ClearBeds);
+    assert_eq!(action.label, "Clear 1 bed");
+    assert_eq!(
+        action.reason,
+        "1 finished print from this Build is still on its bed. Clear it and confirm what came off. 1 more print result is waiting for verification."
+    );
+    assert_eq!(action.item_count, Some(1));
+
+    // An unmatched print finished on the Trident later: no bed holds this
+    // Build's prints, and both results still need confirming.
+    f.setting(
+        "printer.unattributed_prints",
+        &serde_json::json!([{
+            "id": "later",
+            "printer_id": "trident",
+            "integration_id": "moonraker-1",
+            "filename": "someone-else.gcode",
+            "completed_at": "2026-11-06T12:00:00.000Z",
+            "gcode_objects": [],
+            "candidates": [],
+        }]),
+    );
+    let workspace = f.workspace(Inputs::default(), 1);
+    assert_eq!(workspace.next_action.kind, ActionKind::VerifyPrints);
+    assert_eq!(workspace.next_action.item_count, Some(2));
+    let feed = f.tasks(Inputs::default());
+    assert_eq!(feed.tasks[0].next_action, workspace.next_action);
+
+    // Dismissing that print does not put the older result back on the bed.
+    f.setting(
+        "printer.unattributed_prints",
+        &serde_json::json!([{
+            "id": "later",
+            "printer_id": "trident",
+            "integration_id": "moonraker-1",
+            "filename": "someone-else.gcode",
+            "completed_at": "2026-11-06T12:00:00.000Z",
+            "gcode_objects": [],
+            "candidates": [],
+            "dismissed": true,
+        }]),
+    );
+    assert_eq!(
+        f.workspace(Inputs::default(), 1).next_action,
+        workspace.next_action
+    );
+}
+
+#[test]
+fn task_feed_clear_beds_orders_a_late_claim_by_its_print_time() {
+    let f = Fixture::new();
+    let mut finished = bed_link(
+        "finished",
+        "voron",
+        "awaiting_verify",
+        "2026-11-06T10:00:00.000Z",
+    );
+    finished["completed_at"] = "2026-11-06T10:30:00.000Z".into();
+    // Another Build's print came off at 09:00 and was claimed at 12:00: its
+    // link is newer, its print is older, so Build 1's print holds the bed.
+    let mut claimed = bed_link(
+        "claimed",
+        "voron",
+        "awaiting_verify",
+        "2026-11-06T12:00:00.000Z",
+    );
+    claimed["profile_id"] = 2.into();
+    claimed["completed_at"] = "2026-11-06T09:00:00.000Z".into();
+    f.setting(
+        "printer.checkoff_links",
+        &serde_json::json!([finished, claimed]),
+    );
+    let action = f.workspace(Inputs::default(), 1).next_action;
+    assert_eq!(action.kind, ActionKind::ClearBeds);
+    assert_eq!(action.item_count, Some(1));
+    assert_eq!(
+        action.reason,
+        "1 finished print from this Build is still on its bed. Clear it and confirm what came off."
+    );
+}
+
+#[test]
+fn task_feed_match_prints_for_suggested_unmatched_prints() {
+    let f = Fixture::new();
+    let print = |objects: serde_json::Value, claimed: bool| {
+        let mut print = serde_json::json!({
+            "id": "print-1",
+            "printer_id": "voron",
+            "integration_id": "moonraker-1",
+            "filename": "mystery.gcode",
+            "completed_at": "2026-11-06T12:00:00.000Z",
+            "gcode_objects": objects,
+            "candidates": [],
+        });
+        if claimed {
+            print["claimed_at"] = "2026-11-06T12:30:00.000Z".into();
+        }
+        serde_json::json!([print])
+    };
+    let before = f.workspace(Inputs::default(), 1).next_action;
+    assert_eq!(before.kind, ActionKind::CheckOffManually);
+
+    // The printed object carries one of Build 1's Required-unit tokens.
+    let token = serde_json::json!(["ppu_827108f7baf3a2f3461d20c24e85822e"]);
+    f.setting("printer.unattributed_prints", &print(token.clone(), false));
+    let workspace = f.workspace(Inputs::default(), 1);
+    let action = &workspace.next_action;
+    assert_eq!(action.kind, ActionKind::MatchPrints);
+    assert_eq!(action.label, "Match finished prints");
+    assert_eq!(
+        action.reason,
+        "1 finished print the app could not match looks like this Build's. Open Match prints to claim or dismiss it."
+    );
+    assert_eq!(action.item_count, Some(1));
+    assert_eq!(action.target.tab, StageId::Checkoff);
+    let checkoff = &workspace.stages[3].status;
+    assert_eq!(checkoff.kind, StatusKind::NeedsAttention);
+    assert_eq!(checkoff.task_count, Some(1));
+    let feed = f.tasks(Inputs::default());
+    assert!(feed.tasks[0].attention);
+    assert_eq!(feed.tasks[0].next_action, workspace.next_action);
+
+    // No evidence for any Build, or a print already claimed: no match task.
+    f.setting(
+        "printer.unattributed_prints",
+        &print(serde_json::json!([]), false),
+    );
+    assert_eq!(f.workspace(Inputs::default(), 1).next_action, before);
+    f.setting("printer.unattributed_prints", &print(token, true));
+    assert_eq!(f.workspace(Inputs::default(), 1).next_action, before);
+}
+
+#[test]
+fn build_workflow_orders_clear_beds_confirm_and_match() {
+    let facts = |failed, awaiting, beds, matches, printing| Facts {
+        build: Build {
+            id: 1,
+            name: "Order".into(),
+        },
+        sources: Sources::Ready { attached_count: 1 },
+        accepted_plan: Accepted::Ready {
+            revision_id: 1,
+            plan_version: 1,
+            total_units: 4,
+            remaining_units: 4,
+        },
+        working_plan: Working::None,
+        production: Production {
+            plate_state: PlateState::Ready,
+            queued_jobs: 0,
+            sending_jobs: 0,
+            printing_jobs: printing,
+            failed_jobs: 0,
+        },
+        checkoff: Checkoff {
+            awaiting_verification: awaiting,
+            failed_verifications: failed,
+            printer_links: 1,
+            beds_to_clear: beds,
+            match_suggestions: matches,
+        },
+        stock: Stock::NotReady,
+    };
+    let kind = |f: Facts| workflow::resolve(&f).unwrap().next_action.kind;
+    assert_eq!(kind(facts(1, 2, 1, 1, 1)), ActionKind::ReviewFailedPrints);
+    assert_eq!(kind(facts(0, 2, 1, 1, 1)), ActionKind::ClearBeds);
+    assert_eq!(kind(facts(0, 2, 0, 1, 1)), ActionKind::VerifyPrints);
+    assert_eq!(kind(facts(0, 0, 0, 1, 1)), ActionKind::MatchPrints);
+    assert_eq!(kind(facts(0, 0, 0, 0, 1)), ActionKind::MonitorProduction);
+    assert!(ActionKind::ClearBeds.needs_attention() && ActionKind::MatchPrints.needs_attention());
+    // A bed count above the awaiting results is not a valid fact.
+    assert!(workflow::resolve(&facts(0, 1, 2, 0, 0)).is_err());
 }

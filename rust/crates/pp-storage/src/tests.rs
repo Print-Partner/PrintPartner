@@ -1850,7 +1850,7 @@ fn ticket_t_7_migrations_preserves_refused_inputs() {
         "Cannot upgrade database schema version 30",
     );
     let newer = if cfg!(feature = "desktop_rebuild") {
-        "45"
+        "46"
     } else {
         "40"
     };

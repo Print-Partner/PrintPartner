@@ -934,8 +934,7 @@ fn write_or_reuse_receipt(
         let receipt = publish_receipt(&temporary, &receipt_path, receipt, admitted)?;
         fs::remove_file(&temporary)
             .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
-        fs::File::open(data_dir)
-            .and_then(|directory| directory.sync_all())
+        pp_os::sync_directory(data_dir)
             .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
         Ok(receipt)
     })();

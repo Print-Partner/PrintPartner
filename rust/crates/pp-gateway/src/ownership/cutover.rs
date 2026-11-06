@@ -373,7 +373,7 @@ pub fn plan(
 
 impl CutoverPlan {
     pub fn commit(self, data_dir: &Path, drained: DrainEvidence) -> CutoverReceipt {
-        self.commit_with_directory_sync(data_dir, drained, |dir| fs::File::open(dir)?.sync_all())
+        self.commit_with_directory_sync(data_dir, drained, pp_os::sync_directory)
     }
 
     fn commit_with_directory_sync(
@@ -582,7 +582,7 @@ fn admit_record(
 }
 
 pub fn append_evidence(data_dir: &Path, evidence: &Evidence<'_>) -> std::io::Result<()> {
-    append_evidence_with_directory_sync(data_dir, evidence, |dir| fs::File::open(dir)?.sync_all())
+    append_evidence_with_directory_sync(data_dir, evidence, pp_os::sync_directory)
 }
 
 fn append_evidence_with_directory_sync(

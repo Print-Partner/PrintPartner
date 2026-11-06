@@ -229,6 +229,7 @@ fn source_import_client_refuses_invalid_directory_input() {
     std::fs::remove_file(link).unwrap();
     let before = fixture.files();
     let rows = fixture.rows();
+    let missing = format!("io: {}", std::io::Error::from_raw_os_error(2));
 
     let refusals = [
         (
@@ -236,7 +237,7 @@ fn source_import_client_refuses_invalid_directory_input() {
                 paths: vec!["absent.stl".into()],
             },
             1024,
-            "io: No such file or directory (os error 2)",
+            missing.as_str(),
         ),
         (
             Input::Files {
@@ -250,7 +251,7 @@ fn source_import_client_refuses_invalid_directory_input() {
                 path: "absent.zip".into(),
             },
             1024,
-            "io: No such file or directory (os error 2)",
+            missing.as_str(),
         ),
         (
             Input::Files {

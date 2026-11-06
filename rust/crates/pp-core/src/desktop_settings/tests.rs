@@ -19,6 +19,15 @@ impl Drop for Fixture {
     }
 }
 
+/// `path` made absolute on this host: Windows needs a drive.
+fn abs(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{path}")
+    } else {
+        path.to_owned()
+    }
+}
+
 fn set(value: &str) -> DesktopSetting {
     DesktopSetting::ExchangeDir(Some(value.to_owned()))
 }
@@ -30,29 +39,32 @@ fn ticket_t_33_desktop_settings_roundtrip_clear_and_reach_the_child_env() {
     let owner = StorageLease::acquire(&fixture.0).unwrap();
     assert_eq!(read(&owner).unwrap(), DesktopSettings::default());
     assert!(read(&owner).unwrap().env().is_empty());
-    update(&owner, set("/srv/exchange")).unwrap();
+    update(&owner, set(&abs("/srv/exchange"))).unwrap();
     update(
         &owner,
-        DesktopSetting::SlicerOrcaDir(Some("/home/a/.config/OrcaSlicer".to_owned())),
+        DesktopSetting::SlicerOrcaDir(Some(abs("/home/a/.config/OrcaSlicer"))),
     )
     .unwrap();
     let settings = update(
         &owner,
-        DesktopSetting::DockerSocket(Some("/run/docker.sock".to_owned())),
+        DesktopSetting::DockerSocket(Some(abs("/run/docker.sock"))),
     )
     .unwrap();
     assert_eq!(read(&owner).unwrap(), settings);
     assert_eq!(
         settings.env(),
         [
-            ("PP_EXCHANGE_DIR", "/srv/exchange".to_owned()),
-            ("DOCKER_SOCKET", "/run/docker.sock".to_owned()),
-            ("SLICER_ORCA_DIR", "/home/a/.config/OrcaSlicer".to_owned()),
+            ("PP_EXCHANGE_DIR", abs("/srv/exchange")),
+            ("DOCKER_SOCKET", abs("/run/docker.sock")),
+            ("SLICER_ORCA_DIR", abs("/home/a/.config/OrcaSlicer")),
         ]
     );
     let cleared = update(&owner, DesktopSetting::DockerSocket(None)).unwrap();
     assert_eq!(cleared.docker_socket, None);
-    assert_eq!(cleared.exchange_dir.as_deref(), Some("/srv/exchange"));
+    assert_eq!(
+        cleared.exchange_dir.as_deref(),
+        Some(abs("/srv/exchange").as_str())
+    );
     assert!(
         !cleared
             .env()
@@ -70,7 +82,7 @@ fn ticket_t_33_desktop_settings_roundtrip_clear_and_reach_the_child_env() {
 fn ticket_t_33_desktop_settings_reject_unsafe_paths_without_writing() {
     let fixture = Fixture::new();
     let owner = StorageLease::acquire(&fixture.0).unwrap();
-    update(&owner, set("/srv/exchange")).unwrap();
+    update(&owner, set(&abs("/srv/exchange"))).unwrap();
     let before = std::fs::read(fixture.0.join(FILE)).unwrap();
     for value in [
         "",
@@ -78,7 +90,7 @@ fn ticket_t_33_desktop_settings_reject_unsafe_paths_without_writing() {
         "/srv/../etc",
         "/srv/exchange\n",
         "/srv/\u{0}x",
-        &format!("/{}", "a".repeat(MAX_VALUE_BYTES)),
+        &abs(&format!("/{}", "a".repeat(MAX_VALUE_BYTES))),
     ] {
         assert!(
             update(&owner, set(value)).is_err(),
@@ -100,7 +112,7 @@ fn ticket_t_33_desktop_settings_refuse_bad_files_without_overwrite() {
     ] {
         std::fs::write(fixture.0.join(FILE), bytes).unwrap();
         assert!(read(&owner).is_err());
-        assert!(update(&owner, set("/srv/exchange")).is_err());
+        assert!(update(&owner, set(&abs("/srv/exchange"))).is_err());
         assert_eq!(std::fs::read(fixture.0.join(FILE)).unwrap(), bytes);
     }
 }

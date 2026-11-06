@@ -3467,6 +3467,7 @@ dependencies = [
  "pp-compat",
  "pp-drivers",
  "pp-net",
+ "pp-os",
  "pp-testkit",
  "rand 0.9.5",
  "serde",

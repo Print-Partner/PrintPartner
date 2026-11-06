@@ -282,6 +282,10 @@ fn verify_dependencies(
         while let Some(directory) = pending.pop() {
             ensure!(!stop.is_cancelled(), "Release verification cancelled");
             let directory = directory.canonicalize()?;
+            ensure!(
+                directory.starts_with(&root),
+                "Dependency root escaped package"
+            );
             if !visited.insert(directory.clone()) {
                 continue;
             }
@@ -290,7 +294,8 @@ fn verify_dependencies(
                 let path = entry.path();
                 let key = inventory_key(&path, &root)?;
                 let kind = entry.file_type()?;
-                if kind.is_symlink() {
+                let junction = kind.is_symlink() && crate::platform::is_junction(&path)?;
+                if kind.is_symlink() && !junction {
                     actual_links.insert(key.clone());
                     if inventory.unshipped_links.contains(&key) {
                         continue;
@@ -304,7 +309,7 @@ fn verify_dependencies(
                     } else {
                         anyhow::bail!("Unexpected dependency link target");
                     }
-                } else if kind.is_dir() {
+                } else if kind.is_dir() || junction {
                     pending.push(path);
                 } else {
                     ensure!(kind.is_file(), "Unexpected dependency file type");
@@ -464,5 +469,46 @@ mod tests {
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Dependency link changed");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junctions_are_walked_as_directories_and_cannot_escape() {
+        use crate::logs::test_support::junction;
+        let root = std::env::temp_dir().join(format!(
+            "pp-junctions-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        let web = root.join("web");
+        let modules = web.join("node_modules");
+        let package = web.join("packages/contracts");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("index.js"), b"export {};\n").unwrap();
+        let link = modules.join("contracts");
+        junction(&package, &link);
+        let inventory = DependencyInventory {
+            web_path: "web".into(),
+            roots: vec!["web/node_modules".into()],
+            files: BTreeMap::from([(
+                "web/packages/contracts/index.js".into(),
+                measure(&package.join("index.js")).unwrap(),
+            )]),
+            links: Default::default(),
+            unshipped_links: Default::default(),
+        };
+        let stop = CancellationToken::new();
+        verify_dependencies(&web, &inventory, &stop).unwrap();
+
+        let outside = root.with_extension("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("index.js"), b"export {};\n").unwrap();
+        std::fs::remove_dir(&link).unwrap();
+        junction(&outside, &link);
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Dependency root escaped package");
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
     }
 }

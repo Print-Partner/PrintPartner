@@ -170,22 +170,31 @@ fn environment_root(
 mod tests {
     use super::*;
 
+    /// `path` made absolute on this host: Windows needs a drive.
+    fn abs(path: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!("C:{path}"))
+        } else {
+            PathBuf::from(path)
+        }
+    }
+
     #[test]
     fn ticket_t_12_windows_layout_defaults_preserve_legacy_store() {
         let layout = DirectoryLayout::resolve(
             Platform::Windows,
-            Path::new("/Users/owner"),
+            &abs("/Users/owner"),
             &LayoutEnvironment::default(),
         )
         .unwrap();
         assert_eq!(
             layout,
             DirectoryLayout {
-                store: "/Users/owner/.print-partner".into(),
-                app_data: "/Users/owner/AppData/Roaming/com.poitee.printpartner".into(),
-                config: "/Users/owner/AppData/Roaming/com.poitee.printpartner".into(),
-                logs: "/Users/owner/AppData/Local/com.poitee.printpartner/logs".into(),
-                cache: "/Users/owner/AppData/Local/com.poitee.printpartner".into(),
+                store: abs("/Users/owner/.print-partner"),
+                app_data: abs("/Users/owner/AppData/Roaming/com.poitee.printpartner"),
+                config: abs("/Users/owner/AppData/Roaming/com.poitee.printpartner"),
+                logs: abs("/Users/owner/AppData/Local/com.poitee.printpartner/logs"),
+                cache: abs("/Users/owner/AppData/Local/com.poitee.printpartner"),
             }
         );
     }
@@ -193,22 +202,22 @@ mod tests {
     #[test]
     fn ticket_t_12_windows_layout_honors_roaming_and_local_roots() {
         let environment = LayoutEnvironment {
-            appdata: Some("/roaming".into()),
-            local_appdata: Some("/local".into()),
+            appdata: Some(abs("/roaming")),
+            local_appdata: Some(abs("/local")),
             xdg_data_home: Some("ignored-relative".into()),
             ..Default::default()
         };
         let layout =
-            DirectoryLayout::resolve(Platform::Windows, Path::new("/Users/owner"), &environment)
+            DirectoryLayout::resolve(Platform::Windows, &abs("/Users/owner"), &environment)
                 .unwrap();
         assert_eq!(
             layout,
             DirectoryLayout {
-                store: "/Users/owner/.print-partner".into(),
-                app_data: "/roaming/com.poitee.printpartner".into(),
-                config: "/roaming/com.poitee.printpartner".into(),
-                logs: "/local/com.poitee.printpartner/logs".into(),
-                cache: "/local/com.poitee.printpartner".into(),
+                store: abs("/Users/owner/.print-partner"),
+                app_data: abs("/roaming/com.poitee.printpartner"),
+                config: abs("/roaming/com.poitee.printpartner"),
+                logs: abs("/local/com.poitee.printpartner/logs"),
+                cache: abs("/local/com.poitee.printpartner"),
             }
         );
     }
@@ -221,23 +230,23 @@ mod tests {
             ..Default::default()
         };
         let layout =
-            DirectoryLayout::resolve(Platform::Windows, Path::new("/Users/owner"), &environment)
+            DirectoryLayout::resolve(Platform::Windows, &abs("/Users/owner"), &environment)
                 .unwrap();
         assert_eq!(
             layout.config,
-            Path::new("/Users/owner/AppData/Roaming/com.poitee.printpartner")
+            abs("/Users/owner/AppData/Roaming/com.poitee.printpartner")
         );
         assert_eq!(
             layout.app_data,
-            Path::new("/Users/owner/AppData/Roaming/com.poitee.printpartner")
+            abs("/Users/owner/AppData/Roaming/com.poitee.printpartner")
         );
         assert_eq!(
             layout.cache,
-            Path::new("/Users/owner/AppData/Local/com.poitee.printpartner")
+            abs("/Users/owner/AppData/Local/com.poitee.printpartner")
         );
         assert_eq!(
             layout.logs,
-            Path::new("/Users/owner/AppData/Local/com.poitee.printpartner/logs")
+            abs("/Users/owner/AppData/Local/com.poitee.printpartner/logs")
         );
     }
 
@@ -261,13 +270,9 @@ mod tests {
                 ),
             ] {
                 assert_eq!(
-                    DirectoryLayout::resolve(
-                        Platform::Windows,
-                        Path::new("/Users/owner"),
-                        &environment
-                    )
-                    .unwrap_err()
-                    .to_string(),
+                    DirectoryLayout::resolve(Platform::Windows, &abs("/Users/owner"), &environment)
+                        .unwrap_err()
+                        .to_string(),
                     message
                 );
             }
@@ -277,23 +282,23 @@ mod tests {
     #[test]
     fn ticket_t_12_windows_environment_snapshot_uses_named_variables() {
         let environment = LayoutEnvironment::from_lookup(|name| match name {
-            "APPDATA" => Some("/roaming".into()),
-            "LOCALAPPDATA" => Some("/local".into()),
+            "APPDATA" => Some(abs("/roaming").into_os_string()),
+            "LOCALAPPDATA" => Some(abs("/local").into_os_string()),
             _ => None,
         });
-        assert_eq!(environment.appdata.as_deref(), Some(Path::new("/roaming")));
+        assert_eq!(
+            environment.appdata.as_deref(),
+            Some(abs("/roaming").as_path())
+        );
         assert_eq!(
             environment.local_appdata.as_deref(),
-            Some(Path::new("/local"))
+            Some(abs("/local").as_path())
         );
         let layout =
-            DirectoryLayout::resolve(Platform::Windows, Path::new("/Users/owner"), &environment)
+            DirectoryLayout::resolve(Platform::Windows, &abs("/Users/owner"), &environment)
                 .unwrap();
-        assert_eq!(layout.config, Path::new("/roaming/com.poitee.printpartner"));
-        assert_eq!(
-            layout.logs,
-            Path::new("/local/com.poitee.printpartner/logs")
-        );
+        assert_eq!(layout.config, abs("/roaming/com.poitee.printpartner"));
+        assert_eq!(layout.logs, abs("/local/com.poitee.printpartner/logs"));
     }
 
     #[cfg(unix)]
@@ -306,7 +311,7 @@ mod tests {
             ..Default::default()
         };
         let layout =
-            DirectoryLayout::resolve(Platform::Windows, Path::new("/Users/owner"), &environment)
+            DirectoryLayout::resolve(Platform::Windows, &abs("/Users/owner"), &environment)
                 .unwrap();
         assert_eq!(
             layout.config.as_os_str().as_bytes(),
@@ -321,32 +326,32 @@ mod tests {
     #[test]
     fn ticket_t_12_windows_layout_falls_back_for_each_missing_root() {
         let environment = LayoutEnvironment {
-            appdata: Some("/roaming".into()),
+            appdata: Some(abs("/roaming")),
             ..Default::default()
         };
         let layout =
-            DirectoryLayout::resolve(Platform::Windows, Path::new("/Users/owner"), &environment)
+            DirectoryLayout::resolve(Platform::Windows, &abs("/Users/owner"), &environment)
                 .unwrap();
-        assert_eq!(layout.config, Path::new("/roaming/com.poitee.printpartner"));
+        assert_eq!(layout.config, abs("/roaming/com.poitee.printpartner"));
         assert_eq!(
             layout.cache,
-            Path::new("/Users/owner/AppData/Local/com.poitee.printpartner")
+            abs("/Users/owner/AppData/Local/com.poitee.printpartner")
         );
         let environment = LayoutEnvironment {
-            local_appdata: Some("/local".into()),
+            local_appdata: Some(abs("/local")),
             ..Default::default()
         };
         let layout =
-            DirectoryLayout::resolve(Platform::Windows, Path::new("/Users/owner"), &environment)
+            DirectoryLayout::resolve(Platform::Windows, &abs("/Users/owner"), &environment)
                 .unwrap();
         assert_eq!(
             layout.config,
-            Path::new("/Users/owner/AppData/Roaming/com.poitee.printpartner")
+            abs("/Users/owner/AppData/Roaming/com.poitee.printpartner")
         );
-        assert_eq!(layout.cache, Path::new("/local/com.poitee.printpartner"));
+        assert_eq!(layout.cache, abs("/local/com.poitee.printpartner"));
         assert_eq!(
             layout.app_data,
-            Path::new("/Users/owner/AppData/Roaming/com.poitee.printpartner")
+            abs("/Users/owner/AppData/Roaming/com.poitee.printpartner")
         );
     }
 
@@ -354,18 +359,18 @@ mod tests {
     fn ticket_t_12_macos_layout_uses_bundle_identity() {
         let layout = DirectoryLayout::resolve(
             Platform::MacOs,
-            Path::new("/Users/owner"),
+            &abs("/Users/owner"),
             &LayoutEnvironment::default(),
         )
         .unwrap();
         assert_eq!(
             layout,
             DirectoryLayout {
-                store: "/Users/owner/.print-partner".into(),
-                app_data: "/Users/owner/Library/Application Support/com.poitee.printpartner".into(),
-                config: "/Users/owner/Library/Application Support/com.poitee.printpartner".into(),
-                logs: "/Users/owner/Library/Logs/com.poitee.printpartner".into(),
-                cache: "/Users/owner/Library/Caches/com.poitee.printpartner".into(),
+                store: abs("/Users/owner/.print-partner"),
+                app_data: abs("/Users/owner/Library/Application Support/com.poitee.printpartner"),
+                config: abs("/Users/owner/Library/Application Support/com.poitee.printpartner"),
+                logs: abs("/Users/owner/Library/Logs/com.poitee.printpartner"),
+                cache: abs("/Users/owner/Library/Caches/com.poitee.printpartner"),
             }
         );
     }
@@ -374,18 +379,18 @@ mod tests {
     fn ticket_t_12_linux_layout_uses_xdg_defaults() {
         let layout = DirectoryLayout::resolve(
             Platform::Linux,
-            Path::new("/home/owner"),
+            &abs("/home/owner"),
             &LayoutEnvironment::default(),
         )
         .unwrap();
         assert_eq!(
             layout,
             DirectoryLayout {
-                store: "/home/owner/.print-partner".into(),
-                app_data: "/home/owner/.local/share/com.poitee.printpartner".into(),
-                config: "/home/owner/.config/com.poitee.printpartner".into(),
-                logs: "/home/owner/.local/state/com.poitee.printpartner/logs".into(),
-                cache: "/home/owner/.cache/com.poitee.printpartner".into(),
+                store: abs("/home/owner/.print-partner"),
+                app_data: abs("/home/owner/.local/share/com.poitee.printpartner"),
+                config: abs("/home/owner/.config/com.poitee.printpartner"),
+                logs: abs("/home/owner/.local/state/com.poitee.printpartner/logs"),
+                cache: abs("/home/owner/.cache/com.poitee.printpartner"),
             }
         );
     }
@@ -395,23 +400,22 @@ mod tests {
         let environment = LayoutEnvironment {
             appdata: Some("ignored-relative".into()),
             local_appdata: Some("ignored-relative".into()),
-            xdg_data_home: Some("/data".into()),
-            xdg_config_home: Some("/config".into()),
-            xdg_state_home: Some("/state".into()),
-            xdg_cache_home: Some("/cache".into()),
+            xdg_data_home: Some(abs("/data")),
+            xdg_config_home: Some(abs("/config")),
+            xdg_state_home: Some(abs("/state")),
+            xdg_cache_home: Some(abs("/cache")),
             ..Default::default()
         };
         let layout =
-            DirectoryLayout::resolve(Platform::Linux, Path::new("/home/owner"), &environment)
-                .unwrap();
+            DirectoryLayout::resolve(Platform::Linux, &abs("/home/owner"), &environment).unwrap();
         assert_eq!(
             layout,
             DirectoryLayout {
-                store: "/home/owner/.print-partner".into(),
-                app_data: "/data/com.poitee.printpartner".into(),
-                config: "/config/com.poitee.printpartner".into(),
-                logs: "/state/com.poitee.printpartner/logs".into(),
-                cache: "/cache/com.poitee.printpartner".into(),
+                store: abs("/home/owner/.print-partner"),
+                app_data: abs("/data/com.poitee.printpartner"),
+                config: abs("/config/com.poitee.printpartner"),
+                logs: abs("/state/com.poitee.printpartner/logs"),
+                cache: abs("/cache/com.poitee.printpartner"),
             }
         );
     }
@@ -419,7 +423,7 @@ mod tests {
     #[test]
     fn ticket_t_12_portable_layout_overrides_home_and_xdg_without_io() {
         let environment = LayoutEnvironment {
-            portable_root: Some("/portable/Print Partner".into()),
+            portable_root: Some(abs("/portable/Print Partner")),
             xdg_data_home: Some("ignored-relative".into()),
             appdata: Some("ignored-relative".into()),
             local_appdata: Some("ignored-relative".into()),
@@ -430,11 +434,11 @@ mod tests {
             assert_eq!(
                 layout,
                 DirectoryLayout {
-                    store: "/portable/Print Partner/data".into(),
-                    app_data: "/portable/Print Partner/data".into(),
-                    config: "/portable/Print Partner/config".into(),
-                    logs: "/portable/Print Partner/logs".into(),
-                    cache: "/portable/Print Partner/cache".into(),
+                    store: abs("/portable/Print Partner/data"),
+                    app_data: abs("/portable/Print Partner/data"),
+                    config: abs("/portable/Print Partner/config"),
+                    logs: abs("/portable/Print Partner/logs"),
+                    cache: abs("/portable/Print Partner/cache"),
                 }
             );
         }
@@ -448,7 +452,7 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                DirectoryLayout::resolve(Platform::Linux, Path::new("/home/owner"), &environment)
+                DirectoryLayout::resolve(Platform::Linux, &abs("/home/owner"), &environment)
                     .unwrap_err()
                     .to_string(),
                 "Invalid PP_PORTABLE_DIR directory",
@@ -490,7 +494,7 @@ mod tests {
             };
             *field = Some("relative".into());
             assert_eq!(
-                DirectoryLayout::resolve(Platform::Linux, Path::new("/home/owner"), &environment)
+                DirectoryLayout::resolve(Platform::Linux, &abs("/home/owner"), &environment)
                     .unwrap_err()
                     .to_string(),
                 expected
@@ -506,49 +510,48 @@ mod tests {
             ..environment
         };
         let layout =
-            DirectoryLayout::resolve(Platform::Linux, Path::new("/home/owner"), &environment)
-                .unwrap();
+            DirectoryLayout::resolve(Platform::Linux, &abs("/home/owner"), &environment).unwrap();
         assert_eq!(
             layout.app_data,
-            Path::new("/home/owner/.local/share/com.poitee.printpartner")
+            abs("/home/owner/.local/share/com.poitee.printpartner")
         );
         assert_eq!(
             layout.config,
-            Path::new("/home/owner/.config/com.poitee.printpartner")
+            abs("/home/owner/.config/com.poitee.printpartner")
         );
         assert_eq!(
             layout.logs,
-            Path::new("/home/owner/.local/state/com.poitee.printpartner/logs")
+            abs("/home/owner/.local/state/com.poitee.printpartner/logs")
         );
         assert_eq!(
             layout.cache,
-            Path::new("/home/owner/.cache/com.poitee.printpartner")
+            abs("/home/owner/.cache/com.poitee.printpartner")
         );
     }
 
     #[test]
     fn ticket_t_12_environment_snapshot_uses_named_variables() {
         let environment =
-            LayoutEnvironment::from_lookup(|name| Some(OsString::from(format!("/{name}"))));
+            LayoutEnvironment::from_lookup(|name| Some(abs(&format!("/{name}")).into_os_string()));
         assert_eq!(
             environment.portable_root.as_deref(),
-            Some(Path::new("/PP_PORTABLE_DIR"))
+            Some(abs("/PP_PORTABLE_DIR").as_path())
         );
         assert_eq!(
             environment.xdg_data_home.as_deref(),
-            Some(Path::new("/XDG_DATA_HOME"))
+            Some(abs("/XDG_DATA_HOME").as_path())
         );
         assert_eq!(
             environment.xdg_config_home.as_deref(),
-            Some(Path::new("/XDG_CONFIG_HOME"))
+            Some(abs("/XDG_CONFIG_HOME").as_path())
         );
         assert_eq!(
             environment.xdg_state_home.as_deref(),
-            Some(Path::new("/XDG_STATE_HOME"))
+            Some(abs("/XDG_STATE_HOME").as_path())
         );
         assert_eq!(
             environment.xdg_cache_home.as_deref(),
-            Some(Path::new("/XDG_CACHE_HOME"))
+            Some(abs("/XDG_CACHE_HOME").as_path())
         );
     }
 
@@ -558,15 +561,14 @@ mod tests {
             (name != "PP_PORTABLE_DIR").then(|| OsString::from("relative"))
         });
         let layout =
-            DirectoryLayout::resolve(Platform::MacOs, Path::new("/Users/owner"), &environment)
-                .unwrap();
+            DirectoryLayout::resolve(Platform::MacOs, &abs("/Users/owner"), &environment).unwrap();
         assert_eq!(
             layout.app_data,
-            Path::new("/Users/owner/Library/Application Support/com.poitee.printpartner")
+            abs("/Users/owner/Library/Application Support/com.poitee.printpartner")
         );
         assert_eq!(
             layout.logs,
-            Path::new("/Users/owner/Library/Logs/com.poitee.printpartner")
+            abs("/Users/owner/Library/Logs/com.poitee.printpartner")
         );
     }
 
@@ -578,8 +580,7 @@ mod tests {
             (name == "XDG_DATA_HOME").then(|| OsString::from_vec(b"/data/\xff".to_vec()))
         });
         let layout =
-            DirectoryLayout::resolve(Platform::Linux, Path::new("/home/owner"), &environment)
-                .unwrap();
+            DirectoryLayout::resolve(Platform::Linux, &abs("/home/owner"), &environment).unwrap();
         assert_eq!(
             layout.app_data.as_os_str().as_bytes(),
             b"/data/\xff/com.poitee.printpartner"

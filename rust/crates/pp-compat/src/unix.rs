@@ -94,6 +94,11 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+/// Junctions exist only on Windows.
+pub(crate) fn is_junction(_path: &Path) -> std::io::Result<bool> {
+    Ok(false)
+}
+
 /// A regular file owned by this user with mode 0600.
 pub(crate) fn private_file(file: &File) -> std::io::Result<bool> {
     let metadata = file.metadata()?;

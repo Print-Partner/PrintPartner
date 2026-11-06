@@ -405,31 +405,40 @@ fn finish_reexec(entered: bool, status: std::process::ExitStatus) -> Result<(), 
 
 #[test]
 fn reexec_work_deadline_starts_when_the_child_enters() {
-    let mut slow_start = std::process::Command::new("sh")
-        .args(["-c", "sleep 1.2; echo pp-origin-child-entered"])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    if let Ok(plan) = std::env::var("PP_REEXEC_SLEEP_CHILD") {
+        let (before, after) = plan.split_once(',').unwrap();
+        std::thread::sleep(Duration::from_millis(before.parse().unwrap()));
+        child_entered();
+        std::thread::sleep(Duration::from_millis(after.parse().unwrap()));
+        return;
+    }
+    // Re-executing this binary keeps each child a single process, so a kill
+    // leaves no shell grandchild holding the pipe open (nextest LEAK).
+    let sleeping_child = |plan: &str| {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "origin_tests::reexec_work_deadline_starts_when_the_child_enters",
+                "--nocapture",
+            ])
+            .env("PP_REEXEC_SLEEP_CHILD", plan)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
     supervise_reexec(
-        &mut slow_start,
+        &mut sleeping_child("1500,0"),
         ReexecLimits {
-            process_start: Duration::from_secs(4),
-            work: Duration::from_millis(500),
+            process_start: Duration::from_secs(10),
+            work: Duration::from_millis(1000),
         },
     )
     .unwrap();
 
-    // `exec sleep` so a killed shell does not leave a grandchild holding the
-    // pipe open (nextest LEAK under process leak detection).
-    let mut slow_work = std::process::Command::new("sh")
-        .args(["-c", "echo pp-origin-child-entered; exec sleep 0.8"])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
     let error = supervise_reexec(
-        &mut slow_work,
+        &mut sleeping_child("0,5000"),
         ReexecLimits {
-            process_start: Duration::from_secs(4),
+            process_start: Duration::from_secs(10),
             work: Duration::from_millis(300),
         },
     )

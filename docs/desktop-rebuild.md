@@ -2825,6 +2825,32 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features des
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_manual_bursts_http
 ```
 
+### Print-file classification (GRE-1212)
+
+`pp_domain::print_file::classify` (feature `desktop_rebuild`) is the Rust port
+of Node's `classifyPrintFileBytes`. The file-assignment routes in GRE-1210
+will use it to decide what a print file is from its bytes alone. It returns the
+classification (`gcode`, `bgcode`, or `3mf` with `toolpath_package`,
+`slicer_project`, `model_package` or `unsupported`), the SHA-256 and size of
+the bytes, or one of Node's ten rejection reasons with Node's wording.
+`next_action` and `is_print_ready` match `printFileNextAction` and the
+contract's `isPrintReady`.
+
+It reads files of up to 256 MiB. For 3MF it walks the ZIP central directory
+only, with Node's caps (2,000 entries, 1,024-byte names, 64 MiB per entry,
+256 MiB in total, depth 16), and refuses unsafe names and symlink entries. It
+never inflates an entry or parses XML. Binary G-code is checked structurally
+(header, version, checksum type, block chain) and never decoded.
+
+`fixtures/parity/print-file-classification/cases.json` holds 82 inputs and
+the Node classifier's answers: the Node unit-test inputs plus truncated 3MF and
+binary G-code, ZIP64 records, hostile ZIP entries and G-code edges.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/print-file-classification/generate.mjs --check
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-domain --features desktop_rebuild --test print_file_parity
+```
+
 ### Accepted Plate workspace read (GRE-1189)
 
 `pp-storage::plates` serves Node's `GET /plans/{id}/plates`

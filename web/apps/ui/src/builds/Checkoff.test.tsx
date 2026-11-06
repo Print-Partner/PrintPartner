@@ -285,6 +285,36 @@ describe("CHK-03 in-flight and stale writes", () => {
     expect(preview()).toBe("gear.stl: +1 printed (unit 1)");
   });
 
+  it("drops an assembled pick once a reread shows its unit unprinted", async () => {
+    let answer: (r: Response) => void = () => {};
+    let cleared = false;
+    const after = (): CheckoffUnits => {
+      const data = units();
+      if (cleared) data.parts[0]!.units[0]!.printed = false;
+      return data;
+    };
+    const fetchMock = core(
+      reads(after, () =>
+        new Promise<Response>((resolve) => (answer = resolve)).then((r) => {
+          cleared = true;
+          return r;
+        }),
+      ),
+    );
+    renderAt(fetchMock);
+    await screen.findByRole("group", { name: /^bracket\.stl/ });
+    fireEvent.click(box("bracket.stl", 1));
+    fireEvent.click(screen.getByRole("button", { name: "Record 1 picked unit" }));
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(1));
+    fireEvent.click(screen.getByRole("radio", { name: "Mark assembled" }));
+    fireEvent.click(box("bracket.stl", 1));
+    expect(preview()).toBe("bracket.stl: +1 assembled (unit 1)");
+    await act(async () => answer(json(RECEIPT)));
+    await waitFor(() => expect(box("bracket.stl", 1).disabled).toBe(true));
+    expect(preview()).toBe("");
+    expect(screen.queryByRole("button", { name: /^Record/ })).toBeNull();
+  });
+
   it("a stale undo Retry never marks a newer burst undone", async () => {
     let undos = 0;
     const fetchMock = core(

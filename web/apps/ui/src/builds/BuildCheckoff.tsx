@@ -224,7 +224,8 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
     });
   });
   // A reread drops picks that now match the stored state, so a burst that landed while its
-  // answer was lost is never picked twice.
+  // answer was lost is never picked twice, and picks the stored state no longer allows (an
+  // assembled pick on a unit that is now unprinted).
   const stored = JSON.stringify(data.parts);
   useEffect(() => {
     const units = new Map(
@@ -233,7 +234,7 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
     setPicks((now) => {
       const kept = [...now].filter(([token, want]) => {
         const unit = units.get(token);
-        return unit !== undefined && unit[field] !== want;
+        return unit !== undefined && unit[field] !== want && pickable(field, unit);
       });
       return kept.length === now.size ? now : new Map(kept);
     });

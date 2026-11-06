@@ -165,7 +165,8 @@ so a print that ends or a link that drops shows up without a reload.
   adds them to the burst. It never adds them on its own. A lower unit that no bed
   can confirm now is named too: one on a print still running (`watching`) as still
   printing, and one on a failed, dismissed or rejected result that no other result
-  confirmed as "not confirmed on any print Today shows". The core refuses those
+  confirmed and no running print is reprinting as "not confirmed on any print Today
+  shows". Each unit is named once. The core refuses those
   confirms unless the unit was completed another way. A lower unit on no loaded
   result is unknown to the UI; the core's 400 detail shows instead.
 - **Burst limit.** One verify-batch carries at most 50 beds. A bigger pick shows

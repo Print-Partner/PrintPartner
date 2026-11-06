@@ -50,7 +50,7 @@ export const bedsToClear = (
 
 /**
  * Units on loaded results that no bed can confirm now: on a print still running, or failed,
- * dismissed or rejected and not confirmed on any other result. A lower one of these makes
+ * dismissed or rejected and neither confirmed nor reprinting on another result, each named once. A lower one of these makes
  * the core refuse a confirm (Progress fills from the left) unless it was completed elsewhere.
  */
 export function bedsBlocking(
@@ -71,10 +71,17 @@ export function bedsBlocking(
     .sort((a, b) => a.created_at.localeCompare(b.created_at))
     .map(blocked)
     .filter((bed) => bed.pending.length > 0);
-  return {
-    printing: all.filter((bed) => bed.result.state === "watching"),
-    unconfirmed: all.filter((bed) => bed.result.state !== "watching"),
-  };
+  const printing = all.filter((bed) => bed.result.state === "watching");
+  const seen = new Set(printing.flatMap((bed) => bed.pending.map(unitKey)));
+  const unconfirmed = all
+    .filter((bed) => bed.result.state !== "watching")
+    .map((bed) => {
+      const pending = bed.pending.filter((u) => !seen.has(unitKey(u)));
+      for (const u of pending) seen.add(unitKey(u));
+      return { ...bed, pending };
+    })
+    .filter((bed) => bed.pending.length > 0);
+  return { printing, unconfirmed };
 }
 
 /** "A", "A and B", "A, B and C". */

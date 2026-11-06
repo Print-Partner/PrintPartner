@@ -449,6 +449,58 @@ describe("a burst names lower units no bed can confirm", () => {
   });
 });
 
+describe("a burst names each blocking lower unit once, under its current print", () => {
+  it("names a failed unit that is being reprinted only as still printing", async () => {
+    const core = fakeCore({
+      results: [
+        result("link-voron", "voron", [[7, 1, "hinge.stl"]]),
+        result("link-annex", "annex", [[7, 0, "hinge.stl"]], {
+          state: "host_failed",
+          host_outcome: "failed",
+        }),
+        result("link-redo", "annex", [[7, 0, "hinge.stl"]], {
+          state: "watching",
+          host_outcome: null,
+          completed_at: null,
+        }),
+      ],
+      printers: [printer("voron", "Voron 2.4"), printer("annex", "Annex K3")],
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(
+      within(bed("Voron 2.4")).getByText(
+        "Lower units of these Parts are still printing: Annex K3: hinge.stl unit 1. Progress fills from the left, so the core refuses this until they come off and are confirmed, unless they were completed another way.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/not confirmed on any print Today shows/)).toBeNull();
+  });
+
+  it("names a unit that failed twice once", async () => {
+    const core = fakeCore({
+      results: [
+        result("link-voron", "voron", [[7, 1, "hinge.stl"]]),
+        result("link-annex", "annex", [[7, 0, "hinge.stl"]], {
+          state: "host_failed",
+          host_outcome: "failed",
+        }),
+        result("link-again", "annex", [[7, 0, "hinge.stl"]], {
+          state: "host_failed",
+          host_outcome: "failed",
+        }),
+      ],
+      printers: [printer("voron", "Voron 2.4"), printer("annex", "Annex K3")],
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(
+      within(bed("Voron 2.4")).getByText(
+        "Lower units of these Parts are not confirmed on any print Today shows: Annex K3: hinge.stl unit 1. Progress fills from the left, so the core refuses this unless they were completed another way.",
+      ),
+    ).toBeTruthy();
+  });
+});
+
 describe("a burst stays inside the verify-batch contract", () => {
   it("says to split a burst of more than 50 beds instead of offering Confirm", async () => {
     const results = Array.from({ length: 51 }, (_, i) =>

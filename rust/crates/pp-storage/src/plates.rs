@@ -1,38 +1,44 @@
 //! Managed accepted Plates (GRE-419), as Node's `routes/accepted-plates.ts`
-//! and `db/accepted-plates.ts` serve them. This module reads the Plate
-//! workspace: the Accepted Plan's Required units, the head Plate revision's
-//! layout checked against its digest, and the fleet Printers a Plate can use.
+//! and `db/accepted-plates.ts` serve them: the Plate workspace read, and the
+//! Plate-revision compare-and-set edits that move, pin, unplace and transfer a
+//! Required unit or restore the revision an arrange replaced.
+//!
+//! Every edit checks the Accepted Plan the caller observed and the Plate
+//! revision it expects, then writes a new immutable revision, moves the head
+//! and appends `plates.revision_changed`, all in one immediate transaction.
+//! An edit that changes nothing writes nothing. A stale basis or revision is
+//! refused without touching history.
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
 
 use crate::{
-    Envelope, Shared, WriterOwner, auth,
+    Envelope, Shared, WriterOwner, auth, domain_events,
     production::{
         layout::{
-            Placement, PlateInput, PrinterGeometry, Spacing, UnitInput, ValidatedPlate,
-            layout_digest, validate_plates,
+            LayoutFailure, Placement, PlateInput, PrinterGeometry, Spacing, UnitInput,
+            ValidatedPlate, layout_digest, validate_plates,
         },
         model::{
             Digest, DimensionUm, MAX_JS_SAFE_INTEGER, MAX_PLATE_UM, OffsetUm, PlateId,
-            RequiredUnitToken, millimetres_to_micrometres, trim_ecmascript,
+            RequiredUnitToken, millimetres_to_micrometres, trim_ecmascript, trimmed_text,
         },
     },
     read_model::{
         AcceptedRead, Credential,
-        farm::setting_list,
+        farm::{iso_time, setting_list},
         graph::{self, Snapshot},
         read_tenant, submit_read,
         views::catalog_color,
     },
 };
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 const LAYOUT_FORMAT: u8 = 2;
@@ -46,10 +52,34 @@ pub struct Response {
     pub body: Value,
 }
 
-/// One request with its raw path segments; storage validates them as the
-/// Node route does.
+/// One request with its raw path segments and body; storage validates both
+/// as the Node route does.
 pub enum Request {
-    Read { profile: String },
+    Read {
+        profile: String,
+    },
+    /// `/plans/{profile}/plates/{plate}/units/{token}` and its suffixes.
+    Unit {
+        edit: UnitEdit,
+        profile: String,
+        plate: String,
+        token: String,
+        body: Value,
+    },
+    Restore {
+        profile: String,
+        body: Value,
+    },
+}
+
+/// The edit a unit route names: `PATCH` (move), `PATCH .../pin`,
+/// `POST .../unplace` or `POST .../transfer`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitEdit {
+    Move,
+    Pin,
+    Unplace,
+    Transfer,
 }
 
 #[derive(Clone)]
@@ -122,6 +152,24 @@ impl Basis {
             mapping_digest: snapshot.required_unit_mapping_digest.clone(),
         }
     }
+    fn parse(value: &Value) -> Option<Self> {
+        let digest = |key: &str| {
+            value[key]
+                .as_str()
+                .filter(|text| {
+                    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                })
+                .map(str::to_owned)
+        };
+        value.as_object()?;
+        Some(Self {
+            profile_id: positive(value["profile_id"].as_f64()?)?,
+            plan_version: positive(value["plan_version"].as_f64()?)?,
+            revision_id: positive(value["plan_revision_id"].as_f64()?)?,
+            revision_digest: digest("plan_revision_digest")?,
+            mapping_digest: digest("required_unit_mapping_digest")?,
+        })
+    }
     fn json(&self) -> Value {
         json!({
             "profile_id": self.profile_id,
@@ -145,8 +193,52 @@ fn positive(number: f64) -> Option<i64> {
         .then_some(number as i64)
 }
 
+/// Node's `plateCoordinate`.
+fn coordinate(value: &Value) -> Option<OffsetUm> {
+    let number = value.as_f64()?;
+    if number.fract() != 0.0 || number < 0.0 {
+        return None;
+    }
+    OffsetUm::parse(number as i64).ok()
+}
+
 enum Op {
     Read(i64),
+    Edit { cmd: Expected, edit: Edit },
+}
+struct Expected {
+    profile: i64,
+    basis: Basis,
+    revision: i64,
+}
+enum Edit {
+    Move {
+        plate: String,
+        token: String,
+        x: OffsetUm,
+        y: OffsetUm,
+    },
+    Pin {
+        plate: String,
+        token: String,
+        pinned: bool,
+    },
+    Unplace {
+        plate: String,
+        token: String,
+    },
+    Transfer {
+        plate: String,
+        token: String,
+        target: Target,
+    },
+    Restore {
+        revision: i64,
+    },
+}
+enum Target {
+    Plate(String),
+    Printer(String),
 }
 
 fn invalid() -> Response {
@@ -164,11 +256,89 @@ fn failure(status: u16, code: &str, detail: &str, mut fields: Map<String, Value>
     }
 }
 
-/// Node's route check: a decimal Plan id.
+/// Node's route checks: a decimal Plan id, a Plate id (any trimmed text of
+/// at most 200 units for a move, `plate_` and 32 hex digits otherwise), a
+/// Required-unit token, and a body whose basis names the same Plan.
 fn validate(request: Request) -> std::result::Result<Op, Response> {
-    match request {
-        Request::Read { profile } => profile_id(&profile).map(Op::Read).ok_or_else(invalid),
-    }
+    let expected = |profile: i64, body: &Value| {
+        let basis = Basis::parse(&body["expected"])?;
+        let revision = positive(body["expected_plate_revision_id"].as_f64()?)?;
+        (basis.profile_id == profile).then_some(Expected {
+            profile,
+            basis,
+            revision,
+        })
+    };
+    let op = match request {
+        Request::Read { profile } => profile_id(&profile).map(Op::Read),
+        Request::Restore { profile, body } => profile_id(&profile).and_then(|profile| {
+            Some(Op::Edit {
+                cmd: expected(profile, &body)?,
+                edit: Edit::Restore {
+                    revision: positive(body["restore_plate_revision_id"].as_f64()?)?,
+                },
+            })
+        }),
+        Request::Unit {
+            edit,
+            profile,
+            plate,
+            token,
+            body,
+        } => (|| {
+            let cmd = expected(profile_id(&profile)?, &body)?;
+            let plate = match edit {
+                UnitEdit::Move => trimmed_text(&plate)?,
+                _ => generated(&plate)?,
+            };
+            let token = RequiredUnitToken::parse(token).ok()?.as_str().to_owned();
+            let edit = unit_edit(edit, plate, token, &body)?;
+            Some(Op::Edit { cmd, edit })
+        })(),
+    };
+    op.ok_or_else(invalid)
+}
+
+/// A generated Plate id after Node's trim: `plate_` and 32 hex digits.
+fn generated(plate: &str) -> Option<String> {
+    Some(
+        PlateId::parse(trim_ecmascript(plate))
+            .ok()?
+            .as_str()
+            .to_owned(),
+    )
+}
+
+/// The body fields each unit edit reads: Node's `parseMoveRequest`,
+/// `parsePinRequest`, `parseRevisionRequest` and `parseTransferRequest`.
+fn unit_edit(edit: UnitEdit, plate: String, token: String, body: &Value) -> Option<Edit> {
+    Some(match edit {
+        UnitEdit::Move => Edit::Move {
+            plate,
+            token,
+            x: coordinate(&body["x_um"])?,
+            y: coordinate(&body["y_um"])?,
+        },
+        UnitEdit::Pin => Edit::Pin {
+            plate,
+            token,
+            pinned: body["pinned"].as_bool()?,
+        },
+        UnitEdit::Unplace => Edit::Unplace { plate, token },
+        UnitEdit::Transfer => {
+            let text = |key: &str| body[key].as_str().map(trim_ecmascript);
+            let target = match (text("target_plate_id"), text("target_printer_id")) {
+                (Some(target), None) => Target::Plate(generated(target)?),
+                (None, Some(target)) => Target::Printer(trimmed_text(target)?),
+                _ => return None,
+            };
+            Edit::Transfer {
+                plate,
+                token,
+                target,
+            }
+        }
+    })
 }
 
 /// Node's `profileId`: `/^\d+$/`, then a positive safe integer.
@@ -179,22 +349,46 @@ fn profile_id(id: &str) -> Option<i64> {
     positive(id.parse().ok()?)
 }
 
-/// A read that returns no workspace, as Node's `sendReadFailure` answers it.
+/// Why an edit wrote nothing, as Node's `sendMoveFailure` answers it.
+#[derive(Debug, PartialEq)]
 enum Refusal {
+    Stale,
+    RevisionChanged,
+    Archived,
     StateUnavailable,
+    UnitNotFound,
+    InvalidUnits,
+    Geometry(&'static str),
+    PrinterNotFound,
     ProfileNotFound,
 }
 impl Refusal {
     fn response(self) -> Response {
         let (status, code, detail) = match self {
+            Self::Stale => (409, "accepted_plan_changed", "Accepted Plan changed"),
+            Self::RevisionChanged => (409, "plate_revision_changed", "Plate revision changed"),
+            Self::Archived => (409, "plan_archived", "Plan is archived"),
             Self::StateUnavailable => (
                 409,
                 "accepted_state_unavailable",
                 "Accepted Plan state is unavailable",
             ),
+            Self::UnitNotFound => (422, "unit_not_found", "Accepted Plate unit is invalid"),
+            Self::InvalidUnits => (422, "invalid_units", "Accepted Plate unit is invalid"),
+            Self::Geometry(reason) => (422, reason, "Accepted Plate geometry is invalid"),
+            Self::PrinterNotFound => (422, "printer_not_found", "Printer was not found"),
             Self::ProfileNotFound => (404, "profile_not_found", "Plan not found"),
         };
         failure(status, code, detail, Map::new())
+    }
+}
+impl From<LayoutFailure> for Refusal {
+    fn from(failure: LayoutFailure) -> Self {
+        match failure {
+            LayoutFailure::InvalidUnits => Self::InvalidUnits,
+            LayoutFailure::OutsideBuildArea => Self::Geometry("outside_build_area"),
+            LayoutFailure::OverlappingUnits => Self::Geometry("overlapping_units"),
+        }
     }
 }
 
@@ -227,18 +421,33 @@ fn inconsistent() -> Response {
     )
 }
 
-pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<Response> {
+pub(crate) fn execute(
+    connection: &mut Connection,
+    command: Command,
+    admission: crate::writer_admission::Deadline,
+) -> Result<Response> {
     let Command {
         credential,
-        op: Op::Read(profile),
+        op,
         repos,
         policy,
     } = command;
-    let Ok(tx) = connection.transaction_with_behavior(TransactionBehavior::Deferred) else {
+    let begun = match op {
+        Op::Read(_) => connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(Into::into),
+        Op::Edit { .. } => crate::writer_admission::begin_immediate(connection, admission),
+    };
+    let Ok(tx) = begun else {
         return Ok(unavailable());
     };
-    let tenant = read_tenant(&tx, &credential, policy)?;
-    let response = match read(&tx, &tenant, profile, &repos) {
+    let tenant = match &op {
+        Op::Read(_) => read_tenant(&tx, &credential, policy)?,
+        Op::Edit { .. } => {
+            auth::authority::queries::reconciliation_actor_ref(&tx, &credential, policy)?.0
+        }
+    };
+    let response = match run(&tx, &tenant, op, &repos) {
         Ok(response) => response,
         Err(error) if error.is::<Integrity>() || error.is::<graph::Integrity>() => inconsistent(),
         Err(error) => return Err(error),
@@ -248,6 +457,24 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
         return Ok(inconsistent());
     }
     Ok(response)
+}
+
+fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Result<Response> {
+    match op {
+        Op::Read(profile) => read(tx, tenant, profile, repos),
+        Op::Edit { cmd, edit } => {
+            let restore = matches!(edit, Edit::Restore { .. });
+            let profile = cmd.profile;
+            match edit_plates(tx, tenant, repos, &cmd, edit)? {
+                Err(refusal) => Ok(refusal.response()),
+                Ok(_) if restore => read(tx, tenant, profile, repos),
+                Ok((id, number)) => Ok(Response {
+                    status: 200,
+                    body: json!({"plate_revision_id": id, "plate_revision_number": number}),
+                }),
+            }
+        }
+    }
 }
 
 /// One `accepted_plate_revisions` row.
@@ -449,6 +676,158 @@ fn accepted(
     )
 }
 
+/// Node's `editAcceptedPlatesInternal` with its five decisions. Returns the
+/// head's revision id and number after the edit.
+fn edit_plates(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    repos: &Path,
+    cmd: &Expected,
+    edit: Edit,
+) -> Result<std::result::Result<(i64, i64), Refusal>> {
+    let printer = match &edit {
+        Edit::Transfer {
+            target: Target::Printer(id),
+            ..
+        } => match fleet(tx, tenant)?.into_iter().find(|(raw, _)| raw == id) {
+            Some((_, Some(printer))) => Some(printer),
+            _ => return Ok(Err(Refusal::PrinterNotFound)),
+        },
+        _ => None,
+    };
+    if !visible(tx, tenant, cmd.profile)? {
+        return Ok(Err(Refusal::Stale));
+    }
+    let snapshot = match accepted(tx, tenant, cmd.profile, repos)? {
+        Ok(snapshot) => snapshot,
+        Err(AcceptedRead::CompatibilityDirty | AcceptedRead::Uninitialized) => {
+            return Ok(Err(Refusal::StateUnavailable));
+        }
+        Err(AcceptedRead::IntegrityFailure { .. }) => bail!(Integrity("accepted")),
+        Err(_) => return Ok(Err(Refusal::Stale)),
+    };
+    if Basis::of(&snapshot) != cmd.basis {
+        return Ok(Err(Refusal::Stale));
+    }
+    if snapshot.profile.archived_at.is_some() {
+        return Ok(Err(Refusal::Archived));
+    }
+    if head(tx, tenant, cmd.profile)? != Some(cmd.revision) {
+        return Ok(Err(Refusal::RevisionChanged));
+    }
+    let current = revision(tx, tenant, cmd.profile, cmd.revision)?
+        .ok_or_else(|| anyhow!(Integrity("head")))?;
+    ensure!(cmd.basis.stamps(&current), Integrity("revision"));
+    let expected = tokens(&snapshot)?;
+    let plates = layout(tx, tenant, &current, &expected)?;
+    let unchanged = Ok(Ok((current.id, current.number)));
+    let next = match decide(tx, tenant, cmd, &current, &plates, &expected, edit, printer)? {
+        Decision::Changed(next) => next,
+        Decision::Unchanged => return unchanged,
+        Decision::Refused(refusal) => return Ok(Err(refusal)),
+    };
+    let validated = match validate_plates(next, &expected, false, Spacing::Clearance) {
+        Ok(validated) => validated,
+        Err(failure) => return Ok(Err(failure.into())),
+    };
+    let digest = layout_digest(&validated, LAYOUT_FORMAT);
+    if digest == layout_digest(&plates, LAYOUT_FORMAT) {
+        return unchanged;
+    }
+    write_revision(tx, tenant, cmd, &validated, &digest).map(Ok)
+}
+
+/// Writes `validated` as the next immutable revision, moves the head from
+/// the expected revision and appends `plates.revision_changed`.
+fn write_revision(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    cmd: &Expected,
+    validated: &[ValidatedPlate],
+    digest: &Digest,
+) -> Result<(i64, i64)> {
+    let number: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(revision_number),0)+1 FROM accepted_plate_revisions WHERE tenant_id=?1 AND profile_id=?2",
+        params![tenant, cmd.profile],
+        |row| row.get(0),
+    )?;
+    let units: usize = validated.iter().map(|plate| plate.input.units.len()).sum();
+    tx.execute(
+        "INSERT INTO accepted_plate_revisions(tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,undo_from_revision_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,?11)",
+        params![
+            tenant,
+            cmd.profile,
+            cmd.basis.revision_id,
+            cmd.basis.plan_version,
+            cmd.basis.revision_digest,
+            cmd.basis.mapping_digest,
+            digest.as_str(),
+            validated.len() as i64,
+            units as i64,
+            number,
+            iso_time(SystemTime::now()),
+        ],
+    )?;
+    let id = tx.last_insert_rowid();
+    for plate in validated {
+        let input = &plate.input;
+        let geometry = &input.printer;
+        tx.execute(
+            "INSERT INTO accepted_plates(tenant_id,revision_id,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![
+                tenant,
+                id,
+                input.plate_id.as_str(),
+                plate.ordinal,
+                input.printer_id,
+                input.printer_name,
+                input.printer_model,
+                geometry.bed_width_um.get(),
+                geometry.bed_depth_um.get(),
+                geometry.bed_height_um.get(),
+                geometry.margin_um.get(),
+            ],
+        )?;
+        for unit in &input.units {
+            tx.execute(
+                "INSERT INTO accepted_plate_units(tenant_id,revision_id,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um,placement,pinned) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    tenant,
+                    id,
+                    input.plate_id.as_str(),
+                    unit.token.as_str(),
+                    unit.x_um.get(),
+                    unit.y_um.get(),
+                    unit.width_um.get(),
+                    unit.depth_um.get(),
+                    unit.height_um.get(),
+                    placement(unit.placement),
+                    unit.pinned,
+                ],
+            )?;
+        }
+    }
+    ensure!(
+        tx.execute(
+            "UPDATE accepted_plate_heads SET current_revision_id=?1 WHERE tenant_id=?2 AND profile_id=?3 AND current_revision_id=?4",
+            params![id, tenant, cmd.profile, cmd.revision],
+        )? == 1,
+        "Accepted Plate head update failed"
+    );
+    domain_events::append(
+        tx,
+        tenant,
+        domain_events::Change {
+            kind: domain_events::PLATES_CHANGED,
+            aggregate_type: "build",
+            aggregate_id: cmd.profile.to_string(),
+            aggregate_version: None,
+            payload: json!({ "plate_revision_id": id }),
+        },
+    )?;
+    Ok((id, number))
+}
+
 fn placement(value: Placement) -> &'static str {
     match value {
         Placement::Auto => "auto",
@@ -457,14 +836,178 @@ fn placement(value: Placement) -> &'static str {
     }
 }
 
+enum Decision {
+    Changed(Vec<PlateInput>),
+    Unchanged,
+    Refused(Refusal),
+}
+
+/// Applies `change` to the unit `token` on Plate `plate`, as Node's move,
+/// pin and unplace do. `change` reports whether the unit changed.
+fn change_unit(
+    plates: &[ValidatedPlate],
+    plate: &str,
+    token: &str,
+    change: impl Fn(&mut UnitInput) -> bool,
+) -> Decision {
+    let mut found = false;
+    let mut changed = false;
+    let next = plates
+        .iter()
+        .map(|current| {
+            let mut input = current.input.clone();
+            if input.plate_id.as_str() == plate {
+                for unit in &mut input.units {
+                    if unit.token.as_str() == token {
+                        found = true;
+                        changed = change(unit);
+                    }
+                }
+            }
+            input
+        })
+        .collect();
+    match (found, changed) {
+        (false, _) => Decision::Refused(Refusal::UnitNotFound),
+        (true, false) => Decision::Unchanged,
+        (true, true) => Decision::Changed(next),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decide(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    cmd: &Expected,
+    current: &Revision,
+    plates: &[ValidatedPlate],
+    expected: &HashSet<RequiredUnitToken>,
+    edit: Edit,
+    printer: Option<Printer>,
+) -> Result<Decision> {
+    Ok(match edit {
+        Edit::Move { plate, token, x, y } => change_unit(plates, &plate, &token, |unit| {
+            let changed = unit.x_um != x || unit.y_um != y;
+            unit.x_um = x;
+            unit.y_um = y;
+            unit.placement = Placement::Manual;
+            changed
+        }),
+        Edit::Pin {
+            plate,
+            token,
+            pinned,
+        } => change_unit(plates, &plate, &token, |unit| {
+            let changed = unit.pinned != pinned;
+            unit.pinned = pinned;
+            changed
+        }),
+        Edit::Unplace { plate, token } => change_unit(plates, &plate, &token, |unit| {
+            let changed = unit.placement != Placement::Unplaced || unit.pinned;
+            unit.placement = Placement::Unplaced;
+            unit.pinned = false;
+            changed
+        }),
+        Edit::Transfer {
+            plate,
+            token,
+            target,
+        } => transfer(plates, &plate, &token, target, printer)?,
+        Edit::Restore { revision: restore } => {
+            if current.undo_from != Some(restore) {
+                return Ok(Decision::Refused(Refusal::UnitNotFound));
+            }
+            let Some(prior) = revision(tx, tenant, cmd.profile, restore)? else {
+                return Ok(Decision::Refused(Refusal::UnitNotFound));
+            };
+            if !cmd.basis.stamps(&prior) {
+                return Ok(Decision::Refused(Refusal::Stale));
+            }
+            let plates = layout(tx, tenant, &prior, expected)?;
+            Decision::Changed(plates.into_iter().map(|plate| plate.input).collect())
+        }
+    })
+}
+
+/// Node's `transferAcceptedPlateUnitInternal`: the unit leaves its Plate,
+/// which disappears when emptied, and lands unplaced on the target Plate or
+/// on a new Plate for the target Printer.
+fn transfer(
+    plates: &[ValidatedPlate],
+    plate: &str,
+    token: &str,
+    target: Target,
+    printer: Option<Printer>,
+) -> Result<Decision> {
+    let source = plates.iter().find(|p| p.input.plate_id.as_str() == plate);
+    let Some(unit) = source.and_then(|p| p.input.units.iter().find(|u| u.token.as_str() == token))
+    else {
+        return Ok(Decision::Refused(Refusal::UnitNotFound));
+    };
+    let mut next: Vec<PlateInput> = plates.iter().map(|p| p.input.clone()).collect();
+    let target_id = match (target, printer) {
+        (Target::Plate(id), _) => id,
+        (Target::Printer(_), Some(printer)) => {
+            let Some(geometry) = printer.geometry else {
+                return Ok(Decision::Refused(Refusal::InvalidUnits));
+            };
+            let mut bytes = [0u8; 16];
+            getrandom::fill(&mut bytes).map_err(|_| anyhow!("Entropy unavailable"))?;
+            let id = PlateId::parse(format!("plate_{}", hex::encode(bytes)))?;
+            next.push(PlateInput {
+                plate_id: id.clone(),
+                printer_id: printer.id,
+                printer_name: printer.name,
+                printer_model: printer.model,
+                printer: geometry,
+                units: Vec::new(),
+            });
+            id.as_str().to_owned()
+        }
+        (Target::Printer(_), None) => return Ok(Decision::Refused(Refusal::PrinterNotFound)),
+    };
+    let Some(destination) = next.iter().find(|p| p.plate_id.as_str() == target_id) else {
+        return Ok(Decision::Refused(Refusal::UnitNotFound));
+    };
+    if target_id == plate {
+        return Ok(Decision::Unchanged);
+    }
+    let bed = &destination.printer;
+    let fits = |dimension: DimensionUm, side: DimensionUm| {
+        i64::from(dimension.get()) <= i64::from(side.get()) - 2 * i64::from(bed.margin_um.get())
+    };
+    if !fits(unit.width_um, bed.bed_width_um)
+        || !fits(unit.depth_um, bed.bed_depth_um)
+        || unit.height_um > bed.bed_height_um
+    {
+        return Ok(Decision::Refused(Refusal::Geometry("outside_build_area")));
+    }
+    let moved = UnitInput {
+        placement: Placement::Unplaced,
+        pinned: false,
+        ..unit.clone()
+    };
+    for candidate in &mut next {
+        if candidate.plate_id.as_str() == plate {
+            candidate.units.retain(|u| u.token.as_str() != token);
+        } else if candidate.plate_id.as_str() == target_id {
+            candidate.units.push(moved.clone());
+        }
+    }
+    next.retain(|p| p.plate_id.as_str() != plate || !p.units.is_empty());
+    Ok(Decision::Changed(next))
+}
+
 /// A fleet Printer with usable build geometry: Node's `acceptedPrinter` over
-/// `parsePrinterMachine`.
+/// `parsePrinterMachine`. `geometry` is `None` when a dimension is past the
+/// stored Plate range, which Node only finds when it validates the layout.
 #[derive(Clone)]
 struct Printer {
     id: String,
     name: String,
     model: String,
     um: [i64; 4],
+    geometry: Option<PrinterGeometry>,
 }
 impl Printer {
     fn json(&self) -> Value {
@@ -580,11 +1123,20 @@ fn accepted_printer(row: &Value) -> Option<Printer> {
     {
         return None;
     }
+    let geometry = (|| {
+        Some(PrinterGeometry {
+            bed_width_um: DimensionUm::parse(width).ok()?,
+            bed_depth_um: DimensionUm::parse(depth).ok()?,
+            bed_height_um: DimensionUm::parse(height).ok()?,
+            margin_um: OffsetUm::parse(margin).ok()?,
+        })
+    })();
     Some(Printer {
         id,
         name,
         model,
         um: [width, depth, height, margin],
+        geometry,
     })
 }
 

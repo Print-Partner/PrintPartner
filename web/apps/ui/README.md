@@ -191,8 +191,16 @@ so a print that ends or a link that drops shows up without a reload.
   one, the write landed, so Retry sends the same request and key and the core replays the
   receipt and Undo. Picks that only overlap a burst that got no answer reread
   the results first: if that burst landed, it is resent with its key so the core
-  replays its receipt and Undo; if not, it is dropped and the picks go as a new
-  burst. A resent Undo whose first answer was lost
+  replays its receipt and Undo; if not, or the reread fails, the picks go as a
+  new burst and the core refuses any unit that already landed. A reread cannot
+  tell a write that never landed from one that landed and was undone elsewhere
+  before it, so a resend can get the old receipt of an undone burst; Today
+  rereads after every answer and, when every sent unit is still pending, says
+  nothing was marked instead of showing the tally and Undo. Keys come from
+  `crypto.randomUUID`, or from `crypto.getRandomValues` where the page is not a
+  secure context (a shared core over plain HTTP). One write runs at a time:
+  Confirm and Undo do nothing while the other is in flight or a confirm is
+  rereading. A resent Undo whose first answer was lost
   gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo

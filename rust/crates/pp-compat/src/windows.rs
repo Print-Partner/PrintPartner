@@ -585,16 +585,56 @@ fn scratch_members(job: &Job) -> String {
         } else {
             let got =
                 unsafe { QueryFullProcessImageNameW(process, 0, name.as_mut_ptr(), &mut len) };
+            let error = std::io::Error::last_os_error();
+            let mut code = 0u32;
+            unsafe { GetExitCodeProcess(process, &mut code) };
             unsafe { CloseHandle(process) };
-            if got == 0 {
-                "<name failed>".into()
+            let image = if got == 0 {
+                format!("<name failed {error}>")
             } else {
                 String::from_utf16_lossy(&name[..len as usize])
-            }
+            };
+            format!("{image} exit_code={code:#x}")
         };
-        out.push_str(&format!(" {member}={image}"));
+        out.push_str(&format!(
+            " {member}={image} toolhelp={}",
+            scratch_toolhelp(member as u32)
+        ));
     }
     out
+}
+
+fn scratch_toolhelp(pid: u32) -> String {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snap == INVALID_HANDLE_VALUE {
+        return "<snapshot failed>".into();
+    }
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = "<not in snapshot>".to_string();
+    let mut ok = unsafe { Process32FirstW(snap, &mut entry) };
+    while ok != 0 {
+        if entry.th32ProcessID == pid {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            found = format!(
+                "{} parent={}",
+                String::from_utf16_lossy(&entry.szExeFile[..end]),
+                entry.th32ParentProcessID
+            );
+            break;
+        }
+        ok = unsafe { Process32NextW(snap, &mut entry) };
+    }
+    unsafe { CloseHandle(snap) };
+    found
 }
 
 pub(crate) fn kill_group(pid: u32) -> bool {

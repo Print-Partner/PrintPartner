@@ -25,7 +25,7 @@ use std::{
 mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
-mod links;
+pub(crate) mod links;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
 mod unattributed;
@@ -197,6 +197,9 @@ pub enum Request {
     /// `POST /printer-checkoff/unattributed/{id}/dismiss`.
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed { id: String },
+    /// `POST /printer-checkoff/{id}/manual-complete`.
+    #[cfg(feature = "desktop_rebuild")]
+    ManualComplete { id: String },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -544,6 +547,10 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::ManualComplete { id } => {
+            return Ok(Op::Manual(manual::Op::CompleteLink { link_id: id }));
+        }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,

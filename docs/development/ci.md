@@ -464,7 +464,7 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
 | `pp-source` | GRE-653 | Its file mechanics go through `pp-os`, but NTFS refuses to rename a directory while handles to entries inside it are open, and snapshot publication and retained capture rename under such handles. |
-| `pp-compat` | GRE-654 | The Node child supervisor uses Unix sockets, process groups, signals and file modes. |
+| `pp-compat` | GRE-654 | The Node child supervisor uses Unix sockets, process groups and signals (GRE-1186). The Windows log port (GRE-1185) opens log entries through `pp-os`, but CI does not compile or test it for Windows until this exclusion is removed (GRE-1187). |
 | `pp-core` | GRE-654 | It depends on `pp-compat` and `pp-storage`. |
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
 | `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |

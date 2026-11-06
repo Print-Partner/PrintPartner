@@ -125,7 +125,7 @@ describe("Windows private pipe dial-in", () => {
     }
   });
 
-  it("finishes a request in flight before close lets the database go", async () => {
+  it("closes streams but finishes a computing request before the database closes", async () => {
     const directory = mkdtempSync(join(tmpdir(), "pp-dial-"));
     const path =
       process.platform === "win32"
@@ -140,6 +140,11 @@ describe("Windows private pipe dial-in", () => {
     let started = () => {};
     const handlerStarted = new Promise<void>((resolve) => (started = resolve));
     const app = Fastify();
+    app.get("/mcp", async (_request, reply) => {
+      reply.hijack();
+      reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+      reply.raw.write(":open\n\n");
+    });
     app.post("/plans/1/save", async () => {
       started();
       await new Promise<void>((resolve) => (release = resolve));
@@ -147,12 +152,20 @@ describe("Windows private pipe dial-in", () => {
       return { saved: true };
     });
     await serveDesktopPipe(app, path);
-    try {
+    const take = async () => {
       await vi.waitFor(() => expect(accepted.length).toBeGreaterThan(0));
       const socket = accepted.shift()!;
       let body = "";
       socket.on("data", (chunk) => (body += chunk));
-      socket.write(
+      return { socket, body: () => body };
+    };
+    try {
+      const stream = await take();
+      stream.socket.write("GET /mcp HTTP/1.1\r\nHost: desktop-compat\r\n\r\n");
+      await vi.waitFor(() => expect(stream.body()).toContain(":open"));
+      const streamClosed = once(stream.socket, "close");
+      const save = await take();
+      save.socket.write(
         "POST /plans/1/save HTTP/1.1\r\nHost: desktop-compat\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
       );
       await handlerStarted;
@@ -162,10 +175,44 @@ describe("Windows private pipe dial-in", () => {
         .then(() => events.push("database closed"));
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(events).toEqual([]);
+      const releasedAt = Date.now();
       release();
       await databaseClosed;
+      expect(Date.now() - releasedAt).toBeLessThan(1000);
       expect(events).toEqual(["handler finished", "app closed", "database closed"]);
-      await vi.waitFor(() => expect(body).toContain('{"saved":true}'));
+      await vi.waitFor(() => expect(save.body()).toContain('{"saved":true}'));
+      await streamClosed;
+    } finally {
+      for (const socket of accepted) socket.destroy();
+      core.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("stops waiting for a request that never answers after the drain bound", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pp-dial-"));
+    const path =
+      process.platform === "win32"
+        ? String.raw`\\.\pipe\pp-dial-bound-${process.pid}`
+        : join(directory, "core.sock");
+    const http = createHttpServer(() => {});
+    const accepted: Socket[] = [];
+    const core = createNetServer((socket) => accepted.push(socket));
+    core.listen(path);
+    await once(core, "listening");
+    const close = dialDesktopPipe(http, path, 1, 200);
+    try {
+      await vi.waitFor(() => expect(accepted.length).toBeGreaterThan(0));
+      const socket = accepted.shift()!;
+      const requested = once(http, "request");
+      socket.write("GET /stuck HTTP/1.1\r\nHost: desktop-compat\r\n\r\n");
+      await requested;
+      const closed = once(socket, "close");
+      const startedAt = Date.now();
+      await close();
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+      await closed;
     } finally {
       for (const socket of accepted) socket.destroy();
       core.close();

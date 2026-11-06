@@ -179,6 +179,21 @@ pub fn progress(profile_id: i64, read: &AcceptedRead) -> Value {
         AcceptedRead::Missing => json!({"kind":"missing","profileId":profile_id}),
     }
 }
+/// The included Parts in Checkoff order: file name bytes, then Part id.
+fn checkoff_parts(snapshot: &Snapshot) -> Vec<&Part> {
+    let mut parts = snapshot
+        .parts
+        .iter()
+        .filter(|p| p.included)
+        .collect::<Vec<_>>();
+    parts.sort_by(|a, b| {
+        a.filename
+            .as_bytes()
+            .cmp(b.filename.as_bytes())
+            .then(a.projection_part_id.cmp(&b.projection_part_id))
+    });
+    parts
+}
 pub fn checkoff(
     profile_id: i64,
     read: &AcceptedRead,
@@ -190,18 +205,7 @@ pub fn checkoff(
     let mut rows = Vec::new();
     let (mut done, mut printed, mut total) = (0, 0, 0);
     if let AcceptedRead::Ready { snapshot } = read {
-        let mut parts = snapshot
-            .parts
-            .iter()
-            .filter(|p| p.included)
-            .collect::<Vec<_>>();
-        parts.sort_by(|a, b| {
-            a.filename
-                .as_bytes()
-                .cmp(b.filename.as_bytes())
-                .then(a.projection_part_id.cmp(&b.projection_part_id))
-        });
-        for p in parts {
+        for p in checkoff_parts(snapshot) {
             let units = p.units.iter().map(|u| u.completed).collect::<Vec<_>>();
             let count = units.iter().filter(|&&u| u).count() as i64;
             let (display, hex, spools) = filament(p, provider)?;
@@ -218,6 +222,51 @@ pub fn checkoff(
     Ok(
         json!({"kind":if matches!(read,AcceptedRead::Empty{..}){"empty"}else{"ready"},"body":{"profile_id":profile_id,"summary":format!("{done}/{} parts fully printed · {printed}/{total} units",rows.len()),"parts":rows}}),
     )
+}
+/// `GET /api/v2/plans/{id}/checkoff/units`, as `{ kind, body }` like
+/// [`checkoff`]: included Parts in the same order, with unit tokens and the
+/// basis a manual burst names.
+#[cfg(feature = "desktop_rebuild")]
+pub fn checkoff_units(profile_id: i64, read: &AcceptedRead) -> Result<Value> {
+    use crate::checkoff_progress::{
+        Basis,
+        wire::{CheckoffPart, CheckoffUnitState, CheckoffUnits},
+    };
+    if let Some(value) = unavailable(read) {
+        return Ok(value);
+    }
+    let (basis, parts) = match read {
+        AcceptedRead::Ready { snapshot } => {
+            let parts = checkoff_parts(snapshot)
+                .into_iter()
+                .map(|p| CheckoffPart {
+                    part_id: p.projection_part_id,
+                    filename: p.filename.clone(),
+                    relative_path: p.relative_path.clone(),
+                    source_layer: p.source_layer.clone(),
+                    role: p.effective_role.clone(),
+                    quantity: p.units.len() as u64,
+                    printed_count: p.units.iter().filter(|u| u.completed).count() as u64,
+                    assembled_count: p.units.iter().filter(|u| u.assembled).count() as u64,
+                    units: p
+                        .units
+                        .iter()
+                        .map(|u| CheckoffUnitState {
+                            token: u.token.clone(),
+                            unit_index: u32::try_from(u.unit_index).unwrap_or(u32::MAX),
+                            object_name: u.object_name.clone(),
+                            printed: u.completed,
+                            assembled: u.assembled,
+                        })
+                        .collect(),
+                })
+                .collect();
+            (Some(Basis::from(&**snapshot).into()), parts)
+        }
+        _ => (None, Vec::new()),
+    };
+    let kind = if basis.is_some() { "ready" } else { "empty" };
+    Ok(json!({"kind": kind, "body": CheckoffUnits { profile_id, basis, parts }}))
 }
 pub fn assembled(part_id: i64, read: &AcceptedRead) -> Value {
     if let Some(value) = unavailable(read) {

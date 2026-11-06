@@ -1412,6 +1412,8 @@ fn open_authority_refusal_prunes_terminal_jobs() {
         1
     );
     drop(tx);
+    // Windows cannot remove the data directory while this connection is open.
+    drop(connection);
     assert_refusal_survives_reopen(sync, &job_id);
 }
 

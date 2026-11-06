@@ -174,6 +174,8 @@ pub fn accepted_router(config: AcceptedHttpConfig, client: ReadClient) -> Router
     }
     // Node registers Part routes at `/` and `/api/v1` only.
     let parts = plans.clone().route("/parts/{id}/assembled", get(assembled));
+    // The Checkoff tab's unit read is Rust-only and served under `/api/v2`.
+    let plans = plans.route("/plans/{id}/checkoff/units", get(checkoff_units));
     gate.guard(
         Router::new()
             .merge(parts.clone())
@@ -222,13 +224,14 @@ impl Drop for Cancellation {
 #[derive(Clone, Copy)]
 enum View {
     Checkoff,
+    CheckoffUnits,
     Assembled,
 }
 
 impl View {
     fn missing(self) -> &'static str {
         match self {
-            Self::Checkoff => "Profile not found",
+            Self::Checkoff | Self::CheckoffUnits => "Profile not found",
             Self::Assembled => "Part not found",
         }
     }
@@ -240,6 +243,14 @@ async fn checkoff(
     request: axum::extract::Request,
 ) -> Response {
     project(app, &id, request, View::Checkoff).await
+}
+
+async fn checkoff_units(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    project(app, &id, request, View::CheckoffUnits).await
 }
 
 async fn assembled(
@@ -271,6 +282,9 @@ async fn project(app: App, id: &str, request: axum::extract::Request, view: View
                 }
                 (View::Checkoff, _) => {
                     views::checkoff(build.profile_id, &build.accepted, &CatalogOnly)?
+                }
+                (View::CheckoffUnits, _) => {
+                    views::checkoff_units(build.profile_id, &build.accepted)?
                 }
                 (View::Assembled, part) => {
                     views::assembled(part.unwrap_or_default(), &build.accepted)
@@ -471,6 +485,41 @@ impl Gate {
         self.blocking(move |cancelled, wait| read(presented.into_credential(), cancelled, wait))
             .await
             .ok()
+    }
+
+    /// Runs `read` like [`Gate::read`] and answers with `present`, or with
+    /// the read's failure.
+    pub(crate) async fn respond<T: Send + 'static>(
+        &self,
+        presented: PresentedCredential,
+        read: impl FnOnce(
+            pp_storage::read_model::Credential,
+            Arc<AtomicBool>,
+            Duration,
+        ) -> anyhow::Result<T>
+        + Send
+        + 'static,
+        present: impl FnOnce(T) -> Response,
+    ) -> Response {
+        match self.read(presented, read).await {
+            Some(Ok(value)) => present(value),
+            Some(Err(error)) => read_error(&error),
+            None => internal(),
+        }
+    }
+}
+
+/// 200 with a storage answer's body as JSON; for another status, the
+/// problem `failure` builds from the body, or 500 when it builds none.
+pub(crate) fn storage_answer<B: serde::Serialize>(
+    status: u16,
+    body: B,
+    failure: impl FnOnce(StatusCode, B) -> Option<Response>,
+) -> Response {
+    match StatusCode::from_u16(status) {
+        Ok(StatusCode::OK) => ok_json(&body),
+        Ok(status) => failure(status, body).unwrap_or_else(internal),
+        Err(_) => internal(),
     }
 }
 

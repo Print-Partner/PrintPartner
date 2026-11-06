@@ -87,18 +87,9 @@ fn verified(path: &Path) -> bool {
     {
         return false;
     }
-    let Some(text) = path.to_str() else {
+    let Some(uri) = crate::sqlite_uri::immutable_uri(path) else {
         return false;
     };
-    let mut uri = String::from("file:");
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
-            uri.push(byte as char);
-        } else {
-            uri.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    uri.push_str("?immutable=1");
     Connection::open_with_flags(
         &uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,

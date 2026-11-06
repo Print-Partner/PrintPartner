@@ -108,6 +108,7 @@ const optionalMembers = {
   Health: new Set(["modules", "degraded_detail", "single_user_auth", "single_user_setup_required", "owner_mapping_required", "github_oauth_configured", "discord_oauth_configured"]),
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
+  ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
 };
 
 for (const fixture of document.fixtures) {

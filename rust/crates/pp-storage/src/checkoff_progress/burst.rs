@@ -42,7 +42,7 @@ pub(super) struct Burst {
 }
 
 /// Object keys sorted at every level, so key order never changes the hash.
-fn canonical(value: &Value) -> Value {
+pub(super) fn canonical(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut keys: Vec<&String> = map.keys().collect();
@@ -146,16 +146,26 @@ pub(super) fn load_receipts(tx: &Transaction<'_>, tenant: &str) -> Result<Vec<Va
     load_list(tx, tenant, KEY)
 }
 
-fn key_hash(key: &str) -> String {
+pub(super) fn key_hash(key: &str) -> String {
     hex::encode(Sha256::digest(key.as_bytes()))
 }
 
-/// Keeps the newest receipts. A dropped receipt leaves the hash of its key
-/// behind, so replaying that key is refused instead of running again.
 fn save_receipts(tx: &Transaction<'_>, tenant: &str, receipts: &[Value]) -> Result<()> {
+    save_receipts_under(tx, tenant, (KEY, RETIRED_KEY), receipts)
+}
+
+/// Keeps the newest receipts under `keys.0`. A dropped receipt leaves the hash
+/// of its key under `keys.1`, so replaying that key is refused instead of
+/// running again.
+pub(super) fn save_receipts_under(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    (key, retired_key): (&str, &str),
+    receipts: &[Value],
+) -> Result<()> {
     let (dropped, kept) = receipts.split_at(receipts.len().saturating_sub(MAX_RECEIPTS));
     if !dropped.is_empty() {
-        let mut retired = load_list(tx, tenant, RETIRED_KEY)?;
+        let mut retired = load_list(tx, tenant, retired_key)?;
         retired.extend(
             dropped
                 .iter()
@@ -164,18 +174,22 @@ fn save_receipts(tx: &Transaction<'_>, tenant: &str, receipts: &[Value]) -> Resu
         save_list(
             tx,
             tenant,
-            RETIRED_KEY,
+            retired_key,
             &retired[retired.len().saturating_sub(MAX_RETIRED)..],
         )?;
     }
-    save_list(tx, tenant, KEY, kept)
+    save_list(tx, tenant, key, kept)
 }
 
 /// SHA-256 of what can depend on the burst's units: every progress row of
 /// their Parts, the outcome rows that name one of them, and every stored link
 /// whose units or resolved units name one of them. Undo compares it with the
 /// value the burst left, so unrelated prints, jobs and links do not block it.
-fn state_hash(tx: &Transaction<'_>, tenant: &str, units: &BTreeSet<(i64, i64)>) -> Result<String> {
+pub(super) fn state_hash(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    units: &BTreeSet<(i64, i64)>,
+) -> Result<String> {
     let mut hasher = Sha256::new();
     let parts: BTreeSet<i64> = units.iter().map(|&(part, _)| part).collect();
     let mut progress = tx.prepare(
@@ -220,7 +234,7 @@ fn state_hash(tx: &Transaction<'_>, tenant: &str, units: &BTreeSet<(i64, i64)>) 
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn progress_row(
+pub(super) fn progress_row(
     tx: &Transaction<'_>,
     tenant: &str,
     part: i64,
@@ -330,29 +344,17 @@ pub(super) fn verify_batch(
     repos: &Path,
 ) -> Outcome {
     let mut receipts = load_receipts(tx, tenant)?;
-    if let Some(receipt) = receipts
-        .iter()
-        .find(|r| r["idempotency_key"] == burst.key.as_str())
-    {
-        if receipt["request_hash"] != burst.hash.as_str() {
-            return refuse(
-                409,
-                "idempotency_key was already used for a different request",
-            );
-        }
-        if receipt.get("undone_at").is_some() {
-            return refuse(
-                409,
-                "burst_undone: this Checkoff burst was undone; send a new idempotency_key to apply it again",
-            );
-        }
-        return Ok(Ok(Response::ok(Body::Receipt(receipt["response"].clone()))));
-    }
-    if load_list(tx, tenant, RETIRED_KEY)?.contains(&Value::from(key_hash(&burst.key))) {
-        return refuse(
-            409,
-            "idempotency_key belongs to a Checkoff burst too old to replay",
-        );
+    if let Some(answer) = replayed(
+        tx,
+        tenant,
+        &receipts,
+        (&burst.key, &burst.hash),
+        RETIRED_KEY,
+        Some(
+            "burst_undone: this Checkoff burst was undone; send a new idempotency_key to apply it again",
+        ),
+    )? {
+        return Ok(Ok(answer));
     }
     let before = public_links(tx, tenant)?;
     let Decided {
@@ -487,18 +489,89 @@ fn undo_conflict(
             "This Checkoff burst predates the undo state check and cannot be undone".into(),
         ));
     }
+    if state_changed(tx, tenant, undo)? {
+        return Ok(Some(
+            "Checkoff changed since this burst: a later verify or progress change on its Parts depends on it".into(),
+        ));
+    }
+    Ok(None)
+}
+
+/// The answer to a repeated idempotency key: the stored receipt, or a refusal
+/// when the key was used for another request, belongs to a dropped receipt
+/// (listed under `retired_key`), or, with `undone`, names a burst that was
+/// undone. `None` when the key is new.
+pub(super) fn replayed(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    receipts: &[Value],
+    (key, hash): (&str, &str),
+    retired_key: &str,
+    undone: Option<&str>,
+) -> Result<Option<Response>> {
+    let refuse = |detail: &str| Some(Response::failure(409, detail, None));
+    if let Some(receipt) = receipts.iter().find(|r| r["idempotency_key"] == key) {
+        return Ok(if receipt["request_hash"] != hash {
+            refuse("idempotency_key was already used for a different request")
+        } else if let Some(detail) = undone.filter(|_| receipt.get("undone_at").is_some()) {
+            refuse(detail)
+        } else {
+            Some(Response::ok(Body::Receipt(receipt["response"].clone())))
+        });
+    }
+    Ok(
+        if load_list(tx, tenant, retired_key)?.contains(&Value::from(key_hash(key))) {
+            refuse("idempotency_key belongs to a Checkoff burst too old to replay")
+        } else {
+            None
+        },
+    )
+}
+
+/// Whether anything that can depend on the burst's units changed since it.
+pub(super) fn state_changed(tx: &Transaction<'_>, tenant: &str, undo: &Value) -> Result<bool> {
     let units: BTreeSet<(i64, i64)> = undo["units"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|unit| Some((unit[0].as_i64()?, unit[1].as_i64()?)))
         .collect();
-    if undo["state"] != state_hash(tx, tenant, &units)?.as_str() {
-        return Ok(Some(
-            "Checkoff changed since this burst: a later verify or progress change on its Parts depends on it".into(),
-        ));
+    Ok(undo["state"] != state_hash(tx, tenant, &units)?.as_str())
+}
+
+/// Puts back the progress rows a burst changed; returns the Parts that moved.
+pub(super) fn restore_progress(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    undo: &Value,
+) -> Result<BTreeSet<i64>> {
+    let mut moved = BTreeSet::new();
+    for row in undo["progress"].as_array().into_iter().flatten() {
+        let changed = tx.execute(
+            "UPDATE print_progress SET completed=?1, assembled=?2 WHERE tenant_id=?3 AND part_id=?4 AND unit_index=?5 AND (completed IS NOT ?1 OR assembled IS NOT ?2)",
+            params![row["completed"].as_bool(), row["assembled"].as_bool(), tenant, row["part_id"].as_i64(), row["unit_index"].as_i64()],
+        )?;
+        if changed > 0 {
+            moved.extend(row["part_id"].as_i64());
+        }
     }
-    Ok(None)
+    Ok(moved)
+}
+
+/// Marks the receipt undone and saves the list; returns the undo time.
+pub(super) fn mark_undone(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    keys: (&str, &str),
+    receipts: &mut [Value],
+    position: usize,
+) -> Result<String> {
+    let undone_at = links::now();
+    if let Value::Object(receipt) = &mut receipts[position] {
+        receipt.insert("undone_at".into(), undone_at.clone().into());
+    }
+    save_receipts_under(tx, tenant, keys, receipts)?;
+    Ok(undone_at)
 }
 
 /// Why the burst with an undo token cannot be undone now.
@@ -568,17 +641,7 @@ pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos:
         }
     }
     links::save_all(tx, tenant, all)?;
-    let mut moved = BTreeSet::new();
-    for row in undo["progress"].as_array().into_iter().flatten() {
-        let changed = tx.execute(
-            "UPDATE print_progress SET completed=?1, assembled=?2 WHERE tenant_id=?3 AND part_id=?4 AND unit_index=?5 AND (completed IS NOT ?1 OR assembled IS NOT ?2)",
-            params![row["completed"].as_bool(), row["assembled"].as_bool(), tenant, row["part_id"].as_i64(), row["unit_index"].as_i64()],
-        )?;
-        if changed > 0 {
-            moved.extend(row["part_id"].as_i64());
-        }
-    }
-    for part in moved {
+    for part in restore_progress(tx, tenant, &undo)? {
         let profile: i64 = tx.query_row(
             "SELECT profile_id FROM parts WHERE tenant_id=?1 AND id=?2",
             params![tenant, part],
@@ -598,11 +661,7 @@ pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos:
             params![tenant, job],
         )?;
     }
-    let undone_at = links::now();
-    if let Value::Object(receipt) = &mut receipts[position] {
-        receipt.insert("undone_at".into(), undone_at.clone().into());
-    }
-    save_receipts(tx, tenant, &receipts)?;
+    let undone_at = mark_undone(tx, tenant, (KEY, RETIRED_KEY), &mut receipts, position)?;
     #[cfg(feature = "desktop_rebuild")]
     super::farm_log::append_undo(tx, tenant, token, &receipts[position]["response"])?;
     let mut body = Map::new();

@@ -2752,6 +2752,137 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 
+### Manual Checkoff bursts (GRE-1191)
+
+The Build Checkoff tab records what was printed or assembled with no printer
+link. With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the
+Checkoff router mounts two writes at `/` and `/api/v2`, and the Accepted Plan
+reads mount one read at `/api/v2` only. All three are Rust-only; Node has no
+route at these paths, so the gateway manifests do not list them.
+
+- `GET /api/v2/plans/{id}/checkoff/units` returns `{ profile_id, basis, parts }`:
+  the included Parts in the order of `GET /plans/{id}/checkoff`, each with its
+  quantity, printed and assembled counts and every Required unit's `token`,
+  `unit_index`, `object_name`, `printed` and `assembled`. `basis` is the
+  Accepted Plan basis a burst sends as `expected`, or `null` for a Build with
+  no Accepted Plan (`parts` is then empty). A Build the caller cannot see is 404.
+- `POST /plans/{id}/checkoff/bursts` takes `{ idempotency_key, expected, units }`:
+  a key of 1 to 200 characters after trimming, the basis, and 1 to 1,000
+  `{ token, printed?, assembled? }` entries, each setting at least one flag and
+  naming a different token. Unknown fields are refused. `expected` for another
+  Build than the path is 404 `Plan not found`.
+  `pp-storage::checkoff_progress::manual` applies the burst in one writer
+  transaction. Printed units fill from the left, as the single-unit writes do:
+  `printed: true` prints that unit and every lower unit of its Part, and
+  `printed: false` clears that unit and every higher unit and their assembly. A
+  burst that prints a unit at or above one it clears on the same Part is 400.
+  Assembling a unit that is not printed after the burst is 400. A token that is
+  not on an included Part of the Accepted Plan is 404, so counts never pass the
+  Part's units. A stale basis is 409 `Accepted Plan changed; reload and retry`,
+  and an archived Build is 409 like every progress write. The first refusal
+  leaves the database unchanged.
+- Success returns `{ idempotency_key, undo_token, profile_id, printed_added,
+  printed_removed, assembled_added, assembled_removed, parts }`, where `parts`
+  holds each named Part's quantity and new counts. The receipt is stored in the
+  same transaction under the `checkoff.manual_bursts` setting with the request's
+  SHA-256 (object keys sorted), the progress rows as they were before, and the
+  SHA-256 of what can depend on the changed units (the same state hash as
+  printer bursts). Retention and replay follow printer bursts: the same key and
+  request returns the stored receipt and writes nothing, also after a restart;
+  the same key with another request is 409; a key whose receipt was dropped
+  (newest 100 kept) is 409 from `checkoff.manual_bursts_retired`. A replay of a
+  burst that was undone is 409 `This Checkoff burst was undone; send the change
+  again as a new burst`, so a late retry never counts it again.
+- `POST /plans/{id}/checkoff/bursts/undo` takes `{ undo_token }` and restores
+  the progress rows the burst changed. It refuses with 409 and a reason when the
+  Accepted Plan basis changed since the burst, when any progress row of the
+  touched Parts, an outcome naming a touched unit, or a printer Checkoff link
+  naming one changed since (`Checkoff changed since this burst: a later change
+  on its Parts depends on it`), and when it was already undone. A token from
+  another Build's path, or an unknown one, is 404.
+
+Each Part a burst or undo changes appends one `checkoff.progress_changed` event
+in the same transaction ([Domain events](domain-events.md)). Neither write
+touches a draft, a Required-unit ID, a printer Checkoff link, a print job, the
+send queue or Spoolman, so Checkoff never passes the Accept gate and never
+deducts or reserves stock. The generated client names the three routes
+`readBuildCheckoffUnits`, `recordManualCheckoffBurst` and
+`undoManualCheckoffBurst`.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_manual_bursts
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_manual_bursts_http
+```
+
+### Accepted Plate workspace read (GRE-1189)
+
+`pp-storage::plates` serves Node's `GET /plans/{id}/plates`
+(`routes/accepted-plates.ts`, `readAcceptedPlateWorkspace`) in one deferred
+read transaction. `pp-api::plates::plates_router` serves it at `/` and
+`/api/v2` behind `accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
+
+The router is not mounted in `read_router` yet. Initialize and arrange
+(GRE-419) still run on Node and write the
+`accepted_plate_*` tables, so the Plate routes and their aliases switch to Rust
+together, as one operation.
+
+The read answers as Node does. A Build the caller cannot see is 404
+`profile_not_found`; an empty Accepted Plan, or one with no Required units, is
+`{"kind": "empty_plan"}`; a dirty or uninitialized compatibility state is 409
+`accepted_state_unavailable`. With no head, or a head revision stamped with
+another Accepted Plan basis, the answer is `setup` with the Required units and
+`expected_plate_revision_id` (`null` without a head). Otherwise it is `ready`:
+the head revision's layout, read in either stored layout format and checked
+against its counts, tenant and layout digest, with placed units per Plate,
+`unplaced` units, and `unassigned` Required units. `printers` lists the
+`printer.fleet` rows that Node's `acceptedPrinter` accepts (trimmed id, name
+and model, a positive build height, margins smaller than half the bed),
+sorted by UTF-8 id. Stored Plate data that contradicts its revision, and a
+stored Plate id that is not a generated `plate_` id, which Node's contract
+parser rejects, are 500 `internal_error`. A read writes nothing.
+
+### Accepted Plate edits (GRE-1184)
+
+`pp-storage::plates` also serves the Plate-revision edits from Node's
+`routes/accepted-plates.ts`: `PATCH /plans/{id}/plates/{plateId}/units/{token}` (move),
+`PATCH .../units/{token}/pin`, `POST .../units/{token}/unplace`,
+`POST .../units/{token}/transfer` and `POST /plans/{id}/plates/restore`.
+`pp-api::plates::plates_router` serves them at `/` and `/api/v2` behind
+`accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
+
+The router is not mounted in `read_router` yet. Initialize and arrange
+(GRE-419) still run on Node and write the same `accepted_plate_*` tables, so
+the Plate routes and their aliases switch to Rust together with them, as one
+operation, and never with one runtime writing beside the other.
+
+Each edit is one immediate writer transaction. It checks, in Node's order, the
+target Printer (transfer only, 422 `printer_not_found`), that the Build is
+visible and its Accepted Plan matches the request's `expected` basis (409
+`accepted_plan_changed`, or `accepted_state_unavailable` while compatibility is
+dirty or uninitialized), that the Build is not archived (409 `plan_archived`),
+and that the head is `expected_plate_revision_id` (409
+`plate_revision_changed`). It then reads the head revision's layout in either
+stored layout format and checks its counts, tenant and digest. A change is
+validated with the current clearance rule (422 `outside_build_area`,
+`overlapping_units` or `invalid_units`), written as a new immutable revision
+with the next revision number, and the head moves by compare-and-set from the
+expected revision. The same transaction appends `plates.revision_changed`. An
+edit whose layout digest equals the head's returns the head and writes nothing.
+Refusals write nothing. Stored Plate data that contradicts its revision is 500
+`internal_error`, as Node's `AcceptedPlateIntegrityError`.
+
+A move takes any trimmed Plate id of at most 200 characters; pin, unplace and
+transfer take only generated `plate_` ids, as Node's routes do. A transfer
+leaves the unit unplaced on the target Plate, or on a new random `plate_` Plate
+for `target_printer_id`, and drops a source Plate it empties. Restore accepts
+only the revision the head's arrange replaced (otherwise 422
+`unit_not_found`), writes its layout as a new revision and returns the
+workspace.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

@@ -173,6 +173,8 @@ so a print that ends or a link that drops shows up without a reload.
   resent. Sent picks stay picked until the core confirms the burst, so a click
   while another confirm is in flight, or a refusal, leaves them to fix and send
   again; units picked while a burst is in flight stay picked after it succeeds.
+  A pick whose unit a reread no longer lists as pending is dropped, so an Undo
+  never brings back a pick that was already sent.
 - **Retry.** A send that fails without an answer from the core (a network error
   or a lost answer) is resent up to twice with the same key, and the alert's
   Retry resends it again with the same key. The core answers a repeated key
@@ -183,8 +185,11 @@ so a print that ends or a link that drops shows up without a reload.
   that landed while its answer was lost replays its receipt and Undo instead of
   being refused as already verified. The key is kept only while a reread still
   lists every unit of that burst as pending; once one is gone, confirming the
-  same units later uses a new key, so a burst undone elsewhere is not answered with its
-  old receipt. A resent Undo whose first answer was lost
+  same units later uses a new key, so a burst undone elsewhere is not answered
+  with its old receipt. The alert's Retry follows the same rule. Confirming any
+  bed of a burst that got no answer resends that burst with its key, so a
+  multi-bed burst that landed replays its receipt and Undo instead of being
+  refused. A resent Undo whose first answer was lost
   gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo

@@ -166,10 +166,26 @@ function useCheckoff() {
       return refresh();
     },
   });
-  /** Sends the picks as one burst, and calls `onConfirmed` once the core confirms it. */
+  /**
+   * Sends the picks as one burst, and calls `onConfirmed` once the core confirms it. Picks
+   * that touch a bed of a burst that got no answer resend that burst with its key instead,
+   * so a write that landed replays its receipt and Undo rather than being refused.
+   */
   const confirmPicks = (picks: Pick[], onConfirmed?: () => void) => {
     if (confirm.isPending || picks.length === 0 || picks.length > MAX_BURST_BEDS) return;
-    const key = unanswered.current.get(burstId(picks))?.key ?? crypto.randomUUID();
+    const beds = new Set(picks.map((p) => p.bed.result.id));
+    const lost = [...unanswered.current.entries()].find(([, u]) =>
+      u.picks.some((p) => beds.has(p.bed.result.id)),
+    );
+    if (lost) {
+      const [id, { key, picks: sent }] = lost;
+      confirm.mutate(
+        { picks: sent, key },
+        { onSuccess: id === burstId(picks) ? onConfirmed : undefined },
+      );
+      return;
+    }
+    const key = crypto.randomUUID();
     unanswered.current.set(burstId(picks), { key, picks });
     confirm.mutate({ picks, key }, { onSuccess: onConfirmed });
   };
@@ -184,14 +200,17 @@ function useCheckoff() {
 
 type Checkoff = ReturnType<typeof useCheckoff>;
 
-/** The live tally, Undo, and a Retry that resends the same request with the same key. */
+/**
+ * The live tally, Undo, and a Retry. A confirm's Retry goes through `confirmPicks`, so it
+ * reuses the saved key only while a reread still lists that bed waiting.
+ */
 function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
-  const { confirm, undo, undoBurst, tally } = checkoff;
+  const { confirm, confirmPicks, undo, undoBurst, tally } = checkoff;
   const failure = confirm.isError
     ? {
         what: "Could not confirm what came off.",
         error: confirm.error,
-        resend: () => confirm.mutate(confirm.variables),
+        resend: () => confirmPicks(confirm.variables!.picks),
       }
     : undo.isError
       ? {

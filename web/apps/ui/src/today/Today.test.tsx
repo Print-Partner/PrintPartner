@@ -543,6 +543,26 @@ describe("an uncertain write is reconciled, not repeated", () => {
     expect(core.state.marked).toBe(3);
   });
 
+  it("sends Retry with a new key once a reread no longer lists the bed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseFirstAnswers: 3 });
+    const waiting = structuredClone(core.state.results);
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Voron 2.4" })).toBeNull());
+    core.state.results = waiting;
+    core.state.marked = 0;
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" });
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(2);
+    expect(core.state.marked).toBe(3);
+  });
+
   it("drops the unanswered key once a reread no longer lists the bed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ loseFirstAnswers: 3 });
@@ -807,6 +827,38 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(
       within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }),
     ).toHaveProperty("checked", true);
+  });
+
+  it("does not bring back sent picks after an Undo", async () => {
+    const core = fakeCore({ results: SHARED() });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await screen.findByText(/^Confirmed \d+ units? from Voron 2.4\./);
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { level: 3, name: "Voron 2.4" })).toBeNull(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    expect(unit("bracket.stl unit 2")).toHaveProperty("checked", false);
+    expect(preview().textContent).toContain("Nothing picked.");
+  });
+
+  it("resends a lost multi-bed burst with its key when one of its beds is confirmed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED(), loseFirstAnswers: 3 });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    expect(await screen.findByText("Confirmed 2 units from Voron 2.4 and Trident.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
+    expect(core.state.marked).toBe(2);
   });
 
   it("keeps the picks when the core refuses the burst", async () => {

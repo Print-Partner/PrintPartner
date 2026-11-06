@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { MutationButton } from "../screen/ScreenTemplate";
 import {
   listWords,
@@ -129,6 +129,16 @@ export function ClearBeds({
     bed.pending.map((unit) => ({ key: slotKey(bed, unit), bed, unit })),
   );
   const selected = new Set([...picked].filter((key) => slots.some((s) => s.key === key)));
+  // A pick whose unit a reread no longer lists as pending is dropped, so an Undo or a
+  // reopened bed never brings back a pick that was already sent.
+  const slotKeys = JSON.stringify(slots.map((s) => s.key));
+  useEffect(() => {
+    const live = new Set<string>(JSON.parse(slotKeys));
+    setPicked((now) => {
+      const kept = [...now].filter((key) => live.has(key));
+      return kept.length === now.size ? now : new Set(kept);
+    });
+  }, [slotKeys]);
   const picks = picksOf(beds, selected);
   const needs = lowerFirst(beds, picks);
   const stillPrinting = lowerFirst(blocking.printing, picks);

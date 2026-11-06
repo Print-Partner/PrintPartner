@@ -336,6 +336,10 @@ impl CompatHandle {
 
 pub struct Supervisor {
     #[cfg(test)]
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "read by the Unix tests until GRE-1187")
+    )]
     health_probes_completed: watch::Receiver<usize>,
     pub handle: CompatHandle,
     stop: CancellationToken,
@@ -1168,10 +1172,25 @@ impl Drop for Supervisor {
     }
 }
 
-#[cfg(test)]
+// GRE-1187 ports the Unix-mechanism tests; until then Windows builds only the
+// platform tests in `windows.rs` and `logs.rs`.
+#[cfg(all(test, unix))]
 mod ticket_t_2;
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod tests {
+    pub(crate) fn node_binary() -> std::path::PathBuf {
+        let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
+        let output = std::process::Command::new(configured)
+            .args(["-p", "process.execPath"])
+            .output()
+            .expect("Node must report its native executable");
+        assert!(output.status.success());
+        std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     pub(crate) fn node_binary() -> std::path::PathBuf {
         static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

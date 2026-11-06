@@ -341,13 +341,20 @@ fn push_argument(line: &mut Vec<u16>, argument: &OsStr) {
 }
 
 /// One end of a pipe for the child (synchronous, made inheritable only while
-/// the child is created) and the core's overlapped end.
+/// the child is created) and the core's overlapped end. The pipe carries the
+/// HMAC key, so only the current user may open it.
 fn pipe(child_reads: bool) -> std::io::Result<(OwnedHandle, OwnedHandle)> {
     let name = wide(OsStr::new(&format!(
         r"\\.\pipe\printpartner-stdio-{}-{}",
         std::process::id(),
         rand::random::<u64>()
     )));
+    let descriptor = CurrentUser::query()?.private_descriptor(false)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.as_ptr(),
+        bInheritHandle: 0,
+    };
     let direction = if child_reads {
         PIPE_ACCESS_OUTBOUND
     } else {
@@ -362,7 +369,7 @@ fn pipe(child_reads: bool) -> std::io::Result<(OwnedHandle, OwnedHandle)> {
             4096,
             4096,
             0,
-            std::ptr::null(),
+            &attributes,
         )
     };
     if ours == INVALID_HANDLE_VALUE {
@@ -691,8 +698,12 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use windows_sys::Win32::{
+        Foundation::DuplicateHandle,
         Foundation::GENERIC_WRITE,
-        System::{JobObjects::IsProcessInJob, Threading::PROCESS_QUERY_LIMITED_INFORMATION},
+        System::{
+            JobObjects::IsProcessInJob,
+            Threading::{GetCurrentProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
     };
 
     const JOB_OWNER_ROOT: &str = "PP_COMPAT_JOB_OWNER_ROOT";
@@ -709,9 +720,28 @@ mod tests {
         let lease = File::open("NUL").unwrap();
         let (setup, _guard) = configure_child(&mut command, &lease).unwrap();
         let child = spawn(&mut command, &setup).unwrap();
+        let parent: u32 = std::env::var("PP_COMPAT_SPAWN_EXIT_PARENT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let parent = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, parent) };
+        assert!(!parent.is_null());
+        let mut duplicated: HANDLE = std::ptr::null_mut();
+        check(unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                child.raw(),
+                parent,
+                &mut duplicated,
+                PROCESS_SYNCHRONIZE,
+                0,
+                0,
+            )
+        })
+        .unwrap();
         std::fs::write(
             PathBuf::from(root).join("child"),
-            child.id().unwrap().to_string(),
+            (duplicated as usize).to_string(),
         )
         .unwrap();
         std::process::exit(0);
@@ -736,23 +766,26 @@ mod tests {
                 "--test-threads=1",
             ])
             .env(SPAWN_EXIT_ROOT, &root)
+            .env(
+                "PP_COMPAT_SPAWN_EXIT_PARENT",
+                std::process::id().to_string(),
+            )
             .stdout(std::process::Stdio::null())
             .status()
             .unwrap();
         assert!(status.success());
-        let pid: u32 = std::fs::read_to_string(root.join("child"))
+        let handle: usize = std::fs::read_to_string(root.join("child"))
             .unwrap()
             .parse()
             .unwrap();
-        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-        if !process.is_null() {
-            let process = unsafe { OwnedHandle::from_raw_handle(process as _) };
-            assert_eq!(
-                unsafe { WaitForSingleObject(process.as_raw_handle() as HANDLE, 10_000) },
-                WAIT_OBJECT_0,
-                "child outlived the core that created it"
-            );
-        }
+        // The fixture duplicated its child's handle into this process, so a
+        // reused PID cannot stand in for the child.
+        let process = unsafe { OwnedHandle::from_raw_handle(handle as _) };
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle() as HANDLE, 10_000) },
+            WAIT_OBJECT_0,
+            "child outlived the core that created it"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

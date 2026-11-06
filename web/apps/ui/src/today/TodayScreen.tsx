@@ -374,8 +374,24 @@ function useCheckoff() {
       picks.every(({ bed, units }) => !units.some((u) => waiting(bed, u))),
     );
     const [only] = sent.bursts;
-    if (landed || sent.bursts.length > 1) {
+    if (landed) {
       confirm.mutate(sent);
+      return;
+    }
+    if (sent.bursts.length > 1) {
+      // Each burst follows the same rule: one with no unit or every unit still waiting goes
+      // again with its key, and one partly confirmed by another write sends what is left.
+      const bursts = sent.bursts.map((burst) => {
+        const left = burst.picks
+          .map(({ bed, units }) => ({ bed, units: units.filter((u) => waiting(bed, u)) }))
+          .filter(({ units }) => units.length > 0);
+        const count = (picks: Pick[]) => picks.reduce((n, p) => n + p.units.length, 0);
+        if (left.length === 0 || count(left) === count(burst.picks)) return burst;
+        const rest = { ...burst, picks: left, key: newKey() };
+        unanswered.current.set(burstId(left), rest);
+        return rest;
+      });
+      confirm.mutate({ bursts });
       return;
     }
     const still = only!.picks

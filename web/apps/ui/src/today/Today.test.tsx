@@ -1377,6 +1377,59 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(core.state.marked).toBe(2);
   });
 
+  it("retries each burst of a lost multi-burst confirm by the same rule", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    let lose = 3;
+    let drop = 0;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path !== "/api/v2/printer-checkoff/verify-batch") return real(path, init);
+      if (drop > 0) {
+        drop -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      const answer = await real(path, init);
+      if (lose > 0) {
+        lose -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      return answer;
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    expect(core.state.marked).toBe(1);
+    drop = 3;
+    fireEvent.click(unit("bracket.stl unit 3"));
+    fireEvent.click(unit("gear.stl unit 1"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 3 picked units" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await waitFor(() => expect(drop).toBe(0));
+    // Another window confirms bracket unit 3 before the Retry.
+    await real("/api/v2/printer-checkoff/verify-batch", {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: "elsewhere",
+        beds: [
+          {
+            link_id: "link-voron",
+            decisions: [{ part_id: 1, unit_index: 2, result: "confirmed" }],
+          },
+        ],
+      }),
+    });
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Confirmed 2 units from Voron 2.4.")).toBeTruthy();
+    expect(core.posts.at(-1)!.body.beds).toEqual([
+      { link_id: "link-voron", decisions: [{ part_id: 3, unit_index: 0, result: "confirmed" }] },
+    ]);
+    expect(core.state.marked).toBe(3);
+  });
+
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ results: SHARED() });

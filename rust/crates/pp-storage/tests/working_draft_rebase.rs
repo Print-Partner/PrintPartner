@@ -7,7 +7,7 @@ use pp_storage::{
     auth::{self, Secret},
     read_model::Credential,
     working_drafts::{
-        Failure, PositiveId, RebaseArgs, RebaseRequest,
+        Failure, PositiveId, RebaseArgs, RebaseRequest, RebaseWorkspaceOutcome,
         observation::{
             ArtifactRead, CheckoutManifestUse, DocumentRead, DraftReads, InventoryPath,
             OwnedCatalogReadRequest, OwnedCheckoutReadRequest, OwnedStlReadRequest,
@@ -576,4 +576,54 @@ fn the_body_parses_as_node_parses_it() {
     ] {
         assert!(!parse(body.clone()), "{body}");
     }
+}
+
+#[test]
+fn ticket_t_61_publication_rebase_and_select_selects_the_rebased_draft_once_per_key() {
+    let case = node("base-moved-abandoned");
+    let f = Fixture::new(&case);
+    let call = &case["calls"][0];
+    let owner = f.open();
+    let client = owner
+        .working_drafts_with_observations(
+            policy(),
+            f.reads(&case["files"], &Value::Null, None),
+            PreparationLimits::default(),
+        )
+        .unwrap();
+    let run = || {
+        let outcome = client
+            .rebase_and_select(
+                session(),
+                id(1),
+                RebaseArgs {
+                    draft_id: id(2),
+                    idempotency_key: "first",
+                    request: serde_json::from_value(call["request"].clone()).unwrap(),
+                },
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        let RebaseWorkspaceOutcome::Workspace(outcome) = outcome else {
+            panic!("rebase was refused: {outcome:?}");
+        };
+        serde_json::to_value(outcome).unwrap()
+    };
+    let selected = run();
+    assert_eq!(selected["kind"], "ready", "{selected}");
+    assert_eq!(selected["workspace"]["draft"]["draft_id"], 3);
+    let events = || f.rows("SELECT event_type,payload_json FROM domain_events ORDER BY seq");
+    let draft = |id: u8| json!({"event_type":"plan.draft_changed","payload_json":format!("{{\"draft_id\":{id}}}")});
+    assert_eq!(events(), json!([draft(3), draft(3)]));
+    let selection = f.rows("SELECT id,current_required_unit_reconciliation_id,snapshot_digest FROM plan_drafts WHERE id=3");
+    assert!(!selection[0]["current_required_unit_reconciliation_id"].is_null());
+    assert_eq!(
+        selection[0]["snapshot_digest"],
+        selected["workspace"]["draft"]["snapshot_digest"]
+    );
+    assert_eq!(run(), selected);
+    assert_eq!(f.rows("SELECT id,current_required_unit_reconciliation_id,snapshot_digest FROM plan_drafts WHERE id=3"), selection);
+    assert_eq!(events(), json!([draft(3), draft(3)]));
+    owner.shutdown().unwrap();
 }

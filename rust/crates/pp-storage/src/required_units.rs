@@ -150,6 +150,25 @@ impl ReconciliationCommand {
             credential,
         })
     }
+
+    /// Node's `autoReconcile` selection: no decisions, keyed by the draft's
+    /// snapshot digest.
+    pub fn automatic(
+        profile_id: PositiveId,
+        draft_id: PositiveId,
+        snapshot_digest: &pp_domain::Digest,
+        credential: Credential,
+    ) -> Result<Self> {
+        Self::new(
+            profile_id,
+            draft_id,
+            serde_json::from_value(
+                serde_json::json!({"expected_snapshot_digest": snapshot_digest, "decisions": []}),
+            )?,
+            &format!("auto-{}", snapshot_digest.as_str()),
+            credential,
+        )
+    }
 }
 
 pub use Failure as AdmissionFailure;

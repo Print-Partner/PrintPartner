@@ -56,6 +56,12 @@ const lostSend = (error: Error) =>
 const resendable = (error: Error) =>
   !(error instanceof RequestContractError) && !(error instanceof CoreError && error.status < 500);
 const reason = (error: Error) => (error instanceof CoreError && error.detail) || error.message;
+// A lost send may have landed, so only its same-key Retry may record next, and Record stays
+// hidden while that Retry, or any send, is in flight.
+const recordGate = (record: { isPending: boolean; error: Error | null }, pending: unknown) => {
+  const uncertain = record.error !== null && lostSend(record.error) && pending !== null;
+  return { uncertain, hidden: uncertain || record.isPending };
+};
 // A resent undo whose first answer was lost finds the burst already undone.
 const ALREADY_UNDONE = "This Checkoff burst was already undone";
 
@@ -248,8 +254,7 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
   const { conflicts } = outcome(data.parts, field, picks);
   const tooMany = picks.size > MAX_BURST_UNITS;
   const busy = record.isPending || undo.isPending;
-  // A lost send may have landed, so only its same-key Retry may record next.
-  const uncertain = record.isError && lostSend(record.error) && pending !== null;
+  const { uncertain, hidden } = recordGate(record, pending);
   const send = () => {
     if (busy || uncertain || picks.size === 0 || conflicts.length > 0 || tooMany) return;
     const burst = {
@@ -338,7 +343,7 @@ function CheckoffBody({ id, data }: { id: number; data: CheckoffUnits }) {
             </p>
           )}
         </div>
-        {lines.length > 0 && conflicts.length === 0 && !tooMany && !uncertain && (
+        {lines.length > 0 && conflicts.length === 0 && !tooMany && !hidden && (
           <MutationButton primary onClick={send}>
             {`Record ${plural(picks.size, "picked unit")}`}
           </MutationButton>

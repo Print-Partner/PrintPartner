@@ -344,11 +344,12 @@ describe("CHK-03 in-flight and stale writes", () => {
 
   it("a lost send blocks a new burst until its same-key Retry settles it", async () => {
     let calls = 0;
+    let answer: (r: Response) => void = () => {};
     const fetchMock = core(
       reads(units, () => {
         calls += 1;
         if (calls <= 3) return Promise.reject(new TypeError("Failed to fetch"));
-        return json(RECEIPT);
+        return new Promise<Response>((resolve) => (answer = resolve));
       }),
     );
     renderAt(fetchMock);
@@ -359,6 +360,9 @@ describe("CHK-03 in-flight and stale writes", () => {
     expect(screen.getByText(/may have landed/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Record/ })).toBeNull();
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(4));
+    expect(screen.queryByRole("button", { name: /^Record/ })).toBeNull();
+    await act(async () => answer(json(RECEIPT)));
     await screen.findByText(/Recorded:/);
     const sent = posts(fetchMock).map((p) => p.body);
     expect(sent).toHaveLength(4);

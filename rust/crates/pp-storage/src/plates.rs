@@ -11,6 +11,8 @@
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
 
+mod arrange;
+
 use crate::{
     Envelope, Shared, WriterOwner, auth, domain_events,
     production::{
@@ -67,6 +69,11 @@ pub enum Request {
         body: Value,
     },
     Restore {
+        profile: String,
+        body: Value,
+    },
+    /// `POST /plans/{profile}/plates/arrange`.
+    Arrange {
         profile: String,
         body: Value,
     },
@@ -204,7 +211,15 @@ fn coordinate(value: &Value) -> Option<OffsetUm> {
 
 enum Op {
     Read(i64),
-    Edit { cmd: Expected, edit: Edit },
+    Edit {
+        cmd: Expected,
+        edit: Edit,
+    },
+    /// `all` repacks every unit; otherwise only units neither manual nor pinned.
+    Arrange {
+        cmd: Expected,
+        all: bool,
+    },
 }
 struct Expected {
     profile: i64,
@@ -277,6 +292,17 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
                 edit: Edit::Restore {
                     revision: positive(body["restore_plate_revision_id"].as_f64()?)?,
                 },
+            })
+        }),
+        Request::Arrange { profile, body } => profile_id(&profile).and_then(|profile| {
+            let all = match body["mode"].as_str()? {
+                "all" => true,
+                "unplaced" => false,
+                _ => return None,
+            };
+            Some(Op::Arrange {
+                cmd: expected(profile, &body)?,
+                all,
             })
         }),
         Request::Unit {
@@ -436,16 +462,14 @@ pub(crate) fn execute(
         Op::Read(_) => connection
             .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(Into::into),
-        Op::Edit { .. } => crate::writer_admission::begin_immediate(connection, admission),
+        _ => crate::writer_admission::begin_immediate(connection, admission),
     };
     let Ok(tx) = begun else {
         return Ok(unavailable());
     };
     let tenant = match &op {
         Op::Read(_) => read_tenant(&tx, &credential, policy)?,
-        Op::Edit { .. } => {
-            auth::authority::queries::reconciliation_actor_ref(&tx, &credential, policy)?.0
-        }
+        _ => auth::authority::queries::reconciliation_actor_ref(&tx, &credential, policy)?.0,
     };
     let response = match run(&tx, &tenant, op, &repos) {
         Ok(response) => response,
@@ -462,6 +486,7 @@ pub(crate) fn execute(
 fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Result<Response> {
     match op {
         Op::Read(profile) => read(tx, tenant, profile, repos),
+        Op::Arrange { cmd, all } => arrange::run(tx, tenant, repos, &cmd, all),
         Op::Edit { cmd, edit } => {
             let restore = matches!(edit, Edit::Restore { .. });
             let profile = cmd.profile;
@@ -740,17 +765,19 @@ fn edit_plates(
     if digest == layout_digest(&plates, LAYOUT_FORMAT) {
         return unchanged;
     }
-    write_revision(tx, tenant, cmd, &validated, &digest).map(Ok)
+    write_revision(tx, tenant, cmd, &validated, &digest, None).map(Ok)
 }
 
 /// Writes `validated` as the next immutable revision, moves the head from
-/// the expected revision and appends `plates.revision_changed`.
+/// the expected revision and appends `plates.revision_changed`. `undo_from`
+/// records the revision an arrange of every unit replaced, for restore.
 fn write_revision(
     tx: &Transaction<'_>,
     tenant: &str,
     cmd: &Expected,
     validated: &[ValidatedPlate],
     digest: &Digest,
+    undo_from: Option<i64>,
 ) -> Result<(i64, i64)> {
     let number: i64 = tx.query_row(
         "SELECT COALESCE(MAX(revision_number),0)+1 FROM accepted_plate_revisions WHERE tenant_id=?1 AND profile_id=?2",
@@ -759,7 +786,7 @@ fn write_revision(
     )?;
     let units: usize = validated.iter().map(|plate| plate.input.units.len()).sum();
     tx.execute(
-        "INSERT INTO accepted_plate_revisions(tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,undo_from_revision_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,?11)",
+        "INSERT INTO accepted_plate_revisions(tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,undo_from_revision_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             tenant,
             cmd.profile,
@@ -771,6 +798,7 @@ fn write_revision(
             validated.len() as i64,
             units as i64,
             number,
+            undo_from,
             iso_time(SystemTime::now()),
         ],
     )?;

@@ -1197,6 +1197,48 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(core.state.marked).toBe(2);
   });
 
+  it("does not count a lost burst as landed when another write confirmed only part of it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    let drops = 3;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/printer-checkoff/verify-batch" && drops > 0) {
+        drops -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      return real(path, init);
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    // Another window confirms Trident's gear unit 2 before Today rereads.
+    await real("/api/v2/printer-checkoff/verify-batch", {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: "elsewhere",
+        beds: [
+          {
+            link_id: "link-trident",
+            decisions: [{ part_id: 3, unit_index: 1, result: "confirmed" }],
+          },
+        ],
+      }),
+    });
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    expect(await screen.findByText("Confirmed 1 unit from Voron 2.4.")).toBeTruthy();
+    expect(
+      core.posts.filter((p) => p.body.idempotency_key !== "elsewhere").map((p) => p.body.beds),
+    ).toEqual([
+      [{ link_id: "link-voron", decisions: [{ part_id: 1, unit_index: 1, result: "confirmed" }] }],
+    ]);
+  });
+
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ results: SHARED() });

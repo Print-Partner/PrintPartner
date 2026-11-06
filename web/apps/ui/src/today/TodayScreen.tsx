@@ -241,11 +241,13 @@ function useCheckoff() {
         const receipt = receipts[i]!;
         return receipt instanceof Error ? [] : [{ burst, receipt }];
       });
-      const refused = bursts.filter((_, i) => receipts[i] instanceof Error);
-      if (refused.length > 0) {
-        const reason = (receipts.find((r) => r instanceof Error) as Error).message;
-        setNotice(`Not marked on ${pickedPrinters(refused.flatMap((b) => b.picks))}: ${reason}`);
-      }
+      const refusals = bursts.flatMap(({ picks }, i) => {
+        const receipt = receipts[i]!;
+        return receipt instanceof Error
+          ? [`Not marked on ${pickedPrinters(picks)}: ${receipt.message}`]
+          : [];
+      });
+      if (refusals.length > 0) setNotice(refusals.join(" "));
       if (answered.length === 0) return;
       const undos = answered.flatMap(({ burst, receipt }) =>
         replayed(burst) ? [] : [{ printer: pickedPrinters(burst.picks), receipt }],
@@ -300,7 +302,13 @@ function useCheckoff() {
       } finally {
         deciding.current = false;
       }
-      const landed = overlaps.filter(([lostId]) => !unanswered.current.has(lostId));
+      // A burst is all or nothing, so it landed only if no unit of it is waiting any more.
+      // One that lost only some units had them confirmed by another write; it never landed.
+      const landed = overlaps.filter(([, lost]) =>
+        lost.picks.every(({ bed, units }) =>
+          units.every((u) => !listed.current.has(pendingKey(bed, u))),
+        ),
+      );
       if (landed.length > 0) {
         confirm.mutate({ bursts: landed.map(([, burst]) => burst) });
         return;

@@ -530,25 +530,23 @@ and the short jobs below. Each hosted job gets a fresh VM.
 
 GitHub-hosted concurrency is the CI bottleneck: on 2026-11-06 43 runs were queued
 against about 11 running, and a Review gate job waited 35 minutes, while the
-pp-local runners sat idle. Three jobs run on `[self-hosted, Linux, X64, pp-local]`
-for every event, pull requests included:
+pp-local runners sat idle. Two jobs run on `[self-hosted, Linux, X64, pp-local]`:
 
 | Workflow | Job | Why it is safe there |
 | --- | --- | --- |
-| `review-gate.yml` | `review-gate` | Reads the GitHub API only; checks out nothing. |
-| `review-gate-rerun.yml` | `rerun` | Calls the GitHub API only; checks out nothing. |
-| `pr-evidence.yml` | `Lint Evidence block` | Checks out default-branch tooling and passes the PR body as data. |
+| `review-gate.yml` | `review-gate` | Runs on `pull_request_target`, so GitHub uses the base branch's copy of the workflow. Reads the GitHub API only; checks out nothing. |
+| `review-gate-rerun.yml` | `rerun` | Runs on `issue_comment` and `workflow_run`, so GitHub uses the default branch's copy. Calls the GitHub API only; checks out nothing. |
 
 These jobs use no services and no secrets beyond `GITHUB_TOKEN`, so job names and
 required checks do not change. The pp-local hosts share a writable Cargo registry
-and sccache across containers (see [Cargo cache trust](cargo-cache-trust.md)), so a
-job that runs PR-controlled code stays on hosted runners. That is why the
-`actionlint.yml` jobs, `duplication` and `Unit-test Evidence checker` stay hosted: they
-check out the PR and run its scripts. Moving them needs a pp-local pool with no
-writable cache mounts. Keep Rust builds on PRs, macOS, Windows, Docker, release and
-signing jobs, and anything that handles a secret, on hosted runners. To move a job
-back, set its `runs-on` to `ubuntu-latest`. The `pp-local` label is declared in
-`.github/actionlint.yaml`.
+and sccache across containers (see [Cargo cache trust](cargo-cache-trust.md)), so
+any job whose workflow file or scripts a PR can edit stays on hosted runners. A
+`pull_request` workflow comes from the PR's merge ref, so that rules out the
+`actionlint.yml` jobs, `duplication`, `Lint Evidence block` and `Unit-test Evidence
+checker`. Moving them needs a pp-local pool with no writable cache mounts. Keep Rust
+builds on PRs, macOS, Windows, Docker, release and signing jobs, and anything that
+handles a secret, on hosted runners. To move a job back, set its `runs-on` to
+`ubuntu-latest`. The `pp-local` label is declared in `.github/actionlint.yaml`.
 
 ### Linux Rust runner
 

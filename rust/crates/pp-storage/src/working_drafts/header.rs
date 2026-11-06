@@ -174,18 +174,18 @@ pub fn normalized(
     };
     let optional =
         |field, value: &Option<String>| value.as_deref().map(|v| text(field, v)).transpose();
-    if header
-        .due_date
-        .as_deref()
-        .is_some_and(|date| !calendar_date(date))
-    {
+    let name = text("name", &header.name)?;
+    let order_number = optional("order_number", &header.order_number)?;
+    let customer = optional("customer", &header.customer)?;
+    let due_date = header.due_date.as_deref().map(trim_js);
+    if due_date.is_some_and(|date| !calendar_date(date)) {
         return Err(("due_date", "calendar_date"));
     }
     Ok(BuildHeader {
-        name: text("name", &header.name)?,
-        order_number: optional("order_number", &header.order_number)?,
-        customer: optional("customer", &header.customer)?,
-        due_date: header.due_date.clone(),
+        name,
+        order_number,
+        customer,
+        due_date: due_date.map(str::to_owned),
     })
 }
 
@@ -531,7 +531,30 @@ pub(crate) fn view(
 
 #[cfg(test)]
 mod tests {
-    use super::calendar_date;
+    use super::{DraftHeader, calendar_date, normalized};
+
+    #[test]
+    fn normalized_trims_every_field_and_names_the_first_failure_in_order() {
+        let header = |name: &str, due: &str| DraftHeader {
+            name: name.into(),
+            order_number: None,
+            customer: None,
+            due_date: Some(due.into()),
+        };
+        let saved = normalized(&header(" Kit ", " 2026-12-01 ")).unwrap();
+        assert_eq!(
+            (saved.name.as_str(), saved.due_date.as_deref()),
+            ("Kit", Some("2026-12-01"))
+        );
+        assert_eq!(
+            normalized(&header(" ", "2026-02-30")).unwrap_err(),
+            ("name", "text_length")
+        );
+        assert_eq!(
+            normalized(&header("Kit", " 2026-02-30 ")).unwrap_err(),
+            ("due_date", "calendar_date")
+        );
+    }
 
     #[test]
     fn calendar_date_accepts_only_real_days() {

@@ -9,6 +9,12 @@
 //! `idempotency_key`, which returns the stored receipt. Admission is
 //! `accepted::Gate`: loopback, exact Host and Origin, and a session or API key.
 //!
+//! Node's `POST /printer-checkoff/{id}/manual-complete` (GRE-1169) shares it
+//! too: it marks a watching print on a hand-tracked printer finished and
+//! checks nothing off. Node's single-link verify and dismiss stay on Node,
+//! because they deduct Spoolman stock, send webhooks and claim unattributed
+//! prints after the write, and Rust has none of that yet.
+//!
 //! Node's accepted Progress import (`POST /plans/{id}/progress/import`)
 //! shares the router and the same writer transaction rules.
 //!
@@ -51,12 +57,17 @@ struct App {
 }
 
 /// Mounts the burst routes at `/` and `/api/v2` when `PP_DESKTOP_REBUILD` was
-/// exactly `1` or `true`; otherwise nothing.
+/// exactly `1` or `true`; otherwise nothing. Manual-complete also keeps
+/// Node's `/api/v1` alias.
 pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
     };
     let routes = Router::new()
+        .route(
+            "/printer-checkoff/{id}/manual-complete",
+            post(manual_complete),
+        )
         .route("/printer-checkoff/verify-batch", post(verify_batch))
         .route("/printer-checkoff/verify-batch/undo", post(undo_batch))
         .route("/farm-log", get(farm_log))
@@ -78,8 +89,21 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
             "/printer-checkoff/unattributed/{id}/dismiss",
             post(dismiss_unattributed),
         );
-    gate.guard(routes.clone().nest("/api/v2", routes))
+    let v1 = Router::new().route(
+        "/printer-checkoff/{id}/manual-complete",
+        post(manual_complete),
+    );
+    gate.guard(routes.clone().nest("/api/v2", routes).nest("/api/v1", v1))
         .with_state(App { gate, client })
+}
+
+/// Node's `POST /printer-checkoff/{id}/manual-complete`.
+async fn manual_complete(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+) -> Response {
+    run(app, presented, Request::ManualComplete { id }).await
 }
 
 async fn verify_batch(

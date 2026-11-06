@@ -35,7 +35,7 @@ permissions: {}
 
 jobs:
   review-gate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, pp-local]
     timeout-minutes: 5
     permissions:
       actions: read

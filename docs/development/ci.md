@@ -523,7 +523,30 @@ Required Rust and lint jobs fail if their input-selection job fails, so a broken
 
 Jobs run on GitHub-hosted runners (`ubuntu-latest`, `ubuntu-24.04`, `macos-26`,
 `macos-26-intel`, `macos-latest` or `windows-latest`), except the Linux Rust jobs
-below. Each hosted job gets a fresh VM.
+and the short jobs below. Each hosted job gets a fresh VM.
+
+### Short jobs on pp-local
+
+GitHub-hosted concurrency is the CI bottleneck: on 2026-11-06 43 runs were queued
+against about 11 running, and a Review gate job waited 35 minutes, while the
+pp-local runners sat idle. The short jobs that need nothing hosted-specific
+run on `[self-hosted, Linux, X64, pp-local]` for every event, pull requests included:
+
+| Workflow | Jobs |
+| --- | --- |
+| `review-gate.yml` | `review-gate` |
+| `review-gate-rerun.yml` | `rerun` |
+| `pr-evidence.yml` | `Lint Evidence block` |
+| `pr-evidence-tests.yml` | `Unit-test Evidence checker` |
+| `actionlint.yml` | `agent-guidance`, `large-files`, `python-lint`, `changes`, `actionlint`, `zizmor` |
+| `duplication.yml` | `duplication` |
+
+These jobs use no services and no secrets beyond `GITHUB_TOKEN`, and they install
+their pinned tools themselves (actionlint 1.7.12, zizmor 1.31.1, Ruff, Node
+22.23.3), so job names and required checks do not change. Keep Rust builds, macOS,
+Windows, Docker, release and signing jobs, and anything that handles a secret, on
+hosted runners. To move a job back, set its `runs-on` to `ubuntu-latest`. The
+runs-on label is declared in `.github/actionlint.yaml`.
 
 ### Linux Rust runner
 

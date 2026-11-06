@@ -137,7 +137,8 @@ fn safe_relative(path: &str) -> bool {
 }
 
 /// Node's `resolveSnapshotRoot`: a real directory strictly inside `repos`,
-/// reached without links.
+/// reached without links. `root` is the stored locator under `repos` before
+/// links resolve, so a linked snapshot directory is refused.
 fn snapshot_root(repos: &Path, root: &str) -> Result<PathBuf, &'static str> {
     let configured = lexical(repos);
     let snapshot = lexical(Path::new(root));
@@ -205,11 +206,11 @@ fn open_verified(repos: &Path, artifact: &Artifact) -> Result<(File, u64), &'sta
     let (root, relative, expected) = match artifact {
         Artifact::Unavailable { reason } => return Err(reason),
         Artifact::Tracked {
-            snapshot_root,
+            snapshot_path,
             relative_path,
             expected_sha256,
             ..
-        } => (snapshot_root, relative_path, expected_sha256),
+        } => (snapshot_path, relative_path, expected_sha256),
     };
     if expected.len() != 64
         || !expected
@@ -287,14 +288,16 @@ endsolid box
             self.dir.path().join("repos")
         }
         fn artifact(&self, relative: &str, text: &str) -> Artifact {
+            let root = self
+                .repos()
+                .join("1/revisions/r")
+                .to_string_lossy()
+                .into_owned();
             Artifact::Tracked {
                 source_id: 1,
                 source_revision_id: 1,
-                snapshot_root: self
-                    .repos()
-                    .join("1/revisions/r")
-                    .to_string_lossy()
-                    .into_owned(),
+                snapshot_root: root.clone(),
+                snapshot_path: root,
                 relative_path: relative.into(),
                 expected_sha256: hex::encode(Sha256::digest(text.as_bytes())),
             }
@@ -373,12 +376,29 @@ endsolid box
             source_id: 1,
             source_revision_id: 1,
             snapshot_root: snapshot.dir.path().to_string_lossy().into_owned(),
+            snapshot_path: snapshot.dir.path().to_string_lossy().into_owned(),
             relative_path: "box.stl".into(),
             expected_sha256: "0".repeat(64),
         };
         assert_eq!(check(&outside), unavailable("unsafe_path"));
         let legacy = Artifact::Unavailable { reason: "legacy" };
         assert_eq!(check(&legacy), unavailable("legacy"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_linked_snapshot_directory() {
+        let snapshot = Snapshot::new(&[("box.stl", BOX)]);
+        let link = snapshot.repos().join("1/revisions/link");
+        std::os::unix::fs::symlink("r", &link).unwrap();
+        let mut artifact = snapshot.artifact("box.stl", BOX);
+        if let Artifact::Tracked { snapshot_path, .. } = &mut artifact {
+            *snapshot_path = link.to_string_lossy().into_owned();
+        }
+        assert_eq!(
+            snapshot.load(&[("t", &artifact)], LIMITS),
+            unavailable("symlink")
+        );
     }
 
     #[cfg(unix)]

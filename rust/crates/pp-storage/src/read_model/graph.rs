@@ -118,6 +118,9 @@ pub struct Input {
     pub source_revision_id: Option<i64>,
     pub manifest_digest: Option<String>,
     pub snapshot_root: Option<String>,
+    /// `repos/<locator>` before links resolve, which Node's artifact reads walk.
+    #[serde(skip)]
+    pub snapshot_path: Option<String>,
     pub source_synced_at: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -130,6 +133,9 @@ pub enum Artifact {
         source_revision_id: i64,
         #[serde(rename = "snapshotRoot")]
         snapshot_root: String,
+        /// `repos/<locator>` before links resolve.
+        #[serde(skip)]
+        snapshot_path: String,
         #[serde(rename = "relativePath")]
         relative_path: String,
         #[serde(rename = "expectedSha256")]
@@ -819,7 +825,7 @@ pub(crate) fn read(
                     "Accepted Plan input identity is corrupt",
                 )?;
             }
-            let (mut root, mut synced) = (None, None);
+            let (mut root, mut path, mut synced) = (None, None, None);
             if tracking == "revision" {
                 let rid = r.n("source_revision_id")?;
                 check(
@@ -866,6 +872,7 @@ pub(crate) fn read(
                     message: "Accepted Plan Source revision is corrupt".into(),
                 })?;
                 root = Some(resolved.to_string_lossy().into_owned());
+                path = Some(repos.join(locator).to_string_lossy().into_owned());
                 synced = sr.os("synced_at")?;
             } else {
                 check(
@@ -913,6 +920,7 @@ pub(crate) fn read(
                 source_revision_id: r.on("source_revision_id")?,
                 manifest_digest: r.os("manifest_digest")?,
                 snapshot_root: root,
+                snapshot_path: path,
                 source_synced_at: synced,
             });
         }
@@ -1042,6 +1050,7 @@ pub(crate) fn read(
                         code: "artifact_linkage",
                         message: "Tracked accepted Plan Part has no snapshot".into(),
                     })?,
+                    snapshot_path: input.snapshot_path.clone().unwrap_or_default(),
                     relative_path: r.s("relative_path")?.into(),
                     expected_sha256: r.s("artifact_digest")?.into(),
                 }

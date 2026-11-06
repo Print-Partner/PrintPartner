@@ -9,6 +9,10 @@ pub struct ApplyRequest {
     pub expected_base: PlanDraftBasis,
     #[serde(default)]
     pub remap_checkoff_links: bool,
+    /// The draft header version the preview showed; `None` when it showed no
+    /// header. Accept answers `draft_changed` when the header moved since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_header_version: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1068,6 +1068,7 @@ mod codegen {
                 revision_id,
                 plan_version: if revision_id.is_some() { MAX_SAFE } else { 0 },
             },
+            expected_header_version: revision_id.map(|_| u32::MAX),
         };
         let snapshot = SnapshotNote {
             saved_before_accept: true,

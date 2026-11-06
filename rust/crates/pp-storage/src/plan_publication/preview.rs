@@ -44,6 +44,11 @@ pub struct PreviewRevision {
     pub expected_snapshot_digest: String,
     pub expected_lifecycle_version: i64,
     pub expected_base: DraftBase,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<u32>")
+    )]
+    pub expected_header_version: Option<u32>,
 }
 
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
@@ -286,6 +291,7 @@ pub(crate) fn preview(
             revision_id: h["baseRevisionId"].as_i64(),
             plan_version: num(&h, "basePlanVersion")?,
         },
+        expected_header_version: super::header_version(tx, tenant, draft_id)?,
     };
     let request = serde_json::from_value::<ApplyRequest>(json!({
         "expected_snapshot_digest": revision.expected_snapshot_digest,
@@ -294,6 +300,7 @@ pub(crate) fn preview(
             "revision_id": revision.expected_base.revision_id,
             "plan_version": revision.expected_base.plan_version,
         },
+        "expected_header_version": revision.expected_header_version,
     }));
     // No Accept request can name this revision, so every Accept gets
     // `draft_changed`.

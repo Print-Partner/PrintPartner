@@ -1152,6 +1152,7 @@ fn check_draft(
     };
     if h["lifecycleVersion"].as_u64() != Some(request.expected_lifecycle_version.get())
         || h["snapshotDigest"] != request.expected_snapshot_digest.as_str()
+        || header_version(tx, tenant, draft_id)? != request.expected_header_version
         || !["plan-draft-v1", "plan-draft-v2"].contains(&text(&h, "digestFormat")?)
     {
         return Ok(Err(Outcome::DraftChanged));
@@ -1650,6 +1651,20 @@ pub(crate) fn publish_in_transaction(
         },
     )?;
     Ok(Outcome::Applied { receipt })
+}
+
+/// Draft `draft_id`'s header version, `None` without a header row. Header
+/// saves leave the snapshot digest and lifecycle version alone, so Accept's
+/// revision gate checks this too.
+pub(super) fn header_version(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    draft_id: i64,
+) -> Result<Option<u32>> {
+    Ok(
+        crate::working_drafts::header::read(tx, tenant, draft_id)?
+            .map(|state| state.header_version),
+    )
 }
 
 /// Draft `draft_id`'s header row, or `DuplicateBuildName` when its name is

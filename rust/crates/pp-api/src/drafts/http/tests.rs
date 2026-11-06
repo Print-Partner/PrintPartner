@@ -1777,7 +1777,7 @@ async fn accept_preview_lists_changes_and_checks_then_accept_refuses_its_stale_r
     assert_eq!(
         preview["revision"],
         json!({"draft_id":2,"expected_snapshot_digest":digest,"expected_lifecycle_version":0,
-            "expected_base":{"revision_id":1,"plan_version":1}})
+            "expected_base":{"revision_id":1,"plan_version":1},"expected_header_version":null})
     );
     // The live Part moved to spool 7 after the revision stored none; Accept
     // carries the live spool into the new revision.
@@ -2020,7 +2020,8 @@ async fn select_units(server: &ReadServer) -> Value {
 fn revision_of(workspace: &Value) -> Value {
     let draft = &workspace["draft"];
     json!({"draft_id":draft["draft_id"],"expected_snapshot_digest":draft["snapshot_digest"],
-        "expected_lifecycle_version":draft["lifecycle_version"],"expected_base":draft["base"]})
+        "expected_lifecycle_version":draft["lifecycle_version"],"expected_base":draft["base"],
+        "expected_header_version":null})
 }
 
 /// Accept's refusal as the preview's problem body carries it.

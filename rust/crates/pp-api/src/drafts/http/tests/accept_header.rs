@@ -15,6 +15,13 @@ fn propose(server: &ReadServer, name: &str) {
         .unwrap();
 }
 
+/// An Accept body naming header version `version`, the one `propose` saves.
+fn header_body(version: u32) -> Value {
+    let mut body = apply_body(DIGEST, 0);
+    body["expected_header_version"] = json!(version);
+    body
+}
+
 /// The Build's name, order number, customer and due date as stored.
 fn build_header(server: &ReadServer) -> Header {
     server
@@ -54,7 +61,7 @@ async fn gre_1207_accept_copies_the_draft_header_to_the_build_once() {
     let before = build_header(&server);
     propose(&server, "Renamed kit");
     let receipt = json_reply(
-        keyed(&server, APPLY, Some("h-1")).json(&apply_body(DIGEST, 0)),
+        keyed(&server, APPLY, Some("h-1")).json(&header_body(1)),
         200,
     )
     .await;
@@ -74,7 +81,7 @@ async fn gre_1207_accept_copies_the_draft_header_to_the_build_once() {
     let after = logical_database(&server.sql());
     assert_eq!(
         json_reply(
-            keyed(&server, APPLY, Some("h-1")).json(&apply_body(DIGEST, 0)),
+            keyed(&server, APPLY, Some("h-1")).json(&header_body(1)),
             200
         )
         .await,
@@ -126,7 +133,7 @@ async fn gre_1207_accept_refuses_a_name_another_build_has_without_writing() {
     let before = logical_database(&server.sql());
     assert_eq!(
         json_reply(
-            keyed(&server, APPLY, Some("h-1")).json(&apply_body(DIGEST, 0)),
+            keyed(&server, APPLY, Some("h-1")).json(&header_body(1)),
             409
         )
         .await,
@@ -158,5 +165,39 @@ async fn gre_1207_preview_lists_a_header_only_change_as_changed() {
     expected.push(json!({"field":"customer","old":null,"new":"Acme"}));
     expected.push(json!({"field":"due_date","old":null,"new":"2026-12-01"}));
     assert_eq!(preview["changes"]["header"], json!(expected));
+    server.close().await;
+}
+
+#[tokio::test]
+async fn gre_1207_accept_refuses_a_header_saved_after_the_preview() {
+    let setup = aligned_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    select_units(&server).await;
+    propose(&server, "Previewed kit");
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    let mut body = preview["revision"].clone();
+    assert_eq!(body["expected_header_version"], 1);
+    body.as_object_mut().unwrap().remove("draft_id");
+    server
+        .sql()
+        .execute(
+            "UPDATE plan_draft_headers SET name='Unreviewed kit',header_version=2 WHERE draft_id=2",
+            [],
+        )
+        .unwrap();
+    let before = logical_database(&server.sql());
+    let mut unversioned = body.clone();
+    unversioned
+        .as_object_mut()
+        .unwrap()
+        .remove("expected_header_version");
+    for (key, stale) in [("h-1", &body), ("h-2", &unversioned)] {
+        let refused = json_reply(keyed(&server, APPLY, Some(key)).json(stale), 409).await;
+        assert_eq!(refused["code"], "draft_changed");
+    }
+    assert_eq!(logical_database(&server.sql()), before);
+    body["expected_header_version"] = json!(2);
+    json_reply(keyed(&server, APPLY, Some("h-3")).json(&body), 200).await;
+    assert_eq!(build_header(&server).0, "Unreviewed kit");
     server.close().await;
 }

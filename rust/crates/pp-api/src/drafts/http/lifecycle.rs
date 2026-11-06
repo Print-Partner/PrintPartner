@@ -194,6 +194,7 @@ impl Accept {
                 "expected_lifecycle_version": workspace.draft.lifecycle_version,
                 "expected_base": workspace.draft.base,
                 "remap_checkoff_links": self.request.remap_checkoff_links,
+                "expected_header_version": self.request.expected_header_version,
             }))?;
             let command = PublicationCommand::normalized_http(
                 self.profile,

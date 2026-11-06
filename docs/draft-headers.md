@@ -136,6 +136,16 @@ draft whose Parts and inputs equal its base but whose header differs is
 `changed`, not `no_change`. `duplicate_orders` checks the order number the
 Build has after Accept.
 
+A header save changes neither the snapshot digest nor the lifecycle version,
+so the preview's `revision` also carries `expected_header_version`: the
+draft's `header_version`, or `null` without a header row. Accept compares it
+with the stored version in its revision gate and answers `draft_changed` when
+they differ, including when a header row exists and the request omits the
+field. A header saved after the preview therefore never reaches the Build
+unreviewed. The field is only a precondition. It is not part of the request
+digest, because the admission row Accept shares with Node stores no header
+version, so a replay of the same key answers the existing receipt.
+
 ## Schema 44
 
 When Accept saves its `pre_apply` snapshot of the replaced Plan, it also saves

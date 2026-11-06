@@ -285,6 +285,14 @@ impl Dir {
         })
     }
 
+    /// Wrap a directory handle the caller opened, keeping how it was opened,
+    /// for example without following a final link or without delete sharing.
+    pub fn from_open(directory: File) -> Self {
+        Self {
+            inner: platform::Dir::from_open(directory),
+        }
+    }
+
     pub fn try_clone(&self) -> io::Result<Self> {
         self.inner.try_clone().map(|inner| Self { inner })
     }
@@ -387,6 +395,23 @@ impl Dir {
             .rename_no_replace(checked_name(from)?, checked_name(to)?)
     }
 
+    /// Rename the entry `from`, a link itself rather than its target, to `to`
+    /// in this directory, replacing an existing `to` that is not a
+    /// directory: `renameat` on Unix.
+    pub fn rename_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        self.inner
+            .rename_replace(checked_name(from)?, checked_name(to)?)
+    }
+
+    /// Open the entry `name` itself, without following it, only to read and
+    /// change its owner and DACL: `READ_CONTROL | WRITE_DAC`, without the
+    /// `SYNCHRONIZE` every other open adds, so the owner of a file whose DACL
+    /// grants nothing can still open it. A directory is refused.
+    #[cfg(windows)]
+    pub fn open_security_nofollow(&self, name: &str) -> io::Result<File> {
+        self.inner.open_security_nofollow(checked_name(name)?)
+    }
+
     /// Remove the empty directory `name`. A link is refused.
     pub fn remove_dir(&self, name: &str) -> io::Result<()> {
         self.inner.remove_dir(checked_name(name)?)
@@ -453,6 +478,13 @@ pub enum FileOpen {
     /// Create a new regular file for writing (`O_WRONLY | O_CREAT | O_EXCL`,
     /// mode 0600), failing with `AlreadyExists` when any entry has the name.
     CreateWriteOnly,
+    /// Append to an existing regular file (`O_WRONLY | O_APPEND`). On
+    /// Windows the handle can also read and change the file's DACL.
+    Append,
+    /// Create a new regular file for appending, as [`FileOpen::CreateWriteOnly`]
+    /// creates it. On Windows it inherits the directory's ACL, and the handle
+    /// can also read and change the file's DACL.
+    CreateAppend,
 }
 
 /// The names in a directory, from [`Dir::entries`].

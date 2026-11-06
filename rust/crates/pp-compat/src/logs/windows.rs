@@ -359,7 +359,7 @@ pub(super) mod test_support {
         path::Path,
     };
     use windows_sys::Win32::{
-        Foundation::{DELETE, LocalFree},
+        Foundation::LocalFree,
         Security::{
             Authorization::{
                 ConvertSecurityDescriptorToStringSecurityDescriptorW,
@@ -370,9 +370,10 @@ pub(super) mod test_support {
             PROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_DACL_SECURITY_INFORMATION,
         },
         Storage::FileSystem::{
-            FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
-            OPEN_EXISTING, READ_CONTROL, SetFileInformationByHandle, WRITE_DAC,
+            DELETE, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FileDispositionInfo, OPEN_EXISTING, READ_CONTROL,
+            SetFileInformationByHandle, WRITE_DAC,
         },
     };
 
@@ -420,7 +421,7 @@ pub(super) mod test_support {
         let file = std::fs::OpenOptions::new()
             .access_mode(DELETE)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
             .unwrap();
         let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };

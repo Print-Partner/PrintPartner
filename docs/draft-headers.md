@@ -159,7 +159,8 @@ Two limits remain:
   `draft_changed` for a draft that has a header row. No UI flow creates a
   header row today, and no web code calls the Accept preview yet. GRE-1120,
   not built yet, adds the Accept gate. It must show the preview, header
-  included, and send that preview's `revision` as the Accept body.
+  included, and send that preview's `revision` without `draft_id` (the draft
+  id goes in the path), `expected_header_version` included, as the Accept body.
 
 ## Schema 44
 

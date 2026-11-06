@@ -14,7 +14,7 @@ use pp_api::{
     printer_status::{PrinterStatusPort, StatusLookup, printer_status_router},
     printer_stream::{HEARTBEAT, PrinterStream, printer_stream_router},
 };
-use pp_gateway::printer_host::MoonrakerReads;
+use pp_gateway::printer_host::HostReads;
 use pp_gateway::{
     HTTPS_UNAVAILABLE, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
     PrinterHostState, PrinterHostStatus, PrinterObservations, REDIRECT_UNAVAILABLE,
@@ -217,7 +217,7 @@ pub struct StatusRoutes {
     farm: FarmClient,
     stream_config: AcceptedHttpConfig,
     settings: SettingsClient,
-    reads: MoonrakerReads,
+    reads: HostReads,
 }
 
 impl StatusRoutes {
@@ -231,7 +231,7 @@ impl StatusRoutes {
             farm: owner.farm_reads(policy)?,
             stream_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
             settings: owner.client(),
-            reads: MoonrakerReads::new()?,
+            reads: HostReads::new()?,
         })
     }
 

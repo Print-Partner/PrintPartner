@@ -166,6 +166,39 @@ fn ticket_t_26_open_leaves_an_unclean_legacy_queue_untouched() {
 }
 
 #[test]
+fn ticket_t_26_open_interrupts_a_stale_send_in_a_kept_setting() {
+    let directory = tempfile::tempdir().unwrap();
+    open(directory.path());
+    let kept = json!([
+        {"id": "q1", "filename": "a.gcode", "artifact_path": "/a.gcode", "printer_id": "p",
+         "state": "sending", "updated_at": "2026-11-05T01:00:00.000Z"},
+        {"id": "q2", "filename": "b.gcode", "printer_id": "p", "state": "queued"}
+    ]);
+    store(directory.path(), "default", &kept.to_string());
+    open(directory.path());
+    assert!(
+        table(directory.path()).is_empty(),
+        "q2 has no artifact path"
+    );
+    let stored: Value =
+        serde_json::from_str(&setting(directory.path(), "default").unwrap()).unwrap();
+    assert_eq!(stored[1], kept[1]);
+    let mut expected = kept[0].clone();
+    expected["state"] = json!("error");
+    expected["error"] = json!(INTERRUPTED_ERROR);
+    expected["updated_at"] = stored[0]["updated_at"].clone();
+    assert_eq!(stored[0], expected);
+    assert_ne!(stored[0]["updated_at"], kept[0]["updated_at"]);
+    let again = setting(directory.path(), "default");
+    open(directory.path());
+    assert_eq!(
+        setting(directory.path(), "default"),
+        again,
+        "a second open changes nothing"
+    );
+}
+
+#[test]
 fn ticket_t_26_open_interrupts_two_stale_sends_on_one_printer() {
     let directory = tempfile::tempdir().unwrap();
     open(directory.path());
@@ -203,7 +236,7 @@ fn ticket_t_26_a_legacy_setting_wins_over_table_rows() {
     store(directory.path(), "default", &one.to_string());
     open(directory.path());
     let two = json!([{"id": "q2", "filename": "b.gcode", "artifact_path": "/b.gcode",
-        "printer_id": "p", "state": "sending"}]);
+        "printer_id": "p", "state": "cancelled"}]);
     store(directory.path(), "default", &two.to_string());
     assert_eq!(rows(&database(directory.path()), "default").unwrap(), None);
     assert_eq!(

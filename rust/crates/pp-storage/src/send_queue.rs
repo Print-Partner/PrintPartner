@@ -12,9 +12,10 @@
 //! into the table, in stored order, and deletes the setting in the same
 //! transaction. A queue that is not clean (not a JSON array, or an item Node's
 //! `parseItem` or Accept's production check would drop or refuse) stays in the
-//! setting and is never rewritten, and so does a queue the table's constraints
-//! refuse: each tenant moves inside its own savepoint. A moved or stored
-//! `sending` item becomes `error`
+//! setting, and so does a queue the table's constraints refuse: each tenant
+//! moves inside its own savepoint. A setting that stays is rewritten only to
+//! mark its `sending` items interrupted. A moved, kept or stored `sending`
+//! item becomes `error`
 //! with [`INTERRUPTED_ERROR`]: the process that started its upload is gone, so
 //! the printer outcome is unknown and only the user may send it again.
 //!
@@ -120,15 +121,47 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<()> {
         let savepoint = tx.savepoint()?;
         match adopt(&savepoint, &tenant, &now) {
             Ok(()) => savepoint.commit()?,
-            Err(error) if refused(&error) => {}
+            Err(error) if refused(&error) => drop(savepoint),
             Err(error) => return Err(error),
         }
+        interrupt_kept(&tx, &tenant, &now)?;
     }
     tx.execute(
         "UPDATE printer_send_queue SET state='error',error=?1,updated_at=?2 WHERE state='sending'",
         params![INTERRUPTED_ERROR, now],
     )?;
     tx.commit()?;
+    Ok(())
+}
+
+/// In a setting that stayed, mark each `sending` item interrupted, as Node's
+/// own restart reconciliation does, and change nothing else. A value that is
+/// not a JSON array, or holds no `sending` item, is left byte for byte.
+fn interrupt_kept(tx: &Connection, tenant: &str, now: &str) -> Result<()> {
+    let raw: Option<Option<String>> = tx
+        .query_row(
+            "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
+            params![tenant, LEGACY_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(Ok(Value::Array(mut items))) = raw.flatten().map(|raw| serde_json::from_str(&raw))
+    else {
+        return Ok(());
+    };
+    let mut changed = false;
+    for item in items.iter_mut().filter(|item| item["state"] == "sending") {
+        item["state"] = json!("error");
+        item["error"] = json!(INTERRUPTED_ERROR);
+        item["updated_at"] = json!(now);
+        changed = true;
+    }
+    if changed {
+        tx.execute(
+            "UPDATE app_settings SET value=?1 WHERE tenant_id=?2 AND key=?3",
+            params![Value::Array(items).to_string(), tenant, LEGACY_KEY],
+        )?;
+    }
     Ok(())
 }
 

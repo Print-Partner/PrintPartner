@@ -66,14 +66,18 @@ schema 44, so no Node process writes the setting afterwards.
    `checkoff_units` that are null or an array of whole coordinates. Text is
    trimmed and `error` cut to 500 characters, as `parseItem` does, and a
    missing time is stamped with the open time, as Node stamps it on load.
-2. A queue that is not clean stays in the setting, byte for byte, and keeps
-   being read from there. Moving it would drop or change items that Node or
-   Accept reads, and Accept still refuses such a queue as it does today.
+2. A queue that is not clean stays in the setting and keeps being read from
+   there. Moving it would drop or change items that Node or Accept reads, and
+   Accept still refuses such a queue as it does today. The only rewrite is the
+   one Node's own restart makes: each `sending` item becomes `error` with
+   the interrupted text below. A value that is not a JSON array, or holds no
+   `sending` item, stays byte for byte.
 3. A tenant whose table already holds items keeps both: the setting is read,
    and the rows are never merged with it.
 4. Each tenant moves inside its own savepoint. If the table refuses an item
    (for example an id over 128 characters), that tenant's inserts roll back
-   and its setting stays; startup and the other tenants are unaffected.
+   and its setting stays, as in item 2; startup and the other tenants are
+   unaffected.
 5. A `sending` item moves as `error`, and every `sending` row already in
    the table becomes `error`, with Node's
    `INTERRUPTED_PRINTER_SEND_ERROR` text and a new `updated_at`. The process

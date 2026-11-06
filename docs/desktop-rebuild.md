@@ -1549,7 +1549,7 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 44 (`LAST_COPIED_STEP`)
+repair's writes to `source_revisions`. Each step through 45 (`LAST_COPIED_STEP`)
 writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
 the first step writes, the open names its rollback copy in the run marker
 `backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
@@ -1564,7 +1564,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-44.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-45.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.

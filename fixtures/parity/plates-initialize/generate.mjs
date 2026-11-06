@@ -146,6 +146,9 @@ const PHASES = [
     seed: NO_HEAD + "UPDATE build_profiles SET archived_at='2026-10-03T00:00:00.000Z' WHERE id=1;", requests: [
     init("too_large_before_archived_outside_bed", assign([TOKEN, "p-huge"]), { revision: null }),
   ] },
+  { name: "outside_bed_wide_unit", database: single, files: one(same(box(2200000, 10, 10))), seed: NO_HEAD, requests: [
+    init("wide_unit_fits_outside_bed", assign([TOKEN, "p-huge"]), { revision: null }),
+  ] },
   { name: "multi_outside_bed_too_deep", database: multi, files: { "bracket.stl": same(box(40, 250, 20)), "gear.stl": same(box(25, 25, 10)) }, requests: [
     init("too_large_on_outside_bed", MULTI_ALL("p-huge"), { revision: null }),
   ] },

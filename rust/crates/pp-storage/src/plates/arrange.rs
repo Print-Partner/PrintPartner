@@ -141,16 +141,17 @@ pub(super) fn production_rules(
 }
 
 /// A unit with the setup fields Node's `productionPackingBuckets` groups by.
-pub(super) fn group_unit(
+pub(super) fn group_unit<T: Clone>(
     part: &graph::Part,
     row: &graph::Unit,
-    value: PackingUnit,
-) -> GroupUnit<PackingUnit> {
+    token: RequiredUnitToken,
+    value: T,
+) -> GroupUnit<T> {
     let setup = setup_unit(part, row);
     let text = |key: &str| setup.get(key).and_then(Value::as_str).map(str::to_owned);
     GroupUnit {
-        value: value.clone(),
-        token: value.token,
+        value,
+        token,
         object_name: text("object_name").unwrap_or_default(),
         filename: text("filename").unwrap_or_default(),
         source_directory: text("source_directory").unwrap_or_default(),
@@ -301,7 +302,7 @@ fn repacked(
             let (part, row) = by_token
                 .get(unit.token.as_str())
                 .ok_or_else(|| anyhow!(Integrity("layout")))?;
-            members.push(group_unit(part, row, packing(unit)));
+            members.push(group_unit(part, row, unit.token.clone(), packing(unit)));
         }
         let mut index = 0;
         for bucket in grouping_buckets(&members, rules) {

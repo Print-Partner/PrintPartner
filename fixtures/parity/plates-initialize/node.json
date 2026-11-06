@@ -4221,6 +4221,98 @@
    }
   },
   {
+   "name": "outside_bed_wide_unit",
+   "database": "rust/crates/pp-storage/tests/fixtures/accepted-plate-node.db",
+   "files": [
+    {
+     "path": "repos/1/revisions/accepted/included.stl",
+     "text": "solid box\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 2200000 0 0\n   vertex 2200000 10 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 2200000 10 0\n   vertex 0 10 0\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 2200000 0 10\n   vertex 2200000 10 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 10\n   vertex 2200000 10 10\n   vertex 0 10 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 2200000 0 0\n   vertex 2200000 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 2200000 0 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 10 0\n   vertex 2200000 10 0\n   vertex 2200000 10 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 10 0\n   vertex 2200000 10 10\n   vertex 0 10 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 10 0\n   vertex 0 10 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 0 0 0\n   vertex 0 10 10\n   vertex 0 0 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 2200000 0 0\n   vertex 2200000 10 0\n   vertex 2200000 10 10\n  endloop\n endfacet\n facet normal 0 0 0\n  outer loop\n   vertex 2200000 0 0\n   vertex 2200000 10 10\n   vertex 2200000 0 10\n  endloop\n endfacet\nendsolid box\n"
+    }
+   ],
+   "seed": "UPDATE plan_revision_parts SET artifact_digest='c14b6c349c82bde3b73146bae469c8302b6356d5db12cda6b63fd0998dca9eb7' WHERE revision_id=1 AND relative_path='included.stl';UPDATE plan_revisions SET snapshot_digest='dd1ccac29bde4133940ff946e4aff7f5804a6d02e7ec63cdd8071cfcc9fd0150' WHERE id=1;UPDATE plan_apply_requests SET revision_digest='dd1ccac29bde4133940ff946e4aff7f5804a6d02e7ec63cdd8071cfcc9fd0150' WHERE revision_id=1;INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.fleet','[{\"id\":\"p-a\",\"name\":\"Printer A\",\"model\":\"Model A\",\"bed_width_mm\":250,\"bed_depth_mm\":220,\"bed_height_mm\":200,\"margin_mm\":5},{\"id\":\"p-b\",\"name\":\"Printer B\",\"model\":\"Model B\",\"bed_width_mm\":180,\"bed_depth_mm\":180,\"bed_height_mm\":150,\"margin_mm\":3},{\"id\":\"p-tiny\",\"name\":\"Tiny\",\"model\":\"Tiny\",\"bed_width_mm\":12,\"bed_depth_mm\":12,\"bed_height_mm\":12,\"margin_mm\":1},{\"id\":\"p-nogeo\",\"name\":\"No height\",\"model\":\"No height\",\"bed_width_mm\":200,\"bed_depth_mm\":200,\"bed_height_mm\":null,\"margin_mm\":2},{\"id\":\"p-huge\",\"name\":\"Huge\",\"model\":\"Huge\",\"bed_width_mm\":3000000,\"bed_depth_mm\":210,\"bed_height_mm\":200,\"margin_mm\":4}]');DELETE FROM accepted_plate_heads;",
+   "seedRows": {},
+   "cases": [
+    {
+     "id": "wide_unit_fits_outside_bed",
+     "path": "/plans/1/plates/initialize",
+     "body": {
+      "expected": {
+       "profile_id": 1,
+       "plan_version": 1,
+       "plan_revision_id": 1,
+       "plan_revision_digest": "dd1ccac29bde4133940ff946e4aff7f5804a6d02e7ec63cdd8071cfcc9fd0150",
+       "required_unit_mapping_digest": "a26b59e92961a70d709090b6dc1742df84dc1cfaed94ee0a2a77a57f9ac0b952"
+      },
+      "expected_plate_revision_id": null,
+      "assignments": [
+       {
+        "token": "ppu_574c8d5f92624f029e21705a8ebb8a1b",
+        "printer_id": "p-huge"
+       }
+      ]
+     },
+     "node": {
+      "status": 422,
+      "body": {
+       "detail": "Accepted Plate geometry is invalid",
+       "code": "outside_build_area"
+      }
+     },
+     "changed": []
+    }
+   ],
+   "plateRows": {
+    "accepted_plate_revisions": [
+     {
+      "id": 1,
+      "tenant_id": "default",
+      "profile_id": 1,
+      "plan_revision_id": 1,
+      "plan_version": 1,
+      "plan_revision_digest": "bac2028fe05e303f3c0ff3b2af25b0ebc978bad83e7644320c381e9febadc876",
+      "required_unit_mapping_digest": "a26b59e92961a70d709090b6dc1742df84dc1cfaed94ee0a2a77a57f9ac0b952",
+      "layout_digest": "e03d88b9f6a78737b9a2a4b7fb2cb155a42be535db12d577d88f689bb1ede830",
+      "expected_plate_count": 1,
+      "expected_unit_count": 1,
+      "revision_number": 1,
+      "undo_from_revision_id": null,
+      "created_at": null
+     }
+    ],
+    "accepted_plates": [
+     {
+      "tenant_id": "default",
+      "revision_id": 1,
+      "plate_id": "fixture-plate",
+      "ordinal": 1,
+      "printer_id": "fixture-printer",
+      "printer_name": "Fixture Printer",
+      "printer_model": "Fixture Model",
+      "bed_width_um": 250000,
+      "bed_depth_um": 220000,
+      "bed_height_um": 220000,
+      "margin_um": 5000
+     }
+    ],
+    "accepted_plate_units": [
+     {
+      "tenant_id": "default",
+      "revision_id": 1,
+      "plate_id": "fixture-plate",
+      "required_unit_token": "ppu_574c8d5f92624f029e21705a8ebb8a1b",
+      "x_um": 5000,
+      "y_um": 5000,
+      "width_um": 50000,
+      "depth_um": 40000,
+      "height_um": 30000,
+      "placement": "auto",
+      "pinned": 0
+     }
+    ],
+    "accepted_plate_heads": []
+   }
+  },
+  {
    "name": "multi_outside_bed_too_deep",
    "database": "rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db",
    "files": [

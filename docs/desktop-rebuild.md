@@ -2987,8 +2987,8 @@ not fit, on that Printer or another, is still 422 `unit_too_large`. After that a
 `plan_archived` and any other Build is 422 `outside_build_area`, the codes
 Node gives for the same requests.
 
-`fixtures/parity/plates-initialize/node.json` is Node's answer for 43 cases in
-17 phases. Each phase writes box STLs into the pinned Source snapshot and
+`fixtures/parity/plates-initialize/node.json` is Node's answer for 44 cases in
+18 phases. Each phase writes box STLs into the pinned Source snapshot and
 seeds SQL that re-pins those Parts to the files' SHA-256 and restamps the
 revision digest with Node's `digestPlanRevisionParts`, because the fixtures pin
 digests whose files do not exist. Regenerate it with

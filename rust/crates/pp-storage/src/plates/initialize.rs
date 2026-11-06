@@ -14,7 +14,7 @@ use super::arrange::{
 use super::artifacts::{self, Failure, LIMITS};
 use super::*;
 use crate::production::layout::{
-    GroupRule, PackResult, PackingUnit, first_too_large, grouping_buckets, pack_units,
+    GroupRule, MeasuredUnit, PackResult, PackingUnit, first_too_large, grouping_buckets, pack_units,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -202,30 +202,34 @@ fn pack_assigned(input: &Packing<'_>) -> Result<Option<Packed>> {
                 return Ok(None);
             };
             let token = RequiredUnitToken::parse(row.token.clone())?;
-            let dimension = |value: u64| {
-                i64::try_from(value)
-                    .ok()
-                    .and_then(|v| DimensionUm::parse(v).ok())
-            };
-            let [Some(width_um), Some(depth_um), Some(height_um)] = size.map(dimension) else {
-                return Ok(Some(Packed::TooLarge((token, (*printer_id).to_owned()))));
-            };
-            let value = PackingUnit {
-                token,
-                width_um,
-                depth_um,
-                height_um,
-            };
-            members.push(group_unit(part, row, value));
+            let value: MeasuredUnit = (token.clone(), *size);
+            members.push(group_unit(part, row, token, value));
         }
         for bucket in grouping_buckets(&members, input.rules) {
+            if let Some(token) = first_too_large(printer.um, &bucket) {
+                return Ok(Some(Packed::TooLarge((token, (*printer_id).to_owned()))));
+            }
             let Some(geometry) = &printer.geometry else {
-                if let Some(token) = first_too_large(printer.um, &bucket) {
-                    return Ok(Some(Packed::TooLarge((token, (*printer_id).to_owned()))));
-                }
                 outside = true;
                 continue;
             };
+            let bucket = bucket
+                .into_iter()
+                .map(|(token, size)| {
+                    let [width_um, depth_um, height_um] = size.map(|value| {
+                        i64::try_from(value)
+                            .ok()
+                            .and_then(|v| DimensionUm::parse(v).ok())
+                            .ok_or_else(|| anyhow!("a fitted unit is past the stored Plate range"))
+                    });
+                    Ok(PackingUnit {
+                        token,
+                        width_um: width_um?,
+                        depth_um: depth_um?,
+                        height_um: height_um?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
             let packed = match pack_units(geometry, &bucket) {
                 PackResult::Packed(packed) => packed,
                 PackResult::UnitTooLarge(token) => {

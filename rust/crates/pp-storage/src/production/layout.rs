@@ -291,36 +291,50 @@ fn fits(printer: &PrinterGeometry, unit: &PackingUnit) -> bool {
         && unit.depth_um.get() <= usable_depth
         && unit.height_um.get() <= printer.bed_height_um.get()
 }
-/// The first unit, in packing order, that does not fit a bed given as
-/// width, depth, height and margin in micrometres. Node runs this check on a
-/// bed too large for `PrinterGeometry` before its layout is refused.
-pub fn first_too_large(bed_um: [i64; 4], units: &[PackingUnit]) -> Option<RequiredUnitToken> {
-    let [width, depth, height, margin] = bed_um;
+/// A unit's token and its measured width, depth and height in micrometres.
+pub type MeasuredUnit = (RequiredUnitToken, [u64; 3]);
+
+/// The first unit, in packing order, that does not fit a bed given as width,
+/// depth, height and margin in micrometres: Node's `unitFitsPrinter` over raw
+/// measurements, before any value has to fit the stored Plate range.
+pub fn first_too_large(bed_um: [i64; 4], units: &[MeasuredUnit]) -> Option<RequiredUnitToken> {
+    let [width, depth, height, margin] = bed_um.map(i128::from);
     let mut units = units.to_vec();
-    sort_units(&mut units);
+    units.sort_by(|(left, l), (right, r)| packing_order((left.as_str(), *l), (right.as_str(), *r)));
     units
         .into_iter()
-        .find(|unit| {
-            i64::from(unit.width_um.get()) > width - 2 * margin
-                || i64::from(unit.depth_um.get()) > depth - 2 * margin
-                || i64::from(unit.height_um.get()) > height
+        .find(|(_, [w, d, h])| {
+            i128::from(*w) > width - 2 * margin
+                || i128::from(*d) > depth - 2 * margin
+                || i128::from(*h) > height
         })
-        .map(|unit| unit.token)
+        .map(|(token, _)| token)
 }
+
+/// Node's `compareUnits`: longest side first, then larger footprint, then token.
+fn packing_order(left: (&str, [u64; 3]), right: (&str, [u64; 3])) -> std::cmp::Ordering {
+    let (left_token, [left_width, left_depth, _]) = left;
+    let (right_token, [right_width, right_depth, _]) = right;
+    right_width
+        .max(right_depth)
+        .cmp(&left_width.max(left_depth))
+        .then_with(|| {
+            let left_area = u128::from(left_width) * u128::from(left_depth);
+            let right_area = u128::from(right_width) * u128::from(right_depth);
+            right_area.cmp(&left_area)
+        })
+        .then_with(|| left_token.cmp(right_token))
+}
+
 fn sort_units(units: &mut [PackingUnit]) {
+    let key = |unit: &PackingUnit| {
+        [unit.width_um, unit.depth_um, unit.height_um].map(|value| u64::from(value.get()))
+    };
     units.sort_by(|left, right| {
-        let longest = right
-            .width_um
-            .get()
-            .max(right.depth_um.get())
-            .cmp(&left.width_um.get().max(left.depth_um.get()));
-        longest
-            .then_with(|| {
-                let left_area = u64::from(left.width_um.get()) * u64::from(left.depth_um.get());
-                let right_area = u64::from(right.width_um.get()) * u64::from(right.depth_um.get());
-                right_area.cmp(&left_area)
-            })
-            .then_with(|| left.token.as_str().cmp(right.token.as_str()))
+        packing_order(
+            (left.token.as_str(), key(left)),
+            (right.token.as_str(), key(right)),
+        )
     });
 }
 

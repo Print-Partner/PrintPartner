@@ -147,8 +147,35 @@ so a print that ends or a link that drops shows up without a reload.
 - **Confirm one bed.** "Confirm <printer> bed" sends one
   `POST /api/v2/printer-checkoff/verify-batch` with one bed and a new
   `crypto.randomUUID()` idempotency key, confirming every pending unit of that
-  result. Rejecting units and multi-bed bursts are slice 5 and the Build
-  Checkoff tab (GRE-1121).
+  result.
+- **Clear beds burst** (`src/today/ClearBeds.tsx`, `src/today/beds.ts`). Each
+  bed lists its pending units as checkboxes. On a focused unit, `P` picks every
+  unit on its bed (the plate), `F` every unit of its Part on every bed, and `0`
+  to `9` that many of its Part, lowest unit first, dropping the rest of that
+  Part. `Space` or a click toggles one unit; with `Shift`, every unit from the
+  last one toggled takes the new state. The preview says how many units on how
+  many beds will be marked, and what each Part gains, before anything is sent.
+  "Confirm N picked units" sends every picked bed in one verify-batch request
+  with one key, and the tally carries one Undo for the whole burst. Rejecting
+  units stays in the Build Checkoff tab (GRE-1121).
+- **Progress fills from the left.** The core refuses a Part's unit while a lower
+  unit of that Part is still pending (400 "Confirm must include lower incomplete
+  units first"). When a pick or a bed's confirm skips a lower pending unit shown
+  on another bed, Today names those units before the send, and "Pick them too"
+  adds them to the burst. It never adds them on its own. A lower unit that no bed
+  can confirm now is named too: one on a print still running (`watching`) as still
+  printing, and one on a failed, dismissed or rejected result that no other result
+  confirmed and no running print is reprinting as "not confirmed on any print Today
+  shows". Each unit is named once. The core refuses those
+  confirms unless the unit was completed another way. A lower unit on no loaded
+  result is unknown to the UI; the core's 400 detail shows instead.
+- **Burst limit.** One verify-batch carries at most 50 beds. A bigger pick shows
+  that limit in place of Confirm. A send refused by the client contract is never
+  resent. Sent picks stay picked until the core confirms the burst, so a click
+  while another confirm is in flight, or a refusal, leaves them to fix and send
+  again; units picked while a burst is in flight stay picked after it succeeds.
+  A pick whose unit a reread no longer lists as pending is dropped, so an Undo
+  never brings back a pick that was already sent.
 - **Retry.** A send that fails without an answer from the core (a network error
   or a lost answer) is resent up to twice with the same key, and the alert's
   Retry resends it again with the same key. The core answers a repeated key
@@ -158,22 +185,41 @@ so a print that ends or a link that drops shows up without a reload.
   confirm gets an answer, confirming that bed again reuses its key, so a write
   that landed while its answer was lost replays its receipt and Undo instead of
   being refused as already verified. The key is kept only while a reread still
-  lists that bed with the same pending units; once the bed is gone, confirming
-  it later uses a new key, so a burst undone elsewhere is not answered with its
-  old receipt. The alert's Retry rereads the results first and follows the same
-  rule while the bed is listed; once the reread no longer lists it, the write
-  landed, so Retry sends the same request and key and the core replays the
-  receipt and Undo. A reread cannot tell a write that never landed from one that
-  landed and was undone elsewhere before it, so a resend can get the old receipt
-  of an undone burst; Today rereads after every answer and, when the bed is
-  still waiting, says nothing was marked instead of showing the tally and Undo.
-  Keys come from `crypto.randomUUID`, or from `crypto.getRandomValues` where the
-  page is not a secure context (a shared core over plain HTTP). One write runs
-  at a time: Confirm and Undo do nothing while the other is in flight. A resent Undo whose first answer was lost
+  lists every unit of that burst as pending; once one is gone, confirming the
+  same units later uses a new key, so a burst undone elsewhere is not answered
+  with its old receipt. The alert's Retry rereads the results first and follows
+  the same rule while every sent unit is listed. A burst is all or nothing, so
+  only when the reread lists none of its units did the write land, and Retry sends
+  the same request and key so the core replays the receipt and Undo; when only some
+  are gone, another write confirmed them, and Retry sends the units still waiting
+  as a new burst. A confirm that resent several bursts applies this to each burst. Picks that only overlap bursts that got no answer reread
+  the results first: every one of those bursts that landed (none of its units is
+  waiting any more; a burst is all or nothing) is resent with its
+  key, so the core replays each receipt, and one Undo undoes them all (if the
+  core refuses one of them, the others keep their receipts and Undo, and an alert
+  names the refused printer), and the picks they do not cover go with them as a
+  new burst; if none did, the picks the reread still lists as pending go as a new
+  burst. This works only until a reread: a reread that shows a lost burst landed
+  drops its key and its bed leaves Today, and then only the alert's Retry (while
+  no newer confirm has replaced it) resends it with its key and brings back its
+  Undo. A replayed receipt of a burst undone
+  elsewhere leaves the picks picked. If the
+  reread fails, nothing is sent, an alert says so, and that burst keeps its key,
+  so confirming again can still reach its receipt and Undo. A reread cannot
+  tell a write that never landed from one that landed and was undone elsewhere
+  before it, so a resend can get the old receipt of an undone burst; Today
+  rereads after every answer and, when every sent unit is still pending, says
+  nothing was marked instead of showing the tally and Undo. Keys come from
+  `crypto.randomUUID`, or from `crypto.getRandomValues` where the page is not a
+  secure context (a shared core over plain HTTP). One write runs at a time:
+  Confirm and Undo do nothing while the other is in flight or a confirm is
+  rereading. A resent Undo whose first answer was lost
   gets 409 "already undone"; Today counts that as done and rereads.
-- **Undo.** The tally, "Confirmed N units from <printer>.", sits in a polite
+- **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo
-  button. Undo sends the receipt's `undo_token` to
+  button. When the tally covers several bursts, Undo sends their tokens one by one,
+  newest first, because the core refuses to undo a burst a later write depends on;
+  if one fails, the tally keeps only the bursts still confirmed. Undo sends the receipt's `undo_token` to
   `POST /api/v2/printer-checkoff/verify-batch/undo`; the core restores the
   links, progress and outcomes, or refuses with 409 and a reason.
 - **Printer links down.** Confirming a bed needs no printer. A bed whose printer

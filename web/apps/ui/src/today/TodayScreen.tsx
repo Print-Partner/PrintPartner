@@ -8,15 +8,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
-import { readCore, writeCore } from "../core/rust";
+import { readCore, RequestContractError, writeCore } from "../core/rust";
 import { tasksQuery, type Task } from "../core/workflow";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
+import {
+  bedsBlocking,
+  bedsToClear,
+  MAX_BURST_BEDS,
+  pickedPrinters,
+  plural,
+  unitKey,
+  type Bed,
+  type Pick,
+  type Unit,
+} from "./beds";
+import { ClearBeds } from "./ClearBeds";
 
 type CheckoffResult = CheckoffResultList["results"][number];
 type FarmPrinter = FarmPrinterList["printers"][number];
-type Unit = CheckoffResult["units"][number];
 
 /** Today rereads results and printer links this often, so a print that ends or a link that drops shows up. */
 const REFRESH_MS = 30_000;
@@ -41,74 +52,37 @@ const LINK_DOWN = new Set<FarmPrinter["state"]["execution"]>([
   "unknown",
 ]);
 
-/** A bed waiting for a person: an awaiting-verify result and the units it has not resolved. */
-interface Bed {
-  result: CheckoffResult;
-  printer: string;
-  pending: Unit[];
-}
-
-const unitKey = (u: { part_id: number; unit_index: number }) => `${u.part_id}:${u.unit_index}`;
-
-/** A bed's link and the pending units a confirm of it sends. */
-const bedId = (bed: Bed) => `${bed.result.id}=${bed.pending.map(unitKey).join(",")}`;
-
-/** Results waiting for a person, oldest first, each with its pending units. */
-function bedsToClear(
-  results: readonly CheckoffResult[],
-  printerName: (id: string) => string,
-): Bed[] {
-  return results
-    .filter((r) => r.state === "awaiting_verify")
-    .map((result) => {
-      const resolved = new Set(result.resolved_units.map(unitKey));
-      return {
-        result,
-        printer: printerName(result.printer_id),
-        pending: result.units.filter((u) => !resolved.has(unitKey(u))),
-      };
-    })
-    .filter((bed) => bed.pending.length > 0)
-    .sort((a, b) => a.result.created_at.localeCompare(b.result.created_at));
-}
-
-/** "A", "A and B", "A, B and C". */
-const listWords = (words: readonly string[]) =>
-  words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
-
-const plural = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
-
-/** What confirming a bed marks, one line per Part: its file name, the count and the unit numbers. */
-function bedDiff(pending: readonly Unit[]) {
-  const parts = new Map<number, { name: string; units: number[] }>();
-  for (const unit of pending) {
-    const part = parts.get(unit.part_id) ?? {
-      name: unit.part_filename ?? `Part ${unit.part_id}`,
-      units: [],
-    };
-    part.units.push(unit.unit_index + 1);
-    parts.set(unit.part_id, part);
-  }
-  return [...parts.entries()].map(([id, { name, units }]) => ({
-    id,
-    text: `${name}: +${units.length} printed (${units.length === 1 ? "unit" : "units"} ${listWords(units.map(String))})`,
-  }));
-}
-
-/** A confirm in flight: the bed and the idempotency key every resend of it reuses. */
-interface Confirm {
-  bed: Bed;
+/** A burst in flight: the picked units and the idempotency key every resend of it reuses. */
+interface Burst {
+  picks: Pick[];
   key: string;
+  /** Runs only when the core confirms this burst, never on a replayed undone receipt. */
+  onConfirmed?: () => void;
 }
+
+/**
+ * One confirm. It sends one burst, or resends every lost burst a reread shows had landed
+ * (so each one's receipt and Undo come back) together with the picks they do not cover.
+ */
+interface Confirm {
+  bursts: Burst[];
+}
+
+/** Names a burst by the units it confirms, so the same burst finds its unanswered key. */
+const burstId = (picks: readonly Pick[]) =>
+  picks.map((p) => `${p.bed.result.id}=${p.units.map(unitKey).join(",")}`).join("|");
+
+/** One pending unit of one bed. */
+const pendingKey = (bed: Bed, u: Unit) => `${bed.result.id}=${unitKey(u)}`;
 
 interface Undo {
-  printer: string;
+  picks: Pick[];
   receipt: VerifyBatchReceipt;
 }
 
 /** The last thing a confirm or undo did, for the live region and the Undo button. */
 type Tally =
-  | { kind: "confirmed"; undo: Undo }
+  | { kind: "confirmed"; undos: Undo[] }
   | { kind: "undone"; printer: string; units: number }
   | { kind: "replayed"; printer: string };
 
@@ -123,37 +97,49 @@ const newKey = () =>
         b.toString(16).padStart(2, "0"),
       ).join("");
 
+const printersOf = (undos: readonly Undo[]) => pickedPrinters(undos.flatMap((u) => u.picks));
+
 const tallyText = (t: Tally) =>
   t.kind === "confirmed"
-    ? `Confirmed ${plural(t.undo.receipt.units_confirmed, "unit")} from ${t.undo.printer}.`
+    ? `Confirmed ${plural(
+        t.undos.reduce((n, u) => n + u.receipt.units_confirmed, 0),
+        "unit",
+      )} from ${printersOf(t.undos)}.`
     : t.kind === "replayed"
       ? `Nothing was marked on ${t.printer}: that confirm had already been undone elsewhere. Confirm the bed again.`
       : `Undid the ${t.printer} confirmation. ${plural(t.units, "unit")} ${t.units === 1 ? "is" : "are"} waiting again.`;
 
 // A send that never reached the core, or whose answer was lost, is resent with the same
 // key; the core answers a repeat with the first receipt and writes nothing.
-const lostSend = (error: Error) => !(error instanceof CoreError);
+// A body the client refused to send was not lost; resending it fails the same way.
+const lostSend = (error: Error) =>
+  !(error instanceof CoreError) && !(error instanceof RequestContractError);
 const retryLostSend = (failures: number, error: Error) => failures < 2 && lostSend(error);
-const resendable = (error: Error) => !(error instanceof CoreError && error.status < 500);
+const resendable = (error: Error) =>
+  !(error instanceof RequestContractError) && !(error instanceof CoreError && error.status < 500);
 // A resent undo whose first answer was lost finds the burst already undone.
 const ALREADY_UNDONE = "This Checkoff burst was already undone";
 
 function useCheckoff() {
   const client = useQueryClient();
   const [tally, setTally] = useState<Tally | null>(null);
-  // The key of each bed's confirm that has no answer yet, by `bedId`. Confirming that bed
-  // again reuses it, so a write that landed while its answer was lost replays its receipt
-  // and Undo.
-  const unanswered = useRef(new Map<string, string>());
-  // A saved key lasts only while a reread still lists its bed with the same pending units.
-  // Once the bed is gone, confirming it later is a new write with a new key, so a burst
-  // that was undone elsewhere is never answered with its old receipt.
+  // Why a Confirm sent nothing: the reread failed, or no picked unit is still waiting.
+  const [notice, setNotice] = useState<string | null>(null);
+  // The key of each burst that has no answer yet. Confirming the same units again reuses
+  // it, so a write that landed while its answer was lost replays its receipt and Undo.
+  const unanswered = useRef(new Map<string, { key: string; picks: Pick[] }>());
+  // A saved key lasts only while a reread still lists every unit of its burst as pending.
+  // Once one is gone, confirming the same units later is a new write with a new key, so a
+  // burst that was undone elsewhere is never answered with its old receipt.
   const listed = useRef(new Set<string>());
   const keepWaiting = useCallback((beds: readonly Bed[]) => {
-    const waiting = new Set(beds.map(bedId));
+    const waiting = new Set(beds.flatMap((bed) => bed.pending.map((u) => pendingKey(bed, u))));
     listed.current = waiting;
-    for (const id of unanswered.current.keys()) {
-      if (!waiting.has(id)) unanswered.current.delete(id);
+    for (const [id, { picks }] of unanswered.current) {
+      const stillPending = picks.every(({ bed, units }) =>
+        units.every((u) => waiting.has(pendingKey(bed, u))),
+      );
+      if (!stillPending) unanswered.current.delete(id);
     }
   }, []);
   const refresh = () =>
@@ -162,87 +148,219 @@ function useCheckoff() {
       client.invalidateQueries({ queryKey: tasksQuery.queryKey }),
     ]);
   const undo = useMutation({
-    mutationFn: async ({ receipt }: Undo) => {
-      try {
-        await writeCore("undoCheckoffBurst", {}, { undo_token: receipt.undo_token });
-      } catch (error) {
-        if (!(
-          error instanceof CoreError &&
-          error.status === 409 &&
-          error.detail === ALREADY_UNDONE
-        )) {
-          throw error;
+    // One token at a time, newest first: the core refuses to undo a burst once a later
+    // write touched the same link or Parts. If one fails, the tally keeps only the bursts
+    // still confirmed, so it never offers or names a burst that is already undone.
+    mutationFn: async (undos: Undo[]) => {
+      for (const [i, { receipt }] of [...undos].reverse().entries()) {
+        try {
+          await writeCore("undoCheckoffBurst", {}, { undo_token: receipt.undo_token });
+        } catch (error) {
+          if (!(
+            error instanceof CoreError &&
+            error.status === 409 &&
+            error.detail === ALREADY_UNDONE
+          )) {
+            if (i > 0) setTally({ kind: "confirmed", undos: undos.slice(0, undos.length - i) });
+            throw error;
+          }
         }
       }
     },
     retry: retryLostSend,
     onError: () => refresh(),
-    onSuccess: (_, { printer, receipt }) => {
+    onSuccess: (_, undos) => {
       setTally({
         kind: "undone",
-        printer,
-        units: receipt.units_confirmed + receipt.units_rejected,
+        printer: printersOf(undos),
+        units: undos.reduce((n, u) => n + u.receipt.units_confirmed + u.receipt.units_rejected, 0),
       });
       return refresh();
     },
   });
   const confirm = useMutation({
-    mutationFn: ({ bed, key }: Confirm) =>
-      writeCore(
-        "verifyCheckoffBurst",
-        {},
-        {
-          idempotency_key: key,
-          beds: [
-            {
+    // Several landed bursts resent together: a refusal of one keeps the receipts of the
+    // others, so their Undo is not lost. A lost answer fails the whole resend, which is
+    // safe to repeat because every burst keeps its key.
+    mutationFn: async ({ bursts }: Confirm) => {
+      const receipts: (VerifyBatchReceipt | Error)[] = [];
+      for (const { picks, key } of bursts) {
+        const sent = writeCore(
+          "verifyCheckoffBurst",
+          {},
+          {
+            idempotency_key: key,
+            beds: picks.map(({ bed, units }) => ({
               link_id: bed.result.id,
-              decisions: bed.pending.map((u) => ({
+              decisions: units.map((u) => ({
                 part_id: u.part_id,
                 unit_index: u.unit_index,
                 result: "confirmed" as const,
               })),
-            },
-          ],
-        },
-      ),
+            })),
+          },
+        );
+        receipts.push(
+          bursts.length === 1
+            ? await sent
+            : await sent.catch((error: Error) => {
+                if (lostSend(error)) throw error;
+                return error;
+              }),
+        );
+      }
+      return receipts;
+    },
     retry: retryLostSend,
-    onMutate: () => undo.reset(),
-    onError: (error, { bed }) => {
+    onMutate: () => {
+      setNotice(null);
+      undo.reset();
+    },
+    onError: (error, { bursts }) => {
       if (lostSend(error)) return;
-      unanswered.current.delete(bedId(bed));
+      for (const { picks } of bursts) unanswered.current.delete(burstId(picks));
       return refresh();
     },
-    onSuccess: async (receipt, { bed }) => {
-      unanswered.current.delete(bedId(bed));
+    onSuccess: async (receipts, { bursts }) => {
+      for (const { picks } of bursts) unanswered.current.delete(burstId(picks));
       undo.reset();
       const answeredAt = Date.now();
       await refresh();
       // A resent key whose burst was undone elsewhere gets its old receipt and writes
-      // nothing; a reread made after the answer still lists the bed waiting.
+      // nothing; a reread made after the answer still lists every sent unit as pending.
       const read = client.getQueryState<CheckoffResultList>(checkoffQuery.queryKey);
-      const replayed =
-        read?.data !== undefined &&
-        read.status === "success" &&
-        read.dataUpdatedAt >= answeredAt &&
-        bedsToClear(read.data.results, String).some((b) => bedId(b) === bedId(bed));
-      setTally(
-        replayed
-          ? { kind: "replayed", printer: bed.printer }
-          : { kind: "confirmed", undo: { printer: bed.printer, receipt } },
+      const pending =
+        read?.data !== undefined && read.status === "success" && read.dataUpdatedAt >= answeredAt
+          ? new Set(
+              bedsToClear(read.data.results, String).flatMap((bed) =>
+                bed.pending.map((u) => pendingKey(bed, u)),
+              ),
+            )
+          : null;
+      const replayed = ({ picks }: Burst) =>
+        pending !== null &&
+        picks.every(({ bed, units }) => units.every((u) => pending.has(pendingKey(bed, u))));
+      const answered = bursts.flatMap((burst, i) => {
+        const receipt = receipts[i]!;
+        return receipt instanceof Error ? [] : [{ burst, receipt }];
+      });
+      const refusals = bursts.flatMap(({ picks }, i) => {
+        const receipt = receipts[i]!;
+        return receipt instanceof Error
+          ? [`Not marked on ${pickedPrinters(picks)}: ${receipt.message}`]
+          : [];
+      });
+      if (refusals.length > 0) setNotice(refusals.join(" "));
+      if (answered.length === 0) return;
+      const undos = answered.flatMap(({ burst, receipt }) =>
+        replayed(burst) ? [] : [{ picks: burst.picks, receipt }],
       );
+      setTally(
+        undos.length === 0
+          ? {
+              kind: "replayed",
+              printer: pickedPrinters(answered.flatMap(({ burst }) => burst.picks)),
+            }
+          : { kind: "confirmed", undos },
+      );
+      for (const { burst } of answered) if (!replayed(burst)) burst.onConfirmed?.();
     },
   });
-  const confirmBed = (bed: Bed) => {
+  // Set while a confirm rereads before it decides what to send, so a second click waits.
+  const deciding = useRef(false);
+  /**
+   * Sends the picks as one burst, and calls `onConfirmed` once the core confirms it. The
+   * same picks as a burst that got no answer reuse its key. Picks that only overlap such a
+   * burst reread the results first: if one of those bursts landed, it is resent with its key
+   * so the core replays its receipt and Undo; if none did, the picks the reread still lists as
+   * pending go as a new burst. If the reread fails, nothing is sent and those bursts keep their
+   * keys, so their receipts and Undo stay reachable.
+   */
+  const confirmPicks = async (picks: Pick[], onConfirmed?: () => void) => {
     // One write at a time: a confirm never resets a pending Undo, and the reverse.
-    if (confirm.isPending || undo.isPending) return;
-    const key = unanswered.current.get(bedId(bed)) ?? newKey();
-    unanswered.current.set(bedId(bed), key);
-    confirm.mutate({ bed, key });
+    if (confirm.isPending || undo.isPending || deciding.current) return;
+    if (picks.length === 0 || picks.length > MAX_BURST_BEDS) return;
+    const id = burstId(picks);
+    const saved = unanswered.current.get(id);
+    if (saved) {
+      confirm.mutate({ bursts: [{ picks, key: saved.key, onConfirmed }] });
+      return;
+    }
+    const beds = new Set(picks.map((p) => p.bed.result.id));
+    const overlaps = [...unanswered.current.entries()].filter(([, u]) =>
+      u.picks.some((p) => beds.has(p.bed.result.id)),
+    );
+    let sending = picks;
+    if (overlaps.length > 0) {
+      deciding.current = true;
+      setNotice(null);
+      try {
+        const fresh = await client.fetchQuery({ ...checkoffQuery, staleTime: 0 });
+        keepWaiting(bedsToClear(fresh.results, String));
+      } catch {
+        setNotice(
+          `Nothing was sent: could not reread the results to check the earlier confirm on ${pickedPrinters(overlaps.flatMap(([, lost]) => lost.picks))}. Confirm again once the core answers.`,
+        );
+        return;
+      } finally {
+        deciding.current = false;
+      }
+      // A burst is all or nothing, so it landed only if no unit of it is waiting any more.
+      // One that lost only some units had them confirmed by another write; it never landed.
+      const landed = overlaps.filter(([, lost]) =>
+        lost.picks.every(({ bed, units }) =>
+          units.every((u) => !listed.current.has(pendingKey(bed, u))),
+        ),
+      );
+      if (landed.length > 0) {
+        const replaying = new Set(
+          landed.flatMap(([, lost]) =>
+            lost.picks.flatMap(({ bed, units }) => units.map((u) => pendingKey(bed, u))),
+          ),
+        );
+        const rest = picks
+          .map(({ bed, units }) => ({
+            bed,
+            units: units.filter(
+              (u) => listed.current.has(pendingKey(bed, u)) && !replaying.has(pendingKey(bed, u)),
+            ),
+          }))
+          .filter(({ units }) => units.length > 0);
+        const extra = rest.length > 0 ? [{ picks: rest, key: newKey(), onConfirmed }] : [];
+        for (const burst of extra) unanswered.current.set(burstId(burst.picks), burst);
+        confirm.mutate({ bursts: [...landed.map(([, burst]) => burst), ...extra] });
+        return;
+      }
+      sending = picks
+        .map(({ bed, units }) => ({
+          bed,
+          units: units.filter((u) => listed.current.has(pendingKey(bed, u))),
+        }))
+        .filter(({ units }) => units.length > 0);
+      if (sending.length === 0) {
+        setNotice("Nothing was sent: the picked units are no longer waiting.");
+        return;
+      }
+      // A lost burst that never landed and whose units all go again is replaced by this one.
+      const resent = new Set(
+        sending.flatMap(({ bed, units }) => units.map((u) => pendingKey(bed, u))),
+      );
+      for (const [lostId, lost] of overlaps) {
+        const covered = lost.picks.every(({ bed, units }) =>
+          units.every((u) => resent.has(pendingKey(bed, u))),
+        );
+        if (covered) unanswered.current.delete(lostId);
+      }
+    }
+    const key = newKey();
+    unanswered.current.set(burstId(sending), { key, picks: sending });
+    confirm.mutate({ bursts: [{ picks: sending, key, onConfirmed }] });
   };
-  // Retry of a confirm that got no answer. It rereads the results first. While the bed is
-  // listed waiting, it goes through `confirmBed` and its saved-key rule, so a burst undone
-  // elsewhere becomes a new write. Once the bed is gone, the write landed, so the same
-  // request and key go again and the core replays the receipt.
+  // Retry of a confirm that got no answer. It rereads the results first. A burst is all or
+  // nothing, so only when no sent unit is listed any more did the write land, and the same
+  // request and key go again for the core to replay the receipt. Otherwise the units still
+  // listed go through `confirmPicks`: all of them reuse the saved key, and a remainder (some
+  // were confirmed by another write) is a new burst.
   const retryConfirm = async () => {
     const sent = confirm.variables!;
     try {
@@ -251,16 +369,43 @@ function useCheckoff() {
     } catch {
       // An unreadable reread keeps the last one.
     }
-    if (listed.current.has(bedId(sent.bed))) confirmBed(sent.bed);
-    else confirm.mutate(sent);
+    const waiting = (bed: Bed, u: Unit) => listed.current.has(pendingKey(bed, u));
+    const landed = sent.bursts.every(({ picks }) =>
+      picks.every(({ bed, units }) => !units.some((u) => waiting(bed, u))),
+    );
+    const [only] = sent.bursts;
+    if (landed) {
+      confirm.mutate(sent);
+      return;
+    }
+    if (sent.bursts.length > 1) {
+      // Each burst follows the same rule: one with no unit or every unit still waiting goes
+      // again with its key, and one partly confirmed by another write sends what is left.
+      const bursts = sent.bursts.map((burst) => {
+        const left = burst.picks
+          .map(({ bed, units }) => ({ bed, units: units.filter((u) => waiting(bed, u)) }))
+          .filter(({ units }) => units.length > 0);
+        const count = (picks: Pick[]) => picks.reduce((n, p) => n + p.units.length, 0);
+        if (left.length === 0 || count(left) === count(burst.picks)) return burst;
+        const rest = { ...burst, picks: left, key: newKey() };
+        unanswered.current.set(burstId(left), rest);
+        return rest;
+      });
+      confirm.mutate({ bursts });
+      return;
+    }
+    const still = only!.picks
+      .map(({ bed, units }) => ({ bed, units: units.filter((u) => waiting(bed, u)) }))
+      .filter(({ units }) => units.length > 0);
+    await confirmPicks(still, only!.onConfirmed);
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
-  const undoBurst = (tallied: Undo) => {
-    if (undo.isPending || confirm.isPending) return;
+  const undoBurst = (tallied: Undo[]) => {
+    if (undo.isPending || confirm.isPending || deciding.current) return;
     confirm.reset();
     undo.mutate(tallied);
   };
-  return { confirm, confirmBed, keepWaiting, retryConfirm, undo, undoBurst, tally };
+  return { confirm, confirmPicks, keepWaiting, retryConfirm, undo, undoBurst, tally, notice };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
@@ -270,10 +415,10 @@ type Checkoff = ReturnType<typeof useCheckoff>;
  * key for an Undo).
  */
 function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
-  const { confirm, retryConfirm, undo, undoBurst, tally } = checkoff;
+  const { confirm, retryConfirm, undo, undoBurst, tally, notice } = checkoff;
   const failure = confirm.isError
     ? {
-        what: "Could not confirm the bed.",
+        what: "Could not confirm what came off.",
         error: confirm.error,
         resend: retryConfirm,
       }
@@ -291,11 +436,16 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
           <p>
             {tallyText(tally)}{" "}
             {tally.kind === "confirmed" && (
-              <MutationButton onClick={() => undoBurst(tally.undo)}>Undo</MutationButton>
+              <MutationButton onClick={() => undoBurst(tally.undos)}>Undo</MutationButton>
             )}
           </p>
         )}
       </div>
+      {notice && (
+        <div role="alert" className="pp-banner" data-kind="error">
+          <p>{notice}</p>
+        </div>
+      )}
       {failure && (
         <div role="alert" className="pp-banner" data-kind="error">
           <p>{failure.what}</p>
@@ -306,44 +456,6 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
         </div>
       )}
     </>
-  );
-}
-
-/** The hero task: clear the beds waiting for a person, with the reason and what each confirm marks. */
-function ClearBeds({
-  beds,
-  linkNote,
-  checkoff,
-}: {
-  beds: Bed[];
-  linkNote: (printerId: string) => string | null;
-  checkoff: Checkoff;
-}) {
-  return (
-    <section className="pp-hero" aria-labelledby="pp-hero-title">
-      <h2 id="pp-hero-title">{`Clear ${plural(beds.length, "bed")} and confirm what came off`}</h2>
-      <p className="pp-hero-reason">{`Frees ${listWords([...new Set(beds.map((b) => b.printer))])}.`}</p>
-      <ul className="pp-beds">
-        {beds.map((bed) => (
-          <li key={bed.result.id} className="pp-bed" data-link={bed.result.id}>
-            <h3>{bed.printer}</h3>
-            <p className="pp-muted">
-              {bed.result.filename}
-              {linkNote(bed.result.printer_id) &&
-                `. ${linkNote(bed.result.printer_id)}, so confirm by hand what came off.`}
-            </p>
-            <ul aria-label={`What confirming ${bed.printer} marks`} className="pp-diff">
-              {bedDiff(bed.pending).map((line) => (
-                <li key={line.id}>{line.text}</li>
-              ))}
-            </ul>
-            <MutationButton primary onClick={() => checkoff.confirmBed(bed)}>
-              {`Confirm ${bed.printer} bed`}
-            </MutationButton>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
 
@@ -486,7 +598,12 @@ export function TodayScreen() {
           <>
             <CheckoffStatus checkoff={checkoff} />
             {beds.length > 0 ? (
-              <ClearBeds beds={beds} linkNote={linkNote} checkoff={checkoff} />
+              <ClearBeds
+                beds={beds}
+                blocking={bedsBlocking(data.results, printerName, beds)}
+                linkNote={linkNote}
+                confirm={checkoff.confirmPicks}
+              />
             ) : (
               top && <TopTask task={top} />
             )}

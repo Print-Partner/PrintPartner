@@ -22,6 +22,14 @@ export class ContractError extends Error {
   }
 }
 
+/** A write body that fails the generated request schema; it is never sent. */
+export class RequestContractError extends Error {
+  constructor(path: string) {
+    super(`The request for ${path} does not match the client contract, so it was not sent`);
+    this.name = "RequestContractError";
+  }
+}
+
 /**
  * One GET through the generated Rust client: the route's path, filled with its
  * parameters, and its response schema. A body that fails the schema is a
@@ -52,7 +60,7 @@ export async function writeCore<N extends WriteRoute>(
   const route = routes[name];
   const path = routePath(name, params);
   const request = route.request?.safeParse(body);
-  if (!request?.success) throw new ContractError(path);
+  if (!request?.success) throw new RequestContractError(path);
   const response = await fetchCore(path, {
     method: route.method,
     headers: { accept: "application/json", "content-type": "application/json" },

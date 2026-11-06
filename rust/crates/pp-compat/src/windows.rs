@@ -31,8 +31,9 @@ use tokio::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
-        WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED, HANDLE,
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
     },
     Security::{Authorization::SE_FILE_OBJECT, SECURITY_ATTRIBUTES},
     Storage::FileSystem::{
@@ -47,7 +48,9 @@ use windows_sys::Win32::{
             JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
             QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         },
-        Pipes::{CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT},
+        Pipes::{
+            CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
+        },
         Threading::{
             CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
@@ -630,6 +633,30 @@ fn create_instance(
     }
 }
 
+/// Whether the client of a connected instance is still attached: peeking a
+/// pipe whose client closed fails with a broken or disconnected pipe.
+fn client_attached(server: &NamedPipeServer) -> std::io::Result<bool> {
+    let mut available = 0;
+    let peeked = unsafe {
+        PeekNamedPipe(
+            server.as_raw_handle() as HANDLE,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if peeked != 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error().map(|code| code as u32) {
+        Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED | ERROR_NO_DATA) => Ok(false),
+        _ => Err(error),
+    }
+}
+
 impl Channel {
     pub(crate) fn bind(_runtime_dir: &Path, generation: &str) -> std::io::Result<Self> {
         let name = PathBuf::from(format!(r"\\.\pipe\printpartner-compat-{generation}"));
@@ -657,13 +684,15 @@ impl Channel {
     }
 
     /// Take the connection the child dialed into the listening instance and
-    /// create the next instance. A dial that closed before it was taken, for
-    /// example when Node's `headersTimeout` reaped it while idle, leaves the
-    /// instance dead (`ERROR_NO_DATA`); it is replaced and the wait goes on for
-    /// the child's redial. The child keeps a dial queued, so a wait past
-    /// [`CONNECT_TIMEOUT`] means it stopped dialing and fails the request
-    /// instead of holding it forever. If the next instance cannot be created,
-    /// the connected one is still returned and later connects fail.
+    /// create the next instance. A dial that closed before it was taken leaves
+    /// the instance dead, and `ConnectNamedPipe`'s `ERROR_NO_DATA` reaches here
+    /// as a success, so [`client_attached`] checks the client is still there; a
+    /// dead instance is replaced and the wait goes on for the child's redial. A
+    /// client that closes right after that check fails this one request. The
+    /// child keeps a dial queued, so a wait past [`CONNECT_TIMEOUT`] means it
+    /// stopped dialing and fails the request instead of holding it forever. If
+    /// the next instance cannot be created, the connected one is still returned
+    /// and later connects fail.
     pub(crate) async fn connect(&self) -> std::io::Result<Stream> {
         let mut listener = self.listener.lock().await;
         let Some(descriptor) = self.descriptor.as_ref() else {
@@ -674,7 +703,7 @@ impl Channel {
                 let server = listener
                     .as_ref()
                     .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
-                if server.connect().await.is_ok() {
+                if server.connect().await.is_ok() && client_attached(server)? {
                     return Ok::<(), std::io::Error>(());
                 }
                 listener.replace(create_instance(&self.name, false, descriptor)?);

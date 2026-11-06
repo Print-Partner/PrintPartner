@@ -138,7 +138,18 @@ nothing is resent automatically:
   from the send queue after the printer outcome was unknown` and frees the
   printer.
 
-A send Node started has no Rust job; its answer only changes the item.
+A send Node started has no Rust job, so until it is reconciled or removed
+its item reserves the printer: dispatching another item to that printer is
+refused with `Another send to this printer is still unresolved`. Its answer
+only changes the item.
+
+If a queue-owned upload leaves reconciliation through the generic job
+reconciliation instead, the job's new state still settles its `error` item:
+a confirmed success makes it `done`, so it is never sent twice.
+
+A receipt kept from an attempt whose authority was refused counts as
+confirmed when the user says it printed. Otherwise the receipt is moved into
+the reconciliation record, which keeps it as evidence.
 
 The upload worker and the HTTP routes come in the next change.
 

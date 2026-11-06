@@ -154,11 +154,8 @@ export function MatchReview() {
         .join(" "),
     );
     setResolved((now) => new Set([...now, ...done]));
-    try {
-      await client.invalidateQueries({ queryKey: ["core"] });
-    } finally {
-      applying.current = false;
-    }
+    applying.current = false;
+    await client.invalidateQueries({ queryKey: ["core"] });
   };
 
   // Outside the data rows, so the outcome of the Apply that empties the backlog still shows.

@@ -245,8 +245,8 @@ the Farm screen. No screen polls for printer state.
   Each group has Check all, Uncheck all and one Apply. Apply sends one request per
   checked print: `POST .../unattributed/{id}/claim` with the suggested Build for
   Exact and Likely rows, `POST .../unattributed/{id}/dismiss` for rows with no
-  suggestion. A print an Apply resolved leaves the list at once, and a second press is
-  ignored until the reread after Apply answers. A refused print stays
+  suggestion. A second press while Apply runs is ignored, and a print an Apply
+  resolved leaves the list at once, before the reread answers. A refused print stays
   checked with the core's reason under it; a print that answers "Print already
   claimed" is reported as already claimed, never as claimed now. Applying one group
   leaves the other groups' checks and reasons as they were, and the outcome stays

@@ -2,6 +2,7 @@ import { Navigate, type RouteObject } from "react-router";
 import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
 import { BuildsList } from "./builds/BuildsList";
 import { FarmScreen } from "./farm/FarmScreen";
+import { MatchReview } from "./farm/MatchReview";
 import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
 import { DestinationScreen, NotFound, StatesSpecimen } from "./screen/screens";
@@ -54,6 +55,7 @@ export const routes: RouteObject[] = [
           })),
         ],
       },
+      { path: "farm/match", element: <MatchReview /> },
       { path: "states/printers", element: <PrinterStates /> },
       { path: "states/:kind", element: <StatesSpecimen /> },
       { path: "type", element: <TypeSpecimen /> },

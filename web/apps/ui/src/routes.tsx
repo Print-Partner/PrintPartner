@@ -1,6 +1,7 @@
 import { Navigate, type RouteObject } from "react-router";
 import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
 import { BuildsList } from "./builds/BuildsList";
+import { FarmScreen } from "./farm/FarmScreen";
 import { DESTINATIONS } from "./frame/destinations";
 import { Frame } from "./frame/Frame";
 import { DestinationScreen, NotFound, StatesSpecimen } from "./screen/screens";
@@ -10,7 +11,7 @@ import { TypeSpecimen } from "./type/TypeSpecimen";
 function PrinterStates() {
   return (
     <>
-      <h2>Printer states</h2>
+      <h1>Printer states</h1>
       <ul className="printer-states">
         {PRINTER_DISPLAY_STATES.map((state) => (
           <li key={state}>
@@ -33,10 +34,10 @@ export const routes: RouteObject[] = [
         element:
           d.path === "/builds" ? (
             <BuildsList />
+          ) : d.path === "/farm" ? (
+            <FarmScreen />
           ) : (
-            <DestinationScreen destination={d}>
-              {d.path === "/farm" && <PrinterStates />}
-            </DestinationScreen>
+            <DestinationScreen destination={d} />
           ),
       })),
       {
@@ -50,6 +51,7 @@ export const routes: RouteObject[] = [
           })),
         ],
       },
+      { path: "states/printers", element: <PrinterStates /> },
       { path: "states/:kind", element: <StatesSpecimen /> },
       { path: "type", element: <TypeSpecimen /> },
       { path: "*", element: <NotFound /> },

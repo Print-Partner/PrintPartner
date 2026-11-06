@@ -2154,8 +2154,8 @@ checked before the cap.
   with no selection, the retry selects the saved reconciliation again. A retry
   with a different payload returns `idempotency_conflict`.
 
-The operation has no HTTP route yet. D24 (GRE-619) mounts draft list, read, and
-part-edit HTTP only; Required-unit selection stays unregistered. The local
+GRE-416 mounts the operation as `PUT /plans/{id}/drafts/{draft_id}/reconciliation`
+on the draft router (see [D24 drafts HTTP](#d24-drafts-http-gre-619)). The local
 `Decision` and request types exist because `pp-storage` has no dependency on
 `pp-contracts`.
 
@@ -2177,6 +2177,21 @@ Run the tests with:
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --lib required_units -- --test-threads=2
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test required_unit_operations -- --test-threads=2
+```
+
+The T-61 acceptance target (GRE-416) replays the 24 seeded Node histories in
+`fixtures/parity/required-unit-histories/node.json` (inclusion and quantity
+edits, valid and invalid decisions in shuffled order, stale digests, key replays,
+changed payloads and a restart) through the public clients, checks every refused
+request left the draft, decision and assignment rows unchanged, checks surviving
+units keep their predecessor's token, and checks a second tenant cannot read,
+replay or change the first tenant's selection. Active production and running
+operations refuse publication with every membership row unchanged in the
+publication parity cases `production-active` and `running-export`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
+  --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -E 'test(ticket_t_61_required_units) | test(reconciliation_)'
 ```
 
 ## D19 publication model and production links, GRE-612 PR 1
@@ -2850,6 +2865,7 @@ Landed replacement slices for the superseded #635 monolith:
 | d | GRE-942 | Part edits with Node conflict shapes |
 | e | GRE-988 | Abandon with storage lifecycle token |
 | f | GRE-1093 | Accept preview through Accept's own checks |
+| g | GRE-416 | Required-unit reconciliation (`PUT .../reconciliation`) |
 
 With both gates on, `draft_router` serves these paths at the root and
 `/api/v2`:
@@ -2860,13 +2876,14 @@ With both gates on, `draft_router` serves these paths at the root and
 | GET | `/plans/{id}/drafts/{draft_id}` | workspace read |
 | GET | `/plans/{id}/drafts/{draft_id}/accept-preview` | read-only Accept preview |
 | PATCH | `/plans/{id}/drafts/{draft_id}/parts` | `edit` with typed `EditRequest` |
+| PUT | `/plans/{id}/drafts/{draft_id}/reconciliation` | `ReconciliationClient::reconcile` with typed `ReconciliationRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
 
 `admit_draft_routes` buffers each body before routing, disables Axum's 2 MiB
 default, and applies the guard's limits: 16 KiB request target, 1 MiB for
-reads, 8 MiB for PATCH, 5 s body timeout, 64 admission permits. Loopback
+reads, 8 MiB for PATCH and PUT, 5 s body timeout, 64 admission permits. Loopback
 transport is required. Host must match the configured listener; forwarded and
-`x-forwarded-*` headers are refused. Session-cookie writes (PATCH/POST) need a matching
+`x-forwarded-*` headers are refused. Session-cookie writes (PATCH/PUT/POST) need a matching
 Origin; GETs and API-key writes may omit it, but any Origin sent must match.
 A foreign or `null` Origin, or `sec-fetch-site: cross-site`, returns 403.
 Ambiguous credentials return 401, or 403 on an Origin-less write. Exactly one
@@ -2898,6 +2915,35 @@ consumed or already-closed draft that is not the idempotent retry returns
 `invalid_request` before mutation. Server failures use the same
 `Plan draft update failed` detail as edit. The desktop gateway does not mount
 this router; D26 does.
+
+`PUT /plans/{id}/drafts/{draft_id}/reconciliation` (GRE-416) saves and selects
+a Required-unit reconciliation, as Node's route of the same path does. The
+`Idempotency-Key` header is required: a missing key, or one that is blank or
+longer than 160 characters after trimming spaces and tabs, returns 400
+`invalid_request` before the body is read. The body is
+`{ expected_snapshot_digest, decisions }` (`ReconciliationRequest`):
+`select_exact_predecessor`, `accept_prior_completion` or `replace` decisions,
+at most 10,000, one per draft Part. A malformed body returns 400 before any
+write. The route reuses `WorkingDraftClient`'s writer and auth policy through
+`WorkingDraftClient::reconciliation`, so the selection runs in one immediate
+transaction on the single writer and nothing is sent to Node.
+
+- 200 returns the draft workspace with its `reconciliation` summary. The
+  selection commits with one `plan.draft_changed` domain event
+  ([Domain events](domain-events.md)).
+- A retry with the same actor, key and payload returns the stored selection and
+  writes nothing, before the snapshot digest is checked. The one exception is
+  Node's repair: an open v1 draft whose selection was detached gets that
+  selection back, and the repair still writes no domain event. The same key with
+  another payload returns 409 `{ code: "idempotency_conflict" }`.
+- Edit's conflicts apply: 409 `draft_changed`, `base_changed`, `not_open` or
+  `accepted_baseline_required`, 422 `domain_error`, and 404
+  `profile_not_found` or `draft_not_found`. When another connection holds
+  the SQLite write lock past the writer's admission deadline, the route answers
+  503 `transaction_unavailable`, as edit does.
+- A decision that does not apply to the draft makes Node's service throw, so
+  both routes answer 500 `Plan draft update failed`. The transaction rolls
+  back every reconciliation, decision and assignment row and writes no event.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one

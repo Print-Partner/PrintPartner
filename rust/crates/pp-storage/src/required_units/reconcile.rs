@@ -75,7 +75,8 @@ impl Scope<'_> {
     }
 
     /// Replays an idempotent request. A v1 draft whose prior selection was
-    /// detached gets that reconciliation selected again, as Node repairs it.
+    /// detached gets that reconciliation selected again, as Node repairs it;
+    /// the repair writes no domain event.
     fn replay(&self, existing: &Value, payload: &str) -> Result<Outcome> {
         if existing["payloadDigest"] != payload {
             return Ok(Outcome::IdempotencyConflict);
@@ -290,6 +291,17 @@ impl Scope<'_> {
             reconciliation,
             &next,
             "Required-unit reconciliation selection could not be verified",
+        )?;
+        crate::domain_events::append(
+            self.tx,
+            self.tenant,
+            crate::domain_events::Change {
+                kind: crate::domain_events::DRAFT_CHANGED,
+                aggregate_type: "build",
+                aggregate_id: self.profile.to_string(),
+                aggregate_version: None,
+                payload: json!({"draft_id": self.draft}),
+            },
         )?;
         self.ready(&selected)
     }

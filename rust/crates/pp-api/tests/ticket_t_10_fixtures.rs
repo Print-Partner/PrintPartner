@@ -1367,11 +1367,20 @@ mod ticket_t_10_fixtures {
             ledger
                 .compare(&case.id, &case.node, &actual)
                 .unwrap_or_else(|error| panic!("{error}"));
-            let expected = if refused.contains(&case.id.as_str()) {
-                &[][..]
+            let mut expected = if refused.contains(&case.id.as_str()) {
+                Vec::new()
             } else {
-                &case.changed[..]
+                case.changed.clone()
             };
+            // Node has no change feed. Rust commits a `plan.draft_changed`
+            // event with every new Required-unit selection.
+            if expected
+                .iter()
+                .any(|table| table == "plan_draft_required_unit_reconciliations")
+            {
+                expected.push("domain_events".to_owned());
+                expected.sort();
+            }
             assert_eq!(changed, expected, "{}: changed tables", case.id);
         }
         ledger.finish().unwrap()

@@ -1066,6 +1066,25 @@ async fn failure_codes_map_without_private_detail() {
             Some("transaction_unavailable"),
         ),
         (
+            "wrapped locked",
+            anyhow::anyhow!("database is locked").context("Plan draft update failed"),
+            503,
+            Some("transaction_unavailable"),
+        ),
+        (
+            "wrapped deadline",
+            anyhow::anyhow!("Writer transaction admission deadline expired")
+                .context("Plan draft update failed"),
+            503,
+            Some("transaction_unavailable"),
+        ),
+        (
+            "wrapped private",
+            anyhow::anyhow!("private fixture detail").context("Plan draft update failed"),
+            500,
+            Some("internal_error"),
+        ),
+        (
             "writer full",
             anyhow::anyhow!("Writer queue full"),
             503,
@@ -2128,5 +2147,243 @@ async fn accept_preview_lists_only_the_changes_accept_publishes() {
                 "old":flag(false),"new":flag(true)}
         ])
     );
+    server.close().await;
+}
+
+fn reconcile_request(
+    server: &ReadServer,
+    path: &str,
+    key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = server.request(Method::PUT, path);
+    match key {
+        Some(key) => request.header("Idempotency-Key", key),
+        None => request,
+    }
+}
+
+fn reconcile_body(digest: &str, decisions: Value) -> Value {
+    json!({"expected_snapshot_digest": digest, "decisions": decisions})
+}
+
+/// The draft events storage committed, oldest first.
+fn draft_events(server: &ReadServer) -> Vec<(String, String, String)> {
+    let sql = server.sql();
+    let mut statement = sql
+        .prepare("SELECT event_type,aggregate_id,payload_json FROM domain_events ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn reconciliation_selects_once_replays_by_key_and_refuses_conflicts() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let path = "/api/v2/plans/1/drafts/2/reconciliation";
+    let selected = json_reply(
+        reconcile_request(&server, path, Some(" select-1 "))
+            .json(&reconcile_body(DIGEST, json!([]))),
+        200,
+    )
+    .await;
+    assert_eq!(
+        selected["reconciliation"],
+        json!({"kind":"ready","reused_units":6,"new_units":0,"surplus_units":0})
+    );
+    assert_ne!(selected["draft"]["snapshot_digest"], DIGEST);
+    let events = vec![(
+        "plan.draft_changed".to_owned(),
+        "1".to_owned(),
+        "{\"draft_id\":2}".to_owned(),
+    )];
+    assert_eq!(draft_events(&server), events);
+    assert_eq!(
+        json_reply(server.request(Method::GET, "/plans/1/drafts/2"), 200).await,
+        selected
+    );
+    let before = logical_database(&server.sql());
+    // The same key and payload on the root alias replays without a write.
+    assert_eq!(
+        json_reply(
+            reconcile_request(
+                &server,
+                "/plans/1/drafts/2/reconciliation",
+                Some("select-1")
+            )
+            .json(&reconcile_body(DIGEST, json!([]))),
+            200
+        )
+        .await,
+        selected
+    );
+    // The same key with another payload conflicts before the stale digest.
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, path, Some("select-1")).json(&reconcile_body(
+                DIGEST,
+                json!([{"kind":"replace","target_draft_part_id":4}])
+            )),
+            409
+        )
+        .await,
+        json!({"code":"idempotency_conflict"})
+    );
+    // A new key against the digest the selection replaced is draft_changed.
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, path, Some("select-2"))
+                .json(&reconcile_body(DIGEST, json!([]))),
+            409
+        )
+        .await,
+        json!({"code":"draft_changed","workspace":selected})
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    assert_eq!(draft_events(&server), events);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn reconciliation_refuses_bad_keys_bodies_and_targets_without_writing() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let path = "/plans/1/drafts/2/reconciliation";
+    let before = logical_database(&server.sql());
+    let invalid_request = json!({"detail":"Request is invalid","code":"invalid_request"});
+    let body = reconcile_body(DIGEST, json!([]));
+    let long = "k".repeat(161);
+    for key in [None, Some(""), Some("   "), Some(long.as_str())] {
+        assert_eq!(
+            json_reply(reconcile_request(&server, path, key).json(&body), 400).await,
+            invalid_request,
+            "{key:?}"
+        );
+    }
+    for body in [
+        "{",
+        "[]",
+        "{}",
+        "{\"expected_snapshot_digest\":\"00\",\"decisions\":[]}",
+        "{\"expected_snapshot_digest\":\"ae11e670337e3e5eab736b29b4e294edbea8b564661cf15972625783f8930ee3\",\"decisions\":[{\"kind\":\"replace\",\"target_draft_part_id\":4},{\"kind\":\"replace\",\"target_draft_part_id\":4}]}",
+        "{\"expected_snapshot_digest\":\"ae11e670337e3e5eab736b29b4e294edbea8b564661cf15972625783f8930ee3\",\"decisions\":[],\"extra\":1}",
+    ] {
+        let mut problem = json_reply(
+            reconcile_request(&server, path, Some("bad-body")).body(body.to_owned()),
+            400,
+        )
+        .await;
+        problem.as_object_mut().unwrap().remove("errors");
+        assert_eq!(problem, invalid_request, "{body}");
+    }
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, "/plans/1/drafts/9/reconciliation", Some("missing"))
+                .json(&body),
+            404
+        )
+        .await,
+        json!({"detail":"Plan draft not found","code":"draft_not_found"})
+    );
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, "/plans/7/drafts/2/reconciliation", Some("missing"))
+                .json(&body),
+            404
+        )
+        .await,
+        json!({"detail":"Plan not found","code":"profile_not_found"})
+    );
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, "/plans/1/drafts/0/reconciliation", Some("zero"))
+                .json(&body),
+            400
+        )
+        .await,
+        invalid_request
+    );
+    // Node throws for a decision that does not apply; the route answers its
+    // generic 500 and the transaction rolls back.
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, path, Some("inapplicable")).json(&reconcile_body(
+                DIGEST,
+                json!([{"kind":"accept_prior_completion","target_draft_part_id":4,"predecessor_revision_part_id":3}])
+            )),
+            500
+        )
+        .await,
+        json!({"detail":"Plan draft update failed","code":"internal_error"})
+    );
+    let anonymous = server
+        .client
+        .request(Method::PUT, format!("{}{path}", server.origin))
+        .header("Origin", &server.origin)
+        .header("Idempotency-Key", "anonymous")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+    assert_eq!(logical_database(&server.sql()), before);
+    assert!(draft_events(&server).is_empty());
+    server.close().await;
+}
+
+#[tokio::test]
+async fn reconciliation_under_write_contention_is_transaction_unavailable() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let holder = server.sql();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
+    let problem = json_reply(
+        reconcile_request(
+            &server,
+            "/plans/1/drafts/2/reconciliation",
+            Some("contended"),
+        )
+        .json(&reconcile_body(DIGEST, json!([]))),
+        503,
+    )
+    .await;
+    assert_eq!(
+        problem,
+        json!({"detail":"Plan draft update is unavailable","code":"transaction_unavailable"})
+    );
+    assert!(started.elapsed() < Duration::from_secs(30));
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert!(draft_events(&server).is_empty());
+    server.close().await;
+}
+
+#[tokio::test]
+async fn reconciliation_without_a_key_is_refused_before_its_body_is_read() {
+    let server = ReadServer::start_limited(1024, "").await;
+    let oversized = vec![b'x'; 4096];
+    assert_eq!(
+        json_reply(
+            reconcile_request(&server, "/plans/1/drafts/2/reconciliation", None).body(oversized),
+            400
+        )
+        .await,
+        json!({"detail":"Request is invalid","code":"invalid_request"})
+    );
+    let mut stream = tokio::net::TcpStream::connect(server.host()).await.unwrap();
+    let head = format!(
+        "PUT /plans/1/drafts/2/reconciliation HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\n\
+         Cookie: {FIXTURE_COOKIE}\r\nIdempotency-Key:  \r\nContent-Length: 100\r\n\r\n{{",
+        server.host(),
+        server.origin
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut response = vec![0; 1024];
+    let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut response))
+        .await
+        .expect("answered before the body timeout")
+        .unwrap();
+    let response = String::from_utf8_lossy(&response[..read]);
+    assert!(response.starts_with("HTTP/1.1 400"), "{response}");
     server.close().await;
 }

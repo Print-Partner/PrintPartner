@@ -1,7 +1,30 @@
 // A fake Rust core for the browser checks: GET /health with every Module listed, the
-// Builds, task feed and workflow routes over `count` generated Builds, and two printer
-// Checkoff results waiting on Today. Bodies follow the generated client schemas.
+// Builds, task feed and workflow routes over `count` generated Builds, the farm read
+// over a fixed fleet, and two printer Checkoff results waiting on Today. Bodies follow
+// the generated client schemas. There is no /ws/printers, so screens show the stream as
+// down.
 const MODULES = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"];
+
+const printer = (id, name, kind, state, extra = {}) => ({
+  id,
+  name,
+  model: name,
+  integration: kind ? { id: `int-${id}`, kind } : null,
+  state,
+  reason: null,
+  last_heard_at: "2026-11-05T19:26:00Z",
+  progress_percent: null,
+  loaded_filaments: [{ slot: 1, filament_color_id: null, label: "" }],
+  ...extra,
+});
+const PRINTERS = [
+  printer("voron", "Voron 2.4", "moonraker", { execution: "printing", bed_clear: "needs_clearing", display: "printing" }, { progress_percent: 42 }),
+  printer("trident", "Trident", "moonraker", { execution: "idle", bed_clear: "needs_clearing", display: "bed_to_clear" }),
+  printer("micron", "Micron", "moonraker", { execution: "idle", bed_clear: "clear", display: "ready" }),
+  printer("annex", "Annex K3", "moonraker", { execution: "unreachable", bed_clear: "unknown", display: "unreachable" }, { reason: "unreachable" }),
+  printer("h2d", "Bambu H2D", "bambu", { execution: "manual", bed_clear: "unknown", display: "manual" }, { reason: "monitoring_not_supported", last_heard_at: null }),
+  printer("h2d-spare", "Bambu H2D (spare)", null, { execution: "not_set_up", bed_clear: "unknown", display: "not_set_up" }, { reason: "not_set_up", last_heard_at: null }),
+];
 
 function build(id) {
   const total = 10 + (id % 90);
@@ -119,7 +142,7 @@ export function fakeCore(count, { orders = "on" } = {}) {
     single_user_auth: true,
     single_user_setup_required: false,
     modules: MODULES.map((module) =>
-      module === "orders" && orders === "on"
+      (module === "orders" && orders === "on") || module === "farm"
         ? { module, state: "on" }
         : { module, state: "off", reason: "default_off" },
     ),
@@ -131,6 +154,7 @@ export function fakeCore(count, { orders = "on" } = {}) {
     if (pathname === "/api/v2/plans") return { status: 200, body: { profiles: builds } };
     if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks, unavailable: [] } };
     if (pathname === "/api/v2/printer-checkoff") return { status: 200, body: { results: CHECKOFF } };
+    if (pathname === "/api/v2/printers") return { status: 200, body: { printers: PRINTERS } };
     const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow)?$/.exec(pathname);
     const found = match && builds[Number(match[1]) - 1];
     if (!found) return undefined;

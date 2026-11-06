@@ -2961,7 +2961,8 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   `WorkingDraftClient::rebase_and_select`. A rebased or existing draft is selected
   and answered as recompute's is. As in Node's `rebaseFailure`, a source whose
   lifecycle or digest changed is 409 `draft_changed` with the source's workspace,
-  and an open source is 409 `not_open` with its workspace. `merge_conflicts`
+  and a source whose state differs from `expected_source_state` is 409
+  `not_open` with its workspace. `merge_conflicts`
   is 422 `{ code, conflicts }`. `base_unchanged` is 409, alongside recompute's
   409s and 422s.
 - `POST /plans/{id}/drafts/{draft_id}/apply` (Accept) takes `ApplyRequest` and runs

@@ -26,6 +26,7 @@ mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
 mod links;
+mod manual;
 #[cfg(feature = "desktop_rebuild")]
 mod unattributed;
 mod verify;
@@ -72,6 +73,7 @@ fn is_token(value: &str) -> bool {
 
 /// The Accepted Plan a caller observed. Every write refuses a different basis.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Basis {
     #[serde(deserialize_with = "safe_integer")]
@@ -175,6 +177,11 @@ pub enum Request {
     VerifyBatch { body: Value },
     /// `POST /printer-checkoff/verify-batch/undo` with its raw JSON body.
     UndoBatch { body: Value },
+    /// `POST /plans/{id}/checkoff/bursts` with its raw JSON body: one manual
+    /// Checkoff burst on a Build's Required units, with an idempotency key.
+    ManualBurst { profile_id: i64, body: Value },
+    /// `POST /plans/{id}/checkoff/bursts/undo` with its raw JSON body.
+    UndoManualBurst { profile_id: i64, body: Value },
     /// `GET /api/v2/farm-log` with its raw `cursor` and `limit` query values.
     #[cfg(feature = "desktop_rebuild")]
     FarmLog {
@@ -357,6 +364,7 @@ enum Op {
     UndoBatch {
         token: String,
     },
+    Manual(manual::Op),
     #[cfg(feature = "desktop_rebuild")]
     FarmLog(farm_log::Query),
     #[cfg(feature = "desktop_rebuild")]
@@ -512,6 +520,18 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         Request::UndoBatch { body } => {
             return burst::undo_token(&body).map(|token| Op::UndoBatch { token });
         }
+        Request::ManualBurst { profile_id, body } => {
+            return manual::ManualBurst::parse(profile_id, &body)
+                .map(|burst| Op::Manual(manual::Op::Burst(burst)));
+        }
+        Request::UndoManualBurst { profile_id, body } => {
+            return burst::undo_token(&body).map(|token| {
+                Op::Manual(manual::Op::Undo {
+                    profile: profile_id,
+                    token,
+                })
+            });
+        }
         #[cfg(feature = "desktop_rebuild")]
         Request::FarmLog { cursor, limit } => {
             return farm_log::Query::parse(cursor.as_deref(), limit.as_deref()).map(Op::FarmLog);
@@ -651,6 +671,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::Dismiss { link_id } => return verify::dismiss(tx, tenant, &link_id),
         Op::VerifyBatch(burst) => return burst::verify_batch(tx, tenant, burst, repos),
         Op::UndoBatch { token } => return burst::undo_batch(tx, tenant, &token, repos),
+        Op::Manual(op) => return manual::run(tx, tenant, op, repos),
         #[cfg(feature = "desktop_rebuild")]
         Op::FarmLog(query) => return farm_log::page(tx, tenant, &query, repos),
         #[cfg(feature = "desktop_rebuild")]

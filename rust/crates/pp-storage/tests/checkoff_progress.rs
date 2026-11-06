@@ -13,6 +13,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "common/progress_rows.rs"]
+mod progress_rows;
+
 const WAIT: Duration = Duration::from_secs(5);
 
 fn session() -> Credential {
@@ -87,23 +90,7 @@ impl Fixture {
 
     /// `part_id:unit_index:completed:assembled` for every progress row.
     fn progress(&self) -> Vec<String> {
-        let connection = Connection::open(self.root.join("print-partner.db")).unwrap();
-        let mut statement = connection
-            .prepare("SELECT part_id,unit_index,completed,assembled FROM print_progress ORDER BY part_id,unit_index")
-            .unwrap();
-        statement
-            .query_map([], |r| {
-                Ok(format!(
-                    "{}:{}:{}:{}",
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?
-                ))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
+        progress_rows::progress(&Connection::open(self.root.join("print-partner.db")).unwrap())
     }
 
     fn complete(&self, n: u8, completed: bool) -> Value {

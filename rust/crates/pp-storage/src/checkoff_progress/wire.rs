@@ -3,6 +3,7 @@
 //! describe the subset the replacement UI sends and reads. A receipt carries
 //! more fields, such as each bed's stored link, which these types leave out.
 
+use super::Basis;
 use crate::read_model::farm::{CheckoffResultState, UnitResult};
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +94,121 @@ pub struct UndoBatchRequest {
 pub struct UndoBatchReceipt {
     pub undo_token: String,
     pub undone_at: String,
+}
+
+/// One Required unit on a Build's Checkoff tab.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct CheckoffUnitState {
+    pub token: String,
+    pub unit_index: u32,
+    pub object_name: String,
+    pub printed: bool,
+    pub assembled: bool,
+}
+
+/// One included Part of the Accepted Plan with its Required units.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct CheckoffPart {
+    pub part_id: i64,
+    pub filename: String,
+    pub relative_path: String,
+    pub source_layer: String,
+    pub role: String,
+    pub quantity: u64,
+    pub printed_count: u64,
+    pub assembled_count: u64,
+    pub units: Vec<CheckoffUnitState>,
+}
+
+/// `GET /api/v2/plans/{id}/checkoff/units`: the Accepted Plan's included Parts
+/// with each Required unit's token and durable printed and assembled state.
+/// `basis` is what a manual burst sends as `expected`; it is `null` when the
+/// Build has no Accepted Plan yet.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct CheckoffUnits {
+    pub profile_id: i64,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<AcceptedBasis>")
+    )]
+    pub basis: Option<AcceptedBasis>,
+    pub parts: Vec<CheckoffPart>,
+}
+
+/// The Accepted Plan basis as a read serves it: the fields a write sends back
+/// as `expected`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct AcceptedBasis {
+    pub profile_id: i64,
+    pub plan_version: i64,
+    pub plan_revision_id: i64,
+    pub plan_revision_digest: String,
+    pub required_unit_mapping_digest: String,
+}
+impl From<Basis> for AcceptedBasis {
+    fn from(basis: Basis) -> Self {
+        Self {
+            profile_id: basis.profile_id,
+            plan_version: basis.plan_version,
+            plan_revision_id: basis.plan_revision_id,
+            plan_revision_digest: basis.plan_revision_digest,
+            required_unit_mapping_digest: basis.required_unit_mapping_digest,
+        }
+    }
+}
+
+/// One unit of a manual burst: the state it sets. Printing a unit prints
+/// every lower unit of its Part; clearing one clears every higher unit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ManualBurstUnit {
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub printed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembled: Option<bool>,
+}
+
+/// `POST /api/v2/plans/{id}/checkoff/bursts`: repeating it with the same
+/// `idempotency_key` returns the first receipt and writes nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ManualBurstRequest {
+    /// 1 to 200 characters after trimming; the route checks it.
+    pub idempotency_key: String,
+    pub expected: Basis,
+    #[cfg_attr(feature = "codegen", schemars(length(min = 1, max = 1000)))]
+    pub units: Vec<ManualBurstUnit>,
+}
+
+/// A touched Part's counts after a manual burst.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct ManualBurstPart {
+    pub part_id: i64,
+    pub quantity: u64,
+    pub printed_count: u64,
+    pub assembled_count: u64,
+}
+
+/// The manual burst receipt: its undo token and the units it changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct ManualBurstReceipt {
+    pub idempotency_key: String,
+    pub undo_token: String,
+    pub profile_id: i64,
+    pub printed_added: u64,
+    pub printed_removed: u64,
+    pub assembled_added: u64,
+    pub assembled_removed: u64,
+    pub parts: Vec<ManualBurstPart>,
 }
 
 /// `POST /printer-checkoff/unattributed/{id}/claim`: attributes an

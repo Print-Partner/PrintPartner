@@ -745,6 +745,37 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    fn started(scratch: &Scratch) -> (PathBuf, PathBuf, Logs) {
+        let directory = scratch.0.join("logs");
+        let logs = Logs::open(directory.clone()).unwrap();
+        logs.event(Event::Starting, 30);
+        let path = directory.join("desktop.jsonl");
+        (directory, path, logs)
+    }
+
+    fn rotate(logs: &Logs, rotation: Option<bool>) {
+        if let Some(size) = rotation {
+            force_rotation(logs, size);
+        }
+    }
+
+    fn assert_ready(path: impl AsRef<Path>) {
+        let row: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(row["event"], "compat_ready");
+    }
+
+    fn outside(scratch: &Scratch) -> PathBuf {
+        let target = scratch.0.join("outside");
+        std::fs::write(
+            &target,
+            b"private history
+",
+        )
+        .unwrap();
+        widen(&target);
+        target
+    }
+
     fn force_rotation(logs: &Logs, size: bool) {
         let mut log = logs.events.lock().unwrap();
         if size {
@@ -758,18 +789,11 @@ mod tests {
     fn ticket_t_2_unlinked_active_log_recovers_without_restart() {
         for rotation in [None, Some(false), Some(true)] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory).unwrap();
-            logs.event(Event::Starting, 30);
+            let (_, path, logs) = started(&scratch);
             std::fs::remove_file(&path).unwrap();
-            if let Some(size) = rotation {
-                force_rotation(&logs, size);
-            }
+            rotate(&logs, rotation);
             logs.event(Event::Ready, 30);
-            let row: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            assert_eq!(row["event"], "compat_ready");
+            assert_ready(&path);
             assert!(private(&path));
         }
     }
@@ -781,10 +805,7 @@ mod tests {
     fn ticket_t_2_delete_pending_active_log_recovers_without_restart() {
         for rotation in [None, Some(false), Some(true)] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory).unwrap();
-            logs.event(Event::Starting, 30);
+            let (_, path, logs) = started(&scratch);
             platform::test_support::delete_pending(&path);
             assert!(
                 std::fs::OpenOptions::new()
@@ -793,13 +814,9 @@ mod tests {
                     .open(&path)
                     .is_err()
             );
-            if let Some(size) = rotation {
-                force_rotation(&logs, size);
-            }
+            rotate(&logs, rotation);
             logs.event(Event::Ready, 30);
-            let row: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            assert_eq!(row["event"], "compat_ready");
+            assert_ready(&path);
             assert!(private(&path));
         }
     }
@@ -810,9 +827,7 @@ mod tests {
     fn ticket_t_2_hardlinked_logs_leave_outside_access_unchanged() {
         for name in ["desktop.jsonl", "desktop.1.jsonl"] {
             let scratch = Scratch::new();
-            let target = scratch.0.join("outside");
-            std::fs::write(&target, b"private history\n").unwrap();
-            widen(&target);
+            let target = outside(&scratch);
             let before = access(&target);
             std::fs::hard_link(&target, scratch.0.join("logs").join(name)).unwrap();
             assert!(Logs::open(scratch.0.join("logs")).is_err());
@@ -829,9 +844,7 @@ mod tests {
             let path = directory.join("desktop.jsonl");
             let logs = Logs::open(directory).unwrap();
             std::fs::remove_file(&path).unwrap();
-            let target = scratch.0.join("outside");
-            std::fs::write(&target, b"private history\n").unwrap();
-            widen(&target);
+            let target = outside(&scratch);
             if hardlink {
                 std::fs::hard_link(&target, &path).unwrap();
             } else {
@@ -842,9 +855,7 @@ mod tests {
             assert!(widened(&target));
             std::fs::remove_file(&path).unwrap();
             logs.event(Event::Ready, 30);
-            let row: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-            assert_eq!(row["event"], "compat_ready");
+            assert_ready(path);
         }
     }
 
@@ -869,11 +880,7 @@ mod tests {
                 assert_eq!(mode(&archived) & !0o600, 0);
                 chmod(&archived, 0o600);
                 assert_eq!(std::fs::read(&archived).unwrap(), b"history\n");
-                let row: serde_json::Value = serde_json::from_slice(
-                    &std::fs::read(directory.join("desktop.jsonl")).unwrap(),
-                )
-                .unwrap();
-                assert_eq!(row["event"], "compat_ready");
+                assert_ready(directory.join("desktop.jsonl"));
             }
         }
     }
@@ -896,10 +903,7 @@ mod tests {
             let archived = directory.join("desktop.2.jsonl");
             assert!(private(&archived));
             assert_eq!(std::fs::read(&archived).unwrap(), b"history\n");
-            let row: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(directory.join("desktop.jsonl")).unwrap())
-                    .unwrap();
-            assert_eq!(row["event"], "compat_ready");
+            assert_ready(directory.join("desktop.jsonl"));
         }
     }
 
@@ -921,9 +925,7 @@ mod tests {
     #[test]
     fn ticket_t_2_hardlink_active_startup_leaves_target_unchanged() {
         let scratch = Scratch::new();
-        let target = scratch.0.join("outside");
-        std::fs::write(&target, b"private history\n").unwrap();
-        widen(&target);
+        let target = outside(&scratch);
         std::fs::hard_link(&target, scratch.0.join("logs/desktop.jsonl")).unwrap();
         let result = Logs::open(scratch.0.join("logs"));
         if let Ok(logs) = &result {
@@ -938,17 +940,12 @@ mod tests {
     fn ticket_t_2_hardlink_active_after_startup_refuses_append_and_both_rotations() {
         for rotation in [None, Some(false), Some(true)] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
+            let (directory, path, logs) = started(&scratch);
             let before = std::fs::read(&path).unwrap();
             let target = scratch.0.join("outside");
             std::fs::hard_link(&path, &target).unwrap();
             widen(&target);
-            if let Some(size) = rotation {
-                force_rotation(&logs, size);
-            }
+            rotate(&logs, rotation);
             for _ in 0..2 {
                 logs.event(Event::Ready, 30);
             }
@@ -962,16 +959,11 @@ mod tests {
     fn ticket_t_2_hardlink_active_replacement_preserves_history_on_rotation() {
         for size in [false, true] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
+            let (directory, path, logs) = started(&scratch);
             let original = scratch.0.join("original");
             std::fs::rename(&path, &original).unwrap();
             let before = std::fs::read(&original).unwrap();
-            let target = scratch.0.join("outside");
-            std::fs::write(&target, b"private history\n").unwrap();
-            widen(&target);
+            let target = outside(&scratch);
             std::fs::hard_link(&target, &path).unwrap();
             std::fs::write(directory.join("desktop.6.jsonl"), b"oldest\n").unwrap();
             force_rotation(&logs, size);
@@ -1071,10 +1063,7 @@ mod tests {
     fn ticket_t_2_owner_only_modes_are_repaired_between_events_and_both_rotations() {
         for rotation in [None, Some(false), Some(true)] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
+            let (directory, path, logs) = started(&scratch);
             widen(&directory);
             widen(&path);
             if let Some(size) = rotation {
@@ -1247,10 +1236,7 @@ mod tests {
     fn ticket_t_2_log_rotation_preserves_archives_with_dangling_active_symlink() {
         for size_rollover in [false, true] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
+            let (directory, path, logs) = started(&scratch);
             let before = std::fs::read(&path).unwrap();
             let original = scratch.0.join("original");
             std::fs::rename(&path, &original).unwrap();

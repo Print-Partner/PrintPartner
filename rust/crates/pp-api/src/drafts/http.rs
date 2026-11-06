@@ -299,6 +299,7 @@ fn mount(
         )
         .route("/plans/{id}/drafts/{draft_id}/abandon", post(abandon))
         .route("/plans/{id}/drafts/recompute", post(lifecycle::recompute))
+        .route("/plans/{id}/drafts/save", post(lifecycle::autosave))
         .route(
             "/plans/{id}/drafts/{draft_id}/rebase",
             post(lifecycle::rebase),
@@ -613,11 +614,11 @@ fn idempotency_key(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// The writes Node refuses without an `Idempotency-Key`: reconciliation,
-/// recompute, rebase and Accept.
+/// recompute, rebase and Accept, and the Rust-only draft autosave.
 fn keyed_write(method: &Method, path: &str) -> bool {
     match *method {
         Method::PUT => path.ends_with("/reconciliation"),
-        Method::POST => ["/recompute", "/rebase", "/apply"]
+        Method::POST => ["/recompute", "/rebase", "/apply", "/drafts/save"]
             .iter()
             .any(|action| path.ends_with(action)),
         _ => false,

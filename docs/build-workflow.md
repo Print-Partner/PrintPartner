@@ -97,7 +97,8 @@ GRE-1166 adds the two task kinds GRE-1089's TSK-01 names. Both are facts in
 tenant's `printer.checkoff_links`, `printer.unattributed_prints`,
 `printer.send_queue`, `printer.fleet` and `integrations` settings, parsed the
 way the [farm reads](farm-reads.md) parse them. A setting over 4 MiB fails the
-workflow read with `Farm settings exceed the read limit`.
+whole workflow read: the HTTP routes answer 500 and MCP answers "Build workflow
+is unavailable".
 
 - **`beds_to_clear`.** Each result's bed time is when its print came off
   (`completed_at`) or, while it runs, when it started (`created_at`). A claimed

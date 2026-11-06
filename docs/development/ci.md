@@ -468,7 +468,7 @@ These crates do not build on Windows yet. The Windows job excludes them with `--
 | `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
 | `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |
 
-`pp-os` and `pp-storage` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. The Windows job builds and tests `pp-os`, including
+`pp-os`, `pp-storage` and `pp-source` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. The Windows job builds and tests `pp-os`, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
 tests for symbolic links, junctions, directory locks, write-through renames,

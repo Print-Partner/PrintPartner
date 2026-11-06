@@ -807,12 +807,6 @@ pub(crate) mod test_support {
         assert_ne!(terminated, 0);
     }
 
-    /// True once `pid` has exited. A process handle the supervisor holds
-    /// keeps the exit status, so nothing is reaped here.
-    pub(crate) fn exited_unreaped(pid: u32) -> bool {
-        !super::process_alive(pid)
-    }
-
     pub(crate) fn exited(code: u8) -> ExitStatus {
         ExitStatus::from_raw(u32::from(code))
     }

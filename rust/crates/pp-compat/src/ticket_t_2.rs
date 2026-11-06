@@ -360,6 +360,9 @@ async fn ticket_t_2_repeated_start_stop_no_duplicate_child() {
     assert!(wall.elapsed() < Duration::from_secs(8));
 }
 
+// Unix only until GRE-1203: on Windows the startup probe waits up to 2 s for
+// the child's dial, and the child's pipe stdio blocks paused-clock auto-advance.
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_3_drain_readiness_timeout_no_leaked_task() {
     let scratch = Scratch::new("ready");
@@ -673,12 +676,16 @@ async fn ticket_t_2_guard_logs_five_failure_facts_then_stops_restarts() {
     );
 }
 
+// Unix only until GRE-1203, with the paused-time crash tests that use it.
+#[cfg(unix)]
 fn crash_guard_spec(scratch: &Scratch) -> super::ShellSpec {
     let mut spec = shell_spec(scratch);
     spec.script = r#"let setup = null; const input = require("node:readline").createInterface({ input: process.stdin }); input.once("line", (line) => { setup = JSON.parse(line); if (!require("node:fs").existsSync(setup.data_dir + "/hold")) process.exit(7); }); input.on("close", () => process.exit(setup === null ? 1 : 0));"#;
     spec
 }
 
+// Unix only until GRE-1203, with the paused-time crash tests that use it.
+#[cfg(unix)]
 fn shell_exited(pid: u32) -> bool {
     if super::drain::process_group_absent(pid) {
         return true;
@@ -686,6 +693,8 @@ fn shell_exited(pid: u32) -> bool {
     test_support::exited_unreaped(pid)
 }
 
+// Unix only until GRE-1203, with the paused-time crash tests that use it.
+#[cfg(unix)]
 async fn wait_shell_crash(
     supervisor: &super::Supervisor,
     scratch: &Scratch,
@@ -784,6 +793,8 @@ async fn wait_shell_crash(
     );
 }
 
+// Unix only until GRE-1203, with the paused-time crash tests that use it.
+#[cfg(unix)]
 async fn advance_crash_backoff(supervisor: &super::Supervisor) {
     let attempt = match *supervisor.handle.status.borrow() {
         super::Status::Backoff { attempt } => attempt,
@@ -792,6 +803,8 @@ async fn advance_crash_backoff(supervisor: &super::Supervisor) {
     tokio::time::advance(super::backoff(attempt)).await;
 }
 
+// Unix only until GRE-1203, with the paused-time crash tests that use it.
+#[cfg(unix)]
 async fn shutdown_guard_shell(supervisor: super::Supervisor, scratch: &Scratch) {
     let pid = *recorded_pids(&scratch.pidfile()).last().unwrap();
     let stopping = supervisor.shutdown();
@@ -812,6 +825,9 @@ async fn shutdown_guard_shell(supervisor: super::Supervisor, scratch: &Scratch) 
     }
 }
 
+// Unix only until GRE-1203: on Windows the startup probe waits up to 2 s for
+// the child's dial, and the child's pipe stdio blocks paused-clock auto-advance.
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_duplicate_recovery_cannot_bypass_next_crash_guard() {
     let scratch = Scratch::new("duplicate-recovery");
@@ -855,6 +871,9 @@ async fn ticket_t_2_duplicate_recovery_cannot_bypass_next_crash_guard() {
     );
 }
 
+// Unix only until GRE-1203: on Windows the startup probe waits up to 2 s for
+// the child's dial, and the child's pipe stdio blocks paused-clock auto-advance.
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_five_shell_crashes_guard_until_explicit_recovery() {
     let scratch = Scratch::new("guard-runtime");
@@ -910,6 +929,9 @@ async fn ticket_t_2_five_shell_crashes_guard_until_explicit_recovery() {
     );
 }
 
+// Unix only until GRE-1203: on Windows the startup probe waits up to 2 s for
+// the child's dial, and the child's pipe stdio blocks paused-clock auto-advance.
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_shell_crashes_expire_outside_default_guard_window() {
     let scratch = Scratch::new("guard-expiry");
@@ -944,8 +966,8 @@ async fn ticket_t_2_shell_crashes_expire_outside_default_guard_window() {
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
-// INTERIM (GRE-1194): the health fixture plays the child on a Unix listener.
-// Its Windows dial loop, and these tests on Windows, are still to come.
+// Unix only until GRE-1203: the health fixture plays the child on a Unix
+// listener. Its Windows dial loop and Windows counterparts come with GRE-1203.
 #[cfg(unix)]
 struct HealthFixture {
     delay_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -1094,6 +1116,8 @@ async fn pump_until(predicate: impl Fn() -> bool) {
     }
 }
 
+// Unix only until GRE-1203, with the paused-time crash tests that use it.
+#[cfg(unix)]
 async fn pump_for(duration: Duration) {
     let wall = std::time::Instant::now();
     while wall.elapsed() < duration {
@@ -1113,6 +1137,7 @@ async fn health_supervisor(scratch: &Scratch) -> (super::Supervisor, HealthFixtu
     (supervisor, fixture)
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_cadence_requires_ok_and_bundled_release() {
@@ -1178,6 +1203,7 @@ async fn ticket_t_2_health_cadence_requires_ok_and_bundled_release() {
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_unhealthy_startup_stops_polling_at_thirty_seconds() {
@@ -1338,6 +1364,9 @@ async fn ticket_t_3_drain_repeated_eof_interrupts_mutation_without_resend() {
     }
 }
 
+// Unix only until GRE-1203: on Windows the startup probe waits up to 2 s for
+// the child's dial, and the child's pipe stdio blocks paused-clock auto-advance.
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_process_exit_obeys_every_backoff_deadline_and_cap() {
     let scratch = Scratch::new("backoff-deadlines");
@@ -1574,18 +1603,21 @@ async fn health_backoff_deadlines(end: HealthBackoffEnd) {
     );
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_loss_obeys_every_backoff_deadline_and_cap() {
     health_backoff_deadlines(HealthBackoffEnd::Restart).await;
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_loss_shutdown_cancels_late_capped_restart() {
     health_backoff_deadlines(HealthBackoffEnd::Shutdown).await;
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_health_loss_disarm_cancels_late_capped_restart() {
@@ -1650,6 +1682,7 @@ async fn readiness_remaining_budget(hung: bool) {
     );
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_hung_liveness_times_out_three_times_and_shutdown_cancels_restart() {
@@ -1707,18 +1740,23 @@ async fn ticket_t_2_hung_liveness_times_out_three_times_and_shutdown_cancels_res
     assert!(live_pids(&scratch.pidfile()).is_empty());
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_hung_readiness_is_cut_off_at_remaining_budget() {
     readiness_remaining_budget(true).await;
 }
 
+// Unix only until GRE-1203: the health fixture listens on a Unix socket.
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ticket_t_2_slow_readiness_cannot_publish_after_remaining_budget() {
     readiness_remaining_budget(false).await;
 }
 
+// Unix: the child exits on SIGTERM. Windows counterpart:
+// ticket_t_3_drain_shutdown_forces_backpressured_startup_setup_windows.
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_3_drain_shutdown_cancels_backpressured_startup_setup() {
     let scratch = Scratch::new("blocked-startup-setup");
@@ -1749,6 +1787,49 @@ async fn ticket_t_3_drain_shutdown_cancels_backpressured_startup_setup() {
     assert!(super::drain::process_group_absent(pid));
     assert_eq!(recorded_pids(&scratch.pidfile()), vec![pid]);
     println!("startup setup cancelled; spawns=1; probes=0; live_groups=0; status=stopped");
+}
+
+// Windows: the child never reads stdin and there is no SIGTERM, so stop ends in
+// the Job Object kill after SIGTERM_GRACE. It must not hang on the blocked write.
+#[cfg(windows)]
+#[tokio::test]
+async fn ticket_t_3_drain_shutdown_forces_backpressured_startup_setup_windows() {
+    let scratch = Scratch::new("blocked-startup-setup-windows");
+    let supervisor = super::Supervisor::launch_shell(
+        super::ShellSpec {
+            script: "setInterval(() => {}, 1e9)",
+            setup_padding: "x".repeat(1024 * 1024),
+            ..shell_spec(&scratch)
+        },
+        super::SupervisorConfig::default(),
+    )
+    .unwrap();
+    wait_live(&scratch.pidfile(), 1).await;
+    let handle = supervisor.handle.clone();
+    let probes = supervisor.health_probes_completed.clone();
+    assert!(matches!(*handle.status.borrow(), super::Status::Starting));
+    assert_eq!(*probes.borrow(), 0);
+    let pid = recorded_pids(&scratch.pidfile())[0];
+    assert_eq!(live_pids(&scratch.pidfile()), vec![pid]);
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        super::drain::SIGTERM_GRACE + Duration::from_secs(5),
+        supervisor.shutdown(),
+    )
+    .await
+    .expect("shutdown remained blocked writing startup setup")
+    .expect("supervisor shutdown");
+    let elapsed = started.elapsed();
+    assert_eq!(result, super::CompatExit::Forced);
+    assert!(elapsed >= super::drain::SIGTERM_GRACE, "{elapsed:?}");
+    assert!(matches!(*handle.status.borrow(), super::Status::Stopped));
+    assert!(handle.endpoint().is_none());
+    assert_eq!(*probes.borrow(), 0);
+    assert!(super::drain::process_group_absent(pid));
+    assert_eq!(recorded_pids(&scratch.pidfile()), vec![pid]);
+    println!(
+        "startup setup forced after {elapsed:?}; spawns=1; probes=0; live_groups=0; status=stopped"
+    );
 }
 
 #[cfg(unix)]
@@ -2499,6 +2580,9 @@ fn ticket_t_3_drain_rate_limit_debits_require_current_generation_signature() {
     }
 }
 
+// Unix only until GRE-1204: release verification rejects Windows npm junctions
+// with "Dependency link inventory mismatch".
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_2_respawn_blocked_during_verification_starts_no_child() {
     let scratch = Scratch::new("respawn-disarmed");

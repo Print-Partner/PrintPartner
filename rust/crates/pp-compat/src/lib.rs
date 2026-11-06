@@ -1554,6 +1554,7 @@ mod tests {
 
     /// When `exit` is set, close the child's stdin and reap it, as a stop
     /// that finds the leader already gone sees it.
+    #[cfg(any(target_os = "linux", windows))]
     async fn observe_exit(
         child: &mut super::platform::Child,
         exit: bool,

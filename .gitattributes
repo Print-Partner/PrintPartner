@@ -1,3 +1,8 @@
+# Rust sources embed schema SQL, JSON fixtures and snapshots with include_str!
+# and compare them byte for byte, so Windows checkouts keep LF endings too.
+rust/** text=auto eol=lf
+# Node parity fixtures are compared byte for byte with generator output.
+fixtures/** text=auto eol=lf
 # Pinned historical schema sources are hashed byte for byte (pp-testkit, pp-storage
 # tests). Keep them exactly as committed on every OS, with no line-ending conversion.
 rust/crates/pp-storage/data/historical/** -text

@@ -1628,7 +1628,7 @@ fn ticket_t_7_migrations() {
             "tsx",
             "scripts/storage-fixtures/prepare.mts",
         ])
-        .arg(&root)
+        .arg(pp_testkit::node_path::node_path(&root))
         .output()
         .unwrap();
     assert!(

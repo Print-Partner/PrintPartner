@@ -29,9 +29,9 @@ use windows_sys::{
     },
     Win32::{
         Foundation::{
-            ERROR_NO_MORE_FILES, ERROR_NOT_LOCKED, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE,
-            RtlNtStatusToDosError, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
-            STATUS_NOT_SUPPORTED, UNICODE_STRING,
+            ERROR_LOCK_VIOLATION, ERROR_NO_MORE_FILES, ERROR_NOT_LOCKED, HANDLE, NTSTATUS,
+            OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_INVALID_INFO_CLASS,
+            STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, UNICODE_STRING,
         },
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY,
@@ -39,12 +39,65 @@ use windows_sys::{
             FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_GENERIC_READ,
             FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
             FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileFullDirectoryInfo,
-            GetFileInformationByHandle, GetFileInformationByHandleEx, MOVE_FILE_FLAGS,
+            GetFileInformationByHandle, GetFileInformationByHandleEx, LOCK_FILE_FLAGS,
+            LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVE_FILE_FLAGS,
             MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, SYNCHRONIZE,
+            UnlockFileEx,
         },
-        System::IO::IO_STATUS_BLOCK,
+        System::IO::{IO_STATUS_BLOCK, OVERLAPPED},
     },
 };
+
+/// The one byte every lock covers; see the crate's "Lock range on Windows".
+const LOCK_OFFSET: u64 = i64::MAX as u64;
+
+fn lock_overlapped() -> OVERLAPPED {
+    // SAFETY: OVERLAPPED is plain data, and all zeroes is a valid value.
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    overlapped.Anonymous.Anonymous.Offset = LOCK_OFFSET as u32;
+    overlapped.Anonymous.Anonymous.OffsetHigh = (LOCK_OFFSET >> 32) as u32;
+    overlapped
+}
+
+/// `LockFileEx` on [`LOCK_OFFSET`]. Handles here are synchronous, so a lock
+/// without `LOCKFILE_FAIL_IMMEDIATELY` returns once it is granted.
+fn lock_range(file: &File, flags: LOCK_FILE_FLAGS) -> io::Result<()> {
+    let mut overlapped = lock_overlapped();
+    // SAFETY: the handle stays open for the call and `overlapped` outlives it.
+    let locked = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as HANDLE,
+            flags,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if locked == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+pub(crate) fn try_lock(file: &File) -> Result<(), crate::TryLockError> {
+    match lock_range(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) => {
+            Err(crate::TryLockError::WouldBlock)
+        }
+        Err(error) => Err(crate::TryLockError::Io(error)),
+    }
+}
+
+pub(crate) fn unlock(file: &File) -> io::Result<()> {
+    let mut overlapped = lock_overlapped();
+    // SAFETY: the handle stays open for the call and `overlapped` outlives it.
+    if unsafe { UnlockFileEx(file.as_raw_handle() as HANDLE, 0, 1, 0, &mut overlapped) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
 
 /// Windows has no POSIX owner; [`crate::PosixAccess`] is never constructed.
 pub(crate) fn effective_uid() -> u32 {
@@ -648,7 +701,7 @@ impl Dir {
     }
 
     pub(crate) fn lock(&self) -> io::Result<()> {
-        fs4::FileExt::lock(self.lock_file()?)
+        lock_range(self.lock_file()?, LOCKFILE_EXCLUSIVE_LOCK)
     }
 
     /// Unix `flock(LOCK_UN)` succeeds without a lock; so does this, though

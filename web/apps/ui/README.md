@@ -253,10 +253,11 @@ the Farm screen. No screen polls for printer state.
   every open print of the same file on that integration together (read from
   `GET .../unattributed`), so reprints of one
   file are counted as claimed by the Apply that claimed them, with one request.
-  If that list cannot be read, a reprint answered "Print already claimed" after
-  this Apply claimed the same file name is still counted as claimed by it, whatever
-  its integration. When the list was read, a print of the same name on another
-  integration, or one missing from the list, is reported as already claimed. Applying one group
+  If that list cannot be read and the last list read does not hold a print, that
+  print answering "Print already claimed" after this Apply claimed the same file
+  name is still counted as claimed by it, whatever its integration. Otherwise a
+  print of the same name on another integration, or one missing from a fresh
+  list, is reported as already claimed. Applying one group
   leaves the other groups' checks and reasons as they were, and the outcome stays
   shown when the last print is resolved. The list rereads after every Apply. Farm module off shows the Module-off state; a core that lists no Farm
   module is read as on, as Farm does.

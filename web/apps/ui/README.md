@@ -168,7 +168,9 @@ Spoolman route, so it works with those Modules off.
 - **Retry and refusals.** A send that got no answer is resent up to twice with
   the same key and the same body. After that, the alert's Retry resends it again
   with that key, so the core replays the first receipt instead of counting twice.
-  A reread follows every send, and it drops picks that already match the stored
+  Until that Retry settles, Record is hidden, because a new key could record the
+  same picks as a second burst and lose the first burst's Undo. Undo keeps the
+  lost send's alert and Retry in view. A reread follows every send, and it drops picks that already match the stored
   state. A refusal from the core (4xx) shows its detail and no Retry. This covers
   a stale basis, a burst already undone, and an undo that a later change blocks.
   A resent undo that finds its burst already undone after a lost answer counts

@@ -61,6 +61,21 @@ const baseName = (filename: string) => {
   return name.slice(name.lastIndexOf("/") + 1).toLowerCase();
 };
 
+/**
+ * Claims one print for its suggested Build: true when this request claimed it, false when
+ * the core answers that it was already claimed. Any other failure throws.
+ */
+async function claimPrint(s: Suggestion) {
+  try {
+    await writeCore("claimUnattributedPrint", { id: s.print_id }, { profile_id: s.build!.id });
+    return true;
+  } catch (error) {
+    if (error instanceof CoreError && error.status === 409 && error.detail === ALREADY_CLAIMED)
+      return false;
+    throw error;
+  }
+}
+
 /** Whether Apply claims a checked row for its Build; otherwise it dismisses the row. */
 const claims = (s: Suggestion) => s.confidence !== "none" && s.build !== null;
 
@@ -129,12 +144,7 @@ export function MatchReview() {
       if (done.includes(s.print_id)) continue;
       try {
         if (claims(s)) {
-          try {
-            await writeCore(
-              "claimUnattributedPrint",
-              { id: s.print_id },
-              { profile_id: s.build!.id },
-            );
+          if (await claimPrint(s)) {
             const reprints = rows.filter(
               (r) =>
                 !resolved.has(r.print_id) && !done.includes(r.print_id) && fileOf(r) === fileOf(s),
@@ -145,13 +155,7 @@ export function MatchReview() {
             claimed += ids.length;
             claimedNames.add(baseName(s.filename));
             done.push(...ids);
-          } catch (error) {
-            if (!(
-              error instanceof CoreError &&
-              error.status === 409 &&
-              error.detail === ALREADY_CLAIMED
-            ))
-              throw error;
+          } else {
             // A file this Apply already claimed elsewhere was claimed by it, even when the
             // integrations could not be read to group it in advance.
             if (claimedNames.has(baseName(s.filename))) claimed += 1;

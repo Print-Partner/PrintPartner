@@ -1054,6 +1054,68 @@ mod transaction {
         });
         assert_eq!(events, Vec::from_iter(expected), "{}", case["id"]);
     }
+    /// An applied Accept saves one `pre_apply` snapshot of the Plan it
+    /// replaces in the same transaction; any other outcome saves none.
+    fn assert_pre_accept_snapshot(c: &Connection, case: &Value, actual: &Value) {
+        let rows: Vec<(i64, String, String, String)> = c
+            .prepare("SELECT profile_id,source,created_at,payload_json FROM plan_snapshots WHERE source='pre_apply'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        if actual["kind"] != "applied" {
+            assert_eq!(rows, vec![], "{}", case["id"]);
+            return;
+        }
+        let [(profile, _, created_at, payload)] = rows.as_slice() else {
+            panic!("{}: {rows:?}", case["id"]);
+        };
+        let payload: Value = serde_json::from_str(payload).unwrap();
+        let input = &case["input"];
+        assert_eq!(json!(profile), input["profileId"], "{}", case["id"]);
+        assert_eq!(
+            (
+                &payload["accepted_plan_revision_id"],
+                &payload["accepted_plan_version"],
+                &payload["captured_at"],
+            ),
+            (
+                &input["expectedBase"]
+                    .get("revisionId")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                &input["expectedBase"]["planVersion"],
+                &json!(created_at),
+            ),
+            "{}",
+            case["id"]
+        );
+        let mut layers: Vec<&Value> = case["before"]["profile_layers"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| row["profile_id"] == input["profileId"])
+                    .collect()
+            })
+            .unwrap_or_default();
+        layers.sort_by_key(|row| (row["layer_order"].as_i64(), row["id"].as_i64()));
+        assert_eq!(
+            payload["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|layer| (&layer["layer_type"], &layer["project_id"], &layer["order"]))
+                .collect::<Vec<_>>(),
+            layers
+                .iter()
+                .map(|row| (&row["layer_type"], &row["project_id"], &row["layer_order"]))
+                .collect::<Vec<_>>(),
+            "{}",
+            case["id"]
+        );
+        assert!(payload["kit_manifest"]["selections"].is_object());
+    }
     #[test]
     fn transaction_replays_node_outcomes_receipts_and_persisted_rows() {
         let fixture = fixture();
@@ -1126,6 +1188,7 @@ mod transaction {
                 );
             }
             assert_accept_event(&c, case, &actual);
+            assert_pre_accept_snapshot(&c, case, &actual);
             if actual["kind"] == "checkoff_remap_unsafe" {
                 assert_eq!(snapshot(&c, "plan_apply_admissions"), json!([]));
             }
@@ -1137,6 +1200,7 @@ mod transaction {
                 assert_eq!(replay["kind"], "existing");
                 assert_eq!(replay["receipt"], actual["receipt"]);
                 assert_accept_event(&c, case, &actual);
+                assert_pre_accept_snapshot(&c, case, &actual);
                 assert!(
                     c.execute(
                         "UPDATE plan_apply_admissions SET request_digest='tampered'",

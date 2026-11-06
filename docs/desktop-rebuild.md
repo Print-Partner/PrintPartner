@@ -3005,6 +3005,14 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
+  Before it publishes, Accept saves the snapshot its preview promises: one
+  `plan_snapshots` row, `source` `pre_apply`, named `Before accepting draft
+  <draft_id>`, in the same transaction. Its payload has Node's
+  `capturePlanSnapshotPayload` shape (`layers`, `kit_manifest`,
+  `captured_at`, with `recipe_summary` `null` because Rust does not derive the
+  recipe yet) plus `accepted_plan_revision_id` and `accepted_plan_version` of
+  the Plan it replaces. A replay, an already consumed draft and every refusal
+  save none.
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500

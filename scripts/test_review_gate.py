@@ -47,7 +47,8 @@ def out(value):
 if path.endswith("/pulls/7/files") and slurp:
     out([[{"filename": item, "status": "modified"} if isinstance(item, str) else item for item in state["files"]]])
 elif path.endswith("/pulls/7") and not slurp:
-    out({"changed_files": state["changed_files"], "base": {"ref": state["pr_base"]}})
+    out({"changed_files": state["changed_files"], "base": {"ref": state["pr_base"]},
+         "head": {"sha": state.get("moved_to", state["head"])}})
 elif path.endswith(f"/commits/{state['head']}/check-runs") and slurp and query["filter"] == ["all"]:
     seq = state.get("checks_seq")
     if seq:
@@ -111,11 +112,11 @@ class ReviewGateStepTests(unittest.TestCase):
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
     def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None, pr_base="main",
-             droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0"):
+             droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0", moved_to=None):
         state = self.folder / "state.json"
         state.write_text(json.dumps({
             "head": HEAD, "checks": [run("review-gate", None), *checks], "pages": pages or [[]],
-            "droid_log": droid_log, "pr_base": pr_base, "checks_seq": checks_seq, "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
+            "droid_log": droid_log, "pr_base": pr_base, "checks_seq": checks_seq, **({"moved_to": moved_to} if moved_to else {}), "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
             "suites": {str(key): value for key, value in SUITES.items()},
             "blobs": {f"{DROID}@{HEAD}": "d1", f"{DROID}@main": "d1", f"{CLAUDE}@{HEAD}": "c1",
                       f"{CLAUDE}@main": "c1"} if blobs is None else blobs}))
@@ -198,6 +199,12 @@ class ReviewGateStepTests(unittest.TestCase):
         broken = [run("claude-code-review", "failure"), finished[1]]
         failed = self.assertFails(checks_seq=[review, broken], checks=broken, wait="5")
         self.assertIn("claude-code-review is failure", failed.stdout)
+
+    def test_a_waiting_gate_stops_when_the_head_moves(self):
+        review = [run("claude-code-review", None), run("claude-security-review", None)]
+        result = self.gate(checks_seq=[review], checks=review, wait="5", moved_to=OLD)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("The PR head moved", result.stdout)
 
     def test_waiting_cannot_create_a_pass_from_a_spoofed_run(self):
         review = [run("claude-code-review", None, suite=9), run("claude-security-review", None)]
@@ -387,9 +394,12 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         workflow = load("review-gate.yml")
         self.assertEqual(set(workflow["on"]), {"pull_request_target"})
         self.assertEqual(workflow["on"]["pull_request_target"]["types"],
-                         ["opened", "synchronize", "reopened", "ready_for_review"])
+                         ["opened", "synchronize", "reopened", "ready_for_review", "edited"])
         job = workflow["jobs"]["review-gate"]
         self.assertNotIn("if", job)
+        group = workflow["concurrency"]
+        self.assertIn("github.event.action != 'edited'", group["cancel-in-progress"])
+        self.assertIn("github.run_id", group["group"])
         self.assertEqual(job["permissions"], {"actions": "read", "checks": "read", "contents": "read",
                                               "pull-requests": "read"})
         self.assertNotIn("uses:", text)

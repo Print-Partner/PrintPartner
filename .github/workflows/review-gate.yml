@@ -24,19 +24,19 @@ name: Review gate
 # scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
 # the guard), as Dependabot's action bumps do, it needs both path 3 (the
 # owner's marker for that head) and path 1 or 2.
-# Every push waits up to 30 minutes for the head's Claude jobs, then fails
-# unless one path holds; a stacked PR is judged against its own base.
-# review-gate-rerun.yml reruns it when a review ends or a marker changes. See
-# docs/development/definition-of-done.md#code-review.
+# Every push or edit waits up to 30 minutes for the head's Claude jobs, then
+# fails unless one path holds; a stacked PR is judged against its own base and
+# again when an edit retargets it. review-gate-rerun.yml reruns it when a review
+# ends or a marker changes. See docs/development/definition-of-done.md#code-review.
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.run_attempt == '1' && 'push' || github.run_id }}
-  cancel-in-progress: ${{ github.run_attempt == '1' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action != 'edited' && github.run_attempt == '1' && 'push' || github.run_id }}
+  cancel-in-progress: ${{ github.event.action != 'edited' && github.run_attempt == '1' }}
 
 jobs:
   review-gate:
@@ -120,6 +120,11 @@ jobs:
                   for item in page["check_runs"]:
                       if item["name"] in CLAUDE_JOBS:
                           seen.setdefault(item["name"], []).append(item["status"])
+              current = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
+                                                  capture_output=True, text=True).stdout)
+              if current["head"]["sha"] != HEAD:
+                  print(f"::error::The PR head moved from {HEAD}; the run for the new head judges it.")
+                  sys.exit(1)
               waiting = [name for name in CLAUDE_JOBS
                          if any(status != "completed" for status in seen.get(name, []))
                          or (name not in seen and time.monotonic() - started_at < GRACE)]

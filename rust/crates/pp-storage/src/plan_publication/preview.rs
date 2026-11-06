@@ -9,8 +9,9 @@ use serde::Serialize;
 /// The preview's snapshot note when Accept will save one. Accept owns saving it.
 const SNAPSHOT_DETAIL: &str =
     "Print Partner saves a snapshot of the accepted Plan before it accepts this draft.";
-/// The note when there is no Accepted Plan with an input set to save.
-const NO_SNAPSHOT_DETAIL: &str = "There is no accepted Plan to snapshot, so Print Partner saves no snapshot before it accepts this draft.";
+/// The note when `snapshot::replaced_layers` finds no Accepted Plan that a
+/// restore could bring back.
+const NO_SNAPSHOT_DETAIL: &str = "Print Partner has no accepted Plan it can restore from a snapshot, so it saves none before it accepts this draft.";
 
 #[derive(Debug)]
 pub enum PreviewOutcome {

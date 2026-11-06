@@ -849,6 +849,15 @@ pub(crate) mod test_support {
         (Channel::bind(runtime_dir, generation).unwrap(), Listener)
     }
 
+    /// Open the channel's pipe as a client would. Once `close` has dropped
+    /// every server instance the pipe name is gone, so this fails with
+    /// `NotFound`; while the listener is up it succeeds at once.
+    pub(crate) async fn channel_open(channel: &Channel) -> std::io::Result<()> {
+        tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(channel.name())
+            .map(drop)
+    }
+
     /// Dial the channel's pipe and hold the connection unanswered.
     pub(crate) async fn hold_connection(_listener: Listener, name: &Path) -> File {
         let name = name.to_path_buf();

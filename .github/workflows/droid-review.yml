@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   droid-review:
-    if: vars.PP_DROID_REVIEW == 'on' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (vars.PP_DROID_REVIEW == 'on')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

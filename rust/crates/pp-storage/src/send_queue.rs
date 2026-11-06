@@ -12,7 +12,9 @@
 //! into the table, in stored order, and deletes the setting in the same
 //! transaction. A queue that is not clean (not a JSON array, or an item Node's
 //! `parseItem` or Accept's production check would drop or refuse) stays in the
-//! setting and is never rewritten. Then every `sending` item becomes `error`
+//! setting and is never rewritten, and so does a queue the table's constraints
+//! refuse: each tenant moves inside its own savepoint. A moved or stored
+//! `sending` item becomes `error`
 //! with [`INTERRUPTED_ERROR`]: the process that started its upload is gone, so
 //! the printer outcome is unknown and only the user may send it again.
 //!
@@ -106,14 +108,21 @@ pub(crate) fn write_units(tx: &Transaction<'_>, tenant: &str, items: &[Value]) -
 /// Move each tenant's clean legacy queue into the table, then mark every
 /// `sending` item interrupted. One immediate transaction.
 pub(crate) fn recover(connection: &mut Connection) -> Result<()> {
-    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let now = iso_time(SystemTime::now());
     let tenants = tx
         .prepare("SELECT tenant_id FROM app_settings WHERE key=?1 ORDER BY tenant_id")?
         .query_map([LEGACY_KEY], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for tenant in tenants {
-        adopt(&tx, &tenant, &now)?;
+        // A queue the table refuses (an id over 128 characters, say) stays in
+        // the setting: dropping the savepoint rolls back that tenant alone.
+        let savepoint = tx.savepoint()?;
+        match adopt(&savepoint, &tenant, &now) {
+            Ok(()) => savepoint.commit()?,
+            Err(error) if refused(&error) => {}
+            Err(error) => return Err(error),
+        }
     }
     tx.execute(
         "UPDATE printer_send_queue SET state='error',error=?1,updated_at=?2 WHERE state='sending'",
@@ -121,6 +130,14 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<()> {
     )?;
     tx.commit()?;
     Ok(())
+}
+
+fn refused(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(failure, _))
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation
+    )
 }
 
 fn legacy(connection: &Connection, tenant: &str) -> Result<bool> {
@@ -134,7 +151,7 @@ fn legacy(connection: &Connection, tenant: &str) -> Result<bool> {
         .is_some())
 }
 
-fn adopt(tx: &Transaction<'_>, tenant: &str, now: &str) -> Result<()> {
+fn adopt(tx: &Connection, tenant: &str, now: &str) -> Result<()> {
     let raw: Option<String> = tx.query_row(
         "SELECT value FROM app_settings WHERE tenant_id=?1 AND key=?2",
         params![tenant, LEGACY_KEY],
@@ -152,6 +169,17 @@ fn adopt(tx: &Transaction<'_>, tenant: &str, now: &str) -> Result<()> {
         return Ok(());
     }
     for (position, item) in items.iter().enumerate() {
+        // Node's restart reconciliation, applied as the item moves, so two
+        // stale `sending` items on one printer never meet the unique index.
+        let (state, error, updated_at) = if item.state == "sending" {
+            ("error", Some(INTERRUPTED_ERROR), now)
+        } else {
+            (
+                item.state.as_str(),
+                item.error.as_deref(),
+                item.updated_at.as_str(),
+            )
+        };
         tx.execute(
             &format!(
                 "INSERT INTO printer_send_queue(tenant_id,position,{COLUMNS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)"
@@ -167,13 +195,13 @@ fn adopt(tx: &Transaction<'_>, tenant: &str, now: &str) -> Result<()> {
                 item.matched,
                 item.wait_for_idle,
                 item.start,
-                item.state,
+                state,
                 item.units,
                 item.upload_job_id,
-                item.error,
+                error,
                 item.host_name,
                 item.created_at,
-                item.updated_at,
+                updated_at,
             ],
         )?;
     }

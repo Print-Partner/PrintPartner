@@ -145,6 +145,10 @@ fn ticket_t_26_open_leaves_an_unclean_legacy_queue_untouched() {
         format!(r#"[{{{item},"checkoff_units":{{}}}}]"#),
         format!(r#"[{{{item},"checkoff_units":[{{"part_id":"1","unit_index":0}}]}}]"#),
         format!(r#"[{{{item},"state":"sent"}}]"#),
+        format!(
+            r#"[{{"id":"{}","filename":"a.gcode","artifact_path":"/a.gcode","printer_id":"p","state":"queued"}}]"#,
+            "q".repeat(129)
+        ),
     ] {
         let directory = tempfile::tempdir().unwrap();
         open(directory.path());
@@ -158,6 +162,35 @@ fn ticket_t_26_open_leaves_an_unclean_legacy_queue_untouched() {
         );
         assert!(table(directory.path()).is_empty(), "{value}");
         assert_eq!(queue(directory.path(), "default"), before, "{value}");
+    }
+}
+
+#[test]
+fn ticket_t_26_open_interrupts_two_stale_sends_on_one_printer() {
+    let directory = tempfile::tempdir().unwrap();
+    open(directory.path());
+    let stale = |id: &str| {
+        json!({"id": id, "filename": "a.gcode", "artifact_path": "/a.gcode",
+            "printer_id": "p-moon", "state": "sending"})
+    };
+    store(
+        directory.path(),
+        "default",
+        &json!([stale("q1"), stale("q2")]).to_string(),
+    );
+    open(directory.path());
+    assert_eq!(setting(directory.path(), "default"), None);
+    let row = |position, id: &str| {
+        (
+            "default".to_owned(),
+            position,
+            id.to_owned(),
+            "error".to_owned(),
+        )
+    };
+    assert_eq!(table(directory.path()), vec![row(0, "q1"), row(1, "q2")]);
+    for item in queue(directory.path(), "default") {
+        assert_eq!(item["error"], INTERRUPTED_ERROR);
     }
 }
 

@@ -270,6 +270,7 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
         tx.commit()?;
         return Ok(None);
     }
+    let farm = super::farm::FarmTasks::read(&tx, &tenant)?;
     let mut facts = Vec::with_capacity(ids.len());
     let mut unavailable = Vec::new();
     let mut budget = graph::Budget::default();
@@ -278,11 +279,13 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
         let accepted = super::accepted_read(&tx, &tenant, id, &command.repos, &mut budget)?;
         match context::capture(&tx, &tenant, id, &accepted, &mut budget) {
             Ok(captured) => {
-                facts.push(
-                    captured
-                        .ok_or_else(|| anyhow!("Build context missing"))?
-                        .facts,
-                );
+                let mut build = captured
+                    .ok_or_else(|| anyhow!("Build context missing"))?
+                    .facts;
+                build.checkoff.beds_to_clear =
+                    farm.beds(id).min(build.checkoff.awaiting_verification);
+                build.checkoff.match_suggestions = farm.matches(id);
+                facts.push(build);
             }
             Err(error)
                 if command.request == Request::Tasks

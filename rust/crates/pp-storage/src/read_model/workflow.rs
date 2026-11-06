@@ -112,6 +112,15 @@ pub struct Checkoff {
     /// none, Checkoff is manual.
     #[serde(default)]
     pub printer_links: u64,
+    /// Results awaiting verification that are still on their bed: no later
+    /// print started or finished on the same printer. At most one per printer
+    /// and never more than `awaiting_verification`.
+    #[serde(default)]
+    pub beds_to_clear: u64,
+    /// Open unmatched prints whose match suggestion names this Build as
+    /// `exact` or `likely`. A suggestion never checks anything off.
+    #[serde(default)]
+    pub match_suggestions: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
@@ -192,7 +201,9 @@ pub struct Stage {
 pub enum ActionKind {
     ReviewFailedPrints,
     RecoverPrinterJobs,
+    ClearBeds,
     VerifyPrints,
+    MatchPrints,
     MonitorProduction,
     ReviewProductionQueue,
     ReviewPlanStatus,
@@ -214,7 +225,9 @@ impl ActionKind {
             self,
             Self::ReviewFailedPrints
                 | Self::RecoverPrinterJobs
+                | Self::ClearBeds
                 | Self::VerifyPrints
+                | Self::MatchPrints
                 | Self::ReviewPlanStatus
                 | Self::ResolvePlanIssues
                 | Self::RefreshWorkingPlan
@@ -476,6 +489,17 @@ fn checkoff_status(f: &Facts) -> StageStatus {
             n,
         );
     }
+    if c.match_suggestions > 0 {
+        let n = c.match_suggestions;
+        return tasks(
+            NeedsAttention,
+            format!(
+                "{n} unmatched {} may belong to this Build.",
+                plural(n, "print")
+            ),
+            n,
+        );
+    }
     let printing = f.production.printing_jobs;
     if printing > 0 {
         return active(
@@ -547,6 +571,32 @@ fn next(f: &Facts) -> NextAction {
             n,
         );
     }
+    if c.beds_to_clear > 0 {
+        let n = c.beds_to_clear;
+        let more = c.awaiting_verification - n;
+        let mut reason = format!(
+            "{n} finished {} from this Build {} still on {} {}. Clear {} and confirm what came off.",
+            plural(n, "print"),
+            is_are(n),
+            if n == 1 { "its" } else { "their" },
+            plural(n, "bed"),
+            if n == 1 { "it" } else { "them" }
+        );
+        if more > 0 {
+            reason.push_str(&format!(
+                " {more} more print {} {} waiting for verification.",
+                plural(more, "result"),
+                is_are(more)
+            ));
+        }
+        return items(
+            ClearBeds,
+            StageId::Checkoff,
+            &format!("Clear {n} {}", plural(n, "bed")),
+            reason,
+            n,
+        );
+    }
     if c.awaiting_verification > 0 {
         let n = c.awaiting_verification;
         return items(
@@ -557,6 +607,21 @@ fn next(f: &Facts) -> NextAction {
                 "{n} print {} {} waiting for verification.",
                 plural(n, "result"),
                 is_are(n)
+            ),
+            n,
+        );
+    }
+    if c.match_suggestions > 0 {
+        let n = c.match_suggestions;
+        return items(
+            MatchPrints,
+            StageId::Checkoff,
+            "Match finished prints",
+            format!(
+                "{n} finished {} the app could not match {} like this Build's. Open Match prints to claim or dismiss {}.",
+                plural(n, "print"),
+                if n == 1 { "looks" } else { "look" },
+                if n == 1 { "it" } else { "them" }
             ),
             n,
         );
@@ -744,6 +809,8 @@ fn validate(f: &Facts) -> anyhow::Result<()> {
             .try_fold(0u64, |sum, n| sum.checked_add(*n))
             .is_some_and(|n| n <= MAX)
             && f.checkoff.printer_links <= MAX
+            && f.checkoff.beds_to_clear <= f.checkoff.awaiting_verification
+            && f.checkoff.match_suggestions <= MAX
             && !matches!(f.stock, Stock::Ready { shortfalls } if shortfalls > MAX),
         "Invalid workflow counts"
     );

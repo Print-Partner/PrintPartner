@@ -25,7 +25,9 @@ including `1.0`.
    `workflow::Facts` in one deferred SQLite transaction, through the same
    `context::capture` that Build reads use: Sources freshness, Accepted Plan
    progress, the newest open draft, plate state, the send queue and printer
-   Checkoff links.
+   Checkoff links. The same transaction reads the farm settings once and adds
+   each Build's beds to clear and suggested unmatched prints (GRE-1166, see
+   [Clear beds and match](#clear-beds-and-match)).
 2. `WorkflowClient::read` adds the inputs other owners compute
    (`WorkflowInputs`), then resolves each Build with `workflow::resolve`.
 3. The task feed is `rank` over those resolved workflows. It never picks a next
@@ -36,6 +38,13 @@ including `1.0`.
 The resolver keeps Node's order (failed results, failed jobs, results awaiting
 verification, active jobs, queued jobs, unreadable Plan, no Sources, drafts,
 Sources changes, first Plan) with these replacement-product changes:
+
+- **Clear beds before confirm.** Results awaiting verification that still sit
+  on their bed are `clear_beds` ("Clear 2 beds"), ahead of `verify_prints`.
+  The reason adds any other results still waiting for verification.
+- **Match after confirm.** Suggested unmatched prints are `match_prints`
+  ("Match finished prints") after `verify_prints` and before active jobs. The
+  Checkoff stage shows them as needs attention when nothing above applies.
 
 - **Saved draft, not accepted.** An open draft with changes is
   `review_working_plan`: "N Plan changes are saved in a draft and not used for
@@ -64,8 +73,9 @@ and, for draft actions, `draft_id`.
 Builds whose next action is `view_completed_build` and archived Builds have
 no task. The rest sort by:
 
-1. Attention first: failed results or jobs, results awaiting verification, an
-   unreadable Plan, unfinished Plan choices, a stale draft, a stock shortfall.
+1. Attention first: failed results or jobs, beds to clear, results awaiting
+   verification, suggested unmatched prints, an unreadable Plan, unfinished
+   Plan choices, a stale draft, a stock shortfall.
 2. Earliest due date, then Builds with no due date.
 3. Build id.
 
@@ -79,6 +89,35 @@ has no next action. The feed lists it under `unavailable` with `plan_id`,
 same per-Build rule Build reads use for `context_error`. Running out of the
 read budget still fails the whole read. `GET /plans/{id}/workflow` for that
 Build answers 500.
+
+## Clear beds and match
+
+GRE-1166 adds the two task kinds GRE-1089's TSK-01 names. Both are facts in
+`workflow::Checkoff`, read by `read_model::farm::FarmTasks` from the
+tenant's `printer.checkoff_links`, `printer.unattributed_prints`,
+`printer.send_queue`, `printer.fleet` and `integrations` settings, parsed the
+way the [farm reads](farm-reads.md) parse them. A setting over 4 MiB fails the
+workflow read with `Farm settings exceed the read limit`.
+
+- **`beds_to_clear`.** An awaiting-verify result is on its bed until a later
+  result starts on the same printer (the bed was cleared to start it) or a
+  later unmatched print finishes there. Times compare as RFC 3339 when both
+  parse; otherwise the result stored later counts as later. At most one result
+  per printer is on its bed, so the count is beds, never more than
+  `awaiting_verification`. A result without `created_at` is skipped, as the
+  farm reads skip it, and stays a `verify_prints` result.
+- **`match_suggestions`.** Open unmatched prints whose
+  [match suggestion](farm-reads.md#match-suggestions) names the Build as
+  `exact` or `likely`. The suggestion is computed by the same code as
+  `GET /api/v2/printer-checkoff/unattributed/suggestions`, only when an open
+  unmatched print exists. A `none` suggestion, a claimed or a dismissed print
+  adds nothing. The task never claims anything; the operator claims or
+  dismisses in the Match prints review.
+
+Both actions target the Build's `checkoff` tab and carry the count in
+`item_count`. The Node-compatible Build read (`GET /plans/{id}` context)
+resolves its `workflow` from facts without these counts, as Node does; the
+replacement UI reads `/workflow` and `/tasks`.
 
 ## Web contract
 
@@ -130,8 +169,14 @@ result rather than a second local stock authority.
   - TSK-05 `task_feed_writes_nothing`: three feed reads leave every table's
     rows and every file under the data directory unchanged (SQLite's `-shm`
     lock index is excluded).
-  The projection has no "clear beds" or "match" next action, so the feed has
-  no such tasks; adding them is a new rule outside this read.
+  - TSK-01 kinds clear beds and match (GRE-1166):
+    `task_feed_clear_beds_until_the_printer_moves_on` (two beds, then one
+    after a later print starts on the Voron, then none after a later unmatched
+    print on the Trident) and
+    `task_feed_match_prints_for_suggested_unmatched_prints` (a print carrying
+    one of the Build's Required-unit tokens; no task without evidence or once
+    claimed). `build_workflow_orders_clear_beds_confirm_and_match` pins the
+    order against failed results, confirm and active jobs.
 - `pp-core/tests/rebuild_read_http.rs`
   `rebuild_workflow_routes_and_mcp_agree` mounts `read_router` and compares the
   HTTP workflow, the task feed entry and the MCP answer to each other, then

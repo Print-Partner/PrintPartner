@@ -194,6 +194,7 @@ impl Accept {
                 "expected_lifecycle_version": workspace.draft.lifecycle_version,
                 "expected_base": workspace.draft.base,
                 "remap_checkoff_links": self.request.remap_checkoff_links,
+                "expected_header_version": self.request.expected_header_version,
             }))?;
             let command = PublicationCommand::normalized_http(
                 self.profile,
@@ -323,6 +324,11 @@ impl Accept {
             AcceptOutcome::AcceptedBaselineRequired => conflict("accepted_baseline_required", None),
             AcceptOutcome::InputsChanged => conflict("inputs_changed", None),
             AcceptOutcome::IdempotencyConflict => conflict("idempotency_conflict", None),
+            AcceptOutcome::DuplicateBuildName { name } => refusal(
+                StatusCode::CONFLICT,
+                "duplicate_build_name",
+                [("name", json!(name))],
+            ),
             AcceptOutcome::BuildArchived => domain_error("build_archived"),
             AcceptOutcome::TokenAllocationFailed => domain_error("token_allocation_failed"),
             AcceptOutcome::ReconciliationRequired { reason } => refusal(

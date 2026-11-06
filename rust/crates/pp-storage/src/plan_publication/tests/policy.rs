@@ -27,7 +27,7 @@ fn with_owner(tenant: &str, test: impl FnOnce(&WriterOwner, &Connection, &Value)
         }
     }
     let c = super::transaction::database(&json!({"definitions": data["transactionSchema"]}), &case);
-    c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
+    c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_send_queue; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
     c.execute("INSERT INTO users(id,display_name,is_admin,created_at) VALUES(?1,'Publication owner',1,'2026-09-06T00:00:00.000Z')", [ACCOUNT]).unwrap();
     c.execute("INSERT INTO sessions(id,user_id,expires_at,provider) VALUES(?1,?2,'2099-01-01T00:00:00.000Z','email')", params![hex::encode(Sha256::digest(SESSION)), ACCOUNT]).unwrap();
     let dir = crate::tests::directory("publication-policy");

@@ -107,12 +107,28 @@ interface Undo {
 }
 
 /** The last thing a confirm or undo did, for the live region and the Undo button. */
-type Tally = { kind: "confirmed"; undo: Undo } | { kind: "undone"; printer: string; units: number };
+type Tally =
+  | { kind: "confirmed"; undo: Undo }
+  | { kind: "undone"; printer: string; units: number }
+  | { kind: "replayed"; printer: string };
+
+/**
+ * A new idempotency key. `crypto.randomUUID` exists only in secure contexts, and a shared
+ * core may be opened over plain HTTP on the LAN, so random bytes build the key there.
+ */
+const newKey = () =>
+  typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
+        b.toString(16).padStart(2, "0"),
+      ).join("");
 
 const tallyText = (t: Tally) =>
   t.kind === "confirmed"
     ? `Confirmed ${plural(t.undo.receipt.units_confirmed, "unit")} from ${t.undo.printer}.`
-    : `Undid the ${t.printer} confirmation. ${plural(t.units, "unit")} ${t.units === 1 ? "is" : "are"} waiting again.`;
+    : t.kind === "replayed"
+      ? `Nothing was marked on ${t.printer}: that confirm had already been undone elsewhere. Confirm the bed again.`
+      : `Undid the ${t.printer} confirmation. ${plural(t.units, "unit")} ${t.units === 1 ? "is" : "are"} waiting again.`;
 
 // A send that never reached the core, or whose answer was lost, is resent with the same
 // key; the core answers a repeat with the first receipt and writes nothing.
@@ -196,16 +212,30 @@ function useCheckoff() {
       unanswered.current.delete(bedId(bed));
       return refresh();
     },
-    onSuccess: (receipt, { bed }) => {
+    onSuccess: async (receipt, { bed }) => {
       unanswered.current.delete(bedId(bed));
       undo.reset();
-      setTally({ kind: "confirmed", undo: { printer: bed.printer, receipt } });
-      return refresh();
+      const answeredAt = Date.now();
+      await refresh();
+      // A resent key whose burst was undone elsewhere gets its old receipt and writes
+      // nothing; a reread made after the answer still lists the bed waiting.
+      const read = client.getQueryState<CheckoffResultList>(checkoffQuery.queryKey);
+      const replayed =
+        read?.data !== undefined &&
+        read.status === "success" &&
+        read.dataUpdatedAt >= answeredAt &&
+        bedsToClear(read.data.results, String).some((b) => bedId(b) === bedId(bed));
+      setTally(
+        replayed
+          ? { kind: "replayed", printer: bed.printer }
+          : { kind: "confirmed", undo: { printer: bed.printer, receipt } },
+      );
     },
   });
   const confirmBed = (bed: Bed) => {
-    if (confirm.isPending) return;
-    const key = unanswered.current.get(bedId(bed)) ?? crypto.randomUUID();
+    // One write at a time: a confirm never resets a pending Undo, and the reverse.
+    if (confirm.isPending || undo.isPending) return;
+    const key = unanswered.current.get(bedId(bed)) ?? newKey();
     unanswered.current.set(bedId(bed), key);
     confirm.mutate({ bed, key });
   };
@@ -226,7 +256,7 @@ function useCheckoff() {
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
   const undoBurst = (tallied: Undo) => {
-    if (undo.isPending) return;
+    if (undo.isPending || confirm.isPending) return;
     confirm.reset();
     undo.mutate(tallied);
   };

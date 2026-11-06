@@ -479,6 +479,67 @@ describe("an uncertain write is reconciled, not repeated", () => {
     expect(core.state.marked).toBe(3);
   });
 
+  it("says nothing was marked when a resent key replays a burst undone elsewhere", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseFirstAnswers: 3 });
+    const waiting = structuredClone(core.state.results);
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    // Undone elsewhere before Today rereads: the core keeps the receipt for that key.
+    core.state.results = waiting;
+    core.state.marked = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    expect(
+      await screen.findByText(
+        "Nothing was marked on Voron 2.4: that confirm had already been undone elsewhere. Confirm the bed again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(2);
+    expect(core.state.marked).toBe(3);
+  });
+
+  it("builds a key from random bytes where crypto.randomUUID is missing", async () => {
+    const randomUUID = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    try {
+      const core = fakeCore();
+      renderToday(core);
+      fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+      expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+      expect(core.posts[0]!.body.idempotency_key).toMatch(/^[0-9a-f]{32}$/);
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", { value: randomUUID, configurable: true });
+    }
+  });
+
+  it("does not start an Undo while a confirm is still in flight", async () => {
+    const core = fakeCore();
+    const real = core.fetchMock.getMockImplementation()!;
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await screen.findByText("Confirmed 3 units from Voron 2.4.");
+    let answer: (() => void) | null = null;
+    core.fetchMock.mockImplementation((path: string, init?: RequestInit) =>
+      path === "/api/v2/printer-checkoff/verify-batch"
+        ? new Promise<Response>((resolve) => {
+            answer = () => resolve(real(path, init));
+          })
+        : real(path, init),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Trident bed" }));
+    await waitFor(() => expect(answer).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await act(async () => answer!());
+    expect(await screen.findByText("Confirmed 1 unit from Trident.")).toBeTruthy();
+    expect(core.posts.filter((p) => p.path.endsWith("/undo"))).toHaveLength(0);
+    expect(core.state.marked).toBe(4);
+  });
+
   it("drops the unanswered key once a reread no longer lists the bed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ loseFirstAnswers: 3 });

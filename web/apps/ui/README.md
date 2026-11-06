@@ -163,7 +163,13 @@ so a print that ends or a link that drops shows up without a reload.
   old receipt. The alert's Retry rereads the results first and follows the same
   rule while the bed is listed; once the reread no longer lists it, the write
   landed, so Retry sends the same request and key and the core replays the
-  receipt and Undo. A resent Undo whose first answer was lost
+  receipt and Undo. A reread cannot tell a write that never landed from one that
+  landed and was undone elsewhere before it, so a resend can get the old receipt
+  of an undone burst; Today rereads after every answer and, when the bed is
+  still waiting, says nothing was marked instead of showing the tally and Undo.
+  Keys come from `crypto.randomUUID`, or from `crypto.getRandomValues` where the
+  page is not a secure context (a shared core over plain HTTP). One write runs
+  at a time: Confirm and Undo do nothing while the other is in flight. A resent Undo whose first answer was lost
   gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printer>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo

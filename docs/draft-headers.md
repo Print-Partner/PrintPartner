@@ -146,6 +146,20 @@ unreviewed. The field is only a precondition. It is not part of the request
 digest, because the admission row Accept shares with Node stores no header
 version, so a replay of the same key answers the existing receipt.
 
+Two limits remain:
+
+- **Save.** The publishing Save in Rust (`WorkingDraftClient::save`) has no
+  HTTP route; Node serves `POST /plans/:id/save`, and Node's Accept never
+  reads `plan_draft_headers`. Rust Save publishes the source draft's header as
+  it stands in Save's transaction, because Node's `SavePlanChoicesRequest`
+  carries no header version. Whatever routes Save to Rust must add a
+  client-observed version first.
+- **Web client.** `applyPlanDraft` in `web/apps/web/src/api/endpoints/planDrafts.ts`
+  sends no `expected_header_version`, so Accept from the web UI answers
+  `draft_changed` for a draft that has a header row. No UI flow creates a
+  header row today; GRE-1120's Accept gate shows the preview, header included,
+  and sends its `revision`.
+
 ## Schema 44
 
 When Accept saves its `pre_apply` snapshot of the replaced Plan, it also saves

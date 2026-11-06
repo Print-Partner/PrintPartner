@@ -2858,9 +2858,9 @@ parser rejects, are 500 `internal_error`. A read writes nothing.
 `pp-api::plates::plates_router` serves them at `/` and `/api/v2` behind
 `accepted::Gate` when `PP_DESKTOP_REBUILD` is `1` or `true`.
 
-The router is not mounted in `read_router` yet. Initialize and arrange
-(GRE-419) still run on Node and write the same `accepted_plate_*` tables, so
-the Plate routes and their aliases switch to Rust together with them, as one
+The router is not mounted in `read_router` yet. Initialize (GRE-419) still
+runs on Node and writes the same `accepted_plate_*` tables, so the Plate routes
+and their aliases, arrange included, switch to Rust together with it, as one
 operation, and never with one runtime writing beside the other.
 
 Each edit is one immediate writer transaction. It checks, in Node's order, the
@@ -2890,6 +2890,44 @@ workspace.
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
 ```
+
+### Accepted Plate arrange (GRE-1200)
+
+`pp-storage::plates` serves Node's `POST /plans/{id}/plates/arrange`
+(`arrangeAcceptedPlates` in `services/accepted-plate-workspace.ts`) as
+`Request::Arrange`. The body is `expected`, `expected_plate_revision_id` and
+`mode`, which is `unplaced` or `all`; anything else is 400
+`invalid_request`. Like the edits, it is not mounted until initialize moves.
+
+Arrange is one immediate writer transaction. It checks, in Node's order, that
+the Build is visible (404 `profile_not_found`), that it has an Accepted Plan
+(an empty Plan, or one with no Required units, answers `{"kind": "empty_plan"}`),
+that a head revision exists, that the request's basis is current (409
+`accepted_plan_changed`) and that the head is `expected_plate_revision_id` (409
+`plate_revision_changed`). It then packs the layout, checks archive state (409
+`plan_archived`) and validates the result with the clearance rule.
+
+- `unplaced` keeps each manual or pinned unit where it is and packs every other
+  unit of that Plate around them. Units that overflow go to new Plates for the
+  same Printer, with Node's deterministic `initial_plate_id`.
+- `all` repacks every unit of each Printer, split into buckets by the Build's
+  stored Production setup rules (`production_setup:<id>` in `app_settings`,
+  read by `production::setup::stored_rules`). It reuses the Printer's existing
+  Plate ids in order, clears manual placement and pins, and records the replaced
+  revision as `undo_from` so restore can return to it.
+
+A unit that cannot fit its Printer is 422 `unit_too_large` with `token` and
+`printer_id`. A packed layout whose digest equals the head's returns the
+workspace and writes nothing. Otherwise the new revision, the head move and
+`plates.revision_changed` commit together, and the response is the workspace
+with each Plate's units in packing order, as Node answers.
+
+`fixtures/parity/plates-arrange/node.json` is Node's answer for 28 cases in 13
+phases (refusals, pinned and manual units, an unplaced unit, archive, a missing
+head, a foreign Plan, several Printers, grouping rules and keep-together rules).
+Regenerate it with `node fixtures/parity/plates-arrange/generate.mjs` and check it
+with `--check`. `ticket_t_61_plates_arrange_matches_node` replays every case and
+compares responses, changed tables, events and final Plate rows.
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 

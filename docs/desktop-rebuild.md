@@ -2857,7 +2857,7 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-domain --features desk
 `desktop_rebuild`) is the create path of Node's
 `materializeAcceptedPrinterLink`. It is what `POST
 /printer-checkoff/file-assignments` records once the route has parsed the
-request and read the file. No route uses it yet; GRE-1210 mounts it. In one
+request and read the file. GRE-1220 mounts it (next section). In one
 writer transaction, against the Build's Accepted Plan:
 
 - The plan revision must be the one the operator saw, or 409 `The Accepted
@@ -2900,6 +2900,52 @@ every response and stored row.
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/printer-file-assignment/generate.mjs --check
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
+```
+
+### Print-file assignment routes (GRE-1220)
+
+`pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`
+and `POST /printer-checkoff/file-assignments/preview` at the root and under
+`/api/v1`, where Node registers them, behind `desktop_rebuild` and
+`PP_DESKTOP_REBUILD`. Each mount has Node's 20-per-minute window per route and
+its 1 MiB JSON limit.
+
+- Storage parses the body in Node's `parsePrintFileRequest` order and resolves
+  the printer as `resolveAssignmentPrinter` does: a fleet printer by id, its
+  host or `manual:<id>` with `tracking: "manual"`, or, with no `printer_id`,
+  the unmanaged printer (`manual:unmanaged`). The assignment route then checks
+  `plan_revision_id`, `unit_tokens` and `object_mappings`; the preview reads
+  the Build's Accepted Plan and builds `suggestPrintFileAttribution`'s
+  suggestion and match review. Every refusal keeps Node's status and detail.
+- The route reads the file. A `snapshot_token` is trimmed and needs a
+  `remote_path` and no `upload_token`, or 400 `A snapshot token requires its
+  original printer file path`. It redeems the classification and identity
+  captured for exactly that Build, printer, path and file name while the
+  printer's linked integration is unchanged; anything else is 409 `This file
+  preview expired or its source changed. Cancel and reopen the file.` A
+  redeemed file is not re-observed for drift, and a successful assignment
+  spends the token.
+- An `upload_token` answers Node's unknown-upload 409 `That upload is no longer
+  available; upload the print file again`, because this runtime serves no
+  upload route yet. A `remote_path` without a snapshot on a Moonraker or
+  PrusaLink host answers 501 instead of recording the print unread, because
+  this runtime does not read a printer's file itself yet. A printer tracked by
+  hand, or a host type Node has no file reader for, records the print unread
+  as Node does, and an unread 3MF is refused with Node's 409.
+- The assignment itself is `Request::AssignFile` (previous section).
+
+`checkoff_progress::print_file::SnapshotStore` is Node's
+`printer-file-snapshots.ts` for this process: one capture at a time, at most
+128 tokens, 15 minutes each. The files/content route calls
+`SnapshotStore::begin` with `print_file::file_source` read before and after
+it asks the printer, `Capture::push` for each chunk it streams, and
+`Capture::finish` at EOF, which classifies the bytes and makes the token
+redeemable. A capture dropped before EOF releases the store and leaves no
+token. The files/content route does not capture yet; GRE-1214 passes one store
+to both routers and replaces its 501.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test file_assignments_http
 ```
 
 ### Accepted Plate workspace read (GRE-1189)

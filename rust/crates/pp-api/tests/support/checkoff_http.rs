@@ -34,9 +34,20 @@ impl Fixture {
     }
 
     pub fn open(&self, flag: &str) -> (WriterOwner, Router) {
+        self.open_with(flag, |config, owner| {
+            checkoff_router(config, owner.checkoff_progress().unwrap())
+        })
+    }
+
+    /// Opens the writer and mounts `router` with the loopback config.
+    pub fn open_with(
+        &self,
+        flag: &str,
+        router: impl FnOnce(AcceptedHttpConfig, &WriterOwner) -> Router,
+    ) -> (WriterOwner, Router) {
         let owner = WriterOwner::open(&self.0, Limits::default()).unwrap().0;
         let config = AcceptedHttpConfig::from_startup(ORIGIN, "default", Some(flag)).unwrap();
-        let router = checkoff_router(config, owner.checkoff_progress().unwrap());
+        let router = router(config, &owner);
         (owner, router)
     }
 }

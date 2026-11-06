@@ -32,12 +32,16 @@ pub mod farm_log;
 mod links;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
+pub mod print_file;
+#[cfg(feature = "desktop_rebuild")]
 mod unattributed;
 mod verify;
 pub mod wire;
 
 #[cfg(feature = "desktop_rebuild")]
 pub use assign::{AssignedLink, Assignment};
+#[cfg(feature = "desktop_rebuild")]
+pub use print_file::{FileRequest, FileRoute};
 
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_IMPORT: i64 = 10_000;
@@ -208,6 +212,10 @@ pub enum Request {
     /// already read by the route.
     #[cfg(feature = "desktop_rebuild")]
     AssignFile(Box<Assignment>),
+    /// `POST /printer-checkoff/file-assignments` or its `/preview`: the raw
+    /// body parsed and its printer resolved, before the route reads the file.
+    #[cfg(feature = "desktop_rebuild")]
+    FileRequest { body: Value, route: FileRoute },
 }
 impl Request {
     fn is_import(&self) -> bool {
@@ -262,6 +270,10 @@ pub enum Body {
         link: Value,
         attribution: Box<Value>,
     },
+    /// A parsed print-file request, which the route answers itself.
+    #[cfg(feature = "desktop_rebuild")]
+    #[serde(skip_serializing)]
+    FileRequest(Box<FileRequest>),
     /// A dismissed unattributed print.
     Dismissed {
         ok: bool,
@@ -390,7 +402,7 @@ enum Op {
     #[cfg(feature = "desktop_rebuild")]
     ClaimUnattributed(unattributed::Claim),
     #[cfg(feature = "desktop_rebuild")]
-    AssignFile(Box<Assignment>),
+    File(print_file::Op),
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed {
         id: String,
@@ -563,7 +575,11 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         #[cfg(feature = "desktop_rebuild")]
         Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
         #[cfg(feature = "desktop_rebuild")]
-        Request::AssignFile(assignment) => return Ok(Op::AssignFile(assignment)),
+        Request::AssignFile(assignment) => return Ok(Op::File(print_file::Op::Assign(assignment))),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::FileRequest { body, route } => {
+            return Ok(Op::File(print_file::Op::Request { body, route }));
+        }
         Request::Import(import) => return import.validate().map(|()| Op::Import(import)),
         Request::Completion {
             expected,
@@ -701,7 +717,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         #[cfg(feature = "desktop_rebuild")]
         Op::DismissUnattributed { id } => return unattributed::dismiss(tx, tenant, &id),
         #[cfg(feature = "desktop_rebuild")]
-        Op::AssignFile(assignment) => return assign::assign(tx, tenant, *assignment, repos),
+        Op::File(op) => return print_file::run(tx, tenant, op, repos),
         Op::Import(import) => {
             let snapshot = match current(tx, tenant, &import.expected, repos)? {
                 Ok(snapshot) => snapshot,

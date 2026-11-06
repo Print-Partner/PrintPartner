@@ -10,6 +10,7 @@ use pp_api::{
     checkoff::checkoff_router,
     drafts::{DraftHttpConfig, draft_router as api_draft_router},
     events::{StreamLimits, events_router},
+    file_assignments::file_assignments_router,
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
     mcp::{McpHttpConfig, mcp_router},
@@ -261,9 +262,9 @@ pub fn read_router(
         events_client,
         StreamLimits::default(),
     );
-    let checkoff = checkoff_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        checkoff_client,
+    let checkoff_config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
+    let checkoff = checkoff_router(checkoff_config.clone(), checkoff_client.clone()).merge(
+        file_assignments_router(checkoff_config, checkoff_client, Arc::default()),
     );
     let plates = plates_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,

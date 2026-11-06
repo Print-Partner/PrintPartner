@@ -247,7 +247,7 @@ async fn run(app: App, presented: PresentedCredential, request: Request) -> Resp
         .await
 }
 
-fn present(response: pp_storage::checkoff_progress::Response) -> Response {
+pub(crate) fn present(response: pp_storage::checkoff_progress::Response) -> Response {
     storage_answer(response.status, response.body, |status, body| match body {
         Body::Failure { detail, code } => Some(crate::problem::build(
             crate::problem::problem(status, &detail, code.as_deref()),

@@ -162,7 +162,7 @@ so a print that ends or a link that drops shows up without a reload.
   units first"). When a pick or a bed's confirm skips a lower pending unit shown
   on another bed, Today names those units before the send, and "Pick them too"
   adds them to the burst. It never adds them on its own. A lower unit on a print
-  still running (\`watching\`) cannot be picked, so Today says it is still printing
+  still running (`watching`) cannot be picked, so Today says it is still printing
   and that the core refuses the confirm until it comes off. A lower unit on no
   loaded result is not known to the UI; the core's 400 detail shows instead.
 - **Burst limit.** One verify-batch carries at most 50 beds. A bigger pick shows

@@ -38,8 +38,9 @@ async function setupFromParent(): Promise<unknown> {
   });
 }
 
-// Unix kills this process's whole group. On Windows the core's Job Object
-// terminates any process left behind once this one exits.
+// Unix kills this process's whole group. On Windows this process only exits: the core
+// terminates what is left in its Job Object after reaping it, and the kernel ends the job
+// when the core closes the job handle.
 const exitDesktop = () =>
   process.platform === "win32" ? process.exit(0) : process.kill(-process.pid, "SIGKILL");
 

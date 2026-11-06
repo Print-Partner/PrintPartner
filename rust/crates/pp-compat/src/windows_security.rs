@@ -284,9 +284,10 @@ fn win32(status: u32) -> io::Result<()> {
     }
 }
 
+/// Read at most 256 units, more than any SID string has.
 unsafe fn wide_to_string(text: *const u16) -> String {
     let mut length = 0;
-    while unsafe { *text.add(length) } != 0 {
+    while length < 256 && unsafe { *text.add(length) } != 0 {
         length += 1;
     }
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, length) })

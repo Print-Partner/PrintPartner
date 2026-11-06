@@ -1,4 +1,3 @@
-#![cfg_attr(test, allow(dead_code))]
 mod account_pin;
 pub use account_pin::DesktopAccountPin;
 pub mod drain;
@@ -337,6 +336,10 @@ impl CompatHandle {
 
 pub struct Supervisor {
     #[cfg(test)]
+    #[cfg_attr(
+        windows,
+        allow(dead_code, reason = "read by the Unix tests until GRE-1187")
+    )]
     health_probes_completed: watch::Receiver<usize>,
     pub handle: CompatHandle,
     stop: CancellationToken,
@@ -1169,6 +1172,8 @@ impl Drop for Supervisor {
     }
 }
 
+// GRE-1187 ports the Unix-mechanism tests; until then Windows builds only the
+// platform tests in `windows.rs` and `logs.rs`.
 #[cfg(all(test, unix))]
 mod ticket_t_2;
 

@@ -1,45 +1,38 @@
 //! Windows log files. The admitted directory is held open without
 //! `FILE_SHARE_DELETE`, so it cannot be renamed, replaced or removed while the
-//! logs are open, and entry paths under it keep resolving inside it. Every
-//! open refuses a reparse point (symbolic link or junction) as the final
-//! component. Access control is a protected DACL that grants only the current
+//! logs are open. Every entry operation runs through `pp_os::Dir` relative to
+//! that handle, never by path, so replacing an ancestor with a junction cannot
+//! redirect it. Every open refuses a reparse point (symbolic link or junction)
+//! as the final component. Access control is a protected DACL that grants only the current
 //! user, the equivalent of modes 0600 and 0700.
 
-use crate::windows_security::{CurrentUser, PrivateDescriptor, SE_FILE_OBJECT, SavedDacl};
+use crate::windows_security::{CurrentUser, SE_FILE_OBJECT, SavedDacl};
+use pp_os::FileOpen;
 use std::{
     fs::{File, Metadata},
     os::windows::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle},
     },
-    path::{Path, PathBuf},
+    path::Path,
 };
-use windows_sys::{
-    Wdk::{
-        Foundation::OBJECT_ATTRIBUTES,
-        Storage::FileSystem::{FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, NtOpenFile},
-    },
-    Win32::{
-        Foundation::{
-            GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, RtlNtStatusToDosError, UNICODE_STRING,
-        },
-        Security::SECURITY_ATTRIBUTES,
-        Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, FILE_APPEND_DATA,
-            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
-            FileStandardInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
-            READ_CONTROL, ReOpenFile, SYNCHRONIZE, WRITE_DAC,
-        },
-        System::IO::IO_STATUS_BLOCK,
+use windows_sys::Win32::{
+    Foundation::{GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE},
+    Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx, OPEN_EXISTING, READ_CONTROL, ReOpenFile, SYNCHRONIZE,
+        WRITE_DAC,
     },
 };
 
+/// The pinned directory: `handle` for its own security, `entries` for
+/// everything inside it.
 pub(super) struct Directory {
     handle: File,
-    path: PathBuf,
+    entries: pp_os::Dir,
 }
 
 fn wide(path: &Path) -> Vec<u16> {
@@ -57,31 +50,12 @@ fn open(
     disposition: u32,
     flags: u32,
 ) -> std::io::Result<File> {
-    open_with(path, access, share, disposition, flags, None)
-}
-
-/// `descriptor` is the security of a file this call creates.
-fn open_with(
-    path: &Path,
-    access: u32,
-    share: u32,
-    disposition: u32,
-    flags: u32,
-    descriptor: Option<&PrivateDescriptor>,
-) -> std::io::Result<File> {
-    let attributes = descriptor.map(|descriptor| SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.as_ptr(),
-        bInheritHandle: 0,
-    });
     let handle = unsafe {
         CreateFileW(
             wide(path).as_ptr(),
             access,
             share,
-            attributes
-                .as_ref()
-                .map_or(std::ptr::null(), |attributes| attributes as *const _),
+            std::ptr::null(),
             disposition,
             FILE_FLAG_OPEN_REPARSE_POINT | flags,
             std::ptr::null_mut(),
@@ -155,8 +129,8 @@ pub(super) fn open_directory(directory: &Path) -> std::io::Result<Directory> {
         return Err(invalid());
     }
     Ok(Directory {
+        entries: pp_os::Dir::from_open(handle.try_clone()?),
         handle,
-        path: directory.to_path_buf(),
     })
 }
 
@@ -188,69 +162,18 @@ pub(super) fn secure_directory(directory: &Directory) -> std::io::Result<()> {
     user.restrict(&directory.handle, true)
 }
 
+/// An archive may have any DACL, including one that denies this user even
+/// attribute reads. Its owner still holds `READ_CONTROL` and `WRITE_DAC`, so
+/// it is opened with only those, gets the private DACL, and is checked as every
+/// log is, through a handle reopened from the same object rather than by name,
+/// so a rename cannot swap in another file. A failed check puts the exact old
+/// DACL back. A hard link, which could be a file outside the directory, is
+/// refused before anything changes.
 pub(super) fn secure_archive(directory: &Directory, name: &str) -> std::io::Result<()> {
-    let path = directory.path.join(name);
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-    match open(
-        &path,
-        READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
-        share,
-        OPEN_EXISTING,
-        0,
-    ) {
-        Ok(file) => secure_log(&file),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            repair_archive(directory, name)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-/// An archive whose DACL denies this user even attribute reads. Its owner
-/// still holds `READ_CONTROL` and `WRITE_DAC`, so it gets the private DACL
-/// and is checked as every log is, through a handle reopened from the same
-/// object rather than by name, so a rename cannot swap in another file. A
-/// failed check puts the exact old DACL back. A hard link, which could be a
-/// file outside the directory, is refused before anything changes.
-///
-/// `CreateFileW` always adds `SYNCHRONIZE` and `FILE_READ_ATTRIBUTES`, which
-/// the owner does not hold here, so the first open is `NtOpenFile` relative to
-/// the admitted directory handle. It opens a reparse point as itself, which
-/// `secure_log` then refuses.
-fn repair_archive(directory: &Directory, name: &str) -> std::io::Result<()> {
-    let mut units: Vec<u16> = name.encode_utf16().collect();
-    let bytes = u16::try_from(units.len() * 2).map_err(|_| invalid())?;
-    let object_name = UNICODE_STRING {
-        Length: bytes,
-        MaximumLength: bytes,
-        Buffer: units.as_mut_ptr(),
+    let file = match directory.entries.open_security_nofollow(name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        opened => opened?,
     };
-    let attributes = OBJECT_ATTRIBUTES {
-        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: directory.handle.as_raw_handle() as HANDLE,
-        ObjectName: &object_name,
-        ..Default::default()
-    };
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-    let mut handle: HANDLE = std::ptr::null_mut();
-    let mut status_block = IO_STATUS_BLOCK::default();
-    let status = unsafe {
-        NtOpenFile(
-            &mut handle,
-            READ_CONTROL | WRITE_DAC,
-            &attributes,
-            &mut status_block,
-            share,
-            FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE,
-        )
-    };
-    if status < 0 {
-        return Err(std::io::Error::from_raw_os_error(
-            unsafe { RtlNtStatusToDosError(status) } as i32,
-        ));
-    }
-    let file = unsafe { File::from_raw_handle(handle as _) };
     let user = CurrentUser::query()?;
     if !user.owns(&file, SE_FILE_OBJECT)? {
         return Err(invalid());
@@ -301,25 +224,21 @@ fn standard(file: &File) -> std::io::Result<FILE_STANDARD_INFO> {
 }
 
 /// `create` fails with `AlreadyExists` when any entry has the name,
-/// including a dangling link. The handle shares delete so rotation can rename
-/// the open active log.
+/// including a dangling link. A created log inherits the private DACL of the
+/// directory, which is secured before every open. The handle shares delete so
+/// rotation can rename the open active log.
 pub(super) fn open_append(
     directory: &Directory,
     name: &str,
     create: bool,
 ) -> std::io::Result<File> {
-    let descriptor = if create {
-        Some(CurrentUser::query()?.private_descriptor(false)?)
-    } else {
-        None
-    };
-    open_with(
-        &directory.path.join(name),
-        FILE_APPEND_DATA | READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        if create { CREATE_NEW } else { OPEN_EXISTING },
-        0,
-        descriptor.as_ref(),
+    directory.entries.open_file(
+        name,
+        if create {
+            FileOpen::CreateAppend
+        } else {
+            FileOpen::Append
+        },
     )
 }
 
@@ -333,21 +252,7 @@ pub(super) fn unlinked(file: &File) -> bool {
 /// Rename within the admitted directory, replacing `to`. The source is opened
 /// as a link, so a reparse point moves as itself.
 pub(super) fn rename(directory: &Directory, from: &str, to: &str) -> std::io::Result<()> {
-    let (from, to) = (
-        wide(&directory.path.join(from)),
-        wide(&directory.path.join(to)),
-    );
-    if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
+    directory.entries.rename_replace(from, to)
 }
 
 #[cfg(test)]

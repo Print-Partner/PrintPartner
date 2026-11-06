@@ -141,7 +141,7 @@ impl std::ops::Deref for MeasuredBundle {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl MeasuredBundle {
     /// Test fixtures whose spawns are meant to fail. The first spawn trusts this value without
     /// measuring it; later spawns still measure it.

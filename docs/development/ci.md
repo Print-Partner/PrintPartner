@@ -463,12 +463,12 @@ Do not scatter `#[cfg(...)]` on statements or `if cfg!(...)` checks through shar
 
 ## Windows exclusions
 
-These crates do not build on Windows yet. The Windows job excludes them with `--exclude` items in `CARGO_SCOPE`. The table below names each port ticket.
+The Windows job excludes these crates with `--exclude` items in `CARGO_SCOPE`, so it does not lint or test their own targets. The table below names each port ticket.
 
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
-| `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
-| `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |
+| `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | Their own code and tests are not ported yet: `pp-server` and pp-api's `auth-http-fixture` use Unix signals, and their tests use Unix sockets, Unix symlinks, `libc` and mode bits. `pp-gateway`'s library already compiles on Windows as a `pp-core` dependency, and so does `pp-api`'s with `desktop_rebuild` on; only their own tests, binaries and clippy are skipped. |
+| `pp-desktop` | GRE-656 | It is the Tauri shell, and its own code and tests are not ported yet. GRE-656 ends with the Windows job building the whole workspace. |
 
 `pp-os`, `pp-storage`, `pp-source`, `pp-compat` and `pp-core` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests still build only on Unix until GRE-1194. `pp-core` reads and publishes its state files through `pp-os` handles (GRE-1188) and runs its runtime tests against the real Node child on Windows. On Windows its tests use `TerminateProcess` for SIGKILL, `NtSuspendProcess` and `NtResumeProcess` for SIGSTOP and SIGCONT, a junction where Unix uses a FIFO, an `icacls` deny where Unix uses mode 000, and a ToolHelp process snapshot where Unix reads `/proc` or `ps`. A runtime test whose restart fails prints the redacted recent logs. Each test that stays Unix-only names its Windows counterpart in a comment. The Windows job builds and tests `pp-os`, including
 renaming and removing a directory while a `Dir` handle on it is open, entry

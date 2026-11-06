@@ -84,18 +84,31 @@ fn ticket_t_33_desktop_settings_reject_unsafe_paths_without_writing() {
     let owner = StorageLease::acquire(&fixture.0).unwrap();
     update(&owner, set(&abs("/srv/exchange"))).unwrap();
     let before = std::fs::read(fixture.0.join(FILE)).unwrap();
-    for value in [
-        "",
-        "relative/dir",
-        "/srv/../etc",
-        "/srv/exchange\n",
-        "/srv/\u{0}x",
-        &abs(&format!("/{}", "a".repeat(MAX_VALUE_BYTES))),
+    for (value, reason) in [
+        (String::new(), "Desktop setting path is empty or too long"),
+        (
+            abs(&format!("/{}", "a".repeat(MAX_VALUE_BYTES))),
+            "Desktop setting path is empty or too long",
+        ),
+        (
+            abs("/srv/exchange\n"),
+            "Desktop setting path contains a control character",
+        ),
+        (
+            abs("/srv/\u{0}x"),
+            "Desktop setting path contains a control character",
+        ),
+        (
+            "relative/dir".to_owned(),
+            "Desktop setting path must be absolute",
+        ),
+        (
+            abs("/srv/../etc"),
+            "Desktop setting path must not contain ..",
+        ),
     ] {
-        assert!(
-            update(&owner, set(value)).is_err(),
-            "{value:?} was accepted"
-        );
+        let error = update(&owner, set(&value)).unwrap_err();
+        assert_eq!(error.to_string(), reason, "{value:?}");
         assert_eq!(std::fs::read(fixture.0.join(FILE)).unwrap(), before);
     }
 }

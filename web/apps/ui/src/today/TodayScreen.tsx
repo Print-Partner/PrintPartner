@@ -32,6 +32,9 @@ type FarmPrinter = FarmPrinterList["printers"][number];
 /** Today rereads results and printer links this often, so a print that ends or a link that drops shows up. */
 const REFRESH_MS = 30_000;
 
+const nothingMarked = (printer: string) =>
+  `Nothing was marked on ${printer}: that confirm had already been undone elsewhere. Confirm the bed again.`;
+
 const checkoffQuery = {
   queryKey: ["core", "checkoff"],
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listPrinterCheckoff", {}, signal),
@@ -56,7 +59,7 @@ const LINK_DOWN = new Set<FarmPrinter["state"]["execution"]>([
 interface Burst {
   picks: Pick[];
   key: string;
-  /** Runs only when the core confirms this burst, never on a replayed undone receipt. */
+  /** Runs only when the core confirms this burst, never when it refuses an undone key. */
   onConfirmed?: () => void;
 }
 
@@ -106,14 +109,18 @@ const tallyText = (t: Tally) =>
         "unit",
       )} from ${printersOf(t.undos)}.`
     : t.kind === "replayed"
-      ? `Nothing was marked on ${t.printer}: that confirm had already been undone elsewhere. Confirm the bed again.`
+      ? nothingMarked(t.printer)
       : `Undid the ${t.printer} confirmation. ${plural(t.units, "unit")} ${t.units === 1 ? "is" : "are"} waiting again.`;
 
 // A send that never reached the core, or whose answer was lost, is resent with the same
-// key; the core answers a repeat with the first receipt and writes nothing.
+// key; the core answers a repeat with the first receipt and writes nothing, or with 409
+// `burst_undone:` when that burst was undone.
 // A body the client refused to send was not lost; resending it fails the same way.
 const lostSend = (error: Error) =>
   !(error instanceof CoreError) && !(error instanceof RequestContractError);
+// The core refuses a key whose burst was undone with 409 `burst_undone:` and writes nothing.
+const burstUndone = (error: unknown) =>
+  error instanceof CoreError && error.status === 409 && !!error.detail?.startsWith("burst_undone:");
 const retryLostSend = (failures: number, error: Error) => failures < 2 && lostSend(error);
 const resendable = (error: Error) =>
   !(error instanceof RequestContractError) && !(error instanceof CoreError && error.status < 500);
@@ -201,12 +208,11 @@ function useCheckoff() {
           },
         );
         receipts.push(
-          bursts.length === 1
-            ? await sent
-            : await sent.catch((error: Error) => {
-                if (lostSend(error)) throw error;
-                return error;
-              }),
+          await sent.catch((error: Error) => {
+            if (lostSend(error)) throw error;
+            if (bursts.length === 1 && !burstUndone(error)) throw error;
+            return error;
+          }),
         );
       }
       return receipts;
@@ -224,46 +230,30 @@ function useCheckoff() {
     onSuccess: async (receipts, { bursts }) => {
       for (const { picks } of bursts) unanswered.current.delete(burstId(picks));
       undo.reset();
-      const answeredAt = Date.now();
       await refresh();
-      // A resent key whose burst was undone elsewhere gets its old receipt and writes
-      // nothing; a reread made after the answer still lists every sent unit as pending.
-      const read = client.getQueryState<CheckoffResultList>(checkoffQuery.queryKey);
-      const pending =
-        read?.data !== undefined && read.status === "success" && read.dataUpdatedAt >= answeredAt
-          ? new Set(
-              bedsToClear(read.data.results, String).flatMap((bed) =>
-                bed.pending.map((u) => pendingKey(bed, u)),
-              ),
-            )
-          : null;
-      const replayed = ({ picks }: Burst) =>
-        pending !== null &&
-        picks.every(({ bed, units }) => units.every((u) => pending.has(pendingKey(bed, u))));
       const answered = bursts.flatMap((burst, i) => {
         const receipt = receipts[i]!;
         return receipt instanceof Error ? [] : [{ burst, receipt }];
       });
       const refusals = bursts.flatMap(({ picks }, i) => {
         const receipt = receipts[i]!;
-        return receipt instanceof Error
+        return receipt instanceof Error && !burstUndone(receipt)
           ? [`Not marked on ${pickedPrinters(picks)}: ${receipt.message}`]
           : [];
       });
+      const undone = bursts.filter((_, i) => burstUndone(receipts[i]));
+      const undoneOn = pickedPrinters(undone.flatMap(({ picks }) => picks));
+      if (answered.length > 0 && undone.length > 0) refusals.push(nothingMarked(undoneOn));
       if (refusals.length > 0) setNotice(refusals.join(" "));
-      if (answered.length === 0) return;
-      const undos = answered.flatMap(({ burst, receipt }) =>
-        replayed(burst) ? [] : [{ picks: burst.picks, receipt }],
-      );
-      setTally(
-        undos.length === 0
-          ? {
-              kind: "replayed",
-              printer: pickedPrinters(answered.flatMap(({ burst }) => burst.picks)),
-            }
-          : { kind: "confirmed", undos },
-      );
-      for (const { burst } of answered) if (!replayed(burst)) burst.onConfirmed?.();
+      if (answered.length > 0) {
+        setTally({
+          kind: "confirmed",
+          undos: answered.map(({ burst, receipt }) => ({ picks: burst.picks, receipt })),
+        });
+        for (const { burst } of answered) burst.onConfirmed?.();
+        return;
+      }
+      if (undone.length > 0) setTally({ kind: "replayed", printer: undoneOn });
     },
   });
   // Set while a confirm rereads before it decides what to send, so a second click waits.

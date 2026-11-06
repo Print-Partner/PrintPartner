@@ -630,27 +630,10 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    /// Serves `router` on `listener` until the returned sender fires.
-    fn serve(
-        listener: tokio::net::TcpListener,
-        router: axum::Router,
-    ) -> (
-        tokio::sync::oneshot::Sender<()>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-            .unwrap();
-        });
-        (stop, server)
+    /// Serves `router` on `listener`; `Serving::stop` returns once no connection
+    /// holds the router, so the owner can then be taken back.
+    fn serve(listener: tokio::net::TcpListener, router: axum::Router) -> pp_api::serving::Serving {
+        pp_api::serving::Serving::start(listener, router)
     }
 
     /// Registers the first account and returns its session cookie.
@@ -756,7 +739,7 @@ mod tests {
             owner.lock().unwrap().farm_reads(policy).unwrap(),
             Arc::new(NoObservations),
         );
-        let (stop, server) = serve(
+        let mut server = serve(
             listener,
             reads
                 .unwrap()
@@ -836,8 +819,7 @@ mod tests {
                 route.method
             );
         }
-        stop.send(()).unwrap();
-        server.await.unwrap();
+        server.stop().await.unwrap();
         let owner = Arc::into_inner(owner).expect("routers dropped");
         owner.into_inner().unwrap().shutdown().unwrap();
         std::fs::remove_dir_all(directory).unwrap();
@@ -853,7 +835,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let (stop, server) = serve(listener, router);
+        let mut server = serve(listener, router);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let cookie = session(&client, &origin, "rebuild@example.com").await;
         let me: Value = client
@@ -879,8 +861,7 @@ mod tests {
         let key: Value = key.json().await.unwrap();
         // Only the rebuild client's lifetimes give API keys an expiry.
         assert!(key["expiresAt"].is_string(), "{key}");
-        stop.send(()).unwrap();
-        server.await.unwrap();
+        server.stop().await.unwrap();
         owner.shutdown().unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }

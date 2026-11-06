@@ -1,12 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::CString,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::{MetadataExt, OpenOptionsExt},
-    },
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -14,6 +9,16 @@ use std::{
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::redact;
+
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as platform;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,18 +129,16 @@ pub fn recent_logs(data: &Path) -> std::io::Result<String> {
 
 /// The admitted `<data>/logs` directory, for the Reveal log folder command.
 /// Refuses a relative path, which an opener could read as an option, a
-/// symlink, anything other than a directory owned by this user, and group or
-/// world access.
+/// symlink, anything other than a directory owned by this user, and access
+/// for any other account: group or world mode bits on Unix, an ACE for another
+/// account on Windows.
 pub fn log_folder(data: &Path) -> std::io::Result<PathBuf> {
     let directory = data.join("logs");
     if !directory.is_absolute() {
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
     let metadata = std::fs::symlink_metadata(&directory)?;
-    if !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
+    if !metadata.is_dir() || !platform::private_folder(&directory, &metadata)? {
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
     Ok(directory)
@@ -173,11 +176,7 @@ fn tail_rows<T>(
         } else {
             format!("{}.{index}.{}", stream.stem, stream.ext)
         };
-        let mut file = match OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(directory.join(name))
-        {
+        let mut file = match platform::open_tail(&directory.join(name)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(_) => {
@@ -250,11 +249,11 @@ const FILE_BYTES: u64 = 10 * 1024 * 1024;
 const LINE_BYTES: usize = 8192;
 
 impl Stream {
-    fn active(self) -> std::io::Result<CString> {
-        Ok(CString::new(format!("{}.{}", self.stem, self.ext))?)
+    fn active(self) -> String {
+        format!("{}.{}", self.stem, self.ext)
     }
-    fn archive(self, index: usize) -> std::io::Result<CString> {
-        Ok(CString::new(format!("{}.{index}.{}", self.stem, self.ext))?)
+    fn archive(self, index: usize) -> String {
+        format!("{}.{index}.{}", self.stem, self.ext)
     }
 }
 
@@ -266,154 +265,73 @@ pub(crate) struct Logs {
 }
 struct LogFile {
     stream: Stream,
-    directory: File,
-    file: File,
+    directory: platform::Directory,
+    /// `None` after an unlinked log was closed and its replacement failed.
+    file: Option<File>,
     day: u64,
     bytes: u64,
 }
 
-fn set_mode(file: &File, mode: libc::mode_t) -> std::io::Result<()> {
-    if unsafe { libc::fchmod(file.as_raw_fd(), mode) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn secure_log(file: &File) -> std::io::Result<()> {
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } || metadata.nlink() != 1
-    {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    }
-    set_mode(file, 0o600)
-}
-
-fn secure_directory(directory: &File) -> std::io::Result<()> {
-    let metadata = directory.metadata()?;
-    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    }
-    set_mode(directory, 0o700)
-}
-
-fn secure_archives(directory: &File, stream: Stream) -> std::io::Result<()> {
+fn secure_archives(directory: &platform::Directory, stream: Stream) -> std::io::Result<()> {
     for index in 1..=ARCHIVES {
-        let name = stream.archive(index)?;
-        let fd = unsafe {
-            libc::openat(
-                directory.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            )
-        };
-        if fd < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::NotFound {
-                continue;
-            }
-            if error.kind() == std::io::ErrorKind::PermissionDenied {
-                let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-                if unsafe {
-                    libc::fstatat(
-                        directory.as_raw_fd(),
-                        name.as_ptr(),
-                        metadata.as_mut_ptr(),
-                        libc::AT_SYMLINK_NOFOLLOW,
-                    )
-                } != 0
-                {
-                    return Err(std::io::Error::last_os_error());
-                }
-                let metadata = unsafe { metadata.assume_init() };
-                if metadata.st_mode & libc::S_IFMT == libc::S_IFREG
-                    && metadata.st_uid == unsafe { libc::geteuid() }
-                    && metadata.st_nlink == 1
-                    && metadata.st_mode & 0o7777 & !0o600 == 0
-                {
-                    continue;
-                }
-            }
-            return Err(error);
-        }
-        let file = unsafe { File::from_raw_fd(fd) };
-        secure_log(&file)?;
+        platform::secure_archive(directory, &stream.archive(index))?;
     }
     Ok(())
 }
 
-/// Create with O_EXCL, then open an existing entry without O_CREAT. On macOS,
-/// racing dirfd-relative O_CREAT opens without O_EXCL can fail with ENOENT.
+/// Create exclusively, then open an existing entry without creating it.
 ///
 /// Another process can remove desktop.jsonl during this open, and the open
 /// then fails closed instead of retrying. An unlink or rename between EEXIST
-/// and the reopen returns ENOENT. An unlink after the open leaves
-/// `nlink == 0`, which `secure_log` refuses with InvalidInput. A rename after
+/// and the reopen returns ENOENT. An unlink after the open leaves no link
+/// (on Windows, a pending delete), which `secure_log` refuses with
+/// InvalidInput. A rename after
 /// the open keeps `nlink == 1`, so the open succeeds on the renamed file.
 /// After either failure, startup fails and `Logs::event` drops its event. That
 /// is intended: the storage lease admits one owner per data directory and
 /// rotation holds the log mutex through its reopen, so only a writer outside
 /// that owner can reach either window.
-fn open_log(directory: &File, stream: Stream) -> std::io::Result<File> {
+fn open_log(directory: &platform::Directory, stream: Stream) -> std::io::Result<File> {
     open_log_observed(directory, stream, |_| {})
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum OpenWindow {
-    /// O_EXCL returned EEXIST and the reopen without O_CREAT is next.
+    /// The exclusive create found an entry and the reopen without create is next.
     Reopen,
     /// The entry is open and `secure_log` is next.
     Secure,
 }
 
 fn open_log_observed(
-    directory: &File,
+    directory: &platform::Directory,
     stream: Stream,
     mut window: impl FnMut(OpenWindow),
 ) -> std::io::Result<File> {
-    let flags =
-        libc::O_WRONLY | libc::O_APPEND | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
-    let name = stream.active()?;
-    let open = |flags| {
-        let fd = unsafe {
-            libc::openat(
-                directory.as_raw_fd(),
-                name.as_ptr(),
-                flags,
-                0o600 as libc::c_uint,
-            )
-        };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(unsafe { File::from_raw_fd(fd) })
-    };
-    let file = match open(flags | libc::O_CREAT | libc::O_EXCL) {
+    let name = stream.active();
+    let file = match platform::open_append(directory, &name, true) {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             window(OpenWindow::Reopen);
-            open(flags)?
+            platform::open_append(directory, &name, false)?
         }
         result => result?,
     };
     window(OpenWindow::Secure);
-    secure_log(&file)?;
+    platform::secure_log(&file)?;
     Ok(file)
 }
 
 impl LogFile {
     fn open(directory: &Path, stream: Stream) -> std::io::Result<Self> {
-        std::fs::create_dir_all(directory)?;
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(directory)?;
-        secure_directory(&directory)?;
+        let directory = platform::open_directory(directory)?;
+        platform::secure_directory(&directory)?;
         secure_archives(&directory, stream)?;
         let file = open_log(&directory, stream)?;
         let bytes = file.metadata()?.len();
         Ok(Self {
             stream,
             directory,
-            file,
+            file: Some(file),
             day: now_secs() / 86400,
             bytes,
         })
@@ -424,14 +342,13 @@ impl LogFile {
     /// stops the caller.
     fn append(&mut self, row: &[u8], now: u64) {
         let stream = self.stream;
-        if secure_directory(&self.directory).is_err() {
+        if platform::secure_directory(&self.directory).is_err() {
             return;
         }
-        if self
-            .file
-            .metadata()
-            .is_ok_and(|metadata| metadata.nlink() == 0)
-        {
+        if self.file.as_ref().is_none_or(platform::unlinked) {
+            // Close first: a classic Windows delete keeps the name taken while
+            // a handle is open, so the replacement could not be created.
+            self.file = None;
             let Ok(file) = open_log(&self.directory, stream) else {
                 return;
             };
@@ -440,34 +357,33 @@ impl LogFile {
             };
             self.bytes = metadata.len();
             self.day = now / 86400;
-            self.file = file;
+            self.file = Some(file);
         }
-        if secure_log(&self.file).is_err() {
+        if self
+            .file
+            .as_ref()
+            .is_none_or(|file| platform::secure_log(file).is_err())
+        {
             return;
         }
         if self.day != now / 86400 || self.bytes + row.len() as u64 > FILE_BYTES {
             let rotate = (|| -> std::io::Result<()> {
                 open_log(&self.directory, stream)?;
                 secure_archives(&self.directory, stream)?;
-                let directory = self.directory.as_raw_fd();
                 for index in (1..=ARCHIVES).rev() {
                     let source = if index == 1 {
-                        stream.active()?
+                        stream.active()
                     } else {
-                        stream.archive(index - 1)?
+                        stream.archive(index - 1)
                     };
-                    let target = stream.archive(index)?;
-                    if unsafe {
-                        libc::renameat(directory, source.as_ptr(), directory, target.as_ptr())
-                    } != 0
-                    {
-                        let error = std::io::Error::last_os_error();
-                        if error.kind() != std::io::ErrorKind::NotFound {
+                    match platform::rename(&self.directory, &source, &stream.archive(index)) {
+                        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                             return Err(error);
                         }
+                        _ => {}
                     }
                 }
-                self.file = open_log(&self.directory, stream)?;
+                self.file = Some(open_log(&self.directory, stream)?);
                 self.bytes = 0;
                 self.day = now / 86400;
                 Ok(())
@@ -476,7 +392,9 @@ impl LogFile {
                 return;
             }
         }
-        if self.file.write_all(row).is_ok() {
+        if let Some(file) = self.file.as_mut()
+            && file.write_all(row).is_ok()
+        {
             self.bytes += row.len() as u64;
         }
     }
@@ -789,6 +707,10 @@ impl tracing::Subscriber for CoreLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use platform::test_support::{
+        access, identity, path_identity, private, restrict, symlink_dir, symlink_file, widen,
+        widened,
+    };
 
     struct Scratch(PathBuf);
     impl Scratch {
@@ -808,14 +730,47 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
     }
 
+    #[cfg(unix)]
     fn chmod(path: &Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    fn started(scratch: &Scratch) -> (PathBuf, PathBuf, Logs) {
+        let directory = scratch.0.join("logs");
+        let logs = Logs::open(directory.clone()).unwrap();
+        logs.event(Event::Starting, 30);
+        let path = directory.join("desktop.jsonl");
+        (directory, path, logs)
+    }
+
+    fn rotate(logs: &Logs, rotation: Option<bool>) {
+        if let Some(size) = rotation {
+            force_rotation(logs, size);
+        }
+    }
+
+    fn assert_ready(path: impl AsRef<Path>) {
+        let row: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(row["event"], "compat_ready");
+    }
+
+    fn outside(scratch: &Scratch) -> PathBuf {
+        let target = scratch.0.join("outside");
+        std::fs::write(
+            &target,
+            b"private history
+",
+        )
+        .unwrap();
+        widen(&target);
+        target
     }
 
     fn force_rotation(logs: &Logs, size: bool) {
@@ -831,19 +786,50 @@ mod tests {
     fn ticket_t_2_unlinked_active_log_recovers_without_restart() {
         for rotation in [None, Some(false), Some(true)] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory).unwrap();
-            logs.event(Event::Starting, 30);
+            let (_, path, logs) = started(&scratch);
             std::fs::remove_file(&path).unwrap();
-            if let Some(size) = rotation {
-                force_rotation(&logs, size);
-            }
+            rotate(&logs, rotation);
             logs.event(Event::Ready, 30);
-            let row: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            assert_eq!(row["event"], "compat_ready");
-            assert_eq!(mode(&path), 0o600);
+            assert_ready(&path);
+            assert!(private(&path));
+        }
+    }
+
+    /// The classic delete leaves the open log pending deletion under its name,
+    /// so recovery must close it before creating the replacement.
+    #[cfg(windows)]
+    #[test]
+    fn ticket_t_2_delete_pending_active_log_recovers_without_restart() {
+        for rotation in [None, Some(false), Some(true)] {
+            let scratch = Scratch::new();
+            let (_, path, logs) = started(&scratch);
+            platform::test_support::delete_pending(&path);
+            assert!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .is_err()
+            );
+            rotate(&logs, rotation);
+            logs.event(Event::Ready, 30);
+            assert_ready(&path);
+            assert!(private(&path));
+        }
+    }
+
+    /// Securing the log directory never touches the access of an entry that
+    /// is a hard link to a file elsewhere, and the entry is refused.
+    #[test]
+    fn ticket_t_2_hardlinked_logs_leave_outside_access_unchanged() {
+        for name in ["desktop.jsonl", "desktop.1.jsonl"] {
+            let scratch = Scratch::new();
+            let target = outside(&scratch);
+            let before = access(&target);
+            std::fs::hard_link(&target, scratch.0.join("logs").join(name)).unwrap();
+            assert!(Logs::open(scratch.0.join("logs")).is_err());
+            assert_eq!(access(&target), before);
+            assert_eq!(std::fs::read(&target).unwrap(), b"private history\n");
         }
     }
 
@@ -855,25 +841,25 @@ mod tests {
             let path = directory.join("desktop.jsonl");
             let logs = Logs::open(directory).unwrap();
             std::fs::remove_file(&path).unwrap();
-            let target = scratch.0.join("outside");
-            std::fs::write(&target, b"private history\n").unwrap();
-            chmod(&target, 0o640);
+            let target = outside(&scratch);
             if hardlink {
                 std::fs::hard_link(&target, &path).unwrap();
             } else {
-                std::os::unix::fs::symlink(&target, &path).unwrap();
+                symlink_file(&target, &path);
             }
             logs.event(Event::Ready, 30);
             assert_eq!(std::fs::read(&target).unwrap(), b"private history\n");
-            assert_eq!(mode(&target), 0o640);
+            assert!(widened(&target));
             std::fs::remove_file(&path).unwrap();
             logs.event(Event::Ready, 30);
-            let row: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-            assert_eq!(row["event"], "compat_ready");
+            assert_ready(path);
         }
     }
 
+    /// Unix admits an unreadable archive whose mode is within 0600 without
+    /// opening it. Windows opens every archive through its owner's implicit
+    /// `WRITE_DAC`; see the next test.
+    #[cfg(unix)]
     #[test]
     fn ticket_t_2_restrictive_archives_allow_startup_and_rotation() {
         for permissions in [0o000, 0o200] {
@@ -891,15 +877,35 @@ mod tests {
                 assert_eq!(mode(&archived) & !0o600, 0);
                 chmod(&archived, 0o600);
                 assert_eq!(std::fs::read(&archived).unwrap(), b"history\n");
-                let row: serde_json::Value = serde_json::from_slice(
-                    &std::fs::read(directory.join("desktop.jsonl")).unwrap(),
-                )
-                .unwrap();
-                assert_eq!(row["event"], "compat_ready");
+                assert_ready(directory.join("desktop.jsonl"));
             }
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn ticket_t_2_archive_without_access_is_repaired_for_startup_and_rotation() {
+        for size in [false, true] {
+            let scratch = Scratch::new();
+            let directory = scratch.0.join("logs");
+            let path = directory.join("desktop.1.jsonl");
+            std::fs::write(&path, b"history\n").unwrap();
+            platform::test_support::deny_all(&path);
+            assert!(std::fs::read(&path).is_err());
+            let logs = Logs::open(directory.clone()).unwrap();
+            assert!(private(&path));
+            logs.event(Event::Starting, 30);
+            force_rotation(&logs, size);
+            logs.event(Event::Ready, 30);
+            let archived = directory.join("desktop.2.jsonl");
+            assert!(private(&archived));
+            assert_eq!(std::fs::read(&archived).unwrap(), b"history\n");
+            assert_ready(directory.join("desktop.jsonl"));
+        }
+    }
+
+    /// Unix-only for the same reason as the restrictive-archive test above.
+    #[cfg(unix)]
     #[test]
     fn ticket_t_2_restrictive_hardlinked_archive_is_still_refused() {
         let scratch = Scratch::new();
@@ -916,16 +922,14 @@ mod tests {
     #[test]
     fn ticket_t_2_hardlink_active_startup_leaves_target_unchanged() {
         let scratch = Scratch::new();
-        let target = scratch.0.join("outside");
-        std::fs::write(&target, b"private history\n").unwrap();
-        chmod(&target, 0o640);
+        let target = outside(&scratch);
         std::fs::hard_link(&target, scratch.0.join("logs/desktop.jsonl")).unwrap();
         let result = Logs::open(scratch.0.join("logs"));
         if let Ok(logs) = &result {
             logs.event(Event::Ready, 30);
         }
         assert_eq!(std::fs::read(&target).unwrap(), b"private history\n");
-        assert_eq!(mode(&target), 0o640);
+        assert!(widened(&target));
         assert!(result.is_err());
     }
 
@@ -933,22 +937,17 @@ mod tests {
     fn ticket_t_2_hardlink_active_after_startup_refuses_append_and_both_rotations() {
         for rotation in [None, Some(false), Some(true)] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
+            let (directory, path, logs) = started(&scratch);
             let before = std::fs::read(&path).unwrap();
             let target = scratch.0.join("outside");
             std::fs::hard_link(&path, &target).unwrap();
-            chmod(&target, 0o640);
-            if let Some(size) = rotation {
-                force_rotation(&logs, size);
-            }
+            widen(&target);
+            rotate(&logs, rotation);
             for _ in 0..2 {
                 logs.event(Event::Ready, 30);
             }
             assert_eq!(std::fs::read(&target).unwrap(), before, "{rotation:?}");
-            assert_eq!(mode(&target), 0o640);
+            assert!(widened(&target));
             assert!(!directory.join("desktop.1.jsonl").exists());
         }
     }
@@ -957,23 +956,18 @@ mod tests {
     fn ticket_t_2_hardlink_active_replacement_preserves_history_on_rotation() {
         for size in [false, true] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
+            let (directory, path, logs) = started(&scratch);
             let original = scratch.0.join("original");
             std::fs::rename(&path, &original).unwrap();
             let before = std::fs::read(&original).unwrap();
-            let target = scratch.0.join("outside");
-            std::fs::write(&target, b"private history\n").unwrap();
-            chmod(&target, 0o640);
+            let target = outside(&scratch);
             std::fs::hard_link(&target, &path).unwrap();
             std::fs::write(directory.join("desktop.6.jsonl"), b"oldest\n").unwrap();
             force_rotation(&logs, size);
             logs.event(Event::Ready, 30);
             assert_eq!(std::fs::read(&original).unwrap(), before);
             assert_eq!(std::fs::read(&target).unwrap(), b"private history\n");
-            assert_eq!(mode(&target), 0o640);
+            assert!(widened(&target));
             assert_eq!(
                 std::fs::read(directory.join("desktop.6.jsonl")).unwrap(),
                 b"oldest\n"
@@ -989,12 +983,12 @@ mod tests {
             let directory = scratch.0.join("logs");
             let target = scratch.0.join("outside");
             std::fs::write(&target, b"archive\n").unwrap();
-            chmod(&target, 0o644);
+            widen(&target);
             std::fs::hard_link(&target, directory.join(format!("desktop.{slot}.jsonl"))).unwrap();
             assert!(Logs::open(directory.clone()).is_err(), "slot {slot}");
             assert!(!directory.join("desktop.jsonl").exists());
             assert_eq!(std::fs::read(&target).unwrap(), b"archive\n");
-            assert_eq!(mode(&target), 0o644);
+            assert!(widened(&target));
         }
     }
 
@@ -1017,7 +1011,7 @@ mod tests {
                 let target = scratch.0.join("outside");
                 std::fs::hard_link(directory.join(format!("desktop.{slot}.jsonl")), &target)
                     .unwrap();
-                chmod(&target, 0o640);
+                widen(&target);
                 force_rotation(&logs, size);
                 for _ in 0..2 {
                     logs.event(Event::Ready, 30);
@@ -1037,7 +1031,7 @@ mod tests {
                     std::fs::read(&target).unwrap(),
                     format!("history {slot}\n").as_bytes()
                 );
-                assert_eq!(mode(&target), 0o640);
+                assert!(widened(&target));
             }
         }
     }
@@ -1046,19 +1040,19 @@ mod tests {
     fn ticket_t_2_owner_only_existing_modes_are_repaired_without_creating_archives() {
         let scratch = Scratch::new();
         let directory = scratch.0.join("logs");
-        chmod(&directory, 0o2775);
+        widen(&directory);
         for name in ["desktop.jsonl", "desktop.1.jsonl", "desktop.6.jsonl"] {
             let path = directory.join(name);
             std::fs::write(&path, b"history\n").unwrap();
-            chmod(&path, 0o664);
+            widen(&path);
         }
         let _logs = Logs::open(directory.clone()).unwrap();
-        assert_eq!(mode(&directory), 0o700);
+        assert!(private(&directory));
         for name in ["desktop.jsonl", "desktop.1.jsonl", "desktop.6.jsonl"] {
-            assert_eq!(mode(&directory.join(name)), 0o600);
+            assert!(private(&directory.join(name)));
             assert_eq!(std::fs::read(directory.join(name)).unwrap(), b"history\n");
         }
-        assert_eq!(mode(&directory.join("compat.log")), 0o600);
+        assert!(private(&directory.join("compat.log")));
         assert_eq!(std::fs::read_dir(directory).unwrap().count(), 4);
     }
 
@@ -1066,31 +1060,25 @@ mod tests {
     fn ticket_t_2_owner_only_modes_are_repaired_between_events_and_both_rotations() {
         for rotation in [None, Some(false), Some(true)] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
-            chmod(&directory, 0o755);
-            chmod(&path, 0o664);
+            let (directory, path, logs) = started(&scratch);
+            widen(&directory);
+            widen(&path);
             if let Some(size) = rotation {
                 for index in 1..=6 {
                     let archive = directory.join(format!("desktop.{index}.jsonl"));
                     std::fs::write(&archive, format!("history {index}\n")).unwrap();
-                    chmod(&archive, 0o644);
+                    widen(&archive);
                 }
                 force_rotation(&logs, size);
             }
             logs.event(Event::Ready, 30);
-            assert_eq!(mode(&directory), 0o700);
-            assert_eq!(mode(&path), 0o600);
+            assert!(private(&directory));
+            assert!(private(&path));
             let bytes = std::fs::read(&path).unwrap();
             assert!(String::from_utf8(bytes).unwrap().contains("compat_ready"));
             if rotation.is_some() {
                 for index in 1..=6 {
-                    assert_eq!(
-                        mode(&directory.join(format!("desktop.{index}.jsonl"))),
-                        0o600
-                    );
+                    assert!(private(&directory.join(format!("desktop.{index}.jsonl"))));
                 }
                 assert!(
                     std::fs::read_to_string(directory.join("desktop.1.jsonl"))
@@ -1108,18 +1096,21 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn fifo(path: &Path) {
         use std::os::unix::ffi::OsStrExt;
         let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
     }
 
+    /// FIFOs are a Unix file type; Windows pipes do not live in directories.
+    #[cfg(unix)]
     #[test]
     fn ticket_t_2_log_open_rejects_fifo_with_peer() {
         let scratch = Scratch::new();
         let path = scratch.0.join("logs/desktop.jsonl");
         fifo(&path);
-        let _peer = OpenOptions::new()
+        let _peer = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
@@ -1127,6 +1118,7 @@ mod tests {
         assert!(Logs::open(scratch.0.join("logs")).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn ticket_t_2_log_open_rejects_readerless_fifo_promptly() {
         const CHILD_PATH: &str = "PP_TEST_READERLESS_LOG_FIFO";
@@ -1165,7 +1157,7 @@ mod tests {
         let scratch = Scratch::new();
         let target = scratch.0.join("outside");
         std::fs::write(&target, "unchanged\n").unwrap();
-        std::os::unix::fs::symlink(&target, scratch.0.join("logs/desktop.jsonl")).unwrap();
+        symlink_file(&target, &scratch.0.join("logs/desktop.jsonl"));
         let result = Logs::open(scratch.0.join("logs"));
         if let Ok(logs) = &result {
             logs.event(Event::Ready, 30);
@@ -1180,7 +1172,7 @@ mod tests {
         let target = scratch.0.join("outside");
         std::fs::create_dir(&target).unwrap();
         std::fs::remove_dir(scratch.0.join("logs")).unwrap();
-        std::os::unix::fs::symlink(&target, scratch.0.join("logs")).unwrap();
+        symlink_dir(&target, &scratch.0.join("logs"));
         let result = Logs::open(scratch.0.join("logs"));
         if let Ok(logs) = &result {
             logs.event(Event::Ready, 30);
@@ -1196,10 +1188,19 @@ mod tests {
         let logs = Logs::open(directory.clone()).unwrap();
         logs.event(Event::Starting, 30);
         let admitted = scratch.0.join("admitted");
-        std::fs::rename(&directory, &admitted).unwrap();
         let target = scratch.0.join("outside");
         std::fs::create_dir(&target).unwrap();
-        std::os::unix::fs::symlink(&target, &directory).unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::rename(&directory, &admitted).unwrap();
+            symlink_dir(&target, &directory);
+        }
+        // Windows refuses to move the admitted directory while the logs hold it.
+        #[cfg(windows)]
+        let admitted = {
+            assert!(std::fs::rename(&directory, &admitted).is_err());
+            directory
+        };
         logs.events.lock().unwrap().day = 0;
         logs.event(Event::Ready, 30);
         assert_eq!(std::fs::read_dir(target).unwrap().count(), 0);
@@ -1220,7 +1221,7 @@ mod tests {
         let original = scratch.0.join("original");
         std::fs::rename(&path, &original).unwrap();
         let target = scratch.0.join("outside");
-        std::os::unix::fs::symlink(&target, &path).unwrap();
+        symlink_file(&target, &path);
         logs.events.lock().unwrap().day = 0;
         logs.event(Event::Ready, 30);
         assert!(!target.exists(), "rotation created the symlink target");
@@ -1232,15 +1233,12 @@ mod tests {
     fn ticket_t_2_log_rotation_preserves_archives_with_dangling_active_symlink() {
         for size_rollover in [false, true] {
             let scratch = Scratch::new();
-            let directory = scratch.0.join("logs");
-            let path = directory.join("desktop.jsonl");
-            let logs = Logs::open(directory.clone()).unwrap();
-            logs.event(Event::Starting, 30);
+            let (directory, path, logs) = started(&scratch);
             let before = std::fs::read(&path).unwrap();
             let original = scratch.0.join("original");
             std::fs::rename(&path, &original).unwrap();
             let target = scratch.0.join("outside");
-            std::os::unix::fs::symlink(&target, &path).unwrap();
+            symlink_file(&target, &path);
             let archives = ["one\n", "two\n", "three\n", "four\n", "five\n", "six\n"];
             for (index, bytes) in archives.iter().enumerate() {
                 std::fs::write(
@@ -1353,7 +1351,7 @@ mod tests {
         let scratch = Scratch::new();
         let outside = scratch.0.join("outside");
         std::fs::write(&outside, "{\"time\":1,\"level\":30,\"event\":\"compat_output\",\"message\":\"SECRET_SYMLINK\"}\n").unwrap();
-        std::os::unix::fs::symlink(&outside, scratch.0.join("logs/desktop.6.jsonl")).unwrap();
+        symlink_file(&outside, &scratch.0.join("logs/desktop.6.jsonl"));
         std::fs::write(
             scratch.0.join("logs/desktop.1.jsonl"),
             "{\"time\":2,\"level\":30,\"event\":\"compat_starting\"}\n",
@@ -1375,7 +1373,7 @@ mod tests {
         );
         let linked = scratch.0.join("linked-data");
         std::fs::create_dir(&linked).unwrap();
-        std::os::unix::fs::symlink(scratch.0.join("logs"), linked.join("logs")).unwrap();
+        symlink_dir(&scratch.0.join("logs"), &linked.join("logs"));
         assert_eq!(
             recent_diagnostics(&linked).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput
@@ -1402,7 +1400,7 @@ mod tests {
     fn gre_696_racing_first_log_opens_share_one_file() {
         let scratch = Scratch::new();
         let path = scratch.0.join("logs/desktop.jsonl");
-        let directory = File::open(scratch.0.join("logs")).unwrap();
+        let directory = platform::open_directory(&scratch.0.join("logs")).unwrap();
         let threads = 8;
         for trial in 0..200 {
             let barrier = std::sync::Barrier::new(threads);
@@ -1412,14 +1410,14 @@ mod tests {
                         scope.spawn(|| {
                             barrier.wait();
                             open_log(&directory, DESKTOP)
-                                .map(|file| file.metadata().unwrap().ino())
+                                .map(|file| identity(&file))
                                 .map_err(|error| error.to_string())
                         })
                     })
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
-            let inode = std::fs::symlink_metadata(&path).unwrap().ino();
+            let inode = path_identity(&path);
             assert!(
                 opened.iter().all(|result| result == &Ok(inode)),
                 "trial {trial}: {opened:?}"
@@ -1432,7 +1430,7 @@ mod tests {
     fn gre_701_unlink_before_reopen_fails_closed_without_recreating() {
         let scratch = Scratch::new();
         let path = scratch.0.join("logs/desktop.jsonl");
-        let directory = File::open(scratch.0.join("logs")).unwrap();
+        let directory = platform::open_directory(&scratch.0.join("logs")).unwrap();
         std::fs::write(&path, "").unwrap();
         let mut windows = Vec::new();
         let error = open_log_observed(&directory, DESKTOP, |window| {
@@ -1452,7 +1450,7 @@ mod tests {
         for existing in [false, true] {
             let scratch = Scratch::new();
             let path = scratch.0.join("logs/desktop.jsonl");
-            let directory = File::open(scratch.0.join("logs")).unwrap();
+            let directory = platform::open_directory(&scratch.0.join("logs")).unwrap();
             if existing {
                 std::fs::write(&path, "").unwrap();
             }
@@ -1533,7 +1531,7 @@ mod tests {
         assert_eq!(rows[2]["level"], 30);
         assert_eq!(rows[2]["msg"], "plain stderr Authorization: [REDACTED]");
         assert_eq!(rows[3]["level"], 40);
-        assert_eq!(mode(&scratch.0.join("logs/compat.log")), 0o600);
+        assert!(private(&scratch.0.join("logs/compat.log")));
         let events = std::fs::read_to_string(scratch.0.join("logs/desktop.jsonl")).unwrap();
         assert_eq!(events.lines().count(), 4);
         assert_clean(&events);
@@ -1588,7 +1586,7 @@ mod tests {
         assert_eq!(rows[0]["attempt"], 3);
         assert_eq!(rows[1]["level"], 30);
         assert_eq!(rows[1]["target"], "pp_core::startup");
-        assert_eq!(mode(&scratch.0.join("logs/core.log")), 0o600);
+        assert!(private(&scratch.0.join("logs/core.log")));
     }
 
     #[test]
@@ -1725,7 +1723,7 @@ mod tests {
             for index in 1..=ARCHIVES {
                 let archive = directory.join(format!("{}.{index}.log", stream.stem));
                 assert_eq!(rows(&archive)[0][field], format!("round {}", 9 - index));
-                assert_eq!(mode(&archive), 0o600);
+                assert!(private(&archive));
             }
         }
     }
@@ -1849,7 +1847,7 @@ mod tests {
         let scratch = Scratch::new();
         let outside = scratch.0.join("outside.log");
         std::fs::write(&outside, "{\"level\":30,\"msg\":\"SECRET_SYMLINK\"}\n").unwrap();
-        std::os::unix::fs::symlink(&outside, scratch.0.join("logs/compat.log")).unwrap();
+        symlink_file(&outside, &scratch.0.join("logs/compat.log"));
         let text = recent_logs(&scratch.0).unwrap();
         assert!(!text.contains("SECRET_SYMLINK"), "{text}");
         let compat = text.find("Compat backend (compat.log)").unwrap();
@@ -1858,7 +1856,7 @@ mod tests {
         assert!(text[core..].contains("No records yet."));
         let linked = scratch.0.join("linked-data");
         std::fs::create_dir(&linked).unwrap();
-        std::os::unix::fs::symlink(scratch.0.join("logs"), linked.join("logs")).unwrap();
+        symlink_dir(&scratch.0.join("logs"), &linked.join("logs"));
         assert_eq!(
             recent_logs(&linked).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput
@@ -1868,12 +1866,12 @@ mod tests {
     #[test]
     fn ticket_t_13_log_folder_admits_only_the_owned_logs_directory() {
         let scratch = Scratch::new();
-        chmod(&scratch.0.join("logs"), 0o700);
+        restrict(&scratch.0.join("logs"));
         assert_eq!(log_folder(&scratch.0).unwrap(), scratch.0.join("logs"));
 
         let linked = scratch.0.join("linked-data");
         std::fs::create_dir(&linked).unwrap();
-        std::os::unix::fs::symlink(scratch.0.join("logs"), linked.join("logs")).unwrap();
+        symlink_dir(&scratch.0.join("logs"), &linked.join("logs"));
         assert_eq!(
             log_folder(&linked).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput
@@ -1898,7 +1896,7 @@ mod tests {
             std::io::ErrorKind::InvalidInput
         );
         // Group or world access means another account could plant files.
-        chmod(&scratch.0.join("logs"), 0o750);
+        widen(&scratch.0.join("logs"));
         assert_eq!(
             log_folder(&scratch.0).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput

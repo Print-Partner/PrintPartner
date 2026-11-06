@@ -7,6 +7,8 @@ use std::{fs, path::PathBuf};
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/pinned_repos.rs"]
+mod pinned_repos;
 
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
@@ -166,23 +168,25 @@ fn root_walk_rejects_symlink_ancestors_and_selected_roots() {
 fn source_handle_survives_repos_path_replacement_without_following_it() {
     let fixture = Fixture::new();
     let mut source = fixture.repos().source(42).unwrap();
-    fs::rename(fixture.0.join("repos"), fixture.0.join("original")).unwrap();
-    fs::create_dir(fixture.0.join("repos")).unwrap();
+    let pinned = pinned_repos::move_repos_aside(&fixture.0, "original");
     let input = LocalFiles::open(&fixture.0.join("input")).unwrap();
     let receipt = source.materialize(request(), &input, budget()).unwrap();
     assert_eq!(receipt.publication, Publication::Created);
     assert!(
         fixture
             .0
-            .join("original/42/revisions/caller-uuid/part.stl")
+            .join(pinned)
+            .join("42/revisions/caller-uuid/part.stl")
             .is_file()
     );
-    assert!(
-        fs::read_dir(fixture.0.join("repos"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    if pinned == "original" {
+        assert!(
+            fs::read_dir(fixture.0.join("repos"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
 }
 
 #[test]

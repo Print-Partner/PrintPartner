@@ -144,6 +144,10 @@ pub(crate) struct Dir {
 }
 
 impl Dir {
+    pub(crate) fn from_open(directory: File) -> Self {
+        Self { directory }
+    }
+
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         let directory = OpenOptions::new()
             .read(true)
@@ -232,6 +236,11 @@ impl Dir {
         crate::unlock(&self.directory)
     }
 
+    /// Unix reuses freed inode numbers.
+    pub(crate) fn identities_are_never_reused(&self) -> io::Result<bool> {
+        Ok(false)
+    }
+
     pub(crate) fn as_fd(&self) -> BorrowedFd<'_> {
         self.directory.as_fd()
     }
@@ -309,6 +318,10 @@ impl Dir {
             FileOpen::Read => OFlags::RDONLY,
             FileOpen::ReadWrite => OFlags::RDWR,
             FileOpen::CreateWriteOnly => OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
+            FileOpen::Append => OFlags::WRONLY | OFlags::APPEND,
+            FileOpen::CreateAppend => {
+                OFlags::WRONLY | OFlags::APPEND | OFlags::CREATE | OFlags::EXCL
+            }
         };
         Ok(File::from(rfs::openat(
             &self.directory,
@@ -334,6 +347,10 @@ impl Dir {
             to,
             RenameFlags::NOREPLACE,
         )?)
+    }
+
+    pub(crate) fn rename_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        Ok(rfs::renameat(&self.directory, from, &self.directory, to)?)
     }
 
     pub(crate) fn remove_dir(&self, name: &str) -> io::Result<()> {

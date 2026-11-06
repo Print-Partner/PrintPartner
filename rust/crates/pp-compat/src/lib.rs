@@ -6,6 +6,8 @@ pub use logs::{CoreLog, log_folder, recent_diagnostics, recent_logs};
 mod parent_death;
 pub mod redact;
 pub mod settings;
+#[cfg(windows)]
+mod windows_security;
 use parent_death::{ParentDeathGuard, configure_child};
 mod release;
 use anyhow::{Context, Result, bail, ensure};

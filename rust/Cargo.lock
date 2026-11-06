@@ -3346,6 +3346,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "pp-os",
  "rand 0.9.5",
  "regex",
  "serde",
@@ -3354,6 +3355,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

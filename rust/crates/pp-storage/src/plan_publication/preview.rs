@@ -6,9 +6,12 @@ use crate::required_units::DraftBase;
 use crate::working_drafts::diff::{self, DraftDiffModel};
 use serde::Serialize;
 
-/// Every preview states this. Accept owns saving the snapshot.
+/// The preview's snapshot note when Accept will save one. Accept owns saving it.
 const SNAPSHOT_DETAIL: &str =
     "Print Partner saves a snapshot of the accepted Plan before it accepts this draft.";
+/// The note when `snapshot::replaced_layers` finds no Accepted Plan that a
+/// restore could bring back.
+const NO_SNAPSHOT_DETAIL: &str = "Print Partner has no accepted Plan it can restore from a snapshot, so it saves none before it accepts this draft.";
 
 #[derive(Debug)]
 pub enum PreviewOutcome {
@@ -279,9 +282,17 @@ pub(crate) fn preview(
         Ok(gate) => gate,
         Err(refused) => return Ok(PreviewOutcome::Refused(refused)),
     };
+    let saved_before_accept =
+        super::snapshot::replaced_layers(tx, tenant, profile, revision.expected_base.revision_id)?
+            .is_some();
     let snapshot = SnapshotNote {
-        saved_before_accept: true,
-        detail: SNAPSHOT_DETAIL.into(),
+        saved_before_accept,
+        detail: if saved_before_accept {
+            SNAPSHOT_DETAIL
+        } else {
+            NO_SNAPSHOT_DETAIL
+        }
+        .into(),
     };
     // Diff the Parts Accept would publish: filament comes from the live Part.
     inherit_live_filament(&mut gate.draft.parts, &gate.predecessors);

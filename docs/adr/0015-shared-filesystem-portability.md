@@ -1,7 +1,8 @@
 # Share narrow filesystem portability mechanics
 
 Status: accepted design on 2026-11-03 under Chad's delegated research choice.
-Partly implemented: `pp-os` exists, and `pp-storage` and `pp-source` use it.
+Partly implemented: `pp-os` exists, and `pp-storage`, `pp-source` and
+`pp-compat` (its Windows log entries only) use it.
 `pp-core` is not migrated yet. This amends [ADR 0009](0009-keep-crates-and-deepen-modules.md)
 without changing [ADR 0010](0010-whole-runtime-cutover.md).
 Numbers 0011 through 0014 are reserved by the separate design proposal; this
@@ -20,7 +21,8 @@ Neither option has a measured compilation or runtime advantage.
 `pp-os` has no business policy, `pp-*`, SQL, HTTP, Tauri or Tokio dependencies.
 Its private Unix/Windows adapters expose handle-based private filesystem access,
 identity checks, no-follow/reparse refusal, lock primitives and durable file
-publication. The first consumers are `pp-storage`, `pp-source` and `pp-core`.
+publication. The first consumers are `pp-storage`, `pp-source`, `pp-compat`
+(Windows log entries only) and `pp-core`.
 Storage retains installation lease policy, lifetime, migration ordering, SQL and
 transactions. Source retains immutable snapshot policy. Core retains composition,
 worker lifetime and signals. Menus, slicer discovery and arbitrary OS-dependent

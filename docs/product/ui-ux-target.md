@@ -137,6 +137,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Builds list, detail, layers | `GET /api/v1/plans`, `/plans/{id}`, `/layers`, `/kit-manifest` | Exists |
 | Drafts | `GET/PATCH /api/v2/plans/{id}/drafts*` (drafts are mounted under `/api/v2`, not `/api/v1`) | Exists |
 | Checkoff read | `GET /plans/{id}/checkoff`, `/parts/{id}/assembled` | Exists |
+| Checkoff tab units and manual bursts | `GET /api/v2/plans/{id}/checkoff/units`, `POST /plans/{id}/checkoff/bursts` and `/bursts/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1191); see [Manual Checkoff bursts](../desktop-rebuild.md#manual-checkoff-bursts-gre-1191) |
 | Sources | `GET /sources`, `/sources/activity`, naming, import rules | Exists |
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
 | Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |

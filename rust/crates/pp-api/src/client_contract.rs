@@ -214,6 +214,27 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("UndoBatchRequest"),
         "UndoBatchReceipt",
     ),
+    route(
+        "readBuildCheckoffUnits",
+        "GET",
+        "/api/v2/plans/{id}/checkoff/units",
+        None,
+        "CheckoffUnits",
+    ),
+    route(
+        "recordManualCheckoffBurst",
+        "POST",
+        "/api/v2/plans/{id}/checkoff/bursts",
+        Some("ManualBurstRequest"),
+        "ManualBurstReceipt",
+    ),
+    route(
+        "undoManualCheckoffBurst",
+        "POST",
+        "/api/v2/plans/{id}/checkoff/bursts/undo",
+        Some("UndoBatchRequest"),
+        "UndoBatchReceipt",
+    ),
     ClientRoute {
         text_params: &["id"],
         ..route(
@@ -274,9 +295,11 @@ mod codegen {
             ProfileList, ProfileSummary,
         },
         checkoff_progress::wire::{
-            BurstBedReceipt, ClaimUnattributedReceipt, ClaimUnattributedRequest, ClaimedLink,
-            DismissUnattributedReceipt, DismissUnattributedRequest, UndoBatchReceipt,
-            UndoBatchRequest, VerifyBatchReceipt, VerifyBatchRequest,
+            BurstBedReceipt, CheckoffPart, CheckoffUnitState, CheckoffUnits,
+            ClaimUnattributedReceipt, ClaimUnattributedRequest, ClaimedLink,
+            DismissUnattributedReceipt, DismissUnattributedRequest, ManualBurstPart,
+            ManualBurstReceipt, ManualBurstRequest, UndoBatchReceipt, UndoBatchRequest,
+            VerifyBatchReceipt, VerifyBatchRequest,
         },
         plan_publication::preview::{
             AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue, InputChange,
@@ -382,6 +405,15 @@ mod codegen {
             schemars::schema_for!(VerifyBatchReceipt),
         )?;
         schema("UndoBatchRequest", schemars::schema_for!(UndoBatchRequest))?;
+        schema("CheckoffUnits", schemars::schema_for!(CheckoffUnits))?;
+        schema(
+            "ManualBurstRequest",
+            schemars::schema_for!(ManualBurstRequest),
+        )?;
+        schema(
+            "ManualBurstReceipt",
+            schemars::schema_for!(ManualBurstReceipt),
+        )?;
         schema("UndoBatchReceipt", schemars::schema_for!(UndoBatchReceipt))?;
         schema(
             "ClaimUnattributedRequest",
@@ -1588,7 +1620,114 @@ mod codegen {
         ] {
             cases.push(request::<UndoBatchRequest>("UndoBatchRequest", name, value));
         }
+        cases.extend(manual_burst_fixtures()?);
         cases.extend(unattributed_fixtures()?);
+        Ok(cases)
+    }
+
+    /// The Checkoff tab's unit read, manual burst requests the generated client
+    /// must accept or refuse as Rust does, and the receipts the routes serve.
+    fn manual_burst_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        let digest = "a".repeat(64);
+        let basis = json!({"profile_id": MAX_SAFE, "plan_version": 1, "plan_revision_id": 2,
+            "plan_revision_digest": digest, "required_unit_mapping_digest": digest});
+        let token = "ppu_00112233445566778899aabbccddeeff";
+        let parsed: pp_storage::checkoff_progress::Basis = serde_json::from_value(basis.clone())?;
+        let parsed = parsed.into();
+        let mut cases = vec![
+            served(
+                "CheckoffUnits",
+                "ready",
+                CheckoffUnits {
+                    profile_id: MAX_SAFE,
+                    basis: Some(parsed),
+                    parts: vec![CheckoffPart {
+                        part_id: MAX_SAFE,
+                        filename: UNICODE.into(),
+                        relative_path: format!("parts/{UNICODE}.stl"),
+                        source_layer: "base".into(),
+                        role: "primary".into(),
+                        quantity: 2,
+                        printed_count: 1,
+                        assembled_count: 1,
+                        units: vec![
+                            CheckoffUnitState {
+                                token: token.into(),
+                                unit_index: 0,
+                                object_name: UNICODE.into(),
+                                printed: true,
+                                assembled: true,
+                            },
+                            CheckoffUnitState {
+                                token: token.into(),
+                                unit_index: 1,
+                                object_name: String::new(),
+                                printed: false,
+                                assembled: false,
+                            },
+                        ],
+                    }],
+                },
+            )?,
+            served(
+                "CheckoffUnits",
+                "no-accepted-plan",
+                CheckoffUnits {
+                    profile_id: 1,
+                    basis: None,
+                    parts: vec![],
+                },
+            )?,
+            served(
+                "ManualBurstReceipt",
+                "printed-and-assembled",
+                ManualBurstReceipt {
+                    idempotency_key: UNICODE.into(),
+                    undo_token: "ppm_00112233445566778899aabbccddeeff".into(),
+                    profile_id: MAX_SAFE,
+                    printed_added: 3,
+                    printed_removed: 0,
+                    assembled_added: 1,
+                    assembled_removed: 0,
+                    parts: vec![ManualBurstPart {
+                        part_id: MAX_SAFE,
+                        quantity: 4,
+                        printed_count: 3,
+                        assembled_count: 1,
+                    }],
+                },
+            )?,
+        ];
+        for (name, value) in [
+            (
+                "printed",
+                json!({"idempotency_key": UNICODE, "expected": basis, "units": [{"token": token, "printed": true}]}),
+            ),
+            (
+                "assembled-and-cleared",
+                json!({"idempotency_key": "k", "expected": basis, "units": [
+                    {"token": token, "printed": true, "assembled": true},
+                    {"token": "ppu_ffeeddccbbaa99887766554433221100", "printed": false}]}),
+            ),
+            (
+                "text-flag",
+                json!({"idempotency_key": "k", "expected": basis, "units": [{"token": token, "printed": "yes"}]}),
+            ),
+            (
+                "extra-unit-field",
+                json!({"idempotency_key": "k", "expected": basis, "units": [{"token": token, "count": 3}]}),
+            ),
+            (
+                "missing-basis",
+                json!({"idempotency_key": "k", "units": [{"token": token, "printed": true}]}),
+            ),
+        ] {
+            cases.push(request::<ManualBurstRequest>(
+                "ManualBurstRequest",
+                name,
+                value,
+            ));
+        }
         Ok(cases)
     }
 

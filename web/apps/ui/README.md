@@ -170,7 +170,8 @@ so a print that ends or a link that drops shows up without a reload.
   result is unknown to the UI; the core's 400 detail shows instead.
 - **Burst limit.** One verify-batch carries at most 50 beds. A bigger pick shows
   that limit in place of Confirm. A send refused by the client contract is never
-  resent, and picks made while a confirm is in flight stay picked.
+  resent. Picks stay picked until the core confirms the burst, so a click while
+  another confirm is in flight, or a refusal, leaves them to fix and send again.
 - **Retry.** A send that fails without an answer from the core (a network error
   or a lost answer) is resent up to twice with the same key, and the alert's
   Retry resends it again with the same key. The core answers a repeated key
@@ -179,7 +180,10 @@ so a print that ends or a link that drops shows up without a reload.
   A refusal from the core (4xx) shows its detail and no Retry. Until a bed's
   confirm gets an answer, confirming that bed again reuses its key, so a write
   that landed while its answer was lost replays its receipt and Undo instead of
-  being refused as already verified. A resent Undo whose first answer was lost
+  being refused as already verified. The key is kept only while a reread still
+  lists every unit of that burst as pending; once one is gone, confirming the
+  same units later uses a new key, so a burst undone elsewhere is not answered with its
+  old receipt. A resent Undo whose first answer was lost
   gets 409 "already undone"; Today counts that as done and rereads.
 - **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
   `role="status"` region that is in the page before any confirm, beside an Undo

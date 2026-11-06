@@ -121,7 +121,7 @@ export function ClearBeds({
   beds: Bed[];
   blocking: { printing: Bed[]; unconfirmed: Bed[] };
   linkNote: (printerId: string) => string | null;
-  confirm: (picks: Pick[]) => boolean;
+  confirm: (picks: Pick[], onConfirmed?: () => void) => void;
 }) {
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [anchor, setAnchor] = useState<string | null>(null);
@@ -168,10 +168,9 @@ export function ClearBeds({
     setAnchor(slot.key);
   };
 
-  // A send that did not start (one already in flight) keeps the picks.
-  const confirmPicked = () => {
-    if (confirm(picks)) setPicked(new Set());
-  };
+  // The picks stay until the core confirms the burst, so a send that did not start or a
+  // refusal leaves them to fix and send again.
+  const confirmPicked = () => confirm(picks, () => setPicked(new Set()));
   const tooMany = picks.length > MAX_BURST_BEDS;
 
   return (

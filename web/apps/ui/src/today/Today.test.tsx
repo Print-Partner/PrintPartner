@@ -4,7 +4,7 @@ import type {
   Health,
   TaskFeed,
 } from "@print-partner/rust-client";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -542,6 +542,27 @@ describe("an uncertain write is reconciled, not repeated", () => {
     expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
     expect(core.state.marked).toBe(3);
   });
+
+  it("drops the unanswered key once a reread no longer lists the bed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ loseFirstAnswers: 3 });
+    const waiting = structuredClone(core.state.results);
+    renderToday(core);
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    // The write landed, so the 30 s reread drops the bed.
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Voron 2.4" })).toBeNull());
+    // The burst is undone somewhere else, and the next reread lists the bed again.
+    core.state.results = waiting;
+    core.state.marked = 0;
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm Voron 2.4 bed" }));
+    expect(await screen.findByText("Confirmed 3 units from Voron 2.4.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(2);
+    expect(core.state.marked).toBe(3);
+  });
 });
 
 describe("UI4-04 with printer links down Today offers manual checkoff and loses no job", () => {
@@ -764,6 +785,28 @@ describe("UI5-01 P, F, digits, Space and Shift pick units and preview them befor
 });
 
 describe("UI5-02 one burst is one request and one undo entry", () => {
+  it("keeps the picks when the core refuses the burst", async () => {
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) =>
+      path === "/api/v2/printer-checkoff/verify-batch"
+        ? json(
+            { title: "Bad Request", detail: "Confirm must include lower incomplete units first" },
+            400,
+          )
+        : real(path, init),
+    );
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Confirm must include lower incomplete units first",
+    );
+    expect(screen.getByRole("button", { name: "Confirm 1 picked unit" })).toBeTruthy();
+    expect(unit("bracket.stl unit 2")).toHaveProperty("checked", true);
+  });
+
   it("confirms units from two beds in one request and undoes both with one token", async () => {
     const core = fakeCore({ results: SHARED() });
     renderToday(core);

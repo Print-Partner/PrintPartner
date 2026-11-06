@@ -4,7 +4,7 @@ import type {
   VerifyBatchReceipt,
 } from "@print-partner/rust-client";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
@@ -20,7 +20,9 @@ import {
   pickedPrinters,
   plural,
   unitKey,
+  type Bed,
   type Pick,
+  type Unit,
 } from "./beds";
 import { ClearBeds } from "./ClearBeds";
 
@@ -89,7 +91,20 @@ function useCheckoff() {
   const [tally, setTally] = useState<Tally | null>(null);
   // The key of each burst that has no answer yet. Confirming the same units again reuses
   // it, so a write that landed while its answer was lost replays its receipt and Undo.
-  const unanswered = useRef(new Map<string, string>());
+  const unanswered = useRef(new Map<string, { key: string; picks: Pick[] }>());
+  // A saved key lasts only while a reread still lists every unit of its burst as pending.
+  // Once one is gone, confirming the same units later is a new write with a new key, so a
+  // burst that was undone elsewhere is never answered with its old receipt.
+  const keepWaiting = useCallback((beds: readonly Bed[]) => {
+    const pendingKey = (bed: Bed, u: Unit) => `${bed.result.id}=${unitKey(u)}`;
+    const waiting = new Set(beds.flatMap((bed) => bed.pending.map((u) => pendingKey(bed, u))));
+    for (const [id, { picks }] of unanswered.current) {
+      const listed = picks.every(({ bed, units }) =>
+        units.every((u) => waiting.has(pendingKey(bed, u))),
+      );
+      if (!listed) unanswered.current.delete(id);
+    }
+  }, []);
   const refresh = () =>
     Promise.all([
       client.invalidateQueries({ queryKey: checkoffQuery.queryKey }),
@@ -151,13 +166,12 @@ function useCheckoff() {
       return refresh();
     },
   });
-  /** Sends the picks as one burst; false when nothing was sent. */
-  const confirmPicks = (picks: Pick[]) => {
-    if (confirm.isPending || picks.length === 0 || picks.length > MAX_BURST_BEDS) return false;
-    const key = unanswered.current.get(burstId(picks)) ?? crypto.randomUUID();
-    unanswered.current.set(burstId(picks), key);
-    confirm.mutate({ picks, key });
-    return true;
+  /** Sends the picks as one burst, and calls `onConfirmed` once the core confirms it. */
+  const confirmPicks = (picks: Pick[], onConfirmed?: () => void) => {
+    if (confirm.isPending || picks.length === 0 || picks.length > MAX_BURST_BEDS) return;
+    const key = unanswered.current.get(burstId(picks))?.key ?? crypto.randomUUID();
+    unanswered.current.set(burstId(picks), { key, picks });
+    confirm.mutate({ picks, key }, { onSuccess: onConfirmed });
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.
   const undoBurst = (tallied: Undo) => {
@@ -165,7 +179,7 @@ function useCheckoff() {
     confirm.reset();
     undo.mutate(tallied);
   };
-  return { confirm, confirmPicks, undo, undoBurst, tally };
+  return { confirm, confirmPicks, keepWaiting, undo, undoBurst, tally };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
@@ -322,6 +336,10 @@ export function TodayScreen() {
   const checkoff = useCheckoff();
   const byId = new Map((printers.data?.printers ?? []).map((p) => [p.id, p]));
   const printerName = (id: string) => byId.get(id)?.name ?? id;
+  const { keepWaiting } = checkoff;
+  useEffect(() => {
+    if (results.data) keepWaiting(bedsToClear(results.data.results, String));
+  }, [results.data, keepWaiting]);
   // Why a printer's link cannot report a finished print, or null when it can. A failed,
   // pending or switched-off farm read says nothing about links, so it never counts as up
   // or as down.

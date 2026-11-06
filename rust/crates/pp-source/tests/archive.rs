@@ -19,6 +19,8 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/pinned_repos.rs"]
+mod pinned_repos;
 
 /// Removed when the scratch drops, including while a test unwinds from a panic.
 struct Fixture(Scratch);
@@ -199,20 +201,7 @@ fn input_file_and_source_roots_remain_pinned_after_path_replacement() {
     )
     .unwrap();
     fs::write(fixture.0.join("input/upload.zip"), b"not a zip").unwrap();
-    // Windows refuses to rename a directory while a handle below it is open,
-    // so the open Source keeps its path from being replaced at all.
-    let renamed = fs::rename(fixture.0.join("repos"), fixture.0.join("original-repos"));
-    let pinned = if cfg!(windows) {
-        assert_eq!(
-            renamed.unwrap_err().kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-        "repos"
-    } else {
-        renamed.unwrap();
-        fs::create_dir(fixture.0.join("repos")).unwrap();
-        "original-repos"
-    };
+    let pinned = pinned_repos::move_repos_aside(&fixture.0, "original-repos");
     let candidate = fixture
         .0
         .join(pinned)

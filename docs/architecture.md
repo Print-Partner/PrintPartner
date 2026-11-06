@@ -146,9 +146,9 @@ uses it for the data-directory lease's file mechanics, preflight opens, backup
 reads and durable backup publication. `pp-source` uses it for every Source
 directory operation: the pinned root walk, staging, enumeration, publication by
 no-replace rename and its directory locks. `pp-compat` uses it on Windows for
-every log entry operation relative to the pinned log directory: append opens,
+its log writes relative to the pinned log directory: append opens,
 exclusive creates, the archive security open and the replacing rotation
-rename. Its Unix logs still call `openat` and `renameat` through libc.
+rename. Read-only tail reads still open by path. Its Unix logs still call `openat` and `renameat` through libc.
 `pp-core` is the next consumer; add
 its edge to the checker and manifests only with its migration. It supplies directory-relative handle access,
 identity/no-follow checks, lock primitives and durable file publication. The

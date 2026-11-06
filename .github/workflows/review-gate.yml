@@ -34,8 +34,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.run_attempt == '1' && 'push' || github.run_id }}
+  cancel-in-progress: ${{ github.run_attempt == '1' }}
 
 jobs:
   review-gate:

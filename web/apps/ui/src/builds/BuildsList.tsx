@@ -62,7 +62,9 @@ function TasksNotice({ query }: { query: UseQueryResult<unknown> }) {
     return (
       <div role="alert" className="pp-banner" data-kind="error">
         <p>
-          {query.data === undefined ? "Could not load next actions." : "Could not refresh next actions."}
+          {query.data === undefined
+            ? "Could not load next actions."
+            : "Could not refresh next actions."}
         </p>
         <p className="pp-banner-detail">{query.error.message}</p>
         <button type="button" className="pp-button" onClick={() => void query.refetch()}>
@@ -132,7 +134,11 @@ export function BuildsList() {
             <ModuleOff module="Orders" wouldShow="each Build's order number" where="this list" />
           )}
           <TasksNotice query={tasks} />
-          <BuildsTable builds={data.profiles} showOrder={orders?.state === "on"} tasks={tasks.data} />
+          <BuildsTable
+            builds={data.profiles}
+            showOrder={orders?.state === "on"}
+            tasks={tasks.data}
+          />
         </>
       )}
       empty={{ message: "No Builds yet. Builds you create appear here." }}

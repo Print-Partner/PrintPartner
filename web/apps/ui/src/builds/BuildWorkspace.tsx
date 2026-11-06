@@ -27,7 +27,7 @@ interface BuildData {
   layers: ProfileLayers["layers"];
 }
 
-type WorkspaceContext = { id: number };
+export type WorkspaceContext = { id: number };
 
 /** A positive safe-integer Build ID from the address, or null. */
 function buildId(raw: string | undefined): number | null {
@@ -56,7 +56,7 @@ export function BuildWorkspace() {
   return <Outlet context={{ id } satisfies WorkspaceContext} />;
 }
 
-function BuildTabs({ id }: { id: number }) {
+export function BuildTabs({ id }: { id: number }) {
   return (
     <nav aria-label="Build sections" className="pp-tabs">
       <ul>

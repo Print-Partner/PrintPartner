@@ -92,8 +92,9 @@ parked), with Overview at the index route (`src/builds/BuildWorkspace.tsx`).
 Overview reads `GET /api/v2/plans/{id}`, `/layers` and `/workflow` and shows
 progress, part count, the Plan's freshness with its reasons in words, the next
 action with its reason, the count of open decisions, the order number and customer
-request, last use, and the layers in layer order. The other tabs say
-what they will hold and that a later slice brings them. Nothing here changes data.
+request, last use, and the layers in layer order. Checkoff is described below.
+The other tabs say what they will hold and that a later slice brings them.
+Nothing on Overview changes data.
 
 - **Order fields follow the Orders Module.** `useModule` (`src/core/modules.ts`)
   reads the Module list from `GET /health`. Orders on shows the Order column and
@@ -130,6 +131,52 @@ what they will hold and that a later slice brings them. Nothing here changes dat
   numbers and fails only on a missing row, next actions that never load, or
   misplaced focus. Revisit
   virtualization if a measurement says otherwise.
+
+## Build Checkoff tab
+
+`/builds/:id/checkoff` (`src/builds/BuildCheckoff.tsx`, `src/builds/checkoff.ts`)
+records printed and assembled units by hand, with no printer link. It reads
+`GET /api/v2/plans/{id}/checkoff/units`, which lists every included Part of the
+accepted Plan with its durable printed and assembled counts. It also lists each
+Required unit with its head Plate (GRE-1196). The tab reads no farm, printer or
+Spoolman route, so it works with those Modules off.
+
+- **Burst keys.** `P`, `F`, digits, `Space` and `Shift` act on the focused unit:
+  - `P` marks every unit on that unit's head Plate.
+  - `F` marks every unit of its Part.
+  - `0` to `9` set its Part's count from the lowest unit and clear the rest.
+  - `Space` or a click flips one unit. With `Shift`, every unit from the last one
+    flipped takes the new state.
+
+  `P` on a unit that is on no Plate says so and picks nothing. When the Plan has
+  no accepted Plate layout, the tab says `P` is unavailable.
+
+- **Printed or assembled.** "Mark printed" and "Mark assembled" choose which flag
+  a burst sets, and switching clears the picks. In assembled mode only printed
+  units can be picked.
+- **Preview.** Before anything is sent, the preview lists what each Part gains or
+  loses, computed as the core computes it. Printed units fill from the left, so
+  printing a unit prints every lower one, and clearing one clears every higher
+  one and its assembly. A pick that both prints and clears units of one Part is
+  named and has no Record button, because the core refuses it.
+- **One burst, one Undo.** "Record N picked units" sends one
+  `POST /api/v2/plans/{id}/checkoff/bursts` with the accepted basis and a new
+  idempotency key. The tally shows the receipt's counts and one Undo, which sends
+  `/bursts/undo` with the receipt's undo token
+  ([Manual Checkoff bursts](../../../docs/desktop-rebuild.md#manual-checkoff-bursts-gre-1191)).
+  Checkoff is not a Plan change and never goes through the Accept gate.
+- **Retry and refusals.** A send that got no answer is resent up to twice with
+  the same key and the same body. After that, the alert's Retry resends it again
+  with that key, so the core replays the first receipt instead of counting twice.
+  A reread follows every send, and it drops picks that already match the stored
+  state. A refusal from the core (4xx) shows its detail and no Retry. This covers
+  a stale basis, a burst already undone, and an undo that a later change blocks.
+  A resent undo that finds its burst already undone after a lost answer counts
+  as done.
+- **States and access.** Loading, error with the last-known units, and offline
+  use the screen template. Offline, Record and Undo stay focusable and do nothing,
+  with the offline reason beside them, and nothing is queued. Unit checkboxes
+  are named "<file> unit N", and Checkoff targets are at least 44 px.
 
 ## Today
 

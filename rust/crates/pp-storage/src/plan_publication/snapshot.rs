@@ -8,27 +8,37 @@
 //! keeps the current ones.
 
 use super::*;
+use rusqlite::OptionalExtension;
 
-/// Inserts one `pre_apply` `plan_snapshots` row for Build `profile` inside
-/// Accept's transaction, before the publication writes. The first Accept, and
-/// a replaced revision with no recorded inputs, have nothing to restore and
-/// save none.
-pub(super) fn save_before_accept(
+/// The Source layers of the Accepted Plan revision `previous` in the payload's
+/// `layers` shape, or `None` when there is no Accepted Plan or its revision
+/// has no input set, so there is nothing to restore and Accept saves no
+/// snapshot. The preview reports `saved_before_accept` from the same answer.
+pub(super) fn replaced_layers(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
-    draft_id: i64,
-    accepted: (Option<i64>, i64),
-    at: &str,
-) -> Result<()> {
-    let (Some(revision), version) = accepted else {
-        return Ok(());
+    previous: Option<i64>,
+) -> Result<Option<Vec<Value>>> {
+    let Some(revision) = previous else {
+        return Ok(None);
+    };
+    let input_set: Option<i64> = tx
+        .query_row(
+            "SELECT input_set_id FROM plan_revisions WHERE tenant_id=?1 AND profile_id=?2 AND id=?3",
+            params![tenant, profile, revision],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(input_set) = input_set else {
+        return Ok(None);
     };
     let layers = tx
         .prepare(
-            "SELECT input.source_layer,input.source_id,source.name,input.layer_order FROM plan_revisions revision JOIN plan_revision_inputs input ON input.tenant_id=revision.tenant_id AND input.input_set_id=revision.input_set_id JOIN projects source ON source.tenant_id=input.tenant_id AND source.id=input.source_id WHERE revision.tenant_id=?1 AND revision.profile_id=?2 AND revision.id=?3 ORDER BY input.layer_order,input.source_id",
+            "SELECT input.source_layer,input.source_id,source.name,input.layer_order FROM plan_revision_inputs input JOIN projects source ON source.tenant_id=input.tenant_id AND source.id=input.source_id WHERE input.tenant_id=?1 AND input.input_set_id=?2 ORDER BY input.layer_order,input.source_id",
         )?
-        .query_map(params![tenant, profile, revision], |row| {
+        .query_map(params![tenant, input_set], |row| {
             let layer: String = row.get(0)?;
             let layer_type = layer.split_once(':').map_or(layer.as_str(), |(kind, _)| kind);
             Ok(json!({
@@ -41,15 +51,30 @@ pub(super) fn save_before_accept(
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if layers.is_empty() {
+    Ok(Some(layers))
+}
+
+/// Inserts one `pre_apply` `plan_snapshots` row for Build `profile` inside
+/// Accept's transaction, before the publication writes, when
+/// [`replaced_layers`] finds a recorded Plan to restore.
+pub(super) fn save_before_accept(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+    accepted: (Option<i64>, i64),
+    at: &str,
+) -> Result<()> {
+    let (previous, version) = accepted;
+    let Some(layers) = replaced_layers(tx, tenant, profile, previous)? else {
         return Ok(());
-    }
+    };
     let payload = json!({
         "layers": layers,
         "kit_manifest": null,
         "recipe_summary": null,
         "captured_at": at,
-        "accepted_plan_revision_id": revision,
+        "accepted_plan_revision_id": previous,
         "accepted_plan_version": version,
     });
     tx.execute(

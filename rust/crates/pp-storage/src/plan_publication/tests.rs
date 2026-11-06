@@ -1153,6 +1153,52 @@ mod transaction {
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["layers"].as_array().unwrap().len(), 1);
     }
+    /// The preview promises a snapshot exactly when Accept saves one: a Ready
+    /// preview reports `saved_before_accept`, and accepting the same case leaves
+    /// a `pre_apply` row, both or neither.
+    #[test]
+    fn transaction_preview_promises_the_snapshot_accept_saves() {
+        let fixture = fixture();
+        let mut seen = HashSet::new();
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut c = database(&fixture, case);
+            let tx = c.transaction().unwrap();
+            let input = &case["input"];
+            let profile = input["profileId"].as_i64().unwrap();
+            let draft = input["draftId"].as_i64().unwrap();
+            let promised = match preview::preview(&tx, "default", profile, draft).unwrap() {
+                preview::PreviewOutcome::Ready(ready) => match *ready {
+                    preview::AcceptPreview::NoChange { snapshot, .. }
+                    | preview::AcceptPreview::Changed { snapshot, .. } => {
+                        snapshot.saved_before_accept
+                    }
+                },
+                preview::PreviewOutcome::Refused(_) => continue,
+            };
+            let actual = publish(
+                &tx,
+                case,
+                &mut Tokens(case["allocationStart"].as_u64().unwrap().into()),
+            );
+            if actual["kind"] != "applied" {
+                continue;
+            }
+            let saved: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM plan_snapshots WHERE source='pre_apply'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(saved == 1, promised, "{}", case["id"]);
+            seen.insert(promised);
+        }
+        assert_eq!(
+            seen.len(),
+            2,
+            "both a first Accept and a replacing Accept are covered"
+        );
+    }
     #[test]
     fn transaction_replays_node_outcomes_receipts_and_persisted_rows() {
         let fixture = fixture();

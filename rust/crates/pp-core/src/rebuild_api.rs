@@ -680,6 +680,8 @@ mod tests {
                 "beds": [{"link_id": "no-such-link", "decisions": [
                     {"part_id": 1, "unit_index": 0, "result": "confirmed"}]}]}),
             "UndoBatchRequest" => json!({"undo_token": "ppb_unknown"}),
+            "ClaimUnattributedRequest" => json!({"profile_id": 1}),
+            "DismissUnattributedRequest" => json!({}),
             other => panic!("no sample body for {other}"),
         }
     }
@@ -806,13 +808,14 @@ mod tests {
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            // The sample bodies name no stored draft, link or burst, so those
+            // The sample bodies name no stored draft, link, burst or print, so those
             // handlers answer their own 404 with a detail.
             let handler_not_found = status == 404
                 && (body["code"] == "draft_not_found"
                     || body["code"] == "farm_log_entry_not_found"
                     || body["detail"] == "beds[0]: Checkoff link not found"
-                    || body["detail"] == "Checkoff burst not found");
+                    || body["detail"] == "Checkoff burst not found"
+                    || body["detail"] == "Unattributed print not found");
             assert!(
                 status == 200 || handler_not_found,
                 "{} {path}: {status} {body}",

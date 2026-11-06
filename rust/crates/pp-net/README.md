@@ -23,10 +23,11 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | Module | Main items |
 | --- | --- |
 | `outbound` | `HttpGuard::new(resolver, deadline, max_body)`; `get(url, api_key)`, `request(method, url, headers, body, deadline)` for one GET or PUT, `post(url, api_key, body, deadline)` for one POST. `HttpReply`, `PostBody`, `PostError` (`Unsent`, `Unknown`, `SourceFailed`). |
+| `outbound` | `stream(url, headers, deadline, body)`: one GET whose body is read as it arrives under a `BodyDeadline` (`Total` or `Idle`) (`StreamReply`, `ReplyBody::chunk`, `ReplyBody::prefix`, `IdleTimeout`). `with_body_limit(max_body)` up to `MAX_LISTING_BODY` (8 MiB); `MAX_BODY` (2 MiB). |
 | `outbound` | `permitted(ip)`: the address policy. `Resolver` trait and `SystemResolver`. `MAX_POST_DEADLINE` (120 s). |
 | `target` | `CanonicalTarget::parse(uri)` and `decode_segment(segment)`. They refuse encoded `/`, `\` or `%`, control characters, `.` and `..` segments, and `//`. |
 
-`HttpGuard::new` accepts a deadline up to 30 s and `max_body` up to 2 MiB. URLs must be `http://` with no credentials. Users: `pp-drivers`, `pp-gateway`, and `pp-core` with `desktop_rebuild`. No binaries.
+`HttpGuard::new` accepts a deadline up to 30 s and `max_body` up to 2 MiB; `with_body_limit` allows 8 MiB. URLs must be `http://` with no credentials. Users: `pp-drivers`, `pp-gateway`, and `pp-core` with `desktop_rebuild`. No binaries.
 
 ## Effects and flags
 
@@ -40,6 +41,7 @@ Cargo features: none.
 
 - `tests/canonical_target.rs`: `proptest` properties for `CanonicalTarget`.
 - Unit tests in `src/target.rs` and `src/outbound.rs`. The `outbound` tests run local HTTP servers on loopback to check deadlines, body limits, redirect refusal and DNS policy.
+- `tests/ticket_t_22_stream.rs`: streamed replies past the buffered limit, the idle and total body deadlines, `prefix`, and the 8 MiB listing limit, on loopback.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-net

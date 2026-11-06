@@ -12,6 +12,11 @@
 //! The farm log (GRE-1126) shares the router: `GET /farm-log` pages the
 //! fleet's logged bursts, undos and sends, and `POST /farm-log/{id}/undo`
 //! undoes a logged burst through the same compensating burst undo.
+//!
+//! Unattributed prints (GRE-1182) share it too:
+//! `POST /printer-checkoff/unattributed/{id}/claim` attributes a print to a
+//! Build and creates its Checkoff link, and `/dismiss` drops it from Match
+//! review. Storage owns both writes; there is no Node fallback.
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, failure, internal, ok_json, read_error},
@@ -44,7 +49,15 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         .route("/printer-checkoff/verify-batch", post(verify_batch))
         .route("/printer-checkoff/verify-batch/undo", post(undo_batch))
         .route("/farm-log", get(farm_log))
-        .route("/farm-log/{id}/undo", post(undo_farm_log_entry));
+        .route("/farm-log/{id}/undo", post(undo_farm_log_entry))
+        .route(
+            "/printer-checkoff/unattributed/{id}/claim",
+            post(claim_unattributed),
+        )
+        .route(
+            "/printer-checkoff/unattributed/{id}/dismiss",
+            post(dismiss_unattributed),
+        );
     gate.guard(routes.clone().nest("/api/v2", routes))
         .with_state(App { gate, client })
 }
@@ -97,6 +110,27 @@ async fn undo_farm_log_entry(
     Path(id): Path<String>,
 ) -> Response {
     run(app, presented, Request::UndoFarmLogEntry { id }).await
+}
+
+async fn claim_unattributed(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    apply(app, presented, &body, |body| Request::ClaimUnattributed {
+        id,
+        body,
+    })
+    .await
+}
+
+async fn dismiss_unattributed(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path(id): Path<String>,
+) -> Response {
+    run(app, presented, Request::DismissUnattributed { id }).await
 }
 
 async fn apply(

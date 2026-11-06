@@ -18,6 +18,7 @@ sequence number, so cursor order is commit order.
 | `checkoff.progress_changed` | 1 | `checkoff_progress`: unit completion, assembly, count import, printer Checkoff verify (one link or a burst), and burst undo; one event per changed Part in each verified link or undo, so a burst that confirms one Part on two links writes two (`{"import": true}` for an import) | `build`, the Build ID | `{"part_id": N}` for a Part change, `{"import": true}` for an import |
 | `plan.revision_accepted` | 1 | `plan_publication::publish_in_transaction`, used by Accept and draft save-and-accept | `build`, the Build ID, version = new accepted Plan version | `{"revision_id": N}` |
 | `plan.draft_changed` | 1 | `required_units`, when a draft's Required-unit selection changes: a reconciliation (`PUT .../reconciliation`), the selection after an edit or recompute, and the selection inside a draft save | `build`, the Build ID, no version | `{"draft_id": N}` |
+| `checkoff.unattributed_resolved` | 1 | `checkoff_progress`, when an unattributed print is claimed (`POST .../unattributed/{id}/claim`, with its new printer Checkoff link, the claimed prints and the plan binding) or dismissed (`.../dismiss`) | `unattributed_print`, the print ID, no version | `{"profile_id": N, "link_id": "..."}` for a claim, `{"dismissed": true}` for a dismiss |
 
 An idempotent replay of an Accept (`Existing` or `AlreadyApplied`) writes no
 event, and neither does a reconciliation replayed by its key or one refused or

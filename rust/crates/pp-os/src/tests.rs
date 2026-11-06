@@ -153,6 +153,22 @@ fn identity_reuse_follows_the_file_system() {
 }
 
 #[test]
+fn a_held_lock_lets_other_handles_read_the_file() {
+    let root = scratch();
+    let path = root.path().join("lease");
+    std::fs::write(&path, b"owner").unwrap();
+    let held = File::options().read(true).write(true).open(&path).unwrap();
+    try_lock(&held).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"owner");
+    let copy = root.path().join("copy");
+    std::fs::copy(&path, &copy).unwrap();
+    assert_eq!(std::fs::read(&copy).unwrap(), b"owner");
+    let other = File::options().write(true).open(&path).unwrap();
+    assert!(matches!(try_lock(&other), Err(TryLockError::WouldBlock)));
+    unlock(&held).unwrap();
+}
+
+#[test]
 fn private_directories_are_created_once() {
     let root = scratch();
     let nested = root.path().join("a").join("b");
@@ -985,5 +1001,23 @@ mod windows {
             dir.status().unwrap().identity()
         );
         unlock(&lock).unwrap();
+    }
+
+    #[test]
+    fn whole_file_locks_and_lock_range_locks_exclude_each_other() {
+        let root = scratch();
+        let path = root.path().join("lock");
+        let ours = File::create(&path).unwrap();
+        let whole = File::options().write(true).open(&path).unwrap();
+        try_lock(&ours).unwrap();
+        assert!(matches!(
+            whole.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        unlock(&ours).unwrap();
+        whole.try_lock().unwrap();
+        assert!(matches!(try_lock(&ours), Err(TryLockError::WouldBlock)));
+        whole.unlock().unwrap();
+        try_lock(&ours).unwrap();
     }
 }

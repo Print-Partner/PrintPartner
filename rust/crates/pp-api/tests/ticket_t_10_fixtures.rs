@@ -1373,11 +1373,10 @@ mod ticket_t_10_fixtures {
                 case.changed.clone()
             };
             // Node has no change feed. Rust commits a `plan.draft_changed`
-            // event with every new Required-unit selection.
-            if expected
-                .iter()
-                .any(|table| table == "plan_draft_required_unit_reconciliations")
-            {
+            // event with every draft write and new Required-unit selection.
+            if expected.iter().any(|table| {
+                table == "plan_drafts" || table == "plan_draft_required_unit_reconciliations"
+            }) {
                 expected.push("domain_events".to_owned());
                 expected.sort();
             }

@@ -484,3 +484,81 @@ body {
   height: 16px;
   flex: none;
 }
+
+.pp-hero {
+  margin: 0 0 24px;
+}
+
+.pp-hero-reason {
+  margin: 0 0 16px;
+  color: var(--text-muted);
+}
+
+.pp-beds,
+.pp-unseen,
+.pp-tasks {
+  display: grid;
+  gap: 16px;
+  margin: 0 0 24px;
+  padding: 0;
+  list-style: none;
+}
+
+.pp-bed {
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+
+.pp-bed h3 {
+  margin: 0 0 4px;
+}
+
+.pp-diff {
+  margin: 8px 0 16px;
+  padding-left: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-tasks {
+  gap: 8px;
+  padding-left: 1.5rem;
+  list-style: decimal;
+}
+
+.pp-units {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 16px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.pp-units legend {
+  padding: 0 4px;
+  color: var(--text-muted);
+}
+
+.pp-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-burst {
+  position: sticky;
+  bottom: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+
+.pp-burst-preview p {
+  margin: 0 0 8px;
+}

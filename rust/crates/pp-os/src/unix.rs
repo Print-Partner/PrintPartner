@@ -368,3 +368,16 @@ impl Iterator for Entries {
         }
     }
 }
+
+/// `flock(LOCK_EX | LOCK_NB)` on `file`.
+pub(crate) fn try_lock(file: &File) -> Result<(), crate::TryLockError> {
+    match fs4::FileExt::try_lock(file) {
+        Ok(()) => Ok(()),
+        Err(fs4::TryLockError::WouldBlock) => Err(crate::TryLockError::WouldBlock),
+        Err(fs4::TryLockError::Error(error)) => Err(crate::TryLockError::Io(error)),
+    }
+}
+
+pub(crate) fn unlock(file: &File) -> io::Result<()> {
+    fs4::FileExt::unlock(file)
+}

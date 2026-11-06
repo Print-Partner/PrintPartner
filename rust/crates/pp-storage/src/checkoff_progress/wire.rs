@@ -3,7 +3,7 @@
 //! describe the subset the replacement UI sends and reads. A receipt carries
 //! more fields, such as each bed's stored link, which these types leave out.
 
-use crate::read_model::farm::UnitResult;
+use crate::read_model::farm::{CheckoffResultState, UnitResult};
 use serde::{Deserialize, Serialize};
 
 /// Why a unit was rejected; the route refuses a rejection without one.
@@ -93,6 +93,52 @@ pub struct UndoBatchRequest {
 pub struct UndoBatchReceipt {
     pub undo_token: String,
     pub undone_at: String,
+}
+
+/// `POST /printer-checkoff/unattributed/{id}/claim`: attributes an
+/// unattributed print to a Build. With `selected_stl_basenames`, only the
+/// objects of those plate files are attributed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ClaimUnattributedRequest {
+    #[cfg_attr(feature = "codegen", schemars(range(min = 1)))]
+    pub profile_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_stl_basenames: Option<Vec<String>>,
+}
+
+/// The printer Checkoff link a claim created. The stored link carries more
+/// fields, such as its units, which this type leaves out.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct ClaimedLink {
+    pub id: String,
+    pub profile_id: i64,
+    pub printer_id: String,
+    pub filename: String,
+    pub state: CheckoffResultState,
+}
+
+/// The claim receipt.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct ClaimUnattributedReceipt {
+    pub ok: bool,
+    pub link: ClaimedLink,
+}
+
+/// `POST /printer-checkoff/unattributed/{id}/dismiss` takes an empty object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DismissUnattributedRequest {}
+
+/// The dismiss receipt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct DismissUnattributedReceipt {
+    pub ok: bool,
 }
 
 #[cfg(test)]

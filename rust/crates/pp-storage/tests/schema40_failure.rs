@@ -20,33 +20,9 @@ struct Snapshot {
     user_version: i64,
 }
 
-// SQLite URI paths decode %HH, so escape every byte outside the RFC 3986 path
-// set. Windows separators become `/`, and `file:///C:/...` keeps the drive.
-fn immutable_uri(path: &Path) -> String {
-    let path = path.to_str().expect("fixture paths are UTF-8");
-    let path = if cfg!(windows) {
-        path.replace('\\', "/")
-    } else {
-        path.to_owned()
-    };
-    let mut uri = String::from(if path.starts_with('/') {
-        "file://"
-    } else {
-        "file:///"
-    });
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~/:".contains(&byte) {
-            uri.push(char::from(byte));
-        } else {
-            uri.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    uri + "?immutable=1"
-}
-
 fn immutable(path: &Path) -> Connection {
     Connection::open_with_flags(
-        immutable_uri(path),
+        pp_storage::sqlite_uri::immutable_uri(path).expect("fixture paths are UTF-8"),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )
     .unwrap()
@@ -236,7 +212,14 @@ fn assert_retry_succeeds(fixture: &Fixture, directory: &Path) {
     );
     assert_eq!(
         ready.backup,
-        Some(directory.join("backups/pre-schema40.db"))
+        // The owner reports the canonical data directory, which on Windows
+        // is a verbatim path without 8.3 short names.
+        Some(
+            std::fs::canonicalize(directory)
+                .unwrap()
+                .join("backups")
+                .join("pre-schema40.db")
+        )
     );
     assert_eq!(
         version(read_only(&database)),

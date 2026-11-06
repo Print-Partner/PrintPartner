@@ -180,10 +180,15 @@ fn files(root: &Path) -> Value {
             if path.is_dir() {
                 pending.push(path);
             } else {
-                found.push(json!([
-                    path.strip_prefix(root).unwrap().to_str().unwrap(),
-                    std::fs::read_to_string(&path).unwrap()
-                ]));
+                // Node's fixture spells paths with '/' on every OS.
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .components()
+                    .map(|part| part.as_os_str().to_str().unwrap())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                found.push(json!([relative, std::fs::read_to_string(&path).unwrap()]));
             }
         }
     }

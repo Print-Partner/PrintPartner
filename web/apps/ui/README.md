@@ -76,7 +76,11 @@ the loopback server and WebKitGTK launcher that both browser checks use.
   logic and `test/core-proxy.test.ts` tests it.
 - UI code calls the core through `fetchCore` in `src/core/client.ts`. It accepts
   same-origin paths only and sends same-origin credentials. In the desktop app
-  and Docker the Rust core serves this UI, so the paths reach it directly.
+  and Docker the Rust core serves this UI, so the paths reach it directly. An
+  error answer names the core's problem `detail` when it sends one.
+- `readCore` and `writeCore` in `src/core/rust.ts` are the typed GET and write.
+  `writeCore` checks the body against the generated request schema before it
+  sends, and the answer against the response schema.
 
 ## Builds
 
@@ -127,6 +131,111 @@ what they will hold and that a later slice brings them. Nothing here changes dat
   misplaced focus. Revisit
   virtualization if a measurement says otherwise.
 
+## Today
+
+`/today` (`src/today/TodayScreen.tsx`) reads `GET /api/v2/printer-checkoff`,
+`GET /api/v2/tasks` and, with the Farm module on, `GET /api/v2/printers` for
+printer names and link state. It rereads the results, tasks and printers every 30 s,
+so a print that ends or a link that drops shows up without a reload.
+
+- **Hero task.** When printer results wait in `awaiting_verify` with pending
+  units, the hero is "Clear N beds and confirm what came off", the reason names
+  the printers it frees, and each bed lists what confirming it marks: one line
+  per Part with its file name, the count and the unit numbers (`unit_index` + 1).
+  With no bed waiting, the hero is the top task from the shared Rust ranking,
+  with its reason and counts, and the ranked list holds the rest.
+- **Confirm one bed.** "Confirm <printer> bed" sends one
+  `POST /api/v2/printer-checkoff/verify-batch` with one bed and a new
+  `crypto.randomUUID()` idempotency key, confirming every pending unit of that
+  result.
+- **Clear beds burst** (`src/today/ClearBeds.tsx`, `src/today/beds.ts`). Each
+  bed lists its pending units as checkboxes. On a focused unit, `P` picks every
+  unit on its bed (the plate), `F` every unit of its Part on every bed, and `0`
+  to `9` that many of its Part, lowest unit first, dropping the rest of that
+  Part. `Space` or a click toggles one unit; with `Shift`, every unit from the
+  last one toggled takes the new state. The preview says how many units on how
+  many beds will be marked, and what each Part gains, before anything is sent.
+  "Confirm N picked units" sends every picked bed in one verify-batch request
+  with one key, and the tally carries one Undo for the whole burst. Rejecting
+  units stays in the Build Checkoff tab (GRE-1121).
+- **Progress fills from the left.** The core refuses a Part's unit while a lower
+  unit of that Part is still pending (400 "Confirm must include lower incomplete
+  units first"). When a pick or a bed's confirm skips a lower pending unit shown
+  on another bed, Today names those units before the send, and "Pick them too"
+  adds them to the burst. It never adds them on its own. A lower unit that no bed
+  can confirm now is named too: one on a print still running (`watching`) as still
+  printing, and one on a failed, dismissed or rejected result that no other result
+  confirmed and no running print is reprinting as "not confirmed on any print Today
+  shows". Each unit is named once. The core refuses those
+  confirms unless the unit was completed another way. A lower unit on no loaded
+  result is unknown to the UI; the core's 400 detail shows instead.
+- **Burst limit.** One verify-batch carries at most 50 beds. A bigger pick shows
+  that limit in place of Confirm. A send refused by the client contract is never
+  resent. Sent picks stay picked until the core confirms the burst, so a click
+  while another confirm is in flight, or a refusal, leaves them to fix and send
+  again; units picked while a burst is in flight stay picked after it succeeds.
+  A pick whose unit a reread no longer lists as pending is dropped, so an Undo
+  never brings back a pick that was already sent.
+- **Retry.** A send that fails without an answer from the core (a network error
+  or a lost answer) is resent up to twice with the same key, and the alert's
+  Retry resends it again with the same key. The core answers a repeated key
+  with the first receipt and writes nothing, so a retry never counts twice
+  ([Checkoff bursts](../../../docs/desktop-rebuild.md#checkoff-bursts-gre-1090)).
+  A refusal from the core (4xx) shows its detail and no Retry. Until a bed's
+  confirm gets an answer, confirming that bed again reuses its key, so a write
+  that landed while its answer was lost replays its receipt and Undo instead of
+  being refused as already verified. The key is kept only while a reread still
+  lists every unit of that burst as pending; once one is gone, confirming the
+  same units later uses a new key, so a burst undone elsewhere is not answered
+  with its old receipt. The alert's Retry rereads the results first and follows
+  the same rule while every sent unit is listed. A burst is all or nothing, so
+  only when the reread lists none of its units did the write land, and Retry sends
+  the same request and key so the core replays the receipt and Undo; when only some
+  are gone, another write confirmed them, and Retry sends the units still waiting
+  as a new burst. A confirm that resent several bursts applies this to each burst. Picks that only overlap bursts that got no answer reread
+  the results first: every one of those bursts that landed (none of its units is
+  waiting any more; a burst is all or nothing) is resent with its
+  key, so the core replays each receipt, and one Undo undoes them all (if the
+  core refuses one of them, the others keep their receipts and Undo, and an alert
+  names the refused printer), and the picks they do not cover go with them as a
+  new burst; if none did, the picks the reread still lists as pending go as a new
+  burst. This works only until a reread: a reread that shows a lost burst landed
+  drops its key and its bed leaves Today, and then only the alert's Retry (while
+  no newer confirm has replaced it) resends it with its key and brings back its
+  Undo. A replayed receipt of a burst undone
+  elsewhere leaves the picks picked. If the
+  reread fails, nothing is sent, an alert says so, and that burst keeps its key,
+  so confirming again can still reach its receipt and Undo. A reread cannot
+  tell a write that never landed from one that landed and was undone elsewhere
+  before it, so a resend can get the old receipt of an undone burst; Today
+  rereads after every answer and, when every sent unit is still pending, says
+  nothing was marked instead of showing the tally and Undo. Keys come from
+  `crypto.randomUUID`, or from `crypto.getRandomValues` where the page is not a
+  secure context (a shared core over plain HTTP). One write runs at a time:
+  Confirm and Undo do nothing while the other is in flight or a confirm is
+  rereading. A resent Undo whose first answer was lost
+  gets 409 "already undone"; Today counts that as done and rereads.
+- **Undo.** The tally, "Confirmed N units from <printers>.", sits in a polite
+  `role="status"` region that is in the page before any confirm, beside an Undo
+  button. When the tally covers several bursts, Undo sends their tokens one by one,
+  newest first, because the core refuses to undo a burst a later write depends on;
+  if one fails, the tally keeps only the bursts still confirmed. Undo sends the receipt's `undo_token` to
+  `POST /api/v2/printer-checkoff/verify-batch/undo`; the core restores the
+  links, progress and outcomes, or refuses with 409 and a reason.
+- **Printer links down.** Confirming a bed needs no printer. A bed whose printer
+  the farm read shows unreachable, not set up, manual or unknown, or does not
+  name, says to confirm by hand what came off. Results still `watching` on such
+  a printer are listed under "Prints the app cannot see finish" with a link to
+  the Build's Checkoff tab, so no print drops out of sight. The same happens,
+  with its own reason, while the farm read is pending ("Printer links not read
+  yet"), when it fails ("Printer links could not be read"), and when the Farm
+  module is off ("The Farm module is off").
+- With the core offline every confirm, Undo and Retry is disabled with the
+  offline reason (`MutationButton`).
+- **Tests.** `src/today/Today.test.tsx` runs against a fake core that applies
+  verify-batch and undo like the Rust routes, including the replay of a
+  repeated key, and counts the requests and marked units.
+
 ## Farm and the pulse line
 
 One `/ws/printers` socket, opened by `PrinterStreamProvider`
@@ -171,9 +280,40 @@ the Farm screen. No screen polls for printer state.
   integration reads Not set up. While the stream is down a banner says the
   states are the last known, with that time, and each row keeps its last-heard
   time. Farm module off (from `GET /health`) shows the Module-off state.
+- **Match prints** (`/farm/match`, `src/farm/MatchReview.tsx`, linked from Farm). Reads
+  `GET /api/v2/printer-checkoff/unattributed/suggestions` and lists every finished
+  print the app could not match in three groups: Exact, Likely and No suggestion
+  ([Farm reads](../../../docs/farm-reads.md#match-suggestions)). Each row names the
+  file, the printer, what Apply would do (claim for the suggested Build, or
+  dismiss; the claim matches against the whole Build, so a suggested plate is shown as
+  evidence only) and what the suggestion rests on, in words. Only rows with
+  `starts_checked` (Exact) start checked; Likely and No suggestion start
+  unchecked, and nothing is claimed or dismissed until a group's Apply is pressed.
+  Each group has Check all, Uncheck all and one Apply. Apply sends one request per
+  checked print: `POST .../unattributed/{id}/claim` with the suggested Build for
+  Exact and Likely rows, `POST .../unattributed/{id}/dismiss` for rows with no
+  suggestion. A second press while Apply runs is ignored, and a print an Apply
+  resolved leaves the list at once, before the reread answers. A refused print stays
+  checked with the core's reason under it; a print that answers "Print already
+  claimed" is reported as already claimed, never as claimed now. The core claims
+  every open print of the same file on that integration together (read from
+  `GET .../unattributed`), so reprints of one
+  file are counted as claimed by the Apply that claimed them, with one request.
+  If that list cannot be read and the last list read does not hold a print, that
+  print answering "Print already claimed" after this Apply claimed the same file
+  name is still counted as claimed by it, whatever its integration. Otherwise a
+  print of the same name on another integration, or one missing from a fresh
+  list, that answers "Print already claimed" is reported as already claimed. Any
+  other refusal, such as a print dismissed elsewhere, stays checked with the core's
+  reason. Applying one group
+  leaves the other groups' checks and reasons as they were, and the outcome stays
+  shown when the last print is resolved. The list rereads after every Apply. Farm module off shows the Module-off state; a core that lists no Farm
+  module is read as on, as Farm does.
 - **Tests.** `src/farm/Farm.test.tsx` drives a fake socket (`src/testSockets.ts`,
   installed for every test by `src/testSetup.ts`) and counts requests: ten
   minutes of heartbeats and one state change make no second printer read.
+  `src/farm/Match.test.tsx` covers UI5-03 against a fake core with the claim
+  and dismiss routes.
 
 ## Fonts and type
 

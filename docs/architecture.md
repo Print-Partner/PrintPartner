@@ -155,7 +155,9 @@ retained-capture phase directory before renaming it, and retained captures
 prove they still own an entry by its recorded `pp-os` identity, rechecked by
 name, instead of by a held handle; Unix also keeps a descriptor per entry so
 an inode number cannot be reused. NTFS refuses byte-range locks on a directory, so a directory lock on
-Windows is a lock on a regular file inside the directory. Storage keeps installation lease
+Windows is a lock on a regular file inside the directory. Windows locks are
+mandatory for the range they cover, so `pp-os` locks only the byte at offset
+`i64::MAX` and other handles can still read a held lease file. Storage keeps installation lease
 lifetime, migration ordering and SQL transactions. Source keeps snapshot policy.
 Native shell behavior and worker/signal orchestration stay with their owners.
 
@@ -228,8 +230,9 @@ it never rewinds Checkoff or a printer command.
 
 This separation remains implementation work. The baseline
 `WorkingDraftClient::save` creates a draft, reconciles it and calls
-`publish_in_transaction`; it is not draft-only autosave. The draft router does
-not mount `/save` or `/apply` either. Deliver durable draft-only saving and an
+`publish_in_transaction`; it is not draft-only autosave, and the draft router
+does not mount `/save`. Accept is `POST /plans/{id}/drafts/{draft_id}/apply`
+on the draft router (GRE-417), the only route that publishes. Deliver durable draft-only saving and an
 explicitly authorized Accept operation through the shared family interfaces.
 Reuse allocation and reconciliation, but prove accepted-state isolation and
 snapshot/history atomicity rather than treating a rename as delivery.

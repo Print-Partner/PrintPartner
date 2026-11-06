@@ -280,7 +280,10 @@ fn node_overlay_fixture_is_current() {
         .current_dir(&root)
         .arg("--conditions=development")
         .arg("--import")
-        .arg(root.join("web/node_modules/tsx/dist/loader.mjs"))
+        .arg(
+            pp_testkit::node_path::file_url(&root.join("web/node_modules/tsx/dist/loader.mjs"))
+                .expect("UTF-8 repository path"),
+        )
         .arg(root.join("fixtures/parity/profile-overlay/generate.mjs"))
         .arg("--check")
         .output()

@@ -214,6 +214,26 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         Some("UndoBatchRequest"),
         "UndoBatchReceipt",
     ),
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "claimUnattributedPrint",
+            "POST",
+            "/api/v2/printer-checkoff/unattributed/{id}/claim",
+            Some("ClaimUnattributedRequest"),
+            "ClaimUnattributedReceipt",
+        )
+    },
+    ClientRoute {
+        text_params: &["id"],
+        ..route(
+            "dismissUnattributedPrint",
+            "POST",
+            "/api/v2/printer-checkoff/unattributed/{id}/dismiss",
+            Some("DismissUnattributedRequest"),
+            "DismissUnattributedReceipt",
+        )
+    },
     route(
         "readSendQueue",
         "GET",
@@ -254,8 +274,9 @@ mod codegen {
             ProfileList, ProfileSummary,
         },
         checkoff_progress::wire::{
-            BurstBedReceipt, UndoBatchReceipt, UndoBatchRequest, VerifyBatchReceipt,
-            VerifyBatchRequest,
+            BurstBedReceipt, ClaimUnattributedReceipt, ClaimUnattributedRequest, ClaimedLink,
+            DismissUnattributedReceipt, DismissUnattributedRequest, UndoBatchReceipt,
+            UndoBatchRequest, VerifyBatchReceipt, VerifyBatchRequest,
         },
         plan_publication::preview::{
             AcceptPreview, BlockingOperation, DuplicateOrder, FieldChange, FieldValue, InputChange,
@@ -362,6 +383,22 @@ mod codegen {
         )?;
         schema("UndoBatchRequest", schemars::schema_for!(UndoBatchRequest))?;
         schema("UndoBatchReceipt", schemars::schema_for!(UndoBatchReceipt))?;
+        schema(
+            "ClaimUnattributedRequest",
+            schemars::schema_for!(ClaimUnattributedRequest),
+        )?;
+        schema(
+            "ClaimUnattributedReceipt",
+            schemars::schema_for!(ClaimUnattributedReceipt),
+        )?;
+        schema(
+            "DismissUnattributedRequest",
+            schemars::schema_for!(DismissUnattributedRequest),
+        )?;
+        schema(
+            "DismissUnattributedReceipt",
+            schemars::schema_for!(DismissUnattributedReceipt),
+        )?;
         schema(
             "PrinterDisplayDescriptor",
             schemars::schema_for!(PrinterDisplayDescriptor),
@@ -1550,6 +1587,59 @@ mod codegen {
             ("number", json!({"undo_token": 1})),
         ] {
             cases.push(request::<UndoBatchRequest>("UndoBatchRequest", name, value));
+        }
+        cases.extend(unattributed_fixtures()?);
+        Ok(cases)
+    }
+
+    /// Unattributed claim and dismiss bodies and the receipts their routes serve.
+    fn unattributed_fixtures() -> Result<Vec<Value>, serde_json::Error> {
+        let mut cases = vec![
+            served(
+                "ClaimUnattributedReceipt",
+                "claimed",
+                ClaimUnattributedReceipt {
+                    ok: true,
+                    link: ClaimedLink {
+                        id: UNICODE.into(),
+                        profile_id: MAX_SAFE,
+                        printer_id: "sim-1".into(),
+                        filename: UNICODE.into(),
+                        state: CheckoffResultState::AwaitingVerify,
+                    },
+                },
+            )?,
+            served(
+                "DismissUnattributedReceipt",
+                "dismissed",
+                DismissUnattributedReceipt { ok: true },
+            )?,
+        ];
+        for (name, value) in [
+            ("profile", json!({"profile_id": MAX_SAFE})),
+            (
+                "selected",
+                json!({"profile_id": 1, "selected_stl_basenames": [UNICODE, "gear.stl"]}),
+            ),
+            ("text-profile", json!({"profile_id": "1"})),
+            ("missing", json!({})),
+            ("extra-field", json!({"profile_id": 1, "force": true})),
+        ] {
+            cases.push(request::<ClaimUnattributedRequest>(
+                "ClaimUnattributedRequest",
+                name,
+                value,
+            ));
+        }
+        for (name, value) in [
+            ("empty", json!({})),
+            ("extra-field", json!({"reason": "x"})),
+        ] {
+            cases.push(request::<DismissUnattributedRequest>(
+                "DismissUnattributedRequest",
+                name,
+                value,
+            ));
         }
         Ok(cases)
     }

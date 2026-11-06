@@ -32,6 +32,8 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+mod lifecycle;
+
 const ADMISSION_PERMITS: usize = 64;
 const READ_PERMITS: usize = 64;
 const TARGET_LIMIT: usize = 16 * 1024;
@@ -131,9 +133,8 @@ async fn guard(
         return failure(StatusCode::UNAUTHORIZED, "Authentication required");
     };
     request.extensions_mut().insert(presented);
-    // A reconciliation without a usable key is refused before its body is read.
-    if request.method() == Method::PUT
-        && request.uri().path().ends_with("/reconciliation")
+    // A keyed write without a usable key is refused before its body is read.
+    if keyed_write(request.method(), request.uri().path())
         && idempotency_key(request.headers()).is_none()
     {
         return invalid_request();
@@ -240,7 +241,7 @@ enum ReadError {
 }
 
 /// Mounts list/workspace reads, Accept previews, part edits, Required-unit
-/// reconciliation, and abandon when the startup gate is on. Storage accepts the presented credential before a handler runs.
+/// reconciliation, abandon, recompute, rebase and Accept when the startup gate is on. Storage accepts the presented credential before a handler runs.
 /// API-key reads also resolve the key so `lastUsedAt` commits as Node does.
 /// A disabled gate mounts nothing.
 pub fn draft_router(
@@ -297,6 +298,16 @@ fn mount(
             put(reconcile),
         )
         .route("/plans/{id}/drafts/{draft_id}/abandon", post(abandon))
+        .route("/plans/{id}/drafts/recompute", post(lifecycle::recompute))
+        .route("/plans/{id}/drafts/save", post(lifecycle::autosave))
+        .route(
+            "/plans/{id}/drafts/{draft_id}/rebase",
+            post(lifecycle::rebase),
+        )
+        .route(
+            "/plans/{id}/drafts/{draft_id}/apply",
+            post(lifecycle::apply),
+        )
         .route_layer(middleware::from_fn_with_state(app, authorize));
     admit_draft_routes(config, routes)
 }
@@ -517,7 +528,7 @@ async fn edit(
     };
     match run_write(&app, work).await {
         Ok(outcome) => present_edit(outcome),
-        Err(error) => write_failure(error, "edit", profile, draft_id),
+        Err(error) => write_failure(error, "edit", profile, Some(draft_id)),
     }
 }
 
@@ -564,7 +575,7 @@ fn write_failure(
     error: ReadError,
     operation: &str,
     profile: PositiveId,
-    draft_id: PositiveId,
+    draft_id: Option<PositiveId>,
 ) -> Response {
     let (class, response) = match error {
         ReadError::Worker => ("worker_failure", edit_internal_error()),
@@ -578,9 +589,10 @@ fn write_failure(
         ),
     };
     if response.status().is_server_error() {
+        let draft_id = draft_id.map_or_else(|| "none".to_owned(), |id| format!("{id:?}"));
         log::error!(
             target: "pp_api::drafts",
-            "Draft HTTP failed; operation={operation} profile_id={profile:?} draft_id={draft_id:?} error_class={class}"
+            "Draft HTTP failed; operation={operation} profile_id={profile:?} draft_id={draft_id} error_class={class}"
         );
     }
     response
@@ -599,6 +611,18 @@ fn idempotency_key(headers: &HeaderMap) -> Option<&str> {
         .and_then(|value| value.to_str().ok())
         .map(|value| value.trim_matches([' ', '\t']))
         .filter(|key| (1..=160).contains(&key.len()))
+}
+
+/// The writes Node refuses without an `Idempotency-Key`: reconciliation,
+/// recompute, rebase and Accept, and the Rust-only draft autosave.
+fn keyed_write(method: &Method, path: &str) -> bool {
+    match *method {
+        Method::PUT => path.ends_with("/reconciliation"),
+        Method::POST => ["/recompute", "/rebase", "/apply", "/drafts/save"]
+            .iter()
+            .any(|action| path.ends_with(action)),
+        _ => false,
+    }
 }
 
 fn reconcile_target(path: &str) -> Option<(PositiveId, PositiveId)> {
@@ -645,7 +669,7 @@ async fn abandon(
     };
     match run_write(&app, work).await {
         Ok(outcome) => present_abandon(outcome),
-        Err(error) => write_failure(error, "abandon", profile, draft_id),
+        Err(error) => write_failure(error, "abandon", profile, Some(draft_id)),
     }
 }
 
@@ -680,7 +704,7 @@ async fn reconcile(
     };
     match run_write(&app, work).await {
         Ok(outcome) => present_edit(outcome),
-        Err(error) => write_failure(error, "reconcile", profile, draft_id),
+        Err(error) => write_failure(error, "reconcile", profile, Some(draft_id)),
     }
 }
 
@@ -718,21 +742,38 @@ fn present_edit(outcome: WorkspaceOutcome) -> Response {
         WorkspaceOutcome::IdempotencyConflict => conflict("idempotency_conflict", None),
         WorkspaceOutcome::DomainError { code } => {
             let code = serde_json::to_value(code).ok();
-            let code = code.as_ref().and_then(Value::as_str);
-            let status = StatusCode::UNPROCESSABLE_ENTITY;
-            let problem = crate::problem::problem(status, "", Some(code.unwrap_or("domain_error")));
-            crate::problem::build(problem.without_detail(), serde_json::Map::new())
+            domain_error(
+                code.as_ref()
+                    .and_then(Value::as_str)
+                    .unwrap_or("domain_error"),
+            )
         }
     }
 }
 
 /// Node sends no `detail` here, so the problem has none either.
 fn conflict(code: &str, workspace: Option<Value>) -> Response {
-    let mut extensions = serde_json::Map::new();
-    if let Some(workspace) = workspace {
-        extensions.insert("workspace".into(), workspace);
-    }
-    let problem = crate::problem::problem(StatusCode::CONFLICT, "", Some(code));
+    let workspace = workspace.map(|workspace| ("workspace", workspace));
+    refusal(StatusCode::CONFLICT, code, workspace)
+}
+
+/// Node's 422 `{ code }` for a `domain_error`.
+fn domain_error(code: &str) -> Response {
+    refusal(StatusCode::UNPROCESSABLE_ENTITY, code, [])
+}
+
+/// A problem with no `detail`, `code`, and Node's other fields as extension
+/// members.
+fn refusal<'a>(
+    status: StatusCode,
+    code: &str,
+    fields: impl IntoIterator<Item = (&'a str, Value)>,
+) -> Response {
+    let extensions = fields
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect();
+    let problem = crate::problem::problem(status, "", Some(code));
     crate::problem::build(problem.without_detail(), extensions)
 }
 

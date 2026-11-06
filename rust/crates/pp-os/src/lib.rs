@@ -20,7 +20,7 @@
 //! | Durable entry changes in a [`Dir`] | [`Dir::create_dir`] or [`Dir::rename_no_replace`], then [`Dir::sync`] (`fsync` on the directory) | Both open the entry with `FILE_WRITE_THROUGH`, the option `MoveFileExW` uses for `MOVEFILE_WRITE_THROUGH`; [`Dir::sync`] does nothing. See [Durability on Windows](#durability-on-windows) |
 //! | File flush | `fsync` on a read-only descriptor | `FlushFileBuffers` on a handle with write access |
 //! | Delete | `unlinkat`: the name goes at once, open handles stay valid | POSIX-semantics delete (`FILE_DISPOSITION_POSIX_SEMANTICS`), the same as Unix. File systems without it, such as FAT, get the classic delete: the name stays until the last handle closes and cannot be opened meanwhile |
-//! | Lock | `flock` through `fs4`, on a file or a directory | `LockFileEx` through `fs4`, on a regular file only; see [Directory locks](#directory-locks) |
+//! | Lock | `flock` through `fs4`, on a file or a directory | `LockFileEx` on the one byte at offset `i64::MAX`, on a regular file only; see [Directory locks](#directory-locks) and [Lock range on Windows](#lock-range-on-windows) |
 //!
 //! [ADR 0015]: ../../../docs/adr/0015-shared-filesystem-portability.md
 //!
@@ -40,6 +40,19 @@
 //! pp-storage's data-directory lease does with `printpartner.lock`.
 //! [`Dir::try_lock`] and [`Dir::lock`] take such a lock on [`DIR_LOCK_FILE`]
 //! for the caller on Windows and `flock` the directory itself on Unix.
+//!
+//! # Lock range on Windows
+//!
+//! A `LockFileEx` lock is mandatory: while one handle holds a range, reads
+//! and writes of that range through any other handle fail with
+//! `ERROR_LOCK_VIOLATION` (os error 33). `fs4` and the standard library lock
+//! the whole file, so reading a held lease file, or copying a data directory
+//! that holds one, failed on Windows. [`try_lock`] and [`Dir::lock`]
+//! therefore lock only the byte at offset `i64::MAX`. No file holds data
+//! there, so reads pass. Exclusivity is unchanged: every Print Partner lock
+//! covers that same byte, and a whole-file lock taken through `fs4` or
+//! `std::fs::File::lock` covers it too, so each kind of holder still refuses
+//! the other. Unix keeps `flock`, which never blocks reads.
 //!
 //! # Windows entry names
 //!
@@ -258,11 +271,7 @@ pub enum TryLockError {
 
 /// Take an exclusive advisory lock on `file` without waiting.
 pub fn try_lock(file: &File) -> Result<(), TryLockError> {
-    match fs4::FileExt::try_lock(file) {
-        Ok(()) => Ok(()),
-        Err(fs4::TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
-        Err(fs4::TryLockError::Error(error)) => Err(TryLockError::Io(error)),
-    }
+    platform::try_lock(file)
 }
 
 /// [`try_lock`] as an `io::Result`, reporting a held lock as `blocked()`.
@@ -276,7 +285,7 @@ fn try_lock_or(file: &File, blocked: fn() -> io::Error) -> io::Result<()> {
 
 /// Release a lock taken with [`try_lock`].
 pub fn unlock(file: &File) -> io::Result<()> {
-    fs4::FileExt::unlock(file)
+    platform::unlock(file)
 }
 
 /// An open directory. Entry operations take one plain name, never a path.

@@ -292,17 +292,7 @@ impl Scope<'_> {
             &next,
             "Required-unit reconciliation selection could not be verified",
         )?;
-        crate::domain_events::append(
-            self.tx,
-            self.tenant,
-            crate::domain_events::Change {
-                kind: crate::domain_events::DRAFT_CHANGED,
-                aggregate_type: "build",
-                aggregate_id: self.profile.to_string(),
-                aggregate_version: None,
-                payload: json!({"draft_id": self.draft}),
-            },
-        )?;
+        crate::domain_events::draft_changed(self.tx, self.tenant, self.profile, self.draft)?;
         self.ready(&selected)
     }
 }

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 fn immutable(path: &Path) -> Connection {
     Connection::open_with_flags(
-        format!("file:{}?immutable=1", path.display()),
+        crate::sqlite_uri::immutable_uri(path).unwrap(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )
     .unwrap()

@@ -354,11 +354,24 @@ pub(crate) fn initialize(
     } else {
         None
     };
-    // The rollback copy of the run this open continues, named by its marker,
+    // The rollback copies of the run this open continues, named by its marker,
     // or this run's own copy, named in a new marker before any step writes.
+    // A restart from 41 without a marker may continue an older release's
+    // upgrade, whose copies 38 to 41 hold its untouched input, so the new
+    // marker names those too and a later restart keeps them all.
     #[cfg(feature = "desktop_rebuild")]
     let pinned = match &backup_path {
-        Some(rollback) => crate::backup_retention::begin_run(rollback)?,
+        Some(rollback) => {
+            let inherited: Vec<PathBuf> = if version == UNMARKED_RESTART {
+                (38..=UNMARKED_RESTART)
+                    .map(|step| rollback.with_file_name(format!("pre-schema{step}.db")))
+                    .filter(|copy| copy.exists())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            crate::backup_retention::begin_run(rollback, &inherited)?
+        }
         None => {
             crate::backup_retention::end_run(&path.with_file_name("backups"))?;
             None
@@ -495,7 +508,7 @@ pub(crate) fn initialize(
         step_copies
             .iter()
             .cloned()
-            .chain(pinned)
+            .chain(pinned.into_iter().flatten())
             .collect::<Vec<_>>(),
     );
     #[cfg(not(feature = "desktop_rebuild"))]

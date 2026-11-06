@@ -39,39 +39,50 @@ pub(crate) const KEEP_VERIFIED: usize = 3;
 pub(crate) const RUN_MARKER: &str = "pre-schema-run";
 
 /// Starts or continues an upgrade whose rollback copy is `rollback`. Returns
-/// the copy an earlier, interrupted attempt named, which retention must keep;
-/// otherwise names `rollback` in a new marker, durably, and returns `None`.
+/// the copies an earlier, interrupted attempt named, which retention must
+/// keep; otherwise names `rollback` and `inherited` in a new marker, durably,
+/// and returns `None`.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn begin_run(rollback: &Path) -> anyhow::Result<Option<PathBuf>> {
+pub(crate) fn begin_run(
+    rollback: &Path,
+    inherited: &[PathBuf],
+) -> anyhow::Result<Option<Vec<PathBuf>>> {
     use anyhow::Context;
     let directory = rollback
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Backup parent missing"))?;
     let marker = directory.join(RUN_MARKER);
     match std::fs::read_to_string(&marker) {
-        Ok(name) => {
-            let name = name.trim();
+        Ok(text) => {
+            let names: Vec<&str> = text.lines().map(str::trim).collect();
             anyhow::ensure!(
-                parse(name).is_some(),
+                !names.is_empty() && names.iter().all(|name| parse(name).is_some()),
                 "Upgrade run marker {} names no pre-upgrade copy",
                 marker.display()
             );
-            return Ok(Some(directory.join(name)));
+            return Ok(Some(
+                names.into_iter().map(|name| directory.join(name)).collect(),
+            ));
         }
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             return Err(error).context("backup_retention: read the upgrade run marker");
         }
         Err(_) => {}
     }
-    let name = rollback
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("Rollback copy name is not UTF-8"))?;
+    let mut lines = String::new();
+    for copy in std::iter::once(rollback).chain(inherited.iter().map(PathBuf::as_path)) {
+        let name = copy
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Rollback copy name is not UTF-8"))?;
+        lines.push_str(name);
+        lines.push('\n');
+    }
     let temp = directory.join(format!(
         ".{RUN_MARKER}-{}",
         hex::encode(rand::random::<[u8; 8]>())
     ));
-    std::fs::write(&temp, format!("{name}\n")).context("backup_retention: write the run marker")?;
+    std::fs::write(&temp, lines).context("backup_retention: write the run marker")?;
     pp_os::sync_file(&temp).context("backup_retention: sync the run marker")?;
     pp_os::publish_rename(&temp, &marker).context("backup_retention: publish the run marker")?;
     pp_os::sync_directory(directory).context("backup_retention: sync the backups directory")?;

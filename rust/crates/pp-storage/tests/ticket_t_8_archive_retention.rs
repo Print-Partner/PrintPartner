@@ -404,3 +404,39 @@ fn ticket_t_8_archive_retention_refuses_a_marker_naming_no_copy() {
     );
     assert!(std::fs::read(data.join("print-partner.db")).unwrap() == database);
 }
+
+/// A new release's first attempt from an unmarked 41 fails before step 42
+/// commits. Its marker names the older run's copies 38 to 41 too, so the
+/// retry, which now finds a marker and runs retention, still keeps the
+/// untouched input in `pre-schema38.db`.
+#[cfg(feature = "desktop_rebuild")]
+#[test]
+fn ticket_t_8_archive_retention_retry_from_unmarked_41_keeps_the_older_run_input() {
+    let (data, backups) = interrupted("pp-t8-retention-retry-41", 41);
+    let database = data.join("print-partner.db");
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_schema42 BEFORE UPDATE OF value ON app_settings
+             WHEN NEW.tenant_id = 'default' AND NEW.key = 'schema_version' AND NEW.value = '42'
+             BEGIN SELECT RAISE(ABORT, 'schema42 stamp rejected'); END;",
+        )
+        .unwrap();
+    assert!(WriterOwner::open(&data, Limits::default()).is_err());
+    assert!(backups.join("pre-schema-run").exists());
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_schema42")
+        .unwrap();
+    let (owner, ready) = WriterOwner::open(&data, Limits::default()).unwrap();
+    owner.shutdown().unwrap();
+    assert_eq!(ready.previous_version, 41);
+    for step in 38..=43 {
+        assert!(
+            backups.join(format!("pre-schema{step}.db")).exists(),
+            "{step} {:?}",
+            ready.pruned_backups
+        );
+    }
+    assert!(!backups.join("pre-schema-run").exists());
+}

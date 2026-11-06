@@ -160,7 +160,7 @@ describe("UI5-03 Match review groups by confidence and ticks nothing by itself",
     expect(within(group(/^Likely/)).getByText("Nothing checked in Likely.")).toBeTruthy();
     expect(await screen.findByLabelText(/^bracket\.gcode on Voron 2\.4/)).toBeTruthy();
     expect(
-      screen.getByText(/Claim for Voron 2\.4 kit, plate 1\. From Required-unit names/),
+      screen.getByText(/Claim for Voron 2\.4 kit \(suggested plate 1\)\. From Required-unit names/),
     ).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(core.posts).toEqual([]);

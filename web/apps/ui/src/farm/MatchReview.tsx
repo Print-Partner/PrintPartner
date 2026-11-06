@@ -268,7 +268,7 @@ export function MatchReview() {
                   <ul>
                     {group.map((s) => {
                       const target = claims(s)
-                        ? `Claim for ${s.build!.name}${s.plate ? `, plate ${s.plate.ordinal}` : ""}`
+                        ? `Claim for ${s.build!.name}${s.plate ? ` (suggested plate ${s.plate.ordinal})` : ""}`
                         : "Dismiss";
                       const error = failures.get(s.print_id);
                       return (

@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -91,8 +90,7 @@ impl Exchange {
 pub struct Served {
     pub origin: String,
     pub client: reqwest::Client,
-    shutdown: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<std::io::Result<()>>,
+    serving: crate::serving::Serving,
 }
 
 impl Served {
@@ -100,17 +98,7 @@ impl Served {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("http://{}", listener.local_addr()?);
         let router = build(&origin);
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-        });
+        let serving = crate::serving::Serving::start(listener, router);
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -119,14 +107,12 @@ impl Served {
         Ok(Self {
             origin,
             client,
-            shutdown,
-            task,
+            serving,
         })
     }
 
-    pub async fn stop(self) -> Result<()> {
-        let _ = self.shutdown.send(());
-        Ok(self.task.await??)
+    pub async fn stop(mut self) -> Result<()> {
+        self.serving.stop().await
     }
 }
 

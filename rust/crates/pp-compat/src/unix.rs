@@ -220,6 +220,12 @@ pub(crate) mod test_support {
         (Channel::unbound(path), listener)
     }
 
+    /// Open a client connection to the channel. After `close` the socket file
+    /// is gone, so this fails with `NotFound`.
+    pub(crate) async fn channel_open(channel: &Channel) -> std::io::Result<()> {
+        channel.connect().await.map(drop)
+    }
+
     /// Accept one connection to the channel and hold it unanswered.
     pub(crate) async fn hold_connection(
         listener: Listener,

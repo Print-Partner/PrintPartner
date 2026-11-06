@@ -190,11 +190,6 @@ fn verify_batch_undo_restores_the_prior_state_or_refuses_with_a_reason() {
         undo(&owner, &token)["body"]["detail"],
         "This Checkoff burst was already undone"
     );
-    assert_eq!(
-        batch(&owner, two_beds("undo-me")),
-        done,
-        "a late retry does not apply the burst again"
-    );
     assert_eq!(fixture.checkoff(), before);
     assert_eq!(undo(&owner, &json!("ppb_missing"))["status"], 404);
 
@@ -552,6 +547,46 @@ fn verify_batch_transaction_has_no_printer_or_spoolman_path() {
             "pp-storage depends on {forbidden}"
         );
     }
+}
+
+#[test]
+fn verify_batch_resend_after_undo_is_refused_and_writes_nothing() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let done = batch(&owner, two_beds("resend"));
+    assert_eq!(done["status"], 200, "{done}");
+    let token = done["body"]["undo_token"].clone();
+    assert_eq!(undo(&owner, &token)["status"], 200);
+    let rows = fixture.checkoff();
+    let events = progress_events(&fixture);
+    let resent = batch(&owner, two_beds("resend"));
+    assert_eq!(resent["status"], 409, "{resent}");
+    assert!(
+        resent["body"]["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("burst_undone:"),
+        "{resent}"
+    );
+    assert_eq!(
+        fixture.checkoff(),
+        rows,
+        "the refused resend writes nothing"
+    );
+    assert_eq!(progress_events(&fixture), events, "and appends no event");
+    owner.shutdown().unwrap();
+    let owner = fixture.open();
+    assert_eq!(
+        batch(&owner, two_beds("resend"))["status"],
+        409,
+        "the refusal survives a restart"
+    );
+    let fresh = batch(&owner, two_beds("resend-again"));
+    assert_eq!(
+        fresh["status"], 200,
+        "a new key applies the burst again: {fresh}"
+    );
+    owner.shutdown().unwrap();
 }
 
 fn progress_events(fixture: &Fixture) -> i64 {

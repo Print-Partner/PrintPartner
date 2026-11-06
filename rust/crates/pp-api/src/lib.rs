@@ -1,6 +1,7 @@
 pub mod auth;
 #[cfg(feature = "desktop_rebuild")]
 pub mod problem;
+pub mod serving;
 /// With `desktop_rebuild` off, pp-api errors keep their legacy JSON bodies.
 #[cfg(not(feature = "desktop_rebuild"))]
 pub mod problem {

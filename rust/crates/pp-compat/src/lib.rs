@@ -1554,6 +1554,7 @@ mod tests {
 
     /// When `exit` is set, close the child's stdin and reap it, as a stop
     /// that finds the leader already gone sees it.
+    #[cfg(any(target_os = "linux", windows))]
     async fn observe_exit(
         child: &mut super::platform::Child,
         exit: bool,
@@ -1607,6 +1608,7 @@ mod tests {
             endpoint,
         } = test_endpoint("stop-regression");
         let channel = endpoint.channel.clone();
+        test_support::channel_open(&channel).await.unwrap();
 
         let first_log = tokio::spawn(std::future::pending::<()>());
         first_log.abort();
@@ -1640,7 +1642,9 @@ mod tests {
 
         let error_message = error.to_string();
         let later_cleanup_attempted = later_attempted.load(Ordering::SeqCst);
-        let channel_closed = channel.connect().await.is_err();
+        let channel_closed = test_support::channel_open(&channel)
+            .await
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
         let process_group_absent = super::drain::process_group_absent(pid);
         let connections_closed = *connections.closed.lock().unwrap();
 

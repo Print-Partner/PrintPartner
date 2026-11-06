@@ -6,7 +6,9 @@
 //! `printer.checkoff_bursts` setting: the idempotency key, the canonical request
 //! hash, the original response and what undo must restore. A repeated key with
 //! the same request returns that response before any other check and writes
-//! nothing; a changed request under the same key is refused. Undo restores the
+//! nothing, unless the burst was undone: then the key is refused with 409
+//! `burst_undone` and nothing is written. A changed request under the same key
+//! is refused. Undo restores the
 //! links, progress rows and outcome rows the burst wrote, and refuses when any
 //! of them, or a touched Accepted Plan, changed since.
 
@@ -348,7 +350,9 @@ pub(super) fn verify_batch(
         &receipts,
         (&burst.key, &burst.hash),
         RETIRED_KEY,
-        None,
+        Some(
+            "burst_undone: this Checkoff burst was undone; send a new idempotency_key to apply it again",
+        ),
     )? {
         return Ok(Ok(answer));
     }

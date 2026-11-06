@@ -2716,7 +2716,11 @@ different request returns 409. The newest 100 receipts are kept. A dropped
 receipt leaves the SHA-256 of its key in `printer.checkoff_bursts_retired` (the
 newest 5,000), and replaying that key returns 409 instead of running again, so an
 undone burst cannot be counted again by a late retry. A replay of an undone burst
-that still has its receipt returns the original receipt and writes nothing.
+that still has its receipt (GRE-1190) returns 409 with a detail that starts
+`burst_undone:`, writes nothing and appends no event, so a client is never told
+a burst applied when its progress was undone. The receipt stays as it was, apart
+from the `undone_at` mark undo wrote. To apply the same beds again the client
+sends a new idempotency key.
 
 Undo takes `{ "undo_token" }` and is a compensating write: it restores each
 link at its original position, the progress rows and the outcome rows the burst
@@ -3144,6 +3148,24 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
+  Before it publishes, Accept saves the snapshot its preview promises: one
+  `plan_snapshots` row, `source` `pre_apply`, named `Before accepting draft
+  <draft_id>`, in the same transaction. It holds the Accepted Plan being
+  replaced. Its `layers` come from that revision's `plan_revision_inputs`
+  (type, Source id, current Source name and order), not from `profile_layers`:
+  Accept publishes the working layers, so they already match the new Plan. The
+  payload has Node's `capturePlanSnapshotPayload` shape plus
+  `accepted_plan_revision_id` and `accepted_plan_version`. Accepted revisions
+  record no kit manifest, Source tag or branch, so `kit_manifest`, `tag`,
+  `branch` and `recipe_summary` are `null`, and restoring the row brings back
+  the replaced Plan's Source layers while keeping the current kit manifest and
+  Source refs. The first Accept, a replaced revision with no input set, one
+  with an input whose Source row is gone, and one whose migrated input set
+  holds `legacy:<id>` layers have nothing restore can place as recorded, so
+  they save none, and the preview reports `saved_before_accept: false` for
+  them. An empty input set is a Plan with no Source layers; its snapshot has
+  `layers: []`, which restores that. A replay, an already consumed draft and
+  every refusal save none either.
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500
@@ -3212,7 +3234,15 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
 - `revision` is `{ draft_id, expected_snapshot_digest,
   expected_lifecycle_version, expected_base }`, the fields Accept's request
   expects. Accept refuses a stale one with `draft_changed` or `base_changed`.
-- `snapshot` is `{ saved_before_accept: true, detail }`.
+- `snapshot` is `{ saved_before_accept, detail }`. `saved_before_accept` is
+  true when Accept will save the `pre_apply` snapshot described above, that is
+  when the accepted Plan's revision has an input set whose layers are all
+  `base` or `addon` with an existing Source. It is false, with a detail
+  saying no snapshot is saved, on a Build's first Accept, when the accepted
+  revision has no input set (a `legacy` revision), when one of its inputs
+  names a Source row that is gone, and when its input set was migrated by
+  schema v18 and holds `legacy:<id>` layers, which Node's restore would turn
+  into addons with no base.
 - A refusal is the one Accept would return, as an RFC 9457 problem
   ([Problem responses](problem-responses.md)): 404 `draft_not_found` for a
   missing draft, otherwise 409 with no `detail`, Accept's outcome kind as

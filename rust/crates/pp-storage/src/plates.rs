@@ -1380,3 +1380,41 @@ fn plate_views(
     }
     Ok((views, unplaced, placed))
 }
+
+/// The head Plate revision and, by token, the Plate id, ordinal and Printer
+/// name of each Required unit placed on one of its Plates, for the Checkoff
+/// units read. `None` when there is no head revision or it stamps an older
+/// Accepted Plan than `snapshot`. Units the head lists as unplaced are left out.
+pub(crate) fn head_plates(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    snapshot: &Snapshot,
+) -> Result<Option<crate::read_model::HeadPlates>> {
+    let Stored::Ready(revision, plates) =
+        stored_layout(tx, tenant, profile, &Basis::of(snapshot), snapshot)?
+    else {
+        return Ok(None);
+    };
+    let by_token = plates
+        .iter()
+        .flat_map(|plate| {
+            let input = &plate.input;
+            input
+                .units
+                .iter()
+                .filter(|unit| unit.placement != Placement::Unplaced)
+                .map(move |unit| {
+                    (
+                        unit.token.as_str().to_owned(),
+                        (
+                            input.plate_id.as_str().to_owned(),
+                            plate.ordinal,
+                            input.printer_name.clone(),
+                        ),
+                    )
+                })
+        })
+        .collect();
+    Ok(Some((revision.id, by_token)))
+}

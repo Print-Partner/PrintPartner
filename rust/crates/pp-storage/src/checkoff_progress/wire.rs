@@ -105,6 +105,21 @@ pub struct CheckoffUnitState {
     pub object_name: String,
     pub printed: bool,
     pub assembled: bool,
+    /// The head Plate this unit is placed on, or `null` when it is on none.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<UnitPlate>")
+    )]
+    pub plate: Option<UnitPlate>,
+}
+
+/// A Plate of the head Plate revision, as the Checkoff tab names it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct UnitPlate {
+    pub plate_id: String,
+    pub ordinal: u32,
+    pub printer_name: String,
 }
 
 /// One included Part of the Accepted Plan with its Required units.
@@ -125,7 +140,10 @@ pub struct CheckoffPart {
 /// `GET /api/v2/plans/{id}/checkoff/units`: the Accepted Plan's included Parts
 /// with each Required unit's token and durable printed and assembled state.
 /// `basis` is what a manual burst sends as `expected`; it is `null` when the
-/// Build has no Accepted Plan yet.
+/// Build has no Accepted Plan yet. `plate_revision_id` is the head Plate
+/// revision the units' `plate` fields come from; it is `null` when the Build
+/// has no Plate revision for this Accepted Plan, and then every `plate` is
+/// `null`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct CheckoffUnits {
@@ -135,6 +153,11 @@ pub struct CheckoffUnits {
         schemars(with = "pp_contracts::RequiredNullable<AcceptedBasis>")
     )]
     pub basis: Option<AcceptedBasis>,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<i64>")
+    )]
+    pub plate_revision_id: Option<i64>,
     pub parts: Vec<CheckoffPart>,
 }
 

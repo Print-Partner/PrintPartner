@@ -171,26 +171,41 @@ function useCheckoff() {
     },
   });
   /**
-   * Sends the picks as one burst, and calls `onConfirmed` once the core confirms it. Picks
-   * that touch a bed of a burst that got no answer resend that burst with its key instead,
-   * so a write that landed replays its receipt and Undo rather than being refused.
+   * Sends the picks as one burst, and calls `onConfirmed` once the core confirms it. The
+   * same picks as a burst that got no answer reuse its key. Picks that only overlap such a
+   * burst reread the results first: if that burst landed, it is resent with its key so the
+   * core replays its receipt and Undo; if it did not, it is dropped and the picks go as a
+   * new burst.
    */
-  const confirmPicks = (picks: Pick[], onConfirmed?: () => void) => {
+  const confirmPicks = async (picks: Pick[], onConfirmed?: () => void) => {
     if (confirm.isPending || picks.length === 0 || picks.length > MAX_BURST_BEDS) return;
-    const beds = new Set(picks.map((p) => p.bed.result.id));
-    const lost = [...unanswered.current.entries()].find(([, u]) =>
-      u.picks.some((p) => beds.has(p.bed.result.id)),
-    );
-    if (lost) {
-      const [id, { key, picks: sent }] = lost;
-      confirm.mutate(
-        { picks: sent, key },
-        { onSuccess: id === burstId(picks) ? onConfirmed : undefined },
-      );
+    const id = burstId(picks);
+    const saved = unanswered.current.get(id);
+    if (saved) {
+      confirm.mutate({ picks, key: saved.key }, { onSuccess: onConfirmed });
       return;
     }
+    const beds = new Set(picks.map((p) => p.bed.result.id));
+    const overlap = [...unanswered.current.entries()].find(([, u]) =>
+      u.picks.some((p) => beds.has(p.bed.result.id)),
+    );
+    if (overlap) {
+      const [lostId, lost] = overlap;
+      try {
+        const fresh = await client.fetchQuery({ ...checkoffQuery, staleTime: 0 });
+        keepWaiting(bedsToClear(fresh.results, String));
+      } catch {
+        return;
+      }
+      if (unanswered.current.has(lostId)) {
+        unanswered.current.delete(lostId);
+      } else {
+        confirm.mutate({ picks: lost.picks, key: lost.key });
+        return;
+      }
+    }
     const key = crypto.randomUUID();
-    unanswered.current.set(burstId(picks), { key, picks });
+    unanswered.current.set(id, { key, picks });
     confirm.mutate({ picks, key }, { onSuccess: onConfirmed });
   };
   // Retry of a confirm that got no answer. It rereads the results first. While every sent
@@ -208,7 +223,7 @@ function useCheckoff() {
     const waiting = sent.picks.every(({ bed, units }) =>
       units.every((u) => listed.current.has(pendingKey(bed, u))),
     );
-    if (waiting) confirmPicks(sent.picks);
+    if (waiting) await confirmPicks(sent.picks);
     else confirm.mutate(sent);
   };
   // Only the newest write's failure shows, so an old confirm error never hides a failed Undo.

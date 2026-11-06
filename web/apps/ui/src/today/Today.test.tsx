@@ -900,6 +900,34 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(core.state.marked).toBe(2);
   });
 
+  it("sends a changed selection as a new burst when the lost one never landed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED() });
+    const real = core.fetchMock.getMockImplementation()!;
+    let drops = 3;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/printer-checkoff/verify-batch" && drops > 0) {
+        drops -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      return real(path, init);
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    expect(await screen.findByText("Confirmed 1 unit from Voron 2.4.")).toBeTruthy();
+    expect(core.posts.map((p) => p.body.beds)).toEqual([
+      [{ link_id: "link-voron", decisions: [{ part_id: 1, unit_index: 1, result: "confirmed" }] }],
+    ]);
+    expect(core.state.marked).toBe(1);
+  });
+
   it("keeps the picks when the core refuses the burst", async () => {
     const core = fakeCore({ results: SHARED() });
     const real = core.fetchMock.getMockImplementation()!;

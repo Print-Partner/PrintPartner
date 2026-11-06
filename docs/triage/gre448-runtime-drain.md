@@ -498,13 +498,15 @@ The driver rejects shell dispatchers before executing them. Each invocation
 creates a separate `run-*` evidence directory and records its exact commands.
 
 The negative control copies the Rust workspace into the isolated stage and
-disarms the production parent-death guard only in that private source copy.
+disarms the production parent-death guard only in that private source copy:
+Unix `adopt` in `pp-compat/src/unix.rs` calls `release()` right after it drops
+the watcher pipe's read end.
 Its Cargo target directory is separate from the calling checkout. The same exact
 test must fail with
 `built startup group outlived force-killed owner`. A pre-cleanup observation
 requires the owner to be reaped, the backend still stopped, and the peer alive.
 The fixture then kills and reaps the leaked group. A `finally` block restores
-the private `lib.rs` byte-for-byte before checking the negative result. The
+the private `unix.rs` byte-for-byte before checking the negative result. The
 calling checkout's source stays unchanged, including if termination bypasses
 `finally`. The driver requires two more cycles with the original guard and
 retains source isolation and restoration hashes.

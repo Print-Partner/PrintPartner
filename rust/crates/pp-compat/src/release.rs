@@ -141,7 +141,8 @@ impl std::ops::Deref for MeasuredBundle {
     }
 }
 
-#[cfg(test)]
+// GRE-1187 ports these tests to Windows.
+#[cfg(all(test, unix))]
 impl MeasuredBundle {
     /// Test fixtures whose spawns are meant to fail. The first spawn trusts this value without
     /// measuring it; later spawns still measure it.
@@ -325,7 +326,8 @@ fn verify_dependencies(
     verify_files(&root, &inventory.files, false, stop)
 }
 
-#[cfg(test)]
+// GRE-1187 ports these tests to Windows.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;

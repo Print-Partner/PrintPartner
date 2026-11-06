@@ -8,6 +8,7 @@ import {
   mappedDesktopTenant,
   mappedDesktopDatabaseAvailable,
   registerDesktopBoundary,
+  serveDesktopPipe,
 } from "./desktop-context.js";
 import { rustOwnedCopy } from "./db/rust-owned.js";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -688,9 +689,13 @@ export async function startServer(config: ServerConfig) {
 
       app = await buildApp(config, ports);
       const desktop = desktopContext();
-      await app.listen(
-        desktop ? { path: desktop.socket_path } : { host: config.host, port: config.port },
-      );
+      if (desktop && process.platform === "win32") {
+        await serveDesktopPipe(app, desktop.socket_path);
+      } else {
+        await app.listen(
+          desktop ? { path: desktop.socket_path } : { host: config.host, port: config.port },
+        );
+      }
       return { app, ports };
     } catch (err) {
       await app?.close();

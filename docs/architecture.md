@@ -70,9 +70,14 @@ protection and Spoolman shortfall tasks in this program. These stay out:
 
 ## Current state and transition
 
-The shipped gateway still supervises Node through `pp-compat` and a private Unix
-socket. Rust owns the directory lock and process lifetime; Node owns live domain
-operations. Rust storage, HTTP routers, and jobs already have substantial tested
+The shipped gateway still supervises Node through `pp-compat` and a private
+channel: a Unix socket on macOS and Linux, and on Windows a named pipe that Rust
+creates with a current-user DACL and `PIPE_REJECT_REMOTE_CLIENTS` and Node dials
+into. Rust owns the directory lock and process lifetime; Node owns live domain
+operations. On Unix, Node runs in its own process group with a parent-death
+watcher; on Windows it is created inside a Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the kernel terminates it and its
+children when the core exits, however it exits. Rust storage, HTTP routers, and jobs already have substantial tested
 implementations behind `desktop_rebuild`. With both gates on, `pp-server` and
 `pp-desktop` now start without a Node child and mount the read, draft and jobs
 routers in the gateway as a sibling router composed by `pp-core`

@@ -1,11 +1,6 @@
 use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
-use std::{
-    fs::OpenOptions,
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
-};
+use std::{io::Read, path::Path};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DesktopAccountPin {
@@ -19,21 +14,14 @@ impl DesktopAccountPin {
         if !cfg!(feature = "desktop_rebuild") || !enabled {
             return Ok(Self::Disabled);
         }
-        let file = match OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(data_dir.join("desktop-account.json"))
-        {
+        let file = match crate::platform::open_nofollow(&data_dir.join("desktop-account.json")) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::Missing),
             Err(error) => return Err(error.into()),
         };
         let metadata = file.metadata()?;
         ensure!(
-            metadata.is_file()
-                && metadata.uid() == unsafe { libc::geteuid() }
-                && metadata.mode() & 0o7777 == 0o600
-                && metadata.len() <= 4096,
+            crate::platform::private_file(&file)? && metadata.len() <= 4096,
             "Desktop account mapping must be a private regular file owned by the current user"
         );
         let mut bytes = Vec::new();
@@ -59,7 +47,8 @@ impl DesktopAccountPin {
     }
 }
 
-#[cfg(test)]
+// GRE-1187 ports these tests to Windows.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[cfg(feature = "desktop_rebuild")]

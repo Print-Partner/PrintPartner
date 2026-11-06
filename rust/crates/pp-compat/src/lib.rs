@@ -3,12 +3,23 @@ pub use account_pin::DesktopAccountPin;
 pub mod drain;
 mod logs;
 pub use logs::{CoreLog, log_folder, recent_diagnostics, recent_logs};
+#[cfg(unix)]
 mod parent_death;
 pub mod redact;
 pub mod settings;
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as platform;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;
 #[cfg(windows)]
 mod windows_security;
-use parent_death::{ParentDeathGuard, configure_child};
+/// The supervised child process.
+pub use platform::Child;
+use platform::ParentDeathGuard;
 mod release;
 use anyhow::{Context, Result, bail, ensure};
 use axum::{
@@ -22,8 +33,6 @@ pub use release::{MeasuredBundle, verify_bundle};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
-    os::fd::AsRawFd,
-    os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
@@ -31,8 +40,7 @@ use std::{
 };
 use tokio::{
     io::AsyncWriteExt,
-    net::UnixStream,
-    process::{Child, ChildStdin, Command},
+    process::{ChildStdin, Command},
     sync::{mpsc, watch},
     task::JoinHandle,
 };
@@ -57,6 +65,21 @@ impl Bundle {
         // ast-grep-ignore: no-writer-family-literal -- Node's shipped community manifests, read only; Rust never writes them.
         self.entry.parent().map(|dist| dist.join("data/manifests"))
     }
+}
+
+static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Start `command` while no compat spawn holds inheritable handles. On
+/// Windows a child created with handle inheritance gets every inheritable
+/// handle in the process, and Node's pipe ends are inheritable for the length
+/// of its `CreateProcessW` call; a child that keeps them would hide stdin EOF
+/// from Node and the log readers. Every other child the process starts goes
+/// through here.
+pub fn spawn_child(command: &mut Command) -> std::io::Result<tokio::process::Child> {
+    let _spawning = SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    command.spawn()
 }
 
 #[cfg(test)]
@@ -93,7 +116,7 @@ pub enum Status {
 
 #[derive(Clone)]
 pub struct Endpoint {
-    socket: PathBuf,
+    channel: Arc<platform::Channel>,
     generation: String,
     key: [u8; 32],
     connections: Arc<Connections>,
@@ -174,7 +197,7 @@ impl Endpoint {
     /// Socket endpoint with no child. Tests drop publication while a refresh is blocked on it.
     pub fn bound_to(socket: impl Into<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
-            socket: socket.into(),
+            channel: Arc::new(platform::Channel::unbound(socket.into())),
             generation: "test-generation".into(),
             key: [9; 32],
             connections: Arc::new(Connections::new()),
@@ -214,7 +237,7 @@ impl Endpoint {
         let stream = tokio::select! {
             biased;
             _ = self.connections.cancelled.cancelled() => bail!("Compatibility connection stopped"),
-            stream = UnixStream::connect(&self.socket) => stream.context("Compatibility socket unavailable")?,
+            stream = self.channel.connect() => stream.context("Compatibility socket unavailable")?,
         };
         let (mut sender, connection) = tokio::select! {
             biased;
@@ -327,7 +350,7 @@ impl CompatHandle {
 }
 
 pub struct Supervisor {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     health_probes_completed: watch::Receiver<usize>,
     pub handle: CompatHandle,
     stop: CancellationToken,
@@ -415,9 +438,7 @@ fn validate_stop_outcome(outcome: StopOutcome, intent: StopIntent) -> Result<()>
     match (outcome, intent) {
         (StopOutcome::Observed(_) | StopOutcome::Forced(_), StopIntent::Restart) => Ok(()),
         (StopOutcome::Forced(status), StopIntent::PlannedShutdown)
-            if status.signal() == Some(libc::SIGKILL)
-                || status.signal() == Some(libc::SIGTERM)
-                || status.success() =>
+            if platform::stopped_by_parent(&status) || status.success() =>
         {
             Ok(())
         }
@@ -425,9 +446,7 @@ fn validate_stop_outcome(outcome: StopOutcome, intent: StopIntent) -> Result<()>
             bail!("Compatibility child required parent-forced termination: {status}")
         }
         (StopOutcome::Observed(status), StopIntent::PlannedShutdown)
-            if status.success()
-                || status.signal() == Some(libc::SIGKILL)
-                || status.signal() == Some(libc::SIGTERM) =>
+            if status.success() || platform::stopped_by_parent(&status) =>
         {
             Ok(())
         }
@@ -503,9 +522,11 @@ impl Process {
         root_argument.push(package_root);
         let generation = hex::encode(rand::random::<[u8; 16]>());
         let key = rand::random::<[u8; 32]>();
-        let socket = spec.runtime_dir.join(format!("{}.sock", &generation[..12]));
         let endpoint = Arc::new(Endpoint {
-            socket,
+            channel: Arc::new(
+                platform::Channel::bind(&spec.runtime_dir, &generation)
+                    .context("Could not create the compatibility channel")?,
+            ),
             generation,
             key,
             connections: Arc::new(Connections::new()),
@@ -529,7 +550,7 @@ impl Process {
             .current_dir(&spec.bundle.web_root)
             .env_clear()
             .envs(
-                ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ"]
+                platform::INHERITED_ENV
                     .iter()
                     .filter_map(|name| std::env::var_os(name).map(|value| (*name, value))),
             )
@@ -544,11 +565,16 @@ impl Process {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let (parent_read, parent_death) =
-            configure_child(&mut command, spec.storage_lock.as_raw_fd())
+        let (child_setup, mut parent_death) =
+            platform::configure_child(&mut command, &spec.storage_lock)
                 .context("Could not arm parent-death watcher")?;
-        let mut child = command.spawn().context("Could not start bundled Node")?;
-        drop(parent_read);
+        let mut child =
+            platform::spawn(&mut command, &child_setup).context("Could not start bundled Node")?;
+        if let Err(error) = platform::adopt(child_setup, &mut parent_death, &child) {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error).context("Could not arm parent-death watcher");
+        }
         #[cfg(test)]
         if let Err(error) =
             (spec.before_setup)(&spec.data_dir, child.id().context("Missing child PID")?)
@@ -558,7 +584,7 @@ impl Process {
             return Err(error);
         }
         let mut stdin = child.stdin.take().context("Missing parent-liveness pipe")?;
-        let mut setup = serde_json::json!({ "version":1, "data_dir":spec.data_dir, "socket_path":endpoint.socket,
+        let mut setup = serde_json::json!({ "version":1, "data_dir":spec.data_dir, "socket_path":endpoint.channel.name(),
             "generation":endpoint.generation, "key":hex::encode(key), "parent_pid":std::process::id(),
             "port":spec.port, "gateway_rate_limit":spec.gateway_rate_limit });
         spec.account_pin.apply(&mut setup);
@@ -603,28 +629,28 @@ impl Process {
     ) -> Result<Self> {
         let generation = hex::encode(rand::random::<[u8; 16]>());
         let key = rand::random::<[u8; 32]>();
-        let socket = spec.runtime_dir.join(format!("{}.sock", &generation[..12]));
         let endpoint = Arc::new(Endpoint {
-            socket: socket.clone(),
+            channel: Arc::new(platform::Channel::bind(&spec.runtime_dir, &generation)?),
             generation,
             key,
             connections: Arc::new(Connections::new()),
         });
-        let mut command = Command::new("/bin/sh");
+        let mut command = platform::test_shell(spec.script);
         command
-            .arg("-c")
-            .arg(spec.script)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
             .env("NODE", crate::tests::node_binary())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let lease = std::fs::File::open("/dev/null")?;
-        let (parent_read, parent_death) = configure_child(&mut command, lease.as_raw_fd())?;
-        let mut child = command.spawn().context("Could not start test child")?;
-        drop(parent_read);
+        let lease = std::fs::File::open(if cfg!(windows) { "NUL" } else { "/dev/null" })?;
+        let (child_setup, mut parent_death) = platform::configure_child(&mut command, &lease)?;
+        let mut child =
+            platform::spawn(&mut command, &child_setup).context("Could not start test child")?;
+        if let Err(error) = platform::adopt(child_setup, &mut parent_death, &child) {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error.into());
+        }
         let pid = child.id().context("Missing child PID")?;
         if let Err(error) = record_test_pid(&spec.pidfile, pid) {
             let _ = child.kill().await;
@@ -635,7 +661,7 @@ impl Process {
         let setup = serde_json::json!({
             "version": 1,
             "data_dir": spec.data_dir,
-            "socket_path": endpoint.socket,
+            "socket_path": endpoint.channel.name(),
             "generation": endpoint.generation,
             "key": hex::encode(key),
             "test_padding": spec.setup_padding,
@@ -754,9 +780,7 @@ impl Process {
                                 }
                             }
                             Err(_) => {
-                                unsafe {
-                                    libc::kill(-(pid as i32), libc::SIGKILL);
-                                }
+                                drain::reap_process_group(pid);
                                 errors.capture(
                                     self.child.start_kill().context("Child termination failed"),
                                 );
@@ -792,10 +816,7 @@ impl Process {
             errors.capture(
                 tokio::time::timeout(Duration::from_secs(2), async {
                     loop {
-                        let result = unsafe { libc::kill(-(pid as i32), 0) };
-                        if result < 0
-                            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-                        {
+                        if drain::process_group_absent(pid) {
                             return;
                         }
                         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -820,11 +841,13 @@ impl Process {
             };
             errors.capture(result);
         }
-        errors.capture(match tokio::fs::remove_file(&self.endpoint.socket).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).context("Compatibility socket cleanup failed"),
-        });
+        errors.capture(
+            self.endpoint
+                .channel
+                .close()
+                .await
+                .context("Compatibility socket cleanup failed"),
+        );
         let stopped = outcome
             .map(|outcome| {
                 let exit = outcome.exit();
@@ -938,7 +961,7 @@ impl Supervisor {
         let logs = logs::Logs::open(source.data_dir().join("logs"))?;
         let (endpoints, endpoint) = watch::channel(None);
         let (states, status) = watch::channel(Status::Starting);
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let (probe_completions, health_probes_completed) = watch::channel(0);
         let (recover, mut recovery) = mpsc::channel(1);
         let stop = CancellationToken::new();
@@ -992,7 +1015,7 @@ impl Supervisor {
                             match probe {
                                 None => break,
                                 Some(probe_ready) => {
-                                    #[cfg(test)]
+                                    #[cfg(all(test, unix))]
                                     probe_completions.send_modify(|count| *count += 1);
                                     ready = startup_probe_publishes(
                                         restarts_blocked(&cancelled, &disarmed),
@@ -1032,7 +1055,7 @@ impl Supervisor {
                                 },
                                 _ = tokio::time::sleep(Duration::from_secs(10)) => {
                                     if process.endpoint.ready(source.bundle(), &cancelled).await { failures = 0; } else { failures += 1; }
-                                    #[cfg(test)]
+                                    #[cfg(all(test, unix))]
                                     probe_completions.send_modify(|count| *count += 1);
                                     if failures >= 3 { break; }
                                 }
@@ -1051,7 +1074,7 @@ impl Supervisor {
                         termination = status
                             .code()
                             .map(logs::Termination::ExitCode)
-                            .or_else(|| status.signal().map(logs::Termination::Signal));
+                            .or_else(|| platform::signal(&status).map(logs::Termination::Signal));
                     }
                     let planned_stop = cancelled.is_cancelled() && observed_exit.is_none();
                     let (stop_intent, stop_exit) = match process
@@ -1128,7 +1151,7 @@ impl Supervisor {
             Ok(exit)
         });
         Ok(Self {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             health_probes_completed,
             handle: CompatHandle {
                 endpoint,
@@ -1160,24 +1183,35 @@ impl Drop for Supervisor {
     }
 }
 
-#[cfg(test)]
+// GRE-1187 ports the Unix-mechanism tests; until then Windows builds only the
+// platform tests in `windows.rs` and `logs.rs`.
+#[cfg(all(test, unix))]
 mod ticket_t_2;
 
+/// The native Node executable the test fixtures run.
 #[cfg(test)]
+fn test_node_binary() -> std::path::PathBuf {
+    static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    NODE.get_or_init(|| {
+        let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
+        let output = std::process::Command::new(configured)
+            .args(["-p", "process.execPath"])
+            .output()
+            .expect("Node must report its native executable");
+        assert!(output.status.success());
+        std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+    })
+    .clone()
+}
+
+#[cfg(all(test, windows))]
 mod tests {
-    pub(crate) fn node_binary() -> std::path::PathBuf {
-        static NODE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        NODE.get_or_init(|| {
-            let configured = std::env::var_os("PP_TEST_NODE").unwrap_or_else(|| "node".into());
-            let output = std::process::Command::new(configured)
-                .args(["-p", "process.execPath"])
-                .output()
-                .expect("Node must report its native executable");
-            assert!(output.status.success());
-            std::path::PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
-        })
-        .clone()
-    }
+    pub(crate) use super::test_node_binary as node_binary;
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    pub(crate) use super::test_node_binary as node_binary;
 
     fn pid_has_exited(pid: i32) -> bool {
         let result = unsafe { libc::kill(pid, 0) };
@@ -1245,7 +1279,7 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let (parent_read, _parent_death) =
-            super::configure_child(&mut command, std::os::fd::AsRawFd::as_raw_fd(&lease)).unwrap();
+            super::platform::configure_child(&mut command, &lease).unwrap();
         let mut child = command.spawn().unwrap();
         drop(parent_read);
         let pidfile = std::path::PathBuf::from(pidfile);
@@ -1394,9 +1428,7 @@ mod tests {
         let lease = std::fs::File::open("/dev/null").unwrap();
         for _ in 0..32 {
             let mut command = tokio::process::Command::new("true");
-            let (read, guard) =
-                super::configure_child(&mut command, std::os::fd::AsRawFd::as_raw_fd(&lease))
-                    .unwrap();
+            let (read, guard) = super::platform::configure_child(&mut command, &lease).unwrap();
             let session = unsafe { libc::getsid(guard.watcher) };
             let watcher = guard.watcher;
             drop(read);
@@ -1482,6 +1514,41 @@ mod tests {
         );
     }
 
+    /// An endpoint on a fresh runtime directory, with a listener bound at its
+    /// socket so the stop under test has a file to remove.
+    struct TestEndpoint {
+        runtime_dir: std::path::PathBuf,
+        socket: std::path::PathBuf,
+        listener: tokio::net::UnixListener,
+        connections: Arc<super::Connections>,
+        endpoint: Arc<super::Endpoint>,
+    }
+
+    fn test_endpoint(generation: &str) -> TestEndpoint {
+        let runtime_dir = std::env::temp_dir().join(format!(
+            "pp-compat-{generation}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&runtime_dir).unwrap();
+        let socket = runtime_dir.join("compat.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let connections = Arc::new(super::Connections::new());
+        let endpoint = Arc::new(super::Endpoint {
+            channel: Arc::new(super::platform::Channel::unbound(socket.clone())),
+            generation: generation.to_owned(),
+            key: [0; 32],
+            connections: connections.clone(),
+        });
+        TestEndpoint {
+            runtime_dir,
+            socket,
+            listener,
+            connections,
+            endpoint,
+        }
+    }
+
     #[tokio::test]
     async fn process_stop_continues_cleanup_after_log_join_error() {
         let mut command = tokio::process::Command::new("sh");
@@ -1491,21 +1558,13 @@ mod tests {
         let observed = child.wait().await.unwrap();
         assert!(observed.success());
 
-        let runtime_dir = std::env::temp_dir().join(format!(
-            "pp-compat-stop-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        std::fs::create_dir(&runtime_dir).unwrap();
-        let socket = runtime_dir.join("compat.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let connections = Arc::new(super::Connections::new());
-        let endpoint = Arc::new(super::Endpoint {
-            socket: socket.clone(),
-            generation: "stop-regression".to_owned(),
-            key: [0; 32],
-            connections: connections.clone(),
-        });
+        let TestEndpoint {
+            runtime_dir,
+            socket,
+            listener,
+            connections,
+            endpoint,
+        } = test_endpoint("stop-regression");
 
         let first_log = tokio::spawn(std::future::pending::<()>());
         first_log.abort();
@@ -1722,21 +1781,13 @@ mod tests {
     ) -> OwnedStop {
         let pid = observed.map(|(pid, _)| pid).or_else(|| child.id()).unwrap();
         let stdin = child.stdin.take();
-        let runtime_dir = std::env::temp_dir().join(format!(
-            "pp-t3-stop-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        std::fs::create_dir(&runtime_dir).unwrap();
-        let socket = runtime_dir.join("compat.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let connections = Arc::new(super::Connections::new());
-        let endpoint = Arc::new(super::Endpoint {
-            socket: socket.clone(),
-            generation: "t3-drain".to_owned(),
-            key: [0; 32],
-            connections: connections.clone(),
-        });
+        let TestEndpoint {
+            runtime_dir,
+            listener,
+            connections,
+            endpoint,
+            ..
+        } = test_endpoint("t3-drain");
         let process = super::Process {
             child,
             pid,
@@ -2084,7 +2135,7 @@ if sys.argv[1] == "wait":
             drop(stream);
         });
         let endpoint = super::Endpoint {
-            socket,
+            channel: Arc::new(super::platform::Channel::unbound(socket)),
             generation: "t3-drain".to_owned(),
             key: [0; 32],
             connections: Arc::new(super::Connections::new()),

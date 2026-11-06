@@ -989,6 +989,41 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     expect(core.state.marked).toBe(1);
   });
 
+  it("sends nothing and keeps a lost burst's key when the reread fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const core = fakeCore({ results: SHARED(), loseFirstAnswers: 3 });
+    const real = core.fetchMock.getMockImplementation()!;
+    let failReads = 0;
+    core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === "/api/v2/printer-checkoff" && failReads > 0) {
+        failReads -= 1;
+        throw new TypeError("Failed to fetch");
+      }
+      return real(path, init);
+    });
+    renderToday(core);
+    await screen.findByRole("heading", { level: 3, name: "Voron 2.4" });
+    fireEvent.click(unit("bracket.stl unit 2"));
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 2 picked units" }));
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    await screen.findByRole("alert");
+    fireEvent.click(within(bed("Trident")).getByRole("checkbox", { name: "gear.stl unit 2" }));
+    failReads = 1;
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    expect(
+      await screen.findByText(
+        "Nothing was sent: could not reread the results to check the earlier confirm on Voron 2.4 and Trident.",
+      ),
+    ).toBeTruthy();
+    expect(core.posts).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm 1 picked unit" }));
+    expect(await screen.findByText("Confirmed 2 units from Voron 2.4 and Trident.")).toBeTruthy();
+    expect(new Set(core.posts.map((p) => p.body.idempotency_key)).size).toBe(1);
+    expect(core.state.marked).toBe(2);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+  });
+
   it("sends a changed selection once when Confirm is double-clicked during the reread", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const core = fakeCore({ results: SHARED() });

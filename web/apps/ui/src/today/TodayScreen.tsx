@@ -108,6 +108,8 @@ const ALREADY_UNDONE = "This Checkoff burst was already undone";
 function useCheckoff() {
   const client = useQueryClient();
   const [tally, setTally] = useState<Tally | null>(null);
+  // The printers of a lost burst whose landing could not be checked, so nothing was sent.
+  const [unchecked, setUnchecked] = useState<string | null>(null);
   // The key of each burst that has no answer yet. Confirming the same units again reuses
   // it, so a write that landed while its answer was lost replays its receipt and Undo.
   const unanswered = useRef(new Map<string, { key: string; picks: Pick[] }>());
@@ -173,7 +175,10 @@ function useCheckoff() {
         },
       ),
     retry: retryLostSend,
-    onMutate: () => undo.reset(),
+    onMutate: () => {
+      setUnchecked(null);
+      undo.reset();
+    },
     onError: (error, { picks }) => {
       if (lostSend(error)) return;
       unanswered.current.delete(burstId(picks));
@@ -211,8 +216,9 @@ function useCheckoff() {
    * Sends the picks as one burst, and calls `onConfirmed` once the core confirms it. The
    * same picks as a burst that got no answer reuse its key. Picks that only overlap such a
    * burst reread the results first: if that burst landed, it is resent with its key so the
-   * core replays its receipt and Undo; if it did not, or the reread fails, the picks go as a
-   * new burst, and a unit that did land is refused by the core rather than counted twice.
+   * core replays its receipt and Undo; if it did not, the picks go as a new burst. If the
+   * reread fails, nothing is sent and that burst keeps its key, so its receipt and Undo stay
+   * reachable.
    */
   const confirmPicks = async (picks: Pick[], onConfirmed?: () => void) => {
     // One write at a time: a confirm never resets a pending Undo, and the reverse.
@@ -231,13 +237,15 @@ function useCheckoff() {
     if (overlap) {
       const [lostId, lost] = overlap;
       deciding.current = true;
-      let landed = false;
+      setUnchecked(null);
+      let landed: boolean;
       try {
         const fresh = await client.fetchQuery({ ...checkoffQuery, staleTime: 0 });
         keepWaiting(bedsToClear(fresh.results, String));
         landed = !unanswered.current.has(lostId);
       } catch {
-        // Unknown: send the picks as asked; the core refuses any unit that already landed.
+        setUnchecked(pickedPrinters(lost.picks));
+        return;
       } finally {
         deciding.current = false;
       }
@@ -275,7 +283,7 @@ function useCheckoff() {
     confirm.reset();
     undo.mutate(tallied);
   };
-  return { confirm, confirmPicks, keepWaiting, retryConfirm, undo, undoBurst, tally };
+  return { confirm, confirmPicks, keepWaiting, retryConfirm, undo, undoBurst, tally, unchecked };
 }
 
 type Checkoff = ReturnType<typeof useCheckoff>;
@@ -285,7 +293,7 @@ type Checkoff = ReturnType<typeof useCheckoff>;
  * key for an Undo).
  */
 function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
-  const { confirm, retryConfirm, undo, undoBurst, tally } = checkoff;
+  const { confirm, retryConfirm, undo, undoBurst, tally, unchecked } = checkoff;
   const failure = confirm.isError
     ? {
         what: "Could not confirm what came off.",
@@ -311,6 +319,12 @@ function CheckoffStatus({ checkoff }: { checkoff: Checkoff }) {
           </p>
         )}
       </div>
+      {unchecked && (
+        <div role="alert" className="pp-banner" data-kind="error">
+          <p>{`Nothing was sent: could not reread the results to check the earlier confirm on ${unchecked}.`}</p>
+          <p className="pp-banner-detail">Confirm again once the core answers.</p>
+        </div>
+      )}
       {failure && (
         <div role="alert" className="pp-banner" data-kind="error">
           <p>{failure.what}</p>

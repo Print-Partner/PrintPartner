@@ -600,7 +600,7 @@ const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 2] = [
     ),
     (
         DRAFT_HEADER_STEP,
-        "tbl_name IN ('plan_draft_headers','build_profile_details')",
+        "tbl_name IN ('plan_draft_headers','build_profile_details','plan_draft_header_receipts')",
         include_str!("working_drafts/header_schema.sql"),
         "Unexpected draft header schema",
         "Draft header schema mismatch",

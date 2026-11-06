@@ -571,7 +571,7 @@ fn owner_installs_schema_dispatches_random_tokens_and_drains_before_stop() {
     let case = &data["clients"][0];
     let c = database(&data);
     seed_session(&c, "default");
-    c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
+    c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
     let dir = crate::tests::directory("publication-owner");
     c.backup("main", dir.join("print-partner.db"), None)
         .unwrap();

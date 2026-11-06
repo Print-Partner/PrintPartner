@@ -8,7 +8,9 @@
 //! unchanged. Every path that writes a new draft from an older one copies the
 //! row ([`carry`]). A save names the header version it observed, so a stale
 //! write is refused; a save that asks for the header the draft already holds
-//! writes nothing, so a retry after a lost answer is answered as saved.
+//! leaves the header alone. Every committed save stores an immutable receipt
+//! under its key, so a retry replays its first answer and a reused key with a
+//! different payload is refused.
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
 use super::save::{Refusal, accepted_base, observed_draft, prepare_new, tenant_actor};
@@ -343,26 +345,102 @@ fn transact(
     else {
         return Ok(Err(HeaderRefusal::Draft(Refusal::NotFound)));
     };
-    let key = {
-        use sha2::{Digest as _, Sha256};
-        format!(
-            "{KEY_PREFIX}{}",
-            hex::encode(Sha256::digest(c.key.as_bytes()))
-        )
-    };
-    // The draft this key created answers a retry whose first answer was lost.
-    if let Some(created) = one(
-        tx,
-        "SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND created_by=? AND idempotency_key=?",
-        &[&tenant, &profile, &actor, &key],
-    )? {
-        let id = num(&created, "id")?;
-        return Ok(match read(tx, tenant, id)? {
-            Some(state) if state.header == header => Ok(saved(tx, tenant, profile, id, state)?),
-            _ => Err(HeaderRefusal::Draft(Refusal::IdempotencyConflict)),
-        });
+    let (key, digest) = receipt_key(c, profile, &actor, &header);
+    // The receipt is read before any stale check, so a committed retry
+    // replays its first answer even after the header or draft moved on.
+    if let Some((draft, prior, state)) = receipt(tx, tenant, profile, &actor, &key)? {
+        if prior != digest {
+            return Ok(Err(HeaderRefusal::Draft(Refusal::IdempotencyConflict)));
+        }
+        return Ok(Ok(saved(tx, tenant, profile, draft, state)?));
     }
-    let base = match accepted_base(tx, tenant, &p, &c.request.expected_base)? {
+    let (draft, state) = match write_observed(tx, c, (tenant, &actor, profile), &p, &key, header)? {
+        Ok(written) => written,
+        Err(reason) => return Ok(Err(reason)),
+    };
+    tx.execute(
+        "INSERT INTO plan_draft_header_receipts (tenant_id,profile_id,actor_id,idempotency_key,payload_digest,draft_id,name,order_number,customer,due_date,header_version,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        params![
+            tenant,
+            profile,
+            actor,
+            key,
+            digest,
+            draft,
+            state.header.name,
+            state.header.order_number,
+            state.header.customer,
+            state.header.due_date,
+            state.header_version,
+            state.updated_at,
+        ],
+    )?;
+    Ok(Ok(saved(tx, tenant, profile, draft, state)?))
+}
+
+/// The stored receipt key, the request key's SHA-256, and the digest of
+/// everything the save was asked to do, which tells a changed payload apart.
+fn receipt_key(c: &Args<'_>, profile: i64, actor: &str, header: &BuildHeader) -> (String, String) {
+    use sha2::{Digest as _, Sha256};
+    let key = format!(
+        "{KEY_PREFIX}{}",
+        hex::encode(Sha256::digest(c.key.as_bytes()))
+    );
+    let base = &c.request.expected_base;
+    let draft = c.request.expected_draft.as_ref().map(|d| {
+        json!({"id":d.draft_id(),"snapshotDigest":d.snapshot_digest(),"lifecycleVersion":d.lifecycle_version()})
+    });
+    let payload = json!({"profileId":profile,"actorId":actor,"expectedBase":{"revisionId":base.revision_id(),"planVersion":base.plan_version()},"expectedDraft":draft,"expectedHeaderVersion":c.request.expected_header_version,"header":header});
+    (key, required_units::model::digest(&payload))
+}
+
+/// The receipt key `key` stored: its draft, payload digest and header.
+fn receipt(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    actor: &str,
+    key: &str,
+) -> Result<Option<(i64, String, DraftHeaderState)>> {
+    let row = tx.query_row(
+        "SELECT draft_id,payload_digest,name,order_number,customer,due_date,header_version,updated_at FROM plan_draft_header_receipts WHERE tenant_id=?1 AND profile_id=?2 AND actor_id=?3 AND idempotency_key=?4",
+        params![tenant, profile, actor, key],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                DraftHeaderState {
+                    header: BuildHeader {
+                        name: row.get(2)?,
+                        order_number: row.get(3)?,
+                        customer: row.get(4)?,
+                        due_date: row.get(5)?,
+                    },
+                    header_version: row.get(6)?,
+                    updated_at: row.get(7)?,
+                },
+            ))
+        },
+    );
+    match row {
+        Ok(found) => Ok(Some(found)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Checks the observed base, draft and header version, then writes `header`
+/// into the open draft, or into a new draft when none is open. Returns the
+/// draft and the header it now holds.
+fn write_observed(
+    tx: &mut Transaction<'_>,
+    c: &Args<'_>,
+    (tenant, actor, profile): (&str, &str, i64),
+    p: &Value,
+    key: &str,
+    header: BuildHeader,
+) -> Result<std::result::Result<(i64, DraftHeaderState), HeaderRefusal>> {
+    let base = match accepted_base(tx, tenant, p, &c.request.expected_base)? {
         Ok(base) => base,
         Err(reason) => return Ok(Err(HeaderRefusal::Draft(reason))),
     };
@@ -384,7 +462,7 @@ fn transact(
             let id = num(&d.header, "id")?;
             let current = read(tx, tenant, id)?;
             if let Some(state) = current.as_ref().filter(|state| state.header == header) {
-                return Ok(Ok(saved(tx, tenant, profile, id, state.clone())?));
+                return Ok(Ok((id, state.clone())));
             }
             let version = current.as_ref().map(|state| state.header_version);
             if version != c.request.expected_header_version {
@@ -411,13 +489,13 @@ fn transact(
                     Err(reason) => return Ok(Err(HeaderRefusal::Draft(reason))),
                 };
             budget.check()?;
-            let id = insert_snapshot(tx, tenant, &actor, profile, &key, &prepared, Origin::New)?;
+            let id = insert_snapshot(tx, tenant, actor, profile, key, &prepared, Origin::New)?;
             write(tx, tenant, id, &header, 1)?;
             id
         }
     };
     let state = read(tx, tenant, draft)?.ok_or_else(|| anyhow!("Saved draft header is missing"))?;
-    Ok(Ok(saved(tx, tenant, profile, draft, state)?))
+    Ok(Ok((draft, state)))
 }
 
 fn saved(

@@ -118,22 +118,42 @@ async fn gre_1197_header_save_writes_the_open_draft_once_and_never_reaches_the_b
     assert_eq!(accepted_rows(&server), accepted);
     assert_eq!(build_header(&server), build);
 
-    // A retry under the same key, or the same header under a new key that
-    // observed no header, writes nothing and answers the saved header.
+    // A retry under the same key writes nothing and answers the saved header.
     let after = logical_database(&server.sql());
     let events = draft_events(&server);
-    for key in ["h-1", "h-2"] {
-        assert_eq!(
-            json_reply(
-                put(&server, Some(key), &body(open.clone(), Value::Null, acme())),
-                200
-            )
-            .await,
-            saved
-        );
-    }
+    assert_eq!(
+        json_reply(
+            put(
+                &server,
+                Some("h-1"),
+                &body(open.clone(), Value::Null, acme())
+            ),
+            200
+        )
+        .await,
+        saved
+    );
     assert_eq!(logical_database(&server.sql()), after);
+    // The same header under a new key that observed no header leaves the
+    // header and the events alone; only that key's receipt is stored.
+    assert_eq!(
+        json_reply(
+            put(
+                &server,
+                Some("h-2"),
+                &body(open.clone(), Value::Null, acme())
+            ),
+            200
+        )
+        .await,
+        saved
+    );
+    assert_eq!(
+        draft_header(&server, 2),
+        Some(("Renamed build".into(), Some("2026-12-01".into()), 1))
+    );
     assert_eq!(draft_events(&server), events);
+    let after = logical_database(&server.sql());
 
     // A different header that observed an older version is refused.
     let other = header("Other", Value::Null, Value::Null, Value::Null);
@@ -167,6 +187,75 @@ async fn gre_1197_header_save_writes_the_open_draft_once_and_never_reaches_the_b
     assert_eq!(reread["draft"], next["receipt"]["header"]);
     assert_eq!(reread["build"], build);
     assert_eq!(accepted_rows(&server), accepted);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn gre_1197_header_receipts_replay_the_first_answer_and_refuse_a_reused_key() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    let open = observed(&json!(DIGEST));
+    let first = json_reply(
+        put(
+            &server,
+            Some("k-1"),
+            &body(open.clone(), Value::Null, acme()),
+        ),
+        200,
+    )
+    .await;
+    let other = header("Other", Value::Null, Value::Null, Value::Null);
+
+    // The same key with a different payload is refused, even when it names
+    // the current header version, and nothing is written.
+    let before = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(
+            put(
+                &server,
+                Some("k-1"),
+                &body(open.clone(), json!(1), other.clone())
+            ),
+            409
+        )
+        .await,
+        json!({"code": "idempotency_conflict"})
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+
+    let second = json_reply(
+        put(
+            &server,
+            Some("k-2"),
+            &body(open.clone(), json!(1), other.clone()),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(second["receipt"]["header"]["header_version"], 2);
+
+    // After a later edit, a retry of the first save replays its own receipt
+    // beside the current header read, and writes nothing.
+    let before = logical_database(&server.sql());
+    let replay = json_reply(
+        put(
+            &server,
+            Some("k-1"),
+            &body(open.clone(), Value::Null, acme()),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(replay["receipt"], first["receipt"]);
+    assert_eq!(replay["header"]["draft"], second["receipt"]["header"]);
+    assert_eq!(logical_database(&server.sql()), before);
+
+    let server = server.restart().await;
+    let replay = json_reply(
+        put(&server, Some("k-1"), &body(open, Value::Null, acme())),
+        200,
+    )
+    .await;
+    assert_eq!(replay["receipt"], first["receipt"]);
     server.close().await;
 }
 

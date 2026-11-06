@@ -16,3 +16,19 @@ CREATE TABLE IF NOT EXISTS build_profile_details (
   due_date TEXT CHECK (due_date IS NULL OR (length(due_date) = 10 AND date(due_date) IS due_date)),
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS plan_draft_header_receipts (
+  tenant_id TEXT NOT NULL,
+  profile_id INTEGER NOT NULL,
+  actor_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  draft_id INTEGER NOT NULL REFERENCES plan_drafts(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  order_number TEXT,
+  customer TEXT,
+  due_date TEXT,
+  header_version INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, profile_id, actor_id, idempotency_key)
+);

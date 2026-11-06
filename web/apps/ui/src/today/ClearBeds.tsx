@@ -25,7 +25,7 @@ interface Slot {
 const slotKey = (bed: Bed, unit: Unit) => `${bed.result.id}|${unitKey(unit)}`;
 
 /** The units a selection confirms, grouped by bed in bed order. */
-export function picksOf(beds: readonly Bed[], selected: ReadonlySet<string>): Pick[] {
+function picksOf(beds: readonly Bed[], selected: ReadonlySet<string>): Pick[] {
   return beds
     .map((bed) => ({ bed, units: bed.pending.filter((u) => selected.has(slotKey(bed, u))) }))
     .filter((pick) => pick.units.length > 0);

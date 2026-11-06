@@ -35,8 +35,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action != 'edited' && github.run_attempt == '1' && 'push' || github.run_id }}
-  cancel-in-progress: ${{ github.event.action != 'edited' && github.run_attempt == '1' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ (github.event.action != 'edited' || github.event.changes.base != null) && github.run_attempt == '1' && 'push' || github.run_id }}
+  cancel-in-progress: ${{ (github.event.action != 'edited' || github.event.changes.base != null) && github.run_attempt == '1' }}
 
 jobs:
   review-gate:
@@ -114,15 +114,22 @@ jobs:
           GRACE, INTERVAL = min(120, MAX_WAIT), int(os.environ.get("PP_GATE_POLL_SECONDS", "30"))
           CLAUDE_JOBS = ("claude-code-review", "claude-security-review")
           started_at = time.monotonic()
+
+
+          def moved():
+              """Whether the PR head or base changed since this run read them."""
+              current = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
+                                                  capture_output=True, text=True).stdout)
+              return current["head"]["sha"] != HEAD or current["base"]["ref"] != pr_base
+
+
           while True:
               seen = {}
               for page in pages(f"repos/{REPO}/commits/{HEAD}/check-runs?filter=all&per_page=100"):
                   for item in page["check_runs"]:
                       if item["name"] in CLAUDE_JOBS:
                           seen.setdefault(item["name"], []).append(item["status"])
-              current = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
-                                                  capture_output=True, text=True).stdout)
-              if current["head"]["sha"] != HEAD or current["base"]["ref"] != pr_base:
+              if moved():
                   print(f"::error::The PR head or base moved while waiting for {HEAD}; the run for the "
                         "change judges it.")
                   sys.exit(1)
@@ -236,6 +243,10 @@ jobs:
           for problem in problems:
               print(f"::error::{problem}")
           if problems:
+              sys.exit(1)
+          # A retarget that landed during judgement must not be passed on the old base.
+          if moved():
+              print(f"::error::The PR head or base moved while judging {HEAD}; the run for the change judges it.")
               sys.exit(1)
           if touched:
               if not (marker and (droid_ok or claude_ok)):

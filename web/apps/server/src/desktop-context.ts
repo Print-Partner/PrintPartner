@@ -14,6 +14,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { connect } from "node:net";
+import type { Server } from "node:http";
 import { dirname, join } from "node:path";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
@@ -122,10 +124,16 @@ export function installDesktopContext(input: unknown): void {
   const parsed = setupSchema.parse(input);
   const dataDir = realpathSync(parsed.data_dir);
   if (process.env.PP_STORAGE_CORE_LOCK !== "1") throw new Error("Core storage lock required");
-  const inherited = fstatSync(198);
-  const ownerLock = statSync(join(dataDir, "printpartner.lock"));
-  if (!inherited.isFile() || inherited.dev !== ownerLock.dev || inherited.ino !== ownerLock.ino)
-    throw new Error("Inherited storage lock rejected");
+  // On Windows the core keeps printpartner.lock instead of passing it as descriptor 198. A
+  // Windows byte-range lock belongs to the process that took it, so an inherited handle would
+  // not hold it. The core runs this process in a Job Object that kills it when the core exits,
+  // so the core's lock covers every moment this process runs.
+  if (process.platform !== "win32") {
+    const inherited = fstatSync(198);
+    const ownerLock = statSync(join(dataDir, "printpartner.lock"));
+    if (!inherited.isFile() || inherited.dev !== ownerLock.dev || inherited.ino !== ownerLock.ino)
+      throw new Error("Inherited storage lock rejected");
+  }
   if (parsed.parent_pid !== process.ppid || parsed.data_dir !== dataDir)
     throw new Error("Desktop storage owner rejected");
   account = admitDesktopAccount(
@@ -134,6 +142,35 @@ export function installDesktopContext(input: unknown): void {
   );
   context = parsed;
   admitDesktopDataDirectory(dataDir);
+}
+
+/**
+ * Serve the core's private named pipe on Windows. The core creates the pipe with a DACL for the
+ * current user only, so this process dials in instead of listening. It keeps `lanes` connects
+ * pending and hands each connected pipe to `server`; each one carries one request. Returns a
+ * function that stops dialing.
+ */
+export function dialDesktopPipe(server: Server, path: string, lanes = 4): () => void {
+  let stopped = false;
+  const dial = () => {
+    if (stopped) return;
+    let connected = false;
+    const socket = connect(path);
+    socket.once("error", () => {
+      if (connected) return;
+      socket.destroy();
+      setTimeout(dial, 50).unref();
+    });
+    socket.once("connect", () => {
+      connected = true;
+      socket.once("close", dial);
+      server.emit("connection", socket);
+    });
+  };
+  for (let lane = 0; lane < lanes; lane += 1) dial();
+  return () => {
+    stopped = true;
+  };
 }
 
 /** Remove the private socket after the desktop parent dies. */

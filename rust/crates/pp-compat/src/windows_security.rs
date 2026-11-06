@@ -10,10 +10,11 @@ use windows_sys::Win32::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             GetSecurityInfo, SDDL_REVISION_1, SE_OBJECT_TYPE, SetSecurityInfo,
         },
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorDacl,
-        GetTokenInformation, INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_OWNER, TOKEN_QUERY,
-        TOKEN_USER, TokenOwner, TokenUser,
+        CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+        GetSecurityDescriptorDacl, GetTokenInformation, INHERIT_ONLY_ACE,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SECURITY_MAX_SID_SIZE, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
+        WinBuiltinAdministratorsSid, WinLocalSystemSid,
     },
     System::{
         SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
@@ -83,6 +84,18 @@ impl TokenSid {
 pub(crate) struct CurrentUser {
     user: TokenSid,
     owner: TokenSid,
+    /// SYSTEM and Administrators: the accounts that, like root on Unix, can
+    /// take any file, so access for them does not make a file less private.
+    root: [Vec<u64>; 2],
+}
+
+fn well_known(kind: i32) -> io::Result<Vec<u64>> {
+    let mut buffer = vec![0u64; (SECURITY_MAX_SID_SIZE as usize).div_ceil(8)];
+    let mut size = SECURITY_MAX_SID_SIZE;
+    check(unsafe {
+        CreateWellKnownSid(kind, ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size)
+    })?;
+    Ok(buffer)
 }
 
 impl CurrentUser {
@@ -90,6 +103,10 @@ impl CurrentUser {
         Ok(Self {
             user: TokenSid::query(TokenUser)?,
             owner: TokenSid::query(TokenOwner)?,
+            root: [
+                well_known(WinLocalSystemSid)?,
+                well_known(WinBuiltinAdministratorsSid)?,
+            ],
         })
     }
 
@@ -178,7 +195,7 @@ impl CurrentUser {
     }
 
     /// True when [`Self::owns`] holds and every ACE that grants access names
-    /// this user: no other account can open `object`.
+    /// this user, SYSTEM or Administrators: no other account can open `object`.
     pub(crate) fn owns_privately(
         &self,
         object: &impl AsRawHandle,
@@ -211,7 +228,8 @@ impl CurrentUser {
             }
             let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
             let sid = unsafe { ptr::addr_of_mut!((*allowed).SidStart) }.cast::<c_void>();
-            if unsafe { EqualSid(sid, self.user()) } == 0 {
+            let root = |known: &Vec<u64>| unsafe { EqualSid(sid, known.as_ptr() as PSID) } != 0;
+            if unsafe { EqualSid(sid, self.user()) } == 0 && !self.root.iter().any(root) {
                 return Ok(false);
             }
         }
@@ -221,6 +239,10 @@ impl CurrentUser {
 
 /// A self-relative security descriptor from [`CurrentUser::private_descriptor`].
 pub(crate) struct PrivateDescriptor(Local);
+
+// The descriptor is immutable once built and only read by the system.
+unsafe impl Send for PrivateDescriptor {}
+unsafe impl Sync for PrivateDescriptor {}
 
 impl PrivateDescriptor {
     pub(crate) fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {

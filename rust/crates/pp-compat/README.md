@@ -1,6 +1,6 @@
 # pp-compat
 
-Supervises the Node compatibility server as a child process and forwards requests to it over a private Unix socket. It retires with Node.
+Supervises the Node compatibility server as a child process and forwards requests to it over a private channel: a Unix socket, or a named pipe on Windows. It retires with Node.
 
 Current ownership and allowed dependencies: [Architecture](../../../docs/architecture.md#crates-and-allowed-edges) and [ADR 0009](../../../docs/adr/0009-keep-crates-and-deepen-modules.md). [ADR 0007](../../../docs/adr/0007-rust-crate-layout.md) is historical dependency evidence only.
 
@@ -8,7 +8,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 - Verifies the measured release, frontend and backend, against the embedded bundle manifest once during core startup (`verify_bundle`). Before each child restart the supervisor rechecks only the backend files (`release::verify_backend`).
 - Spawns, watches, restarts with backoff, crash-guards, and stops the Node child (`Supervisor`).
-- Forwards HTTP to the child over a per-generation Unix socket with a private key (`Endpoint::forward`).
+- Forwards HTTP to the child over a per-generation private channel with a private key (`Endpoint::forward`).
 - Owns the local log files, the one redaction policy, and the table of Node environment settings.
 
 ## Not responsible for
@@ -25,7 +25,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `CompatHandle` | Clonable handle: `status` (`watch` of `Status`), `endpoint()`, `recover()` after the crash guard trips. |
 | `Endpoint` | `forward`, `rate_limit_bucket`, `bound_to`. |
 | `Bundle`, `MeasuredBundle`, `verify_bundle` | Release identity and the proof that its files match the manifest. |
-| `drain` | Process-group stop helpers: `drive_shutdown_group`, `reap_process_group`, `SIGTERM_GRACE`. |
+| `drain` | Process-group stop helpers: `drive_shutdown_group`, `reap_process_group`, `SIGTERM_GRACE`. On Windows the group is the child's Job Object. |
 | `redact` | `Scrubber`, `scrub`, `REDACTED`: the scrub policy for logs, the Logs view, and opt-in Sentry. |
 | `settings` | `ENVIRONMENT` maps each Node env name to an `Owner`; `fixed_env`. |
 | `CoreLog`, `log_folder`, `recent_logs`, `recent_diagnostics` | Log writing and bounded reads. |
@@ -33,8 +33,11 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Effects and flags
 
-- Spawns Node in its own process group with a parent-death pipe and the inherited storage lock descriptor. The child gets a cleared environment plus `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`, `PP_COMMIT`, `settings::fixed_env`, and the desktop settings `pp-core` passes in.
-- Creates `<runtime_dir>/<generation>.sock` and removes it on stop. Writes logs under `<data>/logs/`. Hashes release files on a blocking thread.
+- Platform code lives in `src/unix.rs` and `src/windows.rs`; shared code calls `platform::` and never names an OS.
+- Unix: spawns Node in its own process group with a parent-death pipe and the inherited storage lock descriptor. A planned stop sends SIGTERM to the group after closing stdin, then SIGKILL after `SIGTERM_GRACE`.
+- Windows: spawns Node suspended, puts it in a new Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then resumes it. Every process Node starts joins the job. Only the core holds the job handle, so when the core exits or is killed the kernel terminates the whole job; this replaces both the process group and the parent-death watcher. A planned stop closes stdin, which is the only stop request Node gets, then terminates the job after `SIGTERM_GRACE` with exit code `0x5050_4b4c`. The core keeps the storage lock: a Windows byte-range lock belongs to the process that took it, and the job guarantees Node never outlives the core.
+- The child gets a cleared environment plus the inherited names in `platform::INHERITED_ENV` (Unix: `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`; Windows: `PATH`, `SystemRoot`, `TEMP`, `TMP`, `USERPROFILE`, `LOCALAPPDATA`, `APPDATA`, `TZ`), `PP_COMMIT`, `settings::fixed_env`, and the desktop settings `pp-core` passes in.
+- Unix: Node binds `<runtime_dir>/<generation>.sock`, and the core removes it on stop. Windows: the core creates `\\.\pipe\printpartner-compat-<generation>` as the first instance, with a DACL that grants only the current user and `PIPE_REJECT_REMOTE_CLIENTS`, and always keeps one instance listening; Node dials in and serves one request per connection. There is no TCP fallback. Writes logs under `<data>/logs/`. Hashes release files on a blocking thread.
 - Log files are private to the current user. On Unix the directory gets mode 0700 and each file 0600, and entries are opened relative to the directory descriptor. On Windows (`src/logs/windows.rs`) the directory and each file get a protected DACL that grants only the current user, the directory stays open without `FILE_SHARE_DELETE` so it cannot be renamed or replaced while logs are open, and every open refuses a reparse point. Both refuse hard-linked logs.
 - `build.rs` copies the bundle manifest into `OUT_DIR`, and `release::manifest` embeds it. Source: `PP_DESKTOP_RELEASE_MANIFEST`, else `rust/bundle-manifest.json`. The build fails if the file is missing; generate it with `rust/scripts/build-desktop-manifest.py` (`just ci --only web-assets`). A change to the file or variable rebuilds the crate.
 - Cargo feature `desktop_rebuild` (default off): turns on `DesktopAccountPin` capture. `pp-core` enables it with its own `desktop_rebuild` feature.

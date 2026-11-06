@@ -3,6 +3,7 @@ import { moonrakerHostSnapshot } from "./moonraker-host-snapshot.js";
 import {
   acquireDataDirectory,
   desktopContext,
+  dialDesktopPipe,
   desktopPrincipal,
   desktopRateLimit,
   mappedDesktopTenant,
@@ -688,9 +689,16 @@ export async function startServer(config: ServerConfig) {
 
       app = await buildApp(config, ports);
       const desktop = desktopContext();
-      await app.listen(
-        desktop ? { path: desktop.socket_path } : { host: config.host, port: config.port },
-      );
+      if (desktop && process.platform === "win32") {
+        let stopDialing = () => {};
+        app.addHook("onClose", async () => stopDialing());
+        await app.ready();
+        stopDialing = dialDesktopPipe(app.server, desktop.socket_path);
+      } else {
+        await app.listen(
+          desktop ? { path: desktop.socket_path } : { host: config.host, port: config.port },
+        );
+      }
       return { app, ports };
     } catch (err) {
       await app?.close();

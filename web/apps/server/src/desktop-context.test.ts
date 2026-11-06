@@ -1,5 +1,7 @@
 import { once } from "node:events";
 import { createHmac } from "node:crypto";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createNetServer, type Socket } from "node:net";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +9,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   acquireDataDirectory,
+  dialDesktopPipe,
   releaseOrphanedDesktopOwner,
   verifyDesktopPrincipal,
 } from "./desktop-context.js";
@@ -32,6 +35,43 @@ function signed(value: unknown) {
     now: 100_500,
   };
 }
+
+describe("Windows private pipe dial-in", () => {
+  it("retries until the core listens and serves one request per connection", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pp-dial-"));
+    const path =
+      process.platform === "win32"
+        ? String.raw`\\.\pipe\pp-dial-test-${process.pid}`
+        : join(directory, "core.sock");
+    const http = createHttpServer((request, response) => response.end(`served ${request.url}`));
+    const stop = dialDesktopPipe(http, path, 2);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const accepted: Socket[] = [];
+    const core = createNetServer((socket) => accepted.push(socket));
+    core.listen(path);
+    await once(core, "listening");
+    const request = async (target: string) => {
+      while (accepted.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      const socket = accepted.shift()!;
+      let body = "";
+      socket.on("data", (chunk) => (body += chunk));
+      socket.write(`GET ${target} HTTP/1.1\r\nHost: desktop-compat\r\nConnection: close\r\n\r\n`);
+      await once(socket, "close");
+      return body;
+    };
+    try {
+      expect(await request("/first")).toContain("served /first");
+      expect(await request("/second")).toContain("served /second");
+      expect(await request("/third")).toContain("served /third");
+    } finally {
+      stop();
+      for (const socket of accepted) socket.destroy();
+      core.close();
+      http.closeAllConnections();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("Rust-written storage markers", () => {
   it.each(["dead PID", "reused PID"])("recovers a marker with a %s", (scenario) => {

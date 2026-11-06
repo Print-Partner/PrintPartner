@@ -14,16 +14,25 @@ use std::{
     },
     path::{Path, PathBuf},
 };
-use windows_sys::Win32::{
-    Foundation::{GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE},
-    Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, FILE_APPEND_DATA,
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileStandardInfo, FindClose,
-        FindFirstFileW, GetFileInformationByHandle, GetFileInformationByHandleEx,
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
-        READ_CONTROL, SYNCHRONIZE, WIN32_FIND_DATAW, WRITE_DAC,
+use windows_sys::{
+    Wdk::{
+        Foundation::OBJECT_ATTRIBUTES,
+        Storage::FileSystem::{FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, NtOpenFile},
+    },
+    Win32::{
+        Foundation::{
+            GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, RtlNtStatusToDosError, UNICODE_STRING,
+        },
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, FILE_APPEND_DATA,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+            FileStandardInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
+            READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+        },
+        System::IO::IO_STATUS_BLOCK,
     },
 };
 
@@ -171,27 +180,55 @@ pub(super) fn secure_archive(directory: &Directory, name: &str) -> std::io::Resu
     ) {
         Ok(file) => secure_log(&file),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => repair_archive(&path),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            repair_archive(directory, name)
+        }
         Err(error) => Err(error),
     }
 }
 
 /// An archive whose DACL denies this user even attribute reads. Its owner
-/// still holds @@READ_CONTROL@@ and @@WRITE_DAC@@, so it gets the private DACL,
+/// still holds `READ_CONTROL` and `WRITE_DAC`, so it gets the private DACL,
 /// is reopened and checked as every log is. A check that fails puts the old
 /// DACL back, so a hard link to an outside file leaves that file unchanged.
-fn repair_archive(path: &Path) -> std::io::Result<()> {
-    let mut found = WIN32_FIND_DATAW::default();
-    let search = unsafe { FindFirstFileW(wide(path).as_ptr(), &mut found) };
-    if search == INVALID_HANDLE_VALUE {
-        return Err(std::io::Error::last_os_error());
-    }
-    unsafe { FindClose(search) };
-    if found.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0 {
-        return Err(invalid());
-    }
+///
+/// `CreateFileW` always adds `SYNCHRONIZE` and `FILE_READ_ATTRIBUTES`, which
+/// the owner does not hold here, so the first open is `NtOpenFile` relative to
+/// the admitted directory handle. It opens a reparse point as itself, which
+/// `secure_log` then refuses.
+fn repair_archive(directory: &Directory, name: &str) -> std::io::Result<()> {
+    let mut units: Vec<u16> = name.encode_utf16().collect();
+    let bytes = u16::try_from(units.len() * 2).map_err(|_| invalid())?;
+    let object_name = UNICODE_STRING {
+        Length: bytes,
+        MaximumLength: bytes,
+        Buffer: units.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: directory.handle.as_raw_handle() as HANDLE,
+        ObjectName: &object_name,
+        ..Default::default()
+    };
     let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-    let file = open(path, READ_CONTROL | WRITE_DAC, share, OPEN_EXISTING, 0)?;
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtOpenFile(
+            &mut handle,
+            READ_CONTROL | WRITE_DAC,
+            &attributes,
+            &mut status_block,
+            share,
+            FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE,
+        )
+    };
+    if status < 0 {
+        return Err(std::io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(status) } as i32,
+        ));
+    }
+    let file = unsafe { File::from_raw_handle(handle as _) };
     let user = CurrentUser::query()?;
     if !user.owns(&file, SE_FILE_OBJECT)? {
         return Err(invalid());
@@ -199,7 +236,7 @@ fn repair_archive(path: &Path) -> std::io::Result<()> {
     let saved = SavedDacl::of(&file, SE_FILE_OBJECT)?;
     user.restrict(&file, SE_FILE_OBJECT, false)?;
     let checked = open(
-        path,
+        &directory.path.join(name),
         READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
         share,
         OPEN_EXISTING,

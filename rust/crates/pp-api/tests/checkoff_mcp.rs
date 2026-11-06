@@ -400,3 +400,37 @@ async fn verify_batch_mcp_undo_conflicts_and_lookups_write_nothing() {
     assert_eq!(lookup["state"], "applied");
     served.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verify_batch_lookup_reports_expired_and_unknown_keys() {
+    let fixture = Fixture::new();
+    let served = Served::start(&fixture, None).await;
+    let mcp = served.mcp().await;
+    // A retired key is expired. Once the retired list is full, a key in
+    // neither list may have been dropped, so the lookup says unknown.
+    use sha2::Digest;
+    let mut retired: Vec<String> = (0..4_999).map(|i| format!("{i:064x}")).collect();
+    retired.push(hex::encode(sha2::Sha256::digest(b"old-key")));
+    fixture
+        .sql()
+        .execute(
+            "INSERT INTO app_settings (tenant_id,key,value) VALUES ('default','printer.checkoff_bursts_retired',?1)",
+            [json!(retired).to_string()],
+        )
+        .unwrap();
+    let (_, old) = served
+        .http(Method::GET, &status_path("old-key"), None)
+        .await;
+    assert_eq!(old["state"], "expired", "{old}");
+    let (status, forgotten) = served
+        .http(Method::GET, &status_path("never-sent"), None)
+        .await;
+    assert_eq!((status, &forgotten["state"]), (200, &json!("unknown")));
+    let (unknown_action, is_error) = mcp.confirm("never-sent").await;
+    assert!(is_error);
+    assert_eq!(
+        unknown_action["error"],
+        "Unknown, in-flight, or already applied/dismissed action_id"
+    );
+    served.stop().await;
+}

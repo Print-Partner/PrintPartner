@@ -4,7 +4,7 @@
 
 use super::{
     Body, Outcome, Response,
-    burst::{RETIRED_KEY, key_hash, load_list, load_receipts},
+    burst::{MAX_RETIRED, RETIRED_KEY, key_hash, load_list, load_receipts},
     links,
 };
 use rusqlite::Transaction;
@@ -25,10 +25,10 @@ pub(super) fn key(raw: &str) -> std::result::Result<String, Response> {
 }
 
 /// `applied` or `undone` with the stored receipt, `expired` when the receipt
-/// was trimmed (the burst ran and its key cannot run again), or 404
-/// `burst_not_found` when no burst in the kept history used the key. The
-/// history is the newest 100 receipts plus 5,000 retired keys, the same window
-/// replay checks, so within it a resend with the same key cannot apply twice.
+/// was trimmed (the burst ran and its key cannot run again), `unknown` when the
+/// key is in neither list but the retired list is full, so an older key may
+/// have been dropped, or 404 `burst_not_found` when the key is in neither list
+/// and nothing was ever dropped, so no burst used it.
 pub(super) fn burst_status(tx: &Transaction<'_>, tenant: &str, key: &str) -> Outcome {
     let status = |state: &str, receipt: Option<&Value>| {
         let receipt = receipt.unwrap_or(&Value::Null);
@@ -49,12 +49,16 @@ pub(super) fn burst_status(tx: &Transaction<'_>, tenant: &str, key: &str) -> Out
         };
         return status(state, Some(receipt));
     }
-    if load_list(tx, tenant, RETIRED_KEY)?.contains(&Value::from(key_hash(key))) {
+    let retired = load_list(tx, tenant, RETIRED_KEY)?;
+    if retired.contains(&Value::from(key_hash(key))) {
         return status("expired", None);
+    }
+    if retired.len() >= MAX_RETIRED {
+        return status("unknown", None);
     }
     Ok(Ok(Response::failure(
         404,
-        "No Checkoff burst in the kept history (the newest 5,100 bursts) used this idempotency_key. Resend the same request with the same key; within that history it cannot apply twice.",
+        "No Checkoff burst used this idempotency_key, so nothing was applied. Resend the same request with the same key.",
         Some("burst_not_found"),
     )))
 }

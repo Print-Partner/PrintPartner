@@ -27,7 +27,7 @@ use std::{collections::BTreeSet, path::Path};
 const KEY: &str = "printer.checkoff_bursts";
 pub(super) const RETIRED_KEY: &str = "printer.checkoff_bursts_retired";
 const MAX_RECEIPTS: usize = 100;
-const MAX_RETIRED: usize = 5000;
+pub(super) const MAX_RETIRED: usize = 5000;
 pub(super) const MAX_BEDS: usize = 50;
 
 fn refuse(status: u16, detail: &str) -> Outcome {

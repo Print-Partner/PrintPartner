@@ -2755,7 +2755,8 @@ state; as on every route, an API key's `last_used_at` may be recorded.
 | `applied` | `{idempotency_key, state, applied_at, undone_at: null, receipt}` | The burst committed; `receipt` is the stored response |
 | `undone` | the same with `undone_at` | The burst committed and was undone |
 | `expired` | `applied_at`, `undone_at` and `receipt` are null | The burst committed, its receipt was trimmed, and the key cannot run again |
-| 404 `burst_not_found` | problem body | No burst in the kept history used the key: the newest 100 receipts and 5,000 retired keys, the same window replay checks. Resending the same request with the same key is safe within that window. A key older than 5,100 later bursts is forgotten by both the lookup and replay |
+| `unknown` | `applied_at`, `undone_at` and `receipt` are null | The key is in neither list, but the retired list is full (5,000 keys), so a key older than the newest 5,100 bursts may have been dropped. The lookup cannot tell whether it ran, and replay would treat it as new |
+| 404 `burst_not_found` | problem body | The key is in neither list and no key was ever dropped, so no burst used it and nothing was applied. Resending the same request with the same key is safe |
 
 #### MCP `propose_verify_printer_checkoff` (GRE-1170)
 
@@ -2777,8 +2778,8 @@ no longer holds (applied already, or proposed before a restart or in another
 session) looks up `mcp:<action_id>`. If that burst exists, the call answers
 `{ok, reconciled: true, action_id, detail, result, undone_at}` instead of
 Node's unknown-action error: `ok` is true while the burst stands, and false
-once it was undone or its receipt expired. Otherwise the call answers Node's
-unknown-action error.
+once it was undone or its receipt expired. Otherwise, including an `unknown`
+lookup, the call answers Node's unknown-action error.
 
 The replacement UI's Today screen confirms one bed, or units picked on several
 beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a

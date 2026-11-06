@@ -164,10 +164,11 @@ impl DomainPort for CheckoffDomain {
         let (ok, detail) = match burst["state"].as_str() {
             Some("applied") => (true, "This action was already applied"),
             Some("undone") => (false, "This action was applied and later undone"),
-            _ => (
+            Some("expired") => (
                 false,
                 "This action was applied; its receipt is too old to return",
             ),
+            _ => return None,
         };
         Some(json!({
             "ok": ok,

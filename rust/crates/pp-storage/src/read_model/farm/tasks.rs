@@ -73,7 +73,9 @@ impl Farm {
     /// another result on the same printer has a later bed time, or an
     /// unmatched print (open, claimed or dismissed, in `finished`) completed
     /// there later. Result times compare when both parse; otherwise the result
-    /// stored later is the later one.
+    /// stored later is the later one. Evidence lasts only as long as the
+    /// settings keep it: pruned unmatched prints and trimmed links no longer
+    /// count.
     fn beds_to_clear(&self, finished: &[(String, i128)]) -> BTreeMap<i64, u64> {
         let bed_time = |index: usize| {
             let result = &self.results[index];

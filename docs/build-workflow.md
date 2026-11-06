@@ -106,7 +106,12 @@ workflow read with `Farm settings exceed the read limit`.
   until another result on the same printer has a later bed time, or an
   unmatched print (open, claimed or dismissed) completed there later.
   Result times compare as RFC 3339 when both parse; otherwise the result
-  stored later counts as later. At most one result
+  stored later counts as later. The evidence is only what the settings still
+  hold. Node and Rust prune a claimed or dismissed unmatched print 7 days after
+  it was claimed or dismissed, and trim old terminal links. If nothing else ran
+  on that printer since, an older result that is still awaiting verification
+  shows as `clear_beds` again instead of `verify_prints`. Both kinds ask for
+  the same confirmation in the same Checkoff tab. At most one result
   per printer is on its bed, so the count is beds, never more than
   `awaiting_verification`. A result without `created_at` is skipped, as the
   farm reads skip it, and stays a `verify_prints` result.

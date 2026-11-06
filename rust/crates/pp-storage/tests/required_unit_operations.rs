@@ -219,7 +219,10 @@ fn unchanged_draft_matches_node_and_replays_after_restart() {
     f.sql()
         .execute(detach, [&f.request()["expected_snapshot_digest"].as_str()])
         .unwrap();
+    let events = f.rows("SELECT * FROM domain_events ORDER BY seq");
+    assert_eq!(events.len(), 1);
     assert_eq!(f.call(&client, "selection", f.request()).unwrap(), first);
+    assert_eq!(f.rows("SELECT * FROM domain_events ORDER BY seq"), events);
     assert_eq!(
         f.selection(),
         [json!([2, "open", "plan-draft-v2", 2, digest])]

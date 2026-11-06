@@ -17,9 +17,11 @@ sequence number, so cursor order is commit order.
 | --- | --- | --- | --- | --- |
 | `checkoff.progress_changed` | 1 | `checkoff_progress`: unit completion, assembly, count import, printer Checkoff verify (one link or a burst), and burst undo; one event per changed Part in each verified link or undo, so a burst that confirms one Part on two links writes two (`{"import": true}` for an import) | `build`, the Build ID | `{"part_id": N}` for a Part change, `{"import": true}` for an import |
 | `plan.revision_accepted` | 1 | `plan_publication::publish_in_transaction`, used by Accept and draft save-and-accept | `build`, the Build ID, version = new accepted Plan version | `{"revision_id": N}` |
+| `plan.draft_changed` | 1 | `required_units`, when a draft's Required-unit selection changes: a reconciliation (`PUT .../reconciliation`), the selection after an edit or recompute, and the selection inside a draft save | `build`, the Build ID, no version | `{"draft_id": N}` |
 
 An idempotent replay of an Accept (`Existing` or `AlreadyApplied`) writes no
-event. Refused Checkoff requests write none, and neither does a Checkoff
+event, and neither does a reconciliation replayed by its key or one refused or
+rolled back. Refused Checkoff requests write none, and neither does a Checkoff
 request that changes no row, such as assembling an unprinted unit,
 repeating a completion, or importing the counts already stored.
 

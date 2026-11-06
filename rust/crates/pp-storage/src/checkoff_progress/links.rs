@@ -51,8 +51,6 @@ pub(super) fn is_reason(value: &Value) -> bool {
     value.as_str().is_some_and(|s| REASONS.contains(&s))
 }
 
-/// `String.prototype.trim`: JS whitespace and line terminators, which are
-/// Unicode White_Space without U+0085, plus U+FEFF.
 /// `normalizePrinterFilename`: the trimmed basename in lower case.
 pub(super) fn normalized_filename(name: &str) -> String {
     js_trim(name)
@@ -64,6 +62,8 @@ pub(super) fn normalized_filename(name: &str) -> String {
         .to_lowercase()
 }
 
+/// `String.prototype.trim`: JS whitespace and line terminators, which are
+/// Unicode White_Space without U+0085, plus U+FEFF.
 pub(super) fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
 }

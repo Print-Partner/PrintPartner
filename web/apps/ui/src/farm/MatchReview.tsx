@@ -139,7 +139,11 @@ export function MatchReview() {
       const integration = prints.find((p) => p.id === s.print_id)?.integration_id;
       return `${integration ?? `printer:${s.printer_id}`}:${baseName(s.filename)}`;
     };
-    const claimedNames = new Set<string>();
+    // A file this Apply claimed covers a later "already claimed" answer on the same integration,
+    // or on the same file name when that print's integration could not be read.
+    const claimKey = (s: Suggestion) =>
+      prints.some((p) => p.id === s.print_id) ? fileOf(s) : baseName(s.filename);
+    const claimedFiles = new Set<string>();
     for (const s of picked) {
       if (done.includes(s.print_id)) continue;
       try {
@@ -153,12 +157,10 @@ export function MatchReview() {
               ? reprints.map((r) => r.print_id)
               : [s.print_id];
             claimed += ids.length;
-            claimedNames.add(baseName(s.filename));
+            claimedFiles.add(fileOf(s)).add(baseName(s.filename));
             done.push(...ids);
           } else {
-            // A file this Apply already claimed elsewhere was claimed by it, even when the
-            // integrations could not be read to group it in advance.
-            if (claimedNames.has(baseName(s.filename))) claimed += 1;
+            if (claimedFiles.has(claimKey(s))) claimed += 1;
             else already += 1;
             done.push(s.print_id);
           }

@@ -84,7 +84,7 @@ pub(crate) struct CurrentUser {
     user: TokenSid,
     owner: TokenSid,
     /// SYSTEM and Administrators: the accounts that, like root on Unix, can
-    /// take any file, so access for them does not make a file less private.
+    /// take any file. Only [`Self::owns_privately_or_root`] accepts them.
     root: [Vec<u64>; 2],
 }
 
@@ -186,11 +186,33 @@ impl CurrentUser {
     }
 
     /// True when [`Self::owns`] holds and every ACE that grants access names
-    /// this user, SYSTEM or Administrators: no other account can open `object`.
+    /// this user: no other account can open `object`. Logs and the private
+    /// pipe get a DACL that grants only this user, so they must keep it.
     pub(crate) fn owns_privately(
         &self,
         object: &impl AsRawHandle,
         kind: SE_OBJECT_TYPE,
+    ) -> io::Result<bool> {
+        self.grants_only(object, kind, &[])
+    }
+
+    /// [`Self::owns_privately`], but ACEs for SYSTEM and Administrators are
+    /// also allowed. Only the desktop account pin uses it: the user's profile
+    /// folder passes inherited ACEs for both to the file, and both are
+    /// root-equivalent, as root can read a 0600 file on Unix.
+    pub(crate) fn owns_privately_or_root(
+        &self,
+        object: &impl AsRawHandle,
+        kind: SE_OBJECT_TYPE,
+    ) -> io::Result<bool> {
+        self.grants_only(object, kind, &self.root)
+    }
+
+    fn grants_only(
+        &self,
+        object: &impl AsRawHandle,
+        kind: SE_OBJECT_TYPE,
+        others: &[Vec<u64>],
     ) -> io::Result<bool> {
         let (owner, dacl, _descriptor) = Self::security(object, kind)?;
         if owner.is_null() || !self.may_own(owner) || dacl.is_null() {
@@ -219,8 +241,8 @@ impl CurrentUser {
             }
             let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
             let sid = unsafe { ptr::addr_of_mut!((*allowed).SidStart) }.cast::<c_void>();
-            let root = |known: &Vec<u64>| unsafe { EqualSid(sid, known.as_ptr() as PSID) } != 0;
-            if unsafe { EqualSid(sid, self.user()) } == 0 && !self.root.iter().any(root) {
+            let named = |known: &Vec<u64>| unsafe { EqualSid(sid, known.as_ptr() as PSID) } != 0;
+            if unsafe { EqualSid(sid, self.user()) } == 0 && !others.iter().any(named) {
                 return Ok(false);
             }
         }

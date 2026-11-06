@@ -600,12 +600,13 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
 }
 
 /// A regular file, not a reparse point, owned by this user and open to no
-/// other account except SYSTEM and Administrators.
+/// other account except SYSTEM and Administrators, which the profile folder
+/// grants through inherited ACEs and which can read any file anyway.
 pub(crate) fn private_file(file: &File) -> std::io::Result<bool> {
     let metadata = file.metadata()?;
     Ok(metadata.is_file()
         && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-        && CurrentUser::query()?.owns_privately(file, SE_FILE_OBJECT)?)
+        && CurrentUser::query()?.owns_privately_or_root(file, SE_FILE_OBJECT)?)
 }
 
 /// `\\.\pipe\printpartner-compat-<generation>`. The core always holds one

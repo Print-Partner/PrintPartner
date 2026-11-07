@@ -18,8 +18,9 @@ permissions:
   contents: read
 
 # Superseded PR runs cancel. Pushes to main, merge groups, nightly and manual
-# runs each get their own group and never cancel; a rerun keeps its run's id,
-# so it shares that group and never cancels anything (GRE-1042, GRE-1228).
+# runs each get their own group and never cancel. A rerun keeps its run's id and
+# event, so a rerun of a non-PR run shares that run's group without cancelling,
+# and a rerun of a PR run stays in the PR group (GRE-1042, GRE-1228).
 concurrency:
   group: native-macos-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

@@ -1,64 +1,18 @@
 //! Node's PATCH /plans/{id} and POST /plans/{id}/archive through the Build
 //! router (GRE-421 part 2).
 
-use super::http::{App, Refusal, SummaryContract, failure, missing_build, run, unreadable};
-use crate::loopback::PresentedCredential;
+use super::http::{
+    App, Received, Refusal, SummaryContract, failure, missing_build, number_build_id, run,
+    unreadable,
+};
 use axum::{
-    body::to_bytes,
     extract::{Path, State},
-    http::{Method, StatusCode, header},
+    http::{Method, StatusCode},
     response::Response,
 };
-use pp_storage::build_graph::{
-    ArchiveRefusal, BuildCommand, BuildPatch, PositiveId, SpecialRequest,
-};
+use pp_storage::build_graph::{ArchiveRefusal, BuildCommand, BuildPatch, SpecialRequest};
 use serde::de::IgnoredAny;
 use serde_json::Value;
-
-/// Node reads the id with `Number(id)`, so `0x1` and `" 1 "` name Build 1.
-fn parse_build_id(id: &str) -> Option<PositiveId> {
-    let id = pp_storage::plates::build_id(id)??;
-    PositiveId::new(u64::try_from(id).ok()?).ok()
-}
-
-/// A Build header request with its credential, mount and body read.
-struct Received {
-    presented: PresentedCredential,
-    path: String,
-    contract: SummaryContract,
-    json: bool,
-    bytes: axum::body::Bytes,
-}
-
-async fn receive(app: &App, request: axum::extract::Request) -> Result<Received, Box<Response>> {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return Err(Box::new(failure(
-            StatusCode::UNAUTHORIZED,
-            "Authentication required",
-        )));
-    };
-    let path = request.uri().path().to_owned();
-    let contract = SummaryContract::of(&request);
-    let json = request
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
-    let Ok(bytes) = to_bytes(request.into_body(), app.body_limit()).await else {
-        return Err(Box::new(failure(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Request body too large",
-        )));
-    };
-    Ok(Received {
-        presented,
-        path,
-        contract,
-        json,
-        bytes,
-    })
-}
 
 /// Applies `patch` to the Build `id` names, or 404 when it names none.
 async fn apply(
@@ -68,7 +22,7 @@ async fn apply(
     id: &str,
     patch: BuildPatch,
 ) -> Response {
-    let Some(build) = parse_build_id(id) else {
+    let Some(build) = number_build_id(id) else {
         return missing_build(app, received.presented).await;
     };
     let legacy = received.contract == SummaryContract::LegacyV1;
@@ -90,12 +44,8 @@ async fn apply(
 pub(super) async fn update(
     State(app): State<App>,
     Path(id): Path<String>,
-    request: axum::extract::Request,
+    received: Received,
 ) -> Response {
-    let received = match receive(&app, request).await {
-        Ok(received) => received,
-        Err(response) => return *response,
-    };
     let fields = match serde_json::from_slice::<Value>(&received.bytes) {
         Ok(Value::Object(fields)) => fields,
         Ok(Value::Null) | Err(_) => return unreadable(),
@@ -126,12 +76,8 @@ pub(super) async fn update(
 pub(super) async fn archive(
     State(app): State<App>,
     Path(id): Path<String>,
-    request: axum::extract::Request,
+    received: Received,
 ) -> Response {
-    let received = match receive(&app, request).await {
-        Ok(received) => received,
-        Err(response) => return *response,
-    };
     if received.json && serde_json::from_slice::<IgnoredAny>(&received.bytes).is_err() {
         return unreadable();
     }

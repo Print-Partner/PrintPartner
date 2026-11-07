@@ -53,17 +53,51 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
   echo "pp-iso slot $slot: starting container $name"
   # No volume, no host network, no docker socket, no host devices. The JIT config is passed by
   # name so it does not show in the process list. The container is removed even if it is killed.
-  ACTIONS_RUNNER_INPUT_JITCONFIG=$jit timeout --kill-after=60 "$max_job_seconds" "$engine" run --rm \
+  begun=$(date +%s)
+  if ! ACTIONS_RUNNER_INPUT_JITCONFIG=$jit "$engine" run -d --rm \
     --name "$name" --hostname "$name" \
     --cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=SETUID \
     --cap-add=SETGID --cap-add=KILL --cap-add=FSETID --cap-add=SETFCAP --cap-add=SYS_CHROOT \
     --cpus "$cpus" --memory "$memory" --memory-swap "$memory" --pids-limit "$pids" \
     --label "pp-iso.slot=$slot" \
     --env ACTIONS_RUNNER_INPUT_JITCONFIG \
-    "$PP_ISO_IMAGE" || echo "pp-iso slot $slot: container $name exited with status $?" >&2
-  "$engine" rm -f "$name" >/dev/null 2>&1 || true
-  name=
+    "$PP_ISO_IMAGE" >/dev/null; then
+    unset jit response
+    failures=$((failures + 1))
+    delay=$((failures < 6 ? 5 * (1 << failures) : 300))
+    echo "pp-iso slot $slot: the container did not start ($failures in a row); retrying in $delay s" >&2
+    name=
+    sleep "$delay"
+    continue
+  fi
   unset jit response
+  "$engine" logs -f "$name" 2>&1 &
+  logs_pid=$!
+  # Wait for the container to exit. The run time limit counts from the moment the runner starts a
+  # job (Runner.Worker appears), so a slot that waited a long time for work does not cut a job short.
+  job_start=0
+  while [ -n "$("$engine" ps -q --filter "name=^$name\$" 2>/dev/null)" ]; do
+    if [ "$job_start" -eq 0 ] && "$engine" top "$name" 2>/dev/null | grep -q 'Runner.Worker'; then
+      job_start=$(date +%s)
+    fi
+    if [ "$job_start" -ne 0 ] && [ $(( $(date +%s) - job_start )) -gt "$max_job_seconds" ]; then
+      echo "pp-iso slot $slot: the job in $name ran over $max_job_seconds s; removing the container" >&2
+      break
+    fi
+    sleep 5
+  done
+  "$engine" rm -f "$name" >/dev/null 2>&1 || true
+  kill "$logs_pid" 2>/dev/null || true
+  wait "$logs_pid" 2>/dev/null || true
+  name=
   jobs_done=$((jobs_done + 1))
-  sleep 1
+  if [ "$job_start" -eq 0 ] && [ $(( $(date +%s) - begun )) -lt 30 ]; then
+    failures=$((failures + 1))
+    delay=$((failures < 6 ? 5 * (1 << failures) : 300))
+    echo "pp-iso slot $slot: the container exited at once without a job ($failures in a row); retrying in $delay s" >&2
+    sleep "$delay"
+  else
+    failures=0
+    sleep 1
+  fi
 done

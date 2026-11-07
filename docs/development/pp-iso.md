@@ -34,8 +34,9 @@ capacity without sharing state.
   registry or sccache. Caches come only from `actions/cache`.
 - The container runs the runner as the non-root user `runner` (uid 1001). It runs under
   rootless podman as the unprivileged host user `pp-iso`, so container root maps to an
-  unprivileged uid on the host. `sudo` inside the container exists only for steps that
-  call `sudo apt-get`.
+  unprivileged uid on the host. `runner` has passwordless `sudo` because workflow
+  steps call `sudo apt-get`, so any step can be root inside the container. That root is
+  confined by the user namespace and by the rules above; it is not restricted to `apt`.
 - Capabilities are dropped to the set `apt` and `sudo` need. Each job has CPU, memory
   and process limits and a maximum run time.
 - The registration credential is a token with repository Administration (self-hosted
@@ -55,8 +56,10 @@ A PR adds its own workflow that targets `pp-iso`.
   host filesystem, the docker socket, or other containers' files.
 - It cannot read the registration credential: the token is not in the container, its
   environment, or any mounted file.
-- When the job ends the container is deleted. A job that hangs is killed after
-  `PP_ISO_MAX_JOB_SECONDS` (default 21600).
+- When the job ends the container is deleted. A job that runs longer than
+  `PP_ISO_MAX_JOB_SECONDS` (default 21600), counted from when the runner starts the job, is
+  killed. A container that fails to start or exits at once makes the loop back off, up to 300 s,
+  and each retry registers one new runner, so a broken host does not flood the runner list.
 - It can use the JIT config for its own runner, which is good for that job only.
 - It can use host CPU and memory up to the per-job limits, and the network the container
   has. Network egress is not filtered by this kit.

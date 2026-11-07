@@ -32,6 +32,12 @@ class AssembleLinuxDebTest(unittest.TestCase):
         (self.stage / LINK).symlink_to(TARGET)
         manifest = {"dependencies": {"links": {LINK: TARGET}}}
         (self.stage / "bundle-manifest.json").write_text(json.dumps(manifest))
+        self.write_config({str(self.stage / name): "desktop-runtime/" + name
+                           for name in ("web", "bin", "release.json")})
+
+    def write_config(self, resources):
+        config = {"bundle": {"active": True, "resources": resources}}
+        (self.stage / "bundle-config.json").write_text(json.dumps(config))
 
     def deb(self, edit=None):
         """Build a .deb the way tauri does: the stage's runtime without its symlinks."""
@@ -83,6 +89,27 @@ class AssembleLinuxDebTest(unittest.TestCase):
         deb = self.deb(lambda runtime: os.remove(runtime / "bin/node"))
         with self.assertRaises(SystemExit):
             assembler.assemble(self.stage, deb)
+
+    def test_restored_directory_keeps_the_stage_mode_under_a_strict_umask(self):
+        deb = self.deb()
+        previous = os.umask(0o077)
+        try:
+            assembler.assemble(self.stage, deb)
+        finally:
+            os.umask(previous)
+        self.assertIn("drwxr-xr-x root/root", next(
+            line for line in self.listing(deb).splitlines()
+            if line.endswith("node_modules/@print-partner/")))
+
+    def test_changed_directory_mode_is_refused(self):
+        deb = self.deb(lambda runtime: (runtime / "web/apps").chmod(0o700))
+        with self.assertRaises(SystemExit):
+            assembler.assemble(self.stage, deb)
+
+    def test_resource_mapping_outside_the_runtime_is_refused(self):
+        self.write_config({str(self.stage / "web"): "elsewhere/web"})
+        with self.assertRaises(SystemExit):
+            assembler.assemble(self.stage, self.deb())
 
     def test_lost_executable_bit_is_refused(self):
         deb = self.deb(lambda runtime: (runtime / "bin/node").chmod(0o644))

@@ -18,7 +18,7 @@ PRs therefore run on Blacksmith runners (or GitHub-hosted
 `ubuntu-latest` with `PP_PR_RUNNER=hosted`). Blacksmith costs money per minute and shares one
 plan's concurrency, which is why only the three heavy jobs use it. pp-iso gives PRs self-hosted
 capacity without sharing state.
-With `PP_PR_RUNNER=pp-iso`, only pull requests whose head repository is this repository run on pp-iso; fork pull requests run on Blacksmith, as `cargo-cache-trust.md` requires for PR-editable code.
+With `PP_PR_RUNNER=pp-iso`, only pull requests whose head repository is this repository run on pp-iso; the script sends fork pull requests to Blacksmith, as `cargo-cache-trust.md` requires for PR-editable code. A pull request runs its own copy of the script and workflow, so the runner group's fork-run settings must also keep fork code off pp-iso.
 
 | | pp-local | pp-iso |
 | --- | --- | --- |

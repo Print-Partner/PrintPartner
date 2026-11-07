@@ -6,11 +6,12 @@ use crate::loopback::PresentedCredential;
 use axum::{
     body::to_bytes,
     extract::{Path, State},
-    http::{Method, StatusCode},
+    http::{Method, StatusCode, header},
     response::Response,
 };
 use pp_storage::build_graph::{
     BuildCommand, ManifestOptionsOutcome, PositiveId, VariantCommand, VariantOutcome,
+    variants::json_body_refused,
 };
 
 /// Node reads the id with `Number(id)`, so `0x3`, `3e0` and `" 3 "` name Plan 3.
@@ -40,16 +41,27 @@ pub(super) async fn select(
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(build) = parse_build_id(&id) else {
-        return unknown_build(app, request).await;
-    };
     let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
         return failure(StatusCode::UNAUTHORIZED, "Authentication required");
     };
     let path = request.uri().path().to_owned();
+    let json = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
     let limit = app.body_limit();
-    let Ok(bytes) = to_bytes(request.into_body(), limit).await else {
+    let (parts, body) = request.into_parts();
+    let Ok(bytes) = to_bytes(body, limit).await else {
         return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
+    };
+    if json && (bytes.is_empty() || json_body_refused(&bytes)) {
+        return unreadable();
+    }
+    let Some(build) = parse_build_id(&id) else {
+        let request = axum::extract::Request::from_parts(parts, axum::body::Body::empty());
+        return unknown_build(app, request).await;
     };
     let command = VariantCommand::Select {
         build,

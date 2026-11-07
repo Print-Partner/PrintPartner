@@ -3102,14 +3102,18 @@ or `{}` when it is missing, empty or not JSON.
 
 A selection checks in Node's order:
 
+0. Under `Content-Type: application/json`, an empty body, a body that is not
+   JSON, or one Fastify's parser refuses as prototype poisoning (a `__proto__`
+   key, or a `constructor` key whose object has a `prototype` key) is 400
+   `Request is invalid` before the id is read, as Fastify answers before Node's
+   route runs. Like the other Rust routes, a body under another content type is
+   read as JSON rather than refused with Fastify's 415.
 1. The id is `Number(id)` as a positive integer (so `0x3`, `3e0` and `" 3 "`
    name Plan 3, through `plates::build_id`), else 404 `Profile not found`,
    before the body is read. The dimensions read does the same.
 2. The body is `{ selection?: Record<string, string>, source_id?: positive safe
-   integer }` (an empty body or `null` is `{}`), else 400 `Invalid variant
-   selection`. A body that is not JSON, or that Fastify's parser refuses as
-   prototype poisoning (a `__proto__` key, or a `constructor` key whose object
-   has a `prototype` key), is 400 `Request is invalid`.
+   integer }` (no body or `null` is `{}`), else 400 `Invalid variant
+   selection`.
 3. Without a base Source, 400 `No base source on plan`; a `source_id` other
    than the base Source, 400 `Source must match the plan's base source`.
 4. Each selected dimension, in JavaScript property order, must be a dimension
@@ -3129,12 +3133,13 @@ unreadable file, such as an exhausted `PreparationLimits` budget (each
 copied dimension name and text option, aliases included, is charged to it), is 503
 `source_observation_failed`, as for the manifest builder; Node has no limits.
 
-`fixtures/parity/variants-http/node.json` is Node's answer for 75 requests on
+`fixtures/parity/variants-http/node.json` is Node's answer for 78 requests on
 one database. `variants_flat_v1_v2_match_node_responses_and_changed_tables`
 in `ticket_t_10_fixtures` replays every case through `build_router` over the
 production `SourceReads`: 74 match Node's status, body and changed tables, and
-the poisoned body is a declared correction (400 `Request is invalid` without
-Fastify's parser code);
+four bodies Fastify's parser refuses (poisoned, not JSON, or empty under
+`application/json`, including on a missing or non-numeric Plan) are declared
+corrections (400 `Request is invalid` without Fastify's parser codes);
 and after each of the 18 saves the stored selection text and the Source's
 `imported_paths` equal Node's byte for byte. Regenerate the golden with
 `node fixtures/parity/variants-http/generate.mjs`.

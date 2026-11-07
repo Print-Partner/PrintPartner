@@ -1621,7 +1621,7 @@ mod ticket_t_10_fixtures {
         let fixture = seeded_fixture(
             include_str!("../../../../fixtures/parity/variants-http/node.json"),
             "variants-http",
-            75,
+            78,
         );
         assert!(fixture.seed.is_some());
         let sandbox = Sandbox::new("t10-variants").unwrap();
@@ -1645,20 +1645,22 @@ mod ticket_t_10_fixtures {
                 &sandbox,
                 FIXTURE_COOKIE,
                 std::slice::from_ref(case),
-                if case.id == "prototype_dimension_flat" {
-                    vec![Correction {
-                        case: "prototype_dimension_flat",
-                        kind: CorrectionKind::Security,
-                        reason: "Rust refuses a poisoned body without Fastify's parser code",
-                        rust: Exchange {
-                            status: 400,
-                            body: json!({"detail": "Request is invalid"}),
-                            set_cookie: vec![],
-                        },
-                    }]
-                } else {
-                    vec![]
-                },
+                REFUSED_BODIES
+                    .iter()
+                    .find(|id| **id == case.id)
+                    .map(|id| {
+                        vec![Correction {
+                            case: id,
+                            kind: CorrectionKind::Security,
+                            reason: "Rust refuses what Fastify's parser refuses, without its code",
+                            rust: Exchange {
+                                status: 400,
+                                body: json!({"detail": "Request is invalid"}),
+                                set_cookie: vec![],
+                            },
+                        }]
+                    })
+                    .unwrap_or_default(),
             )
             .await;
             matched += report.matched;
@@ -1696,6 +1698,14 @@ mod ticket_t_10_fixtures {
         assert_eq!(matched, 74);
         assert_eq!(checked, 18);
     }
+
+    /// The variants cases Fastify's JSON parser refuses before the route runs.
+    const REFUSED_BODIES: [&str; 4] = [
+        "prototype_dimension_flat",
+        "prototype_missing_build_v1",
+        "not_json_text_id_v2",
+        "empty_json_body_flat",
+    ];
 
     #[tokio::test]
     async fn catalog_flat_v1_match_node_responses_and_changed_tables() {

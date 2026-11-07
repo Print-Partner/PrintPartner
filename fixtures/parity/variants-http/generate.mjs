@@ -152,6 +152,10 @@ const REQUESTS = [
   post("not_array_dimension_flat", "/plans/3/variant-selection", { selection: { notes: "plain text" } }),
   post("inherited_name_v1", "/api/v1/plans/3/variant-selection", { selection: { toString: "x" } }),
   raw("prototype_dimension_flat", "/plans/3/variant-selection", '{"selection":{"__proto__":"small"}}'),
+  // Fastify's parser answers before the route reads the id.
+  raw("prototype_missing_build_v1", "/api/v1/plans/99/variant-selection", '{"selection":{"__proto__":"small"}}'),
+  raw("not_json_text_id_v2", "/api/v2/plans/abc/variant-selection", "{"),
+  raw("empty_json_body_flat", "/plans/3/variant-selection", ""),
   post("other_source_v2", "/api/v2/plans/3/variant-selection", { selection: {}, source_id: 5 }),
   post("unknown_source_flat", "/plans/3/variant-selection", { selection: { size: "large" }, source_id: 99 }),
   post("source_id_zero_v1", "/api/v1/plans/3/variant-selection", { source_id: 0 }),

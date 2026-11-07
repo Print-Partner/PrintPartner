@@ -325,6 +325,15 @@ fn parse_request(bytes: &[u8]) -> std::result::Result<Request, VariantOutcome> {
     Ok((selection, source))
 }
 
+/// Whether Fastify's JSON parser refuses a non-empty `application/json` body
+/// before Node's route runs: not JSON, or prototype poisoning.
+pub fn json_body_refused(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Box<RawValue>>(text).ok())
+        .is_none_or(|body| poisoned(&body))
+}
+
 /// Fastify's default JSON parser refuses a body with a `__proto__` key, or a
 /// `constructor` key whose object value has a `prototype` key, at any depth.
 fn poisoned(value: &RawValue) -> bool {

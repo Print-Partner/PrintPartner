@@ -1328,7 +1328,7 @@ mod ticket_t_10_fixtures {
             for (source, checkout) in &fixture.checkouts {
                 let checkout = checkout
                     .split('/')
-                    .fold(sandbox.path().to_path_buf(), |path, part| path.join(part));
+                    .fold(data_dir(sandbox), |path, part| path.join(part));
                 connection
                     .execute(
                         "UPDATE projects SET local_path=?1 WHERE id=?2",
@@ -1340,6 +1340,11 @@ mod ticket_t_10_fixtures {
         WriterOwner::open(sandbox.path(), Limits::default())
             .unwrap()
             .0
+    }
+
+    /// The sandbox as Rust reports it: canonical, in the spelling Node writes.
+    fn data_dir(sandbox: &Sandbox) -> std::path::PathBuf {
+        pp_testkit::node_path::node_path(&sandbox.path().canonicalize().unwrap())
     }
 
     /// Node's generators write their scratch data directory as `{data}`, with
@@ -1376,7 +1381,8 @@ mod ticket_t_10_fixtures {
             .map(|correction| correction.case)
             .collect();
         let mut ledger = Ledger::new(corrections).unwrap();
-        let data = sandbox.path().to_str().unwrap();
+        let data = data_dir(sandbox);
+        let data = data.to_str().unwrap();
         for case in cases {
             let (mut actual, changed) = send_case(served, cookie, sandbox, case, &case.path).await;
             with_data_placeholder(&mut actual.body, data);

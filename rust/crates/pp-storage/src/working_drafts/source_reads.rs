@@ -216,10 +216,7 @@ impl DraftReads for SourceReads {
         b.check()?;
         let (logical, root) = if request.purpose() == StlPurpose::Revision {
             let root = self.revision(request.source_id(), request.stored_path(), b)?;
-            (
-                Some(pp_os::display_path(&root).to_string_lossy().into_owned()),
-                Some(root),
-            )
+            (Some(root.to_string_lossy().into_owned()), Some(root))
         } else {
             match request.stored_path().filter(|path| !path.is_empty()) {
                 None => (None, None),

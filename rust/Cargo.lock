@@ -3301,6 +3301,7 @@ dependencies = [
  "log",
  "pp-services",
  "pp-storage",
+ "pp-testkit",
  "reqwest",
  "rmcp",
  "rusqlite",

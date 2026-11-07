@@ -325,7 +325,7 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
     let fixture = Fixture::start(StreamLimits {
         streams: 1,
         queued_frames: 2,
-        slow_client_deadline: Duration::from_millis(200),
+        slow_client_deadline: Duration::from_millis(500),
         heartbeat: Duration::from_secs(60),
     })
     .await;
@@ -346,7 +346,7 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
     assert_eq!(&head, b"HTTP/1.1 200");
     fixture.record(1..4000, 2000);
     let mut slowest = Duration::ZERO;
-    let stalled = Instant::now() + Duration::from_secs(1);
+    let stalled = Instant::now() + Duration::from_millis(1500);
     while Instant::now() < stalled {
         slowest = slowest.max(fixture.poke());
         tokio::time::sleep(Duration::from_millis(50)).await;

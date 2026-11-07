@@ -56,3 +56,4 @@ tempfile = "=3.27.0"
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 hyper = { workspace = true, features = ["server"] }
 hyper-util.workspace = true
+pp-testkit = { path = "../pp-testkit" }

@@ -324,8 +324,10 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
         let _ = (&window, &event);
     });
     stop_signal.abort();
-    // Remove the focus endpoint while this process still holds the data lock.
-    drop(focus_server);
+    // Close the focus endpoint while this process still holds the data lock.
+    if let Some(server) = focus_server {
+        runtime.block_on(server.stop());
+    }
     let receipt = runtime.block_on(core.shutdown());
     println!("{}", serde_json::to_string(&receipt)?);
     ensure!(receipt.complete(), "Desktop shutdown incomplete");

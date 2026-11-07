@@ -73,7 +73,7 @@ pub fn owned_by_another_desktop(error: &anyhow::Error) -> bool {
 /// Listener for focus requests. Dropping it stops the listener, so drop it
 /// before the lock owner shuts down.
 pub struct FocusServer {
-    _listener: platform::FocusListener,
+    listener: platform::FocusListener,
 }
 
 impl FocusServer {
@@ -82,8 +82,15 @@ impl FocusServer {
     pub fn start(data: &Path, focus: impl Fn() + Send + Sync + 'static) -> Result<Self> {
         let identity = Identity::of(data)?;
         Ok(Self {
-            _listener: platform::FocusListener::start(data, identity, Arc::new(focus))?,
+            listener: platform::FocusListener::start(data, identity, Arc::new(focus))?,
         })
+    }
+
+    /// Stop listening and wait, bounded, until the endpoint is closed, so the
+    /// next owner of the data directory can listen. Call it before core
+    /// shutdown releases the lock; a plain drop does not wait.
+    pub async fn stop(self) {
+        self.listener.stop().await;
     }
 }
 
@@ -157,7 +164,7 @@ pub(crate) mod tests {
         let server = FocusServer::start(data.path(), focus).unwrap();
         assert!(ask(data.path()).await.unwrap());
         assert_eq!(count.load(Ordering::SeqCst), 1);
-        drop(server);
+        server.stop().await;
         assert!(
             !ask(data.path()).await.unwrap_or(false),
             "no owner, no focus"

@@ -51,6 +51,9 @@ impl FocusListener {
         });
         Ok(Self { path, task })
     }
+
+    /// Dropping closes the socket at once, so there is nothing to wait for.
+    pub(crate) async fn stop(self) {}
 }
 
 impl Drop for FocusListener {
@@ -112,7 +115,7 @@ mod tests {
             std::fs::symlink_metadata(&socket).unwrap().mode() & 0o777,
             0o600
         );
-        drop(server);
+        server.stop().await;
         assert!(!socket.exists(), "socket removed with its owner");
         assert!(ask(data.path()).await.is_err(), "no owner, no focus");
     }

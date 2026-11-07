@@ -237,7 +237,7 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 |------------|--------|----------|-------|
 | `rust (linux)` | Aggregate over `rust (linux) build` plus rebuild partitions when selected | The whole workspace | All |
 | `rust (macos)` | `macos-26` | The whole workspace | All except [macOS exclusions](#macos-exclusions) |
-| `rust (windows)` | `windows-latest` | The workspace | All in those packages |
+| `rust (windows)` | `windows-latest` | The whole workspace | All |
 
 `rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or on `ubuntu-latest`; see [Linux Rust runner](#linux-rust-runner).
 

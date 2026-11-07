@@ -217,7 +217,9 @@ mod tests {
         command
     }
 
-    /// Does nothing unless `recorder` started it.
+    /// The opener that `recorder` runs, not a check of its own: libtest can only
+    /// start a test, so it is one. In a normal run there is no record path and
+    /// it returns at once; the reveal test asserts what it records.
     #[test]
     fn reveal_recorder() {
         let Some(record) = std::env::var_os("PP_REVEAL_RECORD") else {

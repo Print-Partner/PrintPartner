@@ -13,11 +13,12 @@ mod unix;
 use unix as platform;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+use windows as platform;
+
 /// The supervised child process.
 pub use platform::Child;
 use platform::ParentDeathGuard;
-#[cfg(windows)]
-use windows as platform;
 mod release;
 use anyhow::{Context, Result, bail, ensure};
 use axum::{

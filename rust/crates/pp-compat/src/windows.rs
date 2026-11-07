@@ -41,7 +41,7 @@ use windows_sys::Win32::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT,
         FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FileAttributeTagInfo,
         GetFileInformationByHandleEx, OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND,
-        READ_CONTROL,
+        READ_CONTROL, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
     },
     System::{
         IO::{CreateIoCompletionPort, GetQueuedCompletionStatus},
@@ -461,6 +461,8 @@ fn pipe(child_reads: bool) -> std::io::Result<(OwnedHandle, OwnedHandle)> {
     } else {
         FILE_GENERIC_WRITE
     };
+    // The only instance is ours, but the child's end still allows the server
+    // identification only, never impersonation, like every client open.
     let theirs = unsafe {
         CreateFileW(
             name.as_ptr(),
@@ -468,7 +470,7 @@ fn pipe(child_reads: bool) -> std::io::Result<(OwnedHandle, OwnedHandle)> {
             0,
             std::ptr::null(),
             OPEN_EXISTING,
-            0,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
             std::ptr::null_mut(),
         )
     };

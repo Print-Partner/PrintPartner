@@ -374,7 +374,7 @@ mod tests {
                 ),
                 ("invalid-portable", Some("")),
                 ("invalid-portable", Some("relative")),
-                ("invalid-portable", Some("/safe/../other")),
+                ("invalid-portable", Some(abs!("/safe/../other"))),
                 ("invalid-portable-unavailable", Some("relative")),
                 ("legacy", None),
                 ("unavailable", None),

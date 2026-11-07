@@ -67,6 +67,13 @@ fn inventory_key(path: &Path, root: &Path) -> Result<String> {
 /// `apps/server/dist/current` release junction that
 /// `web/scripts/atomic-package-build.mjs` creates; they are only walked, with
 /// their canonical target inside the root.
+///
+/// `key` is the logical path from the inventory root, the path Node resolves
+/// through, not the canonical target. A walk root that is itself a junction is
+/// checked the same way, so a `node_modules` root junction fails as naming no
+/// module. The walk visits a directory once outside `node_modules` and once
+/// inside it, so reaching it first through a non-module junction cannot skip
+/// the check.
 fn verify_junction_package(junction: &Path, key: &str) -> Result<()> {
     #[derive(Deserialize)]
     struct Package {
@@ -308,8 +315,8 @@ fn verify_dependencies(
     let mut actual_files = std::collections::BTreeSet::new();
     let mut actual_links = std::collections::BTreeSet::new();
     let mut visited = std::collections::BTreeSet::new();
-    for directory in &inventory.roots {
-        let directory = root.join(relative(directory)?);
+    for root_key in &inventory.roots {
+        let directory = root.join(relative(root_key)?);
         if !directory.try_exists()? {
             continue;
         }
@@ -317,21 +324,30 @@ fn verify_dependencies(
             directory.canonicalize()?.starts_with(&root),
             "Dependency root escaped package"
         );
-        let mut pending = vec![directory];
-        while let Some(directory) = pending.pop() {
+        if std::fs::symlink_metadata(&directory)?.is_symlink()
+            && crate::platform::is_junction(&directory)?
+        {
+            verify_junction_package(&directory, root_key)?;
+        }
+        let mut pending = vec![(directory, root_key.clone())];
+        while let Some((directory, logical)) = pending.pop() {
             ensure!(!stop.is_cancelled(), "Release verification cancelled");
             let directory = directory.canonicalize()?;
             ensure!(
                 directory.starts_with(&root),
                 "Dependency root escaped package"
             );
-            if !visited.insert(directory.clone()) {
+            let in_modules = logical
+                .split('/')
+                .any(|part| part.eq_ignore_ascii_case("node_modules"));
+            if !visited.insert((directory.clone(), in_modules)) {
                 continue;
             }
             for entry in std::fs::read_dir(directory)? {
                 let entry = entry?;
                 let path = entry.path();
                 let key = inventory_key(&path, &root)?;
+                let logical = format!("{logical}/{}", entry.file_name().to_string_lossy());
                 let kind = entry.file_type()?;
                 let junction = kind.is_symlink() && crate::platform::is_junction(&path)?;
                 if kind.is_symlink() && !junction {
@@ -344,15 +360,15 @@ fn verify_dependencies(
                     if target.is_file() {
                         actual_files.insert(inventory_key(&target, &root)?);
                     } else if target.is_dir() {
-                        pending.push(target);
+                        pending.push((target, logical));
                     } else {
                         anyhow::bail!("Unexpected dependency link target");
                     }
                 } else if junction {
-                    verify_junction_package(&path, &key)?;
-                    pending.push(path);
+                    verify_junction_package(&path, &logical)?;
+                    pending.push((path, logical));
                 } else if kind.is_dir() {
-                    pending.push(path);
+                    pending.push((path, logical));
                 } else {
                     ensure!(kind.is_file(), "Unexpected dependency file type");
                     actual_files.insert(key);
@@ -560,6 +576,37 @@ mod tests {
         let stop = CancellationToken::new();
         verify_dependencies(&web, &inventory, &stop).unwrap();
 
+        let decoy = web.join("decoy/@pp");
+        std::fs::create_dir_all(&decoy).unwrap();
+        junction(&web.join("packages/domain"), &decoy.join("contracts"));
+        let server_modules = web.join("apps/server/node_modules");
+        let decoyed = DependencyInventory {
+            web_path: "web".into(),
+            roots: vec![
+                "web/apps/server/dist".into(),
+                "web/node_modules".into(),
+                "web/apps/server/node_modules".into(),
+            ],
+            files: inventory.files.clone(),
+            links: Default::default(),
+            unshipped_links: Default::default(),
+        };
+        junction(&web.join("decoy"), &server_modules);
+        let error = verify_dependencies(&web, &decoyed, &stop).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Dependency junction web/apps/server/node_modules names no module"
+        );
+        std::fs::remove_dir(&server_modules).unwrap();
+        std::fs::create_dir(&server_modules).unwrap();
+        crate::logs::test_support::symlink_dir(&decoy, &server_modules.join("@pp"));
+        let error = verify_dependencies(&web, &decoyed, &stop).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Dependency junction web/apps/server/node_modules/@pp/contracts targets package @pp/domain"
+        );
+        std::fs::remove_dir_all(&server_modules).unwrap();
+
         let link = scope.join("contracts");
         std::fs::remove_dir(&link).unwrap();
         junction(&web.join("packages/domain"), &link);
@@ -572,7 +619,7 @@ mod tests {
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "Dependency junction web/Node_Modules/@pp/contracts targets package @pp/domain"
+            "Dependency junction web/node_modules/@pp/contracts targets package @pp/domain"
         );
         std::fs::rename(web.join("Node_Modules"), web.join("node_modules")).unwrap();
 
@@ -595,12 +642,12 @@ mod tests {
         assert_eq!(error.to_string(), "Dependency root escaped package");
         std::fs::remove_dir(&link).unwrap();
 
-        let unnamed = release.join("node_modules");
+        let unnamed = release.join("Node_Modules");
         junction(&release.join("v1"), &unnamed);
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "Dependency junction web/apps/server/dist/node_modules names no module"
+            "Dependency junction web/apps/server/dist/Node_Modules names no module"
         );
         std::fs::remove_dir(&unnamed).unwrap();
         std::fs::remove_dir_all(root).unwrap();

@@ -373,7 +373,7 @@ pub fn plan(
 
 impl CutoverPlan {
     pub fn commit(self, data_dir: &Path, drained: DrainEvidence) -> CutoverReceipt {
-        self.commit_with_directory_sync(data_dir, drained, |dir| fs::File::open(dir)?.sync_all())
+        self.commit_with_directory_sync(data_dir, drained, pp_os::sync_directory)
     }
 
     fn commit_with_directory_sync(
@@ -445,7 +445,7 @@ fn write_record(data_dir: &Path, record: &CutoverRecord) -> std::io::Result<()> 
         file.write_all(&encoded)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&temporary, data_dir.join(CUTOVER_FILE))
+        pp_os::publish_rename(&temporary, &data_dir.join(CUTOVER_FILE))
     })();
     if written.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -582,7 +582,7 @@ fn admit_record(
 }
 
 pub fn append_evidence(data_dir: &Path, evidence: &Evidence<'_>) -> std::io::Result<()> {
-    append_evidence_with_directory_sync(data_dir, evidence, |dir| fs::File::open(dir)?.sync_all())
+    append_evidence_with_directory_sync(data_dir, evidence, pp_os::sync_directory)
 }
 
 fn append_evidence_with_directory_sync(
@@ -592,6 +592,7 @@ fn append_evidence_with_directory_sync(
 ) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(evidence)?;
     line.push(b'\n');
+    create_evidence_log(data_dir)?;
     let mut options = fs::OpenOptions::new();
     options.append(true).create(true);
     #[cfg(unix)]
@@ -608,6 +609,35 @@ fn append_evidence_with_directory_sync(
     file.write_all(&line)?;
     file.sync_all()?;
     sync_directory(data_dir)
+}
+
+/// Unix creates a missing evidence log in the append itself; the directory
+/// sync after it makes the new entry durable.
+#[cfg(unix)]
+fn create_evidence_log(_data_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Windows cannot flush a directory, so a missing evidence log is created
+/// empty and moved into place write-through before the append. Its temporary
+/// name stays outside the cutover record's temporaries, which boot counts.
+#[cfg(windows)]
+fn create_evidence_log(data_dir: &Path) -> std::io::Result<()> {
+    let path = data_dir.join(EVIDENCE_FILE);
+    if fs::symlink_metadata(&path).is_ok() {
+        return Ok(());
+    }
+    let temporary = data_dir.join(format!(
+        ".{EVIDENCE_FILE}.{}.tmp",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    fs::File::create_new(&temporary)?.sync_all()?;
+    let published = match pp_os::publish_new(&temporary, &path) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        result => result,
+    };
+    let _ = fs::remove_file(&temporary);
+    published
 }
 
 #[cfg(test)]

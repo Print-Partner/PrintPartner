@@ -98,6 +98,21 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+/// Node takes Unix paths as they are.
+pub(crate) fn node_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+/// `--import` takes an absolute Unix path.
+pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsString> {
+    Ok(path.into())
+}
+
+/// Junctions exist only on Windows.
+pub(crate) fn is_junction(_path: &Path) -> std::io::Result<bool> {
+    Ok(false)
+}
+
 /// A regular file owned by this user with mode 0600.
 pub(crate) fn private_file(file: &File) -> std::io::Result<bool> {
     let metadata = file.metadata()?;

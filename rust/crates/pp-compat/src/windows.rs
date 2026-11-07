@@ -37,9 +37,11 @@ use windows_sys::Win32::{
     },
     Security::{Authorization::SE_FILE_OBJECT, SECURITY_ATTRIBUTES},
     Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_FIRST_PIPE_INSTANCE,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND, READ_CONTROL,
+        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FileAttributeTagInfo,
+        GetFileInformationByHandleEx, OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND,
+        READ_CONTROL,
     },
     System::{
         IO::{CreateIoCompletionPort, GetQueuedCompletionStatus},
@@ -53,6 +55,7 @@ use windows_sys::Win32::{
         Pipes::{
             CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
         },
+        SystemServices::IO_REPARSE_TAG_MOUNT_POINT,
         SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO,
         Threading::{
             CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
@@ -686,6 +689,65 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+/// `path` without the verbatim `\\?\` prefix that `canonicalize` adds. Node
+/// keys modules by their ordinary path, so a verbatim package root or entry
+/// would put every module outside the desktop package boundary.
+pub(crate) fn node_path(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    let Some(std::path::Component::Prefix(prefix)) = components.next() else {
+        return path.to_path_buf();
+    };
+    let mut plain = match prefix.kind() {
+        std::path::Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+        std::path::Prefix::VerbatimUNC(server, share) => {
+            let mut root = std::ffi::OsString::from(r"\\");
+            root.push(server);
+            root.push(r"\");
+            root.push(share);
+            PathBuf::from(root)
+        }
+        _ => return path.to_path_buf(),
+    };
+    plain.extend(components);
+    plain
+}
+
+/// `--import` takes a URL on Windows: Node reads `C:\…` as a URL with the
+/// scheme `c:` and refuses it.
+pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsString> {
+    url::Url::from_file_path(node_path(path))
+        .map(|url| url.as_str().into())
+        .map_err(|()| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Preload path is not a file URL",
+            )
+        })
+}
+
+/// Whether `path` is itself a junction (a mount-point reparse point), which
+/// std reports as a symbolic link. npm and the package build create junctions
+/// on Windows, and the manifest builder walks them as directories.
+pub(crate) fn is_junction(path: &Path) -> std::io::Result<bool> {
+    let file = OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let mut information = FILE_ATTRIBUTE_TAG_INFO::default();
+    check(unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileAttributeTagInfo,
+            (&raw mut information).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    })?;
+    Ok(
+        information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            && information.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT,
+    )
+}
+
 /// A regular file, not a reparse point, owned by this user and open to no
 /// other account except SYSTEM and Administrators, which the profile folder
 /// grants through inherited ACEs and which can read any file anyway.
@@ -965,6 +1027,25 @@ mod tests {
 
     const JOB_OWNER_ROOT: &str = "PP_COMPAT_JOB_OWNER_ROOT";
     const SPAWN_EXIT_ROOT: &str = "PP_COMPAT_SPAWN_EXIT_ROOT";
+
+    #[test]
+    fn node_gets_plain_paths_and_a_file_url_preload() {
+        assert_eq!(
+            node_path(Path::new(r"\\?\C:\pp\web\desktop.js")),
+            Path::new(r"C:\pp\web\desktop.js")
+        );
+        assert_eq!(
+            node_path(Path::new(r"\\?\UNC\host\share\web")),
+            Path::new(r"\\host\share\web")
+        );
+        assert_eq!(node_path(Path::new(r"C:\pp\web")), Path::new(r"C:\pp\web"));
+        assert_eq!(
+            import_specifier(Path::new(r"\\?\C:\pp\a b\desktop-resolution.js")).unwrap(),
+            "file:///C:/pp/a%20b/desktop-resolution.js"
+        );
+        assert!(import_specifier(Path::new(r"\\?\GLOBALROOT\Device\pp")).is_err());
+        assert!(import_specifier(Path::new(r"relative\desktop-resolution.js")).is_err());
+    }
 
     /// The core for the startup test: it exits the moment its child exists,
     /// before adoption or any other setup, and runs no cleanup.

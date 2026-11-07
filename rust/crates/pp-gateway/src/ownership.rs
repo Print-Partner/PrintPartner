@@ -18,8 +18,6 @@ pub mod resources;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -816,20 +814,35 @@ fn parse_receipt(
 const LEASE_FILE_LIMIT: u64 = 64 * 1024;
 
 fn open_lease_file(path: &Path) -> std::io::Result<Option<fs::File>> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
-    }
-    match options.open(path) {
+    match open_read_nofollow(path) {
         Ok(file) => Ok(Some(file)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// Opens `path` to read without following a final link or blocking on a
+/// FIFO planted at its name.
+#[cfg(unix)]
+fn open_read_nofollow(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// Opens `path` to read, opening a reparse point planted at its name as
+/// itself instead of following it; the caller refuses anything but a regular
+/// file.
+#[cfg(windows)]
+fn open_read_nofollow(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
 }
 
 fn read_bounded_file(file: fs::File, limit: u64) -> std::io::Result<String> {
@@ -920,12 +933,7 @@ fn write_or_reuse_receipt(
         ".{RECEIPT_FILE}.{}.tmp",
         hex::encode(rand::random::<[u8; 16]>())
     ));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options
-        .open(&temporary)
+    let mut file = pp_os::create_new_private_file(&temporary)
         .map_err(|error| AdmissionError::Malformed(error.to_string()))?;
     let result = (|| {
         file.write_all(&encoded)

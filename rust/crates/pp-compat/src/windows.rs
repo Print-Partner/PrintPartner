@@ -25,14 +25,14 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    net::windows::named_pipe::{NamedPipeServer, ServerOptions},
+    net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions},
     process::{ChildStderr, ChildStdin, ChildStdout, Command},
     sync::watch,
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED, HANDLE,
-        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
+        CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED,
+        HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     },
     Security::{Authorization::SE_FILE_OBJECT, SECURITY_ATTRIBUTES},
@@ -689,33 +689,10 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-/// `path` without the verbatim `\\?\` prefix that `canonicalize` adds. Node
-/// keys modules by their ordinary path, so a verbatim package root or entry
-/// would put every module outside the desktop package boundary.
-pub(crate) fn node_path(path: &Path) -> PathBuf {
-    let mut components = path.components();
-    let Some(std::path::Component::Prefix(prefix)) = components.next() else {
-        return path.to_path_buf();
-    };
-    let mut plain = match prefix.kind() {
-        std::path::Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
-        std::path::Prefix::VerbatimUNC(server, share) => {
-            let mut root = std::ffi::OsString::from(r"\\");
-            root.push(server);
-            root.push(r"\");
-            root.push(share);
-            PathBuf::from(root)
-        }
-        _ => return path.to_path_buf(),
-    };
-    plain.extend(components);
-    plain
-}
-
 /// `--import` takes a URL on Windows: Node reads `C:\…` as a URL with the
 /// scheme `c:` and refuses it.
 pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsString> {
-    url::Url::from_file_path(node_path(path))
+    url::Url::from_file_path(pp_os::display_path(path))
         .map(|url| url.as_str().into())
         .map_err(|()| {
             std::io::Error::new(
@@ -883,6 +860,32 @@ impl Channel {
     }
 }
 
+/// A test child's end of the channel. Like Node, it keeps one dial queued:
+/// each accept opens the core's listening instance, waiting while the core
+/// still holds the previous dial there.
+pub(crate) struct FakeChild(PathBuf);
+
+pub(crate) type FakeStream = NamedPipeClient;
+
+pub(crate) fn fake_channel(dir: &Path) -> std::io::Result<(Channel, FakeChild)> {
+    let channel = Channel::bind(dir, &hex::encode(rand::random::<[u8; 16]>()))?;
+    let name = channel.name().to_path_buf();
+    Ok((channel, FakeChild(name)))
+}
+
+impl FakeChild {
+    pub(crate) async fn accept(&mut self) -> std::io::Result<FakeStream> {
+        loop {
+            match ClientOptions::new().open(&self.0) {
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                result => return result,
+            }
+        }
+    }
+}
+
 /// The interpreter for test child scripts: Node with `-e`, since Windows has no
 /// `/bin/sh`. Scripts for it are JavaScript.
 #[cfg(test)]
@@ -1030,15 +1033,6 @@ mod tests {
 
     #[test]
     fn node_gets_plain_paths_and_a_file_url_preload() {
-        assert_eq!(
-            node_path(Path::new(r"\\?\C:\pp\web\desktop.js")),
-            Path::new(r"C:\pp\web\desktop.js")
-        );
-        assert_eq!(
-            node_path(Path::new(r"\\?\UNC\host\share\web")),
-            Path::new(r"\\host\share\web")
-        );
-        assert_eq!(node_path(Path::new(r"C:\pp\web")), Path::new(r"C:\pp\web"));
         assert_eq!(
             import_specifier(Path::new(r"\\?\C:\pp\a b\desktop-resolution.js")).unwrap(),
             "file:///C:/pp/a%20b/desktop-resolution.js"

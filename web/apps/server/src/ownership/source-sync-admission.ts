@@ -557,7 +557,9 @@ export function beginSourceSyncAdmission(
   } finally {
     rmSync(temporary, { force: true });
   }
-  const directory = openSync(dataDir, "r");
+  // Windows flushes only a handle with write access; a read-only sync fails with EPERM.
+  // Only Windows opens a directory for writing.
+  const directory = openSync(dataDir, process.platform === "win32" ? "r+" : "r");
   try {
     fsyncSync(directory);
   } finally {

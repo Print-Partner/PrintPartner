@@ -102,7 +102,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf, Prefix},
 };
 
 #[cfg(unix)]
@@ -259,6 +259,32 @@ pub fn sync_file(path: &Path) -> io::Result<()> {
 /// Flush a directory's entries, so renames and links in it survive a crash.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     platform::sync_directory(path)
+}
+
+/// `path` as a user or Node writes it. The verbatim `\\?\C:\…` that
+/// `canonicalize` returns on Windows becomes `C:\…`, and `\\?\UNC\server\share\…`
+/// becomes `\\server\share\…`. Every other prefix, such as `\\?\GLOBALROOT` or
+/// a device path, is returned unchanged, and so is every Unix path. Use it
+/// where a path becomes a stored or user-visible value, or is compared with
+/// one; open files through the canonical path.
+pub fn display_path(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path.to_path_buf();
+    };
+    let mut plain = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+        Prefix::VerbatimUNC(server, share) => {
+            let mut root = OsString::from(r"\\");
+            root.push(server);
+            root.push(r"\");
+            root.push(share);
+            PathBuf::from(root)
+        }
+        _ => return path.to_path_buf(),
+    };
+    plain.extend(components);
+    plain
 }
 
 /// Why [`try_lock`] did not take the lock.

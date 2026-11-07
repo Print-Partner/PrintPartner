@@ -254,7 +254,7 @@ fn ticket_t_10_draftreads_scan_walks_like_node() {
     .unwrap();
     assert_eq!(
         logical.as_deref(),
-        revision.canonicalize().unwrap().to_str()
+        pp_os::display_path(&revision.canonicalize().unwrap()).to_str()
     );
     assert_eq!(paths(&*inventory), [("part.stl".into(), 0)]);
     assert_eq!(

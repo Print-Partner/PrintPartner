@@ -13,7 +13,7 @@ use pp_storage::{
 };
 use reqwest::{Client, Method};
 use serde_json::{Value, json};
-use std::{os::unix::fs::DirBuilderExt, sync::atomic::AtomicBool, time::Duration};
+use std::{sync::atomic::AtomicBool, time::Duration};
 
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
@@ -35,9 +35,11 @@ struct Fixture {
 impl Fixture {
     async fn new(mutation: Option<&str>, flag: Option<&str>) -> Self {
         let directory = Scratch::new("pp-accepted-http-");
-        std::fs::DirBuilder::new()
+        let builder = &mut std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
+        builder
             .recursive(true)
-            .mode(0o700)
             .create(directory.join("repos/1/revisions/accepted"))
             .unwrap();
         std::fs::write(

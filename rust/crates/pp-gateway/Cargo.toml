@@ -28,6 +28,9 @@ tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 pp-testkit = { path = "../pp-testkit" }
 tokio = { workspace = true, features = ["test-util"] }

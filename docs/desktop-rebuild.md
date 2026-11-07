@@ -3201,7 +3201,8 @@ A PATCH checks in Node's order:
 5. A string `name` is trimmed. Blank is 400 `Profile name is required`. A name
    another Build has is the Build rename rule Accept uses:
    409 `{"code":"duplicate_build_name","name":...}` (Node answered 400
-   `Profile already exists`). A `name` that is not a string is ignored.
+   `Profile already exists`). The web client's `engineFetch` shows that 409 as
+   `Profile already exists: <name>`, the message Node gave. A `name` that is not a string is ignored.
 6. `special_request` is `String(value)` trimmed, and blank or `null` clears it.
    When `String()` throws (an object with its own `toString` member, or an
    array holding one), any rename stays saved and the answer is Node's: 500

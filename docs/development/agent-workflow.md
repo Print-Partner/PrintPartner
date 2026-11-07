@@ -32,7 +32,45 @@ A brief is a snapshot. Stop and ask the owner before you continue when:
 
 Report the conflict and the facts on each side. The owner decides which wins and updates the source.
 
-When you hand work off, put the current status, open decisions, and next action in the PR description. Session notes and `/tmp` files are gone for the next reader.
+When you stop with work in flight or hand it off, post a Handoff comment on the ticket as [Handoffs](#handoffs) describes.
+
+## Handoffs
+
+Any agent or person can take over Print Partner Desktop work: Capy, Factory Droid, Claude Code, Codex, or you. Everything needed to continue lives in four places, never only in one agent's chat or machine:
+
+| What | Where |
+| --- | --- |
+| Plan | Notion "Print Partner: execution plan v17.1". Phases P1 to P7, in order. |
+| Live status | Notion "Execution status (live)". One row per lane with its PRs, tickets, and next step, plus a Landed list with shas and a "Needs Chad" list. |
+| Execution record | Linear, team GRE, project "Print Partner Desktop (Rust core)". The newest **Handoff** comment on a ticket says where its work stands. |
+| Code | GitHub `poitee/printpartner`. All work in progress is on a pushed branch or an open PR. |
+
+The Notion page [Agent handoff: how to take over any lane](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5) holds the operating rules and Chad's decisions, newest first. Read it before you take over. [Sources of truth](contributing.md#sources-of-truth) says which page wins when they disagree. If it disagrees with this page or the code, stop and ask, as for a [task brief](#start-from-a-task-brief).
+
+### Pick up a ticket
+
+1. Open the ticket in Linear and read its newest comment that starts with **Handoff**.
+2. Check out the branch it names at the head sha it names. If the PR has moved past that sha, the PR is the truth.
+3. Comment "Claimed by [your agent or thread name]" on the ticket before you change anything.
+4. Follow AGENTS.md and this page for setup, checks, and evidence.
+
+### Post a Handoff
+
+Post a Handoff comment on the ticket whenever you stop with work in flight: you pause, end a turn with work still open, or hand the work over. Copy this template word for word and fill in each bracket:
+
+```text
+**Handoff** [date] by [agent or thread]
+Branch: [name] · PR: #[n] · Head: [full sha] · Base: main
+Done: [what is true at this head]
+Next: [the next concrete step]
+Verification: CI [green, red with the failing check, or pending] · cross-family review [clean at this sha, open findings, or not run] · open threads [n]
+Decisions and constraints: [anything a newcomer must not undo, such as a schema step number, or a decision of Chad's with its date]
+Blockers: [none, or who must do what]
+```
+
+Never leave work only on a machine. Push it to a branch before you stop. If you can't push, describe what is unpushed in the Handoff. Put every decision or constraint you rely on in the Handoff or the PR description; session notes, chat history, and `/tmp` files are gone for the next reader.
+
+Without Linear access, you still follow these steps through the task owner. The owner puts the newest Handoff in your [task brief](#start-from-a-task-brief) and posts your claim on the ticket. When you stop, write your Handoff in the PR description, or give it to the owner if there is no PR, and the owner posts it on the ticket.
 
 ## Set up and run checks
 

@@ -28,7 +28,7 @@ jobs:
       group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.workflow_run.head_sha }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       actions: write
       pull-requests: read
@@ -60,7 +60,7 @@ jobs:
             exit 0
           fi
           # A running gate cannot be rerun, so wait for it to finish first.
-          for _ in $(seq 1 40); do
+          for _ in $(seq 1 250); do
             now=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
             if [ "$now" != "$head" ]; then
               echo "#$pr moved from $head to $now while waiting; the new head's own gate run judges it."
@@ -80,5 +80,5 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::review-gate run $id for $head did not finish within about 7 minutes; rerun it by hand."
+          echo "::error::review-gate run $id for $head did not finish within about 40 minutes; rerun it by hand."
           exit 1

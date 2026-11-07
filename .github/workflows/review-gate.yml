@@ -24,12 +24,12 @@ name: Review gate
 # scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
 # the guard), as Dependabot's action bumps do, it needs both path 3 (the
 # owner's marker for that head) and path 1 or 2.
-# Every push starts a new run, which fails until one path holds for the new
-# head. review-gate-rerun.yml reruns this job when a review workflow finishes
-# or a marker comment changes. See docs/development/definition-of-done.md#code-review.
+# Every push or edit waits up to 30 minutes for the head's Claude jobs, then fails unless one
+# path holds. Only a PR into the default branch passes on a review run; any other base needs
+# the owner's marker. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
 
@@ -40,7 +40,7 @@ concurrency:
 jobs:
   review-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 35
     permissions:
       actions: read
       checks: read
@@ -58,7 +58,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          import json, os, re, subprocess, sys
+          import json, os, re, subprocess, sys, time
 
           REPO, PR, HEAD = os.environ["REPO"], os.environ["PR_NUMBER"], os.environ["HEAD_SHA"]
           AUTHOR, OWNER, DEFAULT = os.environ["AUTHOR"], os.environ["OWNER"], os.environ["DEFAULT_BRANCH"]
@@ -105,6 +105,47 @@ jobs:
           pull = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
                                            capture_output=True, text=True).stdout)
           changed, pr_base = pull["changed_files"], pull["base"]["ref"]
+          # Claude's review starts with this run, so wait for its jobs instead of failing early.
+          # Only the Claude jobs are waited on, only for a bounded time, and a job that never
+          # appears within GRACE seconds counts as not running. Everything below judges the final
+          # state, so waiting decides when the gate judges and cannot create a pass.
+          MAX_WAIT = int(os.environ.get("PP_GATE_MAX_WAIT_SECONDS", "1800"))
+          GRACE, INTERVAL = min(120, MAX_WAIT), int(os.environ.get("PP_GATE_POLL_SECONDS", "30"))
+          CLAUDE_JOBS = tuple(name for name, (path, _) in ORIGINS.items()
+                              if path == ".github/workflows/claude-review.yml")
+          started_at = time.monotonic()
+
+
+          def newest(run):
+              """Sort key for the latest run of a check: a queued run has no start time yet and is the newest."""
+              return run.get("started_at") or "9999"
+
+
+          def moved():
+              """Whether the PR head or base changed since this run read them."""
+              current = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
+                                                  capture_output=True, text=True).stdout)
+              return current["head"]["sha"] != HEAD or current["base"]["ref"] != pr_base
+
+
+          while True:
+              seen = {}
+              for page in pages(f"repos/{REPO}/commits/{HEAD}/check-runs?filter=all&per_page=100"):
+                  for item in page["check_runs"]:
+                      if item["name"] in CLAUDE_JOBS:
+                          if item["name"] not in seen or newest(item) > newest(seen[item["name"]]):
+                              seen[item["name"]] = item
+              if moved():
+                  print(f"::error::The PR head or base moved while waiting for {HEAD}; the run for the "
+                        "change judges it.")
+                  sys.exit(1)
+              waiting = [name for name in CLAUDE_JOBS
+                         if name in seen and seen[name]["status"] != "completed"
+                         or (name not in seen and time.monotonic() - started_at < GRACE)]
+              if not waiting or time.monotonic() - started_at >= MAX_WAIT:
+                  break
+              print(f"Waiting for {', '.join(waiting)} on {HEAD}.", flush=True)
+              time.sleep(INTERVAL)
           runs = [run for page in pages(f"repos/{REPO}/commits/{HEAD}/check-runs?filter=all&per_page=100")
                   for run in page["check_runs"] if run["name"] in ORIGINS]
           comments = [item for page in pages(f"repos/{REPO}/issues/{PR}/comments?per_page=100") for item in page]
@@ -134,8 +175,9 @@ jobs:
               """Whether the latest run of a check came from this PR into the default branch.
 
               Another PR with the same head SHA but another base runs that base's copy of the workflow,
-              so the run's pull_requests must name this PR, and every PR it names must target the default
-              branch. Anything else, including an empty list, fails closed.
+              so this PR must target the default branch, the run's pull_requests must name this PR, and
+              every PR it names must target the default branch. Anything else, including an empty list,
+              fails closed.
               """
               found = workflow_run(latest[name]) if name in latest else None
               prs = (found or {}).get("pull_requests") or []
@@ -154,7 +196,7 @@ jobs:
               if where != ORIGINS[name]:
                   problems.append(f"check run {name} ({run['id']}) comes from {where or 'another app'}, "
                                   f"not {ORIGINS[name][0]} on {ORIGINS[name][1]}.")
-              elif name not in latest or (run.get("started_at") or "") > (latest[name].get("started_at") or ""):
+              elif name not in latest or newest(run) > newest(latest[name]):
                   latest[name] = run
 
 
@@ -207,6 +249,10 @@ jobs:
           for problem in problems:
               print(f"::error::{problem}")
           if problems:
+              sys.exit(1)
+          # A retarget that landed during judgement must not be passed on the old base.
+          if moved():
+              print(f"::error::The PR head or base moved while judging {HEAD}; the run for the change judges it.")
               sys.exit(1)
           if touched:
               if not (marker and (droid_ok or claude_ok)):

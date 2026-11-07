@@ -28,7 +28,10 @@ SUITES = {1: (".github/workflows/review-gate.yml", "pull_request_target"), 2: (D
           6: (CLAUDE, "pull_request", [{"number": 8, "base": {"ref": "release"}}]),
           7: (DROID, "pull_request", [{"number": 8, "base": {"ref": "release"}}]),
           8: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "main"}}, {"number": 8, "base": {"ref": "release"}}]),
-          11: (DROID, "pull_request", [])}
+          11: (DROID, "pull_request", []),
+          # Stacked PR 7 into release: the runs list that base.
+          12: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "release"}}]),
+          13: (DROID, "pull_request", [{"number": 7, "base": {"ref": "release"}}])}
 DROID_RAN = "##[end-action id=__Factory-AI_droid-action.droid;outcome=success;conclusion=success;duration_ms=128764]"
 DROID_SKIPPED = "##[end-action id=__Factory-AI_droid-action.droid;outcome=skipped;conclusion=skipped;duration_ms=0]"
 SUITE_FOR = {"review-gate": 1, "droid-review": 2, "claude-code-review": 3, "claude-security-review": 3}
@@ -44,9 +47,22 @@ def out(value):
 if path.endswith("/pulls/7/files") and slurp:
     out([[{"filename": item, "status": "modified"} if isinstance(item, str) else item for item in state["files"]]])
 elif path.endswith("/pulls/7") and not slurp:
-    out({"changed_files": state["changed_files"], "base": {"ref": state["pr_base"]}})
+    counter = os.environ["FAKE_GH_STATE"] + ".pulls"
+    calls = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(calls + 1))
+    later = calls >= state.get("moves_on_call", 1)
+    out({"changed_files": state["changed_files"],
+         "base": {"ref": state.get("moved_base") if later and state.get("moved_base") else state["pr_base"]},
+         "head": {"sha": state.get("moved_to", state["head"]) if later else state["head"]}})
 elif path.endswith(f"/commits/{state['head']}/check-runs") and slurp and query["filter"] == ["all"]:
-    out([{"check_runs": state["checks"]}])
+    seq = state.get("checks_seq")
+    if seq:
+        counter = os.environ["FAKE_GH_STATE"] + ".n"
+        calls = int(open(counter).read()) if os.path.exists(counter) else 0
+        open(counter, "w").write(str(calls + 1))
+        out([{"check_runs": seq[min(calls, len(seq) - 1)]}])
+    else:
+        out([{"check_runs": state["checks"]}])
 elif path.endswith("/issues/7/comments") and slurp:
     out(state["pages"])
 elif path.endswith("/actions/runs") and slurp:
@@ -101,11 +117,14 @@ class ReviewGateStepTests(unittest.TestCase):
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
     def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None, pr_base="main",
-             droid_log=f"log\n{DROID_RAN}\nlog"):
+             droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0", moved_to=None, moved_base=None, moves_on_call=1):
         state = self.folder / "state.json"
+        for counter in (".n", ".pulls"):
+            Path(str(state) + counter).unlink(missing_ok=True)
         state.write_text(json.dumps({
             "head": HEAD, "checks": [run("review-gate", None), *checks], "pages": pages or [[]],
-            "droid_log": droid_log, "pr_base": pr_base, "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
+            "droid_log": droid_log, "pr_base": pr_base, "checks_seq": checks_seq, **({"moved_to": moved_to} if moved_to else {}),
+            **({"moved_base": moved_base} if moved_base else {}), "moves_on_call": moves_on_call, "files": list(files), "changed_files": len(files) if changed_files is None else changed_files,
             "suites": {str(key): value for key, value in SUITES.items()},
             "blobs": {f"{DROID}@{HEAD}": "d1", f"{DROID}@main": "d1", f"{CLAUDE}@{HEAD}": "c1",
                       f"{CLAUDE}@main": "c1"} if blobs is None else blobs}))
@@ -113,6 +132,7 @@ class ReviewGateStepTests(unittest.TestCase):
         script.write_text(self.script)
         env = {**self.env, "PATH": self.path, "FAKE_GH_STATE": str(state), "GH_TOKEN": "x", "REPO": "o/r",
                "PR_NUMBER": "7", "HEAD_SHA": HEAD, "AUTHOR": author, "OWNER": OWNER, "DEFAULT_BRANCH": "main",
+               "PP_GATE_MAX_WAIT_SECONDS": wait, "PP_GATE_POLL_SECONDS": "0",
                "GITHUB_STEP_SUMMARY": str(self.folder / "summary.md")}
         result = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True, check=False)
         self.assertNotIn("unexpected gh call", result.stderr)
@@ -161,9 +181,67 @@ class ReviewGateStepTests(unittest.TestCase):
             with self.subTest(label):
                 result = self.assertFails(checks=checks)
                 self.assertIn("not this PR's into main", result.stdout)
-        self.assertFails(checks=[run("droid-review")], pr_base="release")
-        self.assertFails(checks=[run("claude-code-review"), run("claude-security-review")], pr_base="release")
         self.assertPasses(checks=[run("droid-review", suite=7)], pages=[[marker()]])
+
+    def test_a_pr_into_another_base_never_passes_on_a_review_run(self):
+        stacked = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
+        for checks in (stacked, [run("droid-review", suite=13)], [run("claude-code-review"), run("claude-security-review")]):
+            result = self.assertFails(checks=checks, pr_base="release")
+            self.assertIn("not this PR's into main", result.stdout)
+        self.assertFails(checks=[], pr_base="release")
+        self.assertPasses(checks=[], pr_base="release", pages=[[marker()]])
+
+    def test_the_gate_waits_for_claude_jobs_that_are_still_running(self):
+        review = [run("claude-code-review", None), run("claude-security-review", None)]
+        finished = [run("claude-code-review"), run("claude-security-review")]
+        waited = self.assertPasses(checks_seq=[review, review, finished], checks=finished, wait="5")
+        self.assertIn(f"Waiting for claude-code-review, claude-security-review on {HEAD}.", waited.stdout)
+        self.assertIn("claude-code-review succeeded", waited.stdout)
+        self.assertFails(checks_seq=[review], checks=review, wait="1")
+        broken = [run("claude-code-review", "failure"), finished[1]]
+        failed = self.assertFails(checks_seq=[review, broken], checks=broken, wait="5")
+        self.assertIn("claude-code-review is failure", failed.stdout)
+
+    def test_only_the_latest_claude_runs_are_waited_on(self):
+        older, newer = "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z"
+        checks = [run("claude-code-review", None, started=older), run("claude-security-review", None, started=older),
+                  run("claude-code-review", started=newer), run("claude-security-review", started=newer)]
+        result = self.assertPasses(checks=checks, checks_seq=[checks], wait="5")
+        self.assertNotIn("Waiting for", result.stdout)
+
+    def test_a_queued_rerun_is_awaited_and_judged_instead_of_an_older_pass(self):
+        old = [run("claude-code-review"), run("claude-security-review")]
+        queued = [{**run("claude-code-review", None), "status": "queued", "started_at": None},
+                  {**run("claude-security-review", None), "status": "queued", "started_at": None}]
+        done = [run("claude-code-review", started="2026-11-04T17:00:00Z"),
+                run("claude-security-review", started="2026-11-04T17:00:00Z")]
+        waited = self.assertPasses(checks_seq=[old + queued, done + old], checks=done + old, wait="5")
+        self.assertIn("Waiting for claude-code-review, claude-security-review", waited.stdout)
+        self.assertFails(checks=old + queued, checks_seq=[old + queued], wait="1")
+
+    def test_a_waiting_gate_stops_when_the_head_moves(self):
+        review = [run("claude-code-review", None), run("claude-security-review", None)]
+        result = self.gate(checks_seq=[review], checks=review, wait="5", moved_to=OLD)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("head or base moved", result.stdout)
+
+    def test_a_waiting_gate_stops_when_the_base_moves(self):
+        review = [run("claude-code-review", None, suite=12), run("claude-security-review", None, suite=12)]
+        done = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
+        result = self.gate(checks_seq=[review, done], checks=done, wait="5", pr_base="release", moved_base="main")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("head or base moved", result.stdout)
+
+    def test_a_retarget_during_judgement_is_not_passed_on_the_old_base(self):
+        done = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
+        result = self.gate(checks=done, pr_base="release", moved_base="main", moves_on_call=2)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("moved while judging", result.stdout)
+
+    def test_waiting_cannot_create_a_pass_from_a_spoofed_run(self):
+        review = [run("claude-code-review", None, suite=9), run("claude-security-review", None)]
+        spoofed = [run("claude-code-review", suite=9), run("claude-security-review")]
+        self.assertFails(checks_seq=[review, spoofed], checks=spoofed, wait="5", reason="comes from")
 
     def test_latest_run_of_a_check_decides(self):
         older, newer = "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z"
@@ -347,7 +425,15 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         text = (WORKFLOWS / "review-gate.yml").read_text(encoding="utf-8")
         workflow = load("review-gate.yml")
         self.assertEqual(set(workflow["on"]), {"pull_request_target"})
+        self.assertEqual(workflow["on"]["pull_request_target"]["types"],
+                         ["opened", "synchronize", "reopened", "ready_for_review", "edited"])
         job = workflow["jobs"]["review-gate"]
+        self.assertNotIn("if", job)
+        group = workflow["concurrency"]
+        self.assertEqual(group["cancel-in-progress"], "true")
+        self.assertNotIn("github.run_id", group["group"])
+        self.assertNotIn("github.run_attempt", group["group"])
+        self.assertNotIn("edited", group["group"])
         self.assertEqual(job["permissions"], {"actions": "read", "checks": "read", "contents": "read",
                                               "pull-requests": "read"})
         self.assertNotIn("uses:", text)

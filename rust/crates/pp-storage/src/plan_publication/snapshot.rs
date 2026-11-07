@@ -68,7 +68,9 @@ pub(super) fn replaced_layers(
 
 /// Inserts one `pre_apply` `plan_snapshots` row for Build `profile` inside
 /// Accept's transaction, before the publication writes, when
-/// [`replaced_layers`] finds a recorded Plan to restore.
+/// [`replaced_layers`] finds a recorded Plan to restore. Beside it, the
+/// Build's header as it stood goes to `plan_snapshot_headers`, which Node's
+/// payload has no place for, so a restore can bring the header back too.
 pub(super) fn save_before_accept(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -97,6 +99,19 @@ pub(super) fn save_before_accept(
             format!("Before accepting draft {draft_id}"),
             at,
             payload.to_string()
+        ],
+    )?;
+    let header = crate::working_drafts::header::build_header(tx, tenant, profile)?;
+    tx.execute(
+        "INSERT INTO plan_snapshot_headers (snapshot_id,tenant_id,name,order_number,customer,due_date,captured_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            tx.last_insert_rowid(),
+            tenant,
+            header.name,
+            header.order_number,
+            header.customer,
+            header.due_date,
+            at
         ],
     )?;
     Ok(())

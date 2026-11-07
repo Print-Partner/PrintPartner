@@ -1,124 +1,430 @@
-//! Node's stored Production setup (`production_setup:<Build id>`), read as
-//! `parseStoredProductionSetup` does: the whole `productionSetupSchema`
-//! (`@print-partner/contracts`) must hold, or the setup is ignored.
+//! Node's Production setup (`production_setup:<Build id>`), parsed as Zod parses
+//! `productionSetupSchema` and `productionSetupCommandSchema`
+//! (`@print-partner/contracts`). A stored setup must hold the whole schema or it
+//! is ignored; a command that fails answers Zod's issues.
 
 use super::layout::{GroupField, GroupKind, GroupRule};
 use super::model::{MAX_JS_SAFE_INTEGER, trim_ecmascript};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
-/// The grouping rules of the stored setup for Build `profile`, or none when
-/// it is absent, is not JSON, fails the schema or names another Build.
-/// `assign_to_printer` rules are validated and left out: packing never reads
-/// them.
-pub fn stored_rules(raw: Option<&str>, profile: i64) -> Vec<GroupRule> {
-    raw.filter(|raw| !raw.is_empty())
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        .and_then(|value| rules(value.as_object()?, profile))
-        .unwrap_or_default()
+const FORMAT: &str = "production-setup-v1";
+const ROUTES: [&str; 3] = ["plates", "stl", "external"];
+const GROUP_FIELDS: [&str; 6] = [
+    "material",
+    "color",
+    "source_directory",
+    "source_layer",
+    "role",
+    "part",
+];
+const RULE_KINDS: [&str; 4] = [
+    "separate_by",
+    "keep_together",
+    "assign_to_printer",
+    "set_material",
+];
+const COMMANDS: [&str; 5] = [
+    "set_preferred_slicer_instance",
+    "set_selection",
+    "replace_printer_assignments",
+    "set_route",
+    "replace_rules",
+];
+
+/// The issues of one Zod parse, `{ path, message }`, in the order Zod adds them.
+#[derive(Default)]
+struct Zod {
+    path: Vec<Value>,
+    issues: Vec<Value>,
 }
 
-/// Zod's `z.string().trim().min(1).max(max)`: the trimmed text, counted in
-/// UTF-16 units as JavaScript's `length` does.
-fn text(value: Option<&Value>, max: usize) -> Option<String> {
-    let text = trim_ecmascript(value?.as_str()?);
-    (1..=max)
-        .contains(&text.encode_utf16().count())
-        .then(|| text.to_owned())
-}
+impl Zod {
+    fn fail<T>(&mut self, message: String) -> Option<T> {
+        self.issues
+            .push(json!({"path": self.path, "message": message}));
+        None
+    }
 
-fn nullable_text(value: Option<&Value>, max: usize) -> Option<Option<String>> {
-    match value? {
-        Value::Null => Some(None),
-        other => text(Some(other), max).map(Some),
+    fn at<T>(
+        &mut self,
+        key: impl Into<Value>,
+        parse: impl FnOnce(&mut Self) -> Option<T>,
+    ) -> Option<T> {
+        self.path.push(key.into());
+        let parsed = parse(self);
+        self.path.pop();
+        parsed
+    }
+
+    fn field<T>(
+        &mut self,
+        object: &Map<String, Value>,
+        key: &str,
+        parse: impl FnOnce(&mut Self, Option<&Value>) -> Option<T>,
+    ) -> Option<T> {
+        self.at(key, |zod| parse(zod, object.get(key)))
+    }
+
+    fn expected<T>(&mut self, kind: &str, value: Option<&Value>) -> Option<T> {
+        let received = match value {
+            None => "undefined",
+            Some(Value::Null) => "null",
+            Some(Value::Bool(_)) => "boolean",
+            Some(Value::Number(_)) => "number",
+            Some(Value::String(_)) => "string",
+            Some(Value::Array(_)) => "array",
+            Some(Value::Object(_)) => "object",
+        };
+        self.fail(format!(
+            "Invalid input: expected {kind}, received {received}"
+        ))
+    }
+
+    fn object<'a>(&mut self, value: Option<&'a Value>) -> Option<&'a Map<String, Value>> {
+        match value {
+            Some(Value::Object(object)) => Some(object),
+            other => self.expected("object", other),
+        }
+    }
+
+    /// `z.string().trim().min(1).max(max)`, counted in UTF-16 units.
+    fn text(&mut self, value: Option<&Value>, max: usize) -> Option<Value> {
+        let Some(Value::String(text)) = value else {
+            return self.expected("string", value);
+        };
+        let text = trim_ecmascript(text);
+        let units = text.encode_utf16().count();
+        if units == 0 {
+            return self.fail("Too small: expected string to have >=1 characters".into());
+        }
+        if units > max {
+            return self.fail(format!(
+                "Too big: expected string to have <={max} characters"
+            ));
+        }
+        Some(text.into())
+    }
+
+    fn nullable_text(&mut self, value: Option<&Value>, max: usize) -> Option<Value> {
+        match value {
+            Some(Value::Null) => Some(Value::Null),
+            other => self.text(other, max),
+        }
+    }
+
+    fn boolean(&mut self, value: Option<&Value>) -> Option<Value> {
+        match value {
+            Some(Value::Bool(flag)) => Some((*flag).into()),
+            other => self.expected("boolean", other),
+        }
+    }
+
+    /// `z.enum(options)`.
+    fn option(&mut self, value: Option<&Value>, options: &[&str]) -> Option<Value> {
+        match value {
+            Some(Value::String(text)) if options.contains(&text.as_str()) => {
+                Some(text.as_str().into())
+            }
+            _ => {
+                let quoted: Vec<String> = options
+                    .iter()
+                    .map(|option| format!("\"{option}\""))
+                    .collect();
+                self.fail(format!(
+                    "Invalid option: expected one of {}",
+                    quoted.join("|")
+                ))
+            }
+        }
+    }
+
+    /// `z.array(item).max(max)`: a longer array fails before its items are read.
+    fn array(
+        &mut self,
+        value: Option<&Value>,
+        max: usize,
+        mut item: impl FnMut(&mut Self, &Value) -> Option<Value>,
+    ) -> Option<Value> {
+        let Some(Value::Array(items)) = value else {
+            return self.expected("array", value);
+        };
+        if items.len() > max {
+            return self.fail(format!("Too big: expected array to have <={max} items"));
+        }
+        let parsed: Vec<Option<Value>> = items
+            .iter()
+            .enumerate()
+            .map(|(index, value)| self.at(index, |zod| item(zod, value)))
+            .collect();
+        parsed
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Array)
+    }
+
+    /// The tag of a `z.discriminatedUnion(key, ...)` value.
+    fn tag<'a>(
+        &mut self,
+        object: &'a Map<String, Value>,
+        key: &str,
+        options: &[&str],
+    ) -> Option<&'a str> {
+        match object.get(key) {
+            Some(Value::String(tag)) if options.contains(&tag.as_str()) => Some(tag),
+            _ => {
+                let quoted: Vec<String> =
+                    options.iter().map(|option| format!("'{option}'")).collect();
+                self.at(key, |zod| {
+                    zod.fail(format!(
+                        "Invalid discriminator value. Expected {}",
+                        quoted.join(" | ")
+                    ))
+                })
+            }
+        }
+    }
+
+    /// `.strict()`: one issue naming every key the shape does not list.
+    fn strict(&mut self, object: &Map<String, Value>, shape: &[&str]) {
+        let unknown: Vec<String> = object
+            .keys()
+            .filter(|key| !shape.contains(&key.as_str()))
+            .map(|key| format!("\"{key}\""))
+            .collect();
+        match unknown.len() {
+            0 => {}
+            1 => {
+                self.fail::<()>(format!("Unrecognized key: {}", unknown[0]));
+            }
+            _ => {
+                self.fail::<()>(format!("Unrecognized keys: {}", unknown.join(", ")));
+            }
+        }
+    }
+
+    fn selection(&mut self, value: Option<&Value>) -> Option<Value> {
+        let object = self.object(value)?;
+        match self.tag(object, "mode", &["all_incomplete", "custom"])? {
+            "custom" => {
+                let tokens = self.field(object, "selected_unit_tokens", |zod, value| {
+                    zod.array(value, 20_000, |zod, token| zod.text(Some(token), 500))
+                })?;
+                Some(json!({"mode": "custom", "selected_unit_tokens": tokens}))
+            }
+            _ => Some(json!({"mode": "all_incomplete"})),
+        }
+    }
+
+    fn assignments(&mut self, value: Option<&Value>) -> Option<Value> {
+        self.array(value, 20_000, |zod, assignment| {
+            let object = zod.object(Some(assignment))?;
+            let token = zod.field(object, "token", |zod, value| zod.text(value, 500));
+            let printer = zod.field(object, "printer_id", |zod, value| zod.text(value, 200));
+            Some(json!({"token": token?, "printer_id": printer?}))
+        })
+    }
+
+    fn rules(&mut self, value: Option<&Value>) -> Option<Value> {
+        self.array(value, 200, |zod, rule| {
+            let object = zod.object(Some(rule))?;
+            let kind = zod.tag(object, "kind", &RULE_KINDS)?;
+            let id = zod.field(object, "id", |zod, value| zod.text(value, 100));
+            let enabled = zod.field(object, "enabled", Self::boolean);
+            let fields: &[&str] = if kind == "set_material" {
+                &GROUP_FIELDS[1..]
+            } else {
+                &GROUP_FIELDS
+            };
+            let field = zod.field(object, "field", |zod, value| zod.option(value, fields));
+            let extra: &[(&str, usize)] = match kind {
+                "keep_together" => &[("value", 500)],
+                "assign_to_printer" => &[("value", 500), ("printer_id", 200)],
+                "set_material" => &[("value", 500), ("material_type", 100)],
+                _ => &[],
+            };
+            let extra: Vec<(&str, Option<Value>)> = extra
+                .iter()
+                .map(|(key, max)| {
+                    (
+                        *key,
+                        zod.field(object, key, |zod, value| zod.text(value, *max)),
+                    )
+                })
+                .collect();
+            let mut parsed = Map::new();
+            parsed.insert("id".into(), id?);
+            parsed.insert("enabled".into(), enabled?);
+            parsed.insert("kind".into(), kind.into());
+            parsed.insert("field".into(), field?);
+            for (key, value) in extra {
+                parsed.insert(key.into(), value?);
+            }
+            Some(Value::Object(parsed))
+        })
     }
 }
 
-fn array(value: Option<&Value>, max: usize) -> Option<&Vec<Value>> {
-    value?.as_array().filter(|items| items.len() <= max)
+/// Node's `defaultProductionSetup`.
+pub fn default_setup(profile: i64) -> Value {
+    json!({
+        "format": FORMAT,
+        "profile_id": profile,
+        "preferred_slicer_instance_id": null,
+        "selection": {"mode": "all_incomplete"},
+        "printer_assignments": [],
+        "route": null,
+        "rules": [],
+        "updated_at": null,
+    })
 }
 
-fn rules(setup: &Map<String, Value>, profile: i64) -> Option<Vec<GroupRule>> {
-    let id = setup.get("profile_id")?.as_f64()?;
-    if setup.get("format")?.as_str()? != "production-setup-v1"
+/// Node's `parseStoredProductionSetup`: the stored setup as Zod outputs it, or
+/// none when it is absent, is not JSON, fails the schema or names another Build.
+pub fn stored_setup(raw: Option<&str>, profile: i64) -> Option<Value> {
+    let value: Value = serde_json::from_str(raw.filter(|raw| !raw.is_empty())?).ok()?;
+    let object = value.as_object()?;
+    let mut zod = Zod::default();
+    let preferred = zod.field(object, "preferred_slicer_instance_id", |zod, value| {
+        zod.nullable_text(value, 200)
+    });
+    let selection = zod.field(object, "selection", Zod::selection);
+    let assignments = match object.get("printer_assignments") {
+        None => Some(json!([])),
+        Some(value) => zod.assignments(Some(value)),
+    };
+    let route = match object.get("route") {
+        None | Some(Value::Null) => Some(Value::Null),
+        Some(value) => zod.option(Some(value), &ROUTES),
+    };
+    let rules = zod.field(object, "rules", Zod::rules);
+    let id = object.get("profile_id")?.as_f64()?;
+    let updated_at = match object.get("updated_at")? {
+        Value::Null => Value::Null,
+        Value::String(at) if datetime(at) => at.as_str().into(),
+        _ => return None,
+    };
+    if object.get("format")?.as_str()? != FORMAT
         || id.fract() != 0.0
         || !(1.0..=MAX_JS_SAFE_INTEGER as f64).contains(&id)
         || id as i64 != profile
     {
         return None;
     }
-    nullable_text(setup.get("preferred_slicer_instance_id"), 200)?;
-    match setup.get("updated_at")? {
-        Value::Null => {}
-        Value::String(at) if datetime(at) => {}
-        _ => return None,
-    }
-    let selection = setup.get("selection")?.as_object()?;
-    match selection.get("mode")?.as_str()? {
-        "all_incomplete" => {}
-        "custom" => {
-            for token in array(selection.get("selected_unit_tokens"), 20_000)? {
-                text(Some(token), 500)?;
-            }
-        }
-        _ => return None,
-    }
-    if let Some(assignments) = setup.get("printer_assignments") {
-        for assignment in array(Some(assignments), 20_000)? {
-            text(assignment.get("token"), 500)?;
-            text(assignment.get("printer_id"), 200)?;
-        }
-    }
-    match setup.get("route") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(route)) if ["plates", "stl", "external"].contains(&route.as_str()) => {}
-        _ => return None,
-    }
-    let rules = array(setup.get("rules"), 200)?
-        .iter()
-        .map(rule)
-        .collect::<Option<Vec<_>>>()?;
-    Some(rules.into_iter().flatten().collect())
+    Some(json!({
+        "preferred_slicer_instance_id": preferred?,
+        "selection": selection?,
+        "printer_assignments": assignments?,
+        "route": route?,
+        "rules": rules?,
+        "format": FORMAT,
+        "profile_id": profile,
+        "updated_at": updated_at,
+    }))
 }
 
-/// One `productionGroupingRuleSchema` rule; `Some(None)` for a valid
-/// `assign_to_printer` rule.
-fn rule(value: &Value) -> Option<Option<GroupRule>> {
-    let id = text(value.get("id"), 100)?;
-    let enabled = value.get("enabled")?.as_bool()?;
-    let kind = value.get("kind")?.as_str()?;
-    let field = match value.get("field")?.as_str()? {
-        "material" if kind != "set_material" => GroupField::Material,
+/// A `productionSetupCommandSchema` command: the setup field it replaces and its
+/// parsed value.
+#[derive(Debug, PartialEq)]
+pub struct SetupCommand {
+    pub field: &'static str,
+    pub value: Value,
+}
+
+/// The command a PATCH body names, or Zod's issues.
+pub fn setup_command(body: &Value) -> Result<SetupCommand, Vec<Value>> {
+    let mut zod = Zod::default();
+    let parsed = (|| {
+        let object = zod.object(Some(body))?;
+        let field = match zod.tag(object, "kind", &COMMANDS)? {
+            "set_preferred_slicer_instance" => "preferred_slicer_instance_id",
+            "set_selection" => "selection",
+            "replace_printer_assignments" => "printer_assignments",
+            "set_route" => "route",
+            _ => "rules",
+        };
+        let value = zod.field(object, field, |zod, value| match field {
+            "preferred_slicer_instance_id" => zod.nullable_text(value, 200),
+            "selection" => zod.selection(value),
+            "printer_assignments" => zod.assignments(value),
+            "route" if value == Some(&Value::Null) => Some(Value::Null),
+            "route" => zod.option(value, &ROUTES),
+            _ => zod.rules(value),
+        });
+        zod.strict(object, &["kind", field]);
+        Some(SetupCommand {
+            field,
+            value: value?,
+        })
+    })();
+    match parsed {
+        Some(command) if zod.issues.is_empty() => Ok(command),
+        _ => Err(zod.issues),
+    }
+}
+
+/// `updateProductionSetup`: `setup` with the command applied, stamped for
+/// Build `profile` at `updated_at`, in the schema's key order.
+pub fn apply(setup: &Value, command: SetupCommand, profile: i64, updated_at: &str) -> Value {
+    let mut next = Map::new();
+    for key in [
+        "preferred_slicer_instance_id",
+        "selection",
+        "printer_assignments",
+        "route",
+        "rules",
+    ] {
+        let value = if key == command.field {
+            command.value.clone()
+        } else {
+            setup[key].clone()
+        };
+        next.insert(key.into(), value);
+    }
+    next.insert("format".into(), FORMAT.into());
+    next.insert("profile_id".into(), profile.into());
+    next.insert("updated_at".into(), updated_at.into());
+    Value::Object(next)
+}
+
+/// The grouping rules of the stored setup for Build `profile`, or none when it
+/// is ignored. `assign_to_printer` rules are left out: packing never reads them.
+pub fn stored_rules(raw: Option<&str>, profile: i64) -> Vec<GroupRule> {
+    let Some(setup) = stored_setup(raw, profile) else {
+        return Vec::new();
+    };
+    setup["rules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(group_rule)
+        .collect()
+}
+
+/// One parsed rule as packing reads it.
+fn group_rule(rule: &Value) -> Option<GroupRule> {
+    let text = |key: &str| rule[key].as_str().map(str::to_owned);
+    let kind = match rule["kind"].as_str()? {
+        "separate_by" => GroupKind::SeparateBy,
+        "keep_together" => GroupKind::KeepTogether,
+        "set_material" => GroupKind::SetMaterial,
+        _ => return None,
+    };
+    let field = match rule["field"].as_str()? {
+        "material" => GroupField::Material,
         "color" => GroupField::Color,
         "source_directory" => GroupField::SourceDirectory,
         "source_layer" => GroupField::SourceLayer,
         "role" => GroupField::Role,
-        "part" => GroupField::ObjectName,
-        _ => return None,
+        _ => GroupField::ObjectName,
     };
-    let value_text = || text(value.get("value"), 500);
-    let (kind, rule_value, material_type) = match kind {
-        "separate_by" => (GroupKind::SeparateBy, None, None),
-        "keep_together" => (GroupKind::KeepTogether, Some(value_text()?), None),
-        "assign_to_printer" => {
-            value_text()?;
-            text(value.get("printer_id"), 200)?;
-            return Some(None);
-        }
-        "set_material" => (
-            GroupKind::SetMaterial,
-            Some(value_text()?),
-            Some(text(value.get("material_type"), 100)?),
-        ),
-        _ => return None,
-    };
-    Some(Some(GroupRule {
-        id,
-        enabled,
+    Some(GroupRule {
+        id: text("id")?,
+        enabled: rule["enabled"].as_bool()?,
         kind,
         field,
-        value: rule_value,
-        material_type,
-    }))
+        value: text("value"),
+        material_type: text("material_type"),
+    })
 }
 
 /// Zod 4's `z.string().datetime()`: `YYYY-MM-DDTHH:MM:SS`, optional

@@ -4,6 +4,8 @@ pub mod build_identity;
 pub mod features;
 pub mod gcode_objects;
 #[cfg(feature = "desktop_rebuild")]
+pub mod print_file;
+#[cfg(feature = "desktop_rebuild")]
 pub mod printer_display_state;
 
 use serde::{Deserialize, Deserializer, Serialize, de};

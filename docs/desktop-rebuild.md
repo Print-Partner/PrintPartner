@@ -1553,7 +1553,7 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 44 (`LAST_COPIED_STEP`)
+repair's writes to `source_revisions`. Each step through 45 (`LAST_COPIED_STEP`)
 writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
 the first step writes, the open names its rollback copy in the run marker
 `backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
@@ -1568,7 +1568,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-44.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-45.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -2678,9 +2678,10 @@ seeds a lone surrogate and cuts a note across a pair to cover both directions.
 
 Not ported here: the route itself and its webhooks, unattributed-print claiming
 after verify, the Spoolman deduction Node runs after the response (and the
-storage-owned deduction intent GRE-411 adds), manual complete, unattributed claim
-and dismiss, file assignments, remote-file recheck, and the monitor that moves
-links to `awaiting_verify`. Those stay on Node until their whole operation moves.
+storage-owned deduction intent GRE-411 adds), file assignments, remote-file
+recheck, and the monitor that moves links to `awaiting_verify`. Those stay on
+Node until their whole operation moves. Manual complete moved with GRE-1169
+(below).
 
 The Node fixture replays the services on a copy of
 `rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db` with
@@ -2689,6 +2690,33 @@ synthetic links; generated IDs and times are normalized.
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/printer-checkoff-verify/generate.mjs --check
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_61_checkoff)'
+```
+
+### Manual complete (GRE-1169)
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the Checkoff
+router mounts Node's `POST /printer-checkoff/{id}/manual-complete` (and its
+`/api/v1` and `/api/v2` aliases) behind the same loopback, Host, Origin and
+credential gate as the bursts.
+`pp-storage::checkoff_progress::verify::manual_complete` runs in one writer
+transaction and matches Node:
+
+- 404 `Tracked print not found` when the link id is unknown.
+- 409 `This print is monitored by its printer host` unless the link's
+  `integration_id` is `manual:<printer_id>`.
+- 409 `Tracked print is no longer waiting to finish` unless the link is
+  `watching`.
+- Otherwise the link becomes `awaiting_verify` with `host_outcome: success`,
+  `saw_active: true`, `last_progress: 100` and a fresh `completed_at`, moves
+  to the end of the list before the terminal-history trim, and the response is
+  `{ link }`. Nothing is checked off; the operator still verifies the print.
+
+Node's handler has no side effects after the write, so this route owns the
+whole operation. Single-link verify and dismiss stay on Node: they deduct
+Spoolman stock, send webhooks and claim unattributed prints after the write.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_single_http
 ```
 
 ### Checkoff bursts (GRE-1090)
@@ -2827,6 +2855,32 @@ deducts or reserves stock. The generated client names the three routes
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_manual_bursts
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_manual_bursts_http
+```
+
+### Print-file classification (GRE-1212)
+
+`pp_domain::print_file::classify` (feature `desktop_rebuild`) is the Rust port
+of Node's `classifyPrintFileBytes`. The file-assignment routes in GRE-1210
+will use it to decide what a print file is from its bytes alone. It returns the
+classification (`gcode`, `bgcode`, or `3mf` with `toolpath_package`,
+`slicer_project`, `model_package` or `unsupported`), the SHA-256 and size of
+the bytes, or one of Node's ten rejection reasons with Node's wording.
+`next_action` and `is_print_ready` match `printFileNextAction` and the
+contract's `isPrintReady`.
+
+It reads files of up to 256 MiB. For 3MF it walks the ZIP central directory
+only, with Node's caps (2,000 entries, 1,024-byte names, 64 MiB per entry,
+256 MiB in total, depth 16), and refuses unsafe names and symlink entries. It
+never inflates an entry or parses XML. Binary G-code is checked structurally
+(header, version, checksum type, block chain) and never decoded.
+
+`fixtures/parity/print-file-classification/cases.json` holds 85 inputs and
+the Node classifier's answers: the Node unit-test inputs plus truncated 3MF and
+binary G-code, ZIP64 records, hostile ZIP entries (including names with a leading byte-order mark, which Node's `TextDecoder` drops) and G-code edges.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/print-file-classification/generate.mjs --check
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-domain --features desktop_rebuild --test print_file_parity
 ```
 
 ### Accepted Plate workspace read (GRE-1189)
@@ -3028,6 +3082,53 @@ flag through the router.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_plates) | binary(plates_http)'
+```
+
+### Production setup in Rust (GRE-1209)
+
+GRE-421's first part. `pp_storage::plates` serves Node's `GET` and
+`PATCH /plans/{id}/production-setup` as `Request::ProductionSetup`, and
+`pp_api::plates::plates_router` mounts both at `/` only, because Node
+registers no `/api/v2` alias for them. With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone runs the command that writes
+`production_setup:<id>`. Rust already deletes the key with its Build. Node's
+duplicate still copies it to the new Build's own key until the duplicate part
+of GRE-421 moves, so the two runtimes never write the same key.
+
+The route checks in Node's order:
+
+1. The id is `Number(id)` as a positive integer (so `0x1` and `" 1 "` name
+   Build 1), else 400 `invalid Build id`.
+2. The Build must exist in the tenant, else 404 `Build not found`. An archived
+   Build still saves, as in Node.
+3. The PATCH body must be one `productionSetupCommandSchema` command, else 400
+   `Invalid production setup` with Zod's `issues`: the same paths and
+   messages, in Zod's order.
+4. A `set_route` that changes a route already chosen is 409
+   `production_method_locked` when a Printer Checkoff link of this Build that
+   is not dismissed names, after the slicer's instance suffix, a Required unit
+   the next package makes. The next package is the custom selection's available
+   tokens, or every incomplete unit. When the Accepted Plan state cannot be
+   read, it is 503.
+
+A stored setup that fails `productionSetupSchema`, or names another Build, reads
+as Node's default. A saved setup is Zod's output: trimmed text, unknown keys
+dropped, and the schema's key order. Node retries its setting compare-and-set
+and answers 409 after eight conflicts. Here the read, the lock check and the
+write share one immediate transaction on the single writer, so no conflict can
+occur. The body limit is Node's 8 MiB (`MAX_BULK_JSON_BODY_BYTES`), and a body
+that is not JSON is 400 `Invalid JSON body`.
+
+`fixtures/parity/production-setup/node.json` is Node's answer for 82 cases in
+22 phases. `ticket_t_61_build_lifecycle_production_setup_matches_node` replays
+the 78 that reach storage and compares the status, the body, the changed tables
+and the stored text, then reopens the writer. The other four are the
+`/api/v2` alias and Fastify's body parser, which `plates_http` covers at the
+router. Regenerate the golden with
+`node fixtures/parity/production-setup/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
 ```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
@@ -3285,7 +3386,9 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   423 with `checkoff_link_count` and `send_queue_item_count`.
   `checkoff_remap_unsafe` is 422 with `unmappable`. `build_archived` and
   `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
-  which Node has no counterpart for, is 409 `{ code, operations }`. A missing Plan
+  which Node has no counterpart for, is 409 `{ code, operations }`, and so is
+  `duplicate_build_name` (`{ code, name }`), a draft header naming another
+  Build ([Draft header fields](draft-headers.md#accept)). A missing Plan
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
@@ -3306,7 +3409,10 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   they save none, and the preview reports `saved_before_accept: false` for
   them. An empty input set is a Plan with no Source layers; its snapshot has
   `layers: []`, which restores that. A replay, an already consumed draft and
-  every refusal save none either.
+  every refusal save none either. Beside the snapshot, Accept saves the Build's
+  header as it stood in `plan_snapshot_headers` (schema step 45), and a draft
+  header row is copied to the Build
+  ([Draft header fields](draft-headers.md#accept)).
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500
@@ -3351,10 +3457,11 @@ so Node and Rust never write the same operation. Node has no route at
 `PUT /plans/{id}/drafts/header` saves a Build's name, order number, customer
 and due date into the observed open draft, or into a new draft when none is
 open, in one immediate transaction. It needs an `Idempotency-Key`, writes
-nothing to the Build, and Accept publishes it (part B, not yet built).
+nothing to the Build, and Accept publishes it.
 `GET /plans/{id}/drafts/{draft_id}/header` reads the draft's header beside the
 Build's current one. [Draft header fields](draft-headers.md) has the contract,
-schema step 43, and the draft paths that carry the header forward.
+schema steps 43 and 45, the draft paths that carry the header forward, and the
+Accept copy.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one
@@ -3379,7 +3486,9 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   (`added`, `removed`, and `printed_affected`: printed units that Accept removes
   or whose Part changes), `plates.cleared` (the accepted Plates Accept clears),
   `stock` (`off`, or per Spoolman spool the unprinted unit count before and
-  after), `duplicate_orders` (other unarchived Plans with this order number),
+  after), `header` (the Build header fields the draft changes, `old` and
+  `new`), `duplicate_orders` (other unarchived Plans with the order number
+  the Build has after Accept),
   `production` (active checkoff links and queued sends, with any link Accept
   could not remap), and `blocked_by` (running operations Accept refuses on).
 - `revision` is `{ draft_id, expected_snapshot_digest,

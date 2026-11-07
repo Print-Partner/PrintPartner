@@ -24,7 +24,7 @@ use pp_gateway::{
 };
 use pp_storage::{
     SettingsClient, WriterOwner,
-    auth::AuthPolicy,
+    auth::{AuthPolicy, AuthorityFailure},
     jobs::{
         AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobFailure,
         JobKind, Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission,
@@ -53,8 +53,10 @@ const INVALID_ARTIFACT: &str = "Invalid artifact path";
 const SETTINGS_UNAVAILABLE: &str = "Printer settings unavailable";
 const NOT_AUTHORIZED: &str =
     "The account that sent this can no longer send it. Nothing was sent to the printer.";
-const NOT_ADMITTED: &str =
-    "Storage refused the send before it reached the printer. Nothing was sent.";
+/// Storage could not admit the send (for example a busy writer). Failing it
+/// now, rather than letting its lease expire, keeps it from starting minutes
+/// later with no user action.
+const NOT_STARTED: &str = "The send did not start because storage could not admit it. Nothing was sent to the printer. Send now sends it.";
 /// Node's `isAllowedPrinterUploadFilename` refusal: only sliced files print.
 /// Storage refuses to enqueue any other upload; the route says why first.
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
@@ -176,11 +178,12 @@ impl SendWorker {
             return Err(anyhow!("Printer worker claimed another job kind"));
         };
         let (worker, attempt) = (self.worker.clone(), lease.clone());
-        if tokio::task::spawn_blocking(move || worker.authorize(&attempt))
-            .await?
-            .is_err()
-        {
-            return Ok(self.give_up(&mut lease, NOT_AUTHORIZED).await);
+        if let Err(error) = tokio::task::spawn_blocking(move || worker.authorize(&attempt)).await? {
+            let reason = match error.downcast_ref::<AuthorityFailure>() {
+                Some(_) => NOT_AUTHORIZED,
+                None => NOT_STARTED,
+            };
+            return Ok(self.give_up(&mut lease, reason).await);
         }
         let prepared = self.prepare(&printer_id, &artifact_path).await;
         let (target, kind, integration_id, file) = match prepared {
@@ -269,7 +272,7 @@ impl SendWorker {
         };
         let reason = match error.downcast_ref() {
             Some(failure @ JobFailure::FeatureDisabled { .. }) => failure.to_string(),
-            _ => NOT_ADMITTED.to_owned(),
+            _ => NOT_STARTED.to_owned(),
         };
         Ok(Some(self.give_up(lease, &reason).await))
     }

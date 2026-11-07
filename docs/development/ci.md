@@ -397,6 +397,10 @@ On macOS, set `TMPDIR` to a short directory on a case-sensitive volume before yo
 
 Clippy and fmt do not read the manifest contents. For a lint-only run, `echo '{}' > rust/bundle-manifest.json` is enough. The tests need the real manifest.
 
+## Packaged-app smoke
+
+`desktop-packaged-smoke.yml` builds the Linux `.deb`, installs it into a disposable root and launches the installed app on a schema 31 database, in the default build and in the `desktop_rebuild` build. It checks the native window, the persisted Build in the accessibility tree, a clean shutdown and the migrated rows. It is not a required check, and `just ci` does not run it. [Packaged-app smoke](packaged-smoke.md) explains each step and how to run it locally.
+
 ## Read a failure
 
 1. Open the failed check on the pull request, or run `gh pr checks <number>`.

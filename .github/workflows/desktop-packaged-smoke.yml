@@ -1,0 +1,193 @@
+name: Desktop packaged smoke
+
+# Builds the Linux .deb, installs it into a disposable root and launches the
+# installed app on a schema 31 database: a native window titled Print Partner,
+# the fixture's Build in the accessibility tree, a clean SIGTERM shutdown and
+# unchanged Plan and Plate rows after migration. Not a required check.
+# docs/development/packaged-smoke.md explains each step.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
+    paths:
+      - 'desktop/packaged-smoke/**'
+      - 'web/**'
+      - 'rust/crates/**'
+      - 'rust/scripts/**'
+      - 'rust/Cargo.toml'
+      - 'rust/Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/desktop-packaged-smoke.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || (github.event_name == 'push' && github.run_attempt == '1' && !startsWith(github.ref, 'refs/tags/')) && 'push' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.run_attempt == '1' && !startsWith(github.ref, 'refs/tags/')) }}
+
+jobs:
+  changes:
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name == 'pull_request')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      smoke: ${{ steps.select.outputs.smoke }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run on harness changes or the ci:packaged-smoke label
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:packaged-smoke') }}
+        run: |
+          set -euo pipefail
+          smoke=$HAS_LABEL
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" \
+              | grep -qE '^(desktop/packaged-smoke/|\.github/workflows/desktop-packaged-smoke\.yml$)'; then
+            smoke=true
+          fi
+          echo "smoke=$smoke" >> "$GITHUB_OUTPUT"
+          echo "Packaged smoke: $smoke (label: $HAS_LABEL)" >> "$GITHUB_STEP_SUMMARY"
+
+  linux:
+    name: packaged smoke (linux, ${{ matrix.mode }})
+    needs: changes
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.smoke == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One scenario per line: a name, then smoke.py flags.
+          - mode: default
+            features: ''
+            scenarios: |
+              migrate
+          - mode: desktop_rebuild
+            features: desktop_rebuild
+            scenarios: |
+              refuse-unmarked --rebuild --expect-refusal
+              migrate-rust-owned --rebuild --rust-owned
+    env:
+      VITE_PRINT_PARTNER_DESKTOP: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      SMOKE_REPEAT: '5'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Installed inline until PRI-34's shared GUI dependency setup lands.
+      - name: Install WebKitGTK, a virtual display and AT-SPI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libayatana-appindicator3-dev librsvg2-dev pkg-config \
+            xvfb xauth dbus-x11 at-spi2-core python3-gi gir1.2-atspi-2.0 \
+            xdotool x11-utils imagemagick libgl1-mesa-dri libegl1 file
+          echo "EVIDENCE=$RUNNER_TEMP/packaged-smoke" >> "$GITHUB_ENV"
+      - name: Test the harness helpers
+        run: cd desktop/packaged-smoke && python3 -B -m unittest -v test_packaged_smoke
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.23.3'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/packaged-smoke/package-lock.json
+      - name: Verify Node runtime
+        run: test "$(node --version)" = "v22.23.3"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rust -> target
+          key: packaged-smoke-${{ matrix.mode }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install the staged Node 24.21.0 runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/node24"
+          curl -fsSL -o "$RUNNER_TEMP/node24.tar.xz" \
+            https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz
+          tar -xJf "$RUNNER_TEMP/node24.tar.xz" -C "$RUNNER_TEMP/node24" --strip-components=1
+          node24="$RUNNER_TEMP/node24/bin/node"
+          file "$node24" | grep -q 'ELF 64-bit'
+          identity="$("$node24" -p 'process.version+" "+process.versions.modules+" "+process.execPath')"
+          test "$identity" = "v24.21.0 137 $node24"
+          echo "NODE24=$node24" >> "$GITHUB_ENV"
+      - name: Generate the schema 31 fixture
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          npm --prefix web ci
+          (cd web && node --conditions=development --import tsx \
+            scripts/storage-fixtures/prepare.mts "$RUNNER_TEMP/prepared")
+          python3 desktop/packaged-smoke/legacy_fixture.py \
+            --prepared "$RUNNER_TEMP/prepared" --output "$RUNNER_TEMP/fixture"
+          cp "$RUNNER_TEMP/fixture/fixture.json" "$EVIDENCE/fixture.json"
+      - name: Build and stage the desktop assets
+        run: |
+          set -euo pipefail
+          npm --prefix web run build
+          python3 rust/scripts/stage-desktop.py --web web --node "$NODE24" \
+            --output "$RUNNER_TEMP/desktop-stage" --commit "$GITHUB_SHA"
+      - name: Build the .deb
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: |
+          set -euo pipefail
+          export PP_DESKTOP_RELEASE_MANIFEST="$RUNNER_TEMP/desktop-stage/bundle-manifest.json"
+          npm --prefix desktop/packaged-smoke ci
+          tauri="$GITHUB_WORKSPACE/desktop/packaged-smoke/node_modules/.bin/tauri"
+          "$tauri" --version | tee "$EVIDENCE/tauri-version.txt"
+          grep -Fx 'tauri-cli 2.12.1' "$EVIDENCE/tauri-version.txt"
+          (
+            cd rust/crates/pp-desktop
+            "$tauri" build --config "$RUNNER_TEMP/desktop-stage/bundle-config.json" \
+              --no-sign --bundles deb ${FEATURES:+--features "$FEATURES"}
+          )
+          debs=(rust/target/release/bundle/deb/*.deb)
+          test "${#debs[@]}" -eq 1
+          echo "DEB=$GITHUB_WORKSPACE/${debs[0]}" >> "$GITHUB_ENV"
+          git diff --exit-code -- rust/Cargo.lock web/package-lock.json
+      - name: Install the .deb into a disposable root
+        run: |
+          set -euo pipefail
+          python3 desktop/packaged-smoke/install_deb.py --deb "$DEB" \
+            --stage "$RUNNER_TEMP/desktop-stage" --root "$RUNNER_TEMP/install" \
+            | tee "$EVIDENCE/install.json"
+      - name: Launch the installed app on the schema 31 database
+        env:
+          SCENARIOS: ${{ matrix.scenarios }}
+        run: |
+          set -euo pipefail
+          for run in $(seq 1 "$SMOKE_REPEAT"); do
+            while read -r name flags; do
+              [ -n "$name" ] || continue
+              echo "Packaged smoke $name, launch $run/$SMOKE_REPEAT"
+              # shellcheck disable=SC2086 # flags is a list of smoke.py switches
+              dbus-run-session -- python3 desktop/packaged-smoke/smoke.py \
+                --app "$RUNNER_TEMP/install/usr/bin/pp-desktop" \
+                --fixture "$RUNNER_TEMP/fixture" \
+                --output "$EVIDENCE/$name-$run" $flags < /dev/null
+            done <<< "$SCENARIOS"
+          done
+      - name: Upload the receipts and screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packaged-smoke-linux-${{ matrix.mode }}
+          path: ${{ runner.temp }}/packaged-smoke/
+          if-no-files-found: warn
+          retention-days: 14

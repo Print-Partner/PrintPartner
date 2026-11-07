@@ -147,14 +147,25 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     job = jobs[job_id]
                     self.assertEqual(job.get("name", job_id), context)
                     self.assertEqual(job["needs"], "changes")
+                    selected = "needs.changes.outputs.relevant != 'false'"
+                    if job_id == "rust-windows":
+                        selected = f"({selected} && needs.changes.outputs.windows != 'false')"
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
-                                     "(needs.changes.result != 'success' || "
-                                     "needs.changes.outputs.relevant != 'false'))")
+                                     f"(needs.changes.result != 'success' || {selected}))")
                     checkout = next(step for step in job["steps"]
                                     if step.get("uses", "").startswith("actions/checkout@"))
                     self.assertNotIn("ref", checkout.get("with", {}))
                 if filename == "rust-cross-os.yml":
+                    windows = next(step for step in jobs["changes"]["steps"]
+                                   if step.get("id") == "windows")
+                    self.assertEqual(windows["run"], "python3 scripts/ci-path-filter.py windows")
+                    self.assertEqual(windows["env"], {
+                        **select["env"],
+                        "PR_LABELS": "${{ toJSON(github.event.pull_request.labels.*.name) }}",
+                    })
+                    self.assertEqual(jobs["changes"]["outputs"]["windows"],
+                                     "${{ steps.windows.outputs.windows }}")
                     self.assertIn("python3 scripts/ci-affected-nextest-filter.py",
                                   select["run"].splitlines())
                     self.assertEqual(jobs["changes"]["outputs"]["nextest_filter"],

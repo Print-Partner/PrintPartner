@@ -1,6 +1,7 @@
 """Exercise CI selection with real Git histories and the workflow CLI."""
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -118,6 +119,63 @@ class CiPathFilterTests(unittest.TestCase):
             git("rm", "rust/crates/new/src/lib.rs")
             git("commit", "-qm", "delete source")
             self.assertEqual(select(advanced_base, git("rev-parse", "HEAD"), "rust")[0], "relevant=true\n")
+
+
+    def test_windows_tier(self):
+        for event in ["push", "merge_group", "schedule", "workflow_dispatch"]:
+            self.assertTrue(ci_filter.select(event, "", "", "windows"))
+        self.assertTrue(ci_filter.select("pull_request", "", "", "windows"))
+        for label in ["ci:full", "ci:windows"]:
+            self.assertTrue(ci_filter.select("pull_request", "0" * 40, "0" * 40, "windows", [label]))
+        self.assertFalse(ci_filter.WINDOWS_LABELS.intersection(["macos", "ci:macos"]))
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=directory, text=True).strip()
+
+            def commit(path, text):
+                file = Path(directory, path)
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(text)
+                git("add", "--", path)
+                git("commit", "-qm", "proof")
+                return git("rev-parse", "HEAD")
+
+            def windows(base, head, labels=()):
+                output = Path(directory, "output")
+                output.write_text("")
+                subprocess.check_output(
+                    ["python3", str(SCRIPT), "windows"], cwd=directory, text=True,
+                    env={**os.environ, "EVENT_NAME": "pull_request", "BASE_SHA": base,
+                         "HEAD_SHA": head, "PR_LABELS": json.dumps(list(labels)),
+                         "GITHUB_OUTPUT": str(output),
+                         "GITHUB_STEP_SUMMARY": str(Path(directory, "summary"))})
+                return output.read_text()
+
+            git("init", "-q")
+            git("config", "user.email", "proof@example.com")
+            git("config", "user.name", "Proof")
+            base = commit("README.md", "base\n")
+            cases = [
+                ("rust/crates/pp-api/src/lib.rs", "fn a() {}\n", "windows=false\n"),
+                ("web/apps/web/src/App.tsx", "export {}\n", "windows=false\n"),
+                ("docs/a.md", "text\n", "windows=false\n"),
+                ("rust/crates/pp-os/src/new.rs", "fn a() {}\n", "windows=true\n"),
+                ("rust/crates/pp-core/src/state.rs", "#[cfg(windows)]\nmod w;\n", "windows=true\n"),
+                ("rust/crates/pp-core/Cargo.toml", "[target.'cfg(windows)'.dependencies]\n", "windows=true\n"),
+                ("rust/Cargo.lock", "lock\n", "windows=true\n"),
+                (".github/workflows/web-ci.yml", "name: x\n", "windows=true\n"),
+                ("scripts/ci-path-filter.py", "x\n", "windows=true\n"),
+            ]
+            for path, text, expected in cases:
+                git("checkout", "-q", "--detach", base)
+                head = commit(path, text)
+                with self.subTest(path=path):
+                    self.assertEqual(windows(base, head), expected)
+            git("checkout", "-q", "--detach", base)
+            head = commit("rust/crates/pp-api/src/lib.rs", "fn a() {}\n")
+            self.assertEqual(windows(base, head, ["ci:windows"]), "windows=true\n")
+            self.assertEqual(windows(base, head, ["ci:full"]), "windows=true\n")
+            self.assertEqual(windows(base, head, ["macos"]), "windows=false\n")
 
 
 if __name__ == "__main__":

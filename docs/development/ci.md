@@ -15,6 +15,15 @@ On ready PRs, the jobs are selected as follows:
 
 The selection is made at job level by `scripts/ci-path-filter.py`, not with workflow `paths:`, so a skipped job still reports `skipped` and the required `rust (linux)` and `rust (windows)` checks never stay pending. A PR that changes only docs, other workflows or other non-Rust files skips both: PR #1548, which changed one workflow and `ci.md`, reported `rust (linux)` and `rust (windows)` as skipped, and a PR that touches a path above, such as this filter, runs them. Markdown is not a Rust input and does not select them, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed with `include_str!`, and anything under `fixtures/`, where parity READMEs sit inside hashed fixture trees. A UI-only change under `web/apps/web/` still selects them on purpose: the Rust jobs run `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` on that UI, then test the desktop bundle against the measured manifest. Skipping those PRs would drop that check from the required set. Web CI covers the UI's own lint, tests and build.
 
+#### Windows tier
+
+`rust (windows)` takes up to 90 minutes, so a PR runs it per push only when it is selected. Main pushes, merge groups, the nightly schedule and manual runs always run it. A PR selects it in two ways, both decided in the `changes` job by `scripts/ci-path-filter.py windows`:
+
+- **Label.** `ci:windows` selects the Windows job. `ci:full` selects it and `rust (macos)`; the existing `macos` label still selects macOS alone. The labels are read from the PR event, and the job re-evaluates when one is added or removed.
+- **Path.** The PR changes `rust/crates/pp-os/`, `rust/Cargo.lock`, `rust-toolchain.toml`, `.github/workflows/`, `.github/actions/`, the selector or its test, or any Rust or Cargo file under `rust/` whose head content mentions `windows` (`cfg(windows)`, a `windows` module or dependency). Deleted files select it. A Windows-port PR therefore selects it without a label.
+
+A PR that changes only other Rust, web or docs files skips the Windows job and keeps Linux. The skipped job still reports `rust (windows)`, so the required check is present; GitHub counts a skipped required job as passing, which is the reason the decision must not be loosened casually. The selector and its test are in CODEOWNERS, so changing what skips a required check needs Chad's review, and the full set (Windows, macOS, packaged smoke, native macOS) runs on `main`, in merge groups and nightly regardless of PR labels. A PR whose Windows job did not run has not been tested on Windows: add `ci:windows` when in doubt.
+
 Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
@@ -271,7 +280,7 @@ Steps 4 to 10 run even when an earlier one of them fails, so one run reports eve
 
 Each job declares its runner in `runs-on`, its package scope in `CARGO_SCOPE`, and its test filter in `NEXTEST_FILTER` (from the `changes` job output, defaulting to `all()`). The three jobs share the same anchored steps. They have no matrix, so GitHub reports their exact required names both when running and when skipped. The Linux rebuild partitions always use `all()` because they only run on non-PR events.
 
-`rust (linux)` and `rust (windows)` are required checks on `main`; `rust (macos)` is advisory. [Settings for Chad](ci-controls.md#settings-for-chad) lists the full ruleset.
+`rust (linux)` and `rust (windows)` are required checks on `main`; `rust (macos)` is advisory. A PR that the [Windows tier](#windows-tier) does not select reports `rust (windows)` as skipped. [Settings for Chad](ci-controls.md#settings-for-chad) lists the full ruleset.
 
 ## Run the required checks with one command
 

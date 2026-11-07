@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Select required CI jobs from a complete PR diff; non-PR events always run."""
 
+import json
 import os
 from pathlib import Path
 import re
@@ -37,8 +38,28 @@ def relevant(path, kind):
             or re.fullmatch(r"web/package[^/]*\.json", path) is not None)
 
 
-def select(event, base, head, kind):
+WINDOWS_LABELS = {"ci:full", "ci:windows"}
+WINDOWS_PATHS = ("rust/crates/pp-os/", ".github/workflows/", ".github/actions/")
+WINDOWS_FILES = {"rust/Cargo.lock", "rust-toolchain.toml", ".github/actionlint.yaml",
+                 "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}
+
+
+def windows_relevant(path, head):
+    if path in WINDOWS_FILES or path.startswith(WINDOWS_PATHS):
+        return True
+    if not path.startswith("rust/") or not path.endswith((".rs", ".toml")):
+        return False
+    try:
+        text = subprocess.check_output(["git", "show", f"{head}:{path}"], stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        return True
+    return b"windows" in text.lower()
+
+
+def select(event, base, head, kind, labels=()):
     if event != "pull_request":
+        return True
+    if kind == "windows" and WINDOWS_LABELS.intersection(labels):
         return True
     if not all(re.fullmatch(r"[0-9a-f]{40}", sha or "") for sha in (base, head)):
         return True
@@ -49,18 +70,21 @@ def select(event, base, head, kind):
         ).decode("utf-8", errors="surrogateescape").split("\0")
     except subprocess.CalledProcessError:
         return True
+    if kind == "windows":
+        return any(windows_relevant(path, head) for path in paths if path)
     return any(relevant(path, kind) for path in paths if path)
 
 
 if __name__ == "__main__":
     kind = sys.argv[1]
-    if kind not in {"rust", "actions", "native"}:
-        raise SystemExit("Expected rust, actions or native")
+    if kind not in {"rust", "actions", "native", "windows"}:
+        raise SystemExit("Expected rust, actions, native or windows")
+    labels = json.loads(os.environ.get("PR_LABELS") or "[]")
     value = str(select(os.environ["EVENT_NAME"], os.environ.get("BASE_SHA"),
-                       os.environ.get("HEAD_SHA"), kind)).lower()
+                       os.environ.get("HEAD_SHA"), kind, labels)).lower()
     message = f"{kind} inputs changed: {value}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        output.write(f"relevant={value}\n")
+        output.write(f"{'windows' if kind == 'windows' else 'relevant'}={value}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)

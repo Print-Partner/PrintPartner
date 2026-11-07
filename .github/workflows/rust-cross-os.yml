@@ -55,6 +55,7 @@ jobs:
       actions: read
     outputs:
       relevant: ${{ steps.select.outputs.relevant }}
+      windows: ${{ steps.windows.outputs.windows }}
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
     steps:
@@ -74,6 +75,14 @@ jobs:
           python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py
           python3 scripts/ci-path-filter.py rust
           python3 scripts/ci-affected-nextest-filter.py
+      - name: Select the Windows tier
+        id: windows
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 scripts/ci-path-filter.py windows
       - name: Select the Linux Rust runner
         id: runner
         env:
@@ -477,8 +486,8 @@ jobs:
   rust-macos:
     name: rust (macos)
     needs: changes
-    # macOS is opt-in on ready PRs, and always selected on non-PR events.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false') && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'macos'))))
+    # macOS is opt-in on ready PRs (macos or ci:full label), and always selected on non-PR events.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false') && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && (contains(github.event.pull_request.labels.*.name, 'macos') || contains(github.event.pull_request.labels.*.name, 'ci:full')))))
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -493,8 +502,9 @@ jobs:
   rust-windows:
     name: rust (windows)
     needs: changes
-    # Explicit jobs keep each required check present when selection skips it.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
+    # Explicit jobs keep each required check present when selection skips it. Main, merge groups,
+    # the nightly run and manual runs always select Windows; a PR selects it by label or path.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.relevant != 'false' && needs.changes.outputs.windows != 'false')))
     runs-on: windows-latest
     env:
       RUST_OS: windows

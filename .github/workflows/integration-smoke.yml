@@ -32,7 +32,7 @@ concurrency:
 jobs:
   postgres:
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name != 'workflow_dispatch' || inputs.postgres)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # npm 10 waits fetch-timeout (300s) on a stalled socket and prints nothing
     # when CI hides the progress bar. A 5 minute job cancelled `npm ci` before
     # that wait could fail or retry (run 39713832065, job 119611149797).
@@ -125,7 +125,7 @@ jobs:
 
   slicer-sidecar:
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event_name == 'workflow_dispatch' && inputs.slicer_sidecar)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

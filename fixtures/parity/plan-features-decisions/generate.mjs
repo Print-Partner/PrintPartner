@@ -156,6 +156,8 @@ const REQUESTS = [
   post("decision_object_then_bool_v2", "/api/v2" + decisions(12), { label: {}, summary: true }),
   post("decision_nested_array_flat", decisions(12), { action_type: [["x"]] }),
   post("decision_shifted_v1", "/api/v1" + decisions(12), { action_type: [], label: ["a", "b"] }),
+  post("decision_overflow_then_bool_flat", decisions(12), { label: ["a", "b", "c", "d", "e"], summary: true }),
+  post("decision_overflow_then_objects_v2", "/api/v2" + decisions(12), { label: ["a", "b", "c", "d", "e"], summary: {}, rationale: {} }),
   rawPost("decision_duplicate_key_flat", decisions(12), "{\"kind\":\"bogus\",\"kind\":\"choice\"}"),
   post("decision_invalid_kind_v1", "/api/v1" + decisions(12), { kind: "bogus" }),
   post("decision_empty_kind_v2", "/api/v2" + decisions(12), { kind: "" }),

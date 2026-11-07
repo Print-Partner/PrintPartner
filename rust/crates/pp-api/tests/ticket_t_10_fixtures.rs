@@ -1730,7 +1730,7 @@ mod ticket_t_10_fixtures {
         let fixture = seeded_fixture(
             include_str!("../../../../fixtures/parity/plan-features-decisions/node.json"),
             "plan-features-decisions",
-            106,
+            108,
         );
         let sandbox = Sandbox::new("t10-plan-features").unwrap();
         let owner = open_seeded(&sandbox, &fixture);
@@ -1813,7 +1813,7 @@ mod ticket_t_10_fixtures {
         owner.shutdown().unwrap();
         let report = ledger.finish().unwrap();
         print_report("plan-features-decisions", &report);
-        assert_eq!(report.matched, 94);
+        assert_eq!(report.matched, 96);
         assert_eq!(report.corrected.len(), FASTIFY_REFUSED.len());
         assert_eq!(off, 4);
         assert_eq!(checked, 32);

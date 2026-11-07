@@ -3391,11 +3391,11 @@ and `rationale` to better-sqlite3 unchecked, with only `null` falling back to
 The answer is the inserted row as Node's `mapPlanDecision` returns it. The
 append writes only `plan_decisions`: no publication row or blocker.
 
-`fixtures/parity/plan-features-decisions/node.json` is Node's answer for 106
+`fixtures/parity/plan-features-decisions/node.json` is Node's answer for 108
 requests on one database, run with `PP_DESKTOP_REBUILD=1` except four with it
 unset. `plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables`
 in `ticket_t_10_fixtures` replays them through `build_router` merged with
-`planning_router`, as `pp-core` composes them. 94 match Node's status, body
+`planning_router`, as `pp-core` composes them. 96 match Node's status, body
 and changed tables. Eight bodies Fastify's parser refuses are declared
 corrections (400 `Request is invalid` without Fastify's codes). The four
 flag-off cases reach a router built with the flag off, which mounts nothing:

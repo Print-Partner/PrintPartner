@@ -169,13 +169,13 @@ fn bind(fields: [Field<'_>; PARAMETERS]) -> Result<Vec<Value>, &'static str> {
     let mut named = false;
     for value in fields {
         match value {
-            Field::Bound(value) => bound.push(value),
+            Field::Bound(value) => push(&mut bound, value)?,
             Field::Spread(items) => {
                 for item in items {
                     let Field::Bound(value) = field(item) else {
                         return Err(UNBINDABLE);
                     };
-                    bound.push(value);
+                    push(&mut bound, value)?;
                 }
             }
             Field::Named if named => {
@@ -185,11 +185,20 @@ fn bind(fields: [Field<'_>; PARAMETERS]) -> Result<Vec<Value>, &'static str> {
             Field::Unbindable => return Err(UNBINDABLE),
         }
     }
-    match bound.len() {
-        PARAMETERS => Ok(bound),
-        count if count < PARAMETERS => Err("Too few parameter values were provided"),
-        _ => Err("Too many parameter values were provided"),
+    if bound.len() < PARAMETERS {
+        return Err("Too few parameter values were provided");
     }
+    Ok(bound)
+}
+
+/// Binds the next parameter; SQLite refuses one past the last at once, so
+/// better-sqlite3 stops there.
+fn push(bound: &mut Vec<Value>, value: Value) -> Result<(), &'static str> {
+    if bound.len() == PARAMETERS {
+        return Err("Too many parameter values were provided");
+    }
+    bound.push(value);
+    Ok(())
 }
 
 /// Inserts the bound row; a constraint SQLite refuses is Node's 400.

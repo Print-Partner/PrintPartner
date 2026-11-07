@@ -5,7 +5,6 @@ use axum::{
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 use pp_core::{CoreRuntime, CoreStatus, SupervisorConfig};
-use std::os::unix::fs::DirBuilderExt;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -37,6 +36,9 @@ mod printer_stream;
 #[cfg(feature = "desktop_rebuild")]
 #[path = "runtime_m0/printer_host.rs"]
 mod printer_host;
+
+#[path = "support/process.rs"]
+mod process;
 
 #[path = "support/process_tree.rs"]
 mod process_tree;
@@ -246,8 +248,8 @@ async fn protected_real_node_lifecycle() {
         .unwrap();
     assert!(receipt.compat_reaped && receipt.storage_released);
     assert!(!data.join(".desktop-owner.json").exists());
-    assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
-    let second = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    assert!(!pp_core::process_alive(child_pid));
+    let second = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(second.origin(), origin);
     second.shutdown().await;
     println!(
@@ -261,9 +263,7 @@ async fn authenticated_logout_requests_complete_shutdown() {
     use fs2::FileExt;
 
     let data = temporary("logout");
-    let mut runtime = CoreRuntime::start(launch(data.clone()))
-        .await
-        .expect("real Node reaches verified readiness");
+    let mut runtime = started(CoreRuntime::start(launch(data.clone())).await, &data);
     let origin = runtime.origin().to_owned();
     let target = runtime.take_launch_target().unwrap().into_url();
     let bootstrap = target.strip_prefix(&origin).unwrap();
@@ -346,7 +346,7 @@ async fn authenticated_logout_requests_complete_shutdown() {
         .await
         .unwrap();
     assert!(receipt.complete(), "incomplete receipt: {receipt:?}");
-    assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
+    assert!(!pp_core::process_alive(child_pid));
     assert!(!data.join(".desktop-owner.json").exists());
     assert!(!runtime_dir.exists());
     let lock = std::fs::OpenOptions::new()
@@ -363,12 +363,12 @@ async fn authenticated_logout_requests_complete_shutdown() {
 
 #[tokio::test]
 async fn ticket_t_12_hostile_lock_is_refused_before_supervised_node_startup() {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
     let data = temporary("hostile-lock");
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&data)
-        .unwrap();
+    pp_os::create_private_dir(&data).unwrap();
     let database = data.join("print-partner.db");
     let config = data.join("desktop.toml");
     let marker = data.join(".desktop-owner.json");
@@ -444,16 +444,14 @@ async fn rust_marked_directory_is_refused_before_supervised_node_startup() {
     );
 }
 
+/// Windows counterpart: `ticket_t_12_windows_admission_reads_no_posix_modes`.
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_12_unsafe_ancestor_is_refused_before_child_or_database_open() {
     use std::os::unix::fs::PermissionsExt;
     let parent = temporary("unsafe-ancestor");
     let data = parent.join("data");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&data)
-        .unwrap();
+    pp_os::create_private_dir_all(&data).unwrap();
     let source = temporary("ancestor-copy-source");
     let (owner, _) = pp_storage::WriterOwner::open(&source, pp_storage::Limits::default()).unwrap();
     owner.shutdown().unwrap();
@@ -484,15 +482,13 @@ async fn ticket_t_12_unsafe_ancestor_is_refused_before_child_or_database_open() 
     );
 }
 
+/// Windows counterpart: `ticket_t_12_windows_admission_reads_no_posix_modes`.
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_12_unsafe_directory_is_refused_before_child_or_database_open() {
     use std::os::unix::fs::PermissionsExt;
     let data = temporary("unsafe-directory");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&data)
-        .unwrap();
+    pp_os::create_private_dir_all(&data).unwrap();
     let database = data.join("print-partner.db");
     let copied = b"copied database must remain unopened";
     std::fs::write(&database, copied).unwrap();
@@ -519,19 +515,42 @@ async fn ticket_t_12_unsafe_directory_is_refused_before_child_or_database_open()
     std::fs::remove_dir_all(data).unwrap();
 }
 
+/// Windows has no POSIX modes, and pp-storage does not inspect ACLs yet (ADR
+/// 0015), so a data directory and an ancestor that Everyone may change are
+/// admitted. Counterpart of the two Unix refusals above; it pins this
+/// behaviour so changing it is deliberate.
+#[cfg(windows)]
+#[test]
+fn ticket_t_12_windows_admission_reads_no_posix_modes() {
+    let parent = temporary("acl-ancestor");
+    let data = parent.join("data");
+    pp_os::create_private_dir_all(&data).unwrap();
+    for path in [&parent, &data] {
+        let granted = std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/grant", "*S-1-1-0:(OI)(CI)(M)"])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(granted.success(), "icacls failed: {granted}");
+        assert_eq!(pp_os::status_follow(path).unwrap().posix_access(), None);
+    }
+    drop(pp_storage::lease::StorageLease::acquire(&data).unwrap());
+    std::fs::remove_dir_all(&parent).unwrap();
+}
+
 #[tokio::test]
 async fn ticket_t_12_unsafe_config_is_refused_before_any_database_open() {
     let data = temporary("unsafe-origin-config");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&data)
-        .unwrap();
+    pp_os::create_private_dir_all(&data).unwrap();
     let database = data.join("print-partner.db");
     let copied = b"copied database must remain unopened";
     std::fs::write(&database, copied).unwrap();
     let target = data.join("missing-config.toml");
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&target, data.join("desktop.toml")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&target, data.join("desktop.toml")).unwrap();
     let error = CoreRuntime::start(launch(data.clone()))
         .await
         .err()
@@ -554,11 +573,7 @@ async fn occupied_saved_port_recovers_before_child_start() {
         "pp-bind-m0-{}",
         hex::encode(rand::random::<[u8; 8]>())
     ));
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&data)
-        .unwrap();
+    pp_os::create_private_dir_all(&data).unwrap();
     let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     std::fs::write(
         data.join("desktop.toml"),
@@ -662,7 +677,7 @@ async fn occupied_saved_port_recovers_before_child_start() {
     );
     assert!(runtime.shutdown().await.complete());
     assert!(!data.join(".desktop-owner.json").exists());
-    let runtime = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    let runtime = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(runtime.origin(), origin);
     assert_eq!(runtime.origin_change(), None);
     assert!(handle.browser_preferences().await.is_err());
@@ -803,7 +818,7 @@ async fn crash_guard_stops_after_five_failures_and_recovers_explicitly() {
             unreachable!()
         };
         prior_pid = pid;
-        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGKILL) }, 0);
+        assert!(process::kill(pid));
         await_status(
             &mut state,
             deadline,
@@ -853,6 +868,17 @@ async fn desktop_cookie(runtime: &mut CoreRuntime) -> String {
     desktop.split(';').next().unwrap().to_owned()
 }
 
+/// The started runtime, or a panic that carries the redacted recent logs, so
+/// a hosted failure shows why the child never became ready.
+fn started<E: std::fmt::Display>(result: Result<CoreRuntime, E>, data: &Path) -> CoreRuntime {
+    result.unwrap_or_else(|error| {
+        panic!(
+            "runtime start failed: {error:#}\n{}",
+            pp_core::recent_logs(data).unwrap_or_else(|error| error.to_string())
+        )
+    })
+}
+
 fn temporary(case: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "pp-{case}-{}",
@@ -862,8 +888,6 @@ fn temporary(case: &str) -> PathBuf {
 
 #[tokio::test]
 async fn source_sync_receipt_is_admitted_before_desktop_effects() {
-    use std::os::unix::fs::MetadataExt;
-
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "source-sync-receipt-{}",
         hex::encode(rand::random::<[u8; 8]>())
@@ -882,11 +906,7 @@ async fn source_sync_receipt_is_admitted_before_desktop_effects() {
     ];
     for (name, body) in cases {
         let data = root.join(name);
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&data)
-            .unwrap();
+        pp_os::create_private_dir_all(&data).unwrap();
         let receipt = data.join("source-sync-admission.json");
         std::fs::write(&receipt, body).unwrap();
         let error = CoreRuntime::start(launch(data.clone()))
@@ -910,14 +930,12 @@ async fn source_sync_receipt_is_admitted_before_desktop_effects() {
         .expect("desktop startup admits Source Sync");
     let receipt = data.join("source-sync-admission.json");
     let bytes = std::fs::read(&receipt).unwrap();
-    let inode = std::fs::metadata(&receipt).unwrap().ino();
+    let identity = pp_os::status_follow(&receipt).unwrap().identity();
     let shutdown = first.shutdown().await;
     assert!(shutdown.complete(), "{shutdown:?}");
-    let second = CoreRuntime::start(launch(data.clone()))
-        .await
-        .expect("restart reuses the Source Sync receipt");
+    let second = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(std::fs::read(&receipt).unwrap(), bytes);
-    assert_eq!(std::fs::metadata(&receipt).unwrap().ino(), inode);
+    assert_eq!(pp_os::status_follow(&receipt).unwrap().identity(), identity);
     let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(parsed["operation"], "source.sync");
     assert_eq!(parsed["owner"], "node");
@@ -1006,6 +1024,10 @@ async fn changed_or_missing_built_artifacts_are_rejected() {
     );
 }
 
+// Unix only: it fails cleanup by planting a directory at the channel socket.
+// The Windows channel is a named pipe with no file to plant over; see
+// `ticket_t_12_windows_channel_leaves_nothing_to_clean`.
+#[cfg(unix)]
 #[tokio::test]
 async fn cleanup_error_publishes_failed_and_preserves_failure() {
     let data = temporary("compat-cleanup-status");
@@ -1032,7 +1054,7 @@ async fn cleanup_error_publishes_failed_and_preserves_failure() {
         .unwrap();
     std::fs::rename(&socket, directory.join("retained-socket")).unwrap();
     std::fs::create_dir(&socket).unwrap();
-    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGKILL) }, 0);
+    assert!(process::kill(pid));
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if matches!(*state.borrow(), CoreStatus::Failed) {
@@ -1085,7 +1107,7 @@ async fn stable_child_resets_backoff_without_erasing_rapid_crash_escalation() {
         if index == 2 {
             tokio::time::sleep(stable_time).await;
         }
-        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGKILL) }, 0);
+        assert!(process::kill(pid));
         let attempt = loop {
             if let CoreStatus::Backoff { attempt } = *state.borrow() {
                 break attempt;
@@ -1110,11 +1132,7 @@ async fn stable_child_resets_backoff_without_erasing_rapid_crash_escalation() {
 #[tokio::test]
 async fn node_lease_directory_refuses_start_without_leaving_a_lock_file() {
     let data = temporary("node-lease-no-lock-left");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(data.join(".desktop-lease"))
-        .unwrap();
+    pp_os::create_private_dir_all(&data.join(".desktop-lease")).unwrap();
     std::fs::write(data.join(".desktop-lease/owner.json"), b"{}").unwrap();
     let listing = |root: &Path| {
         let mut entries = std::collections::BTreeMap::new();
@@ -1198,9 +1216,7 @@ async fn same_process_restart_retries_failed_storage_release_without_double_owne
 
     std::fs::remove_file(blocker).unwrap();
     std::fs::remove_dir(&marker).unwrap();
-    let restarted = CoreRuntime::start(launch(data.clone()))
-        .await
-        .expect("same-process restart retries the retained failed release");
+    let restarted = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert!(lease.is_file());
     assert!(lock.try_lock_exclusive().is_err());
     assert!(CoreRuntime::start(launch(data.clone())).await.is_err());
@@ -1214,7 +1230,6 @@ async fn same_process_restart_retries_failed_storage_release_without_double_owne
 #[test]
 fn drop_after_caller_runtime_teardown_reaps_writer_and_descendant() {
     use fs2::FileExt;
-    use std::os::unix::process::CommandExt;
     let data = temporary("drop-after-runtime");
     let caller = tokio::runtime::Runtime::new().unwrap();
     let runtime = caller
@@ -1230,12 +1245,20 @@ fn drop_after_caller_runtime_teardown_reaps_writer_and_descendant() {
         | CoreStatus::Failed => panic!("not ready"),
     };
     let runtime_dir = runtime.runtime_dir().to_owned();
-    let mut descendant = std::process::Command::new("sleep")
-        .arg("60")
-        .process_group(pid as i32)
-        .spawn()
-        .unwrap();
-    let descendant_pid = descendant.id();
+    // Windows keeps the group in a Job Object this test cannot join; pp-compat's
+    // `ticket_t_3_drain_job_remains_until_every_member_exits` covers members.
+    #[cfg(unix)]
+    let mut descendant = Some({
+        use std::os::unix::process::CommandExt;
+        std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(pid as i32)
+            .spawn()
+            .unwrap()
+    });
+    #[cfg(windows)]
+    let mut descendant: Option<std::process::Child> = None;
+    let descendant_pid = descendant.as_ref().map(std::process::Child::id);
     caller.shutdown_timeout(Duration::from_secs(2));
     let lock = std::fs::OpenOptions::new()
         .read(true)
@@ -1246,8 +1269,10 @@ fn drop_after_caller_runtime_teardown_reaps_writer_and_descendant() {
     drop(runtime);
     let deadline = std::time::Instant::now() + Duration::from_secs(16);
     loop {
-        let descendant_reaped = descendant.try_wait().unwrap().is_some();
-        let child_reaped = unsafe { libc::kill(pid as i32, 0) } < 0;
+        let descendant_reaped = descendant
+            .as_mut()
+            .is_none_or(|descendant| descendant.try_wait().unwrap().is_some());
+        let child_reaped = !pp_core::process_alive(pid);
         if descendant_reaped
             && child_reaped
             && !data.join(".desktop-owner.json").exists()
@@ -1268,6 +1293,9 @@ fn drop_after_caller_runtime_teardown_reaps_writer_and_descendant() {
     );
 }
 
+// Unix only, for the reason given on
+// `cleanup_error_publishes_failed_and_preserves_failure`.
+#[cfg(unix)]
 #[tokio::test]
 async fn compatibility_cleanup_failure_reports_failed_instead_of_ready() {
     let data = temporary("compat-cleanup-failure");
@@ -1293,6 +1321,30 @@ async fn compatibility_cleanup_failure_reports_failed_instead_of_ready() {
         .err()
         .expect("unproved child closure must prevent same-process restart");
     assert!(error.to_string().contains("Closure was not proved"));
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+/// Windows counterpart of the two socket cleanup failure tests: the channel
+/// is a named pipe, so the runtime directory holds no entry for it, and
+/// shutdown proves the child closed.
+#[cfg(windows)]
+#[tokio::test]
+async fn ticket_t_12_windows_channel_leaves_nothing_to_clean() {
+    let data = temporary("compat-pipe-cleanup");
+    let runtime = started(CoreRuntime::start(launch(data.clone())).await, &data);
+    let state = compat(&runtime);
+    assert!(matches!(*state.borrow(), CoreStatus::Ready { .. }));
+    let runtime_dir = runtime.runtime_dir().to_owned();
+    assert!(std::fs::read_dir(&runtime_dir).unwrap().all(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_none_or(|ext| ext != "sock")
+    }));
+    let receipt = runtime.shutdown().await;
+    assert!(receipt.compat_reaped);
+    assert!(receipt.complete(), "{receipt:?}");
     std::fs::remove_dir_all(data).unwrap();
 }
 
@@ -1372,10 +1424,8 @@ async fn core_process_fixture() {
     std::future::pending::<()>().await;
 }
 
-fn pid_has_exited(pid: i32) -> bool {
-    let result = unsafe { libc::kill(pid, 0) };
-    (result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH))
-        || matches!(linux_proc_state(pid as u32), Some('Z' | 'X'))
+fn pid_has_exited(pid: u32) -> bool {
+    !pp_core::process_alive(pid) || matches!(linux_proc_state(pid), Some('Z' | 'X'))
 }
 
 fn peer_is_running(peer: &mut std::process::Child) -> bool {
@@ -1416,7 +1466,6 @@ fn canonical_node(node: &Path) -> PathBuf {
 #[test]
 fn core_death_terminates_stopped_node_and_allows_recovery() {
     use std::io::{BufRead, BufReader};
-    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let data = temporary("core-death-live-child");
     let mut core = Command::new(std::env::current_exe().unwrap())
@@ -1437,32 +1486,41 @@ fn core_death_terminates_stopped_node_and_allows_recovery() {
             .unwrap();
         let ready: serde_json::Value =
             serde_json::from_str(line.split_once("PP_CORE_READY ").unwrap().1).unwrap();
-        let pid = ready["pid"].as_u64().unwrap() as i32;
+        let pid = ready["pid"].as_u64().unwrap() as u32;
         child_pid = Some(pid);
         runtime_dir = Some(PathBuf::from(ready["runtime_dir"].as_str().unwrap()));
         // The peer only keeps the group from being orphaned. POSIX would
-        // SIGHUP a stopped orphan group.
-        group_peer = Some(
-            Command::new("sleep")
-                .arg("600")
-                .process_group(pid)
-                .spawn()
-                .unwrap(),
-        );
+        // SIGHUP a stopped orphan group. Windows has no process groups; the
+        // core's Job Object holds Node.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            group_peer = Some(
+                Command::new("sleep")
+                    .arg("600")
+                    .process_group(pid as i32)
+                    .spawn()
+                    .unwrap(),
+            );
+        }
         // Freeze the child with its DB open to deterministically hold the shutdown window.
-        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
-        // waitpid cannot observe this non-child on macOS; ps works on both hosts.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let state = Command::new("ps")
-                .args(["-o", "stat=", "-p", &pid.to_string()])
-                .output()
-                .unwrap();
-            if String::from_utf8_lossy(&state.stdout).contains('T') {
-                break;
+        process::stop(pid);
+        // waitpid cannot observe this non-child on macOS; ps works on both
+        // hosts. NtSuspendProcess has suspended every thread when it returns.
+        #[cfg(unix)]
+        {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let state = Command::new("ps")
+                    .args(["-o", "stat=", "-p", &pid.to_string()])
+                    .output()
+                    .unwrap();
+                if String::from_utf8_lossy(&state.stdout).contains('T') {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "child did not stop");
+                std::thread::sleep(Duration::from_millis(10));
             }
-            assert!(std::time::Instant::now() < deadline, "child did not stop");
-            std::thread::sleep(Duration::from_millis(10));
         }
         core.kill().unwrap();
         core.wait().unwrap();
@@ -1474,23 +1532,24 @@ fn core_death_terminates_stopped_node_and_allows_recovery() {
             pid_has_exited(pid),
             "stopped Node outlived the force-killed owner"
         );
-        while peer_is_running(group_peer.as_mut().unwrap()) && std::time::Instant::now() < deadline
+        while group_peer.as_mut().is_some_and(peer_is_running)
+            && std::time::Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
-            !peer_is_running(group_peer.as_mut().unwrap()),
+            !group_peer.as_mut().is_some_and(peer_is_running),
             "Node group member outlived its owner"
         );
         let caller = tokio::runtime::Runtime::new().unwrap();
-        let runtime = caller
-            .block_on(CoreRuntime::start(launch(data.clone())))
-            .expect("dead owner and terminated Node allow recovery");
+        let runtime = started(
+            caller.block_on(CoreRuntime::start(launch(data.clone()))),
+            &data,
+        );
         let state = compat(&runtime).borrow().clone();
         let CoreStatus::Ready { pid: new_pid, .. } = state else {
             panic!("not ready")
         };
-        let new_pid = new_pid as i32;
         assert_ne!(new_pid, pid);
         #[cfg(target_os = "linux")]
         {
@@ -1504,8 +1563,14 @@ fn core_death_terminates_stopped_node_and_allows_recovery() {
         }
         #[cfg(not(target_os = "linux"))]
         {
+            #[cfg(unix)]
             let comm = Command::new("ps")
                 .args(["-o", "comm=", "-p", &new_pid.to_string()])
+                .output()
+                .unwrap();
+            #[cfg(windows)]
+            let comm = Command::new("tasklist")
+                .args(["/NH", "/FO", "CSV", "/FI", &format!("PID eq {new_pid}")])
                 .output()
                 .unwrap();
             let comm = String::from_utf8_lossy(&comm.stdout);
@@ -1516,16 +1581,19 @@ fn core_death_terminates_stopped_node_and_allows_recovery() {
         }
         assert!(caller.block_on(runtime.shutdown()).complete());
         assert!(
-            !peer_is_running(group_peer.as_mut().unwrap()),
+            !group_peer.as_mut().is_some_and(peer_is_running),
             "old Node group member survived recovery"
         );
     }));
     let _ = core.kill();
     let _ = core.wait();
     if let Some(pid) = child_pid {
+        #[cfg(unix)]
         unsafe {
-            libc::kill(-pid, libc::SIGKILL);
+            libc::kill(-(pid as i32), libc::SIGKILL);
         }
+        #[cfg(windows)]
+        process::kill(pid);
     }
     if let Some(mut peer) = group_peer {
         let _ = peer.kill();
@@ -1665,7 +1733,7 @@ async fn ticket_t_4_real_gateway_hidden_status_and_config_cancellation() {
         CoreStatus::Ready { pid, .. } => pid,
         _ => panic!("backend not ready"),
     };
-    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGSTOP) }, 0);
+    process::stop(pid);
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let cached_while_node_stopped = tokio::time::timeout(
         Duration::from_millis(300),
@@ -1680,7 +1748,7 @@ async fn ticket_t_4_real_gateway_hidden_status_and_config_cancellation() {
         ),
     )
     .await;
-    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGCONT) }, 0);
+    assert!(process::resume(pid));
     assert_eq!(
         cached_while_node_stopped
             .expect("cached read blocked on Node")
@@ -1996,12 +2064,12 @@ async fn gre_335_shared_status_route_keeps_node_path_for_other_printers() {
         CoreStatus::Ready { pid, .. } => pid,
         _ => panic!("backend not ready"),
     };
-    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGSTOP) }, 0);
+    process::stop(pid);
     let before = moonraker_calls.load(Ordering::SeqCst);
     tokio::time::sleep(Duration::from_millis(3500)).await;
     let during = moonraker_calls.load(Ordering::SeqCst);
     let (status, body, _) = get(&origin, &cookie, &moonraker_id).await;
-    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGCONT) }, 0);
+    assert!(process::resume(pid));
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["state"], "printing");
     assert!(
@@ -2132,7 +2200,7 @@ async fn ticket_t_5_staged_release_reuses_the_persisted_desktop_identity() {
     assert_eq!(health["version"], expected_version);
     let persisted = std::fs::read(data.join("desktop.toml")).unwrap();
     assert!(runtime.shutdown().await.complete());
-    let reopened = CoreRuntime::start(launch(data.clone())).await.unwrap();
+    let reopened = started(CoreRuntime::start(launch(data.clone())).await, &data);
     assert_eq!(reopened.origin(), origin);
     assert_eq!(std::fs::read(data.join("desktop.toml")).unwrap(), persisted);
     assert!(reopened.shutdown().await.complete());

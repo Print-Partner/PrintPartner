@@ -537,7 +537,8 @@ export async function createBackup(
       },
       [snapshotRelativePath, metadataRelativePath, ...archiveEntries],
     );
-    const archiveHandle = await fs.open(temporaryArchivePath, "r");
+    // Windows flushes only a handle with write access; a read-only sync fails with EPERM.
+    const archiveHandle = await fs.open(temporaryArchivePath, "r+");
     try {
       await archiveHandle.sync();
     } finally {

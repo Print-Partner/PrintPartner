@@ -1549,7 +1549,7 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 44 (`LAST_COPIED_STEP`)
+repair's writes to `source_revisions`. Each step through 46 (`LAST_COPIED_STEP`)
 writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
 the first step writes, the open names its rollback copy in the run marker
 `backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
@@ -1564,7 +1564,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-44.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-46.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -3485,7 +3485,9 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   423 with `checkoff_link_count` and `send_queue_item_count`.
   `checkoff_remap_unsafe` is 422 with `unmappable`. `build_archived` and
   `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
-  which Node has no counterpart for, is 409 `{ code, operations }`. A missing Plan
+  which Node has no counterpart for, is 409 `{ code, operations }`, and so is
+  `duplicate_build_name` (`{ code, name }`), a draft header naming another
+  Build ([Draft header fields](draft-headers.md#accept)). A missing Plan
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
@@ -3506,7 +3508,10 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   they save none, and the preview reports `saved_before_accept: false` for
   them. An empty input set is a Plan with no Source layers; its snapshot has
   `layers: []`, which restores that. A replay, an already consumed draft and
-  every refusal save none either.
+  every refusal save none either. Beside the snapshot, Accept saves the Build's
+  header as it stood in `plan_snapshot_headers` (schema step 45), and a draft
+  header row is copied to the Build
+  ([Draft header fields](draft-headers.md#accept)).
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500
@@ -3551,10 +3556,11 @@ so Node and Rust never write the same operation. Node has no route at
 `PUT /plans/{id}/drafts/header` saves a Build's name, order number, customer
 and due date into the observed open draft, or into a new draft when none is
 open, in one immediate transaction. It needs an `Idempotency-Key`, writes
-nothing to the Build, and Accept publishes it (part B, not yet built).
+nothing to the Build, and Accept publishes it.
 `GET /plans/{id}/drafts/{draft_id}/header` reads the draft's header beside the
 Build's current one. [Draft header fields](draft-headers.md) has the contract,
-schema step 43, and the draft paths that carry the header forward.
+schema steps 43 and 45, the draft paths that carry the header forward, and the
+Accept copy.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one
@@ -3579,7 +3585,9 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   (`added`, `removed`, and `printed_affected`: printed units that Accept removes
   or whose Part changes), `plates.cleared` (the accepted Plates Accept clears),
   `stock` (`off`, or per Spoolman spool the unprinted unit count before and
-  after), `duplicate_orders` (other unarchived Plans with this order number),
+  after), `header` (the Build header fields the draft changes, `old` and
+  `new`), `duplicate_orders` (other unarchived Plans with the order number
+  the Build has after Accept),
   `production` (active checkoff links and queued sends, with any link Accept
   could not remap), and `blocked_by` (running operations Accept refuses on).
 - `revision` is `{ draft_id, expected_snapshot_digest,
@@ -3717,3 +3725,40 @@ shell markup is unchanged. This slice adds no tokens, screens or routes.
 cd web/apps/web
 npx vitest run src/lib/desktopRebuild.test.ts src/layout/AppLayout.desktopRebuild.test.tsx
 ```
+
+## Filament grams per send (GRE-1165, part a: GRE-1237)
+
+Schema step 46 adds the Rust-only table `print_link_grams`, one row per tenant and
+Printer Checkoff link. A link is one send of a file to a printer. Its row holds
+the grams that send uses (`grams`, positive), the number of Checkoff units the
+send prints (`units`, positive), where the grams came from (`basis`:
+`estimated` or `measured`), the slicer's grams per millimetre of filament
+(`grams_per_mm`, when the file states both), and the length the printer
+reported using at finish (`measured_mm`). Step 46 takes a `pre-schema46.db` copy like every
+step through `LAST_COPIED_STEP`, and the table is validated against
+`print_grams/schema.sql` like the other side tables. Node has no such table and
+never writes it.
+
+The owner decided on 2026-11-04 to record the slicer's estimate at send and
+replace it with the measured value when the print finishes. Printers report
+millimetres, and the staged file is deleted after upload, so the conversion
+factor is kept at send (Alfala, 2026-11-07):
+
+- `pp_storage::print_grams::record_estimate` writes the estimate and its
+  `grams_per_mm`. A later estimate replaces it only until a length is measured.
+- `pp_storage::print_grams::record_measured` stores `measured_mm`. With a
+  `grams_per_mm`, the grams become `measured_mm × grams_per_mm` and the basis
+  `measured` (`Recorded`). Without one, the estimate stays (`NoFactor`). A link
+  with no estimate is left alone (`NoEstimate`). Nothing calls it
+yet: the send path writes the estimate in GRE-1238, and the status watcher
+writes the measured value in GRE-1165's last part.
+
+The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
+grams from this table instead of `print_jobs.filament_consumed_g`, which
+nothing writes. A send's grams are spread evenly over its `units`, so a send
+whose units are only partly checked off still costs each checked-off unit its
+share. Each Part averages its five most recent sends that have a checked-off
+unit for it (`print_job_parts` rows with the send's `link_id`). A Part with any
+measured send uses only measured sends and reads `measured`; a Part with only
+estimates reads `estimated`. The read no longer requires
+`print_jobs.status = 'completed'`, which nothing sets either.

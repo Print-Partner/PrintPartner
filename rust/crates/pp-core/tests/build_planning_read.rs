@@ -56,7 +56,11 @@ mod with_feature {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             match &file[1] {
                 Value::String(content) => std::fs::write(&path, content).unwrap(),
+                #[cfg(unix)]
                 link => std::os::unix::fs::symlink(link["link"].as_str().unwrap(), &path).unwrap(),
+                #[cfg(windows)]
+                link => std::os::windows::fs::symlink_file(link["link"].as_str().unwrap(), &path)
+                    .unwrap(),
             }
         }
         let db = rusqlite::Connection::open(data.join("print-partner.db")).unwrap();

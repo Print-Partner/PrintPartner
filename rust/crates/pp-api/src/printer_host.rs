@@ -4,10 +4,13 @@
 //! - `GET /printers/{id}/capabilities`, `/printers/{id}/files?path=` and
 //!   `/printers/{id}/cameras`, at the root and under `/api/v1`, where Node's
 //!   core routes are registered
+//! - `GET /printers/{id}/files/content?path=` and `/printers/{id}/cameras/view?id=`
+//!   (GRE-1174), which stream the printer's reply through at the same mounts
 //! - `POST /api/v1/integrations/{id}/test`, under `/api/v1` only, as in Node
 //!
-//! Every route is read-only on the printer: it lists, describes or probes,
-//! and never uploads, starts, deletes or touches Checkoff. The drivers'
+//! Every route is read-only on the printer: it lists, describes, probes or
+//! streams a file or camera image, and never uploads, starts, deletes or
+//! touches Checkoff. The drivers'
 //! request counts and the PrusaLink 401 resend are described in
 //! docs/printer-host-reads.md. `pp-core` implements [`PrinterHostPort`] over
 //! storage's integration settings and the gateway's Moonraker and PrusaLink
@@ -18,6 +21,7 @@ use crate::accepted::failure;
 use crate::admin::{AdminHttpConfig, Gate};
 use axum::{
     Router,
+    body::Body,
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
@@ -71,11 +75,25 @@ pub enum HostAnswer<T> {
 
 pub type Answer<T> = Pin<Box<dyn Future<Output = HostAnswer<T>> + Send>>;
 
+/// A printer reply head whose body streams through as the client reads it.
+pub struct HostStream {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub content_length: Option<u64>,
+    pub body: Body,
+}
+
 pub trait PrinterHostPort: Send + Sync + 'static {
     fn capabilities(&self, printer: String) -> Answer<Capabilities>;
     /// `path` is already a safe storage path, or empty for the root.
     fn files(&self, printer: String, path: String) -> Answer<Value>;
     fn cameras(&self, printer: String) -> Answer<Value>;
+    /// The printer's reply for a print file at `path`, a safe storage path;
+    /// `Ok(None)` when the host does not list that file.
+    fn file(&self, printer: String, path: String) -> Answer<Option<HostStream>>;
+    /// The printer's reply for one camera's view; `Ok(None)` when the host
+    /// lists no camera with that id.
+    fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>>;
     /// `Ok` holds Node's `{ok, message}` test result.
     fn test(&self, integration: String) -> Answer<Value>;
 }
@@ -85,6 +103,8 @@ pub trait PrinterHostPort: Send + Sync + 'static {
 const CAPABILITIES_LIMIT: u32 = 120;
 const FILES_LIMIT: u32 = 60;
 const CAMERAS_LIMIT: u32 = 60;
+const FILE_CONTENT_LIMIT: u32 = 20;
+const CAMERA_VIEW_LIMIT: u32 = 20;
 const TEST_LIMIT: u32 = 5;
 const WINDOW: Duration = Duration::from_secs(60);
 
@@ -135,7 +155,9 @@ fn routes(port: Arc<dyn PrinterHostPort>) -> Router {
     let printers = Router::new()
         .route("/printers/{id}/capabilities", get(capabilities))
         .route("/printers/{id}/files", get(files))
-        .route("/printers/{id}/cameras", get(cameras));
+        .route("/printers/{id}/files/content", get(file_content))
+        .route("/printers/{id}/cameras", get(cameras))
+        .route("/printers/{id}/cameras/view", get(camera_view));
     let mount = |routes: Router<App>, port| {
         routes.with_state(App {
             port,
@@ -263,6 +285,156 @@ async fn cameras(State(app): State<App>, Path(id): Path<String>) -> Response {
         other => refusal(other, || {
             axum::Json(json!({ "cameras": [] })).into_response()
         }),
+    }
+}
+
+/// What a proxied reply is served as.
+#[derive(Clone, Copy)]
+enum Served {
+    /// A print file: a download, never a page.
+    File,
+    /// A camera view for an `<img>`: only image and MJPEG types pass.
+    Camera,
+}
+
+/// Camera types a browser renders as an image without running script.
+const CAMERA_TYPES: [&str; 5] = [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "multipart/x-mixed-replace",
+];
+
+/// Node's `sendUpstreamResponse`: a 2xx reply streams through with its
+/// type and length and `private, no-store`; anything else is refused and its
+/// body is never read. Unlike Node, the reply comes from Print Partner's own
+/// origin with `nosniff` and a sandboxing CSP, a print file as an
+/// attachment, and a camera type outside `CAMERA_TYPES` as
+/// `application/octet-stream`, so printer-controlled HTML or SVG never runs
+/// as a page of the app.
+fn proxied(stream: HostStream, served: Served) -> Response {
+    match stream.status {
+        200..=299 => {}
+        404 => return failure(StatusCode::NOT_FOUND, "Printer resource not found"),
+        status => {
+            return failure(
+                StatusCode::BAD_GATEWAY,
+                &format!("Printer host returned HTTP {status}"),
+            );
+        }
+    }
+    let mut response = Response::new(stream.body);
+    let headers = response.headers_mut();
+    let content_type = stream.content_type.filter(|value| match served {
+        Served::File => true,
+        Served::Camera => {
+            let essence = value.split(';').next().unwrap_or_default().trim();
+            CAMERA_TYPES
+                .iter()
+                .any(|allowed| essence.eq_ignore_ascii_case(allowed))
+        }
+    });
+    let content_type = match (content_type, served) {
+        (Some(value), _) => HeaderValue::from_str(&value).ok(),
+        (None, Served::Camera) => Some(HeaderValue::from_static("application/octet-stream")),
+        (None, Served::File) => None,
+    };
+    if let Some(value) = content_type {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    if let Served::File = served {
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment"),
+        );
+    }
+    if let Some(length) = stream.content_length {
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    }
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+}
+
+#[derive(Deserialize)]
+struct ContentQuery {
+    path: Option<String>,
+    profile_id: Option<String>,
+}
+
+async fn file_content(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<ContentQuery>,
+) -> Response {
+    if let Some(after) = app.windows.consume("files_content", FILE_CONTENT_LIMIT) {
+        return throttled(after);
+    }
+    // Node captures a Build's inspection snapshot here; its only redeemer,
+    // the print-file assignment route, is not served by this runtime yet.
+    if query.profile_id.is_some() {
+        return failure(
+            StatusCode::NOT_IMPLEMENTED,
+            "Print-file inspection for a Build is not available in this runtime yet",
+        );
+    }
+    let requested = query.path.unwrap_or_default();
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return failure(StatusCode::BAD_REQUEST, "path is required");
+    }
+    let Some(path) = safe_storage_path(requested) else {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "path is not a valid printer storage path",
+        );
+    };
+    match app.port.file(id, path).await {
+        HostAnswer::Ok(Some(stream)) => proxied(stream, Served::File),
+        HostAnswer::Ok(None) => failure(StatusCode::NOT_FOUND, "Printer file not found"),
+        other => refusal(other, || {
+            failure(
+                StatusCode::NOT_IMPLEMENTED,
+                "Printer host does not support file browsing",
+            )
+        }),
+    }
+}
+
+#[derive(Deserialize)]
+struct CameraQuery {
+    id: Option<String>,
+}
+
+async fn camera_view(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<CameraQuery>,
+) -> Response {
+    if let Some(after) = app.windows.consume("cameras_view", CAMERA_VIEW_LIMIT) {
+        return throttled(after);
+    }
+    let camera = query.id.unwrap_or_default();
+    let camera = camera.trim();
+    if camera.is_empty() {
+        return failure(StatusCode::BAD_REQUEST, "id is required");
+    }
+    let missing = || failure(StatusCode::NOT_FOUND, "Printer camera not found");
+    match app.port.camera_view(id, camera.to_owned()).await {
+        HostAnswer::Ok(Some(stream)) => proxied(stream, Served::Camera),
+        HostAnswer::Ok(None) => missing(),
+        other => refusal(other, missing),
     }
 }
 

@@ -171,6 +171,9 @@ function claimMatchingUnattributedPrints(repo: AppRepository, link: PrinterCheck
 /**
  * The link state a host-confirmed finish produces: printing is done and an
  * operator still has to verify it. Spread a fresh `completed_at` over it.
+ * Exported for fixtures/parity/printer-file-assignment/generate.mjs.
+ *
+ * @public
  */
 export const HOST_COMPLETED_PATCH = {
   state: "awaiting_verify",

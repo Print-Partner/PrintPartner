@@ -557,7 +557,6 @@ fn classify(result: &UploadResult, start: bool) -> Sent {
     Sent::Failed(result.message.clone())
 }
 
-/// The printer's path as a receipt id: at most 128 characters.
 /// The remote path cut to the 128 bytes a receipt id may hold, on a
 /// character boundary.
 fn receipt_id(remote_path: &str) -> String {

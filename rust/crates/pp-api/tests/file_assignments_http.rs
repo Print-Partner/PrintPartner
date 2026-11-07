@@ -923,7 +923,8 @@ async fn uploads_up_to_64_mb_are_held_to_two_and_the_route_takes_ten_a_minute() 
     let (status, _) = post(&router, UPLOAD, "{}", true).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     let junk = Some("pp_session=junk");
-    let (status, _) = checkoff_http::loopback::send(&router, "POST", UPLOAD, "{}", junk).await;
+    let (status, _) =
+        checkoff_http::loopback::send(&router, "POST", UPLOAD, Some("{}"), junk).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,

@@ -1,5 +1,6 @@
 //! A loopback request to a mounted router, with the Host, Origin and peer
-//! address the accepted gate admits, and the JSON body of its answer.
+//! address the accepted gate admits, and the JSON body of its answer. A body
+//! is sent as `application/json`; `None` sends no body and no type.
 use axum::{
     Router,
     body::Body,
@@ -16,11 +17,12 @@ pub async fn send(
     router: &Router,
     method: &str,
     path: &str,
-    body: &str,
+    body: Option<&str>,
     cookie: Option<&str>,
 ) -> (StatusCode, Value) {
-    let body = body.as_bytes().to_vec();
-    send_as(router, method, path, "application/json", body, cookie).await
+    let content_type = body.is_some().then_some("application/json");
+    let body = body.unwrap_or_default().as_bytes().to_vec();
+    send_as(router, method, path, content_type, body, cookie).await
 }
 
 /// [`send`] with any content type and body, as a multipart upload is sent.
@@ -28,7 +30,7 @@ pub async fn send_as(
     router: &Router,
     method: &str,
     path: &str,
-    content_type: &str,
+    content_type: Option<&str>,
     body: Vec<u8>,
     cookie: Option<&str>,
 ) -> (StatusCode, Value) {
@@ -36,8 +38,10 @@ pub async fn send_as(
         .method(method)
         .uri(path)
         .header("host", "127.0.0.1:4100")
-        .header("origin", ORIGIN)
-        .header("content-type", content_type);
+        .header("origin", ORIGIN);
+    if let Some(content_type) = content_type {
+        request = request.header("content-type", content_type);
+    }
     if let Some(cookie) = cookie {
         request = request.header("cookie", cookie);
     }

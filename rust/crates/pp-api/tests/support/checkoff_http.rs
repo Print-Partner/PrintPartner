@@ -76,7 +76,7 @@ pub async fn send(
     cookie: bool,
 ) -> (StatusCode, Value) {
     let cookie = cookie.then_some(SESSION);
-    loopback::send(router, method, path, body, cookie).await
+    loopback::send(router, method, path, Some(body), cookie).await
 }
 
 /// A signed-in POST of `body` as `content_type`.
@@ -86,5 +86,13 @@ pub async fn post_as(
     content_type: &str,
     body: Vec<u8>,
 ) -> (StatusCode, Value) {
-    loopback::send_as(router, "POST", path, content_type, body, Some(SESSION)).await
+    loopback::send_as(
+        router,
+        "POST",
+        path,
+        Some(content_type),
+        body,
+        Some(SESSION),
+    )
+    .await
 }

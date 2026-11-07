@@ -130,42 +130,43 @@ class DataDirectoryTest(unittest.TestCase):
 class InstallTreeTest(unittest.TestCase):
     stage = {
         "web": ("dir", None),
-        "web/a.js": ("file", ("1", False)),
+        "web/a.js": ("file", "1", False),
         "web/node_modules": ("dir", None),
         "web/node_modules/@pp": ("dir", None),
         "web/node_modules/@pp/core": ("link", "../../packages/core"),
         "bin": ("dir", None),
-        "bin/node": ("file", ("2", True)),
+        "bin/node": ("file", "2", True),
     }
 
     def packaged(self, **changes):
-        tree = {path: entry for path, entry in self.stage.items() if not path.endswith("@pp/core")}
-        del tree["web/node_modules/@pp"]
-        tree.update(changes)
-        return tree
+        return {**self.stage, **changes}
 
-    def test_only_dropped_links_are_restored(self):
+    def test_identical_tree_passes(self):
+        found = install_deb.differences(self.stage, self.packaged())
+        self.assertFalse(any(found.values()))
+
+    def test_dropped_link_fails(self):
+        tree = self.packaged()
+        del tree["web/node_modules/@pp/core"]
         self.assertEqual(
-            install_deb.missing_links(self.stage, self.packaged()), ["web/node_modules/@pp/core"]
+            install_deb.differences(self.stage, tree)["missing"], ["web/node_modules/@pp/core"]
         )
 
-    def test_changed_file_fails(self):
-        with self.assertRaises(SystemExit):
-            install_deb.missing_links(
-                self.stage, self.packaged(**{"web/a.js": ("file", ("x", False))})
-            )
+    def test_retargeted_link_fails(self):
+        tree = self.packaged(**{"web/node_modules/@pp/core": ("link", "../elsewhere")})
+        self.assertEqual(
+            install_deb.differences(self.stage, tree)["changed"], ["web/node_modules/@pp/core"]
+        )
+
+    def test_changed_file_and_lost_executable_bit_fail(self):
+        tree = self.packaged(**{"web/a.js": ("file", "x", False), "bin/node": ("file", "2", False)})
+        self.assertEqual(
+            install_deb.differences(self.stage, tree)["changed"], ["bin/node", "web/a.js"]
+        )
 
     def test_extra_file_fails(self):
-        with self.assertRaises(SystemExit):
-            install_deb.missing_links(
-                self.stage, self.packaged(**{"web/b.js": ("file", ("3", False))})
-            )
-
-    def test_missing_file_fails(self):
-        tree = self.packaged()
-        del tree["bin/node"]
-        with self.assertRaises(SystemExit):
-            install_deb.missing_links(self.stage, tree)
+        tree = self.packaged(**{"web/b.js": ("file", "3", False)})
+        self.assertEqual(install_deb.differences(self.stage, tree)["extra"], ["web/b.js"])
 
 
 if __name__ == "__main__":

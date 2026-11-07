@@ -9,8 +9,8 @@ The macOS bundle job's `installed_bundle_start_health_shutdown` test checks back
 Each job runs on a GitHub-hosted `ubuntu-24.04` runner, never on the pp-local runners. The `default` job builds the app without features. The `desktop_rebuild` job builds with `--features desktop_rebuild` and launches with `PP_DESKTOP_REBUILD=1`. The flag stays off in every other build. See [Scenarios](#scenarios) for what each job launches.
 
 1. **Fixture.** `web/scripts/storage-fixtures/prepare.mts` (Node 22.23.3) writes its `immutable-corpus` case: a schema 34 database whose rows come from the autosave golden, with the Build "Parity Build", 3 accepted Plan revisions and 2 Plates. `desktop/packaged-smoke/legacy_fixture.py` copies it and applies the transformations `prepare.mts` uses for its schema-31 case: drop `board_posts` and `board_comments`, drop `projects.legacy_manifest_cutover`, and stamp `schema_version` 31. It records the row counts and a digest of every Plan and Plate table in `fixture.json`. Nothing is committed or hand-edited; the fixture is regenerated on every run.
-2. **Package.** The job stages the desktop runtime with `rust/scripts/stage-desktop.py`, then builds a `.deb` with the Tauri CLI 2.12.1 pinned in `desktop/packaged-smoke/package-lock.json`, using the stage's `bundle-config.json`.
-3. **Install.** `install_deb.py` unpacks the `.deb` into a disposable root with `dpkg-deb -x` and compares its `desktop-runtime` tree with the stage, file by file. See [Dropped workspace links](#dropped-workspace-links).
+2. **Package.** With Node 24.21.0 and freshly installed web dependencies, the job builds the desktop assets and stages the runtime with `rust/scripts/stage-desktop.py`, then builds the shipped `.deb` with `rust/scripts/desktop-deb.sh` and the Tauri CLI 2.12.1 pinned in `desktop/packaged-smoke/package-lock.json` (see [Linux package](../desktop.md#linux-package)).
+3. **Install.** `install_deb.py` unpacks the `.deb` as shipped into a disposable root with `dpkg-deb -x` and fails unless its `desktop-runtime` tree equals the stage: the same files, SHA-256 and executable bits, the same symlinks and targets, nothing extra. It changes nothing.
 4. **Launch.** `smoke.py`, inside `dbus-run-session`, starts its own Xvfb display and launches `usr/bin/pp-desktop` with a disposable `HOME` whose `.print-partner/print-partner.db` is the fixture. It then requires, in order:
    - a mapped X11 window owned by the app, titled `Print Partner`, at least 900 x 650 (the startup error dialog fails the run at once);
    - the fixture's Build name as a link or table cell inside the page's `document web` node of the app's AT-SPI accessibility tree. If the page shows the first-run "Set up Print Partner" form instead, the smoke types a disposable administrator (`packaged-smoke@example.invalid` with a random password that is never written down), submits it, and follows "Continue to Print Partner";
@@ -33,11 +33,7 @@ The app runs without network sharing, with loopback ports only, and sends nothin
 
 ## When it runs
 
-Every push to `main`, nightly at 06:41 UTC, and on manual dispatch. On a ready pull request it runs when the PR changes `desktop/packaged-smoke/` or the workflow, or has the `ci:packaged-smoke` label; otherwise both jobs skip. Draft pull requests skip it.
-
-## Dropped workspace links
-
-Tauri CLI 2.12.1's deb bundler skips symlinks in `bundle.resources`. The stage has four, `web/node_modules/@print-partner/{contracts,domain,server,web}`, and the installed app refuses to start without them (`desktop_startup_failed: core_startup`, because resource verification finds a different file inventory). Until Linux packaging keeps them, `install_deb.py` restores exactly those links from the stage and lists them under `restoredLinks` in `install.json`. Any other difference between the package and the stage, including a changed, extra or missing file, fails the job. GRE-1233 tracks the packaging fix.
+Every push to `main`, nightly at 06:41 UTC, and on manual dispatch. On a ready pull request a small `changes` job runs, and the smoke jobs run when the PR changes `desktop/packaged-smoke/` or the workflow, or has the `ci:packaged-smoke` label; otherwise they skip. Draft pull requests skip everything.
 
 ## Run it locally
 
@@ -48,16 +44,16 @@ cd desktop/packaged-smoke && python3 -B -m unittest -v test_packaged_smoke && cd
 npm --prefix web ci   # with Node 22.23.3
 (cd web && node --conditions=development --import tsx scripts/storage-fixtures/prepare.mts /tmp/pp-prepared)
 python3 desktop/packaged-smoke/legacy_fixture.py --prepared /tmp/pp-prepared --output /tmp/pp-fixture
+npm --prefix web ci   # again, with Node 24.21.0
 VITE_PRINT_PARTNER_DESKTOP=1 npm --prefix web run build
-python3 rust/scripts/stage-desktop.py --web web --node /path/to/node-v24.21.0 --output /tmp/pp-stage --commit "$(git rev-parse HEAD)"
+python3 rust/scripts/stage-desktop.py --web web --node "$(command -v node)" --output /tmp/pp-stage --commit "$(git rev-parse HEAD)"
 npm --prefix desktop/packaged-smoke ci
-(cd rust/crates/pp-desktop && PP_DESKTOP_RELEASE_MANIFEST=/tmp/pp-stage/bundle-manifest.json \
-  ../../../desktop/packaged-smoke/node_modules/.bin/tauri build --config /tmp/pp-stage/bundle-config.json --no-sign --bundles deb)
+PP_DESKTOP_STAGE=/tmp/pp-stage PP_TAURI="$PWD/desktop/packaged-smoke/node_modules/.bin/tauri" rust/scripts/desktop-deb.sh
 python3 desktop/packaged-smoke/install_deb.py --deb rust/target/release/bundle/deb/*.deb --stage /tmp/pp-stage --root /tmp/pp-root
 dbus-run-session -- python3 desktop/packaged-smoke/smoke.py --app /tmp/pp-root/usr/bin/pp-desktop --fixture /tmp/pp-fixture --output /tmp/pp-evidence
 ```
 
-For the rebuild mode, add `--features desktop_rebuild` to the build and run `smoke.py` with `--rebuild --expect-refusal`, then with `--rebuild --rust-owned`. Each output path must be a new directory.
+For the rebuild mode, pass `--features desktop_rebuild` to `desktop-deb.sh` and run `smoke.py` with `--rebuild --expect-refusal`, then with `--rebuild --rust-owned`. Each output path must be a new directory.
 
 ## Windows and macOS
 

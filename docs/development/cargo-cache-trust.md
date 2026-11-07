@@ -1,8 +1,8 @@
 # Cargo cache trust for same-repository PRs
 
 The Linux Rust jobs in Rust cross-OS run on pp-local again for pushes to `main`,
-merge groups and manual runs (GRE-1042). Pull requests run on GitHub-hosted
-runners, or on Blacksmith or [pp-iso](pp-iso.md) runners when `PP_PR_RUNNER` selects
+merge groups and manual runs (GRE-1042). Pull requests run on Blacksmith runners by
+default, or on GitHub-hosted or [pp-iso](pp-iso.md) runners when `PP_PR_RUNNER` selects
 them (never pp-local), so PR code does not run on the hosts that share the containers'
 host-mounted Cargo registry and sccache. This assessment, written for the earlier
 local-runner configuration that ran PRs locally, describes the risk that keeping

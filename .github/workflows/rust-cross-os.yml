@@ -11,7 +11,7 @@ name: Rust cross-OS
 # runners. Schedule keeps the in-job monolithic desktop_rebuild nextest.
 # The Linux jobs run on the pp-local fleet for main pushes, merge groups and
 # manual runs, and on ubuntu-latest for the schedule, PP_RUST_RUNNER=hosted or an
-# unavailable fleet. Pull requests follow PP_PR_RUNNER: hosted (default), blacksmith or
+# unavailable fleet. Pull requests follow PP_PR_RUNNER: blacksmith (default), hosted or
 # pp-iso (scripts/ci-rust-runner.py; docs/development/ci.md).
 on:
   pull_request:

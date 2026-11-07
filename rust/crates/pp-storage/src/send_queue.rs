@@ -190,7 +190,7 @@ pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<()
         PersistentState::ReconciliationRequired => Some(UNKNOWN_OUTCOME_ERROR),
         _ => return Ok(()),
     };
-    tx.execute(
+    let changed = tx.execute(
         &format!("UPDATE printer_send_queue SET state=?1,error=?2,updated_at=?3 WHERE tenant_id=?4 AND upload_job_id=?5 AND state IN ({from})"),
         params![
             if error.is_some() { "error" } else { "done" },
@@ -199,6 +199,32 @@ pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<()
             job.tenant,
             job.job_id,
         ],
+    )?;
+    if changed > 0 {
+        trim(tx, &job.tenant)?;
+    }
+    Ok(())
+}
+
+/// Node's `MAX_ITEMS`: terminal history fills the queue only up to this size.
+#[cfg(feature = "desktop_rebuild")]
+const MAX_ITEMS: i64 = 50;
+
+/// Node's `trimPrinterSendQueue`, run after every queue write: each
+/// `queued`, `sending` and `error` item stays, and only the newest terminal
+/// items that fit beside them in [`MAX_ITEMS`] do.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn trim(tx: &Connection, tenant: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM printer_send_queue
+          WHERE tenant_id=?1 AND state NOT IN ('queued','sending','error')
+            AND id NOT IN (
+              SELECT id FROM printer_send_queue
+               WHERE tenant_id=?1 AND state NOT IN ('queued','sending','error')
+               ORDER BY position DESC
+               LIMIT max(0, ?2 - (SELECT count(*) FROM printer_send_queue
+                                   WHERE tenant_id=?1 AND state IN ('queued','sending','error'))))",
+        params![tenant, MAX_ITEMS],
     )?;
     Ok(())
 }

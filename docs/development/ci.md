@@ -505,7 +505,7 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
   - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `macos` label, is not a draft, and changes desktop inputs. The selector includes the Rust inputs above, the native workflow, its cleanup tests and the Rust verification helper directory. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
   - Pushes to `main` or `master`, merge groups, nightly and manual runs select every job, including the Intel bundle.
 
-  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels an older `main` run; pushes to `main`, reruns, merge groups, nightly and manual runs each have their own group.
+  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels an older `main` run; pushes to `main`, merge groups, nightly and manual runs each have their own group, and a rerun shares its original run's group without cancelling anything.
   The source fixture registers the named `cleanup_source_fixture` function with `trap cleanup_source_fixture EXIT` after a successful attach. It captures `$?` immediately and exits with that status on every cleanup path. Cleanup targets only this step's owned mount. It tries normal detach of the mount three times, with `sleep 2` between failures. If all three fail, it records holders and then forces detach of the whole-disk device that `hdiutil attach` printed first, again up to three times with `sleep 2` between failures. A forced unmount can succeed while ejecting the backing device returns `Resource busy`. The mount path is then an ordinary directory, so the forced retries target the device. The explicit sleeps total at most eight seconds. The `hdiutil` calls and holder diagnostics add time, so eight seconds is not a wall-clock cleanup bound.
 
   After normal detach retries fail, `lsof +f -- "$fixture_mount"` records open files on the source fixture's owned APFS filesystem before forced detach. A diagnostic failure, or failure of all three forced attempts, warns without changing the test exit status. Run `python3 scripts/test_native_image_cleanup.py -v` for executable cleanup fixtures. The same suite runs in `macos-storage-gate`, including a macOS-only disposable APFS image held open by a child process. Linux skips that native proof.
@@ -594,15 +594,18 @@ because a newer merge cancelled each older run and left that merge with no resul
 
 The run count stays bounded because `main` only receives merges of reviewed pull
 requests, one `push` event each, and a workflow starts at most one run per event.
-The path filters still skip jobs that a merge cannot affect. Reruns (attempt 2 and
-later, which `main-red` starts), tag pushes, merge groups, the schedule and manual
-runs each have their own group too.
+The path filters still skip jobs that a merge cannot affect. Tag pushes, merge groups,
+the schedule and manual runs each have their own group too. A rerun (attempt 2 and
+later, which `main-red` starts) keeps its run's `run_id`, so it shares the original
+run's group; it never cancels anything and, because the original has finished, does
+not wait.
 
 | Event | Group | `cancel-in-progress` |
 | --- | --- | --- |
 | `pull_request` | workflow and ref (or PR number) | `true` |
 | `push` to `main` | `run_id` | `false` |
-| `push` of a tag, `merge_group`, `schedule`, `workflow_dispatch`, rerun | `run_id` | `false` |
+| `push` of a tag, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
+| rerun of any run | the original run's `run_id` | `false` |
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.
 

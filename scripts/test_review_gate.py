@@ -119,6 +119,8 @@ class ReviewGateStepTests(unittest.TestCase):
     def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None, pr_base="main",
              droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0", moved_to=None, moved_base=None, moves_on_call=1):
         state = self.folder / "state.json"
+        for counter in (".n", ".pulls"):
+            Path(str(state) + counter).unlink(missing_ok=True)
         state.write_text(json.dumps({
             "head": HEAD, "checks": [run("review-gate", None), *checks], "pages": pages or [[]],
             "droid_log": droid_log, "pr_base": pr_base, "checks_seq": checks_seq, **({"moved_to": moved_to} if moved_to else {}),
@@ -181,19 +183,13 @@ class ReviewGateStepTests(unittest.TestCase):
                 self.assertIn("not this PR's into main", result.stdout)
         self.assertPasses(checks=[run("droid-review", suite=7)], pages=[[marker()]])
 
-    def test_a_stacked_pr_is_judged_against_its_own_base_with_the_same_rules(self):
+    def test_a_pr_into_another_base_never_passes_on_a_review_run(self):
         stacked = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
-        self.assertPasses(checks=stacked, pr_base="release")
-        self.assertPasses(checks=[run("droid-review", suite=13)], pr_base="release")
-        self.assertFails(checks=[])
+        for checks in (stacked, [run("droid-review", suite=13)], [run("claude-code-review"), run("claude-security-review")]):
+            result = self.assertFails(checks=checks, pr_base="release")
+            self.assertIn("not this PR's into main", result.stdout)
         self.assertFails(checks=[], pr_base="release")
-        self.assertFails(checks=[run("droid-review", "failure", suite=13)], pr_base="release")
         self.assertPasses(checks=[], pr_base="release", pages=[[marker()]])
-        moved = self.assertFails(checks=[run("claude-code-review"), run("claude-security-review")], pr_base="release")
-        self.assertIn("not this PR's into release", moved.stdout)
-        self.assertFails(checks=[run("claude-code-review", suite=12), run("claude-security-review", suite=12)])
-        differs = {f"{CLAUDE}@{HEAD}": "c2", f"{CLAUDE}@main": "c1"}
-        self.assertFails(checks=stacked, pr_base="release", files=[CLAUDE], blobs=differs)
 
     def test_the_gate_waits_for_claude_jobs_that_are_still_running(self):
         review = [run("claude-code-review", None), run("claude-security-review", None)]
@@ -205,6 +201,13 @@ class ReviewGateStepTests(unittest.TestCase):
         broken = [run("claude-code-review", "failure"), finished[1]]
         failed = self.assertFails(checks_seq=[review, broken], checks=broken, wait="5")
         self.assertIn("claude-code-review is failure", failed.stdout)
+
+    def test_only_the_latest_claude_runs_are_waited_on(self):
+        older, newer = "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z"
+        checks = [run("claude-code-review", None, started=older), run("claude-security-review", None, started=older),
+                  run("claude-code-review", started=newer), run("claude-security-review", started=newer)]
+        result = self.assertPasses(checks=checks, checks_seq=[checks], wait="5")
+        self.assertNotIn("Waiting for", result.stdout)
 
     def test_a_waiting_gate_stops_when_the_head_moves(self):
         review = [run("claude-code-review", None), run("claude-security-review", None)]

@@ -133,6 +133,34 @@ pub fn mcp_router(
         ))
 }
 
+/// The router over every client MCP reads, each opened on `owner` with
+/// `policy`, and the auth client that issues its keys.
+#[cfg(test)]
+pub(crate) fn test_router(
+    owner: &pp_storage::WriterOwner,
+    config: McpHttpConfig,
+    policy: auth::AuthPolicy,
+) -> (Router, RebuildAuthClient) {
+    let auth = owner
+        .rebuild_auth_with_policy(policy, Default::default())
+        .unwrap();
+    let workflow = owner
+        .build_workflow(
+            policy,
+            Arc::new(pp_storage::read_model::build_workflow::PendingInputs),
+        )
+        .unwrap();
+    let reads = Arc::new(owner.source_reads().unwrap());
+    let drafts = owner
+        .working_drafts_with_observations(policy, reads, Default::default())
+        .unwrap();
+    let planning = owner
+        .build_planning(policy, owner.source_reads().unwrap())
+        .unwrap();
+    let router = mcp_router(config, auth.clone(), workflow, drafts, planning);
+    (router, auth)
+}
+
 async fn guard(
     axum::extract::State(Guard {
         config,
@@ -236,6 +264,22 @@ impl ProductMcp {
         let Some(id) = positive_id(arguments, "plan_id") else {
             return error("plan_id required");
         };
+        match self.workflow(id, presented).await {
+            Some(Outcome::Workspace(workspace)) => match serde_json::to_string(&workspace) {
+                Ok(text) => ToolResult {
+                    text,
+                    is_error: false,
+                },
+                Err(_) => error("Build workflow is unavailable"),
+            },
+            Some(Outcome::MissingBuild) => error("Build not found"),
+            _ => error("Build workflow is unavailable"),
+        }
+    }
+
+    /// The Build's workflow read with the caller's key, or `None` when the
+    /// read failed.
+    async fn workflow(&self, id: PositiveId, presented: PresentedCredential) -> Option<Outcome> {
         let Reads { workflow, wait, .. } = self.reads.clone();
         let read = tokio::task::spawn_blocking(move || {
             workflow.read(
@@ -246,17 +290,7 @@ impl ProductMcp {
             )
         })
         .await;
-        match read {
-            Ok(Ok(Outcome::Workspace(workspace))) => match serde_json::to_string(&workspace) {
-                Ok(text) => ToolResult {
-                    text,
-                    is_error: false,
-                },
-                Err(_) => error("Build workflow is unavailable"),
-            },
-            Ok(Ok(Outcome::MissingBuild)) => error("Build not found"),
-            _ => error("Build workflow is unavailable"),
-        }
+        read.ok()?.ok()
     }
 }
 

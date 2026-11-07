@@ -54,23 +54,7 @@ impl McpServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let config = McpHttpConfig::from_startup(&origin, tenant, flag).unwrap();
-        let auth = owner
-            .rebuild_auth_with_policy(policy(), Default::default())
-            .unwrap();
-        let workflow = owner
-            .build_workflow(
-                policy(),
-                Arc::new(pp_storage::read_model::build_workflow::PendingInputs),
-            )
-            .unwrap();
-        let reads = Arc::new(owner.source_reads().unwrap());
-        let drafts = owner
-            .working_drafts_with_observations(policy(), reads, Default::default())
-            .unwrap();
-        let planning = owner
-            .build_planning(policy(), owner.source_reads().unwrap())
-            .unwrap();
-        let router = mcp_router(config, auth, workflow, drafts, planning);
+        let (router, _) = test_router(&owner, config, policy());
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,

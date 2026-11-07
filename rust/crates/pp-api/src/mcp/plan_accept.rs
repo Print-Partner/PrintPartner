@@ -146,7 +146,10 @@ impl ProductMcp {
                     "draft_id": receipt["draftId"],
                     "revision_id": receipt["revisionId"],
                 });
-                let build_workflow = self.workflow(plan, credential).await;
+                let build_workflow = match self.workflow(plan, credential).await {
+                    Some(Outcome::Workspace(workspace)) => json!(workspace),
+                    _ => Value::Null,
+                };
                 ToolResult::ok(pretty(&json!({
                     "ok": true,
                     "result": {
@@ -272,24 +275,6 @@ impl ProductMcp {
             }
             Ok(Ok(planning::Outcome::MissingBuild)) => Err(Refusal::MissingBuild),
             _ => Err(Refusal::Unavailable),
-        }
-    }
-
-    /// The Build workflow Node returns after Accept, or `null`.
-    async fn workflow(&self, plan: PositiveId, presented: PresentedCredential) -> Value {
-        let Reads { workflow, wait, .. } = self.reads.clone();
-        let read = tokio::task::spawn_blocking(move || {
-            workflow.read(
-                presented.into_credential(),
-                Request::Build(Some(plan)),
-                Arc::new(AtomicBool::new(false)),
-                wait,
-            )
-        })
-        .await;
-        match read {
-            Ok(Ok(Outcome::Workspace(workspace))) => json!(workspace),
-            _ => Value::Null,
         }
     }
 }

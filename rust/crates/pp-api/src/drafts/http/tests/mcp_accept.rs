@@ -2,7 +2,7 @@
 //! (GRE-1236): the proposal holds the previewed revision, confirm copies the
 //! draft header once, and a stale proposal is refused and stays pending.
 use super::*;
-use crate::mcp::{McpHttpConfig, mcp_router};
+use crate::mcp::{McpHttpConfig, test_router};
 
 /// A key-authenticated MCP session on its own loopback listener, served from
 /// the draft server's writer.
@@ -17,29 +17,10 @@ impl Mcp {
     async fn start(server: &ReadServer) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let owner = &server.owner;
-        let auth = owner
-            .rebuild_auth_with_policy(policy(), Default::default())
-            .unwrap();
-        let workflow = owner
-            .build_workflow(
-                policy(),
-                Arc::new(pp_storage::read_model::build_workflow::PendingInputs),
-            )
-            .unwrap();
-        let reads = Arc::new(owner.source_reads().unwrap());
-        let drafts = owner
-            .working_drafts_with_observations(policy(), reads, Default::default())
-            .unwrap();
-        let planning = owner
-            .build_planning(policy(), owner.source_reads().unwrap())
-            .unwrap();
-        let router = mcp_router(
+        let (router, auth) = test_router(
+            &server.owner,
             McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
-            auth.clone(),
-            workflow,
-            drafts,
-            planning,
+            policy(),
         );
         let task = tokio::spawn(async move {
             axum::serve(
@@ -120,6 +101,20 @@ impl Mcp {
             result["isError"] == true,
             serde_json::from_str(content).unwrap(),
         )
+    }
+}
+
+impl Mcp {
+    async fn propose(&self) -> (bool, Value) {
+        self.call(
+            "propose_apply_plan_draft",
+            json!({"plan_id": 1, "draft_id": 2}),
+        )
+        .await
+    }
+
+    async fn confirm(&self, id: &str) -> (bool, Value) {
+        self.call("confirm_apply", json!({"action_id": id})).await
     }
 }
 
@@ -227,12 +222,7 @@ async fn gre_1236_mcp_accepts_the_previewed_revision_and_copies_the_header_once(
     let server = proposed_header().await;
     let mcp = Mcp::start(&server).await;
     let accepted = build_name(&server);
-    let (failed, proposed) = mcp
-        .call(
-            "propose_apply_plan_draft",
-            json!({"plan_id": 1, "draft_id": 2}),
-        )
-        .await;
+    let (failed, proposed) = mcp.propose().await;
     assert!(!failed, "{proposed}");
     assert_eq!(proposed["status"], "proposed");
     let action = &proposed["action"];
@@ -246,7 +236,7 @@ async fn gre_1236_mcp_accepts_the_previewed_revision_and_copies_the_header_once(
     assert_eq!(build_name(&server), accepted, "a proposal writes nothing");
 
     let id = action["id"].as_str().unwrap();
-    let (failed, confirmed) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    let (failed, confirmed) = mcp.confirm(id).await;
     assert!(!failed, "{confirmed}");
     assert_eq!(confirmed["ok"], true);
     let result = &confirmed["result"];
@@ -263,7 +253,7 @@ async fn gre_1236_mcp_accepts_the_previewed_revision_and_copies_the_header_once(
 
     let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
     assert_eq!(pending, json!({"actions": []}));
-    let (failed, again) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    let (failed, again) = mcp.confirm(id).await;
     assert!(failed, "{again}");
     assert_eq!(snapshot_headers(&server), 1);
     drop(mcp);
@@ -274,12 +264,7 @@ async fn gre_1236_mcp_accepts_the_previewed_revision_and_copies_the_header_once(
 async fn gre_1236_mcp_refuses_a_stale_proposal_and_keeps_it_pending() {
     let server = proposed_header().await;
     let mcp = Mcp::start(&server).await;
-    let (_, proposed) = mcp
-        .call(
-            "propose_apply_plan_draft",
-            json!({"plan_id": 1, "draft_id": 2}),
-        )
-        .await;
+    let (_, proposed) = mcp.propose().await;
     let id = proposed["action"]["id"].as_str().unwrap().to_owned();
     server
         .sql()
@@ -289,7 +274,7 @@ async fn gre_1236_mcp_refuses_a_stale_proposal_and_keeps_it_pending() {
         )
         .unwrap();
     let before = plan_rows(&server);
-    let (failed, refused) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    let (failed, refused) = mcp.confirm(&id).await;
     assert!(failed, "{refused}");
     assert_eq!(refused["ok"], false);
     assert_eq!(refused["result"]["apply_result"]["kind"], "draft_changed");
@@ -339,12 +324,7 @@ async fn gre_1236_mcp_proposes_nothing_while_production_would_refuse_accept() {
     brief(&server, 2, json!([]), json!({}));
     let mcp = Mcp::start(&server).await;
     let before = plan_rows(&server);
-    let (failed, refused) = mcp
-        .call(
-            "propose_apply_plan_draft",
-            json!({"plan_id": 1, "draft_id": 2}),
-        )
-        .await;
+    let (failed, refused) = mcp.propose().await;
     assert!(failed, "{refused}");
     assert_eq!(refused["error"], "Working Plan cannot be accepted");
     assert_eq!(
@@ -363,14 +343,8 @@ async fn gre_1236_mcp_refuses_a_draft_the_brief_does_not_select_or_unresolved_ch
     let server = proposed_header().await;
     let mcp = Mcp::start(&server).await;
     let before = plan_rows(&server);
-    let propose = || {
-        mcp.call(
-            "propose_apply_plan_draft",
-            json!({"plan_id": 1, "draft_id": 2}),
-        )
-    };
     brief(&server, 3, json!([]), json!({}));
-    let (failed, other) = propose().await;
+    let (failed, other) = mcp.propose().await;
     assert!(failed);
     assert_eq!(other, json!({"error": "Selected Working Plan not found"}));
     // Hydration drops the selection once the pinned Source revisions moved.
@@ -382,27 +356,27 @@ async fn gre_1236_mcp_refuses_a_draft_the_brief_does_not_select_or_unresolved_ch
             [],
         )
         .unwrap();
-    let (failed, moved) = propose().await;
+    let (failed, moved) = mcp.propose().await;
     assert!(failed);
     assert_eq!(moved, json!({"error": "Selected Working Plan not found"}));
     let (differences, resolutions) = unresolved_choices();
     brief(&server, 2, differences.clone(), resolutions.clone());
-    let (failed, unresolved) = propose().await;
+    let (failed, unresolved) = mcp.propose().await;
     assert!(failed);
     assert_eq!(unresolved, json!({"error": UNRESOLVED}));
     let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
     assert_eq!(pending, json!({"actions": []}));
 
     brief(&server, 2, json!([]), json!({}));
-    let (failed, proposed) = propose().await;
+    let (failed, proposed) = mcp.propose().await;
     assert!(!failed, "{proposed}");
     let id = proposed["action"]["id"].as_str().unwrap().to_owned();
     brief(&server, 2, differences, resolutions);
-    let (failed, refused) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    let (failed, refused) = mcp.confirm(&id).await;
     assert!(failed, "{refused}");
     assert_eq!(refused, json!({"ok": false, "detail": UNRESOLVED}));
     brief(&server, 3, json!([]), json!({}));
-    let (failed, refused) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    let (failed, refused) = mcp.confirm(&id).await;
     assert!(failed, "{refused}");
     assert_eq!(
         refused,
@@ -420,18 +394,13 @@ async fn gre_1236_mcp_confirm_selects_the_automatic_reconciliation_propose_write
     let server = header_draft(false).await;
     let mcp = Mcp::start(&server).await;
     let before = plan_rows(&server);
-    let (failed, proposed) = mcp
-        .call(
-            "propose_apply_plan_draft",
-            json!({"plan_id": 1, "draft_id": 2}),
-        )
-        .await;
+    let (failed, proposed) = mcp.propose().await;
     assert!(!failed, "{proposed}");
     assert_eq!(proposed["action"]["params"]["revision"], Value::Null);
     assert_eq!(proposed["reconciliation"]["reason"], "missing");
     assert_eq!(plan_rows(&server), before, "a proposal writes nothing");
     let id = proposed["action"]["id"].as_str().unwrap();
-    let (failed, confirmed) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    let (failed, confirmed) = mcp.confirm(id).await;
     assert!(!failed, "{confirmed}");
     assert_eq!(confirmed["result"]["apply_result"]["kind"], "applied");
     assert_eq!(build_name(&server), "Renamed by MCP");

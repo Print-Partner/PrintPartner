@@ -2,6 +2,8 @@ pub mod manifest_options;
 mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
+pub mod header;
+pub use header::{ArchiveRefusal, BuildPatch};
 pub(crate) mod projection;
 use crate::{Envelope, Shared, WriterOwner, auth, read_model};
 use anyhow::{Result, anyhow, ensure};
@@ -62,6 +64,16 @@ pub enum BuildCommand {
     Touch {
         build: PositiveId,
     },
+    /// Node's PATCH /plans/{id}. `legacy` is the /api/v1 contract.
+    Update {
+        build: PositiveId,
+        patch: BuildPatch,
+        legacy: bool,
+    },
+    Archive {
+        build: PositiveId,
+        legacy: bool,
+    },
     SetBase {
         build: PositiveId,
         source: PositiveId,
@@ -105,6 +117,16 @@ pub enum BuildOutcome {
     },
     Deleted,
     MissingBuild,
+    /// The name another Build of the tenant has (`duplicate_build_name`).
+    RenameTaken {
+        name: String,
+    },
+    NameRequired,
+    FeatureDisabled {
+        feature: &'static str,
+    },
+    FeatureTogglesInvalid,
+    ArchiveRefused(ArchiveRefusal),
     InvalidBaseSource,
     MissingSource,
     MissingLayer,
@@ -403,6 +425,14 @@ fn mutation(
                         .ok_or_else(|| anyhow!("Touched Build missing"))?,
                 ),
             })
+        }
+        BuildCommand::Update {
+            build,
+            patch,
+            legacy,
+        } => header::update(tx, tenant, *build, patch, *legacy, repos),
+        BuildCommand::Archive { build, legacy } => {
+            header::archive(tx, tenant, *build, *legacy, repos)
         }
         BuildCommand::SetBase { build, source } => {
             let build = build.get() as i64;

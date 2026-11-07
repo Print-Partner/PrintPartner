@@ -113,6 +113,14 @@ It sends 20 requests in order on the flat, `/api/v1` and `/api/v2` mounts: build
 node fixtures/parity/manifest-checkouts-http/generate.mjs --check
 ```
 
+## build-header/node.json (GRE-1231)
+
+`generate.mjs` runs Node's `PATCH /plans/:id` and `POST /plans/:id/archive` with `PP_DESKTOP_REBUILD=1` on copies of `accepted-plate-node.db`, in 12 phases that each seed their own SQL: renames, the `orders` feature gate and special requests, duplicate names, archives of printed, unprinted, uninitialized, already archived and empty Builds, and the `/api/v1` legacy refusal. Times written during a request are recorded as `"<now>"`. `build_header_http` replays the 50 cases through `build_router`: 46 exact, 4 declared corrections.
+
+```sh
+node fixtures/parity/build-header/generate.mjs --check
+```
+
 ## catalog-http/node.json (GRE-451)
 
 `generate.mjs` uses the same copied database after its `seed` SQL adds Source 2 (tenant `default`, with an import rule and a category), Source 3 (tenant `foreign`) and five activity events, one for `foreign`, one of another kind and one whose payload is not JSON. It sends 56 requests in order to the catalog routes Rust's `admit_catalog_routes` serves, on the flat and `/api/v1` mounts: Source list, detail, create, patch and delete, import rules, Source activity, Source naming, Source categories, global STL naming and its preview, with their missing, foreign, non-numeric, duplicate, retained-history and invalid-body refusals. Each case records the complete response and the tables it changed. A created Source's `local_path` sits under Node's scratch data directory, so the golden writes that directory as `{data}`, and the Rust test writes its sandbox the same way.

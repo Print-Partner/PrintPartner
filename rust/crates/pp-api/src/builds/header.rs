@@ -1,0 +1,136 @@
+//! Node's PATCH /plans/{id} and POST /plans/{id}/archive through the Build
+//! router (GRE-421 part 2).
+
+use super::http::{App, SummaryContract, failure, missing_build, run, unknown_build, unreadable};
+use crate::loopback::PresentedCredential;
+use axum::{
+    body::to_bytes,
+    extract::{Path, State},
+    http::{Method, StatusCode},
+    response::Response,
+};
+use pp_storage::build_graph::{ArchiveRefusal, BuildCommand, BuildPatch, PositiveId};
+use serde_json::Value;
+
+/// Node reads the id with `Number(id)`, so `0x1` and `" 1 "` name Build 1.
+fn parse_build_id(id: &str) -> Option<PositiveId> {
+    let id = pp_storage::plates::build_id(id)??;
+    PositiveId::new(u64::try_from(id).ok()?).ok()
+}
+
+pub(super) async fn update(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
+        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
+    };
+    let path = request.uri().path().to_owned();
+    let contract = SummaryContract::of(&request);
+    let limit = app.body_limit();
+    let Ok(bytes) = to_bytes(request.into_body(), limit).await else {
+        return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
+    };
+    let fields = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(fields)) => fields,
+        Ok(Value::Null) | Err(_) => return unreadable(),
+        Ok(_) => Default::default(),
+    };
+    if fields.get("archived") == Some(&Value::Bool(false)) {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "Cannot unarchive; duplicate the archived template instead",
+        );
+    }
+    let Some(build) = parse_build_id(&id) else {
+        return missing_build(app, presented).await;
+    };
+    let patch = BuildPatch {
+        name: fields
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        special_request: fields.get("special_request").map(|value| match value {
+            Value::Null => None,
+            value => Some(js_string(value)),
+        }),
+        archive: fields.get("archived") == Some(&Value::Bool(true)),
+        touch: fields.get("touch_last_used") == Some(&Value::Bool(true)),
+    };
+    let legacy = contract == SummaryContract::LegacyV1;
+    run(
+        app,
+        presented,
+        Method::PATCH,
+        path,
+        contract,
+        BuildCommand::Update {
+            build,
+            patch,
+            legacy,
+        },
+    )
+    .await
+}
+
+pub(super) async fn archive(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(build) = parse_build_id(&id) else {
+        return unknown_build(app, request).await;
+    };
+    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
+        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
+    };
+    let path = request.uri().path().to_owned();
+    let contract = SummaryContract::of(&request);
+    let legacy = contract == SummaryContract::LegacyV1;
+    run(
+        app,
+        presented,
+        Method::POST,
+        path,
+        contract,
+        BuildCommand::Archive { build, legacy },
+    )
+    .await
+}
+
+/// JavaScript's `String(value)` for a JSON value other than `null`.
+fn js_string(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => match number.as_f64() {
+            Some(n) => ryu_js::Buffer::new().format(n).to_owned(),
+            None => number.to_string(),
+        },
+        Value::Bool(flag) => flag.to_string(),
+        Value::Null => String::new(),
+        Value::Array(items) => items.iter().map(js_string).collect::<Vec<_>>().join(","),
+        Value::Object(_) => "[object Object]".to_owned(),
+    }
+}
+
+pub(super) fn archive_refused(refusal: ArchiveRefusal) -> Response {
+    match refusal {
+        ArchiveRefusal::Remaining => failure(
+            StatusCode::BAD_REQUEST,
+            "Archive only when print remaining is 0",
+        ),
+        ArchiveRefusal::CompatibilityDirty => failure(
+            StatusCode::CONFLICT,
+            "Accepted Plan requires compatibility repair",
+        ),
+        ArchiveRefusal::Uninitialized => failure(
+            StatusCode::CONFLICT,
+            "Accepted Plan operational state is not initialized",
+        ),
+        ArchiveRefusal::Integrity => failure(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Accepted Plan data is inconsistent",
+        ),
+    }
+}

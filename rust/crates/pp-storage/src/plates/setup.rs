@@ -21,7 +21,7 @@ fn detail(status: u16, detail: &str) -> Response {
 
 /// Node's `parseProfileId`: `Number(raw)`, then a positive integer. `None` is 400;
 /// an integer past the safe range names no Build.
-fn build_id(raw: &str) -> Option<Option<i64>> {
+pub fn build_id(raw: &str) -> Option<Option<i64>> {
     let text = trim_ecmascript(raw);
     let radix = [
         ("0x", 16),

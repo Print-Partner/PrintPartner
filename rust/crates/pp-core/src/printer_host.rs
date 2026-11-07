@@ -59,7 +59,7 @@ fn host(integration: StoredIntegration) -> Option<Host> {
 
 /// The printer's linked host, or the answer that ends the request.
 async fn linked<T>(settings: &SettingsClient, printer: String) -> Result<Host, HostAnswer<T>> {
-    linked_watched(settings, printer)
+    linked_watched(settings, printer, false)
         .await
         .map(|(host, _)| host)
 }
@@ -72,18 +72,21 @@ fn status_watched(
     hosts.is_some_and(|hosts| hosts.prusalink.iter().any(|row| row.id == integration.id))
 }
 
-/// The printer's linked host and whether the status watchers take it. Storage
-/// skips a PrusaLink row past the host cap or with an id a Moonraker row has
-/// (`printer_hosts::watched`), so its status is not served here.
+/// The printer's linked host and, when `status` asks, whether the status
+/// watchers take it. Storage skips a PrusaLink row past the host cap or with
+/// an id a Moonraker row has (`printer_hosts::watched`), so its status is not
+/// served here. Only capabilities ask, so file and camera reads read the
+/// settings once.
 async fn linked_watched<T>(
     settings: &SettingsClient,
     printer: String,
+    status: bool,
 ) -> Result<(Host, bool), HostAnswer<T>> {
     let client = settings.clone();
     let link = tokio::task::spawn_blocking(move || {
         let link = printer_hosts::printer_link(&client, READER_WAIT, &printer)?;
         let watched = match &link {
-            PrinterLink::Linked(integration) if integration.kind == "prusalink" => {
+            PrinterLink::Linked(integration) if status && integration.kind == "prusalink" => {
                 status_watched(integration, printer_hosts::read(&client, READER_WAIT)?)
             }
             _ => true,
@@ -173,7 +176,7 @@ impl PrinterHostPort for StoredPrinterHosts {
     fn capabilities(&self, printer: String) -> Answer<Capabilities> {
         let settings = self.settings.clone();
         Box::pin(async move {
-            match linked_watched(&settings, printer).await {
+            match linked_watched(&settings, printer, true).await {
                 // Moonraker and PrusaLink both have status watchers.
                 Ok((Host::Read(_), watched)) => HostAnswer::Ok(Capabilities {
                     files: true,
@@ -275,23 +278,27 @@ mod tests {
     /// not past the host cap, and not on an id a Moonraker row already has.
     #[test]
     fn ticket_t_22_prusalink_status_capability_follows_the_watched_rows() {
-        let hosts = |moonraker: usize| {
+        let hosts = |moonraker: usize, prusalink: &str| {
             let mut rows: Vec<Value> = (0..moonraker)
                 .map(|i| json!({"id": format!("m{i}"), "type": "moonraker", "config": {"base_url": "http://m.test"}}))
                 .collect();
             rows.push(
-                json!({"id": "i", "type": "prusalink", "config": {"base_url": "http://p.test"}}),
+                json!({"id": prusalink, "type": "prusalink", "config": {"base_url": "http://p.test"}}),
             );
             printer_hosts::watched(Some(&Value::Array(rows).to_string()))
         };
         let prusalink = stored("prusalink");
-        assert!(status_watched(&prusalink, hosts(127)));
-        assert!(!status_watched(&prusalink, hosts(128)), "past the cap");
+        assert!(status_watched(&prusalink, hosts(127, "i")));
+        assert!(!status_watched(&prusalink, hosts(128, "i")), "past the cap");
         assert!(!status_watched(&prusalink, None), "unusable setting");
         let shared = StoredIntegration {
             id: "m0".into(),
             ..stored("prusalink")
         };
-        assert!(!status_watched(&shared, hosts(1)), "id a Moonraker row has");
+        assert!(status_watched(&shared, hosts(0, "m0")));
+        assert!(
+            !status_watched(&shared, hosts(1, "m0")),
+            "id a Moonraker row has"
+        );
     }
 }

@@ -22,6 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "desktop_rebuild")]
+mod assign;
+#[cfg(feature = "desktop_rebuild")]
+pub mod attribution;
 mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
@@ -33,6 +37,9 @@ mod manual;
 mod unattributed;
 mod verify;
 pub mod wire;
+
+#[cfg(feature = "desktop_rebuild")]
+pub use assign::{AssignedLink, Assignment};
 
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_IMPORT: i64 = 10_000;
@@ -206,6 +213,10 @@ pub enum Request {
     /// One printer Checkoff link by id, for MCP proposals. Reads only.
     #[cfg(feature = "desktop_rebuild")]
     CheckoffLink { id: String },
+    /// `POST /printer-checkoff/file-assignments`, parsed and with its file
+    /// already read by the route.
+    #[cfg(feature = "desktop_rebuild")]
+    AssignFile(Box<Assignment>),
     /// `POST /printer-checkoff/{id}/manual-complete`.
     #[cfg(feature = "desktop_rebuild")]
     ManualComplete { id: String },
@@ -257,6 +268,11 @@ pub enum Body {
     Claimed {
         link: Value,
         ok: bool,
+    },
+    /// A recorded print file: its new printer Checkoff link and attribution.
+    Assigned {
+        link: Value,
+        attribution: Box<Value>,
     },
     /// A dismissed unattributed print.
     Dismissed {
@@ -385,6 +401,8 @@ enum Op {
     },
     #[cfg(feature = "desktop_rebuild")]
     ClaimUnattributed(unattributed::Claim),
+    #[cfg(feature = "desktop_rebuild")]
+    AssignFile(Box<Assignment>),
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed {
         id: String,
@@ -577,6 +595,8 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
             return Ok(Op::CheckoffLink { id });
         }
         #[cfg(feature = "desktop_rebuild")]
+        Request::AssignFile(assignment) => return Ok(Op::AssignFile(assignment)),
+        #[cfg(feature = "desktop_rebuild")]
         Request::ManualComplete { id } => {
             return Ok(Op::Manual(manual::Op::CompleteLink { link_id: id }));
         }
@@ -732,6 +752,8 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::BurstStatus { key } => return lookup::burst_status(tx, tenant, &key),
         #[cfg(feature = "desktop_rebuild")]
         Op::CheckoffLink { id } => return lookup::link(tx, tenant, &id),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::AssignFile(assignment) => return assign::assign(tx, tenant, *assignment, repos),
         Op::Import(import) => return import_current(tx, tenant, import, repos),
         Op::Unit {
             target: Target::Token { expected, token },

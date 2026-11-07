@@ -270,6 +270,7 @@ async fn decode(node: &Path, coding: Coding, raw: &[u8]) -> Result<Vec<u8>, Stri
     let mut child = tokio::process::Command::new(node)
         .args(["-e", DECODER])
         .env_clear()
+        .envs(std::env::var_os("SystemRoot").map(|root| ("SystemRoot", root)))
         .env("PP_CODEC", coding.token().unwrap())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

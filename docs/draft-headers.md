@@ -134,8 +134,8 @@ these routes through the generated client:
   so the preview, and the revision Accept sends, include the edit made just
   before the click. Start a draft does nothing while a save is running,
   because that save already starts the draft.
-- MCP's Accept still runs through the Node compatibility server and ignores
-  the draft header (GRE-1236).
+- MCP's `propose_apply_plan_draft` accepts through the same Rust preview and
+  Accept, so it copies the draft header too (GRE-1236, below).
 - Offline, every field is read-only and every button is `aria-disabled` with
   the reason. With the Orders module off, the order number, customer and due
   date fields are hidden and the tab says why.

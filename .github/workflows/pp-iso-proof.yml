@@ -1,0 +1,54 @@
+name: pp-iso proof
+
+# Manual. Proves that pp-iso jobs run in fresh containers and that nothing persists between them.
+# Job one writes marker files; job two runs after it and must find none of them.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pp-iso-proof
+  cancel-in-progress: false
+
+jobs:
+  first:
+    runs-on: [self-hosted, linux, x64, pp-iso]
+    timeout-minutes: 10
+    outputs:
+      container: ${{ steps.id.outputs.container }}
+    steps:
+      - name: Identify the container and leave markers
+        id: id
+        run: |
+          set -euo pipefail
+          container=$(hostname)
+          echo "container=$container" >> "$GITHUB_OUTPUT"
+          echo "container: $container"
+          id -un; id -u
+          test ! -S /var/run/docker.sock && echo "no docker socket"
+          mkdir -p "$HOME/.cargo/registry" /home/runner/pp-iso-marker
+          echo first > "$HOME/.cargo/registry/marker"
+          echo first > /home/runner/pp-iso-marker/marker
+          echo first > /tmp/pp-iso-marker
+          ls -la "$HOME/.cargo/registry/marker" /tmp/pp-iso-marker
+  second:
+    needs: first
+    runs-on: [self-hosted, linux, x64, pp-iso]
+    timeout-minutes: 10
+    env:
+      FIRST_CONTAINER: ${{ needs.first.outputs.container }}
+    steps:
+      - name: Check this is a different, empty container
+        run: |
+          set -euo pipefail
+          container=$(hostname)
+          echo "first container:  $FIRST_CONTAINER"
+          echo "second container: $container"
+          [ "$container" != "$FIRST_CONTAINER" ] || { echo "same container reused" >&2; exit 1; }
+          for f in "$HOME/.cargo/registry/marker" /home/runner/pp-iso-marker/marker /tmp/pp-iso-marker; do
+            [ ! -e "$f" ] || { echo "persisted file found: $f" >&2; exit 1; }
+          done
+          test ! -S /var/run/docker.sock
+          echo "ok: different container, nothing persisted"

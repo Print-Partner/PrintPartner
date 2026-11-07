@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Installs the pp-iso runner kit on a Linux host with systemd and rootless podman.
+#   sudo ./install.sh              install or update the kit, build the image, start the slots
+#   sudo ./install.sh --set-token  store the registration token (typed at a hidden prompt)
+# Run it from a checkout of scripts/pp-iso. It never prints or logs the token.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+etc=/etc/pp-iso
+lib=/usr/local/lib/pp-iso
+user=pp-iso
+
+[ "$(id -u)" -eq 0 ] || { echo "run this as root (sudo)" >&2; exit 1; }
+install -d -m 0755 "$etc"
+
+if [ "${1:-}" = "--set-token" ]; then
+  printf 'Token for repository Administration (self-hosted runners) only; input is hidden: '
+  read -rs token
+  echo
+  [ -n "$token" ] || { echo "empty token, nothing stored" >&2; exit 1; }
+  (umask 077; printf '%s\n' "$token" > "$etc/token.new")
+  chown root:root "$etc/token.new"
+  chmod 0600 "$etc/token.new"
+  mv "$etc/token.new" "$etc/token"
+  unset token
+  echo "stored $etc/token (root:root, 0600)"
+  exit 0
+fi
+
+command -v podman >/dev/null || { echo "install podman first (apt install podman)" >&2; exit 1; }
+command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
+[ -f "$etc/runner.env" ] || { install -m 0644 "$here/runner.env.example" "$etc/runner.env"; echo "created $etc/runner.env; edit PP_ISO_SLOTS and the reserves, then run this again"; exit 0; }
+# shellcheck disable=SC1091
+. "$etc/runner.env"
+
+id "$user" >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/pp-iso --shell /usr/sbin/nologin "$user"
+grep -q "^$user:" /etc/subuid || usermod --add-subuids 200000-265535 "$user"
+grep -q "^$user:" /etc/subgid || usermod --add-subgids 200000-265535 "$user"
+loginctl enable-linger "$user"
+if getent group docker | grep -qw "$user"; then
+  echo "$user is in the docker group; remove it. pp-iso must not reach a host docker socket." >&2
+  exit 1
+fi
+
+cpus=$(nproc)
+mem_gb=$(awk '/MemTotal/ {printf "%d", $2 / 1048576}' /proc/meminfo)
+per_cpu=${PP_ISO_CPUS:-4}
+per_mem=$(printf '%s' "${PP_ISO_MEMORY:-14g}" | tr -dc '0-9')
+by_cpu=$(( (cpus - ${PP_LOCAL_RESERVE_CPUS:-0}) / per_cpu ))
+by_mem=$(( (mem_gb - ${PP_LOCAL_RESERVE_MEMORY_GB:-0}) / per_mem ))
+fit=$(( by_cpu < by_mem ? by_cpu : by_mem ))
+echo "host: $cpus CPUs, $mem_gb GB; pp-local keeps ${PP_LOCAL_RESERVE_CPUS:-0} CPUs and ${PP_LOCAL_RESERVE_MEMORY_GB:-0} GB; each pp-iso job takes $per_cpu CPUs and ${PP_ISO_MEMORY:-14g}; room for $fit slot(s)"
+if [ "${PP_ISO_SLOTS:-1}" -gt "$fit" ] || [ "$fit" -lt 1 ]; then
+  echo "PP_ISO_SLOTS=${PP_ISO_SLOTS:-1} does not fit; lower it or the per-job size, or raise the pp-local reserve is wrong" >&2
+  exit 1
+fi
+
+rootless=$(runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" podman info --format '{{.Host.Security.Rootless}}')
+[ "$rootless" = true ] || { echo "podman is not rootless for $user; refusing to continue" >&2; exit 1; }
+
+install -d -m 0755 "$lib"
+install -m 0755 "$here/pp-iso-loop.sh" "$lib/pp-iso-loop.sh"
+install -m 0644 "$here/pp-iso-runner@.service" /etc/systemd/system/pp-iso-runner@.service
+systemctl daemon-reload
+
+version=$(sed -n 's/^ARG RUNNER_VERSION=//p' "$here/Dockerfile")
+image="localhost/pp-iso-runner:$version"
+runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" HOME=/var/lib/pp-iso podman build -t "$image" "$here"
+[ "${PP_ISO_IMAGE:-}" = "$image" ] || echo "note: set PP_ISO_IMAGE=$image in $etc/runner.env"
+
+[ -s "$etc/token" ] || { echo "no token yet: run 'sudo $0 --set-token', then run this again" >&2; exit 1; }
+
+for unit in $(systemctl list-units --all --plain --no-legend 'pp-iso-runner@*.service' | awk '{print $1}'); do
+  n=${unit#pp-iso-runner@}; n=${n%.service}
+  [ "$n" -le "${PP_ISO_SLOTS:-1}" ] || systemctl disable --now "$unit"
+done
+for n in $(seq 1 "${PP_ISO_SLOTS:-1}"); do
+  systemctl enable --now "pp-iso-runner@$n.service"
+done
+systemctl --no-pager --lines=3 status 'pp-iso-runner@*.service' || true

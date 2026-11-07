@@ -1,0 +1,24 @@
+[Unit]
+Description=pp-iso ephemeral runner slot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pp-iso
+Group=pp-iso
+EnvironmentFile=/etc/pp-iso/runner.env
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+# The root-only token file is handed to this service as a credential and is not readable by other users.
+LoadCredential=token:/etc/pp-iso/token
+RuntimeDirectory=pp-iso-%i
+RuntimeDirectoryMode=0700
+ExecStart=/usr/local/lib/pp-iso/pp-iso-loop.sh %i
+Restart=always
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=90
+# Rootless podman needs newuidmap (setuid) and its home directory, so no NoNewPrivileges or ProtectHome here.
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

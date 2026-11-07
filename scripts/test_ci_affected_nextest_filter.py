@@ -60,6 +60,7 @@ class CiAffectedNextestFilterTests(unittest.TestCase):
             "scripts/ci-path-filter.py",
             "scripts/ci-affected-nextest-filter.py",
             "scripts/setup-ci-linux.sh",
+            ".github/actions/linux-gui-deps/action.yml",
         ]:
             with self.subTest(path=path):
                 self.assertEqual(

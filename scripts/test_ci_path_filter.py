@@ -27,6 +27,7 @@ class CiPathFilterTests(unittest.TestCase):
                      "fixtures/drivers/moonraker/moonraker-success.json",
                      "fixtures/http/routes-inventory.json", "scripts/ci-rust-runner.py",
                      "scripts/test_ci_rust_runner.py", "scripts/ci-pp-local-sccache.sh",
+                     ".github/actions/linux-gui-deps/action.yml",
                      "web/apps/server/src/data/legal/LICENSE-SUMMARY.md",
                      "web/apps/server/src/data/legal/ATTRIBUTION.md", "fixtures/parity/README.md"]:
             with self.subTest(path=path):

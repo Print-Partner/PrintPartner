@@ -20,6 +20,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 pp-compat = { path = "../pp-compat" }
 pp-net = { path = "../pp-net" }
+pp-os = { path = "../pp-os" }
 http-body-util.workspace = true
 pp-drivers = { path = "../pp-drivers" }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }

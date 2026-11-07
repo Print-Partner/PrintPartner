@@ -142,7 +142,7 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   event. Refusals keep Node's status and detail (400 `profile_id is required`,
   404 `Unattributed print not found`, 409 `Print already claimed`, `That print
   file is already assigned`, and the rest of `materializeProblem`) and write
-  nothing. Node's per-IP rate limit is not carried over because the routes are
+  nothing. A Build that does not exist is a 500, as in Node (GRE-1217). Node's per-IP rate limit is not carried over because the routes are
   loopback-only. Tests: `pp-storage/tests/unattributed_claim.rs` and
   `pp-api/tests/unattributed_claim_http.rs`.
 - Printer stream (GRE-1014): `GET /ws/printers` sends a snapshot of every
@@ -1549,7 +1549,7 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 44 (`LAST_COPIED_STEP`)
+repair's writes to `source_revisions`. Each step through 46 (`LAST_COPIED_STEP`)
 writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
 the first step writes, the open names its rollback copy in the run marker
 `backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
@@ -1564,7 +1564,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-44.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-46.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -2674,9 +2674,10 @@ seeds a lone surrogate and cuts a note across a pair to cover both directions.
 
 Not ported here: the route itself and its webhooks, unattributed-print claiming
 after verify, the Spoolman deduction Node runs after the response (and the
-storage-owned deduction intent GRE-411 adds), manual complete, unattributed claim
-and dismiss, file assignments, remote-file recheck, and the monitor that moves
-links to `awaiting_verify`. Those stay on Node until their whole operation moves.
+storage-owned deduction intent GRE-411 adds), file assignments, remote-file
+recheck, and the monitor that moves links to `awaiting_verify`. Those stay on
+Node until their whole operation moves. Manual complete moved with GRE-1169
+(below).
 
 The Node fixture replays the services on a copy of
 `rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db` with
@@ -2685,6 +2686,33 @@ synthetic links; generated IDs and times are normalized.
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/printer-checkoff-verify/generate.mjs --check
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_61_checkoff)'
+```
+
+### Manual complete (GRE-1169)
+
+With `desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, the Checkoff
+router mounts Node's `POST /printer-checkoff/{id}/manual-complete` (and its
+`/api/v1` and `/api/v2` aliases) behind the same loopback, Host, Origin and
+credential gate as the bursts.
+`pp-storage::checkoff_progress::verify::manual_complete` runs in one writer
+transaction and matches Node:
+
+- 404 `Tracked print not found` when the link id is unknown.
+- 409 `This print is monitored by its printer host` unless the link's
+  `integration_id` is `manual:<printer_id>`.
+- 409 `Tracked print is no longer waiting to finish` unless the link is
+  `watching`.
+- Otherwise the link becomes `awaiting_verify` with `host_outcome: success`,
+  `saw_active: true`, `last_progress: 100` and a fresh `completed_at`, moves
+  to the end of the list before the terminal-history trim, and the response is
+  `{ link }`. Nothing is checked off; the operator still verifies the print.
+
+Node's handler has no side effects after the write, so this route owns the
+whole operation. Single-link verify and dismiss stay on Node: they deduct
+Spoolman stock, send webhooks and claim unattributed prints after the write.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_single_http
 ```
 
 ### Checkoff bursts (GRE-1090)
@@ -2823,6 +2851,83 @@ deducts or reserves stock. The generated client names the three routes
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test checkoff_manual_bursts
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test checkoff_manual_bursts_http
+```
+
+### Print-file classification (GRE-1212)
+
+`pp_domain::print_file::classify` (feature `desktop_rebuild`) is the Rust port
+of Node's `classifyPrintFileBytes`. The file-assignment routes in GRE-1210
+will use it to decide what a print file is from its bytes alone. It returns the
+classification (`gcode`, `bgcode`, or `3mf` with `toolpath_package`,
+`slicer_project`, `model_package` or `unsupported`), the SHA-256 and size of
+the bytes, or one of Node's ten rejection reasons with Node's wording.
+`next_action` and `is_print_ready` match `printFileNextAction` and the
+contract's `isPrintReady`.
+
+It reads files of up to 256 MiB. For 3MF it walks the ZIP central directory
+only, with Node's caps (2,000 entries, 1,024-byte names, 64 MiB per entry,
+256 MiB in total, depth 16), and refuses unsafe names and symlink entries. It
+never inflates an entry or parses XML. Binary G-code is checked structurally
+(header, version, checksum type, block chain) and never decoded.
+
+`fixtures/parity/print-file-classification/cases.json` holds 85 inputs and
+the Node classifier's answers: the Node unit-test inputs plus truncated 3MF and
+binary G-code, ZIP64 records, hostile ZIP entries (including names with a leading byte-order mark, which Node's `TextDecoder` drops) and G-code edges.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/print-file-classification/generate.mjs --check
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-domain --features desktop_rebuild --test print_file_parity
+```
+
+### Print-file assignment storage (GRE-1217)
+
+`Request::AssignFile` in `pp-storage::checkoff_progress` (feature
+`desktop_rebuild`) is the create path of Node's
+`materializeAcceptedPrinterLink`. It is what `POST
+/printer-checkoff/file-assignments` records once the route has parsed the
+request and read the file. No route uses it yet; GRE-1210 mounts it. In one
+writer transaction, against the Build's Accepted Plan:
+
+- The plan revision must be the one the operator saw, or 409 `The Accepted
+  Plan moved on; reload the Build and choose the file again`.
+- Every confirmed unit must be an incomplete Required unit of an included
+  Part, picked once, and every object mapping must point an unmatched or
+  ambiguous object at a distinct confirmed unit. Otherwise 409 `That print
+  file does not map to an incomplete Required unit in this Build`.
+- No watching or awaiting-verify link may already hold the same file name
+  (basename, any case) on that integration, or 409 `That print file is already
+  assigned`.
+- The link is created watching with the confirmed units (each with its
+  Required-unit object name), the unmatched names as `unlabeled_names`, the
+  remote path, identity and classification, and, with `retain_unmatched`, the
+  unmatched objects (or the file itself) as pending imported extras. With
+  `completed` it is created awaiting verify with Node's host-completed fields.
+  Node applies that patch in a second transaction; here it is the same write.
+- The response is `{ link, attribution }`, with Node's camelCase
+  `attribution` object.
+
+`checkoff_progress::attribution` is now the one port of
+`resolveAcceptedPrinterAttribution` (per-name outcomes, the positive-only rule
+that drops fuzzy file-name matches, the file-name fallback),
+`confirmAcceptedPrinterUnits` and `applyConfirmedObjectMappings`. The
+unattributed-print claim uses it too. `pp_domain::gcode_objects::match_object_name_exact`
+is the matcher without its fuzzy step.
+
+A Build that does not exist is a 500 for both claim and assignment, because
+Node's operational read throws `Profile not found` and both routes answer that
+with a plain 500. The claim answered 409 `Accepted Plan operational state is
+not initialized` before.
+
+`fixtures/parity/printer-file-assignment/node.json` replays 18 create commands
+through Node's repository (and its completed patch) on a copy of the
+required-units fixture: matches by Required-unit name and by file name,
+confirmed and mapped units, every refusal the fixture can reach, kept extras, a
+completed print and a missing Build. The Rust test replays them and compares
+every response and stored row.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/printer-file-assignment/generate.mjs --check
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
 ```
 
 ### Accepted Plate workspace read (GRE-1189)
@@ -3403,7 +3508,9 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   423 with `checkoff_link_count` and `send_queue_item_count`.
   `checkoff_remap_unsafe` is 422 with `unmappable`. `build_archived` and
   `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
-  which Node has no counterpart for, is 409 `{ code, operations }`. A missing Plan
+  which Node has no counterpart for, is 409 `{ code, operations }`, and so is
+  `duplicate_build_name` (`{ code, name }`), a draft header naming another
+  Build ([Draft header fields](draft-headers.md#accept)). A missing Plan
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
@@ -3424,7 +3531,10 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   they save none, and the preview reports `saved_before_accept: false` for
   them. An empty input set is a Plan with no Source layers; its snapshot has
   `layers: []`, which restores that. A replay, an already consumed draft and
-  every refusal save none either.
+  every refusal save none either. Beside the snapshot, Accept saves the Build's
+  header as it stood in `plan_snapshot_headers` (schema step 45), and a draft
+  header row is copied to the Build
+  ([Draft header fields](draft-headers.md#accept)).
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500
@@ -3469,10 +3579,11 @@ so Node and Rust never write the same operation. Node has no route at
 `PUT /plans/{id}/drafts/header` saves a Build's name, order number, customer
 and due date into the observed open draft, or into a new draft when none is
 open, in one immediate transaction. It needs an `Idempotency-Key`, writes
-nothing to the Build, and Accept publishes it (part B, not yet built).
+nothing to the Build, and Accept publishes it.
 `GET /plans/{id}/drafts/{draft_id}/header` reads the draft's header beside the
 Build's current one. [Draft header fields](draft-headers.md) has the contract,
-schema step 43, and the draft paths that carry the header forward.
+schema steps 43 and 45, the draft paths that carry the header forward, and the
+Accept copy.
 
 `GET /plans/{id}/drafts/{draft_id}/accept-preview` reports what accepting the
 draft's current revision would change, and writes nothing. It runs in one
@@ -3497,7 +3608,9 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   (`added`, `removed`, and `printed_affected`: printed units that Accept removes
   or whose Part changes), `plates.cleared` (the accepted Plates Accept clears),
   `stock` (`off`, or per Spoolman spool the unprinted unit count before and
-  after), `duplicate_orders` (other unarchived Plans with this order number),
+  after), `header` (the Build header fields the draft changes, `old` and
+  `new`), `duplicate_orders` (other unarchived Plans with the order number
+  the Build has after Accept),
   `production` (active checkoff links and queued sends, with any link Accept
   could not remap), and `blocked_by` (running operations Accept refuses on).
 - `revision` is `{ draft_id, expected_snapshot_digest,
@@ -3635,3 +3748,40 @@ shell markup is unchanged. This slice adds no tokens, screens or routes.
 cd web/apps/web
 npx vitest run src/lib/desktopRebuild.test.ts src/layout/AppLayout.desktopRebuild.test.tsx
 ```
+
+## Filament grams per send (GRE-1165, part a: GRE-1237)
+
+Schema step 46 adds the Rust-only table `print_link_grams`, one row per tenant and
+Printer Checkoff link. A link is one send of a file to a printer. Its row holds
+the grams that send uses (`grams`, positive), the number of Checkoff units the
+send prints (`units`, positive), where the grams came from (`basis`:
+`estimated` or `measured`), the slicer's grams per millimetre of filament
+(`grams_per_mm`, when the file states both), and the length the printer
+reported using at finish (`measured_mm`). Step 46 takes a `pre-schema46.db` copy like every
+step through `LAST_COPIED_STEP`, and the table is validated against
+`print_grams/schema.sql` like the other side tables. Node has no such table and
+never writes it.
+
+The owner decided on 2026-11-04 to record the slicer's estimate at send and
+replace it with the measured value when the print finishes. Printers report
+millimetres, and the staged file is deleted after upload, so the conversion
+factor is kept at send (Alfala, 2026-11-07):
+
+- `pp_storage::print_grams::record_estimate` writes the estimate and its
+  `grams_per_mm`. A later estimate replaces it only until a length is measured.
+- `pp_storage::print_grams::record_measured` stores `measured_mm`. With a
+  `grams_per_mm`, the grams become `measured_mm × grams_per_mm` and the basis
+  `measured` (`Recorded`). Without one, the estimate stays (`NoFactor`). A link
+  with no estimate is left alone (`NoEstimate`). Nothing calls it
+yet: the send path writes the estimate in GRE-1238, and the status watcher
+writes the measured value in GRE-1165's last part.
+
+The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
+grams from this table instead of `print_jobs.filament_consumed_g`, which
+nothing writes. A send's grams are spread evenly over its `units`, so a send
+whose units are only partly checked off still costs each checked-off unit its
+share. Each Part averages its five most recent sends that have a checked-off
+unit for it (`print_job_parts` rows with the send's `link_id`). A Part with any
+measured send uses only measured sends and reads `measured`; a Part with only
+estimates reads `estimated`. The read no longer requires
+`print_jobs.status = 'completed'`, which nothing sets either.

@@ -1166,6 +1166,7 @@ fn check_draft(
     };
     if h["lifecycleVersion"].as_u64() != Some(request.expected_lifecycle_version.get())
         || h["snapshotDigest"] != request.expected_snapshot_digest.as_str()
+        || header_version(tx, tenant, draft_id)? != request.expected_header_version
         || !["plan-draft-v1", "plan-draft-v2"].contains(&text(&h, "digestFormat")?)
     {
         return Ok(Err(Outcome::DraftChanged));
@@ -1409,6 +1410,11 @@ pub(crate) fn publish_in_transaction(
         Ok(gate) => gate,
         Err(refused) => return Ok(refused),
     };
+    // Before the selection, which writes, so the refusal writes nothing.
+    let header = match draft_header(tx, tenant, profile, draft_id)? {
+        Ok(header) => header,
+        Err(refused) => return Ok(refused),
+    };
     let checked = match check_selection(tx, tenant, profile, gate)? {
         Ok(checked) => checked,
         Err(refused) => return Ok(refused),
@@ -1579,6 +1585,9 @@ pub(crate) fn publish_in_transaction(
     }
     tx.execute("INSERT INTO plan_accepted_input_sets(tenant_id,profile_id,input_set_id,accepted_at) VALUES(?,?,?,?) ON CONFLICT(profile_id) DO UPDATE SET input_set_id=excluded.input_set_id,accepted_at=excluded.accepted_at",params![tenant,profile,input_set,at])?;
     ensure!(tx.execute("UPDATE build_profiles SET accepted_plan_revision_id=?,accepted_plan_version=?,last_recomputed_at=? WHERE tenant_id=? AND id=? AND accepted_plan_revision_id IS NULL AND accepted_plan_version=?",params![revision,version+1,at,tenant,profile,version])?==1,"Accepted pointer publication failed");
+    if let Some(state) = &header {
+        publish_header(tx, tenant, profile, &state.header, &at)?;
+    }
     let life = request.expected_lifecycle_version.get() as i64;
     let reconciliation = num(&selected, "id")?;
     ensure!(tx.execute("UPDATE plan_drafts SET state='consumed',lifecycle_version=?,consumed_revision_id=?,consumed_at=? WHERE tenant_id=? AND profile_id=? AND id=? AND state='open' AND lifecycle_version=? AND snapshot_digest=? AND current_required_unit_reconciliation_id=?",params![life+1,revision,at,tenant,profile,draft_id,life,request.expected_snapshot_digest.as_str(),reconciliation])?==1,"Draft consumption failed");
@@ -1656,4 +1665,69 @@ pub(crate) fn publish_in_transaction(
         },
     )?;
     Ok(Outcome::Applied { receipt })
+}
+
+/// Draft `draft_id`'s header version, `None` without a header row. Header
+/// saves leave the snapshot digest and lifecycle version alone, so Accept's
+/// revision gate checks this too.
+pub(super) fn header_version(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    draft_id: i64,
+) -> Result<Option<u32>> {
+    Ok(
+        crate::working_drafts::header::read(tx, tenant, draft_id)?
+            .map(|state| state.header_version),
+    )
+}
+
+/// Draft `draft_id`'s header row, or `DuplicateBuildName` when its name is
+/// one another Build of `tenant` already has, the rule a Build rename checks
+/// (`Profile already exists`).
+fn draft_header(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    draft_id: i64,
+) -> Result<std::result::Result<Option<crate::working_drafts::header::DraftHeaderState>, Outcome>> {
+    let header = crate::working_drafts::header::read(tx, tenant, draft_id)?;
+    let Some(name) = header.as_ref().map(|state| state.header.name.as_str()) else {
+        return Ok(Ok(None));
+    };
+    let taken: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id=?1 AND name=?2 AND id<>?3)",
+        params![tenant, name, profile],
+        |row| row.get(0),
+    )?;
+    Ok(if taken {
+        Err(Outcome::DuplicateBuildName {
+            name: name.to_owned(),
+        })
+    } else {
+        Ok(header)
+    })
+}
+
+/// Copies the accepted draft's header to Build `profile`: name and order
+/// number to `build_profiles`, customer and due date to
+/// `build_profile_details`.
+fn publish_header(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+    header: &crate::working_drafts::header::BuildHeader,
+    at: &str,
+) -> Result<()> {
+    ensure!(
+        tx.execute(
+            "UPDATE build_profiles SET name=?1,order_number=?2 WHERE tenant_id=?3 AND id=?4",
+            params![header.name, header.order_number, tenant, profile],
+        )? == 1,
+        "Accepted header publication failed"
+    );
+    tx.execute(
+        "INSERT INTO build_profile_details (profile_id,tenant_id,customer,due_date,updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(profile_id) DO UPDATE SET customer=excluded.customer,due_date=excluded.due_date,updated_at=excluded.updated_at",
+        params![profile, tenant, header.customer, header.due_date, at],
+    )?;
+    Ok(())
 }

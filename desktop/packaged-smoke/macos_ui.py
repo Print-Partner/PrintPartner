@@ -179,10 +179,13 @@ class MacUI:
         return None
 
     def dismiss(self, dialog):
-        """Press the alert's OK button, so it cannot outlive the launch."""
-        for pid, path, node, ancestors in walk(self.dump({dialog["pid"]})):
-            if path.split(".")[0] == dialog["path"] and node.get("r") == "AXButton":
-                if label(node) == "OK" or node_text(node) == "OK":
+        """Press OK on the alert that shows the dialog's text, found afresh."""
+        current = self.startup_error(set(), dialog["text"])
+        if not current:
+            return True
+        for pid, path, node, ancestors in walk(self.dump({current["pid"]})):
+            if path.split(".")[0] == current["path"] and node.get("r") == "AXButton":
+                if "OK" in (label(node), node_text(node)):
                     return bool((self.call("press", pid, path) or {}).get("pressed"))
         return False
 

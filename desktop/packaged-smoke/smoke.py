@@ -343,6 +343,7 @@ def run(args):
     try:
         ui.start()
         if ui.startup_error(set(), STARTUP_ERROR_TITLE):
+            ui.evidence_screenshot(args.output / "failure.png")
             raise SmokeFailure(f"{STARTUP_ERROR_TITLE!r} is already showing before the launch")
         launch = Launch(args, ui, home)
         if args.expect_refusal:

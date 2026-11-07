@@ -7,7 +7,7 @@
 //   type PID PATH TEXT          focus the element at PATH and type TEXT as key events
 //   tray PID ITEM               open the app's menu bar extra and press the menu item ITEM
 //   cgwindows PID...            on-screen window numbers and bounds for screencapture -l
-//   colors PNG [WIDTH X Y W H]  the number of distinct pixel colors in PNG, or only in the
+//   colors PNG [WIDTH X Y W H]  the number of distinct opaque pixel colors in PNG, or only in the
 //                               rectangle X Y W H (points) of a window capture WIDTH points wide
 import AppKit
 import ApplicationServices
@@ -216,7 +216,7 @@ case "colors":
     guard let data = context.data else { fail("cannot read \(args[2])") }
     let pixels = data.bindMemory(to: UInt32.self, capacity: width * height)
     var colors = Set<UInt32>()
-    for index in 0..<(width * height) {
+    for index in 0..<(width * height) where pixels[index] >> 24 == 0xFF {
         colors.insert(pixels[index])
         if colors.count >= 100_000 { break }
     }

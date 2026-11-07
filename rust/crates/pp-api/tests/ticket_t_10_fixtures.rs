@@ -1,7 +1,11 @@
 #![cfg(feature = "desktop_rebuild")]
 //! T-10-fixtures: copied Node auth fixtures replayed through the isolated
 //! parity runner in `pp_api::fixtures`, comparing responses and state graphs.
+#[path = "support/header_fields.rs"]
+mod header_fields;
+
 mod ticket_t_10_fixtures {
+    use super::header_fields::strip_header_fields;
     use pp_api::{
         auth::{AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer, auth_router},
         fixtures::{
@@ -1243,6 +1247,7 @@ mod ticket_t_10_fixtures {
         )]);
         let mut ledger = Ledger::new(plans_corrections(&fixture)).unwrap();
         let mut atomic = false;
+        let mut stripped = 0;
         for case in &fixture.cases {
             let path = fixture
                 .ids
@@ -1252,6 +1257,7 @@ mod ticket_t_10_fixtures {
                 });
             let (mut actual, changed) = send_case(&served, &cookie, &sandbox, case, &path).await;
             labels.scrub(&mut actual);
+            stripped += strip_header_fields(&mut actual.body);
             ledger
                 .compare(&case.id, &case.node, &actual)
                 .unwrap_or_else(|error| panic!("{error}"));
@@ -1264,6 +1270,10 @@ mod ticket_t_10_fixtures {
             }
         }
         assert!(atomic, "{ATOMIC_CREATE} not replayed");
+        assert!(
+            stripped > 0,
+            "no Rust summary carried the GRE-1100 header fields"
+        );
         served.stop().await.unwrap();
         owner.shutdown().unwrap();
         let report = ledger.finish().unwrap();
@@ -1331,7 +1341,7 @@ mod ticket_t_10_fixtures {
             for (source, checkout) in &fixture.checkouts {
                 let checkout = checkout
                     .split('/')
-                    .fold(sandbox.path().to_path_buf(), |path, part| path.join(part));
+                    .fold(data_dir(sandbox), |path, part| path.join(part));
                 connection
                     .execute(
                         "UPDATE projects SET local_path=?1 WHERE id=?2",
@@ -1343,6 +1353,30 @@ mod ticket_t_10_fixtures {
         WriterOwner::open(sandbox.path(), Limits::default())
             .unwrap()
             .0
+    }
+
+    /// The sandbox as Rust reports it: canonical, in the spelling Node writes.
+    fn data_dir(sandbox: &Sandbox) -> std::path::PathBuf {
+        pp_testkit::node_path::node_path(&sandbox.path().canonicalize().unwrap())
+    }
+
+    /// Node's generators write their scratch data directory as `{data}`, with
+    /// `/` separators, so a Windows path is written the same way.
+    fn with_data_placeholder(value: &mut Value, data: &str) {
+        match value {
+            Value::String(text) if text.contains(data) => {
+                *text = text
+                    .replace(data, "{data}")
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+            }
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|item| with_data_placeholder(item, data)),
+            Value::Object(fields) => fields
+                .values_mut()
+                .for_each(|item| with_data_placeholder(item, data)),
+            _ => {}
+        }
     }
 
     /// Replays every case in order with `cookie`, comparing each response and
@@ -1360,13 +1394,11 @@ mod ticket_t_10_fixtures {
             .map(|correction| correction.case)
             .collect();
         let mut ledger = Ledger::new(corrections).unwrap();
-        let data = sandbox.path().to_str().unwrap();
+        let data = data_dir(sandbox);
+        let data = data.to_str().unwrap();
         for case in cases {
             let (mut actual, changed) = send_case(served, cookie, sandbox, case, &case.path).await;
-            // Node's generators write their scratch data directory as `{data}`.
-            if let Ok(text) = serde_json::to_string(&actual.body) {
-                actual.body = serde_json::from_str(&text.replace(data, "{data}")).unwrap();
-            }
+            with_data_placeholder(&mut actual.body, data);
             ledger
                 .compare(&case.id, &case.node, &actual)
                 .unwrap_or_else(|error| panic!("{error}"));
@@ -1814,10 +1846,11 @@ mod ticket_t_10_fixtures {
     /// directory Plan 1 names. A seed runs with every trigger dropped and
     /// foreign keys off, as the generator ran it.
     fn open_accepted(sandbox: &Sandbox, seed: Option<&str>) -> WriterOwner {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
+        let builder = &mut std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
+        builder
             .recursive(true)
-            .mode(0o700)
             .create(sandbox.path().join("repos/1/revisions/accepted"))
             .unwrap();
         let path = sandbox.path().join("print-partner.db");

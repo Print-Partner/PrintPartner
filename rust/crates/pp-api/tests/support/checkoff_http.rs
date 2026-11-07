@@ -14,10 +14,12 @@ const NODE: &str = include_str!("../../../../../fixtures/parity/printer-checkoff
 const DATABASE: &[u8] =
     include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db");
 
-pub struct Fixture(PathBuf);
+pub struct Fixture(pub PathBuf);
 
 impl Fixture {
     pub fn new() -> Self {
+        // Some #[path] copies only use the fixture; keep the router helpers live without #[allow].
+        let _ = (Self::open, post, send);
         let path = tempfile::tempdir().unwrap().keep();
         std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
         std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
@@ -72,5 +74,5 @@ pub async fn send(
     cookie: bool,
 ) -> (StatusCode, Value) {
     let cookie = cookie.then_some("pp_session=required-unit-fixture-secret");
-    loopback::send(router, method, path, body, cookie).await
+    loopback::send(router, method, path, Some(body), cookie).await
 }

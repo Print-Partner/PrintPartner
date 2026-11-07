@@ -37,6 +37,19 @@ describe("engine transport", () => {
     expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
   });
 
+  it("names the taken Build when a rename answers duplicate_build_name", async () => {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ code: "duplicate_build_name", name: "Taken" }, { status: 409 }),
+    );
+
+    await expect(
+      engineFetchStream({ path: "/plans/1", method: "PATCH" }),
+    ).rejects.toEqual(expect.objectContaining<Partial<EngineHttpError>>({
+      status: 409,
+      message: "Profile already exists: Taken",
+    }));
+  });
+
   it("centralizes unauthorized handling for streamed responses", async () => {
     const unauthorized = vi.fn();
     setEngineUnauthorizedHandler(unauthorized);

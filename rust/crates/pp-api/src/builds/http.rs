@@ -118,7 +118,7 @@ pub(super) enum SummaryContract {
 }
 
 impl SummaryContract {
-    fn of(request: &axum::extract::Request) -> Self {
+    pub(super) fn of(request: &axum::extract::Request) -> Self {
         request
             .extensions()
             .get::<Self>()
@@ -144,7 +144,11 @@ pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router
     };
     let routes = Router::new()
         .route("/plans", get(list).post(create))
-        .route("/plans/{id}", get(detail).delete(remove))
+        .route(
+            "/plans/{id}",
+            get(detail).delete(remove).patch(super::header::update),
+        )
+        .route("/plans/{id}/archive", post(super::header::archive))
         .route("/plans/{id}/layers", get(list_layers).post(attach_addon))
         .route("/plans/{id}/layers/base", put(set_base))
         .route(
@@ -601,6 +605,26 @@ fn present(
             let profiles: Vec<_> = profiles.into_iter().filter_map(Result::ok).collect();
             json_response(StatusCode::OK, &json!(ProfileList { profiles }), head)
         }
+        BuildOutcome::RenameTaken { name } => crate::problem::duplicate_build_name(&name),
+        BuildOutcome::NameRequired => failure(StatusCode::BAD_REQUEST, "Profile name is required"),
+        BuildOutcome::FeatureDisabled => crate::problem::coded(
+            StatusCode::FORBIDDEN,
+            "Feature orders is disabled.",
+            "FEATURE_DISABLED",
+        ),
+        BuildOutcome::Uncoercible { archive: true } => {
+            failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        }
+        BuildOutcome::Uncoercible { archive: false } => failure(
+            StatusCode::BAD_REQUEST,
+            "Cannot convert object to primitive value",
+        ),
+        BuildOutcome::FeatureTogglesInvalid => crate::problem::coded(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Stored feature toggles are invalid.",
+            "FEATURE_TOGGLES_INVALID",
+        ),
+        BuildOutcome::ArchiveRefused(refusal) => super::header::archive_refused(refusal),
         BuildOutcome::Read { profile: value } | BuildOutcome::Touched { profile: value } => {
             match summary(*value) {
                 Ok(body) => json_response(StatusCode::OK, &body, head),
@@ -660,7 +684,7 @@ fn present(
 /// Why the legacy v1 contract cannot present a Plan whose accepted progress
 /// is unavailable.
 #[derive(Debug, PartialEq, Eq)]
-enum Refusal {
+pub(super) enum Refusal {
     Integrity,
     CompatibilityDirty,
     Uninitialized,
@@ -670,7 +694,7 @@ enum Refusal {
 }
 
 impl Refusal {
-    fn response(self) -> Response {
+    pub(super) fn response(self) -> Response {
         match self {
             Self::Integrity => failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -868,6 +892,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: None,
+            customer: None,
+            due_date: None,
         });
         assert_eq!(summary.id, 7);
         assert!(matches!(
@@ -912,6 +938,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: Some("used".into()),
+            customer: Some("Acme".into()),
+            due_date: Some("2026-12-01".into()),
         }))
         .unwrap();
         assert_eq!(wire["build_stale"], true);
@@ -955,6 +983,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: None,
+            customer: None,
+            due_date: None,
         }
     }
 

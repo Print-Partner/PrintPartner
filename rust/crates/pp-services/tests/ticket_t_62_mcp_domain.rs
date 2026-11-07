@@ -265,6 +265,7 @@ struct FakePort {
     enabled: bool,
     farm: FarmAccess,
     apply_result: Result<Value, String>,
+    reconcile_result: Result<Option<Value>, String>,
     applied: Mutex<Vec<ProposedAction>>,
 }
 
@@ -274,6 +275,7 @@ impl FakePort {
             enabled: true,
             farm: FarmAccess::Allowed,
             apply_result: Ok(json!({ "ok": true })),
+            reconcile_result: Ok(None),
             applied: Mutex::default(),
         }
     }
@@ -315,6 +317,41 @@ impl DomainPort for FakePort {
         self.applied.lock().unwrap().push(action.clone());
         self.apply_result.clone()
     }
+    fn reconcile(&self, _action_id: &str) -> Result<Option<Value>, String> {
+        self.reconcile_result.clone()
+    }
+}
+
+#[test]
+fn ticket_t_62_mcp_domain_confirm_of_an_unheld_action_reconciles_or_fails_but_never_guesses() {
+    let unknown = |port: FakePort| {
+        McpSession::new(port, None).call_tool("confirm_apply", &json!({ "action_id": "gone" }))
+    };
+    let (body, is_error) = call(
+        &McpSession::new(FakePort::new(), None),
+        "confirm_apply",
+        json!({ "action_id": "gone" }),
+    );
+    assert!(is_error);
+    assert_eq!(body["action_id"], "gone");
+
+    let mut settled = FakePort::new();
+    settled.reconcile_result = Ok(Some(json!({ "ok": true, "reconciled": true })));
+    let result = unknown(settled).unwrap();
+    assert!(!result.is_error);
+    assert_eq!(
+        serde_json::from_str::<Value>(&result.text).unwrap()["reconciled"],
+        true
+    );
+
+    let mut busy = FakePort::new();
+    busy.reconcile_result = Err("Checkoff is unavailable".into());
+    let failed = unknown(busy).unwrap();
+    assert!(failed.is_error);
+    assert_eq!(
+        serde_json::from_str::<Value>(&failed.text).unwrap(),
+        json!({ "error": "Checkoff is unavailable" })
+    );
 }
 
 fn call(session: &McpSession<FakePort>, name: &str, args: Value) -> (Value, bool) {

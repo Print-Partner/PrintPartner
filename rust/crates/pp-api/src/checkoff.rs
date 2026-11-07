@@ -9,6 +9,12 @@
 //! `idempotency_key`, which returns the stored receipt. Admission is
 //! `accepted::Gate`: loopback, exact Host and Origin, and a session or API key.
 //!
+//! `GET /printer-checkoff/verify-batch?idempotency_key=...` answers what that
+//! key settled to without resending the body (GRE-1170): `applied` or
+//! `undone` with the stored receipt, `expired` once the receipt is trimmed,
+//! `unknown` when the retired-key list is full, or 404 `burst_not_found`
+//! when nothing was applied.
+//!
 //! Node's `POST /printer-checkoff/{id}/manual-complete` (GRE-1169) shares it
 //! too: it marks a watching print on a hand-tracked printer finished and
 //! checks nothing off. Node's single-link verify and dismiss stay on Node,
@@ -68,7 +74,10 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
             "/printer-checkoff/{id}/manual-complete",
             post(manual_complete),
         )
-        .route("/printer-checkoff/verify-batch", post(verify_batch))
+        .route(
+            "/printer-checkoff/verify-batch",
+            post(verify_batch).get(burst_status),
+        )
         .route("/printer-checkoff/verify-batch/undo", post(undo_batch))
         .route("/farm-log", get(farm_log))
         .route("/farm-log/{id}/undo", post(undo_farm_log_entry))
@@ -112,6 +121,31 @@ async fn verify_batch(
     body: Bytes,
 ) -> Response {
     apply(app, presented, &body, |body| Request::VerifyBatch { body }).await
+}
+
+/// The raw query as a URL, so `query_pairs` decodes it as `history.rs` does.
+fn query_url(query: Option<String>) -> Option<reqwest::Url> {
+    reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default())).ok()
+}
+
+/// `GET /printer-checkoff/verify-batch?idempotency_key=...` (GRE-1170): what
+/// a burst key settled to, for a caller whose response was lost. Reads only.
+async fn burst_status(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let Some(url) = query_url(query) else {
+        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
+    };
+    let mut keys = url
+        .query_pairs()
+        .filter(|(name, _)| name == "idempotency_key")
+        .map(|(_, value)| value.into_owned());
+    let (Some(key), None) = (keys.next(), keys.next()) else {
+        return failure(StatusCode::BAD_REQUEST, "Give idempotency_key exactly once");
+    };
+    run(app, presented, Request::BurstStatus { key }).await
 }
 
 async fn undo_batch(
@@ -198,8 +232,7 @@ async fn farm_log(
     Extension(presented): Extension<PresentedCredential>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    let Ok(url) = reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default()))
-    else {
+    let Some(url) = query_url(query) else {
         return failure(StatusCode::BAD_REQUEST, "Request is invalid");
     };
     let (mut cursor, mut limit) = (None, None);

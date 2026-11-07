@@ -1,5 +1,5 @@
 use super::*;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use crate::tests::{abs, platform};
 use std::path::PathBuf;
 
 struct Fixture(PathBuf);
@@ -9,11 +9,7 @@ impl Fixture {
             "pp-desktop-settings-{}",
             hex::encode(rand::random::<[u8; 8]>())
         ));
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&path)
-            .unwrap();
+        pp_os::create_private_dir_all(&path).unwrap();
         Self(path)
     }
 }
@@ -34,29 +30,32 @@ fn ticket_t_33_desktop_settings_roundtrip_clear_and_reach_the_child_env() {
     let owner = StorageLease::acquire(&fixture.0).unwrap();
     assert_eq!(read(&owner).unwrap(), DesktopSettings::default());
     assert!(read(&owner).unwrap().env().is_empty());
-    update(&owner, set("/srv/exchange")).unwrap();
+    update(&owner, set(&abs("/srv/exchange"))).unwrap();
     update(
         &owner,
-        DesktopSetting::SlicerOrcaDir(Some("/home/a/.config/OrcaSlicer".to_owned())),
+        DesktopSetting::SlicerOrcaDir(Some(abs("/home/a/.config/OrcaSlicer"))),
     )
     .unwrap();
     let settings = update(
         &owner,
-        DesktopSetting::DockerSocket(Some("/run/docker.sock".to_owned())),
+        DesktopSetting::DockerSocket(Some(abs("/run/docker.sock"))),
     )
     .unwrap();
     assert_eq!(read(&owner).unwrap(), settings);
     assert_eq!(
         settings.env(),
         [
-            ("PP_EXCHANGE_DIR", "/srv/exchange".to_owned()),
-            ("DOCKER_SOCKET", "/run/docker.sock".to_owned()),
-            ("SLICER_ORCA_DIR", "/home/a/.config/OrcaSlicer".to_owned()),
+            ("PP_EXCHANGE_DIR", abs("/srv/exchange")),
+            ("DOCKER_SOCKET", abs("/run/docker.sock")),
+            ("SLICER_ORCA_DIR", abs("/home/a/.config/OrcaSlicer")),
         ]
     );
     let cleared = update(&owner, DesktopSetting::DockerSocket(None)).unwrap();
     assert_eq!(cleared.docker_socket, None);
-    assert_eq!(cleared.exchange_dir.as_deref(), Some("/srv/exchange"));
+    assert_eq!(
+        cleared.exchange_dir.as_deref(),
+        Some(abs("/srv/exchange").as_str())
+    );
     assert!(
         !cleared
             .env()
@@ -67,34 +66,40 @@ fn ticket_t_33_desktop_settings_roundtrip_clear_and_reach_the_child_env() {
         std::fs::read(fixture.0.join("desktop.toml")).unwrap(),
         b"port = 45678\n"
     );
-    assert_eq!(
-        std::fs::metadata(fixture.0.join(FILE))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    platform::assert_private_file(&fixture.0.join(FILE));
 }
 
 #[test]
 fn ticket_t_33_desktop_settings_reject_unsafe_paths_without_writing() {
     let fixture = Fixture::new();
     let owner = StorageLease::acquire(&fixture.0).unwrap();
-    update(&owner, set("/srv/exchange")).unwrap();
+    update(&owner, set(&abs("/srv/exchange"))).unwrap();
     let before = std::fs::read(fixture.0.join(FILE)).unwrap();
-    for value in [
-        "",
-        "relative/dir",
-        "/srv/../etc",
-        "/srv/exchange\n",
-        "/srv/\u{0}x",
-        &format!("/{}", "a".repeat(MAX_VALUE_BYTES)),
+    for (value, reason) in [
+        (String::new(), "Desktop setting path is empty or too long"),
+        (
+            abs(&format!("/{}", "a".repeat(MAX_VALUE_BYTES))),
+            "Desktop setting path is empty or too long",
+        ),
+        (
+            abs("/srv/exchange\n"),
+            "Desktop setting path contains a control character",
+        ),
+        (
+            abs("/srv/\u{0}x"),
+            "Desktop setting path contains a control character",
+        ),
+        (
+            "relative/dir".to_owned(),
+            "Desktop setting path must be absolute",
+        ),
+        (
+            abs("/srv/../etc"),
+            "Desktop setting path must not contain ..",
+        ),
     ] {
-        assert!(
-            update(&owner, set(value)).is_err(),
-            "{value:?} was accepted"
-        );
+        let error = update(&owner, set(&value)).unwrap_err();
+        assert_eq!(error.to_string(), reason, "{value:?}");
         assert_eq!(std::fs::read(fixture.0.join(FILE)).unwrap(), before);
     }
 }
@@ -111,7 +116,7 @@ fn ticket_t_33_desktop_settings_refuse_bad_files_without_overwrite() {
     ] {
         std::fs::write(fixture.0.join(FILE), bytes).unwrap();
         assert!(read(&owner).is_err());
-        assert!(update(&owner, set("/srv/exchange")).is_err());
+        assert!(update(&owner, set(&abs("/srv/exchange"))).is_err());
         assert_eq!(std::fs::read(fixture.0.join(FILE)).unwrap(), bytes);
     }
 }

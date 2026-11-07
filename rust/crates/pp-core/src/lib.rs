@@ -873,6 +873,9 @@ async fn stop_rust(
         tokio::task::JoinHandle<()>,
     ),
 ) -> ShutdownReceipt {
+    // No new upload starts from here; one in flight may finish below.
+    stop_sends.store(true, std::sync::atomic::Ordering::Release);
+    wake.notify_one();
     let (tracked_idle, gateway_idle) = drain::reject_and_wait(
         MUTATION_DRAIN,
         &gate,
@@ -885,8 +888,6 @@ async fn stop_rust(
     let gateway_stopped = gateway.stop().await.is_ok();
     // An upload in flight finishes; one still running at the bound is
     // dropped, and startup recovery marks it for reconciliation.
-    stop_sends.store(true, std::sync::atomic::Ordering::Release);
-    wake.notify_one();
     let abort = sends.abort_handle();
     if tokio::time::timeout(MUTATION_DRAIN, sends).await.is_err() {
         abort.abort();

@@ -51,6 +51,10 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const READER_WAIT: Duration = Duration::from_millis(500);
 const INVALID_ARTIFACT: &str = "Invalid artifact path";
 const SETTINGS_UNAVAILABLE: &str = "Printer settings unavailable";
+const NOT_AUTHORIZED: &str =
+    "The account that sent this can no longer send it. Nothing was sent to the printer.";
+const NOT_ADMITTED: &str =
+    "Storage refused the send before it reached the printer. Nothing was sent.";
 /// Node's `isAllowedPrinterUploadFilename` refusal: only sliced files print.
 /// Storage refuses to enqueue any other upload; the route says why first.
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
@@ -176,7 +180,7 @@ impl SendWorker {
             .await?
             .is_err()
         {
-            return Ok(Sent::Refused);
+            return Ok(self.give_up(&mut lease, NOT_AUTHORIZED).await);
         }
         let prepared = self.prepare(&printer_id, &artifact_path).await;
         let (target, kind, integration_id, file) = match prepared {
@@ -254,8 +258,8 @@ impl SendWorker {
     }
 
     /// Admits the send's effect, or returns how the attempt ended instead. A
-    /// Farm feature turned off since the dispatch fails the job: nothing was
-    /// sent.
+    /// refusal, such as Farm turned off since the dispatch, fails the job:
+    /// nothing was sent.
     async fn begin(&self, lease: &mut AttemptLease, intent: EffectIntent) -> Result<Option<Sent>> {
         let Err(error) = self
             .advance(lease, WorkerOperation::BeginEffect(intent))
@@ -263,13 +267,23 @@ impl SendWorker {
         else {
             return Ok(None);
         };
-        let Some(failure @ JobFailure::FeatureDisabled { .. }) = error.downcast_ref() else {
-            return Ok(Some(Sent::Refused));
+        let reason = match error.downcast_ref() {
+            Some(failure @ JobFailure::FeatureDisabled { .. }) => failure.to_string(),
+            _ => NOT_ADMITTED.to_owned(),
         };
-        let reason = failure.to_string();
-        self.advance(lease, WorkerOperation::FailWith(reason.clone()))
-            .await?;
-        Ok(Some(Sent::Failed(reason)))
+        Ok(Some(self.give_up(lease, &reason).await))
+    }
+
+    /// Fails an attempt that sent nothing, so its item settles as `error` and
+    /// its printer is free at once; `Refused` when storage refuses that too.
+    async fn give_up(&self, lease: &mut AttemptLease, reason: &str) -> Sent {
+        match self
+            .advance(lease, WorkerOperation::FailWith(reason.to_owned()))
+            .await
+        {
+            Ok(()) => Sent::Failed(reason.to_owned()),
+            Err(_) => Sent::Refused,
+        }
     }
 
     /// Applies one worker operation off the async runtime and keeps the

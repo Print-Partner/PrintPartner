@@ -215,7 +215,10 @@ to the mutation drain bound. For each job it:
    the job awaiting reconciliation. Nothing is retried.
 
 A job that fails before the effect (unlinked printer, missing or foreign
-file) fails with its reason and contacts no printer.
+file, an authority or effect admission that storage refuses) fails with its
+reason at once and contacts no printer, so its item is `error` and the
+printer is free. Shutdown stops claiming new uploads before the gateway
+drains.
 
 ## Tests
 

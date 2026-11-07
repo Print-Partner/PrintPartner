@@ -326,3 +326,94 @@ async fn ticket_t_21_https_and_oversized_listing_are_refused() {
         .unwrap_err();
     assert!(error.to_string().contains("oversized"), "{error}");
 }
+
+/// The whole body of a streamed reply.
+async fn drain(mut reply: pp_net::outbound::StreamReply) -> (u16, String) {
+    let mut read = Vec::new();
+    while let Some(chunk) = reply.body.chunk().await.unwrap() {
+        read.extend_from_slice(&chunk);
+    }
+    (reply.status, String::from_utf8(read).unwrap())
+}
+
+fn streamed_routes() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "/server/webcams/list".into(),
+            String::from_utf8(fixture("webcams-list.json")).unwrap(),
+        ),
+        (
+            "/server/files/gcodes/plates/bracket.gcode".into(),
+            "G28\n".into(),
+        ),
+        ("/webcam/?action=stream".into(), "mjpeg-frame".into()),
+        ("/webcam2/?action=snapshot".into(), "jpeg-snapshot".into()),
+    ])
+}
+
+#[tokio::test]
+async fn ticket_t_21_open_file_streams_one_gcodes_file_with_the_api_key() {
+    let printer = simulator(streamed_routes(), None).await;
+    let driver = driver(&printer.origin, Some(" recorded-key "));
+    let reply = driver.open_file("/plates/bracket.gcode/").await.unwrap();
+    assert_eq!(reply.content_length, Some(4));
+    assert_eq!(drain(reply).await, (200, "G28\n".into()));
+    // A reply that is not 2xx comes back unread for the route to map.
+    let missing = driver.open_file("Lid & Base #2/a b.gcode").await.unwrap();
+    assert_eq!(missing.status, 404);
+    for bad in ["", "../escape", "a\\b", "a//b"] {
+        let error = driver.open_file(bad).await.err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "Invalid Moonraker print-file path",
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        printer.requests(),
+        [
+            "GET /server/files/gcodes/plates/bracket.gcode",
+            "GET /server/files/gcodes/Lid%20%26%20Base%20%232/a%20b.gcode",
+        ]
+    );
+    let heads = printer.heads.lock().unwrap();
+    assert!(heads.iter().all(|head| {
+        head.to_ascii_lowercase()
+            .contains("x-api-key: recorded-key\r\n")
+    }));
+}
+
+#[tokio::test]
+async fn ticket_t_21_open_camera_streams_only_a_same_origin_enabled_view() {
+    let printer = simulator(streamed_routes(), None).await;
+    let driver = driver(&printer.origin, None);
+    let open = |id: &'static str| driver.open_camera(id);
+    let stream = open("55d3b9f7-3c2b-4f6e-9a8e-1c1f2b7a0e01").await.unwrap();
+    assert_eq!(drain(stream).await, (200, "mjpeg-frame".into()));
+    // A WebRTC stream falls back to its absolute same-origin snapshot.
+    let snapshot = open("7b1f0c2e-0000-4000-8000-000000000002").await.unwrap();
+    assert_eq!(drain(snapshot).await, (200, "jpeg-snapshot".into()));
+    for (id, error) in [
+        (
+            "cross-origin-stream",
+            "Moonraker advertised a cross-origin camera URL",
+        ),
+        ("disabled", "Camera not found"),
+        ("webrtc-only", "Camera has no browser-compatible view"),
+        ("camera-99", "Camera not found"),
+    ] {
+        assert_eq!(open(id).await.err().unwrap().to_string(), error, "{id}");
+    }
+    let requests = printer.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|line| !line.ends_with("/server/webcams/list"))
+            .collect::<Vec<_>>(),
+        [
+            "GET /webcam/?action=stream",
+            "GET /webcam2/?action=snapshot"
+        ]
+    );
+    assert!(requests.iter().all(|line| line.starts_with("GET ")));
+}

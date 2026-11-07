@@ -64,12 +64,18 @@ async fn linked<T>(settings: &SettingsClient, printer: String) -> Result<Host, H
         .map(|(host, _)| host)
 }
 
-/// Whether the watchers take this PrusaLink row.
+/// Whether the watchers poll this PrusaLink row: storage took it (within the
+/// cap, not on a Moonraker id) and it has an address.
 fn status_watched(
     integration: &StoredIntegration,
     hosts: Option<printer_hosts::WatchedHosts>,
 ) -> bool {
-    hosts.is_some_and(|hosts| hosts.prusalink.iter().any(|row| row.id == integration.id))
+    hosts.is_some_and(|hosts| {
+        hosts
+            .prusalink
+            .iter()
+            .any(|row| row.id == integration.id && !row.base_url.is_empty())
+    })
 }
 
 /// The printer's linked host and, when `status` asks, whether the status
@@ -300,5 +306,8 @@ mod tests {
             !status_watched(&shared, hosts(1, "m0")),
             "id a Moonraker row has"
         );
+        let blank = json!([{"id": "i", "type": "prusalink", "config": {"base_url": " "}}]);
+        let blank = printer_hosts::watched(Some(&blank.to_string()));
+        assert!(!status_watched(&prusalink, blank), "no address");
     }
 }

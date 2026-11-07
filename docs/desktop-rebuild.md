@@ -185,7 +185,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are
   read-only on the printer: no upload or print start, and only PrusaLink's
   single Digest resend after a 401. Moonraker and PrusaLink both report the
-  status capability; Bambu reads as having no capabilities. See
+  status capability, except a PrusaLink row the watchers do not poll (see
+  above); Bambu reads as having no capabilities. See
   [Printer-host reads](printer-host-reads.md).
 
   ```sh

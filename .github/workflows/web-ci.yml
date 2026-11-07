@@ -158,16 +158,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build pinned OrcaSlicer sidecar
-        uses: useblacksmith/build-push-action@v2 # v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: slicer-sidecar
           tags: print-partner-slicer-sidecar:ci
           load: true
           push: false
+          cache-from: type=gha,scope=slicer-sidecar
           # PRs read main's layers but never write their own (10 GB cache cap).
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=slicer-sidecar,mode=max' || '' }}
       - name: Test sidecar request handling
         run: |
           docker run --rm --entrypoint /lsiopy/bin/python3 \
@@ -190,17 +191,18 @@ jobs:
           docker compose -f docker-compose.saas.yml config
           SESSION_SECRET=ci ALLOWED_ORIGINS=https://plan.example.com docker compose -f docker-compose.hosted.yml config
           docker compose -f docker-compose.yml -f pp-compose.yml config
-      - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # BuildKit layer cache in the GitHub Actions cache (scoped per image).
       - name: Build production image
-        uses: useblacksmith/build-push-action@v2 # v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           tags: print-partner:ci
           load: true
           push: false
+          cache-from: type=gha,scope=print-partner
           # PRs read main's layers but never write their own (10 GB cache cap).
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=print-partner,mode=max' || '' }}
       - name: Verify fresh-volume ownership and restart persistence
         run: bash scripts/docker-startup-smoke.sh print-partner:ci
       - name: Create local smoke source

@@ -482,7 +482,7 @@ jobs:
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
     env:
       RUST_OS: macos
       CARGO_SCOPE: --workspace

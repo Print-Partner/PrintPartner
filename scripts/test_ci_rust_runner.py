@@ -112,14 +112,58 @@ class RustRunnerTests(unittest.TestCase):
         self.assertEqual(runs_on, runner.LOCAL)
         self.assertIn("unreadable", reason)
 
+    def test_pull_requests_follow_pp_pr_runner_and_default_to_hosted(self):
+        for mode, linux in (("", runner.HOSTED), ("hosted", runner.HOSTED), (" Hosted ", runner.HOSTED),
+                            ("maybe", runner.HOSTED), ("pp-local", runner.HOSTED),
+                            ("blacksmith", runner.BLACKSMITH["linux"]), (" Blacksmith ", runner.BLACKSMITH["linux"]),
+                            ("pp-iso", runner.ISOLATED)):
+            with self.subTest(mode=mode):
+                api = Api(runners=[pp_runner()])
+                env = {"EVENT_NAME": "pull_request", "PP_PR_RUNNER": mode, "PP_RUST_RUNNER": "local"}
+                self.assertEqual(self.choose(api, RUNNER_TOKEN="admin", **env)[0], linux)
+                self.assertEqual(api.calls, [])
+
+    def test_pp_pr_runner_does_not_move_other_events(self):
+        for event in ("push", "merge_group", "workflow_dispatch"):
+            self.assertEqual(self.choose(EVENT_NAME=event, PP_PR_RUNNER="blacksmith")[0], runner.LOCAL)
+        for event in ("schedule", "pull_request_target", ""):
+            self.assertEqual(self.choose(EVENT_NAME=event, PP_PR_RUNNER="blacksmith")[0], runner.HOSTED)
+
+    def test_runner_kind_names_the_pool(self):
+        self.assertEqual(runner.runner_kind(runner.LOCAL), "pp-local")
+        self.assertEqual(runner.runner_kind(runner.ISOLATED), "pp-iso")
+        self.assertEqual(runner.runner_kind(runner.BLACKSMITH["linux"]), "blacksmith")
+        self.assertEqual(runner.runner_kind(runner.HOSTED), "hosted")
+        self.assertNotIn("pp-local", runner.ISOLATED)
+
+    def test_cli_routes_windows_and_smoke_only_for_blacksmith_pull_requests(self):
+        for event, mode, windows, smoke, kind in (
+            ("pull_request", "blacksmith", "blacksmith-8vcpu-windows-2025", "blacksmith-4vcpu-ubuntu-2404", "blacksmith"),
+            ("pull_request", "pp-iso", "windows-latest", "ubuntu-24.04", "pp-iso"),
+            ("pull_request", "", "windows-latest", "ubuntu-24.04", "hosted"),
+            ("schedule", "blacksmith", "windows-latest", "ubuntu-24.04", "hosted"),
+        ):
+            with self.subTest(event=event, mode=mode), tempfile.TemporaryDirectory() as directory:
+                output, summary = Path(directory, "output"), Path(directory, "summary")
+                env = {"PATH": os.environ["PATH"], "EVENT_NAME": event, "PP_PR_RUNNER": mode,
+                       "REPOSITORY": REPO, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+                subprocess.run(["python3", "-B", str(SCRIPT)], env=env, check=True, capture_output=True)
+                values = dict(line.partition("=")[::2] for line in output.read_text().splitlines())
+                self.assertEqual(json.loads(values["windows_runs_on"]), windows)
+                self.assertEqual(json.loads(values["smoke_runs_on"]), smoke)
+                self.assertEqual(values["linux_kind"], kind)
+
     def test_cli_writes_a_json_runs_on_output(self):
         with tempfile.TemporaryDirectory() as directory:
             output, summary = Path(directory, "output"), Path(directory, "summary")
             env = {"PATH": os.environ["PATH"], "EVENT_NAME": "schedule", "REPOSITORY": REPO,
                    "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
             subprocess.run(["python3", "-B", str(SCRIPT)], env=env, check=True, capture_output=True)
-            key, _, value = output.read_text().strip().partition("=")
-            self.assertEqual((key, json.loads(value)), ("linux_runs_on", runner.HOSTED))
+            values = dict(line.partition("=")[::2] for line in output.read_text().splitlines())
+            self.assertEqual(json.loads(values["linux_runs_on"]), runner.HOSTED)
+            self.assertEqual(values["linux_kind"], "hosted")
+            self.assertEqual(json.loads(values["windows_runs_on"]), "windows-latest")
+            self.assertEqual(json.loads(values["smoke_runs_on"]), "ubuntu-24.04")
             self.assertIn("schedule events stay hosted", summary.read_text())
         self.assertEqual(json.loads(json.dumps(runner.LOCAL, separators=(",", ":"))), runner.LOCAL)
 

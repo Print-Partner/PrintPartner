@@ -21,21 +21,82 @@ fn parse_build_id(id: &str) -> Option<PositiveId> {
     PositiveId::new(u64::try_from(id).ok()?).ok()
 }
 
+/// A Build header request with its credential, mount and body read.
+struct Received {
+    presented: PresentedCredential,
+    path: String,
+    contract: SummaryContract,
+    json: bool,
+    bytes: axum::body::Bytes,
+}
+
+async fn receive(app: &App, request: axum::extract::Request) -> Result<Received, Box<Response>> {
+    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
+        return Err(Box::new(failure(
+            StatusCode::UNAUTHORIZED,
+            "Authentication required",
+        )));
+    };
+    let path = request.uri().path().to_owned();
+    let contract = SummaryContract::of(&request);
+    let json = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+    let Ok(bytes) = to_bytes(request.into_body(), app.body_limit()).await else {
+        return Err(Box::new(failure(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Request body too large",
+        )));
+    };
+    Ok(Received {
+        presented,
+        path,
+        contract,
+        json,
+        bytes,
+    })
+}
+
+/// Applies `patch` to the Build `id` names, or 404 when it names none.
+async fn apply(
+    app: App,
+    received: Received,
+    method: Method,
+    id: &str,
+    patch: BuildPatch,
+) -> Response {
+    let Some(build) = parse_build_id(id) else {
+        return missing_build(app, received.presented).await;
+    };
+    let legacy = received.contract == SummaryContract::LegacyV1;
+    run(
+        app,
+        received.presented,
+        method,
+        received.path,
+        received.contract,
+        BuildCommand::Update {
+            build,
+            patch,
+            legacy,
+        },
+    )
+    .await
+}
+
 pub(super) async fn update(
     State(app): State<App>,
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
+    let received = match receive(&app, request).await {
+        Ok(received) => received,
+        Err(response) => return *response,
     };
-    let path = request.uri().path().to_owned();
-    let contract = SummaryContract::of(&request);
-    let limit = app.body_limit();
-    let Ok(bytes) = to_bytes(request.into_body(), limit).await else {
-        return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
-    };
-    let fields = match serde_json::from_slice::<Value>(&bytes) {
+    let fields = match serde_json::from_slice::<Value>(&received.bytes) {
         Ok(Value::Object(fields)) => fields,
         Ok(Value::Null) | Err(_) => return unreadable(),
         Ok(_) => Default::default(),
@@ -46,9 +107,6 @@ pub(super) async fn update(
             "Cannot unarchive; duplicate the archived template instead",
         );
     }
-    let Some(build) = parse_build_id(&id) else {
-        return missing_build(app, presented).await;
-    };
     let patch = BuildPatch {
         name: fields
             .get("name")
@@ -62,20 +120,7 @@ pub(super) async fn update(
         archive: fields.get("archived") == Some(&Value::Bool(true)),
         touch: fields.get("touch_last_used") == Some(&Value::Bool(true)),
     };
-    let legacy = contract == SummaryContract::LegacyV1;
-    run(
-        app,
-        presented,
-        Method::PATCH,
-        path,
-        contract,
-        BuildCommand::Update {
-            build,
-            patch,
-            legacy,
-        },
-    )
-    .await
+    apply(app, received, Method::PATCH, &id, patch).await
 }
 
 pub(super) async fn archive(
@@ -83,44 +128,18 @@ pub(super) async fn archive(
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
+    let received = match receive(&app, request).await {
+        Ok(received) => received,
+        Err(response) => return *response,
     };
-    let path = request.uri().path().to_owned();
-    let contract = SummaryContract::of(&request);
-    let json = request
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
-    let limit = app.body_limit();
-    let Ok(bytes) = to_bytes(request.into_body(), limit).await else {
-        return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
-    };
-    if json && serde_json::from_slice::<IgnoredAny>(&bytes).is_err() {
+    if received.json && serde_json::from_slice::<IgnoredAny>(&received.bytes).is_err() {
         return unreadable();
     }
-    let Some(build) = parse_build_id(&id) else {
-        return missing_build(app, presented).await;
+    let patch = BuildPatch {
+        archive: true,
+        ..BuildPatch::default()
     };
-    let legacy = contract == SummaryContract::LegacyV1;
-    run(
-        app,
-        presented,
-        Method::POST,
-        path,
-        contract,
-        BuildCommand::Update {
-            build,
-            patch: BuildPatch {
-                archive: true,
-                ..BuildPatch::default()
-            },
-            legacy,
-        },
-    )
-    .await
+    apply(app, received, Method::POST, &id, patch).await
 }
 
 /// Whether JavaScript's `String(value)` throws: an object with its own

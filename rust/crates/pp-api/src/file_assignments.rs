@@ -429,22 +429,28 @@ async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response
         .map_err(|_| bad(UPLOAD_UNREADABLE))?;
     let mut form = Form::default();
     let (mut files, mut fields) = (0, 0);
+    let mut prototype = false;
     loop {
         let mut part = match parts.next_field().await {
             Ok(Some(part)) => part,
+            Ok(None) if prototype => return Err(bad(UPLOAD_UNREADABLE)),
             Ok(None) => return Ok(form),
             Err(_) => return Err(bad(UPLOAD_UNREADABLE)),
         };
         let name = part.name().map(str::to_owned);
-        if name
+        // @fastify/multipart records this refusal and raises it when the
+        // stream ends, so a limit hit later still answers first.
+        prototype |= name
             .as_deref()
-            .is_some_and(|name| PROTOTYPE.contains(&name))
-        {
-            return Err(bad(UPLOAD_UNREADABLE));
-        }
-        let octets = part
-            .content_type()
-            .is_some_and(|value| value == "application/octet-stream");
+            .is_some_and(|name| PROTOTYPE.contains(&name));
+        let octets = part.content_type().is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .eq_ignore_ascii_case("application/octet-stream")
+        });
         let file_name = part.file_name().map(str::to_owned);
         if file_name.is_none() && !octets {
             fields += 1;

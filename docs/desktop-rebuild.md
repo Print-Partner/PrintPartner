@@ -2989,7 +2989,13 @@ for the upload.
   an `Object.prototype` member is 400 `That upload could not be read`, as
   `@fastify/multipart` refuses it. Node has no cap on the whole body; here it
   is 65 MiB, and a body past it that is still inside the file part is the
-  413, anywhere else the unreadable 400. It then checks `profile_id`, the
+  413, anywhere else the unreadable 400. Answers still differ from Node for
+  requests the web client never sends: an empty multipart body (the
+  unreadable 400 here, `profile_id is required` in Node), a field part typed
+  `application/json` (read as text here, JSON-parsed in Node), a file name
+  sent only as `filename*=` (multer does not decode it), and a malformed or
+  oversized JSON body (415 here, Fastify's 400 or 413). It then checks
+  `profile_id`, the
   `file` part, its file name (what follows the last `/` or `\`, unless that is `.` or `..`, trimmed)
   and extension in Node's order, reads the Build's Accepted Plan (a missing Build is a 500,
   as for the preview), classifies the bytes off the async workers (409 with

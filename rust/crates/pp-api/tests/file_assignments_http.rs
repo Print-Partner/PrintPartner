@@ -767,6 +767,15 @@ fn upload_refusals() -> Vec<(Parts<'static>, u16, &'static str)> {
             "That upload could not be read",
         ),
         (
+            vec![
+                ("toString", None, b"x"),
+                ("file", Some("a.gcode"), gcode),
+                ("file", Some("b.gcode"), gcode),
+            ],
+            400,
+            "Upload one print file at a time",
+        ),
+        (
             vec![("profile_id", None, b"1"), ("file", Some("a.stl"), gcode)],
             400,
             "Choose a .gcode, .gco, .bgcode, or .3mf print file",
@@ -830,7 +839,7 @@ async fn the_upload_route_refuses_in_nodes_order() {
     let octets = concat!(
         "--pp\r\nContent-Disposition: form-data; name=\"profile_id\"\r\n\r\n1\r\n",
         "--pp\r\nContent-Disposition: form-data; name=\"file\"\r\n",
-        "Content-Type: application/octet-stream\r\n\r\nG28\n\r\n--pp--\r\n",
+        "Content-Type: Application/Octet-Stream; charset=binary\r\n\r\nG28\n\r\n--pp--\r\n",
     );
     let (status, unnamed) = post_as(
         &router,

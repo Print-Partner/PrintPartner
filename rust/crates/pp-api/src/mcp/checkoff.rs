@@ -150,6 +150,13 @@ impl DomainPort for CheckoffDomain {
     }
 
     fn reconcile(&self, action_id: &str) -> Result<Option<Value>, String> {
+        // The burst lookup JS-trims its key, but Node matches action ids
+        // exactly, so an id that trimming would change names no action.
+        if action_id.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
+            != action_id
+        {
+            return Ok(None);
+        }
         let burst = match self.run(Request::BurstStatus {
             key: format!("{KEY_PREFIX}{action_id}"),
         })? {

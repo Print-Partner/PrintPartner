@@ -273,6 +273,17 @@ async fn verify_batch_mcp_applies_once_and_reconciles_by_action_id_across_restar
         (&json!(true), &json!(true), &receipt)
     );
     assert_eq!(printed(&fixture), before + 1);
+    // Node matches action ids exactly, so a padded id names no action even
+    // though the burst lookup would trim it to this action's key.
+    for padded in [format!("{action} "), format!("\u{feff}{action}\u{feff}")] {
+        let (unknown, is_error) = mcp.confirm(&padded).await;
+        assert!(is_error, "{unknown}");
+        assert_eq!(
+            unknown["error"],
+            "Unknown, in-flight, or already applied/dismissed action_id"
+        );
+    }
+    assert_eq!(printed(&fixture), before + 1);
     let (status, lookup) = served
         .http(Method::GET, &status_path(&format!("mcp:{action}")), None)
         .await;

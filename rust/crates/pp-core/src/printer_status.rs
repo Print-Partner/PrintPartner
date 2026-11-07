@@ -1,5 +1,5 @@
-//! Moonraker status in the Rust-only runtime. `pp-gateway` owns the watchers;
-//! these adapters feed them the hosts in storage's `integrations` setting and
+//! Moonraker and PrusaLink status in the Rust-only runtime. `pp-gateway` owns
+//! the watchers; these adapters feed them the hosts in storage's `integrations` setting and
 //! expose their cached statuses to the authenticated `pp-api` status route and
 //! farm reads. No adapter writes: monitoring never changes Checkoff or
 //! dispatches a send.
@@ -17,7 +17,7 @@ use pp_api::{
 };
 use pp_gateway::printer_host::HostReads;
 use pp_gateway::{
-    HTTPS_UNAVAILABLE, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
+    HTTPS_UNAVAILABLE, HostKind, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
     PrinterHostState, PrinterHostStatus, PrinterObservations, REDIRECT_UNAVAILABLE,
 };
 use pp_storage::{
@@ -58,20 +58,41 @@ impl MoonrakerHosts for StoredMoonrakerHosts {
             let read =
                 tokio::task::spawn_blocking(move || printer_hosts::read(&client, READER_WAIT));
             match read.await {
-                Ok(Ok(Some(hosts))) => Ok(hosts
-                    .into_iter()
-                    .map(|host| MoonrakerHost {
-                        id: host.id,
-                        base_url: host.base_url,
-                        api_key: host.api_key,
-                        enabled: host.enabled,
-                    })
-                    .collect()),
+                Ok(Ok(Some(hosts))) => Ok(watched_hosts(hosts)),
                 Ok(Ok(None)) => Err(HostReadError::Invalid),
                 Ok(Err(_)) | Err(_) => Err(HostReadError::Unavailable),
             }
         })
     }
+}
+
+/// The Moonraker snapshot, then the PrusaLink hosts storage selected for the
+/// watchers (`printer_hosts::WatchedHosts` applies the cap and id rules).
+fn watched_hosts(hosts: printer_hosts::WatchedHosts) -> Vec<MoonrakerHost> {
+    let mut watched: Vec<MoonrakerHost> = hosts
+        .moonraker
+        .into_iter()
+        .map(|host| MoonrakerHost {
+            id: host.id,
+            base_url: host.base_url,
+            api_key: host.api_key,
+            enabled: host.enabled,
+            kind: HostKind::Moonraker,
+        })
+        .collect();
+    for host in hosts.prusalink {
+        watched.push(MoonrakerHost {
+            id: host.id,
+            base_url: host.base_url,
+            api_key: None,
+            enabled: host.enabled,
+            kind: HostKind::PrusaLink {
+                username: host.username,
+                password: host.password,
+            },
+        });
+    }
+    watched
 }
 
 struct WatchedStatus(MoonrakerStatus);
@@ -90,20 +111,21 @@ impl PrinterStatusPort for WatchedStatus {
     }
 }
 
-/// Farm reads answer from the watchers' observation port. Only Moonraker has
-/// a Rust watcher; its HTTPS and redirecting hosts cannot be monitored here.
+/// Farm reads answer from the watchers' observation port. Moonraker and
+/// PrusaLink have Rust watchers; HTTPS and redirecting Moonraker hosts cannot
+/// be monitored here.
 pub(crate) struct WatchedFarm(pub(crate) MoonrakerStatus);
 
 impl FarmObservations for WatchedFarm {
     fn observe(&self, integration: &PrinterIntegration) -> Observation {
-        if integration.kind != IntegrationKind::Moonraker {
+        if !watched(&integration.kind) {
             return Observation::NotWatched;
         }
         observed(&self.0, &integration.id)
     }
 }
 
-/// What the watchers last observed for Moonraker integration `id`.
+/// What the watchers last observed for integration `id`.
 pub(crate) fn observed(status: &MoonrakerStatus, id: &str) -> Observation {
     let Some(observations) = status.observations() else {
         return Observation::Unavailable;
@@ -111,7 +133,15 @@ pub(crate) fn observed(status: &MoonrakerStatus, id: &str) -> Observation {
     observe(&observations, id, observations.latest(id))
 }
 
-/// One Moonraker integration's observation, from `status` (the latest map
+/// Whether the status watchers poll this kind of integration.
+fn watched(kind: &IntegrationKind) -> bool {
+    matches!(
+        kind,
+        IntegrationKind::Moonraker | IntegrationKind::Prusalink
+    )
+}
+
+/// One watched integration's observation, from `status` (the latest map
 /// entry for farm reads, the stream's own ordered copy for `/ws/printers`).
 fn observe(
     observations: &PrinterObservations,
@@ -198,7 +228,7 @@ async fn produce(
             continue;
         };
         stream.publish(farm.stream_printers(|integration| {
-            if integration.kind != IntegrationKind::Moonraker {
+            if !watched(&integration.kind) {
                 return Observation::NotWatched;
             }
             observe(
@@ -286,5 +316,52 @@ impl StatusRoutes {
             self.send_queue,
             Arc::new(targets),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pp_storage::printer_hosts::{MoonrakerHost as Stored, StoredIntegration, WatchedHosts};
+
+    fn moonraker(id: &str) -> Stored {
+        Stored {
+            id: id.into(),
+            base_url: "http://m.test".into(),
+            api_key: Some("key".into()),
+            enabled: true,
+        }
+    }
+
+    fn prusalink(id: &str) -> StoredIntegration {
+        StoredIntegration {
+            id: id.into(),
+            kind: "prusalink".into(),
+            base_url: "http://p.test".into(),
+            api_key: None,
+            username: "maker".into(),
+            password: Some("secret".into()),
+            storage: None,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn ticket_t_22_prusalink_hosts_follow_moonraker_with_their_credentials() {
+        let hosts = watched_hosts(WatchedHosts {
+            moonraker: vec![moonraker("a")],
+            prusalink: vec![prusalink("mk4")],
+        });
+        let ids: Vec<_> = hosts.iter().map(|host| host.id.as_str()).collect();
+        assert_eq!(ids, ["a", "mk4"]);
+        assert!(hosts[0].kind == HostKind::Moonraker);
+        assert!(
+            hosts[1].kind
+                == HostKind::PrusaLink {
+                    username: "maker".into(),
+                    password: Some("secret".into()),
+                }
+        );
+        assert_eq!(hosts[1].api_key, None);
     }
 }

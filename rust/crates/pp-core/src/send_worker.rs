@@ -451,17 +451,19 @@ impl SendTargets for QueueTargets {
                 crate::printer_status::observed(&self.status, &id),
             ) {
                 (
-                    "moonraker",
+                    "moonraker" | "prusalink",
                     Observation::Seen {
                         state: HostState::Idle | HostState::Complete,
                         ..
                     },
                 ) => None,
-                ("moonraker", Observation::Seen { state, .. }) => Some(format!(
+                ("moonraker" | "prusalink", Observation::Seen { state, .. }) => Some(format!(
                     "Printer is {} — {wait}",
                     format!("{state:?}").to_lowercase()
                 )),
-                ("moonraker", _) => Some(format!("Printer status is unavailable — {wait}")),
+                ("moonraker" | "prusalink", _) => {
+                    Some(format!("Printer status is unavailable — {wait}"))
+                }
                 _ => Some(format!(
                     "Printer status is not watched for {kind} hosts — {wait}"
                 )),

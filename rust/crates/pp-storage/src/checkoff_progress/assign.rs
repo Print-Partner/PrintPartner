@@ -48,6 +48,10 @@ pub struct Assignment {
     /// The print already happened: the link awaits verify instead of watching.
     pub completed: bool,
     pub link: AssignedLink,
+    /// The host fingerprint a redeemed snapshot was checked against. The
+    /// transaction refuses the assignment when the printer's host changed
+    /// since, so stale file evidence is never recorded.
+    pub snapshot_source: Option<String>,
 }
 
 fn refuse(detail: &str) -> Outcome {

@@ -36,6 +36,7 @@ def forces_full_suite(path):
         "scripts/ci-affected-nextest-filter.py",
         "scripts/test_ci_affected_nextest_filter.py",
         "scripts/setup-ci-linux.sh",
+        ".github/actions/linux-gui-deps/action.yml",
         "web/scripts/atomic-package-build.mjs",
     }:
         return True

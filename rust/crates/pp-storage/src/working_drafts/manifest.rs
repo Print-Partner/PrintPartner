@@ -1,6 +1,6 @@
 use super::{
     observation::{DocumentRead, PreparationBudget, ReadFailure, ReadResult},
-    yaml::{Document, Node},
+    yaml::{Document, Node, number_text},
 };
 use crate::manifest_text::{
     DraftPart, JsText, ManifestText, OptionGroupId, VariantId, is_ecmascript_whitespace,
@@ -224,12 +224,20 @@ fn rules(
     }
     Ok(out)
 }
+fn blank(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|text| text.encode_utf16().all(is_ecmascript_whitespace))
+}
 pub(crate) fn parse(bytes: &[u8], b: &mut PreparationBudget<'_>) -> ReadResult<Manifest> {
+    Ok(load(bytes, b)?
+        .map(|(manifest, _)| manifest)
+        .unwrap_or_default())
+}
+/// The loaded manifest with the document it came from, parsed and charged
+/// once, or `None` for a blank file.
+fn load(bytes: &[u8], b: &mut PreparationBudget<'_>) -> ReadResult<Option<(Manifest, Document)>> {
     b.document(bytes.len(), 0)?;
-    if std::str::from_utf8(bytes)
-        .is_ok_and(|text| text.encode_utf16().all(is_ecmascript_whitespace))
-    {
-        return Ok(Manifest::default());
+    if blank(bytes) {
+        return Ok(None);
     }
     let d = Document::parse(bytes, b)?;
     mapping(&d, d.root, b)?;
@@ -275,6 +283,81 @@ pub(crate) fn parse(bytes: &[u8], b: &mut PreparationBudget<'_>) -> ReadResult<M
                 return invalid();
             }
         }
+    }
+    Ok(Some((out, d)))
+}
+/// One option of a variant dimension: a YAML string or number.
+#[derive(Clone)]
+pub(crate) enum DimensionOption {
+    Text(JsText),
+    Number(f64),
+}
+impl DimensionOption {
+    /// `JSON.stringify` of the option; a non-finite number is `null`.
+    pub(crate) fn write_json(&self, output: &mut Vec<u8>) {
+        match self {
+            Self::Text(text) => text.write_json(output),
+            Self::Number(n) if n.is_finite() => {
+                output.extend_from_slice(number_text(*n).as_bytes())
+            }
+            Self::Number(_) => output.extend_from_slice(b"null"),
+        }
+    }
+    /// Node's `String(option) === value`.
+    pub(crate) fn matches(&self, value: &JsText) -> bool {
+        match self {
+            Self::Text(text) => text == value,
+            Self::Number(n) => JsText::scalar(&number_text(*n)) == *value,
+        }
+    }
+}
+pub(crate) type Dimensions = Vec<(JsText, Vec<DimensionOption>)>;
+/// Node's `loadManifestYaml(text).variant_dimensions`: nothing unless the
+/// whole manifest loads, then each entry of a mapping (or each index of a
+/// sequence) whose value is a sequence, keeping its strings and numbers.
+pub(crate) fn variant_dimensions(
+    bytes: &[u8],
+    b: &mut PreparationBudget<'_>,
+) -> ReadResult<Dimensions> {
+    let Some((_, d)) = load(bytes, b)? else {
+        return Ok(Vec::new());
+    };
+    let Some(id) = d.get(d.root, "variant_dimensions", b)? else {
+        return Ok(Vec::new());
+    };
+    let entries = match d.node(id, b)? {
+        Node::Mapping(entries) => {
+            b.expansion(entries.iter().map(|(key, _)| key.units().len() * 2).sum())?;
+            entries.clone()
+        }
+        Node::Sequence(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (JsText::scalar(&index.to_string()), *item))
+            .collect(),
+        _ => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    let prototype = JsText::scalar("__proto__");
+    for (key, value) in entries {
+        let Node::Sequence(items) = d.node(value, b)? else {
+            continue;
+        };
+        if key == prototype {
+            continue;
+        }
+        let mut options = Vec::new();
+        for item in items {
+            match d.node(*item, b)? {
+                Node::String(text) => {
+                    b.expansion(text.units().len() * 2)?;
+                    options.push(DimensionOption::Text(text.clone()));
+                }
+                Node::Number(n) => options.push(DimensionOption::Number(*n)),
+                _ => {}
+            }
+        }
+        out.push((key, options));
     }
     Ok(out)
 }
@@ -1357,3 +1440,51 @@ pub(super) fn kit(raw: Option<String>, b: &mut PreparationBudget<'_>) -> ReadRes
 #[cfg(test)]
 #[path = "manifest_preparation_tests.rs"]
 mod preparation_tests;
+
+#[cfg(test)]
+mod variant_dimension_tests {
+    use super::*;
+    use crate::working_drafts::observation::{PreparationLimits, Resource};
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn aliased_variant_options_charge_their_copies() {
+        let long = "x".repeat(1000);
+        let aliases = vec!["*s"; 200].join(", ");
+        let source = format!("variant_dimensions:\n  a: [&s {long}]\n  b: [{aliases}]\n");
+        let cancel = AtomicBool::new(false);
+        let mut budget = PreparationBudget::new(&cancel, PreparationLimits::default()).unwrap();
+        let dimensions = variant_dimensions(source.as_bytes(), &mut budget).unwrap();
+        assert_eq!(dimensions[1].1.len(), 200);
+        let mut budget = PreparationBudget::new(
+            &cancel,
+            PreparationLimits {
+                total_document_bytes: 20_000,
+                ..PreparationLimits::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            variant_dimensions(source.as_bytes(), &mut budget),
+            Err(ReadFailure::LimitExceeded(Resource::DocumentBytes))
+        ));
+    }
+
+    #[test]
+    fn variant_dimensions_parse_the_manifest_once() {
+        let options = vec!["o"; 300].join(", ");
+        let source = format!(
+            "variant_dimensions:
+  size: [{options}]
+"
+        );
+        let cancel = AtomicBool::new(false);
+        let limits = PreparationLimits {
+            nodes: 400,
+            ..PreparationLimits::default()
+        };
+        let mut budget = PreparationBudget::new(&cancel, limits).unwrap();
+        let dimensions = variant_dimensions(source.as_bytes(), &mut budget).unwrap();
+        assert_eq!(dimensions[0].1.len(), 300);
+    }
+}

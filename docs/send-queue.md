@@ -195,8 +195,8 @@ checks the printer without contacting it:
   Moonraker or PrusaLink host (400);
 - an item with `wait_for_idle` needs the status watcher's latest state to
   be idle or complete, unless the request forces it (409 `Printer is printing
-  — wait for Idle or force dispatch`). Only Moonraker has a watcher here, so
-  a PrusaLink item with `wait_for_idle` needs `force`.
+  — wait for Idle or force dispatch`). Moonraker and PrusaLink hosts have
+  watchers here (PrusaLink since GRE-1175); any other kind needs `force`.
 
 Send ready does the same for each queued item it reads (up to 8), sends at
 most one per printer, and skips an item refused with 409. That item stays as

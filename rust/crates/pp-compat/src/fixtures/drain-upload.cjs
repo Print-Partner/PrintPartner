@@ -1,3 +1,4 @@
+// The test prepends `serve(server, path)` from the platform `test_support::SERVE`.
 const fs = require("node:fs");
 const http = require("node:http");
 const readline = require("node:readline");
@@ -11,7 +12,7 @@ input.once("line", (line) => {
     fs.appendFileSync(events, "EOF\n");
     process.exit(0);
   });
-  http.createServer((request, response) => {
+  serve(http.createServer((request, response) => {
     if (request.url === "/health") {
       response.setHeader("Content-Type", "application/json");
       response.end(JSON.stringify({
@@ -27,5 +28,5 @@ input.once("line", (line) => {
       fs.appendFileSync(events, `${request.method} ${request.url} ${body}\n`);
       // The effect is accepted, but its response is deliberately never sent.
     });
-  }).listen(setup.socket_path);
+  }), setup.socket_path);
 });

@@ -56,6 +56,10 @@ pub(crate) fn request_group_stop(pid: u32) -> bool {
     true
 }
 
+/// Nothing to wait for: a leader's exit leaves no helper process in its group
+/// the way Windows leaves conhost.exe in the job, so the reap follows at once.
+pub(crate) async fn settle_group(_pid: u32) {}
+
 /// SIGKILL the group. True when the group existed.
 pub(crate) fn kill_group(pid: u32) -> bool {
     pid > 0 && unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0
@@ -153,12 +157,13 @@ impl Channel {
     }
 }
 
-/// The interpreter for test child scripts: `/bin/sh -c` with a fixed `PATH`.
+/// The interpreter for test child scripts: Node with `-e`, as on Windows, and
+/// a fixed `PATH`. Scripts for it are JavaScript.
 #[cfg(test)]
 pub(crate) fn test_shell(script: &str) -> Command {
-    let mut command = Command::new("/bin/sh");
+    let mut command = Command::new(crate::tests::node_binary());
     command
-        .arg("-c")
+        .arg("-e")
         .arg(script)
         .env_clear()
         .env("PATH", "/usr/bin:/bin");
@@ -177,18 +182,52 @@ pub(crate) mod test_support {
     use tokio::process::Command;
 
     /// Exits 0 at once.
-    pub(crate) const EXITS: &str = "exit 0";
+    pub(crate) const EXITS: &str = "process.exit(0)";
 
     /// Exits 0 on SIGTERM after printing `terminated`, and prints `ready` once
-    /// the trap is set. The group SIGTERM can land in a forked child before it
-    /// execs `sleep`; the child's inherited trap swallows it and a `sleep 30`
-    /// then outlives the grace period (GRE-719). Short sleeps bound that to
-    /// 0.1 s, and the shell still runs its own trap once the current sleep ends.
-    pub(crate) const COOPERATIVE: &str =
-        "trap 'echo terminated; exit 0' TERM; echo ready; while :; do sleep 0.1; done";
+    /// the handler is set. It never reads stdin, so closing it does nothing.
+    /// The writes are synchronous so `exit` cannot drop them.
+    pub(crate) const COOPERATIVE: &str = concat!(
+        "const fs = require('node:fs'); ",
+        "process.on('SIGTERM', () => { fs.writeSync(1, 'terminated\\n'); process.exit(0); }); ",
+        "fs.writeSync(1, 'ready\\n'); setInterval(() => {}, 1e9);",
+    );
 
-    /// Ignores SIGTERM and stdin closing.
-    pub(crate) const STUBBORN: &str = "trap '' TERM; while true; do sleep 30; done";
+    /// Ignores SIGTERM and stdin closing, and prints `ready` once the handler
+    /// is set.
+    pub(crate) const STUBBORN: &str = concat!(
+        "process.on('SIGTERM', () => {}); ",
+        "require('node:fs').writeSync(1, 'ready\\n'); setInterval(() => {}, 1e9);",
+    );
+
+    /// Defines `serve(server, path)`, which serves `server` on the channel the
+    /// child receives as `socket_path`: on Unix the child listens on it.
+    pub(crate) const SERVE: &str = "function serve(server, path) { server.listen(path); }\n";
+
+    /// How the supervisor records a child that sent itself SIGTERM.
+    pub(crate) fn self_terminated() -> serde_json::Value {
+        serde_json::json!({"kind":"signal","value":15})
+    }
+
+    /// End the child the way an outside actor would: SIGTERM to its PID.
+    pub(crate) fn kill_child(pid: u32) {
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+    }
+
+    /// True once `pid` has exited, without reaping it: the supervisor still
+    /// takes its wait status.
+    pub(crate) fn exited_unreaped(pid: u32) -> bool {
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        result == 0 && unsafe { info.si_pid() } == pid as i32
+    }
 
     pub(crate) fn exited(code: u8) -> ExitStatus {
         ExitStatus::from_raw(i32::from(code) << 8)

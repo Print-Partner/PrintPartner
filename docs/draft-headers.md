@@ -146,6 +146,19 @@ unreviewed. The field is only a precondition. It is not part of the request
 digest, because the admission row Accept shares with Node stores no header
 version, so a replay of the same key answers the existing receipt.
 
+Rust MCP (`/mcp`, `/api/v1/mcp` under `PP_DESKTOP_REBUILD`) accepts through
+the same preview and Accept (GRE-1236). `propose_apply_plan_draft`
+`{ plan_id, draft_id }` reads the Accept preview with the caller's API key
+and writes nothing. When Accept would run, it proposes an action whose
+`params.revision` is the preview's `revision` without `draft_id`, and its
+result carries the `preview`. When Accept would refuse, it proposes nothing
+and returns the refusal as `preview_result`. `confirm_apply` of that action
+sends exactly that revision to Accept with the action id as the idempotency
+key and `remap_checkoff_links: false`, so a header saved after the proposal is
+refused with `draft_changed`. A refusal keeps the action pending, as Node
+does. Only this tool and `get_build_workflow` have Rust ports; every other
+product tool still answers that it has no Rust port.
+
 Two limits remain:
 
 - **Save.** The publishing Save in Rust (`WorkingDraftClient::save`) has no

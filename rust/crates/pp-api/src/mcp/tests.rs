@@ -63,7 +63,11 @@ impl McpServer {
                 Arc::new(pp_storage::read_model::build_workflow::PendingInputs),
             )
             .unwrap();
-        let router = mcp_router(config, auth, workflow);
+        let reads = Arc::new(owner.source_reads().unwrap());
+        let drafts = owner
+            .working_drafts_with_observations(policy(), reads, Default::default())
+            .unwrap();
+        let router = mcp_router(config, auth, workflow, drafts);
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,

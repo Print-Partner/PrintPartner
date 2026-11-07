@@ -23,6 +23,7 @@ use pp_storage::build_graph::PositiveId;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
     read_model::build_workflow::{Outcome, Request, WorkflowClient},
+    working_drafts::WorkingDraftClient,
 };
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
@@ -75,21 +76,23 @@ struct Guard {
     admission: Arc<Semaphore>,
 }
 
-/// The read `get_build_workflow` answers from: the same client as
-/// `GET /plans/{id}/workflow`.
+/// The clients ported tools use: `get_build_workflow` reads the same client as
+/// `GET /plans/{id}/workflow`, and Plan Accept uses the draft routes' client.
 #[derive(Clone)]
 struct Reads {
     workflow: WorkflowClient,
+    drafts: WorkingDraftClient,
     wait: Duration,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
 /// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
-/// `workflow` with the request's API key.
+/// `workflow` and Plan Accept uses `drafts`, each with the request's API key.
 pub fn mcp_router(
     config: McpHttpConfig,
     auth: RebuildAuthClient,
     workflow: WorkflowClient,
+    drafts: WorkingDraftClient,
 ) -> Router {
     if !config.enabled {
         return Router::new();
@@ -101,6 +104,7 @@ pub fn mcp_router(
         .with_allowed_origins([config.origin.clone()]);
     let reads = Reads {
         workflow,
+        drafts,
         wait: config.wait,
     };
     let service = StreamableHttpService::new(
@@ -221,22 +225,10 @@ impl ProductMcp {
             text: json!({ "error": message }).to_string(),
             is_error: true,
         };
-        let Some(id) = arguments
-            .get("plan_id")
-            .and_then(|id| {
-                id.as_u64().or_else(|| {
-                    id.as_f64()
-                        .filter(|id| {
-                            id.fract() == 0.0 && *id >= 1.0 && *id <= 9_007_199_254_740_991.0
-                        })
-                        .map(|id| id as u64)
-                })
-            })
-            .and_then(|id| PositiveId::new(id).ok())
-        else {
+        let Some(id) = positive_id(arguments, "plan_id") else {
             return error("plan_id required");
         };
-        let Reads { workflow, wait } = self.reads.clone();
+        let Reads { workflow, wait, .. } = self.reads.clone();
         let read = tokio::task::spawn_blocking(move || {
             workflow.read(
                 presented.into_credential(),
@@ -258,6 +250,20 @@ impl ProductMcp {
             _ => error("Build workflow is unavailable"),
         }
     }
+}
+
+/// `arguments[field]` as a whole number from 1 to 2^53 - 1, as Node reads it.
+fn positive_id(arguments: &Value, field: &str) -> Option<PositiveId> {
+    arguments
+        .get(field)
+        .and_then(|id| {
+            id.as_u64().or_else(|| {
+                id.as_f64()
+                    .filter(|id| id.fract() == 0.0 && *id >= 1.0 && *id <= 9_007_199_254_740_991.0)
+                    .map(|id| id as u64)
+            })
+        })
+        .and_then(|id| PositiveId::new(id).ok())
 }
 
 fn internal(message: impl ToString) -> ErrorData {
@@ -299,9 +305,28 @@ impl ServerHandler for ProductMcp {
             .and_then(|parts| parts.extensions.get::<KeyPrincipal>())
             .ok_or_else(|| internal("MCP request has no resolved API key"))?;
         let arguments = request.arguments.map(Value::Object).unwrap_or(Value::Null);
-        let result = match parts.and_then(|parts| parts.extensions.get::<PresentedCredential>()) {
+        let presented = parts.and_then(|parts| parts.extensions.get::<PresentedCredential>());
+        let confirming = (request.name == "confirm_apply")
+            .then(|| arguments.get("action_id").and_then(Value::as_str))
+            .flatten()
+            .and_then(|id| self.session.pending(id))
+            .filter(|action| action.action_type == plan_accept::PROPOSE);
+        let result = match presented {
             Some(presented) if request.name == "get_build_workflow" => {
                 self.build_workflow(&arguments, presented.clone()).await
+            }
+            Some(presented) if request.name == plan_accept::PROPOSE => {
+                self.propose_accept(&arguments, presented.clone()).await
+            }
+            Some(presented) if confirming.is_some() => {
+                // Taken before Accept so a concurrent confirm cannot apply it twice.
+                match confirming.and_then(|action| self.session.take_pending(&action.id)) {
+                    Some(action) => self.confirm_accept(action, presented.clone()).await,
+                    None => self
+                        .session
+                        .call_tool(&request.name, &arguments)
+                        .map_err(|error| internal(error.0))?,
+                }
             }
             _ => self
                 .session
@@ -312,6 +337,9 @@ impl ServerHandler for ProductMcp {
         Ok(result.into())
     }
 }
+
+#[path = "mcp/plan_accept.rs"]
+mod plan_accept;
 
 #[cfg(test)]
 #[path = "mcp/tests.rs"]

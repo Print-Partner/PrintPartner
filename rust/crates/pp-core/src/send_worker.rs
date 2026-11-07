@@ -179,17 +179,7 @@ impl SendWorker {
         };
         let (worker, attempt) = (self.worker.clone(), lease.clone());
         if let Err(error) = tokio::task::spawn_blocking(move || worker.authorize(&attempt)).await? {
-            let refused = error.downcast_ref::<AuthorityFailure>().is_some()
-                || matches!(
-                    error.downcast_ref::<AuthFailure>(),
-                    Some(
-                        AuthFailure::OwnerMappingRequired
-                            | AuthFailure::SessionRequired
-                            | AuthFailure::InvalidCredentials
-                            | AuthFailure::CredentialChanged
-                    )
-                );
-            let reason = if refused { NOT_AUTHORIZED } else { NOT_STARTED };
+            let reason = authorize_failure(&error);
             return Ok(self.give_up(&mut lease, reason).await);
         }
         let prepared = self.prepare(&printer_id, &artifact_path).await;
@@ -493,6 +483,22 @@ fn discard(exports: &Path, path: &str) {
     {
         let _ = std::fs::remove_dir_all(directory);
     }
+}
+
+/// Why a send whose authority check failed did not start: the account's
+/// refusal, or storage that could not answer.
+fn authorize_failure(error: &anyhow::Error) -> &'static str {
+    let refused = error.downcast_ref::<AuthorityFailure>().is_some()
+        || matches!(
+            error.downcast_ref::<AuthFailure>(),
+            Some(
+                AuthFailure::OwnerMappingRequired
+                    | AuthFailure::SessionRequired
+                    | AuthFailure::InvalidCredentials
+                    | AuthFailure::CredentialChanged
+            )
+        );
+    if refused { NOT_AUTHORIZED } else { NOT_STARTED }
 }
 
 /// The effect one send admits: the upload, or the upload and its start,

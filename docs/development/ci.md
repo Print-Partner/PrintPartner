@@ -585,6 +585,8 @@ is not needed there, and its post-job cleanup can delete registry sources that
 another container is compiling. `scripts/setup-ci-linux.sh` and
 `dtolnay/rust-toolchain` install the packages and Rust that hosted images ship.
 [Cargo cache trust](cargo-cache-trust.md) covers the shared registry.
+[pp-iso](pp-iso.md) is the separate pool of isolated, one-job runners for jobs that
+run PR-editable code.
 
 ### Actions cache
 

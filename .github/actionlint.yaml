@@ -4,4 +4,5 @@ self-hosted-runner:
     - pp-local
     - pp-local-mac
     - pp-local-win
+    - pp-iso
     - fleet

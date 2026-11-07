@@ -205,6 +205,7 @@ pub fn read_router(
         events_client,
         checkoff_client,
         plates_client,
+        settings,
     ) = {
         let guard = owner
             .lock()
@@ -222,6 +223,7 @@ pub fn read_router(
             guard.domain_events_with_policy(policy)?,
             guard.checkoff_progress_with_policy(policy)?,
             guard.accepted_plates(policy)?,
+            guard.client(),
         )
     };
     // Draft HTTP uses `draft_router` (GRE-820) from the same owner when composed
@@ -264,7 +266,15 @@ pub fn read_router(
     );
     let checkoff_config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     let checkoff = checkoff_router(checkoff_config.clone(), checkoff_client.clone()).merge(
-        file_assignments_router(checkoff_config, checkoff_client, Arc::default()),
+        file_assignments_router(
+            checkoff_config,
+            checkoff_client,
+            Arc::default(),
+            Arc::new(crate::printer_host::StoredPrinterHosts::new(
+                settings,
+                pp_gateway::printer_host::HostReads::new()?,
+            )),
+        ),
     );
     let plates = plates_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,

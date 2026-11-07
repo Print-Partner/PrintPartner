@@ -44,9 +44,11 @@ use windows_sys::Win32::{
         READ_CONTROL,
     },
     System::{
+        IO::{CreateIoCompletionPort, GetQueuedCompletionStatus},
         JobObjects::{
             CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
             JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
             QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         },
@@ -54,6 +56,7 @@ use windows_sys::Win32::{
             CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
         },
         SystemServices::IO_REPARSE_TAG_MOUNT_POINT,
+        SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO,
         Threading::{
             CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
@@ -78,6 +81,13 @@ pub(crate) const INHERITED_ENV: &[&str] = &[
     "APPDATA",
     "TZ",
 ];
+
+/// How long a job may take to empty on its own after its leader exited, before
+/// the reap terminates what is left and reports a forced exit. The job holds
+/// Node's conhost.exe, which exits a moment after Node; 500 ms covers that on
+/// loaded CI hosts, and a member that is really left behind is still terminated
+/// and reported as forced.
+const GROUP_SETTLE: Duration = Duration::from_millis(500);
 
 /// Exit code of every process the core terminates through its job.
 pub(crate) const JOB_KILL_EXIT_CODE: u32 = 0x5050_4b4c;
@@ -114,6 +124,70 @@ impl Job {
 
     fn raw(&self) -> HANDLE {
         self.0.as_raw_handle() as HANDLE
+    }
+
+    /// Point the job's notifications at `port`, or detach them with a null port.
+    fn associate(&self, port: HANDLE) -> std::io::Result<()> {
+        let association = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+            CompletionKey: std::ptr::null_mut(),
+            CompletionPort: port,
+        };
+        check(unsafe {
+            SetInformationJobObject(
+                self.raw(),
+                JobObjectAssociateCompletionPortInformation,
+                (&association as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
+                size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>() as u32,
+            )
+        })
+    }
+
+    /// Block until the job has no active process, or until [`GROUP_SETTLE`]
+    /// passes.
+    ///
+    /// The completion port exists only for this wait. Associated at creation,
+    /// it would queue a `NEW_PROCESS` and an `EXIT_PROCESS` packet for every
+    /// process Node starts during the whole generation, and nothing reads it
+    /// until the final drain. A job takes one port, and detaching it (a null
+    /// port, Windows 8 and later) lets a later wait associate a new one.
+    ///
+    /// The count is read after the port is associated: a job that empties
+    /// before the association is seen as empty, and one that empties after it
+    /// posts `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`, which ends the wait. Other
+    /// messages are skipped. Job messages are not guaranteed to arrive, so a
+    /// lost one only costs the bound.
+    fn wait_empty(&self) {
+        let deadline = std::time::Instant::now() + GROUP_SETTLE;
+        let port =
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        if port.is_null() {
+            return;
+        }
+        let port = unsafe { OwnedHandle::from_raw_handle(port as _) };
+        if self.associate(port.as_raw_handle() as HANDLE).is_err() {
+            return;
+        }
+        while self.active() > 0 {
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            let mut message = 0;
+            let mut key = 0;
+            let mut overlapped = std::ptr::null_mut();
+            let dequeued = unsafe {
+                GetQueuedCompletionStatus(
+                    port.as_raw_handle() as HANDLE,
+                    &mut message,
+                    &mut key,
+                    &mut overlapped,
+                    u32::try_from(left.as_millis()).unwrap_or(u32::MAX).max(1),
+                )
+            };
+            if dequeued == 0 || message == JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO {
+                break;
+            }
+        }
+        let _ = self.associate(std::ptr::null_mut());
     }
 
     /// Processes in the job that have not finished terminating.
@@ -554,6 +628,19 @@ pub(crate) fn request_group_stop(_pid: u32) -> bool {
     false
 }
 
+/// Wait up to [`GROUP_SETTLE`] for the child's job to empty on its own after its leader
+/// exited. Node runs with `CREATE_NO_WINDOW`, so the job also holds the
+/// conhost.exe that serves Node's hidden console, and conhost exits only a
+/// moment after Node. Without this wait, the reap that follows a clean exit
+/// can find conhost still active, terminate the job, and report the exit as
+/// forced.
+pub(crate) async fn settle_group(pid: u32) {
+    let Some(job) = job_of(pid) else {
+        return;
+    };
+    let _ = tokio::task::spawn_blocking(move || job.wait_empty()).await;
+}
+
 /// Terminate every process in the child's job. True when one was running.
 pub(crate) fn kill_group(pid: u32) -> bool {
     let Some(job) = job_of(pid) else {
@@ -816,7 +903,8 @@ pub(crate) fn test_shell(script: &str) -> Command {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{
-        Channel, Child, JOB_KILL_EXIT_CODE, ParentDeathGuard, adopt, configure_child, spawn,
+        Channel, Child, CloseHandle, JOB_KILL_EXIT_CODE, OpenProcess, ParentDeathGuard,
+        TerminateProcess, adopt, configure_child, spawn,
     };
     use std::{
         fs::{File, OpenOptions},
@@ -825,6 +913,7 @@ pub(crate) mod test_support {
         process::ExitStatus,
     };
     use tokio::process::Command;
+    use windows_sys::Win32::System::Threading::PROCESS_TERMINATE;
 
     /// Exits 0 at once.
     pub(crate) const EXITS: &str = "process.exit(0)";
@@ -836,8 +925,40 @@ pub(crate) mod test_support {
         "process.stdin.resume(); console.log('ready');",
     );
 
-    /// Ignores stdin closing.
-    pub(crate) const STUBBORN: &str = "setInterval(() => {}, 1e9)";
+    /// Ignores stdin closing, and prints `ready` once running.
+    pub(crate) const STUBBORN: &str =
+        "require('node:fs').writeSync(1, 'ready\\n'); setInterval(() => {}, 1e9);";
+
+    /// Defines `serve(server, path)`, which serves `server` on the channel the
+    /// child receives as `socket_path`. On Windows the core owns the pipe, so
+    /// the child keeps four dials waiting and replaces each one the core takes,
+    /// as `dialDesktopPipe` does.
+    pub(crate) const SERVE: &str = concat!(
+        "function serve(server, path) { ",
+        "const waiting = new Set(); ",
+        "const dial = () => { let connected = false; const socket = require('node:net').connect(path); ",
+        "socket.once('error', () => { if (!connected) { socket.destroy(); setTimeout(dial, 50).unref(); } }); ",
+        "socket.once('connect', () => { connected = true; waiting.add(socket); ",
+        "socket.once('close', () => { if (waiting.delete(socket)) dial(); }); server.emit('connection', socket); }); }; ",
+        "server.on('request', (request) => { if (waiting.delete(request.socket)) dial(); }); ",
+        "for (let lane = 0; lane < 4; lane++) dial(); }\n",
+    );
+
+    /// How the supervisor records a child that terminated itself with
+    /// `process.kill(process.pid, 'SIGTERM')`: libuv calls `TerminateProcess`
+    /// with exit code 1, and Windows has no signals.
+    pub(crate) fn self_terminated() -> serde_json::Value {
+        serde_json::json!({"kind":"exit_code","value":1})
+    }
+
+    /// End the child the way an outside actor would: terminate its process.
+    pub(crate) fn kill_child(pid: u32) {
+        let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        assert!(!process.is_null());
+        let terminated = unsafe { TerminateProcess(process, 1) };
+        unsafe { CloseHandle(process) };
+        assert_ne!(terminated, 0);
+    }
 
     pub(crate) fn exited(code: u8) -> ExitStatus {
         ExitStatus::from_raw(u32::from(code))

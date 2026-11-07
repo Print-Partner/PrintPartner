@@ -430,8 +430,9 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         job = workflow["jobs"]["review-gate"]
         self.assertNotIn("if", job)
         group = workflow["concurrency"]
-        self.assertEqual(group["cancel-in-progress"], "${{ github.run_attempt == '1' }}")
-        self.assertIn("github.run_id", group["group"])
+        self.assertEqual(group["cancel-in-progress"], "true")
+        self.assertNotIn("github.run_id", group["group"])
+        self.assertNotIn("github.run_attempt", group["group"])
         self.assertNotIn("edited", group["group"])
         self.assertEqual(job["permissions"], {"actions": "read", "checks": "read", "contents": "read",
                                               "pull-requests": "read"})
@@ -456,6 +457,20 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         self.assertIn("github.event.comment.user.login == github.repository_owner", condition)
         self.assertEqual(rerun["jobs"]["rerun"]["permissions"], {"actions": "write", "pull-requests": "read"})
         self.assertIn("review-gate.yml/runs?event=pull_request_target", rerun["jobs"]["rerun"]["steps"][0]["run"])
+
+    def test_superseded_gate_and_rerun_runs_collapse_per_pr(self):
+        gate = load("review-gate.yml")["concurrency"]
+        self.assertEqual(gate["group"], "${{ github.workflow }}-${{ github.event.pull_request.number }}")
+        self.assertEqual(gate["cancel-in-progress"], "true")
+        rerun = load("review-gate-rerun.yml")
+        self.assertNotIn("concurrency", rerun)
+        concurrency = rerun["jobs"]["rerun"]["concurrency"]
+        self.assertEqual(concurrency["cancel-in-progress"], "true")
+        self.assertIn("github.event.issue.number || github.event.workflow_run.head_sha", concurrency["group"])
+        condition = rerun["jobs"]["rerun"]["if"]
+        self.assertIn("github.event.workflow_run.conclusion != 'skipped'", condition)
+        self.assertNotIn("'cancelled'", condition)
+        self.assertIn("pulls/$pr", rerun["jobs"]["rerun"]["steps"][0]["run"])
 
     def test_claude_jobs_are_limited_to_owner_prs_with_minimal_permissions(self):
         workflow = load("claude-review.yml")

@@ -579,7 +579,7 @@ fn owner_installs_schema_dispatches_random_tokens_and_drains_before_stop() {
     let (owner, ready) = WriterOwner::open(&dir, crate::Limits::default()).unwrap();
     assert_eq!(ready.version, crate::schema::CURRENT_VERSION);
     assert_eq!(ready.previous_version, 35);
-    let backup = dir.join("backups/pre-schema35-to-45.db");
+    let backup = dir.join("backups/pre-schema35-to-46.db");
     assert_eq!(ready.backup.as_ref(), Some(&backup));
     assert_eq!(std::fs::read(&backup).unwrap(), before);
     let saved =

@@ -26,10 +26,14 @@ class CiPathFilterTests(unittest.TestCase):
                      "fixtures/parity/jobs-model/jobs-model.json",
                      "fixtures/drivers/moonraker/moonraker-success.json",
                      "fixtures/http/routes-inventory.json", "scripts/ci-rust-runner.py",
-                     "scripts/test_ci_rust_runner.py", "scripts/ci-pp-local-sccache.sh"]:
+                     "scripts/test_ci_rust_runner.py", "scripts/ci-pp-local-sccache.sh",
+                     ".github/actions/linux-gui-deps/action.yml",
+                     "web/apps/server/src/data/legal/LICENSE-SUMMARY.md",
+                     "web/apps/server/src/data/legal/ATTRIBUTION.md", "fixtures/parity/README.md"]:
             with self.subTest(path=path):
                 self.assertTrue(ci_filter.relevant(path, "rust"))
-        for path in ["docs/ci.md", "README.md", "web/scripts/tool.mjs",
+        for path in ["docs/ci.md", "README.md", "rust/crates/pp-api/README.md", "web/apps/web/README.md",
+                     "web/packages/contracts/README.md", "web/scripts/tool.mjs",
                      "web/package-data/file.json", ".github/workflows/web-ci.yml"]:
             with self.subTest(path=path):
                 self.assertFalse(ci_filter.relevant(path, "rust"))
@@ -43,7 +47,8 @@ class CiPathFilterTests(unittest.TestCase):
                      "scripts/verify-rust-gateway/verify.py",
                      "scripts/verify-rust-gateway/future_helper.py"]:
             self.assertTrue(ci_filter.relevant(path, "native"))
-        for path in ["README.md", "docs/ci.md", ".github/workflows/pr-evidence.yml"]:
+        for path in ["README.md", "docs/ci.md", ".github/workflows/pr-evidence.yml",
+                     "rust/crates/pp-desktop/README.md"]:
             self.assertFalse(ci_filter.relevant(path, "native"))
 
     def test_linux_setup_selects_rust(self):

@@ -1,5 +1,11 @@
 import type { AcceptDraftReceipt, DraftAcceptPreview } from "@print-partner/rust-client";
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useOutletContext } from "react-router";
 import { CoreError } from "../core/client";
@@ -33,6 +39,7 @@ import {
 } from "./plan";
 
 const planKey = (id: number) => ["core", "plan", id] as const;
+const draftWriteKey = (id: number) => ["core", "plan-draft-write", id] as const;
 
 /**
  * The Build's header, the Accepted base and the open draft, if any. Every value the tab
@@ -64,8 +71,10 @@ function useDraftWrites(id: number) {
   const latest = () => client.getQueryData<PlanData>(planKey(id));
   const settle = () => client.invalidateQueries({ queryKey: planKey(id) });
   const scope = { id: `plan-draft-${id}` };
+  const mutationKey = draftWriteKey(id);
   const header = useMutation({
     scope,
+    mutationKey,
     mutationFn: ({ fields, key }: { fields: HeaderFields; key: string }) => {
       const data = latest();
       if (!data) throw new Error("The Plan has not loaded yet");
@@ -86,6 +95,7 @@ function useDraftWrites(id: number) {
   });
   const parts = useMutation({
     scope,
+    mutationKey,
     mutationFn: ({ choice, key }: { choice: PlanChoice; key: string }) => {
       const draft = latest()?.draft;
       if (!draft) throw new Error("No draft is open");
@@ -535,6 +545,10 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
   const [gate, setGate] = useState(false);
   const [accepted, setAccepted] = useState<AcceptDraftReceipt | null>(null);
   const draft = data.draft;
+  // A field's blur can start a save in the same turn as a click, so ask the cache, not
+  // the last render, whether one is still running.
+  const saving = () => client.isMutating({ mutationKey: draftWriteKey(id) }) > 0;
+  const busy = useIsMutating({ mutationKey: draftWriteKey(id) }) > 0;
   return (
     <>
       <div className="pp-plan-status">
@@ -560,7 +574,9 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
           </MutationButton>
         ) : (
           <MutationButton
-            onClick={() => writes.header.mutate({ fields: fieldsOf(data.build), key: newKey() })}
+            onClick={() =>
+              !saving() && writes.header.mutate({ fields: fieldsOf(data.build), key: newKey() })
+            }
           >
             Start a draft
           </MutationButton>
@@ -569,7 +585,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
       <SaveStatus writes={writes} />
       <HeaderForm data={data} writes={writes} />
       {draft && <PartsTable parts={draft.workspace.parts} writes={writes} />}
-      {gate && draft && (
+      {gate && draft && !busy && (
         <AcceptGate
           id={id}
           draftId={draft.workspace.draft.draft_id}

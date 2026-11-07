@@ -145,7 +145,7 @@ const RECEIPT = {
 };
 
 type Init = RequestInit | undefined;
-type Handler = (path: string, init: Init) => Response | undefined;
+type Handler = (path: string, init: Init) => Response | Promise<Response> | undefined;
 
 interface Core {
   open?: boolean;
@@ -166,7 +166,7 @@ function core({
   draft = workspace,
 }: Core = {}) {
   return vi.fn((path: string, init?: RequestInit) => {
-    const answer = (): Response => {
+    const answer = (): Response | Promise<Response> => {
       if (path === "/health") return json(health(orders));
       const written = init?.method && init.method !== "GET" ? write?.(path, init) : undefined;
       if (written) return written;
@@ -289,6 +289,64 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
       expected_header_version: 2,
       header: { name: "Bracket kit v3", customer: "Beta" },
     });
+  });
+
+  it("Start a draft right after an edit sends the edit once, not the accepted header", async () => {
+    let release = () => {};
+    const fetchMock = core({
+      open: false,
+      write: () =>
+        new Promise<Response>((resolve) => {
+          release = () =>
+            resolve(
+              json({
+                receipt: { profile_id: 2, draft_id: 9, header: draftHeader(1).draft },
+                header: draftHeader(1),
+              }),
+            );
+        }),
+    });
+    renderAt(fetchMock);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    fireEvent.click(screen.getByRole("button", { name: "Start a draft" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(1));
+    act(() => release());
+    await screen.findByText(/Saved to the draft/);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(writes(fetchMock).map((w) => w.body.header.name)).toEqual(["Bracket kit v3"]);
+  });
+
+  it("opens the gate only after a save started by leaving a field has landed", async () => {
+    let release = () => {};
+    const fetchMock = core({
+      write: (path) =>
+        path === "/api/v2/plans/2/drafts/header"
+          ? new Promise<Response>((resolve) => {
+              release = () =>
+                resolve(
+                  json({
+                    receipt: { profile_id: 2, draft_id: 9, header: draftHeader(2).draft },
+                    header: draftHeader(2),
+                  }),
+                );
+            })
+          : undefined,
+    });
+    renderAt(fetchMock);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    fireEvent.click(screen.getByRole("button", { name: "Review and accept" }));
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(1));
+    const previews = () =>
+      fetchMock.mock.calls.filter(([path]) => String(path).endsWith("/accept-preview")).length;
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(previews()).toBe(0);
+    act(() => release());
+    await screen.findByRole("dialog", { name: "Accept this draft" });
+    expect(previews()).toBeGreaterThan(0);
   });
 
   it("refuses a blank name without sending", async () => {

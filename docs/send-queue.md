@@ -130,10 +130,11 @@ nothing is resent automatically:
   `send_outcome_unknown`.
 - `Reconcile` with `printed: true` makes the item `done`. The job succeeds,
   with the printer's receipt as its result, only when a kept receipt proves
-  the upload, as the generic job reconciliation requires. Without one the
-  job fails with `You reconciled this send: it printed. The printer never
-  confirmed the upload, so this job keeps no result.` With `printed: false` it marks the job failed and leaves the item
-  `error` with `You reconciled this send: the printer did not print it. Send
+  the send (the upload, and the start when the item starts the print), as
+  the generic job reconciliation requires. Without that proof the job fails,
+  and its reason says the user reported it printed and which receipt the
+  printer never gave: the upload's, or only the start's. With
+  `printed: false` it marks the job failed and leaves the item `error` with `You reconciled this send: the printer did not print it. Send
   now sends it again.` The answer is stored in
   `durable_job_reconciliations` as `UserPrinted` or `UserDidNotPrint`
   against the last effect, and the printer is free. Neither answer sends; a

@@ -92,6 +92,37 @@ Required-unit parity fixtures, and Node has no header, so the header has its own
 read beside it. Both routes are in the generated `@print-partner/rust-client`
 (`readDraftHeader`, `saveDraftHeader`).
 
+## Read without a draft: `GET /plans/{id}/drafts/header`
+
+Returns `BuildHeaderView`: the Build's current header (`build`, as above) and its
+Accepted base (`base`: `revision_id` and `plan_version`, `null` and `0` before
+the first Accept). The Plan tab reads it before any draft exists, shows the
+header, and names that base when its first header save creates the draft. It
+writes nothing. An unknown Plan is 404. The generated client calls it
+`readBuildHeader` (GRE-1120).
+
+## The Plan tab (GRE-1120)
+
+The replacement UI's Plan tab (`web/apps/ui/src/builds/BuildPlan.tsx`) uses only
+these routes through the generated client:
+
+- The header form saves a field when it loses focus or on Enter, with
+  `saveDraftHeader`. It names the open draft and the header version it read,
+  so a change made elsewhere is refused with `header_changed`, and the tab
+  rereads. A blank name is refused in the form and never sent.
+- Each Part's Included box and quantity override save as one
+  `autosaveDraft` decision. Writes run one at a time, and each names the draft
+  the previous one left.
+- Review and accept opens the gate. It reads `previewDraftAccept`, shows the
+  snapshot note, the header's old and new values, Part changes, printed
+  Required units affected, cleared Plates, stock impact and duplicate orders,
+  and sends the preview's `revision` without `draft_id` as the `acceptDraft`
+  body with a new `Idempotency-Key`. A refusal shows its reason and previews
+  again; the next Accept uses a new key.
+- Offline, every field is read-only and every button is `aria-disabled` with
+  the reason. With the Orders module off, the order number, customer and due
+  date fields are hidden and the tab says why.
+
 ## Draft paths that carry the header
 
 Every new draft row goes through `insert_snapshot`, which takes an `Origin`:
@@ -154,13 +185,11 @@ Two limits remain:
   it stands in Save's transaction, because Node's `SavePlanChoicesRequest`
   carries no header version. Whatever routes Save to Rust must add a
   client-observed version first.
-- **Web client.** `applyPlanDraft` in `web/apps/web/src/api/endpoints/planDrafts.ts`
-  sends no `expected_header_version`, so Accept from the web UI answers
-  `draft_changed` for a draft that has a header row. No UI flow creates a
-  header row today, and no web code calls the Accept preview yet. GRE-1120,
-  not built yet, adds the Accept gate. It must show the preview, header
-  included, and send that preview's `revision` without `draft_id` (the draft
-  id goes in the path), `expected_header_version` included, as the Accept body.
+- **Old web client.** `applyPlanDraft` in the old UI
+  (`web/apps/web/src/api/endpoints/planDrafts.ts`) sends no
+  `expected_header_version`, so its Accept of a draft that has a header row
+  answers `draft_changed`. The replacement UI's Plan tab creates header rows
+  and accepts them through the gate ([The Plan tab](#the-plan-tab-gre-1120)).
 
 ## Schema 45
 

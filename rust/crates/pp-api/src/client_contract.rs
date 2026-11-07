@@ -110,6 +110,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "DraftWorkspace",
     ),
     route(
+        "readBuildHeader",
+        "GET",
+        "/api/v2/plans/{id}/drafts/header",
+        None,
+        "BuildHeaderView",
+    ),
+    route(
         "readDraftHeader",
         "GET",
         "/api/v2/plans/{id}/drafts/{draft_id}/header",
@@ -134,6 +141,26 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "/api/v2/plans/{id}/drafts/{draft_id}/reconciliation",
             Some("ReconcileDraftRequest"),
             "DraftWorkspace",
+        )
+    },
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
+            "autosaveDraft",
+            "POST",
+            "/api/v2/plans/{id}/drafts/save",
+            Some("SavePlanChoicesRequest"),
+            "DraftAutosaved",
+        )
+    },
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
+            "acceptDraft",
+            "POST",
+            "/api/v2/plans/{id}/drafts/{draft_id}/apply",
+            Some("AcceptDraftRequest"),
+            "AcceptDraftReceipt",
         )
     },
     route(
@@ -324,6 +351,7 @@ mod codegen {
             PreviewRevision, ProductionCheck, SnapshotNote, SpoolImpact, StockImpact, UnitChanges,
             UnitRef, Unmappable,
         },
+        plan_publication::{ApplyPlanDraftReceipt, ApplyRequest},
         read_model::{
             build_workflow::{TaskFeed, UnavailableBuild, rank},
             farm::{
@@ -349,9 +377,10 @@ mod codegen {
         },
         working_drafts::{
             AbandonRequest, EditRequest,
+            autosave::{AutosaveReceipt, DraftAutosaved, SavePlanChoicesRequest},
             header::{
-                BuildHeader, DraftHeaderReceipt, DraftHeaderSaved, DraftHeaderState, HeaderView,
-                SaveDraftHeaderRequest,
+                BuildHeader, BuildHeaderView, DraftHeaderReceipt, DraftHeaderSaved,
+                DraftHeaderState, HeaderView, SaveDraftHeaderRequest,
             },
         },
     };
@@ -386,11 +415,25 @@ mod codegen {
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
         schema("DraftAcceptPreview", schemars::schema_for!(AcceptPreview))?;
         schema("DraftHeaderView", schemars::schema_for!(HeaderView))?;
+        schema("BuildHeaderView", schemars::schema_for!(BuildHeaderView))?;
         schema(
             "SaveDraftHeaderRequest",
             schemars::schema_for!(SaveDraftHeaderRequest),
         )?;
         schema("DraftHeaderSaved", schemars::schema_for!(DraftHeaderSaved))?;
+        schema(
+            "SavePlanChoicesRequest",
+            schemars::schema_for!(SavePlanChoicesRequest),
+        )?;
+        schema("DraftAutosaved", schemars::schema_for!(DraftAutosaved))?;
+        schema("AcceptDraftRequest", schemars::schema_for!(ApplyRequest))?;
+        // Node's receipt parser refuses unknown keys; as a response the
+        // client strips them like every other answer.
+        let mut receipt = schemars::schema_for!(ApplyPlanDraftReceipt);
+        if let Some(object) = receipt.schema.object.as_mut() {
+            object.additional_properties = None;
+        }
+        schema("AcceptDraftReceipt", receipt)?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema(
@@ -1023,6 +1066,28 @@ mod codegen {
             )?,
             served("DraftHeaderView", "proposed", &proposed)?,
             served(
+                "BuildHeaderView",
+                "accepted",
+                BuildHeaderView {
+                    build: full.clone(),
+                    base: DraftBase {
+                        revision_id: Some(MAX_SAFE),
+                        plan_version: MAX_SAFE,
+                    },
+                },
+            )?,
+            served(
+                "BuildHeaderView",
+                "never-accepted",
+                BuildHeaderView {
+                    build: empty.clone(),
+                    base: DraftBase {
+                        revision_id: None,
+                        plan_version: 0,
+                    },
+                },
+            )?,
+            served(
                 "DraftHeaderSaved",
                 "saved",
                 DraftHeaderSaved {
@@ -1427,6 +1492,70 @@ mod codegen {
         ]
     }
 
+    /// Autosave and Accept: their bodies at the bounds, and their answers.
+    fn lifecycle_fixtures(workspace: &Workspace) -> Result<Vec<Value>, serde_json::Error> {
+        let digest = "e".repeat(64);
+        let base = json!({"revision_id": MAX_SAFE, "plan_version": MAX_SAFE});
+        let choices = |name: &str, value: Value| {
+            request::<SavePlanChoicesRequest>("SavePlanChoicesRequest", name, value)
+        };
+        let accept =
+            |name: &str, value: Value| request::<ApplyRequest>("AcceptDraftRequest", name, value);
+        let decision = json!({"kind": "set_quantity_override", "target": {"part_key": UNICODE, "relative_path": "a/b.stl", "source_layer": null}, "value": null});
+        let revision = json!({"expected_snapshot_digest": digest, "expected_lifecycle_version": 2_147_483_646, "expected_base": base});
+        let receipt: ApplyPlanDraftReceipt = serde_json::from_value(json!({
+            "profile_id": MAX_SAFE, "draft_id": MAX_SAFE, "revision_id": MAX_SAFE,
+            "plan_version": MAX_SAFE, "draft_lifecycle_version": MAX_SAFE,
+            "revision_digest": digest, "required_unit_mapping_digest": digest,
+            "applied_at": "2026-11-06T12:00:00.000Z"
+        }))?;
+        let with = |key: &str, value: Value| {
+            let mut body = revision.clone();
+            body[key] = value;
+            body
+        };
+        Ok(vec![
+            served(
+                "DraftAutosaved",
+                "saved",
+                DraftAutosaved {
+                    receipt: AutosaveReceipt {
+                        profile_id: MAX_SAFE,
+                        draft_id: MAX_SAFE,
+                        reconciliation_id: MAX_SAFE,
+                        snapshot_digest: digest.clone(),
+                        saved_at: "2026-11-06T12:00:00.000Z".into(),
+                    },
+                    workspace: Box::new(workspace.clone()),
+                },
+            )?,
+            choices(
+                "new-draft",
+                json!({"expected_base": {"revision_id": null, "plan_version": 0}, "expected_draft": null, "remap_checkoff_links": false, "decisions": [decision]}),
+            ),
+            choices(
+                "missing-draft",
+                json!({"expected_base": base, "remap_checkoff_links": true, "decisions": [decision]}),
+            ),
+            served("AcceptDraftReceipt", "applied", receipt)?,
+            accept("revision", revision.clone()),
+            accept(
+                "header-version",
+                with("expected_header_version", json!(u32::MAX)),
+            ),
+            accept(
+                "null-header-version",
+                with("expected_header_version", Value::Null),
+            ),
+            accept("remap", with("remap_checkoff_links", json!(true))),
+            accept("draft-id", with("draft_id", json!(1))),
+            accept(
+                "stale-lifecycle",
+                with("expected_lifecycle_version", json!(2_147_483_647_u64)),
+            ),
+        ])
+    }
+
     fn fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let summaries = summaries();
         let workspaces = workspaces();
@@ -1586,6 +1715,7 @@ mod codegen {
             cases.push(served("DraftAcceptPreview", name, value)?);
         }
         cases.extend(header_fixtures()?);
+        cases.extend(lifecycle_fixtures(&workspaces[0])?);
         for (index, value) in workspaces.into_iter().enumerate() {
             cases.push(served(
                 "DraftWorkspace",

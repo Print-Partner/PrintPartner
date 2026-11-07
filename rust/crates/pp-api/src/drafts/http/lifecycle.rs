@@ -6,7 +6,7 @@ use pp_storage::{
     working_drafts::{
         RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome, RecomputeOutcome,
         RecomputeRequest, RecomputeWorkspaceOutcome,
-        autosave::{AutosaveCommand, AutosaveOutcome},
+        autosave::{AutosaveCommand, AutosaveOutcome, DraftAutosaved},
         header::{HeaderCommand, HeaderOutcome, HeaderRefusal},
         save::Refusal as SaveRefusal,
     },
@@ -414,10 +414,9 @@ pub(super) async fn autosave(
     };
     let work = move |client: &WorkingDraftClient, flag, wait| client.autosave(command, flag, wait);
     match run_write(&app, work).await {
-        Ok(AutosaveOutcome::Saved { receipt, workspace }) => json_response(
-            StatusCode::OK,
-            json!({"receipt": receipt, "workspace": workspace}),
-        ),
+        Ok(AutosaveOutcome::Saved { receipt, workspace }) => {
+            json_response(StatusCode::OK, DraftAutosaved { receipt, workspace })
+        }
         Ok(AutosaveOutcome::Refused { reason }) => present_autosave(reason),
         Err(error) => write_failure(error, "autosave", profile, None),
     }

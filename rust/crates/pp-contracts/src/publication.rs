@@ -1,6 +1,7 @@
 use crate::autosave::{ApplyPlanDraftReceipt, Digest, PlanDraftBasis, WireInteger};
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplyRequest {

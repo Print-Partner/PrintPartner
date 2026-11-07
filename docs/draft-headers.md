@@ -112,13 +112,15 @@ these routes through the generated client:
   rereads. A blank name is refused in the form and never sent.
 - Each Part's Included box and quantity override save as one
   `autosaveDraft` decision. Writes run one at a time, and each names the draft
-  the previous one left.
+  the previous one left. While writes run, the Included box shows the last
+  value clicked, and the next click toggles from that.
 - Review and accept opens the gate. It reads `previewDraftAccept`, shows the
   snapshot note, the header's old and new values, Part changes, printed
   Required units affected, cleared Plates, stock impact and duplicate orders,
   and sends the preview's `revision` without `draft_id` as the `acceptDraft`
   body with a new `Idempotency-Key`. A refusal shows its reason and previews
-  again; the next Accept uses a new key. Accept stays off, with the reason,
+  again, and Accept stays off until that preview arrives; the next Accept
+  uses a new key. Accept stays off, with the reason,
   while the preview lists running work in `blocked_by` or checkoff links and
   queued sends in `production`: the tab sends `remap_checkoff_links: false`,
   so Accept would refuse with `production_active`.

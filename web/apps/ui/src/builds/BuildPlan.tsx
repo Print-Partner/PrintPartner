@@ -240,9 +240,14 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
   );
 }
 
-/** One Part row: whether it is included and its quantity override. */
-function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
+/**
+ * One Part row: whether it is included and its quantity override. While draft writes run,
+ * the box shows the last value clicked, and the next click toggles from that.
+ */
+function PartRow({ part, writes, busy }: { part: PartView; writes: Writes; busy: boolean }) {
   const offline = useConnection() === "offline";
+  const [clicked, setClicked] = useState<boolean | null>(null);
+  const included = busy && clicked !== null ? clicked : part.included;
   const [quantity, setQuantity] = useState(part.quantity_override?.toString() ?? "");
   const [invalid, setInvalid] = useState(false);
   const errorId = useId();
@@ -263,10 +268,14 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
       <td>
         <input
           type="checkbox"
-          checked={part.included}
+          checked={included}
           aria-label={`Include ${part.filename}`}
           aria-disabled={offline || undefined}
-          onChange={() => !offline && save(includeChoice(part, !part.included))}
+          onChange={() => {
+            if (offline) return;
+            setClicked(!included);
+            save(includeChoice(part, !included));
+          }}
         />
       </td>
       <td>
@@ -293,7 +302,7 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
   );
 }
 
-function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
+function PartsTable({ parts, writes, busy }: { parts: PartView[]; writes: Writes; busy: boolean }) {
   const headingId = useId();
   if (parts.length === 0) return <p>This draft has no Parts.</p>;
   return (
@@ -314,6 +323,7 @@ function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
               key={`${part.draft_part_id}-${part.quantity_override ?? ""}`}
               part={part}
               writes={writes}
+              busy={busy}
             />
           ))}
         </tbody>
@@ -494,7 +504,13 @@ function AcceptGate({
       }
     },
   });
-  const blocked = acceptBlocked(preview.data, offline) ?? (accept.isPending ? "Accepting." : null);
+  const blocked =
+    acceptBlocked(preview.data, offline) ??
+    (accept.isPending
+      ? "Accepting."
+      : preview.isFetching
+        ? "Checking what Accept would change."
+        : null);
   const data = preview.data;
   return (
     <Dialog title="Accept this draft" onClose={onClose} className="pp-gate">
@@ -597,7 +613,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
       </div>
       <SaveStatus writes={writes} />
       <HeaderForm key={id} data={data} writes={writes} busy={busy} />
-      {draft && <PartsTable parts={draft.workspace.parts} writes={writes} />}
+      {draft && <PartsTable parts={draft.workspace.parts} writes={writes} busy={busy} />}
       {gate && draft && !busy && (
         <AcceptGate
           id={id}

@@ -90,7 +90,7 @@ class AssembleLinuxDebTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             assembler.assemble(self.stage, deb)
 
-    def test_restored_directory_keeps_the_stage_mode_under_a_strict_umask(self):
+    def test_restored_directory_is_0755_under_a_strict_umask(self):
         deb = self.deb()
         previous = os.umask(0o077)
         try:
@@ -100,6 +100,24 @@ class AssembleLinuxDebTest(unittest.TestCase):
         self.assertIn("drwxr-xr-x root/root", next(
             line for line in self.listing(deb).splitlines()
             if line.endswith("node_modules/@print-partner/")))
+
+    def test_group_writable_stage_matches_the_bundler_modes(self):
+        deb = self.deb()
+        (self.stage / "web/apps").chmod(0o775)
+        for path in (self.stage / "web").rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                path.chmod(path.stat().st_mode | 0o020)
+        assembler.assemble(self.stage, deb)
+        self.assertIn("drwxr-xr-x root/root", next(
+            line for line in self.listing(deb).splitlines()
+            if line.endswith("node_modules/@print-partner/")))
+
+    def test_stage_reached_through_a_symlink_is_accepted(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.stage)
+        self.write_config({str(alias / name): "desktop-runtime/" + name
+                           for name in ("web", "bin", "release.json")})
+        assembler.assemble(self.stage, self.deb())
 
     def test_changed_directory_mode_is_refused(self):
         deb = self.deb(lambda runtime: (runtime / "web/apps").chmod(0o700))

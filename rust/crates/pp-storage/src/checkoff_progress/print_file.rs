@@ -592,6 +592,8 @@ struct Held {
     /// One capture at a time, as Node allows.
     active: bool,
     ready: HashMap<String, Saved>,
+    /// Snapshots an assignment holds; they still count toward the limit.
+    reserved: usize,
 }
 
 /// Node keeps a token for 15 minutes and at most 128 at once.
@@ -632,8 +634,11 @@ impl SnapshotStore {
     ) -> std::result::Result<Capture, &'static str> {
         let mut held = self.held();
         let source = source.filter(|source| Some(source.as_str()) == current);
-        let (Some(source), false, true) = (source, held.active, held.ready.len() < MAX_READY)
-        else {
+        let (Some(source), false, true) = (
+            source,
+            held.active,
+            held.ready.len() + held.reserved < MAX_READY,
+        ) else {
             return Err(CAPTURE_UNAVAILABLE);
         };
         held.active = true;
@@ -671,6 +676,7 @@ impl SnapshotStore {
         if Some(saved.source.as_str()) != current || saved.scope != *scope {
             return None;
         }
+        held.reserved += 1;
         Some(Reservation {
             store: Arc::clone(self),
             token: token.to_owned(),
@@ -699,11 +705,10 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
+        let mut held = self.store.held();
+        held.reserved -= 1;
         if let Some(saved) = self.saved.take() {
-            self.store
-                .held()
-                .ready
-                .insert(std::mem::take(&mut self.token), saved);
+            held.ready.insert(std::mem::take(&mut self.token), saved);
         }
     }
 }

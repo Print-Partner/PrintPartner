@@ -31,7 +31,7 @@ use axum::{
 };
 use pp_storage::checkoff_progress::{
     AssignedLink, Assignment, Body, FileRequest, FileRoute, ProgressClient, Request,
-    print_file::{Inspected, SNAPSHOT_EXPIRED, SnapshotStore},
+    print_file::{Inspected, Reservation, SNAPSHOT_EXPIRED, SnapshotStore},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -128,12 +128,22 @@ async fn storage(
     app: &App,
     presented: PresentedCredential,
     request: Request,
+    reservation: Option<Reservation>,
 ) -> Result<pp_storage::checkoff_progress::Response, Box<Response>> {
     let client = app.client.clone();
+    // The reservation lives in the blocking call, which finishes an admitted
+    // write even when the request is dropped, so a committed assignment
+    // always spends its snapshot and a failed one always puts it back.
     match app
         .gate
         .read(presented, move |credential, cancelled, wait| {
-            client.apply(credential, request, &cancelled, wait)
+            let response = client.apply(credential, request, &cancelled, wait)?;
+            if response.status == 200
+                && let Some(held) = reservation
+            {
+                held.spend();
+            }
+            Ok(response)
         })
         .await
     {
@@ -155,7 +165,7 @@ async fn parse(
             "Request body must be a JSON object",
         )));
     };
-    answer(storage(app, presented, Request::FileRequest { body, route }).await?)
+    answer(storage(app, presented, Request::FileRequest { body, route }, None).await?)
 }
 
 async fn preview(
@@ -264,14 +274,9 @@ async fn assign(
         },
         snapshot_source: reservation.as_ref().and(parsed.printer.source.clone()),
     };
-    let response = match storage(&app, presented, Request::AssignFile(Box::new(assignment))).await {
-        Ok(response) => response,
-        Err(response) => return *response,
-    };
-    if response.status == 200
-        && let Some(held) = reservation
-    {
-        held.spend();
+    let request = Request::AssignFile(Box::new(assignment));
+    match storage(&app, presented, request, reservation).await {
+        Ok(response) => crate::checkoff::present(response),
+        Err(response) => *response,
     }
-    crate::checkoff::present(response)
 }

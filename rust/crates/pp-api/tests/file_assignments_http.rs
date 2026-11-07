@@ -489,6 +489,53 @@ fn one_capture_at_a_time_and_a_dropped_capture_releases_the_store() {
     assert!(store.read(&token, &scope("c.gcode"), Some("s")).is_none());
 }
 
+#[test]
+fn a_reserved_snapshot_still_counts_toward_the_128_token_limit() {
+    let store = Arc::new(SnapshotStore::default());
+    let source = || Some("s".to_owned());
+    let tokens: Vec<String> = (0..128)
+        .map(|index| {
+            let mut capture = store
+                .begin(
+                    scope(&format!("{index}.gcode")),
+                    json!({}),
+                    source(),
+                    Some("s"),
+                )
+                .unwrap();
+            capture.push(b"G28\n").unwrap();
+            let token = capture.token().to_owned();
+            capture.finish().unwrap();
+            token
+        })
+        .collect();
+    let full = || {
+        store
+            .begin(scope("x.gcode"), json!({}), source(), Some("s"))
+            .err()
+    };
+    assert_eq!(full(), Some(CAPTURE_UNAVAILABLE));
+    let held = store
+        .reserve(&tokens[0], &scope("0.gcode"), Some("s"))
+        .unwrap();
+    assert_eq!(
+        full(),
+        Some(CAPTURE_UNAVAILABLE),
+        "a reservation keeps its slot"
+    );
+    drop(held);
+    assert_eq!(
+        full(),
+        Some(CAPTURE_UNAVAILABLE),
+        "a failed assignment puts it back"
+    );
+    store
+        .reserve(&tokens[0], &scope("0.gcode"), Some("s"))
+        .unwrap()
+        .spend();
+    assert_eq!(full(), None, "a spent token frees its slot");
+}
+
 /// The assignment transaction itself rechecks the host a snapshot was
 /// redeemed against, so a settings write between the route's read and the
 /// write cannot record stale evidence.

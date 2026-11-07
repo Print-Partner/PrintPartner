@@ -2953,8 +2953,10 @@ its 1 MiB JSON limit.
   preview expired or its source changed. Cancel and reopen the file.` A
   redeemed file is not re-observed for drift, and a successful assignment
   spends the token. Node redeems and records in one synchronous step; here the
-  assignment reserves the token, so a concurrent assignment of the same token
-  is refused and a failed one puts it back, and the writer transaction checks
+  assignment reserves the token inside the storage call, so a concurrent
+  assignment of the same token is refused, a failed one puts it back, an
+  admitted write spends it even if the request is dropped, and a reserved
+  token keeps its place in the 128-token limit, and the writer transaction checks
   the printer's host fingerprint again, so a settings change after the route's
   read refuses with the same 409.
 - An `upload_token` answers Node's unknown-upload 409 `That upload is no longer

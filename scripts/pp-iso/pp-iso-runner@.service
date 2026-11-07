@@ -7,7 +7,6 @@ Wants=network-online.target
 User=pp-iso
 Group=pp-iso
 EnvironmentFile=/etc/pp-iso/runner.env
-Environment=XDG_RUNTIME_DIR=/run/user/%U
 # The root-only token file is handed to this service as a credential and is not readable by other users.
 LoadCredential=token:/etc/pp-iso/token
 RuntimeDirectory=pp-iso-%i

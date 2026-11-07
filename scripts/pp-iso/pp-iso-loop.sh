@@ -10,6 +10,7 @@ set -euo pipefail
 slot=${1:?usage: pp-iso-loop.sh <slot>}
 : "${PP_ISO_REPO:?set PP_ISO_REPO=owner/name in /etc/pp-iso/runner.env}"
 : "${PP_ISO_IMAGE:?set PP_ISO_IMAGE in /etc/pp-iso/runner.env}"
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 engine=${PP_ISO_ENGINE:-podman}
 api=${PP_ISO_API:-https://api.github.com}
 cpus=${PP_ISO_CPUS:-4}

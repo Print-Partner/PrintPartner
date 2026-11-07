@@ -74,15 +74,24 @@ Use the Linux hosts that run pp-local today. Each host needs systemd, rootless p
    installation token) for `poitee/PrintPartner` only, with the repository permission
    **Administration: read and write** and nothing else. Do not paste it anywhere except the
    hidden prompt below.
-2. On the host, check out this repository and `cd scripts/pp-iso`.
-3. `sudo ./install.sh`. First run creates `/etc/pp-iso/runner.env` and stops.
-4. Edit `/etc/pp-iso/runner.env`: set `PP_ISO_SLOTS` and the pp-local reserve (see sizing).
-5. `sudo ./install.sh --set-token` and type the token at the hidden prompt.
-6. `sudo ./install.sh` again. It checks the pool fits the host, builds the image as the
+2. Give pp-iso a bounded disk. `install.sh` refuses unless `/var/lib/pp-iso` is its own
+   mounted filesystem, so a job that fills its disk cannot starve pp-local or the OS. For
+   example, a 200 GB loop image: `sudo mkdir -p /var/lib/pp-iso && sudo truncate -s 200G /var/pp-iso.img && sudo mkfs.ext4 -q /var/pp-iso.img`,
+   then add `/var/pp-iso.img /var/lib/pp-iso ext4 loop,nofail 0 2` to `/etc/fstab` and run
+   `sudo mount /var/lib/pp-iso`. Container layers, job workspaces and the image live there.
+3. On the host, check out this repository and `cd scripts/pp-iso`.
+4. `sudo ./install.sh`. First run creates `/etc/pp-iso/runner.env` and stops.
+5. Edit `/etc/pp-iso/runner.env`: set `PP_ISO_SLOTS` and the pp-local reserve (see sizing).
+6. `sudo ./install.sh --set-token` and type the token at the hidden prompt.
+7. `sudo ./install.sh` again. It checks the pool fits the host, builds the image as the
    `pp-iso` user, installs the units and starts the slots.
-7. In GitHub, Settings, Actions, Runners: each slot shows as an idle `pp-iso` runner only
+8. In GitHub, Settings, Actions, Runners: each slot shows as an idle `pp-iso` runner only
    while it waits; it disappears after its job.
-8. Run the **pp-iso proof** workflow from the Actions tab. It must pass.
+9. Run the **pp-iso proof** workflow from the Actions tab. It must pass.
+
+To change the settings or update the kit, edit `runner.env` and run `sudo ./install.sh --restart`.
+Without `--restart` it refuses while slots run, because a running slot keeps its old limits;
+with it, a job in flight is cancelled and can be re-run.
 
 To stop a host: `sudo systemctl disable --now 'pp-iso-runner@*'`. To rotate the token
 run `sudo ./install.sh --set-token` and `sudo systemctl restart 'pp-iso-runner@*'`.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Installs the pp-iso runner kit on a Linux host with systemd and rootless podman.
-#   sudo ./install.sh              install or update the kit, build the image, start the slots
+#   sudo ./install.sh              install the kit, build the image, start the slots
+#   sudo ./install.sh --restart    the same, and restart slots that are already running
 #   sudo ./install.sh --set-token  store the registration token (typed at a hidden prompt)
 # Run it from a checkout of scripts/pp-iso. It never prints or logs the token.
 set -euo pipefail
@@ -33,7 +34,16 @@ command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
 # shellcheck disable=SC1091
 . "$etc/runner.env"
 
+mountpoint -q /var/lib/pp-iso || { echo "/var/lib/pp-iso must be its own filesystem (a dedicated partition or a loop-mounted image of fixed size), so a job cannot fill the host disk; see docs/development/pp-iso.md" >&2; exit 1; }
+running=$(systemctl list-units --state=active --plain --no-legend 'pp-iso-runner@*.service' | awk '{print $1}')
+if [ -n "$running" ] && [ "${1:-}" != "--restart" ]; then
+  echo "pp-iso slots are running and keep their old settings until restarted. Re-run with --restart to restart them now (a job in flight is cancelled and GitHub can re-run it), or stop them first." >&2
+  exit 1
+fi
+
 id "$user" >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/pp-iso --shell /usr/sbin/nologin "$user"
+chown "$user:$user" /var/lib/pp-iso
+chmod 0700 /var/lib/pp-iso
 grep -q "^$user:" /etc/subuid || usermod --add-subuids 200000-265535 "$user"
 grep -q "^$user:" /etc/subgid || usermod --add-subgids 200000-265535 "$user"
 loginctl enable-linger "$user"
@@ -75,6 +85,7 @@ for unit in $(systemctl list-units --all --plain --no-legend 'pp-iso-runner@*.se
   [ "$n" -le "${PP_ISO_SLOTS:-1}" ] || systemctl disable --now "$unit"
 done
 for n in $(seq 1 "${PP_ISO_SLOTS:-1}"); do
-  systemctl enable --now "pp-iso-runner@$n.service"
+  systemctl enable "pp-iso-runner@$n.service"
+  systemctl restart "pp-iso-runner@$n.service"
 done
 systemctl --no-pager --lines=3 status 'pp-iso-runner@*.service' || true

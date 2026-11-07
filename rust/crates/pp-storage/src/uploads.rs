@@ -1792,12 +1792,14 @@ fn activate(
         params![id, revision.input_digest, revision.producer_version, artifact.manifest_digest],
     )?;
     let basis = &op.basis;
-    let local_path = catalog_state
-        .directory
-        .join("repos")
-        .join(&artifact.locator)
-        .to_string_lossy()
-        .into_owned();
+    let local_path = pp_os::display_path(
+        &catalog_state
+            .directory
+            .join("repos")
+            .join(&artifact.locator),
+    )
+    .to_string_lossy()
+    .into_owned();
     let activated = tx.execute(
         "UPDATE projects SET current_source_revision_id=?3,local_path=?4,last_commit_sha=?5,last_synced_at=?6 WHERE tenant_id=?1 AND id=?2 AND current_source_revision_id IS ?7 AND url=?8 AND branch=?9 AND tag IS ?10 AND source_kind=?11 AND source_type=?12 AND local_path IS ?13 AND last_commit_sha IS ?14 AND legacy_manifest_cutover=?15",
         params![

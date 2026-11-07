@@ -436,12 +436,27 @@ fn policy() -> pp_storage::auth::AuthPolicy {
     }
 }
 
+/// Every entry still under `directory`, deepest first.
+fn remaining(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .flat_map(|entry| {
+            let path = entry.path();
+            let mut found = remaining(&path);
+            found.push(path);
+            found
+        })
+        .collect()
+}
+
 struct ReadServer {
     origin: String,
     client: Client,
     owner: pp_storage::WriterOwner,
-    task: tokio::task::JoinHandle<()>,
-    stop: tokio::sync::oneshot::Sender<()>,
+    serving: crate::serving::Serving,
     /// Last field: removed only after `owner` has dropped, even on panic.
     directory: crate::scratch::Scratch,
 }
@@ -503,24 +518,11 @@ impl ReadServer {
             Some(hold) => draft_router_with_hold(config, client, auth, hold),
             None => draft_router(config, client, auth),
         };
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-            .unwrap();
-        });
         Self {
             origin,
             client: Client::builder().no_proxy().build().unwrap(),
             owner,
-            task,
-            stop,
+            serving: crate::serving::Serving::start(listener, router),
             directory,
         }
     }
@@ -545,29 +547,17 @@ impl ReadServer {
             )
             .unwrap()
     }
-    /// Stops the server and removes its scratch directory. Windows refuses to
-    /// delete a file another handle still has open, so a refused removal is
-    /// retried for up to five seconds and then fails the test with the error.
+    /// Stops the server and removes its scratch directory once. Windows refuses
+    /// to delete a file another handle still has open, so a refusal fails the
+    /// test with the OS error and the entries that were left.
     async fn close(self) {
         let directory = self.stopped().await;
-        let started = std::time::Instant::now();
-        loop {
-            match std::fs::remove_dir_all(&*directory) {
-                Ok(()) => break,
-                Err(error) if started.elapsed() < Duration::from_secs(5) => {
-                    eprintln!(
-                        "removing {} after {:?}: {error}",
-                        directory.display(),
-                        started.elapsed()
-                    );
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                Err(error) => panic!(
-                    "draft server scratch {} stayed for {:?}: {error}",
-                    directory.display(),
-                    started.elapsed()
-                ),
-            }
+        if let Err(error) = std::fs::remove_dir_all(&*directory) {
+            panic!(
+                "draft server scratch {} was not removed: {error}; left: {:?}",
+                directory.display(),
+                remaining(&directory)
+            );
         }
     }
     /// Shuts the writer down and serves the same database again.
@@ -575,22 +565,21 @@ impl ReadServer {
         let directory = self.stopped().await;
         Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
     }
-    /// Drops the client's pooled connections, stops the server once every
-    /// connection task has ended, and shuts the writer down. Windows cannot
-    /// remove a file a connection task's storage handle still holds open, so
-    /// aborting only the accept loop leaked the directory there.
+    /// Drops the client's pooled connections, stops the server once no
+    /// connection task holds the router, and shuts the writer down. axum's
+    /// graceful shutdown alone returns while a connection task may still hold
+    /// the router and the storage clients it captured, and Windows cannot
+    /// remove a file those clients still hold open.
     async fn stopped(self) -> crate::scratch::Scratch {
         let Self {
             client,
             owner,
-            task,
-            stop,
+            mut serving,
             directory,
             ..
         } = self;
         drop(client);
-        let _ = stop.send(());
-        tokio::time::timeout(Duration::from_secs(10), task)
+        tokio::time::timeout(Duration::from_secs(10), serving.stop())
             .await
             .expect("draft server connections close")
             .unwrap();

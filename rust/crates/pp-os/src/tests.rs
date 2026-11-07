@@ -1063,6 +1063,7 @@ mod windows {
     }
 }
 
+/// Windows counterpart: `display_path_drops_only_the_verbatim_disk_and_unc_prefixes`.
 #[cfg(unix)]
 #[test]
 fn display_path_is_the_identity_on_unix() {

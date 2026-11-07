@@ -977,7 +977,8 @@ async fn serve_http(
 /// Serves one connection, then reads and discards what the client still sends,
 /// for up to two seconds, before closing. A server that closes with unread
 /// request bytes resets the connection, and on Windows the client loses the
-/// early response to an over-limit body (RFC 9112, section 9.6).
+/// early response to an over-limit body (RFC 9112, section 9.6). The shipping
+/// gateway's connection loop does not linger yet; GRE-1264 tracks that fix.
 async fn serve_lingering(stream: TcpStream, router: axum::Router) {
     let service = hyper::service::service_fn(move |request: hyper::Request<Incoming>| {
         tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))

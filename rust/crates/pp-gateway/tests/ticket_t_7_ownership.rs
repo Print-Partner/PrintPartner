@@ -310,14 +310,13 @@ fn ticket_t_7_ownership_planted_temporaries_do_not_overwrite_targets() {
         }
         boot_source_sync(&dir, bundled_text()).unwrap();
         assert_eq!(read(&target), "untouched data");
-        let metadata = fs::symlink_metadata(dir.join("source-sync-admission.json")).unwrap();
-        assert!(metadata.is_file());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            assert_eq!(metadata.nlink(), 1);
-            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        }
+        let status = pp_os::status_nofollow(&dir.join("source-sync-admission.json")).unwrap();
+        assert!(status.is_file());
+        assert_eq!(status.links(), 1);
+        assert_eq!(
+            status.posix_access().map(|access| access.mode() & 0o777),
+            cfg!(unix).then_some(0o600)
+        );
         let temporary_count = fs::read_dir(&dir)
             .unwrap()
             .filter(|item| {
@@ -374,21 +373,13 @@ fn ticket_t_7_ownership_non_regular_receipts_are_preserved() {
         #[cfg(unix)]
         let _socket = (kind == "socket")
             .then(|| std::os::unix::net::UnixListener::bind(&receipt_path).unwrap());
-        let entry = fs::symlink_metadata(&receipt_path).unwrap();
+        let entry = pp_os::status_nofollow(&receipt_path).unwrap();
         let error = boot_source_sync(&dir, bundled_text()).unwrap_err();
         assert!(
             matches!(error, AdmissionError::Malformed(ref detail) if detail.contains("admission receipt is not a regular file")),
             "{kind}: {error}"
         );
-        let after = fs::symlink_metadata(&receipt_path).unwrap();
-        assert_eq!(after.file_type(), entry.file_type());
-        assert_eq!(after.modified().unwrap(), entry.modified().unwrap());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            assert_eq!(after.ino(), entry.ino());
-            assert_eq!(after.mode(), entry.mode());
-        }
+        assert_eq!(pp_os::status_nofollow(&receipt_path).unwrap(), entry);
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         assert_eq!(fs::read(&target).unwrap(), target_bytes);
         #[cfg(unix)]

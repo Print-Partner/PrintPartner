@@ -233,7 +233,10 @@ A job that fails before the effect (unlinked printer, missing or foreign
 file, an authority or effect admission that storage refuses) fails with its
 reason at once and contacts no printer, so its item is `error` and the
 printer is free. Shutdown stops claiming new uploads before the gateway
-drains.
+drains. A claimed upload whose effect is not yet admitted when shutdown
+begins fails with "Print Partner was stopping" and contacts no printer. A
+host that is not Moonraker or PrusaLink fails with "Upload is not supported
+for <type>".
 
 ## Tests
 

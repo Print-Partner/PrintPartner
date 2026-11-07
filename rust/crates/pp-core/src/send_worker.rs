@@ -142,7 +142,7 @@ impl SendWorker {
                 .await;
                 match claimed {
                     Ok(Ok(Some(claimed))) => {
-                        if let Err(error) = self.start(claimed, &cancelled).await {
+                        if let Err(error) = self.run(claimed, &cancelled).await {
                             tracing::warn!(error = %error, "printer upload stopped");
                         }
                     }
@@ -155,27 +155,19 @@ impl SendWorker {
         })
     }
 
-    /// Runs a claimed upload unless shutdown began while it was being
-    /// claimed; then it fails without contacting the printer.
-    async fn start(&self, claimed: ClaimedAttempt, cancelled: &AtomicBool) -> Result<Sent> {
-        if !cancelled.load(Ordering::Acquire) {
-            return self.run(claimed).await;
-        }
-        let ClaimedAttempt { mut lease, .. } = claimed;
-        Ok(self.give_up(&mut lease, STOPPING).await)
-    }
-
     /// Claims one waiting printer upload and runs it, or returns `None`.
     pub async fn run_next(&self) -> Result<Option<Sent>> {
         let worker = self.worker.clone();
         let claimed = tokio::task::spawn_blocking(move || worker.claim()).await??;
         match claimed {
-            Some(claimed) => self.run(claimed).await.map(Some),
+            Some(claimed) => self.run(claimed, &AtomicBool::new(false)).await.map(Some),
             None => Ok(None),
         }
     }
 
-    async fn run(&self, claimed: ClaimedAttempt) -> Result<Sent> {
+    /// Runs a claimed upload. Shutdown that begins before the effect is
+    /// admitted fails it with [`STOPPING`] without contacting the printer.
+    async fn run(&self, claimed: ClaimedAttempt, cancelled: &AtomicBool) -> Result<Sent> {
         let ClaimedAttempt { job, mut lease, .. } = claimed;
         let Payload::PrinterUpload {
             printer_id,
@@ -204,6 +196,9 @@ impl SendWorker {
         };
         let content_hash = hex::encode(Sha256::digest(&file));
         let intent = intent(&job.job_id, &printer_id, &filename, start, &content_hash);
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(self.give_up(&mut lease, STOPPING).await);
+        }
         if let Some(refused) = self.begin(&mut lease, intent).await? {
             return Ok(refused);
         }

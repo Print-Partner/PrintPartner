@@ -391,7 +391,7 @@ async fn ticket_t_26_a_claim_that_meets_shutdown_never_contacts_the_printer() {
     farm.send("q1");
     let worker = farm.worker();
     let claimed = worker.worker.claim().unwrap().unwrap();
-    let sent = worker.start(claimed, &AtomicBool::new(true)).await.unwrap();
+    let sent = worker.run(claimed, &AtomicBool::new(true)).await.unwrap();
     assert_eq!(sent, Sent::Failed(STOPPING.into()));
     assert!(printer.request_lines().is_empty());
     let (state, error, job, _) = farm.outcome("q1");
@@ -399,6 +399,31 @@ async fn ticket_t_26_a_claim_that_meets_shutdown_never_contacts_the_printer() {
         (state.as_str(), error.as_deref(), job.as_str()),
         ("error", Some(STOPPING), "failed")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ticket_t_26_a_host_that_is_not_read_is_refused_without_contacting_the_printer() {
+    for kind in ["bambu", "octoprint", "unknown-host"] {
+        let printer = printer(&[(UPLOAD, 201)]);
+        let farm = Farm::open(printer.url(), &[("q1", false, true)]);
+        farm.database()
+            .execute(
+                "UPDATE app_settings SET value=json_set(value,'$[0].type',?1) WHERE key='integrations'",
+                [kind],
+            )
+            .unwrap();
+        farm.send("q1");
+        let expected = format!("Upload is not supported for {kind}");
+        let sent = farm.worker().run_next().await.unwrap();
+        assert_eq!(sent, Some(Sent::Failed(expected.clone())), "{kind}");
+        assert!(printer.request_lines().is_empty(), "{kind}");
+        let (state, error, job, _) = farm.outcome("q1");
+        assert_eq!(
+            (state.as_str(), error.as_deref(), job.as_str()),
+            ("error", Some(expected.as_str()), "failed"),
+            "{kind}"
+        );
+    }
 }
 
 #[test]

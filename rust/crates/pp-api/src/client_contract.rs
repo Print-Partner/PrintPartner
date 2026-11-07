@@ -855,6 +855,8 @@ mod codegen {
             freshness,
             archived_at: text("2026-11-03T20:00:00.000Z"),
             last_used_at: text("2026-11-03T21:00:00.000Z"),
+            customer: text(UNICODE),
+            due_date: text("2026-12-01"),
         }
     }
 

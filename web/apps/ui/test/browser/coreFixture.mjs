@@ -39,6 +39,8 @@ function build(id) {
     freshness: { status: "current", accepted_input_set_id: id, accepted_at: "2026-10-02T00:05:00Z" },
     archived_at: null,
     last_used_at: "2026-10-03T12:00:00Z",
+    customer: null,
+    due_date: null,
   };
 }
 

@@ -122,5 +122,7 @@ pub(crate) fn profile_summary(facts: BuildSummaryFacts) -> ProfileSummary {
         freshness,
         archived_at: facts.archived_at,
         last_used_at: facts.last_used_at,
+        customer: facts.customer,
+        due_date: facts.due_date,
     }
 }

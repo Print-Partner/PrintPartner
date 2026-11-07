@@ -28,7 +28,7 @@ Every Moonraker and PrusaLink read is read-only on the printer and sends only GE
 
 ## Not served here yet
 
-- Bambu status (GRE-1176). Bambu reads as having no capabilities, and the files and camera routes answer unsupported. Only `POST /api/v1/integrations/{id}/test` contacts a Bambu printer, to read its status once and pin its certificate ([Pinning in Settings](bambu-lan.md#pinning-in-settings)).
+- Bambu files and cameras. Bambu reports only the status capability (from its watcher, [Status watcher](bambu-lan.md#status-watcher)), and the files and camera routes answer unsupported. `POST /api/v1/integrations/{id}/test` reads its status once and pins its certificate ([Pinning in Settings](bambu-lan.md#pinning-in-settings)).
 - The print-file snapshot for a Build. Node's `files/content?profile_id=` saves the bytes it streams and returns an `X-PrintPartner-Snapshot` token that only the print-file assignment route redeems. That route is not served here yet (GRE-1210 builds the snapshot store; GRE-1214 wires it in), so a request with `profile_id` answers 501 `Print-file inspection for a Build is not available in this runtime yet` and never reaches the printer.
 - Uploads and the send queue (GRE-365). Uploading needs an explicit user send and durable effect records (GRE-354). No Rust route calls `upload_file`.
 

@@ -9,8 +9,8 @@
 
 use crate::{SettingsClient, Work, WriteReply};
 use anyhow::{Context, Result, anyhow};
-use rusqlite::{OptionalExtension, Transaction, params};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use std::{collections::HashMap, sync::atomic::AtomicBool, time::Duration};
 
 /// The schema step that installs the table.
 pub(crate) const SCHEMA_STEP: u64 = 47;
@@ -55,17 +55,40 @@ pub fn read(client: &SettingsClient, wait: Duration, integration: &str) -> Resul
             },
         )
         .optional()?;
-    row.map(|(host, port, sha256, pinned_at)| {
-        Ok(Pin {
-            host,
-            port: u16::try_from(port)?,
-            sha256: sha256
-                .try_into()
-                .map_err(|_| anyhow!("Stored certificate pin is not 32 bytes"))?,
-            pinned_at,
-        })
+    row.map(|(host, port, sha256, pinned_at)| pin(host, port, sha256, pinned_at))
+        .transpose()
+}
+
+/// Every stored pin, by integration id, for the status watchers.
+pub(crate) fn all(connection: &Connection) -> Result<HashMap<String, Pin>> {
+    let mut statement = connection.prepare(
+        "SELECT integration_id, host, port, sha256, pinned_at FROM printer_tls_pins WHERE tenant_id=?1",
+    )?;
+    let rows = statement.query_map(params![TENANT], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (integration, host, port, sha256, pinned_at) = row?;
+        Ok((integration, pin(host, port, sha256, pinned_at)?))
     })
-    .transpose()
+    .collect()
+}
+
+fn pin(host: String, port: i64, sha256: Vec<u8>, pinned_at: String) -> Result<Pin> {
+    Ok(Pin {
+        host,
+        port: u16::try_from(port)?,
+        sha256: sha256
+            .try_into()
+            .map_err(|_| anyhow!("Stored certificate pin is not 32 bytes"))?,
+        pinned_at,
+    })
 }
 
 impl SettingsClient {

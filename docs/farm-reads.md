@@ -62,12 +62,12 @@ the two.
 | No `integration_id` | `not_set_up` | `not_set_up` |
 | `integration_id` names no integration, or a non-printer one such as Spoolman | `not_set_up` | `integration_missing` |
 | Integration disabled | `manual` | `monitoring_disabled` |
-| Bambu (no Rust watcher yet), an HTTPS Moonraker or PrusaLink host, a redirecting Moonraker host, or a Moonraker or PrusaLink host the watchers never poll (no address, or past the 128-host cap; PrusaLink rows come after every Moonraker row) | `manual` | `monitoring_not_supported` |
-| Moonraker or PrusaLink with no status yet, or monitoring stopped | `unknown` | `awaiting_status` |
-| Moonraker or PrusaLink that did not answer its last poll | `unreachable` | `unreachable` |
-| Moonraker or PrusaLink `printing`, `paused` | `printing`, `paused` | `null` |
-| Moonraker or PrusaLink `idle` or `complete` | `idle` | `null` |
-| Moonraker or PrusaLink `error` | `failed` | `null` |
+| An HTTPS Moonraker or PrusaLink host, a redirecting Moonraker host, or a Moonraker, PrusaLink or Bambu host the watchers never take (no address, or past the 128-host cap; PrusaLink and Bambu rows come after every Moonraker row) | `manual` | `monitoring_not_supported` |
+| Moonraker, PrusaLink or Bambu with no status yet, or monitoring stopped | `unknown` | `awaiting_status` |
+| Moonraker or PrusaLink that did not answer its last poll; Bambu whose session dropped, or that has no usable pin and so is never connected | `unreachable` | `unreachable` |
+| Moonraker, PrusaLink or Bambu `printing`, `paused` | `printing`, `paused` | `null` |
+| Moonraker, PrusaLink or Bambu `idle` or `complete` | `idle` | `null` |
+| Moonraker, PrusaLink or Bambu `error` | `failed` | `null` |
 | Moonraker or PrusaLink `unknown` | `unknown` | `null` |
 
 `last_heard_at` is the time of the last successful status poll, kept while the

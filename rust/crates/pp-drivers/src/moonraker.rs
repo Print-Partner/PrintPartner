@@ -50,6 +50,13 @@ pub enum HostKind {
         username: String,
         password: Option<String>,
     },
+    /// Watched over one long-lived MQTT session pinned to the stored
+    /// certificate (GRE-1176). Either `Err` is the offline message the host
+    /// shows instead, and no connection is made: the watcher never pins.
+    Bambu {
+        config: Result<crate::bambu::Config, String>,
+        pin: Result<crate::bambu::Fingerprint, String>,
+    },
 }
 /// A PrusaLink status read is a Digest probe plus one or two GETs, so it
 /// runs at the web client's default status cadence rather than Moonraker's.
@@ -295,7 +302,7 @@ impl Watchers {
     fn interval_for(&self, kind: &HostKind) -> Duration {
         match kind {
             HostKind::Moonraker => self.interval,
-            HostKind::PrusaLink { .. } => self.prusalink_interval,
+            HostKind::PrusaLink { .. } | HostKind::Bambu { .. } => self.prusalink_interval,
         }
     }
     /// The caller serializes snapshots; join removed/replaced tasks before spawning.
@@ -341,8 +348,14 @@ impl Watchers {
                     Slot::Status(Status::offline(message))
                 }
             };
+            let refused = match &host.kind {
+                HostKind::Bambu { config, pin } => config.as_ref().err().or(pin.as_ref().err()),
+                _ => None,
+            };
             let initial = if !host.enabled {
                 Slot::Status(Status::offline("Integration disabled"))
+            } else if let Some(message) = refused {
+                Slot::Status(Status::offline(message))
             } else if needs_node(&host.base_url) {
                 fallback(HTTPS_UNAVAILABLE)
             } else {
@@ -351,42 +364,34 @@ impl Watchers {
             let redirected = fallback(REDIRECT_UNAVAILABLE);
             let status = Arc::new(Mutex::new(Slot::Node));
             publish(&status, &self.port, &id, initial);
-            let task = if host.enabled && !needs_node(&host.base_url) {
-                let config = host.clone();
-                let stopped = cancel.clone();
-                let current = status.clone();
-                let port = self.port.clone();
-                let heard = self.heard.clone();
-                let guard = self.guard.clone();
-                let interval = self.interval_for(&config.kind);
-                Some(tokio::spawn(async move {
-                    let mut failures = 0u32;
-                    loop {
-                        let response = tokio::select! { biased; _=stopped.cancelled()=>break, response=poll(&guard,&config)=>response };
-                        let delay = match response {
-                            Ok(value) => {
-                                failures = 0;
-                                lock(&heard).insert(config.id.clone(), SystemTime::now());
-                                publish(&current, &port, &config.id, Slot::Status(value));
-                                interval
-                            }
-                            Err(Failure::Redirect) => {
-                                publish(&current, &port, &config.id, redirected);
-                                break;
-                            }
-                            Err(failure) => {
-                                failures = failures.saturating_add(1);
-                                let offline = failure.status();
-                                publish(&current, &port, &config.id, Slot::Status(offline));
-                                backoff(interval, failures)
-                            }
-                        };
-                        let delay = jitter(delay, rand::random());
-                        tokio::select! { biased; _=stopped.cancelled()=>break, _=tokio::time::sleep(delay)=>{} }
-                    }
-                }))
-            } else {
-                None
+            let shared = Shared {
+                id: id.clone(),
+                status: status.clone(),
+                port: self.port.clone(),
+                heard: self.heard.clone(),
+            };
+            let interval = self.interval_for(&host.kind);
+            let task = match &host.kind {
+                _ if !host.enabled || refused.is_some() => None,
+                HostKind::Bambu {
+                    config: Ok(config),
+                    pin: Ok(pin),
+                } => Some(watch_bambu(
+                    crate::bambu::Driver::new(self.guard.clone(), config.clone()),
+                    *pin,
+                    interval,
+                    shared,
+                    cancel.clone(),
+                )),
+                _ if needs_node(&host.base_url) => None,
+                _ => Some(poll_host(
+                    self.guard.clone(),
+                    host.clone(),
+                    interval,
+                    redirected,
+                    shared,
+                    cancel.clone(),
+                )),
             };
             self.hosts.insert(
                 id,
@@ -422,6 +427,99 @@ impl Watchers {
             observed.contains_key(id) && Arc::make_mut(observed).remove(id).is_some()
         });
     }
+}
+/// Where one watcher task publishes.
+struct Shared {
+    id: String,
+    status: Arc<Mutex<Slot>>,
+    port: Port,
+    heard: Heard,
+}
+/// A Moonraker or PrusaLink host's poller: one status read per interval while
+/// it answers, the backoff with jitter while it does not. A redirect publishes
+/// `redirected` and ends the task.
+fn poll_host(
+    guard: HttpGuard,
+    config: Host,
+    interval: Duration,
+    redirected: Slot,
+    shared: Shared,
+    stopped: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let Shared {
+            id,
+            status: current,
+            port,
+            heard,
+        } = shared;
+        let mut failures = 0u32;
+        loop {
+            let response = tokio::select! { biased; _=stopped.cancelled()=>break, response=poll(&guard,&config)=>response };
+            let delay = match response {
+                Ok(value) => {
+                    failures = 0;
+                    lock(&heard).insert(id.clone(), SystemTime::now());
+                    publish(&current, &port, &id, Slot::Status(value));
+                    interval
+                }
+                Err(Failure::Redirect) => {
+                    publish(&current, &port, &id, redirected);
+                    break;
+                }
+                Err(failure) => {
+                    failures = failures.saturating_add(1);
+                    let offline = failure.status();
+                    publish(&current, &port, &id, Slot::Status(offline));
+                    backoff(interval, failures)
+                }
+            };
+            let delay = jitter(delay, rand::random());
+            tokio::select! { biased; _=stopped.cancelled()=>break, _=tokio::time::sleep(delay)=>{} }
+        }
+    })
+}
+/// A Bambu host's watcher: one pinned session at a time, its reports
+/// published as they arrive. A dropped session reads offline and reconnects
+/// with the pollers' backoff and jitter; one that answered retries soon.
+fn watch_bambu(
+    driver: crate::bambu::Driver,
+    pin: crate::bambu::Fingerprint,
+    interval: Duration,
+    shared: Shared,
+    stopped: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut session = crate::bambu::Session::default();
+        let mut failures = 0u32;
+        loop {
+            let mut answered = false;
+            let watch = driver.watch(pin, &mut session, |status| {
+                answered = true;
+                lock(&shared.heard).insert(shared.id.clone(), SystemTime::now());
+                publish(
+                    &shared.status,
+                    &shared.port,
+                    &shared.id,
+                    Slot::Status(status),
+                );
+            });
+            let ended = tokio::select! { biased; _=stopped.cancelled()=>break, ended=watch=>ended };
+            failures = if answered {
+                1
+            } else {
+                failures.saturating_add(1)
+            };
+            publish(
+                &shared.status,
+                &shared.port,
+                &shared.id,
+                Slot::Status(ended),
+            );
+            let delay = jitter(backoff(interval, failures), rand::random());
+            tokio::select! { biased; _=stopped.cancelled()=>break, _=tokio::time::sleep(delay)=>{} }
+        }
+    })
 }
 /// Store a slot value and mirror it into the observation map. Node-routed
 /// hosts have no Rust observation. The slot is written first and stays locked

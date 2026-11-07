@@ -1,7 +1,8 @@
 //! GRE-1245: the Rust-only launcher's Bambu Test connection pins the
-//! printer's certificate, and only a deliberate reset replaces the pin. Every
-//! read goes to the loopback TLS broker in `pp_testkit::bambu`; nothing here
-//! talks to a real printer.
+//! printer's certificate, and only a deliberate reset replaces the pin.
+//! GRE-1176: the status watcher connects only once a pin is stored, and only
+//! to that certificate. Every read goes to the loopback TLS broker in
+//! `pp_testkit::bambu`; nothing here talks to a real printer.
 use super::farm_reads::settings_rows;
 use super::ticket_t_4_watcher_proof::{
     proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
@@ -16,6 +17,7 @@ const CODE: &str = "synthetic-code";
 const PIN: &str = "/api/v1/integrations/bambu-1/tls-pin";
 const RESET: &str = "/api/v1/integrations/bambu-1/tls-pin/reset";
 const TEST: &str = "/api/v1/integrations/bambu-1/test";
+const STATUS: &str = "/api/v1/integrations/bambu-1/status";
 const CHANGED: &str = "Printer certificate changed. If you replaced or reset the printer, reset its certificate in Settings.";
 
 #[tokio::test]
@@ -53,9 +55,27 @@ async fn seeded_printer(data: &std::path::Path) -> (Broker, Identity) {
                 }}]),
             ),
             ("feature_toggles", json!({"bambu": true})),
+            (
+                "printer.fleet",
+                json!([{"id": "p-x1c", "name": "X1C", "integration_id": "bambu-1"}]),
+            ),
         ],
     );
     (broker, printer)
+}
+
+/// Polls the status route until the watcher reports `message`.
+async fn watched(origin: &str, cookie: &str, message: &str) {
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        let (code, status) = call(origin, cookie, "GET", STATUS).await;
+        if code == StatusCode::OK && status["message"] == message {
+            return;
+        }
+        last = status;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("the watcher never reported {message}: {last}");
 }
 
 fn connects(log: &[String]) -> usize {
@@ -99,6 +119,27 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
     let test = || call(&origin, &cookie, "POST", TEST);
     let reset = || call(&origin, &cookie, "POST", RESET);
     assert_eq!(pin().await, (StatusCode::OK, json!({"pinned": false})));
+    // With no pin the watcher shows why and never connects.
+    watched(
+        &origin,
+        &cookie,
+        "Certificate not pinned yet. Run Test connection in Settings.",
+    )
+    .await;
+    assert!(broker.log().is_empty(), "{:?}", broker.log());
+    assert_eq!(
+        call(
+            &origin,
+            &cookie,
+            "GET",
+            "/api/v1/printers/p-x1c/capabilities"
+        )
+        .await,
+        (
+            StatusCode::OK,
+            json!({"files": false, "cameras": false, "status": true})
+        )
+    );
 
     let connected = (
         StatusCode::OK,
@@ -116,8 +157,11 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
             .is_some_and(|at| at.ends_with('Z')),
         "{pinned}"
     );
+    // The stored pin starts the watcher, which reads the printer's status.
+    watched(&origin, &cookie, "Idle").await;
 
     let replaced = Identity::generate().unwrap();
+    let before = broker.log().len();
     broker.present(replaced.clone());
     assert_eq!(
         test().await,
@@ -125,8 +169,8 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
     );
     assert_eq!(pin().await.1["sha256_prefix"], prefix(&printer.fingerprint));
     assert_eq!(
-        connects(&broker.log()),
-        1,
+        connects(&broker.log()[before..]),
+        0,
         "the changed certificate never got the access code"
     );
 
@@ -137,6 +181,7 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
         pin().await.1["sha256_prefix"],
         prefix(&replaced.fingerprint)
     );
+    watched(&origin, &cookie, "Idle").await;
     let (code, problem) = call(&origin, &cookie, "GET", "/api/v1/integrations/gone/tls-pin").await;
     assert_eq!(
         (code, &problem["detail"]),
@@ -145,7 +190,7 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
 
     shut_down(runtime).await;
     let log = broker.log();
-    assert_eq!(connects(&log), 2, "{log:?}");
+    assert!(connects(&log) >= 2, "{log:?}");
     only_status_traffic(&log);
     assert_eq!(settings_rows(&data), settings, "pinning changed settings");
 }

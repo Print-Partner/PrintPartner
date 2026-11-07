@@ -186,7 +186,7 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   read-only on the printer: no upload or print start, and only PrusaLink's
   single Digest resend after a 401. Moonraker and PrusaLink both report the
   status capability, except a PrusaLink row the watchers do not poll (see
-  above); Bambu reads as having no capabilities. See
+  above); Bambu reports only the status capability, from its watcher. See
   [Printer-host reads](printer-host-reads.md).
 
   ```sh

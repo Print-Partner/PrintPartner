@@ -1,6 +1,6 @@
 # Bambu LAN driver (GRE-362)
 
-`pp_drivers::bambu` reads a Bambu Lab printer's status over its LAN MQTT broker, as Node's `integrations/adapters/bambu.ts` does. It is status-only: it never uploads a file or controls a print. The Rust-only runtime's Test connection uses it to pin a printer's certificate ([Pinning in Settings](#pinning-in-settings)). GRE-1176 adds the status watcher. Both run only behind `desktop_rebuild` and `PP_DESKTOP_REBUILD`.
+`pp_drivers::bambu` reads a Bambu Lab printer's status over its LAN MQTT broker, as Node's `integrations/adapters/bambu.ts` does. It is status-only: it never uploads a file or controls a print. The Rust-only runtime's Test connection uses it to pin a printer's certificate ([Pinning in Settings](#pinning-in-settings)), and the status watchers keep a pinned session open to each Bambu printer ([Status watcher](#status-watcher)). Both run only behind `desktop_rebuild` and `PP_DESKTOP_REBUILD`.
 
 ## One status read
 
@@ -37,7 +37,19 @@ The Rust-only runtime stores one pin per Bambu integration in `printer_tls_pins`
 - `GET /api/v1/integrations/{id}/tls-pin` answers `{"pinned": false}` or `{"pinned": true, "sha256_prefix": "<12 hex>", "pinned_at": "<RFC 3339>"}`, never the whole hash. `POST /api/v1/integrations/{id}/tls-pin/reset` deletes the row and answers `{"reset": true}` (`false` when there was none). Both answer 404 `Integration not found` for an unknown id, sit behind the same authentication and loopback admission as the other integration routes, and are limited to 60 and 5 requests a minute.
 - Settings → Printers shows a Bambu row's pin (`Certificate pinned · ab12cd34ef56 · <date>` or `Not pinned. Test connection to pin.`) and a **Reset certificate** button with a confirmation that the printer must be the same device. The row renders only when health advertises the desktop rebuild and the runtime serves the pin route. Node advertises the rebuild too but has no `tls-pin` route, so there the GET answers 404 and the row is hidden.
 
-Bambu is a `Host::Status` target in `pp-core`: capabilities read all false and the files and camera routes answer unsupported. No Rust route uploads to a Bambu printer.
+Bambu is a `Host::Status` target in `pp-core`: capabilities read `{files: false, cameras: false, status: true}` for a row the watchers take, and the files and camera routes answer unsupported. No Rust route uploads to a Bambu printer.
+
+## Status watcher
+
+GRE-1176 puts Bambu under the same `Watchers` lifecycle as Moonraker and PrusaLink: one task per enabled host, inside the 128-host cap, cancelled and joined on a config change, suspend or shutdown, and started again on resume. Storage takes Bambu rows the way it takes PrusaLink rows (stored order, after every Moonraker row, first row per id) and only when the row names an address (`host`, `hostname` or `ip`). `pp_storage::printer_hosts::read` adds each row's stored pin from `printer_tls_pins`.
+
+- The watcher never pins. With no pin it shows offline `Certificate not pinned yet. Run Test connection in Settings.` and makes no connection. A pin taken at another host or port shows the address-changed message, also without connecting. A row whose settings the driver refuses shows the driver's message. The watchers re-read the setting every second, so a Test connection that stores a pin, or a reset, restarts the host's task.
+- `Driver::watch` opens one session with `Trust::Pinned` only, so a changed certificate fails before CONNECT. It subscribes, sends pushall, and publishes a status for every report: the first full report (one with a non-blank `gcode_state`), then each later report's `print` fields merged into it, since the printer sends only what changed. Until the first full report the host reads `Awaiting status`.
+- It sends PINGREQ every 15 s and treats 30 s without a packet as a dropped session. A dropped session reads offline with the driver's message and reconnects with the pollers' backoff from a 5 s interval: 10 s after a session that had reported, doubling with each attempt that did not, up to 60 s, each wait up to a fifth shorter for jitter.
+- pushall goes out at most once every five minutes per host task, across reconnects. A session that reconnects inside that window publishes the report it already holds and merges new changes into it.
+- The status route, farm reads, `/ws/printers` and capabilities treat Bambu as watched, like PrusaLink ([Farm reads](farm-reads.md)).
+
+One gap: a Test connection while the watcher holds a session opens a second MQTT client, and a printer that limits concurrent clients may refuse it. The recorded broker accepts both.
 
 ## Status mapping
 

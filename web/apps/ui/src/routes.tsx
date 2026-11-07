@@ -1,7 +1,9 @@
 import { Navigate, type RouteObject } from "react-router";
 import { BuildCheckoff } from "./builds/BuildCheckoff";
+import { BuildHistory } from "./builds/BuildHistory";
 import { BuildOverview, BUILD_TABS, BuildWorkspace, LaterTab } from "./builds/BuildWorkspace";
 import { BuildsList } from "./builds/BuildsList";
+import { FarmLog } from "./farm/FarmLog";
 import { FarmScreen } from "./farm/FarmScreen";
 import { MatchReview } from "./farm/MatchReview";
 import { DESTINATIONS } from "./frame/destinations";
@@ -55,6 +57,8 @@ export const routes: RouteObject[] = [
             element:
               t.path === "checkoff" ? (
                 <BuildCheckoff />
+              ) : t.path === "history" ? (
+                <BuildHistory />
               ) : (
                 <LaterTab label={t.label} holds={t.holds} />
               ),
@@ -62,6 +66,7 @@ export const routes: RouteObject[] = [
         ],
       },
       { path: "farm/match", element: <MatchReview /> },
+      { path: "farm/log", element: <FarmLog /> },
       { path: "states/printers", element: <PrinterStates /> },
       { path: "states/:kind", element: <StatesSpecimen /> },
       { path: "type", element: <TypeSpecimen /> },

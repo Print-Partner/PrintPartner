@@ -1,6 +1,7 @@
 // A fake Rust core for the browser checks: GET /health with every Module listed, the
 // Builds, task feed and workflow routes over `count` generated Builds, the farm read
-// over a fixed fleet, and two printer Checkoff results waiting on Today. Bodies follow
+// over a fixed fleet, two printer Checkoff results waiting on Today, each Build's
+// History and the farm log. Bodies follow
 // the generated client schemas. There is no /ws/printers, so screens show the stream as
 // down.
 const MODULES = ["farm", "spoolman", "orders", "bambu", "assembly_tracking"];
@@ -25,6 +26,64 @@ const PRINTERS = [
   printer("h2d", "Bambu H2D", "bambu", { execution: "manual", bed_clear: "unknown", display: "manual" }, { reason: "monitoring_not_supported", last_heard_at: null }),
   printer("h2d-spare", "Bambu H2D (spare)", null, { execution: "not_set_up", bed_clear: "unknown", display: "not_set_up" }, { reason: "not_set_up", last_heard_at: null }),
 ];
+
+const at = (minute) => `2026-11-05T19:${String(minute).padStart(2, "0")}:00.000Z`;
+const FARM_UNDO = { undoable: true, reason: null, detail: null };
+const farmRefused = (reason, detail = null) => ({ undoable: false, reason, detail });
+const farmEntry = (kind, id, minute, summary, extra) => ({
+  id: `${kind}:${id}`,
+  kind,
+  at: at(minute),
+  summary,
+  build_ids: [1],
+  printer_ids: ["voron"],
+  units_confirmed: kind === "checkoff_burst" ? 3 : null,
+  units_rejected: kind === "checkoff_burst" ? 0 : null,
+  undoes: null,
+  send_state: kind === "send" ? "done" : null,
+  ...extra,
+});
+const FARM_LOG = [
+  farmEntry("checkoff_burst", "4", 25, "Verified 1 bed on Voron 2.4", { undo: FARM_UNDO }),
+  farmEntry("send", "q-2", 20, "Sent plate 2 to Voron 2.4", { undo: farmRefused("printer_command") }),
+  farmEntry("checkoff_burst_undo", "3", 15, "Undid the burst on Trident", {
+    undo: farmRefused("undo_entry"),
+    printer_ids: ["trident"],
+    undoes: "checkoff_burst:2",
+  }),
+  farmEntry("checkoff_burst", "2", 10, "Verified 2 beds on Trident", {
+    undo: farmRefused("already_undone"),
+    printer_ids: ["trident"],
+  }),
+  farmEntry("checkoff_burst", "1", 5, "Verified 1 bed on Micron", {
+    undo: farmRefused("state_changed", "Checkoff changed since this burst: a later change on its Parts depends on it"),
+    printer_ids: ["micron"],
+  }),
+];
+
+function history(b) {
+  const entry = (type, id, minute, summary, extra = {}) => ({
+    id: `${type}:${id}`,
+    type,
+    at: at(minute),
+    actor: "user",
+    summary,
+    link: { kind: type, id },
+    ...extra,
+  });
+  return {
+    plan_id: b.id,
+    entries: [
+      entry("decision", "3", 30, "Print the brackets in PETG", { actor: "assistant" }),
+      entry("checkoff_burst", "7", 25, "4 units checked off", { undo: { undoable: false, reason: "no_undo_token" } }),
+      entry("send", "q-2", 20, "Sent plate 2 to Voron 2.4", { undo: { undoable: false, reason: "printer_command" } }),
+      entry("snapshot", "2", 12, "Before accepting revision 2"),
+      entry("revision", "2", 10, "Accepted revision 2"),
+      entry("revision", "1", 1, "Accepted revision 1"),
+    ],
+    next_cursor: null,
+  };
+}
 
 function build(id) {
   const total = 10 + (id % 90);
@@ -200,12 +259,14 @@ export function fakeCore(count, { orders = "on" } = {}) {
     if (pathname === "/api/v2/tasks") return { status: 200, body: { tasks, unavailable: [] } };
     if (pathname === "/api/v2/printer-checkoff") return { status: 200, body: { results: CHECKOFF } };
     if (pathname === "/api/v2/printers") return { status: 200, body: { printers: PRINTERS } };
-    const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow|\/checkoff\/units)?$/.exec(pathname);
+    if (pathname === "/api/v2/farm-log") return { status: 200, body: { entries: FARM_LOG, next_cursor: null } };
+    const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow|\/checkoff\/units|\/history)?$/.exec(pathname);
     const found = match && builds[Number(match[1]) - 1];
     if (!found) return undefined;
     if (!match[2]) return { status: 200, body: found };
     if (match[2] === "/workflow") return { status: 200, body: workflow(found) };
     if (match[2] === "/checkoff/units") return { status: 200, body: checkoffUnits(found.id) };
+    if (match[2] === "/history") return { status: 200, body: history(found) };
     return {
       status: 200,
       body: {

@@ -75,6 +75,16 @@ first page.
 Each source is capped at 10,000 rows. A Build past the cap answers `500`
 `Build history exceeds the read limit` rather than a partial history.
 
+## Client and UI
+
+The generated client names the route `readBuildHistory` (`BuildHistoryPage`).
+`undo` and its `reason` stay omittable members, as above, so the contract
+test lists them as members a body may omit. The replacement UI's History tab
+(`/builds/{id}/history`, GRE-1101) reads the first page, loads older pages
+with `cursor` on Show older entries, and shows each `undo` reason in words.
+It offers no Undo yet: listing manual and printer bursts with their undo state
+is GRE-1259.
+
 ## Responses
 
 Errors are RFC 9457 problems (`application/problem+json`, see `pp_api::problem`) whose `detail` is the text below.

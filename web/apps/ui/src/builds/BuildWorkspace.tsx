@@ -19,7 +19,11 @@ export const BUILD_TABS = [
   { label: "Plan", path: "plan", holds: "the accepted Plan and its drafts" },
   { label: "Production", path: "production", holds: "plates and sends" },
   { label: "Checkoff", path: "checkoff", holds: "what came off each printer" },
-  { label: "History", path: "history", holds: "accepted revisions, snapshots and checkoff bursts" },
+  {
+    label: "History",
+    path: "history",
+    holds: "accepted revisions, snapshots, checkoff bursts, sends and decisions",
+  },
 ] as const;
 
 interface BuildData {

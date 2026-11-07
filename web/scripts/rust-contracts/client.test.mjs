@@ -101,14 +101,16 @@ test("a descriptor table missing a key value is refused", () => {
   assert.throws(() => generate(changed), /must list every/);
 });
 
-// Members a body may omit: RFC 9457 problem members, `modules` (Rust-only runtime), and
-// the Health members Node's `/health` never sends.
+// Members a body may omit: RFC 9457 problem members, `modules` (Rust-only runtime),
+// the Health members Node's `/health` never sends, and Build history's `undo`, which only
+// bursts and sends carry, with its `reason` only when refused (docs/build-history.md).
 const optionalMembers = {
   Problem: new Set(["code", "detail", "errors"]),
   Health: new Set(["modules", "degraded_detail", "single_user_auth", "single_user_setup_required", "owner_mapping_required", "github_oauth_configured", "discord_oauth_configured"]),
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
+  BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason"]),
 };
 
 for (const fixture of document.fixtures) {

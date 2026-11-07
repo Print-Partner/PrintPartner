@@ -37,6 +37,7 @@ command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
 [ "$(stat -c %d /var/lib/pp-iso)" != "$(stat -c %d /)" ] && mountpoint -q /var/lib/pp-iso || { echo "/var/lib/pp-iso must be its own filesystem (a dedicated partition or a loop-mounted image of fixed size), so a job cannot fill the host disk; see docs/development/pp-iso.md" >&2; exit 1; }
 src=$(findmnt -n -o SOURCE /var/lib/pp-iso)
 case "$src" in
+  *\[*) echo "/var/lib/pp-iso is a bind mount ($src); mount a block device or a fully allocated loop image directly" >&2; exit 1 ;;
   /dev/loop*)
     backing=$(losetup -nl -O BACK-FILE "$src" | head -n1 | tr -d ' ')
     [ -f "$backing" ] && [ $(( $(stat -c %b "$backing") * $(stat -c %B "$backing") )) -ge "$(stat -c %s "$backing")" ] || { echo "the backing file of /var/lib/pp-iso ($backing) is sparse; fully allocate it (fallocate), so its size is really reserved on the host disk" >&2; exit 1; } ;;

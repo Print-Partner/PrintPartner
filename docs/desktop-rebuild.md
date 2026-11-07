@@ -2743,6 +2743,8 @@ is refused (see Writer admission above), so no Node verify, monitor or claim
 writes `printer.checkoff_links`, progress or outcomes beside a burst. A burst
 does not run Node's unattributed-print claim or Spoolman deduction after verify;
 those are GRE-1169 and GRE-411 (deduction intent).
+MCP `propose_verify_printer_checkoff` applies through the same burst
+(GRE-1170, below).
 
 A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
 "additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
@@ -2784,6 +2786,48 @@ without that hash or its unit list (written before they existed) refuses with
 every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
+#### Reconcile by operation id (GRE-1170)
+
+`GET /printer-checkoff/verify-batch?idempotency_key=...` (also at `/api/v2`,
+same admission) answers what a key settled to without resending the body. The
+key is read like the burst's key (JS-trimmed, 1 to 200 characters), and it must
+appear exactly once, otherwise the answer is 400. The read writes no Checkoff
+state; as on every route, an API key's `last_used_at` may be recorded.
+
+| State | Body | Meaning |
+| --- | --- | --- |
+| `applied` | `{idempotency_key, state, applied_at, undone_at: null, receipt}` | The burst committed; `receipt` is the stored response |
+| `undone` | the same with `undone_at` | The burst committed and was undone |
+| `expired` | `applied_at`, `undone_at` and `receipt` are null | The burst committed, its receipt was trimmed, and the key cannot run again |
+| `unknown` | `applied_at`, `undone_at` and `receipt` are null | The key is in neither list, but the retired list is full (5,000 keys), so a key older than the newest 5,100 bursts may have been dropped. The lookup cannot tell whether it ran, and replay would treat it as new |
+| 404 `burst_not_found` | problem body | The key is in neither list and no key was ever dropped, so no burst used it and nothing was applied. Resending the same request with the same key is safe |
+
+#### MCP `propose_verify_printer_checkoff` (GRE-1170)
+
+The Rust MCP (`/mcp`, `/api/v1/mcp`, API key always required) ports Node's
+`propose_verify_printer_checkoff` with the same name and schema
+(`{link_id, decisions}`). The propose step reads the link in a writer
+transaction that changes no Checkoff state and refuses as Node does: `link_id
+and decisions are required`, `Checkoff link not found`, or `Checkoff link is
+not awaiting verification`. Nothing is written until `confirm_apply`.
+`confirm_apply` runs the proposal as a one-bed burst with the idempotency key
+`mcp:<action_id>`, so it shares this burst's receipt, replay, undo and farm log.
+It answers `{ok: true, result: <burst receipt>}`, which carries `undo_token`.
+Node answered with the single-verify body. A refused burst answers
+`{ok: false, status, detail}`, writes nothing and stays pending for a retry or
+dismiss.
+
+The action id is the operation id. `confirm_apply` for an action this session
+no longer holds (applied already, or proposed before a restart or in another
+session) looks up `mcp:<action_id>`. If that burst exists, the call answers
+`{ok, reconciled: true, action_id, detail, result, undone_at}` instead of
+Node's unknown-action error: `ok` is true while the burst stands, and false
+once it was undone or its receipt expired. Otherwise, including an `unknown`
+lookup, the call answers Node's unknown-action error. If the lookup cannot run
+(the writer is busy or past its deadline, or authentication fails), the call
+answers `{"error": "Checkoff is unavailable"}` and the action is not reported
+as unknown.
+
 The replacement UI's Today screen confirms one bed, or units picked on several
 beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a
 lost send with the same key; see `web/apps/ui/README.md` (Today).
@@ -2795,7 +2839,7 @@ unit decisions and imported-extra `additional_decisions`, and leaves out beds wi
 nothing to decide (a plate still `watching`), which the route would refuse.
 
 ```sh
-cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild,pp-api/desktop_rebuild -E 'test(verify_batch)'
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 

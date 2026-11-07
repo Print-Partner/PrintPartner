@@ -862,3 +862,72 @@ fn ticket_t_26_a_queue_left_in_the_legacy_setting_cannot_change() {
         assert_eq!(queue.apply(request), LEGACY);
     }
 }
+
+#[test]
+fn ticket_t_26_writes_keep_nodes_fifty_item_terminal_history() {
+    let ids = |prefix: &str, count: usize| -> Vec<String> {
+        (0..count).map(|i| format!("{prefix}{i}")).collect()
+    };
+    let stored = |queue: &Harness| -> Vec<(String, String)> {
+        let connection = queue.database();
+        let mut statement = connection
+            .prepare("SELECT id,state FROM printer_send_queue WHERE tenant_id=?1 ORDER BY position")
+            .unwrap();
+        statement
+            .query_map([&queue.tenant], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    // Node's "keeps newest terminal history within remaining capacity".
+    let queue = Harness::open();
+    let done = ids("t", 60);
+    let mut items = vec![("a", "p-a", "queued", None)];
+    items.extend(done.iter().map(|id| (id.as_str(), "p-b", "done", None)));
+    queue.seed(&items);
+    assert!(matches!(
+        queue.apply(Request::Remove { id: "a".into() }),
+        Reply::Item(_)
+    ));
+    let kept = stored(&queue);
+    assert_eq!(kept.len(), 50);
+    assert_eq!(kept[0].0, "t10", "the oldest terminal items go first");
+    assert_eq!(kept[49].0, "t59");
+
+    // Node's "never drops active items even when over MAX_ITEMS".
+    let queue = Harness::open();
+    let (queued, done) = (ids("q", 55), ids("t", 10));
+    let mut items: Vec<_> = queued
+        .iter()
+        .map(|id| (id.as_str(), "p-a", "queued", None))
+        .collect();
+    items.extend(done.iter().map(|id| (id.as_str(), "p-b", "done", None)));
+    queue.seed(&items);
+    assert!(matches!(
+        queue.apply(Request::Remove { id: "q0".into() }),
+        Reply::Item(_)
+    ));
+    let kept = stored(&queue);
+    assert_eq!(kept.len(), 54);
+    assert!(kept.iter().all(|(_, state)| state == "queued"));
+}
+
+#[test]
+fn ticket_t_26_dispatch_accepts_object_names_node_bounds_in_utf16_units() {
+    let queue = Harness::open();
+    queue.seed(&[("wide", "p-a", "queued", None)]);
+    let name = "零".repeat(100);
+    queue
+        .database()
+        .execute(
+            "UPDATE printer_send_queue SET checkoff_units=?1 WHERE id='wide'",
+            [json!([{"part_id": 4, "unit_index": 1, "object_name": name}]).to_string()],
+        )
+        .unwrap();
+    let job = queue.dispatch("wide");
+    let (_, document) = queue.job(&job);
+    assert!(
+        document.to_string().contains(&name),
+        "the name is kept whole"
+    );
+}

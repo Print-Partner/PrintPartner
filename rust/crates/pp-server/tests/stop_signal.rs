@@ -51,6 +51,13 @@ fn server_binary() -> PathBuf {
     }
 }
 
+/// Ends the test: kills the child so it cannot outlive a failure.
+fn fail(child: &mut Child, message: &str) -> ! {
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("{message}");
+}
+
 #[test]
 fn stop_signal_finishes_the_shutdown_and_releases_storage() {
     let root = scratch::Scratch::new("pp-stop-signal-");
@@ -65,15 +72,24 @@ fn stop_signal_finishes_the_shutdown_and_releases_storage() {
     own_process_group(&mut command);
     let mut child = command.spawn().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut origin = String::new();
-    stdout.read_line(&mut origin).unwrap();
-    assert!(origin.starts_with("http://"), "{origin}");
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        let mut origin = String::new();
+        let _ = stdout.read_line(&mut origin);
+        if sender.send(origin).is_err() {
+            return;
+        }
         let mut rest = String::new();
         let _ = stdout.read_to_string(&mut rest);
         let _ = sender.send(rest);
     });
+    // Startup includes release verification and the 32 s readiness budget.
+    let Ok(origin) = receiver.recv_timeout(Duration::from_secs(60)) else {
+        fail(&mut child, "pp-server printed no origin within 60 s");
+    };
+    if !origin.starts_with("http://") {
+        fail(&mut child, &format!("unexpected first line: {origin:?}"));
+    }
     send_stop_signal(&child);
     let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
@@ -81,15 +97,16 @@ fn stop_signal_finishes_the_shutdown_and_releases_storage() {
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("pp-server did not stop within 30 s of the stop signal");
+            fail(
+                &mut child,
+                "pp-server did not stop within 30 s of the stop signal",
+            );
         }
         std::thread::sleep(Duration::from_millis(50));
     };
     let rest = receiver
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .expect("pp-server stdout closes after it exits");
+        .recv_timeout(Duration::from_secs(5))
+        .expect("pp-server stdout closes within 5 s of its exit");
     assert!(status.success(), "{rest}");
     let receipt: serde_json::Value = serde_json::from_str(rest.trim()).unwrap();
     assert_eq!(receipt["storage_released"], true, "{receipt}");

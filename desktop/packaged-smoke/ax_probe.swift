@@ -165,8 +165,13 @@ case "tray":
         report[action] = Int(AXUIElementPerformAction(extra, action as CFString).rawValue)
         for _ in 0..<12 where item == nil {
             usleep(250_000)
+            // The app's own menu bar also has a Quit item; only the extra's
+            // menu, or a menu outside the menu bar, is the tray's.
             item = find(extra, role: kAXMenuItemRole, title: args[3])
-                ?? find(app, role: kAXMenuItemRole, title: args[3])
+            for child in elements(app, kAXChildrenAttribute)
+            where item == nil && text(child, kAXRoleAttribute) != kAXMenuBarRole {
+                item = find(child, role: kAXMenuItemRole, title: args[3])
+            }
         }
     }
     guard let menuItem = item else {

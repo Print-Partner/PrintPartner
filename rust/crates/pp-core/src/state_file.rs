@@ -74,12 +74,7 @@ pub(super) fn publish_with(
             boundary(Boundary::Rename)?;
             pp_os::publish_rename(&temporary, &owner.data_dir().join(name))?;
         } else {
-            #[cfg(unix)]
-            std::fs::hard_link(&temporary, owner.data_dir().join(name))?;
-            // A write-through move: Windows cannot flush the directory
-            // afterwards, so the publication itself must be durable.
-            #[cfg(windows)]
-            pp_os::publish_new(&temporary, &owner.data_dir().join(name))?;
+            publish_first(&temporary, &owner.data_dir().join(name))?;
             boundary(Boundary::HardLink)?;
         }
         Ok(())
@@ -93,6 +88,22 @@ pub(super) fn publish_with(
     boundary(Boundary::DirectorySync)?;
     pp_os::sync_directory(owner.data_dir())?;
     Ok(())
+}
+
+/// Links the first version into place without replacing a concurrent
+/// winner, leaving the temporary for the shared cleanup. The directory sync
+/// that follows makes the link durable.
+#[cfg(unix)]
+fn publish_first(temporary: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    std::fs::hard_link(temporary, target)
+}
+
+/// Moves the first version into place write-through without replacing a
+/// concurrent winner: Windows cannot flush the directory afterwards, so the
+/// publication itself must be durable.
+#[cfg(windows)]
+fn publish_first(temporary: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    pp_os::publish_new(temporary, target)
 }
 
 #[cfg(test)]

@@ -592,7 +592,6 @@ fn append_evidence_with_directory_sync(
 ) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(evidence)?;
     line.push(b'\n');
-    #[cfg(windows)]
     create_evidence_log(data_dir)?;
     let mut options = fs::OpenOptions::new();
     options.append(true).create(true);
@@ -615,6 +614,13 @@ fn append_evidence_with_directory_sync(
     file.write_all(&line)?;
     file.sync_all()?;
     sync_directory(data_dir)
+}
+
+/// Unix creates a missing evidence log in the append itself; the directory
+/// sync after it makes the new entry durable.
+#[cfg(unix)]
+fn create_evidence_log(_data_dir: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Windows cannot flush a directory, so a missing evidence log is created

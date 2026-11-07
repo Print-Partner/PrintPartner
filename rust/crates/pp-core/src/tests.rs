@@ -10,3 +10,12 @@ pub(crate) use unix as platform;
 pub(crate) mod windows;
 #[cfg(windows)]
 pub(crate) use windows as platform;
+
+/// `path` made absolute on this host: Windows needs a drive.
+pub(crate) fn abs(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{path}")
+    } else {
+        path.to_owned()
+    }
+}

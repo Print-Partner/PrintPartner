@@ -13,8 +13,6 @@ pub(crate) use std::os::unix::fs::symlink as symlink_file;
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) use std::os::unix::fs::symlink as symlink_dir;
 
-pub(crate) type RawSocket = std::os::fd::RawFd;
-
 /// A FIFO: an entry that is neither a file, a directory nor a link.
 pub(crate) fn special_entry(path: &Path) {
     let path = CString::new(path.as_os_str().as_bytes()).unwrap();
@@ -59,13 +57,13 @@ pub(crate) fn killed(status: &ExitStatus) -> bool {
     status.signal() == Some(libc::SIGKILL)
 }
 
-pub(crate) fn raw_socket(listener: &std::net::TcpListener) -> RawSocket {
+pub(crate) fn raw_socket(listener: &std::net::TcpListener) -> std::os::fd::RawFd {
     std::os::fd::AsRawFd::as_raw_fd(listener)
 }
 
 /// The type and local address of the socket `fd` names, or `None` when `fd`
 /// is not an open socket.
-pub(crate) fn socket_name(fd: RawSocket) -> Option<(i32, Vec<u8>)> {
+pub(crate) fn socket_name(fd: std::os::fd::RawFd) -> Option<(i32, Vec<u8>)> {
     let mut kind: libc::c_int = 0;
     let mut kind_len = std::mem::size_of_val(&kind) as libc::socklen_t;
     let kind_status = unsafe {

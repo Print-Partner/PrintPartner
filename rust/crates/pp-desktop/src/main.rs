@@ -328,9 +328,17 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
         }
         app_handle.exit(0);
     });
+    let runtime_handle = runtime.handle().clone();
+    let mut status_watch = Some(status_watch);
     let exit_code = app.run_return(move |_app, event| {
-        if matches!(event, tauri::RunEvent::Exit) {
-            status_watch.abort();
+        // Finish the watch task before the app is torn down, so its app
+        // handle is never the last one and nothing AppKit owns is dropped
+        // on a tokio worker (GRE-1254).
+        if matches!(event, tauri::RunEvent::Exit)
+            && let Some(watch) = status_watch.take()
+        {
+            watch.abort();
+            let _ = runtime_handle.block_on(watch);
         }
         #[cfg(feature = "desktop_rebuild")]
         if matches!(event, tauri::RunEvent::Ready)
@@ -379,6 +387,13 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
     println!("{}", serde_json::to_string(&receipt)?);
     ensure!(receipt.complete(), "Desktop shutdown incomplete");
     Ok(u8::try_from(exit_code).unwrap_or(1))
+}
+
+const TRAY_ID: &str = "printpartner";
+
+struct TrayStatusItems {
+    status: MenuItem<tauri::Wry>,
+    recover: MenuItem<tauri::Wry>,
 }
 
 fn build_tray(
@@ -450,7 +465,7 @@ fn build_tray(
         .context("Desktop icon missing")?
         .clone()
         .to_owned();
-    let tray = TrayIconBuilder::with_id("printpartner")
+    TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon.clone())
         .tooltip("Print Partner")
         .menu(&menu)
@@ -482,6 +497,10 @@ fn build_tray(
             _ => {}
         })
         .build(app)?;
+    // AppKit objects must be dropped on the main thread. The watch task runs
+    // on a tokio worker, so it holds only the app handle and looks the tray
+    // and its status items up inside run_on_main_thread (GRE-1254).
+    app.manage(TrayStatusItems { status, recover });
     let app_handle = app.handle().clone();
     let watch = tauri::async_runtime::spawn(async move {
         let mut receiver = status_receiver;
@@ -500,12 +519,14 @@ fn build_tray(
                 RuntimeStatus::Node(state) => gate.observe(state),
                 RuntimeStatus::Rust(_) => false,
             };
-            let (status, recover, tray) = (status.clone(), recover.clone(), tray.clone());
+            let app = app_handle.clone();
             if app_handle
                 .run_on_main_thread(move || {
-                    let _ = status.set_text(text);
-                    let _ = recover.set_enabled(guarded);
-                    if let Some(badged) = badged {
+                    if let Some(items) = app.try_state::<TrayStatusItems>() {
+                        let _ = items.status.set_text(text);
+                        let _ = items.recover.set_enabled(guarded);
+                    }
+                    if let (Some(badged), Some(tray)) = (badged, app.tray_by_id(TRAY_ID)) {
                         let _ = tray.set_icon(Some(badged));
                     }
                 })

@@ -887,8 +887,17 @@ fn ticket_t_26_writes_keep_nodes_fifty_item_terminal_history() {
     };
     // Node's "keeps newest terminal history within remaining capacity" and
     // "never drops active items even when over MAX_ITEMS": seed, remove the
-    // first item, and compare what stays.
-    for (queued, done, kept_len, first) in [(1, 60, 50, "t10"), (55, 10, 54, "q1")] {
+    // first item, and compare every row that stays, in order.
+    let rows =
+        |prefix: &str, range: std::ops::Range<usize>, state: &str| -> Vec<(String, String)> {
+            range
+                .map(|i| (format!("{prefix}{i}"), state.to_owned()))
+                .collect()
+        };
+    for (queued, done, expected) in [
+        (1, 60, rows("t", 10..60, "done")),
+        (55, 10, rows("q", 1..55, "queued")),
+    ] {
         let queue = Harness::open();
         let (queued, done) = (ids("q", queued), ids("t", done));
         let mut items: Vec<_> = queued
@@ -901,9 +910,7 @@ fn ticket_t_26_writes_keep_nodes_fifty_item_terminal_history() {
             queue.apply(Request::Remove { id: "q0".into() }),
             Reply::Item(_)
         ));
-        let kept = stored(&queue);
-        assert_eq!((kept.len(), kept[0].0.as_str()), (kept_len, first));
-        assert!(!kept.iter().any(|(id, _)| id == "q0"), "q0 was trimmed");
+        assert_eq!(stored(&queue), expected);
     }
 }
 

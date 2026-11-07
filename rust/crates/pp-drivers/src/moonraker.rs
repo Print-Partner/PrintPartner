@@ -1,4 +1,6 @@
 //! One cancellable, bounded status-only task per enabled host. No storage/send APIs.
+//! Hosts are Moonraker unless a host says it is PrusaLink (GRE-1175), which
+//! the watcher polls through the PrusaLink driver's status read.
 use anyhow::Result;
 use pp_api_types::printer_status::{PrinterHostState as State, PrinterHostStatus as Status};
 use pp_net::outbound::{HttpGuard, SystemResolver};
@@ -34,7 +36,24 @@ pub struct Host {
     pub base_url: String,
     pub api_key: Option<String>,
     pub enabled: bool,
+    /// Node's host snapshot lists only Moonraker hosts and has no such field.
+    #[serde(skip, default)]
+    pub kind: HostKind,
 }
+/// Which status read a watched host gets.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum HostKind {
+    #[default]
+    Moonraker,
+    /// Polled with the PrusaLink driver's Digest-authenticated status read.
+    PrusaLink {
+        username: String,
+        password: Option<String>,
+    },
+}
+/// A PrusaLink status read is a Digest probe plus one or two GETs, so it
+/// runs at the web client's default status cadence rather than Moonraker's.
+pub const PRUSALINK_INTERVAL: Duration = Duration::from_secs(5);
 /// Shown for an HTTPS host when no Node runtime can serve it (until GRE-359).
 pub const HTTPS_UNAVAILABLE: &str = "HTTPS printer monitoring is not available yet";
 /// Shown when a host redirects and no Node runtime can follow it; polling stops.
@@ -164,6 +183,7 @@ pub struct Watchers {
     stale_since: Option<tokio::time::Instant>,
     guard: HttpGuard,
     interval: Duration,
+    prusalink_interval: Duration,
     port: Port,
     heard: Heard,
     /// False in the Rust-only runtime: no Node serves HTTPS or redirecting
@@ -172,14 +192,16 @@ pub struct Watchers {
 }
 impl Watchers {
     pub fn new() -> Result<Self> {
-        Ok(Self::with_guard(
+        let mut watchers = Self::with_guard(
             HttpGuard::new(
                 Arc::new(SystemResolver),
                 Duration::from_secs(5),
                 2 * 1024 * 1024,
             )?,
             Duration::from_secs(2),
-        ))
+        );
+        watchers.prusalink_interval = PRUSALINK_INTERVAL;
+        Ok(watchers)
     }
     pub fn with_guard(guard: HttpGuard, interval: Duration) -> Self {
         assert!(!interval.is_zero());
@@ -189,6 +211,7 @@ impl Watchers {
             stale_since: None,
             guard,
             interval,
+            prusalink_interval: interval,
             port: Port {
                 observed: watch::channel(Observed::default()).0,
                 entered: Entered::default(),
@@ -268,6 +291,13 @@ impl Watchers {
         self.stop().await;
         self.known = None;
     }
+    /// How often a host of `kind` is polled while it answers.
+    fn interval_for(&self, kind: &HostKind) -> Duration {
+        match kind {
+            HostKind::Moonraker => self.interval,
+            HostKind::PrusaLink { .. } => self.prusalink_interval,
+        }
+    }
     /// The caller serializes snapshots; join removed/replaced tasks before spawning.
     /// An empty snapshot is also the sleep/shutdown/backend-loss cancellation path.
     pub async fn replace(&mut self, hosts: Vec<Host>) -> Result<()> {
@@ -328,7 +358,7 @@ impl Watchers {
                 let port = self.port.clone();
                 let heard = self.heard.clone();
                 let guard = self.guard.clone();
-                let interval = self.interval;
+                let interval = self.interval_for(&config.kind);
                 Some(tokio::spawn(async move {
                     let mut failures = 0u32;
                     loop {
@@ -346,7 +376,7 @@ impl Watchers {
                             }
                             Err(failure) => {
                                 failures = failures.saturating_add(1);
-                                let offline = Status::offline(&failure.message());
+                                let offline = failure.status();
                                 publish(&current, &port, &config.id, Slot::Status(offline));
                                 backoff(interval, failures)
                             }
@@ -467,17 +497,21 @@ fn needs_node(base_url: &str) -> bool {
         .get(..6)
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https:"))
 }
-/// A fixed set of messages: printer/transport error text is never echoed.
+/// A fixed set of Moonraker messages: printer/transport error text is never
+/// echoed. A PrusaLink offline status is the driver's, as Node's adapter
+/// reports it.
 enum Failure {
     Redirect,
     Http(u16),
     Unavailable,
+    Offline(Box<Status>),
 }
 impl Failure {
-    fn message(&self) -> String {
+    fn status(self) -> Status {
         match self {
-            Failure::Http(status) => format!("Moonraker returned HTTP {status}"),
-            _ => "Moonraker status unavailable".into(),
+            Failure::Http(status) => Status::offline(&format!("Moonraker returned HTTP {status}")),
+            Failure::Offline(status) => *status,
+            _ => Status::offline("Moonraker status unavailable"),
         }
     }
 }
@@ -494,6 +528,23 @@ fn backoff(interval: Duration, failures: u32) -> Duration {
         .min(Duration::from_secs(60))
 }
 async fn poll(guard: &HttpGuard, host: &Host) -> Result<Status, Failure> {
+    if let HostKind::PrusaLink { username, password } = &host.kind {
+        let driver = crate::prusalink::Driver::new(
+            guard.clone(),
+            &host.base_url,
+            username,
+            password.as_deref(),
+            None,
+        );
+        // An offline status is an unanswered poll: it backs off and does not
+        // count as heard. Anything else, an idle 204 included, answered.
+        let status = driver.status().await;
+        return if status.state == State::Offline {
+            Err(Failure::Offline(Box::new(status)))
+        } else {
+            Ok(status)
+        };
+    }
     // Accept only an origin plus optional provider path; never append to a query.
     let base = host.base_url.trim().trim_end_matches('/');
     if base.contains('?') || base.contains('#') {
@@ -650,6 +701,7 @@ mod tests {
             base_url: url,
             api_key: Some("fixture-key".into()),
             enabled: true,
+            kind: Default::default(),
         }
     }
     async fn wait_calls(calls: &AtomicUsize, count: usize) {

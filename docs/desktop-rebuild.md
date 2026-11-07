@@ -108,13 +108,25 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   the setting every second, so a changed, disabled or removed host replaces or
   cancels its one poller. A malformed setting stops every poller and the route
   answers 503 `Printer monitoring unavailable`.
+  PrusaLink status (GRE-1175): the same watchers also poll the stored
+  PrusaLink hosts, through the PrusaLink driver's Digest-authenticated status
+  read, every 5 s (the web client's default status cadence; Moonraker polls
+  every 2 s). Node reads PrusaLink status on demand, so the published status is
+  the one Node's adapter reports, including its offline messages. An offline
+  read backs off like a failed Moonraker poll and does not count as heard.
+  PrusaLink rows come after the Moonraker snapshot and are watched only while
+  the total stays within the 128-host cap; a PrusaLink row past the cap, or
+  with an id a Moonraker row already has, is not watched.
   `GET`/`HEAD /api/v1/integrations/{id}/status` is the `pp-api`
   `printer_status` route. It authenticates like every Rust route, then answers
-  the cached `PrinterHostStatus`; it never polls a printer on demand. A
-  non-Moonraker id answers 404 `Integration not found`; nothing goes to Node.
+  the cached `PrinterHostStatus`; it never polls a printer on demand. An
+  id that is not a watched Moonraker or PrusaLink host answers 404
+  `Integration not found`; nothing goes to Node.
   An HTTPS host reports `offline` with `HTTPS printer monitoring is not
-  available yet` until GRE-359, and a host that redirects reports `offline`
-  and stops polling. Hiding the window keeps polling; `suspend_monitoring`
+  available yet` until GRE-359, and a Moonraker host that redirects reports
+  `offline` and stops polling. A PrusaLink redirect is the driver's
+  `PrusaLink returned HTTP <status>` offline status, as in Node, and the
+  poller keeps backing off. Hiding the window keeps polling; `suspend_monitoring`
   (sleep) stops every poller and `resume_monitoring` starts them again.
   Monitoring only reads: no Checkoff, queue or job writes and no sends.
   `Gateway::printer_observations()` is the read-only in-process port for later
@@ -172,9 +184,9 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   `/files` and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are
   read-only on the printer: no upload or print start, and only PrusaLink's
-  single Digest resend after a 401. PrusaLink reports
-  no status capability because only Moonraker has a watcher; Bambu reads as
-  having no capabilities. See
+  single Digest resend after a 401. Moonraker and PrusaLink both report the
+  status capability, except a PrusaLink row the watchers do not poll (see
+  above); Bambu reads as having no capabilities. See
   [Printer-host reads](printer-host-reads.md).
 
   ```sh

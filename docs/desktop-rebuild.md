@@ -3164,13 +3164,15 @@ have units and none remaining (else 400 `Archive only when print remaining is
 failure is 500 `Accepted Plan data is inconsistent`.
 
 `fixtures/parity/build-header/node.json` is Node's answer, with
-`PP_DESKTOP_REBUILD=1`, for 50 requests in 12 phases on copies of
+`PP_DESKTOP_REBUILD=1`, for 53 requests in 13 phases on copies of
 `accepted-plate-node.db`. `build_header_patch_and_archive_match_node` replays
-it through `build_router`: 46 cases match Node's status, body and changed
-tables. Four are declared corrections that write nothing: the two
+it through `build_router`: 47 cases match Node's status, body and changed
+tables. Six are declared corrections that write nothing: the two
 duplicate-name renames (409 above), a blank name beside an archive (400, where
-Node answered 500), and a body that is not JSON (400 `Request is invalid`
-without Fastify's parser code).
+Node answered 500), a PATCH or archive body that is not JSON under
+`Content-Type: application/json` (400 `Request is invalid` without Fastify's
+parser code), and a `null` PATCH body (400 `Request is invalid`, where Node
+answered 500). An archive otherwise ignores its body, as Node does.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api --test build_header_http

@@ -143,8 +143,11 @@ fn correction(id: &str) -> Option<(u16, Value)> {
         "rename_taken" | "rename_taken_with_archive" => Some((409, taken)),
         // Node answers 500 when the rename fails beside an archive.
         "blank_name_with_archive" => Some((400, json!({"detail": "Profile name is required"}))),
-        // Rust does not expose Fastify's parser codes or messages.
-        "not_json" => Some((400, json!({"detail": "Request is invalid"}))),
+        // Rust does not expose Fastify's parser codes or messages, and Node
+        // reads `body.archived` from a `null` body and answers 500.
+        "not_json" | "archive_not_json" | "null_body" => {
+            Some((400, json!({"detail": "Request is invalid"})))
+        }
         _ => None,
     }
 }
@@ -207,5 +210,5 @@ async fn build_header_patch_and_archive_match_node() {
         drop(router);
         owner.shutdown().unwrap();
     }
-    assert_eq!((matched, corrected), (46, 4));
+    assert_eq!((matched, corrected), (47, 6));
 }

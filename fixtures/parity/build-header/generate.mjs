@@ -36,7 +36,7 @@ const INCOMPLETE = "UPDATE print_progress SET completed=0, assembled=0 WHERE par
 const TAKEN = "INSERT INTO build_profiles(id,tenant_id,name) VALUES(3,'default','Taken');";
 const patch = (id, body, url = "/plans/1") => ({ id, method: "PATCH", url, body });
 const raw = (id, payload, url = "/plans/1") => ({ id, method: "PATCH", url, payload });
-const archive = (id, url = "/plans/1/archive") => ({ id, method: "POST", url });
+const archive = (id, url = "/plans/1/archive", payload) => ({ id, method: "POST", url, payload });
 
 const PHASES = [
   { name: "header", requests: [
@@ -58,6 +58,7 @@ const PHASES = [
     patch("text_id", { name: "x" }, "/plans/abc"),
     patch("hex_id", { name: "Hex" }, "/plans/0x1"),
     raw("not_json", "{"),
+    raw("null_body", "null"),
   ] },
   { name: "duplicate_name", seed: TAKEN, requests: [
     patch("rename_taken", { name: " Taken " }),
@@ -82,6 +83,7 @@ const PHASES = [
     patch("invalid_toggles_unused", { name: "Fine" }),
   ] },
   { name: "archive", requests: [
+    archive("archive_not_json", "/plans/1/archive", "{"),
     archive("archive_flat"),
     archive("archive_again_v2", "/api/v2/plans/1/archive"),
     patch("patch_archived_again", { archived: true }),
@@ -90,6 +92,7 @@ const PHASES = [
     archive("archive_text_id", "/plans/abc/archive"),
   ] },
   { name: "archive_v1", requests: [archive("archive_v1", "/api/v1/plans/1/archive")] },
+  { name: "archive_object", requests: [archive("archive_object_body", "/plans/1/archive", "{}")] },
   { name: "patch_archive", requests: [
     patch("rename_and_archive_v2", { name: "Done", archived: true, touch_last_used: true }, "/api/v2/plans/1"),
   ] },

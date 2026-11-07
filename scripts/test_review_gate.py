@@ -209,6 +209,16 @@ class ReviewGateStepTests(unittest.TestCase):
         result = self.assertPasses(checks=checks, checks_seq=[checks], wait="5")
         self.assertNotIn("Waiting for", result.stdout)
 
+    def test_a_queued_rerun_is_awaited_and_judged_instead_of_an_older_pass(self):
+        old = [run("claude-code-review"), run("claude-security-review")]
+        queued = [{**run("claude-code-review", None), "status": "queued", "started_at": None},
+                  {**run("claude-security-review", None), "status": "queued", "started_at": None}]
+        done = [run("claude-code-review", started="2026-11-04T17:00:00Z"),
+                run("claude-security-review", started="2026-11-04T17:00:00Z")]
+        waited = self.assertPasses(checks_seq=[old + queued, done + old], checks=done + old, wait="5")
+        self.assertIn("Waiting for claude-code-review, claude-security-review", waited.stdout)
+        self.assertFails(checks=old + queued, checks_seq=[old + queued], wait="1")
+
     def test_a_waiting_gate_stops_when_the_head_moves(self):
         review = [run("claude-code-review", None), run("claude-security-review", None)]
         result = self.gate(checks_seq=[review], checks=review, wait="5", moved_to=OLD)

@@ -2991,7 +2991,8 @@ for the upload.
   fields or size limit answers first, and without that part's own size limit.
   Node has no cap on the whole body; here it
   is 65 MiB, and a body past it that is still inside the file part is the
-  413, anywhere else the unreadable 400. Answers still differ from Node for
+  413 (the unreadable 400 when that part is named after an
+  `Object.prototype` member), anywhere else the unreadable 400. Answers still differ from Node for
   requests the web client never sends: an empty multipart body (the
   unreadable 400 here, `profile_id is required` in Node), a field part typed
   `application/json` (read as text here, JSON-parsed in Node), a file name

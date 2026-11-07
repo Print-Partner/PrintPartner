@@ -22,6 +22,11 @@ pub(super) const VERIFY: &str = "propose_verify_printer_checkoff";
 pub(super) const KEY_PREFIX: &str = "mcp:";
 const UNAVAILABLE: &str = "Checkoff is unavailable";
 
+/// JS `String.prototype.trim`: Rust whitespace except U+0085, plus U+FEFF.
+fn js_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
+}
+
 /// Product tools on storage; every other tool still has no Rust port.
 pub(super) struct CheckoffDomain {
     progress: ProgressClient,
@@ -70,9 +75,7 @@ impl CheckoffDomain {
             })
         };
         let link_id = match args.get("link_id") {
-            Some(Value::String(id)) => {
-                id.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
-            }
+            Some(Value::String(id)) => js_trim(id),
             _ => "",
         };
         let decisions = args
@@ -152,9 +155,7 @@ impl DomainPort for CheckoffDomain {
     fn reconcile(&self, action_id: &str) -> Result<Option<Value>, String> {
         // The burst lookup JS-trims its key, but Node matches action ids
         // exactly, so an id that trimming would change names no action.
-        if action_id.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
-            != action_id
-        {
+        if js_trim(action_id) != action_id {
             return Ok(None);
         }
         let burst = match self.run(Request::BurstStatus {

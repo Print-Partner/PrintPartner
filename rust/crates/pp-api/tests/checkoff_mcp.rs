@@ -28,6 +28,8 @@ mod checkoff_http;
 #[path = "../../pp-storage/tests/common/js_json.rs"]
 mod js_json;
 
+const UNKNOWN_ACTION: &str = "Unknown, in-flight, or already applied/dismissed action_id";
+
 fn policy() -> auth::AuthPolicy {
     auth::AuthPolicy {
         registration: auth::RegistrationPolicy::Open,
@@ -278,10 +280,7 @@ async fn verify_batch_mcp_applies_once_and_reconciles_by_action_id_across_restar
     for padded in [format!("{action} "), format!("\u{feff}{action}\u{feff}")] {
         let (unknown, is_error) = mcp.confirm(&padded).await;
         assert!(is_error, "{unknown}");
-        assert_eq!(
-            unknown["error"],
-            "Unknown, in-flight, or already applied/dismissed action_id"
-        );
+        assert_eq!(unknown["error"], UNKNOWN_ACTION);
     }
     assert_eq!(printed(&fixture), before + 1);
     let (status, lookup) = served
@@ -371,10 +370,7 @@ async fn verify_batch_mcp_undo_conflicts_and_lookups_write_nothing() {
     assert_eq!(pending, json!({ "actions": [] }));
     let (unknown, is_error) = mcp.confirm("not-an-action").await;
     assert!(is_error);
-    assert_eq!(
-        unknown["error"],
-        "Unknown, in-flight, or already applied/dismissed action_id"
-    );
+    assert_eq!(unknown["error"], UNKNOWN_ACTION);
 
     // A refused burst writes nothing and stays pending for a retry.
     let refused = mcp
@@ -442,15 +438,9 @@ async fn verify_batch_lookup_reports_expired_and_unknown_keys() {
     assert_eq!((status, &forgotten["state"]), (200, &json!("unknown")));
     let (unknown_action, is_error) = mcp.confirm("never-sent").await;
     assert!(is_error);
-    assert_eq!(
-        unknown_action["error"],
-        "Unknown, in-flight, or already applied/dismissed action_id"
-    );
+    assert_eq!(unknown_action["error"], UNKNOWN_ACTION);
     let (overlong, is_error) = mcp.confirm(&"x".repeat(200)).await;
     assert!(is_error);
-    assert_eq!(
-        overlong["error"],
-        "Unknown, in-flight, or already applied/dismissed action_id"
-    );
+    assert_eq!(overlong["error"], UNKNOWN_ACTION);
     served.stop().await;
 }

@@ -45,6 +45,8 @@ impl Fixture {
         flag: &str,
         router: impl FnOnce(AcceptedHttpConfig, &WriterOwner) -> Router,
     ) -> (WriterOwner, Router) {
+        // Some #[path] copies only call open_with(); keep open live without #[allow].
+        let _: fn(&Self, &str) -> (WriterOwner, Router) = Self::open;
         let owner = WriterOwner::open(&self.0, Limits::default()).unwrap().0;
         let config = AcceptedHttpConfig::from_startup(ORIGIN, "default", Some(flag)).unwrap();
         let router = router(config, &owner);

@@ -18,7 +18,6 @@ use std::{
     time::Duration,
 };
 
-#[allow(dead_code)]
 #[path = "support/checkoff_http.rs"]
 mod checkoff_http;
 #[path = "../../pp-storage/tests/common/js_json.rs"]

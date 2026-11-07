@@ -3295,6 +3295,8 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "http-body",
+ "hyper",
+ "hyper-util",
  "lettre",
  "log",
  "pp-services",

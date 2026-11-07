@@ -16,10 +16,12 @@ const DATABASE: &[u8] =
 
 const SESSION: &str = "pp_session=required-unit-fixture-secret";
 
-pub struct Fixture(PathBuf);
+pub struct Fixture(pub PathBuf);
 
 impl Fixture {
     pub fn new() -> Self {
+        // Some #[path] copies only use the fixture; keep the router helpers live without #[allow].
+        let _ = (Self::open, post, send);
         let path = tempfile::tempdir().unwrap().keep();
         std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
         std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();

@@ -45,7 +45,7 @@ Any agent or person can take over Print Partner Desktop work: Capy, Factory Droi
 | Execution record | Linear, team GRE, project "Print Partner Desktop (Rust core)". The newest **Handoff** comment on a ticket says where its work stands. |
 | Code | GitHub `poitee/printpartner`. All work in progress is on a pushed branch or an open PR. |
 
-The Notion page [Agent handoff: how to take over any lane](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5) holds the operating rules and Chad's decisions, newest first. Read it before you take over. If it disagrees with this page or the code, stop and ask, as for a [task brief](#start-from-a-task-brief).
+The Notion page [Agent handoff: how to take over any lane](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5) holds the operating rules and Chad's decisions, newest first. Read it before you take over. [Sources of truth](contributing.md#sources-of-truth) says which page wins when they disagree. If it disagrees with this page or the code, stop and ask, as for a [task brief](#start-from-a-task-brief).
 
 ### Pick up a ticket
 
@@ -69,6 +69,8 @@ Blockers: [none, or who must do what]
 ```
 
 Never leave work only on a machine. Push it to a branch before you stop. If you can't push, describe what is unpushed in the Handoff. Put every decision or constraint you rely on in the Handoff or the PR description; session notes, chat history, and `/tmp` files are gone for the next reader.
+
+Without Linear access, you still follow these steps through the task owner. The owner puts the newest Handoff in your [task brief](#start-from-a-task-brief) and posts your claim on the ticket. When you stop, write your Handoff in the PR description, or give it to the owner if there is no PR, and the owner posts it on the ticket.
 
 ## Set up and run checks
 

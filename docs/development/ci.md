@@ -589,9 +589,11 @@ rebuild, `desktop-e2e`, `desktop-webkit`), so a slow Ubuntu mirror cannot stall 
 them and install from the mirror as before. The key is the runner OS and architecture, the
 runner image version, the ISO week and a hash of the package list. The week limits how long a
 cache goes stale: Ubuntu security updates change what `apt-get update` resolves, a restored
-cache then still downloads the newer packages, and the first `main` push of a new week saves a
-fresh set. Only pushes to `main` (not pull requests, merge groups or other refs) save the cache,
-and only when the exact key missed; pull requests restore only. Each install logs
+cache then still downloads the newer packages, and the first hosted run on `main` of a new week saves a
+fresh set. Only a hosted run on `main` that is not a pull request saves, and only when the exact key
+missed: pushes and manual runs of `desktop-e2e` and `desktop-webkit` (always hosted) and the nightly
+`rust-cross-os` schedule. Main pushes of `rust (linux)` run on pp-local, which skips the cache steps
+and saves nothing. Pull requests restore only. Each install logs
 `apt install took N s (cache hit: ...)`. `chain-tip-gate` keeps its inline install.
 
 ### Superseded runs

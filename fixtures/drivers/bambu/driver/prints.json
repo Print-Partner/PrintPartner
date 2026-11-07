@@ -1,0 +1,115 @@
+{
+  "pushall-idle": {
+    "file": "../pushall-idle.json"
+  },
+  "pushall-printing": {
+    "file": "../pushall-printing.json"
+  },
+  "pushall-error": {
+    "file": "../pushall-error.json"
+  },
+  "ams-tray-synthetic": {
+    "file": "../ams-tray-synthetic.json"
+  },
+  "paused-string-numbers": {
+    "print": {
+      "gcode_state": "PAUSE",
+      "mc_percent": "42.5",
+      "mc_remaining_time": " 7 ",
+      "gcode_file": "plate_1.gcode",
+      "nozzle_temper": "215",
+      "bed_temper": "0x3c"
+    }
+  },
+  "running-lowercase-padded": {
+    "print": {
+      "gcode_state": " running ",
+      "mc_percent": 150,
+      "mc_remaining_time": 0.4,
+      "subtask_name": "  ",
+      "gcode_file": " part.3mf "
+    }
+  },
+  "prepare-negative-progress": {
+    "print": {
+      "gcode_state": "PREPARE",
+      "mc_percent": -3,
+      "mc_remaining_time": -1
+    }
+  },
+  "slicing-no-file": {
+    "print": {
+      "gcode_state": "SLICING",
+      "mc_percent": "abc",
+      "mc_remaining_time": "Infinity"
+    }
+  },
+  "init-blank-numbers": {
+    "print": {
+      "gcode_state": "INIT",
+      "mc_percent": "",
+      "mc_remaining_time": "  ",
+      "nozzle_temper": "",
+      "bed_target_temper": "1e2"
+    }
+  },
+  "finish-with-file": {
+    "print": {
+      "gcode_state": "FINISH",
+      "mc_percent": 100,
+      "subtask_name": "done.3mf"
+    }
+  },
+  "finish-no-file": {
+    "print": {
+      "gcode_state": "FINISH"
+    }
+  },
+  "offline-token": {
+    "print": {
+      "gcode_state": "OFFLINE",
+      "mc_percent": 12
+    }
+  },
+  "unknown-token": {
+    "print": {
+      "gcode_state": "CALIBRATING",
+      "mc_percent": 12,
+      "subtask_name": "cal"
+    }
+  },
+  "blank-state": {
+    "print": {
+      "gcode_state": "",
+      "nozzle_temper": null,
+      "bed_temper": true
+    }
+  },
+  "missing-state": {
+    "print": {
+      "nozzle_temper": {},
+      "nozzle_target_temper": [
+        1
+      ],
+      "bed_temper": "0b101",
+      "bed_target_temper": "-Infinity"
+    }
+  },
+  "half-percent": {
+    "print": {
+      "gcode_state": "RUNNING",
+      "mc_percent": 42.5,
+      "mc_remaining_time": "0.5",
+      "subtask_name": "half"
+    }
+  },
+  "hex-and-octal": {
+    "print": {
+      "gcode_state": "RUNNING",
+      "mc_percent": "0x10",
+      "mc_remaining_time": "0o7",
+      "nozzle_temper": "0X1f",
+      "bed_temper": "0x"
+    }
+  }
+}

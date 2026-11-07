@@ -137,6 +137,22 @@ impl Farm {
             .unwrap()
     }
 
+    /// The newest Checkoff link's `print_link_grams` row as
+    /// `[grams, units, basis, grams_per_mm, measured_mm]`.
+    fn grams(&self) -> Value {
+        let links = self.links();
+        let link = links.as_array().unwrap().last().unwrap()["id"].clone();
+        let row: String = self
+            .database()
+            .query_row(
+                "SELECT json_array(grams,units,basis,grams_per_mm,measured_mm) FROM print_link_grams WHERE tenant_id='default' AND link_id=?1",
+                [link.as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&row).unwrap()
+    }
+
     fn links(&self) -> Value {
         self.database()
             .query_row(
@@ -188,15 +204,7 @@ async fn ticket_t_26_upload_only_send_uploads_once_and_never_calls_print_start()
     assert_eq!(result["checkoff_units"], 1);
     assert_eq!(result["filament_estimate_g"], 12.5);
     assert_eq!(result["filament_grams_per_mm"], 0.0025);
-    let grams: (f64, i64, String, f64) = farm
-        .database()
-        .query_row(
-            "SELECT grams,units,basis,grams_per_mm FROM print_link_grams WHERE tenant_id='default' AND link_id=?1",
-            [link["id"].as_str().unwrap()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap();
-    assert_eq!(grams, (12.5, 1, "estimated".into(), 0.0025));
+    assert_eq!(farm.grams(), json!([12.5, 1, "estimated", 0.0025, null]));
     assert_eq!(
         (
             link["profile_id"].clone(),

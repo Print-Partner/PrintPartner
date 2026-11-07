@@ -22,6 +22,10 @@ def relevant(path, kind):
     if kind == "actions":
         return (path.startswith((".github/workflows/", ".github/actions/"))
                 or path in {".github/zizmor.yml", ".github/actionlint.yaml", ".github/actionlint.yml"})
+    # Markdown is not a Rust input, except the legal texts that pp-api and pp-gateway embed with
+    # include_str!/include_bytes! and the fixture READMEs that sit inside hashed fixture trees.
+    if path.endswith(".md") and not path.startswith(("web/apps/server/src/data/", "fixtures/")):
+        return False
     return (path.startswith(("rust/", "web/apps/", "web/packages/", "web/scripts/storage-fixtures/",
                              "fixtures/"))
             or path in {"rust-toolchain.toml", ".github/workflows/rust-cross-os.yml",

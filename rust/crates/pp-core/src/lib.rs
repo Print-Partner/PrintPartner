@@ -249,9 +249,11 @@ enum Backend {
     Rust {
         writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
         status: Arc<tokio::sync::watch::Sender<RustStatus>>,
-        /// The send worker's stop flag and task.
+        /// The send worker's stop flag, its wake (so an idle worker sees the
+        /// flag at once) and its task.
         sends: (
             Arc<std::sync::atomic::AtomicBool>,
+            Arc<tokio::sync::Notify>,
             tokio::task::JoinHandle<()>,
         ),
     },
@@ -554,7 +556,11 @@ async fn start_rust_resources(
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);
     let stop_sends = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let sends = (Arc::clone(&stop_sends), send_worker.spawn(stop_sends));
+    let sends = (
+        Arc::clone(&stop_sends),
+        send_worker.waker(),
+        send_worker.spawn(stop_sends),
+    );
     Ok(Resources {
         owners,
         origin_change,
@@ -861,8 +867,9 @@ async fn stop_rust(
     gateway: Gateway,
     gate: ShutdownGate,
     writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
-    (stop_sends, sends): (
+    (stop_sends, wake, sends): (
         Arc<std::sync::atomic::AtomicBool>,
+        Arc<tokio::sync::Notify>,
         tokio::task::JoinHandle<()>,
     ),
 ) -> ShutdownReceipt {
@@ -879,6 +886,7 @@ async fn stop_rust(
     // An upload in flight finishes; one still running at the bound is
     // dropped, and startup recovery marks it for reconciliation.
     stop_sends.store(true, std::sync::atomic::Ordering::Release);
+    wake.notify_one();
     let abort = sends.abort_handle();
     if tokio::time::timeout(MUTATION_DRAIN, sends).await.is_err() {
         abort.abort();

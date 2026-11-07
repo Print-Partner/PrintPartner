@@ -11,7 +11,7 @@ import type {
 import { CoreError } from "../core/client";
 
 export type BuildHeader = BuildHeaderView["build"];
-export type PlanDraftBasis = SaveDraftHeaderRequest["expected_base"];
+type PlanDraftBasis = SaveDraftHeaderRequest["expected_base"];
 export type PlanDraftIdentity = NonNullable<SaveDraftHeaderRequest["expected_draft"]>;
 export type PlanChoice = SavePlanChoicesRequest["decisions"][number];
 

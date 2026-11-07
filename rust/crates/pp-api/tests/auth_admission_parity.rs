@@ -791,22 +791,7 @@ impl Server {
             .timeout(Duration::from_secs(10))
             .build()?;
         let (stop_http, rx) = oneshot::channel();
-        let http = tokio::spawn(async move {
-            let mut rx = rx;
-            let mut connections = JoinSet::new();
-            loop {
-                tokio::select! {
-                    _ = &mut rx => break,
-                    accepted = listener.accept() => {
-                        let (stream, peer) = accepted?;
-                        let router = router.clone().layer(axum::Extension(ConnectInfo(peer)));
-                        connections.spawn(serve_lingering(stream, router));
-                    }
-                }
-            }
-            while connections.join_next().await.is_some() {}
-            Ok::<(), std::io::Error>(())
-        });
+        let http = tokio::spawn(serve_http(listener, router, rx));
         let connections = Arc::new(AtomicU32::new(0));
         let counter = connections.clone();
         let (stop_smtp, mut rx) = oneshot::channel();
@@ -968,6 +953,26 @@ impl Server {
         }
         (snapshot, errors)
     }
+}
+/// Accepts connections until `stop` fires, then waits for the open ones.
+async fn serve_http(
+    listener: TcpListener,
+    router: axum::Router,
+    mut stop: oneshot::Receiver<()>,
+) -> std::io::Result<()> {
+    let mut connections = JoinSet::new();
+    loop {
+        tokio::select! {
+            _ = &mut stop => break,
+            accepted = listener.accept() => {
+                let (stream, peer) = accepted?;
+                let router = router.clone().layer(axum::Extension(ConnectInfo(peer)));
+                connections.spawn(serve_lingering(stream, router));
+            }
+        }
+    }
+    while connections.join_next().await.is_some() {}
+    Ok(())
 }
 /// Serves one connection, then reads and discards what the client still sends,
 /// for up to two seconds, before closing. A server that closes with unread

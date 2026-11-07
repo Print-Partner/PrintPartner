@@ -17,6 +17,7 @@
 //! assert_eq!(Marker::parse(&bytes).unwrap(), Marker::default());
 //! ```
 
+pub mod bambu;
 pub mod moonraker;
 pub mod node_path;
 pub mod node_schema;

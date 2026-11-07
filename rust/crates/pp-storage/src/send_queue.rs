@@ -22,6 +22,11 @@
 //! Readers call [`rows`]: `None` means the tenant still has the setting and
 //! the reader keeps its Node-compatible setting read; `Some` holds the table's
 //! items in Node's item JSON shape.
+//!
+//! [`writes`] holds the user actions on table items (GRE-365): Send now and
+//! Send ready dispatch an item as a durable `printer-upload` job in the same
+//! transaction, and Remove cancels it. [`settle`] moves a dispatched item to
+//! `done` or `error` in the transaction that changes its job.
 
 use crate::read_model::{farm::iso_time, views::js_trim};
 use anyhow::Result;
@@ -35,6 +40,12 @@ pub(crate) const SCHEMA_STEP: u64 = 44;
 pub(crate) const LEGACY_KEY: &str = "printer.send_queue";
 /// Node's `INTERRUPTED_PRINTER_SEND_ERROR`, word for word.
 pub const INTERRUPTED_ERROR: &str = "Interrupted by process restart. Printer outcome is unknown, so this send was not marked successful. The staged file remains for an explicit retry. This process will not retry a print on its own.";
+/// An item whose Rust upload was dispatched but had not started when the
+/// process stopped. Nothing was sent.
+pub const NOT_STARTED_ERROR: &str = "Interrupted by process restart before the upload began. Nothing was sent to the printer. Send now sends it.";
+/// An item whose upload stopped with its printer outcome unknown while this
+/// process kept running.
+pub const UNKNOWN_OUTCOME_ERROR: &str = "Printer outcome is unknown, so this send was not marked successful. The staged file remains for an explicit retry. This process will not retry a print on its own.";
 
 const STATES: [&str; 5] = ["queued", "sending", "done", "error", "cancelled"];
 const COLUMNS: &str = "id,filename,artifact_path,printer_id,profile_id,match,wait_for_idle,start,state,checkoff_units,upload_job_id,error,host_name,created_at,updated_at";
@@ -126,11 +137,110 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<()> {
         }
         interrupt_kept(&tx, &tenant, &now)?;
     }
+    let dispatched = tx
+        .prepare("SELECT tenant_id,upload_job_id FROM printer_send_queue WHERE state='sending' AND upload_job_id IS NOT NULL")?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     tx.execute(
         "UPDATE printer_send_queue SET state='error',error=?1,updated_at=?2 WHERE state='sending'",
         params![INTERRUPTED_ERROR, now],
     )?;
+    // Job recovery has already queued again every upload interrupted before
+    // its effect was admitted. Nothing reached the printer, so the item says
+    // so and stays sendable, and the upload never starts on its own.
+    #[cfg(feature = "desktop_rebuild")]
+    for (tenant, job) in dispatched {
+        if crate::jobs::release_printer_upload(
+            &tx,
+            &tenant,
+            "open",
+            &job,
+            NOT_STARTED_ERROR,
+            "send_queue_interrupted",
+        )? {
+            tx.execute(
+                "UPDATE printer_send_queue SET error=?1 WHERE tenant_id=?2 AND upload_job_id=?3",
+                params![NOT_STARTED_ERROR, tenant, job],
+            )?;
+        }
+    }
+    #[cfg(not(feature = "desktop_rebuild"))]
+    drop(dispatched);
     tx.commit()?;
+    Ok(())
+}
+
+/// Settle the item that `job` was dispatched for, in the transaction that
+/// saves the job: a finished upload is `done`, and a failed, cancelled or
+/// uncertain one is `error`. A finished state also applies to an `error`
+/// item, so an upload that left reconciliation by any path, including the
+/// generic job reconciliation, never leaves its item looking unsent.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<()> {
+    use crate::jobs::PersistentState;
+    let from = if job.state.terminal() {
+        "'sending','error'"
+    } else {
+        "'sending'"
+    };
+    let error = match job.state {
+        PersistentState::Succeeded | PersistentState::UploadedOnly => None,
+        PersistentState::Failed => Some(job.recovery.as_deref().unwrap_or("Upload failed")),
+        PersistentState::Cancelled => Some("Send cancelled"),
+        PersistentState::ReconciliationRequired => Some(UNKNOWN_OUTCOME_ERROR),
+        _ => return Ok(()),
+    };
+    let changed = tx.execute(
+        &format!("UPDATE printer_send_queue SET state=?1,error=?2,updated_at=?3 WHERE tenant_id=?4 AND upload_job_id=?5 AND state IN ({from})"),
+        params![
+            if error.is_some() { "error" } else { "done" },
+            error.map(|error| utf16_prefix(error, 500)),
+            iso_time(SystemTime::now()),
+            job.tenant,
+            job.job_id,
+        ],
+    )?;
+    if changed > 0 {
+        trim(tx, &job.tenant)?;
+    }
+    Ok(())
+}
+
+/// Node's `MAX_ITEMS`: terminal history fills the queue only up to this size.
+#[cfg(feature = "desktop_rebuild")]
+const MAX_ITEMS: i64 = 50;
+
+/// Node's `trimPrinterSendQueue`, run after every queue write: each
+/// `queued`, `sending` and `error` item stays, and only the newest terminal
+/// items that fit beside them in [`MAX_ITEMS`] do.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn trim(tx: &Connection, tenant: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM printer_send_queue
+          WHERE tenant_id=?1 AND state NOT IN ('queued','sending','error')
+            AND id NOT IN (
+              SELECT id FROM printer_send_queue
+               WHERE tenant_id=?1 AND state NOT IN ('queued','sending','error')
+               ORDER BY position DESC
+               LIMIT max(0, ?2 - (SELECT count(*) FROM printer_send_queue
+                                   WHERE tenant_id=?1 AND state IN ('queued','sending','error'))))",
+        params![tenant, MAX_ITEMS],
+    )?;
+    Ok(())
+}
+
+/// At startup, the item of an upload that job recovery left awaiting
+/// reconciliation says the restart interrupted it, as Node's restart does. A
+/// lease that expired while the process kept running keeps the
+/// unknown-outcome text [`settle`] gave it.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn interrupted(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<()> {
+    if job.state == crate::jobs::PersistentState::ReconciliationRequired {
+        tx.execute(
+            "UPDATE printer_send_queue SET error=?1 WHERE tenant_id=?2 AND upload_job_id=?3 AND state='error'",
+            params![INTERRUPTED_ERROR, job.tenant, job.job_id],
+        )?;
+    }
     Ok(())
 }
 
@@ -380,6 +490,9 @@ fn utf16_prefix(text: &str, units: usize) -> String {
         })
         .collect()
 }
+
+#[cfg(feature = "desktop_rebuild")]
+pub mod writes;
 
 #[cfg(test)]
 mod tests;

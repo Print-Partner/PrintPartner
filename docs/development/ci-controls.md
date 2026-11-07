@@ -166,6 +166,25 @@ Phase 2 remains Chad's work and keeps GRE-635 open:
    A PR touching only `rust/` must merge on green checks if the review policy permits it.
    A docs-only PR must receive both named lint checks.
 
+## Edits to a pull request
+
+An edit to a pull request body, title or base can start workflows. This matrix comes from the `on:` blocks and job conditions, and from the run history of PR #1547 (heads 91478f2 and 8ac5680), where `pr-evidence.yml` ran on every body edit.
+
+| Event | `review-gate` | `Lint Evidence block` | `droid.yml`, `linear-pr-sync.yml` |
+| --- | --- | --- | --- |
+| Push (`synchronize`) | runs and waits for the Claude review; cancels the older run | runs, except on a draft PR, where the job skips | do not start |
+| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips on a draft PR or unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
+| Base change (`edited`) | edit run: judges the head against the new base and cancels an older run that read the old one | runs, except on a draft PR | same as above |
+| Owner comment with a `pp-review-gate` marker (created, edited or deleted) | rerun by `review-gate-rerun.yml`; a marker from anyone else does not rerun | does not run | `droid.yml` starts only when the comment is created, and skips unless it contains `@droid` |
+| Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | do not start |
+
+Neither required check can safely skip an edit on a ready PR. A draft PR is the one exception for `Lint Evidence block`, by existing design: its job skips while the PR is a draft, and that skip does replace an earlier failure, including on `converted_to_draft`. GitHub does not merge a draft, and marking the PR ready runs the lint again on the current body, so the failure cannot reach `main`. `review-gate` has no draft skip.
+
+- `Lint Evidence block` lints the whole body: Evidence lines and `Exemption:` lines both decide the verdict, and fixing a failing Evidence section by editing the body is the normal path. A job-level `if` that skips an edit would leave a skipped required check, which GitHub counts as a pass, and the newer run replaces an earlier failure, so an unrelated edit would clear a failing lint. Not listening to `edited` would keep an old success after a body edit that breaks Evidence. A short job that repeats the previous verdict avoids neither the runner slot nor the queue.
+- `review-gate` has to run on a base change, because a review of a head against one base does not cover the same head against `main`. GitHub does not filter `edited` events by field, and a job-level `if` has the same skipped-required-check problem, so every edit starts an edit run. It reads the API and takes seconds unless a Claude job is running or has not appeared yet, and it cancels the older run for the same PR, so the newest run decides.
+
+`scripts/test_merge_group_workflows.py` keeps `Lint Evidence block` in the shape the table shows, and `scripts/test_review_gate.py` keeps `review-gate` in it. No test pins the `droid.yml` and `linear-pr-sync.yml` cells. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
+
 ## Emergency path
 
 Chad can temporarily disable **main CI controls** in **Settings > Rules**.

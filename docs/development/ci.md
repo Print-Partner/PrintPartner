@@ -590,10 +590,11 @@ them and install from the mirror as before. The key is the runner OS and archite
 runner image version, the ISO week and a hash of the package list. The week limits how long a
 cache goes stale: Ubuntu security updates change what `apt-get update` resolves, a restored
 cache then still downloads the newer packages, and the first hosted run on `main` of a new week saves a
-fresh set. Only a hosted run on `main` that is not a pull request saves, and only when the exact key
-missed: pushes and manual runs of `desktop-e2e` and `desktop-webkit` (always hosted) and the nightly
-`rust-cross-os` schedule. Main pushes of `rust (linux)` run on pp-local, which skips the cache steps
-and saves nothing. Pull requests restore only. Each install logs
+fresh set. Only a GitHub-hosted run on `main` that is not a pull request saves, and only when the exact key
+missed: pushes and manual runs of `desktop-e2e` and `desktop-webkit` (always hosted), the nightly
+`rust-cross-os` schedule (the build job package set), and a `rust (linux)` push that
+`scripts/ci-rust-runner.py` sends to a hosted runner (the only run that saves the rebuild job package set).
+A `rust (linux)` push on pp-local skips the cache steps and saves nothing. Pull requests restore only. Each install logs
 `apt install took N s (cache hit: ...)`. `chain-tip-gate` keeps its inline install.
 
 ### Superseded runs

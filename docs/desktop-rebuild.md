@@ -3659,9 +3659,12 @@ The measured value (GRE-1165, part c) comes from `pp_core::measured_grams`, an
 observer on the Moonraker status watchers' ordered transitions. When a host
 goes to `complete` straight from `printing` or `paused` (an `offline` or
 `unknown` reading in between does not break the run), it asks the host once
-for the filament length of that print (Moonraker `print_stats.filament_used`;
-`HostReads::filament_used` also reads PrusaLink's `consumed_material` as
-millimetres). Storage then picks the newest `watching` Checkoff link of that
+for the finished print's file name and filament length in one read
+(`HostReads::finished_filament`: Moonraker `print_stats` `state`, `filename`
+and `filament_used`; PrusaLink's job `state`, `file` and `consumed_material`,
+read as millimetres). The length counts only when that read still reports the
+print finished (`complete` or `FINISHED`) under the same base name, so a slow
+observer never records the next print's usage against this one. Storage then picks the newest `watching` Checkoff link of that
 host whose `filename` or `remote_path` has the finished file's base name
 (trimmed, `\` read as `/`, case-insensitive, like Node's
 `printerFilenamesMatch`) and calls `record_measured` for it in one write. The
@@ -3669,7 +3672,8 @@ observer records nothing when:
 
 - it did not see the print running, such as a `complete` already showing at
   startup, or after it lagged behind the transition stream;
-- the read fails or reports no positive length (the read is not retried);
+- the read fails, no longer reports that file as finished, or reports no
+  positive length (the read is not retried);
 - no watching link names the file.
 
 In each case the estimate stays. The observer never changes Checkoff state and

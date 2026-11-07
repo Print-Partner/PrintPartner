@@ -3,7 +3,10 @@
 //! An observer on the status watchers' ordered transitions. When a Moonraker
 //! host goes to `complete` straight from `printing` or `paused` (an outage in
 //! between does not count as a new state), it asks the printer once for the
-//! filament length the print used and hands it to storage, which converts it
+//! finished print's file name and filament length. The length counts only
+//! when that same read still reports the print finished and names the same
+//! file, so a slow observer never records the next print's usage. Storage
+//! converts it
 //! with the send's grams per millimetre for the newest watching Checkoff link
 //! of that host whose file is the finished one. A `complete` the watchers did
 //! not see begin, such as one already showing at startup, records nothing, so
@@ -72,8 +75,10 @@ fn finished(
         .filter(|filename| !filename.trim().is_empty())
 }
 
-/// Reads host `integration_id`'s filament length once and records it for
-/// `filename`'s watching link. A failed read or write leaves the estimate.
+/// Reads host `integration_id`'s finished print once and records its
+/// filament length for `filename`'s watching link. A failed read or write, a
+/// printer no longer reporting `filename` as finished, or no positive length
+/// leaves the estimate.
 pub(crate) async fn record(
     settings: &SettingsClient,
     reads: &HostReads,
@@ -90,10 +95,14 @@ pub(crate) async fn record(
     let Some(Host::Read(target)) = host(stored) else {
         return None;
     };
-    let measured_mm = reads
-        .filament_used(&target)
-        .await
-        .filter(|mm| mm.is_finite() && *mm > 0.0)?;
+    let (reported, measured_mm) = reads.finished_filament(&target).await?;
+    let base = |name: &str| {
+        let name = name.trim().replace('\\', "/");
+        name.rsplit('/').next().unwrap_or_default().to_lowercase()
+    };
+    if base(&reported) != base(filename) || !(measured_mm.is_finite() && measured_mm > 0.0) {
+        return None;
+    }
     let (grams, id, filename) = (
         grams.clone(),
         integration_id.to_owned(),

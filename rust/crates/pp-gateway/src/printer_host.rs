@@ -185,13 +185,14 @@ impl HostReads {
         }
     }
 
-    /// The filament length in millimetres the printer reports for its current
-    /// or last print: Moonraker's `print_stats.filament_used`, PrusaLink's
-    /// `consumed_material`. One read; `None` when it gives none.
-    pub async fn filament_used(&self, target: &HostTarget) -> Option<f64> {
+    /// The file name and filament length in millimetres of the print the
+    /// printer reports as finished: Moonraker's `print_stats` (`complete`,
+    /// `filament_used`), PrusaLink's job (`FINISHED`, `consumed_material`).
+    /// One read; `None` when the printer reports no finished print.
+    pub async fn finished_filament(&self, target: &HostTarget) -> Option<(String, f64)> {
         match self.driver(target) {
-            Driver::Moonraker(driver) => driver.filament_used().await,
-            Driver::PrusaLink(driver) => driver.filament_used().await,
+            Driver::Moonraker(driver) => driver.finished_filament().await,
+            Driver::PrusaLink(driver) => driver.finished_filament().await,
         }
     }
 

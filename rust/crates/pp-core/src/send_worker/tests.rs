@@ -439,7 +439,7 @@ impl Farm {
 #[tokio::test(flavor = "multi_thread")]
 async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
     use pp_storage::print_grams::Measurement;
-    let stats = br#"{"result":{"status":{"print_stats":{"filament_used":4000.0}}}}"#;
+    let stats = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"a.gcode","filament_used":4000.0}}}}"#;
     let printer = RoutedPrinter::start(vec![
         (UPLOAD.into(), 201, b"{}".to_vec()),
         (PRINT_STATS.into(), 200, stats.to_vec()),
@@ -465,9 +465,33 @@ async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn gre_1165_no_measured_length_keeps_the_estimate() {
-    let printer = printer(&[(UPLOAD, 201), (PRINT_STATS, 500)]);
-    let farm = Farm::sent(&printer).await;
-    assert_eq!(farm.finish("a.gcode").await, None);
-    assert_eq!(farm.grams(), (12.5, "estimated".into(), None));
+async fn gre_1165_no_finished_length_for_the_file_keeps_the_estimate() {
+    let stats = |state: &str, filename: &str, used: f64| {
+        format!(
+            r#"{{"result":{{"status":{{"print_stats":{{"state":"{state}","filename":"{filename}","filament_used":{used}}}}}}}}}"#
+        )
+    };
+    for (status, body, case) in [
+        (500, String::from("{}"), "read failed"),
+        (
+            200,
+            stats("printing", "b.gcode", 50.0),
+            "the next print started",
+        ),
+        (
+            200,
+            stats("complete", "b.gcode", 50.0),
+            "another file finished",
+        ),
+        (200, stats("complete", "a.gcode", 0.0), "no length"),
+    ] {
+        let printer = RoutedPrinter::start(vec![
+            (UPLOAD.into(), 201, b"{}".to_vec()),
+            (PRINT_STATS.into(), status, body.into_bytes()),
+        ])
+        .unwrap();
+        let farm = Farm::sent(&printer).await;
+        assert_eq!(farm.finish("a.gcode").await, None, "{case}");
+        assert_eq!(farm.grams(), (12.5, "estimated".into(), None), "{case}");
+    }
 }

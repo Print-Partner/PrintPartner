@@ -382,3 +382,21 @@ async fn ticket_t_22_object_list_reads_only_the_prefix_when_range_is_ignored() {
         "a print file larger than 2 MiB still yields its objects"
     );
 }
+
+#[tokio::test]
+async fn gre_1165_finished_filament_needs_a_finished_job() {
+    let job = |state: &str| json!({"state": state, "file": {"display_name": "A.GCODE"}, "consumed_material": 812.5});
+    for (state, expected) in [
+        ("FINISHED", Some(("A.GCODE".to_owned(), 812.5))),
+        ("PRINTING", None),
+    ] {
+        let routes = Served::from([("/api/v1/job".into(), json_route(200, job(state)))]);
+        let (origin, log) = printer(routes, None).await;
+        assert_eq!(
+            driver(&origin).finished_filament().await,
+            expected,
+            "{state}"
+        );
+        assert_eq!(authorized(&log), ["GET /api/v1/job +auth"], "one read");
+    }
+}

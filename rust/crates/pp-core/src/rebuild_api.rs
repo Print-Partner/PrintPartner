@@ -21,13 +21,15 @@ use pp_api::{
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
 // non-optional pp-api [dev-dependencies] edge (gated boundary check).
 pub use pp_api::auth::{AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer};
+use pp_gateway::printer_host::HostReads;
 use pp_storage::{
-    WriterOwner,
+    SettingsClient, WriterOwner,
     auth::{
         AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy,
         rebuild::AuthLifetimes, rebuild::RebuildAuthClient,
     },
     build_graph::BuildGraphClient,
+    checkoff_progress::ProgressClient,
     read_model::build_workflow::PendingInputs,
     working_drafts::{
         WorkingDraftClient,
@@ -169,6 +171,23 @@ pub fn router(
     )))
 }
 
+/// The printer Checkoff routes and the print-file assignment routes, which
+/// read print files off printers through the stored printer hosts.
+fn checkoff_routes(
+    config: AcceptedHttpConfig,
+    client: ProgressClient,
+    settings: SettingsClient,
+) -> Result<Router> {
+    let hosts = crate::printer_host::StoredPrinterHosts::new(settings, HostReads::new()?);
+    let files = file_assignments_router(
+        config.clone(),
+        client.clone(),
+        Arc::default(),
+        Arc::new(hosts),
+    );
+    Ok(checkoff_router(config, client).merge(files))
+}
+
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
@@ -203,9 +222,8 @@ pub fn read_router(
         workflow_client,
         admin_files,
         events_client,
-        checkoff_client,
+        (checkoff_client, settings),
         plates_client,
-        settings,
     ) = {
         let guard = owner
             .lock()
@@ -221,9 +239,8 @@ pub fn read_router(
             guard.build_workflow(policy, Arc::new(PendingInputs))?,
             guard.admin_files()?,
             guard.domain_events_with_policy(policy)?,
-            guard.checkoff_progress_with_policy(policy)?,
+            (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
-            guard.client(),
         )
     };
     // Draft HTTP uses `draft_router` (GRE-820) from the same owner when composed
@@ -265,17 +282,7 @@ pub fn read_router(
         StreamLimits::default(),
     );
     let checkoff_config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
-    let checkoff = checkoff_router(checkoff_config.clone(), checkoff_client.clone()).merge(
-        file_assignments_router(
-            checkoff_config,
-            checkoff_client,
-            Arc::default(),
-            Arc::new(crate::printer_host::StoredPrinterHosts::new(
-                settings,
-                pp_gateway::printer_host::HostReads::new()?,
-            )),
-        ),
-    );
+    let checkoff = checkoff_routes(checkoff_config, checkoff_client, settings)?;
     let plates = plates_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         plates_client,

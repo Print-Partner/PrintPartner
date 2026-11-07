@@ -23,7 +23,10 @@ use pp_storage::{
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -78,8 +81,10 @@ fn fixture() -> Fixture {
 
 /// A printer host serving the files in its map, by storage path, with a
 /// fixed modification time; it lists them as Node's `StorageListing` does.
+/// Like the stored hosts, it serves a file only through a listing, so a
+/// failing listing (`broken`) fails the read too.
 #[derive(Default)]
-struct Host(Mutex<HashMap<String, Vec<u8>>>);
+struct Host(Mutex<HashMap<String, Vec<u8>>>, AtomicBool);
 
 const MODIFIED: &str = "2026-11-01T00:00:00.000Z";
 
@@ -95,6 +100,9 @@ impl PrinterHostPort for Host {
     }
 
     fn files(&self, _: String, path: String) -> Answer<Value> {
+        if self.1.load(Ordering::Relaxed) {
+            return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
+        }
         let entries: Vec<Value> = self
             .0
             .lock()
@@ -111,6 +119,9 @@ impl PrinterHostPort for Host {
     }
 
     fn file(&self, _: String, path: String) -> Answer<Option<HostStream>> {
+        if self.1.load(Ordering::Relaxed) {
+            return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
+        }
         let bytes = self.0.lock().unwrap().get(&path).cloned();
         Box::pin(async move {
             HostAnswer::Ok(bytes.map(|bytes| HostStream {
@@ -1059,7 +1070,7 @@ async fn a_printer_file_is_read_classified_and_recorded_with_its_identity() {
     let host = Arc::new(Host::default());
     host.serve(PATH, b"G1 X1\n");
     host.serve("gcodes/bad.gcode", b"\x00\x01binary");
-    let (owner, router) = hosted(&fixture, "1", &Arc::default(), host);
+    let (owner, router) = hosted(&fixture, "1", &Arc::default(), host.clone());
     let remote = json!({ "remote_path": PATH });
 
     let (status, preview) = post(&router, PREVIEW, &request(remote.clone()), true).await;
@@ -1075,6 +1086,14 @@ async fn a_printer_file_is_read_classified_and_recorded_with_its_identity() {
         (StatusCode::OK, &json!(false)),
         "a file the host does not serve is unread"
     );
+    host.1.store(true, Ordering::Relaxed);
+    let (status, unlisted) = post(&router, PREVIEW, &request(remote.clone()), true).await;
+    assert_eq!(
+        (status, &unlisted["inspected"]),
+        (StatusCode::OK, &json!(false)),
+        "a host whose listing fails serves nothing"
+    );
+    host.1.store(false, Ordering::Relaxed);
     let bad = json!({ "remote_path": "gcodes/bad.gcode", "filename": "bad.gcode" });
     assert_eq!(
         detail(&router, ASSIGN, &assignment(bad)).await,

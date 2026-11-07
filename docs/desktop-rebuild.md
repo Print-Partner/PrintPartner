@@ -3023,9 +3023,12 @@ for the upload.
   gives the provider identity (`size_bytes`, `modified_at`,
   `provider_revision`) when the host lists the file, and the bytes the host
   serves, up to 256 MiB, are classified off the async workers and add
-  `size_bytes` and `sha256`. A listing that fails still lets the bytes decide.
-  A path that is not a safe storage path, a host that will not serve the
-  file, or a failed read leaves the file unread; bytes past 256 MiB are 409
+  `size_bytes` and `sha256`. The host serves only a file its directory
+  listing shows (the printer-host file read's guard against paths outside
+  the storage tree), so unlike Node, where a failed listing still lets the
+  bytes decide, a listing that fails or omits the file leaves it unread. A
+  path that is not a safe storage path, a host that will not serve the file,
+  or a failed read leaves the file unread too; bytes past 256 MiB are 409
   `That print file is too large to inspect`, and bytes that are not a print
   file are 409 with Node's rejection detail. A printer whose settings cannot
   be read in time is 503 `Printer settings are unavailable`. A printer tracked

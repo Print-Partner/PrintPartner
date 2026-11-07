@@ -149,8 +149,9 @@ async fn bounded(mut body: axum::body::Body) -> Result<Option<Vec<u8>>, ()> {
 }
 
 /// Node's `inspectRemoteFile`: the provider's listing entry for the path,
-/// then the bytes the host serves, classified. A listing that fails still
-/// lets the bytes decide; a file the host will not serve is unreadable.
+/// then the bytes the host serves, classified. Unlike Node, the host serves
+/// only a file its directory listing shows, so a listing that fails or omits
+/// the file leaves it unread.
 async fn remote(app: &App, printer: &str, raw: &str) -> Inspection {
     let Some(path) = safe_storage_path(raw) else {
         return Inspection::Unreadable;

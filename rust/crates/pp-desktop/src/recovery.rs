@@ -1,5 +1,6 @@
 use pp_core::{CoreHandle, CoreStatus, RuntimeStatus};
 use pp_desktop::AllowedOrigin;
+use pp_desktop::platform::{REVEAL, message as show_message, opener};
 use std::{
     path::PathBuf,
     sync::{
@@ -9,11 +10,6 @@ use std::{
 };
 use tauri::AppHandle;
 use tokio::process::Command;
-
-#[cfg(target_os = "macos")]
-const OPENER: &str = "/usr/bin/open";
-#[cfg(not(target_os = "macos"))]
-const OPENER: &str = "xdg-open";
 
 #[derive(Default)]
 pub(crate) struct RecoveryGate(AtomicBool);
@@ -80,7 +76,7 @@ impl RecoveryUi {
     }
 
     pub(crate) fn open_data(&self, app: &AppHandle) {
-        let mut command = Command::new(OPENER);
+        let mut command = Command::from(opener());
         command.arg(&self.data);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -100,7 +96,7 @@ impl RecoveryUi {
         let data = self.data.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if !reveal_logs(Command::new(OPENER), data).await {
+            if !reveal_logs(Command::from(opener()), data).await {
                 let _ = app.run_on_main_thread(|| {
                     show_message(
                         "Reveal log folder",
@@ -121,10 +117,7 @@ async fn reveal_logs(mut opener: Command, data: PathBuf) -> bool {
     else {
         return false;
     };
-    if cfg!(target_os = "macos") {
-        opener.arg("-R");
-    }
-    opener.arg(folder);
+    opener.args(REVEAL).arg(folder);
     open(opener).await
 }
 
@@ -189,48 +182,6 @@ pub(crate) fn restart(app: &AppHandle, handle: CoreHandle, gate: Arc<RecoveryGat
     });
 }
 
-fn show_message(title: &str, text: &str, closed: impl Fn() + Send + 'static) {
-    #[cfg(target_os = "linux")]
-    {
-        use gtk::prelude::*;
-        let dialog = gtk::Dialog::builder()
-            .title(title)
-            .modal(true)
-            .default_width(760)
-            .default_height(440)
-            .build();
-        dialog.add_button("Close", gtk::ResponseType::Close);
-        let buffer = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
-        buffer.set_text(text);
-        let view = gtk::TextView::builder()
-            .buffer(&buffer)
-            .editable(false)
-            .cursor_visible(false)
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .build();
-        let scroll = gtk::ScrolledWindow::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        scroll.add(&view);
-        dialog.content_area().add(&scroll);
-        dialog.connect_response(|dialog, _| dialog.close());
-        dialog.connect_destroy(move |_| closed());
-        dialog.show_all();
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let dialog = rfd::AsyncMessageDialog::new()
-            .set_title(title)
-            .set_description(text);
-        tauri::async_runtime::spawn(async move {
-            dialog.show().await;
-            closed();
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,17 +202,63 @@ mod tests {
     }
 
     /// An opener that records its arguments, one per line, in `record`.
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
+
+    /// This test binary, run as an opener: `reveal_recorder` writes the
+    /// arguments after `--` to `record`.
     fn recorder(record: &std::path::Path) -> Command {
-        let mut command = Command::new("/bin/sh");
+        let mut command = Command::new(std::env::current_exe().unwrap());
         command
-            .args(["-c", "printf '%s\\n' \"$@\" > \"$0\""])
-            .arg(record);
+            .args(["--exact", "recovery::tests::reveal_recorder", "--"])
+            .env("PP_REVEAL_RECORD", record);
         command
+    }
+
+    /// Does nothing unless `recorder` started it.
+    #[test]
+    fn reveal_recorder() {
+        let Some(record) = std::env::var_os("PP_REVEAL_RECORD") else {
+            return;
+        };
+        let args: String = std::env::args()
+            .skip_while(|arg| arg != "--")
+            .skip(1)
+            .map(|arg| format!("{arg}\n"))
+            .collect();
+        std::fs::write(record, args).unwrap();
+    }
+
+    /// A directory only this user can open, as the log folder checks require.
+    #[cfg(unix)]
+    fn private_dir(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn private_dir(path: &std::path::Path) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, READ_CONTROL, WRITE_DAC,
+        };
+        std::fs::create_dir_all(path).unwrap();
+        let folder = std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap();
+        pp_os::windows_security::CurrentUser::query()
+            .unwrap()
+            .restrict(&folder, true)
+            .unwrap();
     }
 
     #[tokio::test]
     async fn ticket_t_13_reveal_log_folder_opens_only_the_validated_folder() {
-        use std::os::unix::fs::PermissionsExt;
         let scratch = std::env::temp_dir().join(format!(
             "pp-reveal-{}-{}",
             std::process::id(),
@@ -271,28 +268,28 @@ mod tests {
                 .as_nanos()
         ));
         let data = scratch.join("data");
-        std::fs::create_dir_all(data.join("logs")).unwrap();
-        std::fs::set_permissions(data.join("logs"), std::fs::Permissions::from_mode(0o700))
-            .unwrap();
+        private_dir(&data.join("logs"));
         let record = scratch.join("args");
         assert!(reveal_logs(recorder(&record), data.clone()).await);
         let folder = data.join("logs").display().to_string();
-        let expected = if cfg!(target_os = "macos") {
-            format!("-R\n{folder}\n")
-        } else {
-            format!("{folder}\n")
-        };
+        let expected: String = REVEAL
+            .iter()
+            .chain([&folder.as_str()])
+            .map(|line| format!("{line}\n"))
+            .collect();
         assert_eq!(std::fs::read_to_string(&record).unwrap(), expected);
 
         std::fs::remove_file(&record).unwrap();
         let linked = scratch.join("linked");
         std::fs::create_dir(&linked).unwrap();
-        std::os::unix::fs::symlink(data.join("logs"), linked.join("logs")).unwrap();
+        symlink_dir(data.join("logs"), linked.join("logs")).unwrap();
         assert!(!reveal_logs(recorder(&record), linked).await);
         assert!(!reveal_logs(recorder(&record), scratch.join("missing")).await);
         assert!(!record.exists(), "the opener ran for a refused folder");
 
-        assert!(!reveal_logs(Command::new("/usr/bin/false"), data).await);
+        let mut failing = Command::new(std::env::current_exe().unwrap());
+        failing.arg("--no-such-flag");
+        assert!(!reveal_logs(failing, data).await);
         let _ = std::fs::remove_dir_all(&scratch);
     }
 }

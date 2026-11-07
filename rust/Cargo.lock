@@ -3505,6 +3505,7 @@ dependencies = [
  "anyhow",
  "gtk",
  "pp-core",
+ "pp-os",
  "rfd",
  "serde",
  "serde_json",
@@ -3514,6 +3515,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

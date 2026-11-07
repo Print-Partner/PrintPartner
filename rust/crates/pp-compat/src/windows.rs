@@ -8,7 +8,7 @@
 //! creates as the first instance, with a DACL that grants only the current
 //! user and `PIPE_REJECT_REMOTE_CLIENTS`; the child dials in.
 
-use crate::windows_security::{CurrentUser, PrivateDescriptor};
+use pp_os::windows_security::{CurrentUser, PrivateDescriptor};
 use std::{
     collections::HashMap,
     ffi::{OsStr, c_void},

@@ -134,10 +134,10 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net`, `pp-os` |
 | [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | `pp-os` (Windows log entries, Node path spelling) |
 | [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`, `pp-os`; `pp-source`, `pp-net`, `pp-api` gated |
-| [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
+| [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core`, `pp-os` (focus identity, Windows pipe security) |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
-| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows (open, inspect, enumerate, create, rename, remove), no-follow opens and inspection, file identity, advisory locks, durable rename, display spelling of canonical paths; no policy | none |
+| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows (open, inspect, enumerate, create, rename, remove), no-follow opens and inspection, file identity, advisory locks, durable rename, display spelling of canonical paths, and on Windows the current user's private DACLs (`windows_security`); no policy | none |
 | [`pp-testkit`](../rust/crates/pp-testkit/README.md) | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented graph, not a manifest for the amendment.
@@ -484,7 +484,7 @@ are not product analytics; no default remote exporter or Sentry initialization.
 | Target | Delivery and required evidence | Baseline gap / release decision |
 | --- | --- | --- |
 | macOS first | Build and sign the app/DMG for the owner-approved architecture set; notarize/staple; test installed WKWebView and restart/update on each supported architecture | Declared 13.5 minimum needs oldest-OS proof; architecture coverage, public identity and key custody remain open |
-| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | One crate (`pp-desktop`) is excluded from baseline Windows CI. Share filesystem mechanics through narrow `pp-os`, port consumers incrementally, and keep signals with their runtime owner; choose signing provider and OS/architecture minima |
+| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | Baseline Windows CI builds and tests the whole workspace, `pp-desktop` included. Share filesystem mechanics through narrow `pp-os`, port consumers incrementally, and keep signals with their runtime owner; choose signing provider and OS/architecture minima |
 | Linux before 1.0 | AppImage plus selected deb/rpm, WebKitGTK 4.1, no-tray recovery, package/update trust appropriate to format | Declare oldest glibc/distro matrix and hardware GPU evidence. CI software rendering is not hardware certification |
 | Docker | Non-root amd64/arm64, SQLite/volume migration, health, TERM/restart and optional slicer simulator | Runtime base, volume permissions and architecture execution require proof |
 | LAN browsers | Shared UI, authenticated pairing, HTTPS/cookies, revocation and reconnect, mobile accessibility | LAN admission is not delivered by loopback-only routing; certificate trust must work on actual devices |
@@ -522,42 +522,3 @@ No compile-time, runtime or memory improvement has been measured.
 
 | Proposal/source | Disposition and reason |
 | --- | --- |
-| Candidate 2, incremental family slices and early Windows proof | Keep; independently reviewable work without a crate-move prerequisite |
-| Candidate 1, explicit scope dispositions and named invariant proofs | Graft; retain data/protocol/export compatibility, not old-screen shape. Reconcile existing issues before any tracker action |
-| Candidate 3, explicit user send authority | Graft with private capability constructors; a public actor tag is insufficient |
-| Candidate 3, legacy name mapping | Graft here, not implementation detail in the glossary: `build_profiles`/legacy `profile_id` refer to Plan identity, `projects` to Sources, `print_jobs` to printer history, `durable_jobs` to app Jobs, `tenant_id=default` remains a format detail |
-| Candidate 3, capability filesystem and reviewed ownership history | Evaluate `cap-std`/`cap-fs-ext` for narrow `pp-os` with real Windows race tests; preserve reviewed resource sets at retirement |
-| Candidate 1, crate Interface READMEs and boundary orchestration | Keep short interface docs; reuse `just ci`/existing checker before adding an xtask wrapper |
-| Candidate 1 family split; candidate 3 six-crate engine; candidate 2 broad crate moves and facade deletion | Reject wholesale reorganization; current crates retain transaction locality. Permit only narrow filesystem sharing under ADR 0015; deeper private family modules address operation ownership |
-| Candidate 1 generic public SQL closures and manual generated DTO rewrite | Reject; leaks transaction policy and replaces working generation without product gain |
-| Candidate 3 prerequisite schemars 1.x upgrade | Reject as prerequisite; prove one contract family before a generator/dialect migration |
-| Unified replacement for `/ws/printers` | Reject; preserve Chad-approved GRE-1014 path |
-| Tonight with Rewind order authority and Free burst controls | Keep accepted Today/History/Accept/burst UX; manual fallback is mandatory, and claimed step savings still need fixture validation |
-| Rebuild task engine or omit old decisions/planning phase | Reject; port workflow/build-planning projections and give assistant decisions a History home |
-| Drop Docker slicing or bundle it into the image | Reject; optional external HTTP container is the chosen model |
-| Research, automatic ts-rs versus OpenAPI choice | Defer choice to one wire comparison; retain working schema/Zod route meanwhile |
-| Research, fixed performance/image budgets and replay windows | Not adopted as facts or gates; measure and approve first |
-
-## Remaining owner decisions
-
-- Release signing identity/provider, publisher name, key custodians and recovery.
-  Evaluate Microsoft Artifact Signing and SignPath eligibility rather than
-  assuming EV signing removes SmartScreen warnings.
-- Acceptance/rollback window length, backup retention/free-space requirements,
-  supported input schemas, timed abort/recovery budgets, and explicit production
-  go/no-go. A window never promises lossless rollback.
-- Flag retirement conditions/date and responsible issue; `desktop_rebuild` stays
-  default-off until separately approved removal.
-- Final UI/client package names and router; contract exporter after one-family
-  comparison; REST version policy, replay/idempotency retention and undo conflicts.
-- LAN TLS/trust UX, device/session lifetimes, supported MCP revisions and whether
-  current-spec OAuth or documented limited compatibility ships first.
-- Platform minima, signing/update channels and release cadence; Linux package
-  set/GPU matrix; reference performance hardware and measured budgets.
-
-The glossary remains [CONTEXT.md](../CONTEXT.md); no term changes are needed.
-Keep this existing URL canonical, as the planning research recommends when an
-existing explanation can remain in place. It avoids a second competing target
-page and preserves root guidance links. [Storage](storage.md),
-[Docker](docker.md), [Desktop](desktop.md), [Network sharing](network-sharing.md),
-and [Release](release.md) retain their operational/current-state roles.

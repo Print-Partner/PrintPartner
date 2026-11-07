@@ -9,8 +9,24 @@ pub use autostart::LaunchArgs;
 pub mod browser;
 pub mod downloads;
 pub mod focus;
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "linux")]
+pub use linux as platform;
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(target_os = "macos")]
+pub use macos as platform;
 #[cfg(feature = "desktop_rebuild")]
 pub mod native_actions;
+#[cfg(not(target_os = "linux"))]
+mod rfd_dialogs;
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+pub use windows as platform;
 #[cfg(feature = "desktop_rebuild")]
 pub mod origin_change;
 pub mod tray;
@@ -32,27 +48,11 @@ pub fn desktop_data_dir(
         } else {
             home()?
         };
-        return Ok(DirectoryLayout::resolve(host_platform(), &home, &environment)?.store);
+        return Ok(DirectoryLayout::resolve(platform::HOST, &home, &environment)?.store);
     }
     let home = home()?;
     ensure!(home.is_absolute(), "Desktop home directory unavailable");
     Ok(home.join(".print-partner"))
-}
-
-#[cfg(feature = "desktop_rebuild")]
-fn host_platform() -> pp_core::layout::Platform {
-    #[cfg(target_os = "macos")]
-    {
-        pp_core::layout::Platform::MacOs
-    }
-    #[cfg(target_os = "linux")]
-    {
-        pp_core::layout::Platform::Linux
-    }
-    #[cfg(target_os = "windows")]
-    {
-        pp_core::layout::Platform::Windows
-    }
 }
 
 /// Only emit known diagnostic categories and OS error numbers. Arbitrary error
@@ -189,7 +189,7 @@ impl ResourceLayout {
         let identity = if root.join("release.json").is_file() {
             root.join("release.json")
         } else {
-            root.join("Resources/desktop-runtime/release.json")
+            root.join(native("Resources/desktop-runtime/release.json"))
         };
         let release: ReleaseIdentity = serde_json::from_slice(&std::fs::read(identity)?)?;
         ensure!(
@@ -217,10 +217,10 @@ impl ResourceLayout {
         let node = contained(&self.root, &self.release.node)?;
         Ok(DesktopLaunch {
             data_dir,
-            assets: web.join("apps/web/dist"),
+            assets: web.join(native("apps/web/dist")),
             bundle: VerifiedBundle {
                 node,
-                entry: web.join("apps/server/dist/current/desktop.js"),
+                entry: web.join(native("apps/server/dist/current/desktop.js")),
                 web_root: web,
                 runtime_version: self.release.runtime_version,
                 commit: self.release.commit,
@@ -237,14 +237,47 @@ fn contained(root: &Path, relative: &Path) -> Result<PathBuf> {
                 .all(|part| matches!(part, std::path::Component::Normal(_))),
         "Invalid desktop resource path"
     );
-    let path = root.join(relative).canonicalize()?;
+    let path = root.join(native(relative)).canonicalize()?;
     ensure!(path.starts_with(root), "Desktop resource escaped package");
     Ok(path)
+}
+
+/// `relative` with the host's separator. Windows canonical roots are `\\?\`
+/// paths, which take `/` as part of a name rather than a separator.
+fn native(relative: impl AsRef<Path>) -> PathBuf {
+    relative.as_ref().components().collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink as symlink_dir, symlink as symlink_file};
+    #[cfg(windows)]
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+
+    /// An absolute path on the host: a drive is prefixed on Windows.
+    #[cfg(unix)]
+    macro_rules! abs {
+        ($path:literal) => {
+            $path
+        };
+    }
+    #[cfg(windows)]
+    macro_rules! abs {
+        ($path:literal) => {
+            concat!("C:", $path)
+        };
+    }
+
+    /// A path component that is not valid Unicode on the host.
+    fn nonunicode() -> std::ffi::OsString {
+        #[cfg(unix)]
+        let name = std::os::unix::ffi::OsStringExt::from_vec(vec![0xff]);
+        #[cfg(windows)]
+        let name = std::os::windows::ffi::OsStringExt::from_wide(&[0xd800]);
+        name
+    }
 
     fn selector_child(test: &str) -> std::process::Command {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -284,7 +317,7 @@ mod tests {
     fn ticket_t_12_portable_launcher_store() {
         let mut command = selector_child("tests::portable_launcher_store_in_child");
         command.env("PP_DESKTOP_REBUILD", "1");
-        command.env("PP_PORTABLE_DIR", "/portable/Print Partner");
+        command.env("PP_PORTABLE_DIR", abs!("/portable/Print Partner"));
         assert_selector_child(command);
     }
 
@@ -295,10 +328,13 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let selected = desktop_data_dir(None, || {
             calls.set(calls.get() + 1);
-            Ok("/users/existing-owner".into())
+            Ok(abs!("/users/existing-owner").into())
         })
         .unwrap();
-        assert_eq!(selected, PathBuf::from("/portable/Print Partner/data"));
+        assert_eq!(
+            selected,
+            PathBuf::from(abs!("/portable/Print Partner/data"))
+        );
         assert_eq!(calls.get(), 0);
     }
 
@@ -322,7 +358,7 @@ mod tests {
         ] {
             let mut command = selector_child("tests::launcher_selection_in_child");
             command.env("PP_SELECTOR_CASE", "legacy");
-            command.env("PP_PORTABLE_DIR", "/portable/Print Partner");
+            command.env("PP_PORTABLE_DIR", abs!("/portable/Print Partner"));
             command.env("XDG_DATA_HOME", "invalid-relative");
             if let Some(runtime) = runtime {
                 command.env("PP_DESKTOP_REBUILD", runtime);
@@ -331,8 +367,11 @@ mod tests {
         }
         for runtime in ["1", "true"] {
             for (case, portable) in [
-                ("portable", Some("/portable/Print Partner")),
-                ("portable-unavailable", Some("/portable/Print Partner")),
+                ("portable", Some(abs!("/portable/Print Partner"))),
+                (
+                    "portable-unavailable",
+                    Some(abs!("/portable/Print Partner")),
+                ),
                 ("invalid-portable", Some("")),
                 ("invalid-portable", Some("relative")),
                 ("invalid-portable", Some("/safe/../other")),
@@ -365,25 +404,21 @@ mod tests {
             command.env("PP_PORTABLE_DIR", "invalid-relative");
             assert_selector_child(command);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStringExt;
-            for case in [
-                "nonunicode-portable",
-                "nonunicode-home",
-                "nonunicode-override",
-            ] {
-                let mut command = selector_child("tests::launcher_selection_in_child");
-                command.env("PP_SELECTOR_CASE", case);
-                command.env("PP_DESKTOP_REBUILD", "1");
-                if case == "nonunicode-portable" {
-                    command.env(
-                        "PP_PORTABLE_DIR",
-                        std::ffi::OsString::from_vec(b"/portable/\xff".to_vec()),
-                    );
-                }
-                assert_selector_child(command);
+        for case in [
+            "nonunicode-portable",
+            "nonunicode-home",
+            "nonunicode-override",
+        ] {
+            let mut command = selector_child("tests::launcher_selection_in_child");
+            command.env("PP_SELECTOR_CASE", case);
+            command.env("PP_DESKTOP_REBUILD", "1");
+            if case == "nonunicode-portable" {
+                command.env(
+                    "PP_PORTABLE_DIR",
+                    Path::new(abs!("/portable")).join(nonunicode()),
+                );
             }
+            assert_selector_child(command);
         }
     }
 
@@ -392,21 +427,21 @@ mod tests {
     fn launcher_selection_in_child() {
         let case = std::env::var("PP_SELECTOR_CASE").unwrap();
         let compiled = cfg!(feature = "desktop_rebuild");
-        let mut home = PathBuf::from("/users/existing-owner");
+        let mut home = PathBuf::from(abs!("/users/existing-owner"));
         let mut explicit = None;
-        let mut expected: Result<PathBuf, &str> = Ok("/users/existing-owner/.print-partner".into());
+        let mut expected: Result<PathBuf, &str> =
+            Ok(abs!("/users/existing-owner/.print-partner").into());
         let mut expected_calls = 1;
         match case.as_str() {
-            "legacy" => {}
             "portable" | "portable-unavailable" if compiled => {
-                expected = Ok("/portable/Print Partner/data".into());
+                expected = Ok(abs!("/portable/Print Partner/data").into());
                 expected_calls = 0;
             }
             "invalid-portable-unavailable" | "invalid-portable" if compiled => {
                 expected = Err("Invalid PP_PORTABLE_DIR directory");
                 expected_calls = 0;
             }
-            "portable" | "invalid-portable" => {}
+            "legacy" | "portable" | "invalid-portable" => {}
             "unavailable" | "portable-unavailable" | "invalid-portable-unavailable" => {
                 expected = Err("Desktop home directory unavailable");
             }
@@ -419,11 +454,11 @@ mod tests {
                 });
             }
             "parent-home" | "parent-home-enabled" => {
-                home = "/users/../existing-owner".into();
+                home = abs!("/users/../existing-owner").into();
                 expected = if compiled && case == "parent-home-enabled" {
                     Err("Invalid home directory")
                 } else {
-                    Ok("/users/../existing-owner/.print-partner".into())
+                    Ok(abs!("/users/../existing-owner/.print-partner").into())
                 };
             }
             "absolute-override" | "relative-override" => {
@@ -436,23 +471,19 @@ mod tests {
                 expected = Ok(data);
                 expected_calls = 0;
             }
-            #[cfg(unix)]
             "nonunicode-portable" | "nonunicode-home" | "nonunicode-override" => {
-                use std::os::unix::ffi::OsStringExt;
-                let path =
-                    |bytes: &[u8]| PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()));
                 match case.as_str() {
                     "nonunicode-portable" if compiled => {
-                        expected = Ok(path(b"/portable/\xff/data"));
+                        expected = Ok(Path::new(abs!("/portable")).join(nonunicode()).join("data"));
                         expected_calls = 0;
                     }
                     "nonunicode-home" => {
-                        home = path(b"/users/\xff");
-                        expected = Ok(path(b"/users/\xff/.print-partner"));
+                        home = Path::new(abs!("/users")).join(nonunicode());
+                        expected = Ok(home.join(".print-partner"));
                     }
                     "nonunicode-override" => {
-                        explicit = Some(path(b"relative/\xfe"));
-                        expected = Ok(path(b"relative/\xfe"));
+                        explicit = Some(Path::new("relative").join(nonunicode()));
+                        expected = Ok(Path::new("relative").join(nonunicode()));
                         expected_calls = 0;
                     }
                     _ => {}
@@ -501,15 +532,15 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("pp-identity-");
         let root = scratch.to_path_buf();
         std::fs::create_dir_all(root.join("real")).unwrap();
-        std::os::unix::fs::symlink(root.join("real"), root.join("linked")).unwrap();
-        let fixture = root.join("linked/fixture");
+        symlink_dir(root.join("real"), root.join("linked")).unwrap();
+        let fixture = root.join(native("linked/fixture"));
         std::fs::create_dir_all(&fixture).unwrap();
         let fixture = fixture.canonicalize().unwrap();
         std::fs::create_dir_all(fixture.join("bin")).unwrap();
         std::fs::create_dir_all(fixture.join("web")).unwrap();
-        std::fs::create_dir_all(fixture.join("home/.print-partner")).unwrap();
-        std::fs::write(fixture.join("bin/node"), b"node").unwrap();
-        let data = fixture.join("home/.print-partner");
+        std::fs::create_dir_all(fixture.join(native("home/.print-partner"))).unwrap();
+        std::fs::write(fixture.join(native("bin/node")), b"node").unwrap();
+        let data = fixture.join(native("home/.print-partner"));
         let release = serde_json::json!({
             "runtime_version": "3.3.0-web",
             "commit": "f00471f13d2f0e69631d3130e594b9244f93e01d",
@@ -531,10 +562,10 @@ mod tests {
             "f00471f13d2f0e69631d3130e594b9244f93e01d"
         );
         assert_eq!(launch.bundle.runtime_version, "3.3.0-web");
-        assert_eq!(launch.bundle.node, fixture.join("bin/node"));
+        assert_eq!(launch.bundle.node, fixture.join(native("bin/node")));
         assert_eq!(
             launch.bundle.entry,
-            fixture.join("web/apps/server/dist/current/desktop.js")
+            fixture.join(native("web/apps/server/dist/current/desktop.js"))
         );
         let mut invalid = release;
         invalid["commit"] = serde_json::json!("Print Partner");
@@ -550,11 +581,11 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("pp-macos-layout-");
         let root = scratch.to_path_buf();
         std::fs::create_dir_all(root.join("MacOS")).unwrap();
-        std::fs::create_dir_all(root.join("Resources/desktop-runtime/web")).unwrap();
-        std::fs::write(root.join("MacOS/printpartner-node"), b"fixture").unwrap();
+        std::fs::create_dir_all(root.join(native("Resources/desktop-runtime/web"))).unwrap();
+        std::fs::write(root.join(native("MacOS/printpartner-node")), b"fixture").unwrap();
         let root = root.canonicalize().unwrap();
         std::fs::write(
-            root.join("Resources/desktop-runtime/release.json"),
+            root.join(native("Resources/desktop-runtime/release.json")),
             serde_json::json!({
                 "runtime_version": "4.2.1-web",
                 "commit": "f00471f13d2f0e69631d3130e594b9244f93e01d",
@@ -572,10 +603,13 @@ mod tests {
             .unwrap()
             .into_launch(root.join("data"))
             .unwrap();
-        assert_eq!(launch.bundle.node, root.join("MacOS/printpartner-node"));
+        assert_eq!(
+            launch.bundle.node,
+            root.join(native("MacOS/printpartner-node"))
+        );
         assert_eq!(
             launch.bundle.web_root,
-            root.join("Resources/desktop-runtime/web")
+            root.join(native("Resources/desktop-runtime/web"))
         );
         assert_eq!(launch.bundle.runtime_version, "4.2.1-web");
     }
@@ -727,16 +761,16 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("pp-layout-");
         let root = scratch.to_path_buf();
         std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("bin/node"), b"node").unwrap();
+        std::fs::write(root.join(native("bin/node")), b"node").unwrap();
         let root = root.canonicalize().unwrap();
         assert_eq!(
             contained(&root, Path::new("bin/node")).unwrap(),
-            root.join("bin/node")
+            root.join(native("bin/node"))
         );
         for path in ["../outside", "/usr/bin/node", "bin/missing"] {
             assert!(contained(&root, Path::new(path)).is_err());
         }
-        std::os::unix::fs::symlink("/usr/bin/node", root.join("escape")).unwrap();
+        symlink_file(std::env::current_exe().unwrap(), root.join("escape")).unwrap();
         assert!(contained(&root, Path::new("escape")).is_err());
     }
 

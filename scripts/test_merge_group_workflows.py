@@ -149,7 +149,7 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     self.assertEqual(job["needs"], "changes")
                     selected = "needs.changes.outputs.relevant != 'false'"
                     if job_id == "rust-windows":
-                        selected = f"({selected} && needs.changes.outputs.windows != 'false')"
+                        selected = "needs.changes.outputs.windows != 'false'"
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
                                      f"(needs.changes.result != 'success' || {selected}))")

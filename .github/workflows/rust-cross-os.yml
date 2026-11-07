@@ -1,7 +1,8 @@
 name: Rust cross-OS
 
-# Relevant PRs test Rust on Linux and Windows. Ready PRs with the macos label also
-# test macOS. PR gate keeps clippy + doctests for both feature states (macOS PRs
+# Relevant PRs test Rust on Linux. Windows runs on main, merge groups, nightly and manual
+# runs, and on a PR only when the Windows tier selects it (ci:windows or ci:full label, or a
+# Windows-relevant path). Ready PRs with the macos or ci:full label also test macOS. PR gate keeps clippy + doctests for both feature states (macOS PRs
 # still skip desktop_rebuild=on as before). Linux and Windows PRs run nextest with
 # desktop_rebuild on; macOS PRs skip it.
 # On PRs, nextest uses rdeps(=crate) for changed rust/crates/* (see
@@ -504,7 +505,7 @@ jobs:
     needs: changes
     # Explicit jobs keep each required check present when selection skips it. Main, merge groups,
     # the nightly run and manual runs always select Windows; a PR selects it by label or path.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.relevant != 'false' && needs.changes.outputs.windows != 'false')))
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false'))
     runs-on: windows-latest
     env:
       RUST_OS: windows

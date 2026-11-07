@@ -2,6 +2,8 @@ pub mod manifest_options;
 mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
+pub mod header;
+pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;
 pub use variants::{VariantCommand, VariantOutcome};
 pub(crate) mod projection;
@@ -65,6 +67,12 @@ pub enum BuildCommand {
     Touch {
         build: PositiveId,
     },
+    /// Node's PATCH /plans/{id}. `legacy` is the /api/v1 contract.
+    Update {
+        build: PositiveId,
+        patch: BuildPatch,
+        legacy: bool,
+    },
     SetBase {
         build: PositiveId,
         source: PositiveId,
@@ -109,6 +117,19 @@ pub enum BuildOutcome {
     },
     Deleted,
     MissingBuild,
+    /// The name another Build of the tenant has (`duplicate_build_name`).
+    RenameTaken {
+        name: String,
+    },
+    NameRequired,
+    FeatureDisabled,
+    /// `String(special_request)` threw after any rename was saved: Node's 500
+    /// beside an archive, else its 400.
+    Uncoercible {
+        archive: bool,
+    },
+    FeatureTogglesInvalid,
+    ArchiveRefused(ArchiveRefusal),
     InvalidBaseSource,
     MissingSource,
     MissingLayer,
@@ -411,6 +432,11 @@ fn mutation(
                 ),
             })
         }
+        BuildCommand::Update {
+            build,
+            patch,
+            legacy,
+        } => header::update(tx, tenant, *build, patch, *legacy, repos),
         BuildCommand::SetBase { build, source } => {
             let build = build.get() as i64;
             let source = source.get() as i64;

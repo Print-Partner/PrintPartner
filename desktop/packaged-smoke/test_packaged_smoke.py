@@ -116,7 +116,7 @@ class DataDirectoryTest(unittest.TestCase):
         self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
         self.assertEqual(data.stat().st_mode & 0o777, 0o700)
         self.assertEqual(
-            sorted(smoke.directory_state(data)), [".pp-rust-owned.json", "print-partner.db"]
+            sorted(smoke.directory_state(data)), [".", ".pp-rust-owned.json", "print-partner.db"]
         )
 
     def test_directory_state_sees_a_changed_database(self):
@@ -125,6 +125,17 @@ class DataDirectoryTest(unittest.TestCase):
         before = smoke.directory_state(data)
         (data / "print-partner.db").write_bytes(b"changed")
         self.assertNotEqual(before, smoke.directory_state(data))
+
+    def test_directory_state_sees_nested_entries_and_modes(self):
+        data = self.root / "data"
+        smoke.prepare_data(data, self.root / "fixture", rust_owned=False)
+        (data / "logs").mkdir()
+        before = smoke.directory_state(data)
+        (data / "logs" / "a.log").write_text("x")
+        nested = smoke.directory_state(data)
+        self.assertNotEqual(before, nested)
+        (data / "print-partner.db").chmod(0o600)
+        self.assertNotEqual(nested, smoke.directory_state(data))
 
 
 class InstallTreeTest(unittest.TestCase):

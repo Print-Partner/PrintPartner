@@ -23,9 +23,9 @@ Each job runs on a GitHub-hosted `ubuntu-24.04` runner, never on the pp-local ru
 
 | Job | Scenario | Data directory | Expected |
 | --- | --- | --- | --- |
-| `default` | `migrate` | the schema 31 database | Window, Build visible, clean exit, Node migrates past 31 (to 34 today) and keeps every Plan and Plate row. |
-| `desktop_rebuild` | `refuse-unmarked` | the schema 31 database, no marker | The "Print Partner could not start" dialog, exactly `desktop_startup_failed: core_startup` on stderr (any other category, such as `data_directory_permissions`, fails), and every entry in the data directory byte-for-byte unchanged. The `migrate-rust-owned` row runs the same package on the same database, so the marker is the only difference. |
-| `desktop_rebuild` | `migrate-rust-owned` | the schema 31 database plus `.pp-rust-owned.json` | First-run administrator form, then the Build, clean exit, Rust migrates past 31 (to 45 today) and keeps every Plan and Plate row. |
+| `default` | `migrate` | the schema 31 database | Window, Build visible, clean exit (shutdown receipt with no errors and `storage_released: true`), Node migrates past 31 (to 34 today) and keeps every Plan and Plate row. |
+| `desktop_rebuild` | `refuse-unmarked` | the schema 31 database, no marker | The "Print Partner could not start" dialog, exactly `desktop_startup_failed: core_startup` on stderr (any other category, such as `data_directory_permissions`, fails), and every entry under the data directory, recursively, unchanged in content, mode and link target. The `migrate-rust-owned` row runs the same package on the same database, so the marker is the only difference. |
+| `desktop_rebuild` | `migrate-rust-owned` | the schema 31 database plus `.pp-rust-owned.json` | First-run administrator form, then the Build, clean exit (same receipt check), Rust migrates past 31 (to 45 today) and keeps every Plan and Plate row. |
 
 The rebuild build opens only a directory that is empty or carries the ownership marker, and refuses an existing unmarked installation without touching it ([Storage](../storage.md#ownership-marker-decision)). The cutover writes the marker on a Rust-owned copy ([Architecture](../architecture.md)). The `migrate-rust-owned` scenario stands in for that copy: `smoke.py --rust-owned` writes the marker in the exact format [Storage](../storage.md#ownership-marker-format) documents, and a unit test compares the bytes with that page. The migrated installation has no account, so the rebuild UI asks for an administrator before it shows the Builds.
 

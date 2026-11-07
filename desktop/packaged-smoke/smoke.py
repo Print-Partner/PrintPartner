@@ -329,13 +329,17 @@ def prepare_data(data, fixture_dir, rust_owned):
 
 
 def directory_state(data):
-    """Names, sizes and SHA-256 of every top-level entry, for the refusal check."""
-    state = {}
-    for entry in sorted(data.iterdir()):
-        if entry.is_file() and not entry.is_symlink():
-            state[entry.name] = hashlib.sha256(entry.read_bytes()).hexdigest()
+    """Mode and SHA-256 or link target of every entry under data, for the refusal check."""
+    state = {".": oct(data.stat().st_mode & 0o7777)}
+    for entry in sorted(data.rglob("*")):
+        mode = oct(entry.lstat().st_mode & 0o7777)
+        if entry.is_symlink():
+            value = ["link", os.readlink(entry)]
+        elif entry.is_file():
+            value = ["file", mode, hashlib.sha256(entry.read_bytes()).hexdigest()]
         else:
-            state[entry.name] = "dir" if entry.is_dir() else "other"
+            value = ["dir" if entry.is_dir() else "other", mode]
+        state[entry.relative_to(data).as_posix()] = value
     return state
 
 
@@ -448,9 +452,11 @@ def expect_usable(launch, receipt, fixture, database):
     receipt["ownedProcesses"] = len(launch.owned)
     code, survivors = stop(launch.app, launch.owned, 60)
     receipt.update(exitCode=code, survivors=survivors)
-    receipt["shutdownReceipt"] = last_json_line(launch.stdout)
+    receipt["shutdownReceipt"] = shutdown = last_json_line(launch.stdout)
     if code != 0:
         raise SmokeFailure(f"the app exited with {code} after SIGTERM")
+    if not shutdown or shutdown.get("errors") or shutdown.get("storage_released") is not True:
+        raise SmokeFailure(f"incomplete shutdown receipt: {shutdown}")
     if survivors:
         raise SmokeFailure(f"child processes survived shutdown: {survivors}")
     receipt["database"] = verify_database(database, fixture)

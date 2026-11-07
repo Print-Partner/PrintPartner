@@ -407,6 +407,20 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_lone_surrogates_each_survive() {
+        let body = br#"{"selection":{"\ud800\ud801":"\udc00\ud800x\udbff"}}"#;
+        let Ok((selection, _)) = parse_request(body) else {
+            panic!("selection refused");
+        };
+        assert_eq!(selection[0].0.units(), [0xd800, 0xd801]);
+        assert_eq!(selection[0].1.units(), [0xdc00, 0xd800, 0x78, 0xdbff]);
+        assert_eq!(
+            stored_selection(Some(r#"{"\ud800\ud801":"\udc00\udbff"}"#)),
+            r#"{"\ud800\ud801":"\udc00\udbff"}"#
+        );
+    }
+
+    #[test]
     fn stored_selection_keeps_lone_surrogate_escapes() {
         assert_eq!(
             stored_selection(Some(r#"{"b":"\uD800","2":1.0}"#)),

@@ -207,10 +207,11 @@ fn failure(status: StatusCode, detail: &str) -> Response {
 
 /// One MCP session: its own pending proposals, product tools from the catalog.
 /// `turn` runs one session tool call at a time, so the caller's key set on
-/// the domain belongs to the call that uses it.
+/// the domain belongs to the call that uses it. The blocking task holds it, so
+/// a call whose request was cancelled still finishes before the next starts.
 struct ProductMcp {
     session: Arc<McpSession<CheckoffDomain>>,
-    turn: tokio::sync::Mutex<()>,
+    turn: Arc<tokio::sync::Mutex<()>>,
     reads: Reads,
 }
 
@@ -221,7 +222,7 @@ impl ProductMcp {
                 CheckoffDomain::new(reads.progress.clone(), reads.wait),
                 None,
             )),
-            turn: tokio::sync::Mutex::new(()),
+            turn: Arc::new(tokio::sync::Mutex::new(())),
             reads,
         }
     }
@@ -233,12 +234,16 @@ impl ProductMcp {
         arguments: Value,
         presented: Option<PresentedCredential>,
     ) -> Result<ToolResult, ErrorData> {
-        let _turn = self.turn.lock().await;
-        self.session.port().set_caller(presented);
+        let turn = self.turn.clone().lock_owned().await;
         let session = self.session.clone();
-        let result =
-            tokio::task::spawn_blocking(move || session.call_tool(&name, &arguments)).await;
-        self.session.port().set_caller(None);
+        let result = tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            session.port().set_caller(presented);
+            let result = session.call_tool(&name, &arguments);
+            session.port().set_caller(None);
+            result
+        })
+        .await;
         result.map_err(internal)?.map_err(|error| internal(error.0))
     }
 

@@ -5,9 +5,10 @@ table. Node keeps them as one JSON array in each tenant's `printer.send_queue`
 setting. This page covers the storage half: the table, how Rust reads a queue
 Node left behind, and when the items move. It is compiled only with the
 default-off `desktop_rebuild` feature, and only the Rust-only launcher
-(`PP_DESKTOP_REBUILD=1` or `true`) opens the writer that moves them. The send
-routes and the upload worker are GRE-365 itself; no Rust code sends to a
-printer yet; the queue's storage writes are below.
+(`PP_DESKTOP_REBUILD=1` or `true`) opens the writer that moves them. The
+storage writes come first below; the send routes and the upload worker that
+sends to printers (GRE-365) follow in [Routes](#routes-gre-365) and
+[Upload worker](#upload-worker-gre-365-gre-1215).
 
 ## Schema 44
 
@@ -117,7 +118,12 @@ uploaded-only job makes it `done`; a failed job makes it `error` with the
 job's reason (`Upload failed` when it has none); a cancelled one `Send
 cancelled`; and a job whose printer outcome is unknown makes it `error` with
 the unknown-outcome text. That includes an attempt whose lease expired while
-the process kept running: only startup recovery uses the interrupted text.
+the process kept running: only startup recovery uses the interrupted text. An
+attempt whose lease expired before any effect was admitted is never queued
+again: the job fails, and its item is `error` with `NOT_ADMITTED_ERROR`
+("The send did not start because storage could not admit it. Nothing was sent
+to the printer. Send now sends it."), so the upload never starts minutes later
+without a user action.
 
 ## Unknown outcomes
 
@@ -215,7 +221,9 @@ to the mutation drain bound. For each job it:
 3. sends once through the Moonraker or PrusaLink driver. An upload-only send
    never calls `print/start`. A confirmed send finishes the job with the
    printer, host and remote path, creates the Build's Checkoff link, and
-   deletes the staged directory, as Node does. A definite refusal, including
+   deletes the staged directory, as Node does. A failed label read falls back
+   to the printer id and `Printer`, and a link Node would not create is
+   skipped, so a send the printer confirmed always finishes. A definite refusal, including
    a start the printer refused after the upload, denies the effect, so the
    job fails, the item is `error` with the reason, and the printer is free.
    An unknown outcome (for example a connection closed with no answer) leaves

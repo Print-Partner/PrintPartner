@@ -653,8 +653,11 @@ pub(crate) fn link_upload(
     {
         link["unlabeled_names"] = Value::Null;
     }
-    let link =
-        links::parse(&link, &now).ok_or_else(|| anyhow!("Printer upload link creation failed"))?;
+    // Node's `createPrinterCheckoffLink` answers `null` here, and the send
+    // still finishes without a link.
+    let Some(link) = links::parse(&link, &now) else {
+        return Ok(None);
+    };
     let id = links::js_string(&link["id"]);
     let mut all = links::load(tx, tenant, &now)?;
     all.push(link);

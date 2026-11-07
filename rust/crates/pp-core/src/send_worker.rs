@@ -56,7 +56,7 @@ const NOT_AUTHORIZED: &str =
 /// Storage could not admit the send (for example a busy writer). Failing it
 /// now, rather than letting its lease expire, keeps it from starting minutes
 /// later with no user action.
-const NOT_STARTED: &str = "The send did not start because storage could not admit it. Nothing was sent to the printer. Send now sends it.";
+const NOT_STARTED: &str = pp_storage::send_queue::NOT_ADMITTED_ERROR;
 /// Node's `isAllowedPrinterUploadFilename` refusal: only sliced files print.
 /// Storage refuses to enqueue any other upload; the route says why first.
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
@@ -214,10 +214,15 @@ impl SendWorker {
                 )
                 .await?;
                 let (settings, printer) = (self.settings.clone(), printer_id.clone());
+                // The printer has the file: labels are display text, so a failed
+                // read must not keep the send from finishing.
                 let labels = tokio::task::spawn_blocking(move || {
                     printer_hosts::send_labels(&settings, READER_WAIT, &printer)
                 })
-                .await??;
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
                 let host_name = host_name
                     .or(labels.host_name)
                     .unwrap_or_else(|| "Printer".into());

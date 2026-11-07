@@ -790,6 +790,32 @@ fn ticket_t_26_a_lease_lost_while_running_is_an_unknown_outcome_not_a_restart() 
 }
 
 #[test]
+fn ticket_t_26_a_lease_lost_before_the_upload_began_never_sends_on_its_own() {
+    let queue = Harness::open();
+    queue.seed(&[("stalled", "p-c", "queued", None)]);
+    let worker = queue.worker();
+    let job = queue.dispatch("stalled");
+    claim(&worker);
+    queue
+        .database()
+        .execute("UPDATE durable_jobs SET lease_until=1 WHERE id=?1", [&job])
+        .unwrap();
+    // Recovery fails the attempt instead of queueing it for a later claim.
+    assert!(worker.claim().unwrap().is_none());
+    assert_eq!(queue.job(&job).0, "failed");
+    assert_eq!(
+        queue.item("stalled"),
+        (
+            "error".into(),
+            Some(crate::send_queue::NOT_ADMITTED_ERROR.into()),
+            Some(job)
+        )
+    );
+    assert!(worker.claim().unwrap().is_none(), "nothing runs on its own");
+    assert!(matches!(queue.send("stalled"), Reply::Dispatched { .. }));
+}
+
+#[test]
 fn ticket_t_26_reads_and_missing_files_follow_node() {
     let queue = Harness::open();
     queue.seed(&[

@@ -2022,6 +2022,20 @@ fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord, restart: bool) -> R
     if restart && job.kind == JobKind::PrinterUpload {
         crate::send_queue::interrupted(tx, &job)?;
     }
+    // A printer upload whose worker lost its lease before any effect never
+    // runs again on its own: only Send now sends it (startup does the same
+    // in `send_queue`).
+    #[cfg(feature = "desktop_rebuild")]
+    if !restart && job.kind == JobKind::PrinterUpload && job.state == PersistentState::Queued {
+        release_printer_upload(
+            tx,
+            &job.tenant,
+            "open",
+            &job.job_id,
+            crate::send_queue::NOT_ADMITTED_ERROR,
+            "attempt_recovered",
+        )?;
+    }
     #[cfg(not(feature = "desktop_rebuild"))]
     let _ = restart;
     Ok(())

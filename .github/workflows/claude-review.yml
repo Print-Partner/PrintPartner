@@ -10,7 +10,7 @@ name: Claude Review
 # See docs/development/definition-of-done.md#code-review.
 #
 # The action is not hardened against prompt injection, so the jobs run only for
-# PRs from this repository authored by the repository owner or by Dependabot.
+# PRs from this repository authored by poitee (pinned by login, so an org transfer changes nothing) or by Dependabot.
 # Dependabot runs see only Dependabot secrets, so CLAUDE_CODE_OAUTH_TOKEN must
 # also be stored there for its PRs to be reviewed. Claude gets no
 # shell and no gh: a workflow step writes the PR diff into the workspace, Claude
@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   claude-code-review:
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.user.login == github.repository_owner || github.event.pull_request.user.login == 'dependabot[bot]'))
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.user.login == 'poitee' || github.event.pull_request.user.login == 'dependabot[bot]'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -103,7 +103,7 @@ jobs:
             --disallowedTools "Bash,BashOutput,KillShell,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent,Read(./.git/**),Read(//proc/**),Read(//sys/**),Read(//dev/**),Read(//etc/**),Read(//tmp/**),Read(//var/**),Read(//run/**),Read(//root/**),Read(~/.*),Read(~/.*/**),Read(~/.git-credentials),Read(~/.config/**),Read(~/.claude/**),Read(~/.claude.json),Read(//proc/self/**),Read(~/work/_temp/**),Read(~/work/_actions/**),Read(~/runners/**)"
 
   claude-security-review:
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.user.login == github.repository_owner || github.event.pull_request.user.login == 'dependabot[bot]'))
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.user.login == 'poitee' || github.event.pull_request.user.login == 'dependabot[bot]'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

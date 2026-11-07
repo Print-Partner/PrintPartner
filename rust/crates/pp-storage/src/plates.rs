@@ -19,6 +19,7 @@ mod arrange;
 mod artifacts;
 mod initialize;
 mod setup;
+pub use setup::build_id;
 
 use crate::{
     Envelope, Shared, WriterOwner, auth, domain_events,

@@ -105,6 +105,7 @@ fn assignment(command: &Value) -> Assignment {
             remote_identity: link.get("remoteIdentity").cloned(),
             classification: link.get("classification").cloned(),
         },
+        snapshot_source: None,
     }
 }
 

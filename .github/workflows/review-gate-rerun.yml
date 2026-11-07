@@ -16,18 +16,16 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha }}
-  cancel-in-progress: true
-
 jobs:
   rerun:
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
       github.event.comment.user.login == github.repository_owner &&
       (contains(github.event.comment.body, 'pp-review-gate') || contains(github.event.changes.body.from, 'pp-review-gate')))
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.workflow_run.head_sha }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -44,7 +42,8 @@ jobs:
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          # Every run acts on the PR's current head, so a run that supersedes another does the same work.
+          # The job's concurrency group is per PR for comments and per head for review runs, so a newer
+          # event for the same target replaces an older one that would do the same work.
           if [ "$EVENT_NAME" = issue_comment ]; then
             pr=$ISSUE_NUMBER
           else
@@ -55,6 +54,10 @@ jobs:
             exit 0
           fi
           head=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+          if [ "$EVENT_NAME" = workflow_run ] && [ "$head" != "$RUN_HEAD_SHA" ]; then
+            echo "$RUN_HEAD_SHA is no longer the head of #$pr ($head); its review result is obsolete."
+            exit 0
+          fi
           # A running gate cannot be rerun, so wait for it to finish first.
           for _ in $(seq 1 40); do
             run=$(gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?event=pull_request_target&head_sha=$head&per_page=1" \

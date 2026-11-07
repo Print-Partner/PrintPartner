@@ -377,12 +377,11 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         self.assertEqual(gate["group"], "${{ github.workflow }}-${{ github.event.pull_request.number }}")
         self.assertEqual(gate["cancel-in-progress"], "true")
         rerun = load("review-gate-rerun.yml")
-        self.assertEqual(rerun["concurrency"]["cancel-in-progress"], "true")
-        self.assertIn("github.event.issue.number || github.event.workflow_run.pull_requests[0].number",
-                      rerun["concurrency"]["group"])
-        condition = rerun["jobs"]["rerun"]["if"]
-        for conclusion in ("cancelled", "skipped"):
-            self.assertIn(f"github.event.workflow_run.conclusion != '{conclusion}'", condition)
+        self.assertNotIn("concurrency", rerun)
+        concurrency = rerun["jobs"]["rerun"]["concurrency"]
+        self.assertEqual(concurrency["cancel-in-progress"], "true")
+        self.assertIn("github.event.issue.number || github.event.workflow_run.head_sha", concurrency["group"])
+        self.assertNotIn("conclusion", rerun["jobs"]["rerun"]["if"])
         self.assertIn("pulls/$pr", rerun["jobs"]["rerun"]["steps"][0]["run"])
 
     def test_claude_jobs_are_limited_to_owner_prs_with_minimal_permissions(self):

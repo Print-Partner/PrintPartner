@@ -163,6 +163,10 @@ class CiPathFilterTests(unittest.TestCase):
                 ("rust/crates/pp-core/src/state.rs", "#[cfg(windows)]\nmod w;\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/perm.rs", "use std::os::unix::fs::PermissionsExt;\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/unix_only.rs", "#[cfg(unix)]\nfn a() {}\n", "windows=true\n"),
+                ("rust/crates/pp-core/src/grouped.rs", "use std::{fs, os::unix::fs::PermissionsExt};\n", "windows=true\n"),
+                ("rust/crates/pp-core/src/any.rs", "#[cfg(any(unix, test))]\nfn a() {}\n", "windows=true\n"),
+                ("rust/crates/pp-core/src/bang.rs", "fn a() { if cfg!(unix) {} }\n", "windows=true\n"),
+                ("rust/crates/pp-core/src/attr.rs", "#[cfg_attr(unix, derive(Debug))]\nstruct A;\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/fam.rs", "#[cfg(target_family = \"unix\")]\nfn a() {}\n", "windows=true\n"),
                 ("rust/crates/pp-core/Cargo.toml", "[target.'cfg(windows)'.dependencies]\n", "windows=true\n"),
                 ("rust/Cargo.lock", "lock\n", "windows=true\n"),
@@ -183,6 +187,11 @@ class CiPathFilterTests(unittest.TestCase):
             git("checkout", "-q", with_marker)
             head = commit("rust/crates/pp-core/src/w.rs", "fn a() {}\n")
             self.assertEqual(windows(with_marker, head), "windows=true\n")
+            git("checkout", "-q", "--detach", with_marker)
+            head = commit("rust/crates/pp-core/src/w.rs", "fn a() {}\n")
+            git("checkout", "-q", "--detach", with_marker)
+            moved = commit("rust/crates/pp-core/src/w.rs", "fn b() {}\n")
+            self.assertEqual(windows(moved, head), "windows=true\n")
             git("checkout", "-q", "--detach", base)
             head = commit("rust/crates/pp-api/src/lib.rs", "fn a() {}\n")
             self.assertEqual(windows(base, head, ["ci:windows"]), "windows=true\n")

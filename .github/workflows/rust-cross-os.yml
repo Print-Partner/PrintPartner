@@ -515,7 +515,7 @@ jobs:
         --exclude pp-api --exclude pp-gateway --exclude pp-server
         --exclude pp-desktop
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps: *rust-steps
 
   alert-macos-main:

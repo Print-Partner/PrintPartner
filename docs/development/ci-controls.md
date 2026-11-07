@@ -183,7 +183,7 @@ Neither required check can safely skip an edit on a ready PR. A draft PR is the 
 - `Lint Evidence block` lints the whole body: Evidence lines and `Exemption:` lines both decide the verdict, and fixing a failing Evidence section by editing the body is the normal path. A job-level `if` that skips an edit would leave a skipped required check, which GitHub counts as a pass, and the newer run replaces an earlier failure, so an unrelated edit would clear a failing lint. Not listening to `edited` would keep an old success after a body edit that breaks Evidence. A short job that repeats the previous verdict avoids neither the runner slot nor the queue.
 - `review-gate` has to run on a base change, because a review of a head against one base does not cover the same head against `main`. GitHub does not filter `edited` events by field, and a job-level `if` has the same skipped-required-check problem, so every edit starts an edit run. It reads the API and takes seconds unless a Claude job is running or has not appeared yet, and it cancels the older run for the same PR, so the newest run decides.
 
-`scripts/test_merge_group_workflows.py` keeps both workflows in the shape the table shows. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
+`scripts/test_merge_group_workflows.py` keeps `Lint Evidence block` in the shape the table shows, and `scripts/test_review_gate.py` keeps `review-gate` in it. No test pins the `droid.yml` and `linear-pr-sync.yml` cells. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
 
 ## Emergency path
 

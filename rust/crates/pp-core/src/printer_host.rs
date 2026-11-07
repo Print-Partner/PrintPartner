@@ -147,11 +147,11 @@ impl PrinterHostPort for StoredPrinterHosts {
         let settings = self.settings.clone();
         Box::pin(async move {
             match linked(&settings, printer).await {
-                // Only Moonraker has a status watcher here so far.
-                Ok(Host::Read(target)) => HostAnswer::Ok(Capabilities {
+                // Moonraker and PrusaLink both have status watchers.
+                Ok(Host::Read(_)) => HostAnswer::Ok(Capabilities {
                     files: true,
                     cameras: true,
-                    status: matches!(target, HostTarget::Moonraker { .. }),
+                    status: true,
                 }),
                 Ok(Host::Unported) => HostAnswer::Unsupported,
                 Err(answer) => answer,

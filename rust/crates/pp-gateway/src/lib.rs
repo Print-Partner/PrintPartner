@@ -9,8 +9,8 @@ use axum::{
 use http_body_util::BodyExt;
 use pp_compat::CompatHandle;
 pub use pp_drivers::moonraker::{
-    HTTPS_UNAVAILABLE, Host as MoonrakerHost, PrinterHostState, PrinterHostStatus,
-    PrinterObservations, REDIRECT_UNAVAILABLE, Transition,
+    HTTPS_UNAVAILABLE, Host as MoonrakerHost, HostKind, MAX_HOSTS, PrinterHostState,
+    PrinterHostStatus, PrinterObservations, REDIRECT_UNAVAILABLE, Transition,
 };
 use pp_drivers::moonraker::{Host, Route, Watchers};
 use pp_net::target;
@@ -1728,6 +1728,7 @@ mod snapshot_membership_tests {
                     base_url: endpoint.clone(),
                     api_key: None,
                     enabled: true,
+                    kind: Default::default(),
                 }])
                 .await
                 .unwrap();
@@ -1770,6 +1771,7 @@ mod snapshot_membership_tests {
             base_url: "http://printer.test".into(),
             api_key: None,
             enabled: false,
+            kind: Default::default(),
         };
         watchers.replace(vec![host.clone()]).await.unwrap();
         let overflow: Vec<_> = (0..=pp_drivers::moonraker::MAX_HOSTS)
@@ -1866,6 +1868,7 @@ mod snapshot_membership_tests {
                     base_url: "http://printer.test".into(),
                     api_key: None,
                     enabled: false,
+                    kind: Default::default(),
                 }])
                 .await
                 .unwrap();
@@ -1913,6 +1916,7 @@ mod snapshot_membership_tests {
                                         base_url: "http://printer.test".into(),
                                         api_key: None,
                                         enabled: false,
+                                        kind: Default::default(),
                                     }])
                                     .await
                                     .unwrap();

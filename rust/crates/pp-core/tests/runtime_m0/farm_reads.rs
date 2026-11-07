@@ -1,6 +1,8 @@
 //! GRE-1125: the Rust-only launcher serves the farm reads from storage and
-//! the Moonraker watchers' observation port, behind an account session, with
-//! distinct not-set-up, manual and unreachable reasons and no writes.
+//! the status watchers' observation port, behind an account session, with
+//! distinct not-set-up, manual and unreachable reasons and no writes. Since
+//! GRE-1175 a PrusaLink printer is watched too, so one with no reachable host
+//! reads as unreachable instead of manual.
 use super::ticket_t_4_watcher_proof::{
     SUCCESS, production_rows, proof_data, run_in_child, seed_settings, shut_down, signed_in,
     start_rust_only,
@@ -149,7 +151,7 @@ fn check_printers(printers: &Value) {
             json!(["p-moon", "printing", "printing", null]),
             json!(["p-tls", "manual", "manual", "monitoring_not_supported"]),
             json!(["p-off", "manual", "manual", "monitoring_disabled"]),
-            json!(["p-prusa", "manual", "manual", "monitoring_not_supported"]),
+            json!(["p-prusa", "unreachable", "unreachable", "unreachable"]),
             json!(["p-dead", "unreachable", "unreachable", "unreachable"]),
             json!(["p-gone", "not_set_up", "not_set_up", "integration_missing"]),
             json!(["p-none", "not_set_up", "not_set_up", "not_set_up"]),

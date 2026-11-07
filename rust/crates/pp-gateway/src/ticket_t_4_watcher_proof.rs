@@ -50,6 +50,7 @@ fn moonraker(id: &str, url: &str) -> Host {
         base_url: url.into(),
         api_key: Some("recorded-key".into()),
         enabled: true,
+        kind: Default::default(),
     }
 }
 

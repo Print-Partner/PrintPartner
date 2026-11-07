@@ -738,6 +738,34 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("drops the draft save status once the draft is accepted", async () => {
+    const fetchMock = core({
+      write: (path) => {
+        if (path === "/api/v2/plans/2/drafts/9/apply") return json(RECEIPT);
+        if (path !== "/api/v2/plans/2/drafts/save") return undefined;
+        return json({
+          receipt: {
+            profile_id: 2,
+            draft_id: 9,
+            reconciliation_id: 1,
+            snapshot_digest: DIGEST,
+            saved_at: "2026-11-07T00:00:00.000Z",
+          },
+          workspace: workspace(),
+        });
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Include gear.stl" }));
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    fireEvent.click(screen.getByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/saves a snapshot/);
+    fireEvent.click(within(gate).getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText(/Accepted\. The Plan is now version/)).toBeTruthy();
+    expect(screen.queryByText(/Saved to the draft/)).toBeNull();
+  });
+
   it("keeps Accept off while it previews again after a refusal", async () => {
     let previews = 0;
     let release = () => {};

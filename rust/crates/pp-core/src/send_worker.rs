@@ -24,7 +24,7 @@ use pp_gateway::{
 };
 use pp_storage::{
     SettingsClient, WriterOwner,
-    auth::{AuthPolicy, AuthorityFailure},
+    auth::{AuthFailure, AuthPolicy, AuthorityFailure},
     jobs::{
         AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobFailure,
         JobKind, Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission,
@@ -179,10 +179,17 @@ impl SendWorker {
         };
         let (worker, attempt) = (self.worker.clone(), lease.clone());
         if let Err(error) = tokio::task::spawn_blocking(move || worker.authorize(&attempt)).await? {
-            let reason = match error.downcast_ref::<AuthorityFailure>() {
-                Some(_) => NOT_AUTHORIZED,
-                None => NOT_STARTED,
-            };
+            let refused = error.downcast_ref::<AuthorityFailure>().is_some()
+                || matches!(
+                    error.downcast_ref::<AuthFailure>(),
+                    Some(
+                        AuthFailure::OwnerMappingRequired
+                            | AuthFailure::SessionRequired
+                            | AuthFailure::InvalidCredentials
+                            | AuthFailure::CredentialChanged
+                    )
+                );
+            let reason = if refused { NOT_AUTHORIZED } else { NOT_STARTED };
             return Ok(self.give_up(&mut lease, reason).await);
         }
         let prepared = self.prepare(&printer_id, &artifact_path).await;

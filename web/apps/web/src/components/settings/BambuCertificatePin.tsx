@@ -15,7 +15,8 @@ type Props = {
 /**
  * The Bambu certificate pin for one printer host. Only Test connection records
  * a pin, so this row shows it and offers the deliberate reset a replaced or
- * reset printer needs. Rendered only while the desktop rebuild is on.
+ * reset printer needs. Rendered only while the desktop rebuild is on, and
+ * hidden where the runtime serves no pin route.
  */
 export default function BambuCertificatePin({ integrationId, disabled, onMessage, onError }: Props) {
   const queryClient = useQueryClient();
@@ -39,6 +40,7 @@ export default function BambuCertificatePin({ integrationId, disabled, onMessage
   };
 
   const data = pin.data;
+  if (data === null) return null;
   const label = !data
     ? pin.isError
       ? "Certificate state unavailable."

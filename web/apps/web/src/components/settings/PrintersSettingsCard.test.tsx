@@ -478,6 +478,43 @@ describe("PrintersSettingsCard", () => {
     expect(screen.queryByRole("button", { name: "Reset certificate" })).toBeNull();
   });
 
+  it("hides the Bambu certificate pin where the runtime serves no pin route", async () => {
+    healthState.health = { ok: true, capabilities: ["tenant_feature_toggles"] };
+    api.fetchPrinters.mockResolvedValue([
+      {
+        id: "printer-x1c",
+        name: "X1C",
+        model: "x1c",
+        bed_width_mm: 256,
+        bed_depth_mm: 256,
+        bed_height_mm: 256,
+        margin_mm: 4,
+        max_filament_slots: 1,
+        loaded_filaments: [{ slot: 1, filament_color_id: null, label: "" }],
+        integration_id: "host-x1c",
+        device_id: "default",
+        preset_id: null,
+      } satisfies PrinterMachine,
+    ]);
+    api.fetchIntegrations.mockResolvedValue([
+      {
+        id: "host-x1c",
+        type: "bambu",
+        name: "X1C",
+        config: { host: "192.168.1.60", serial: "FIXTURE01" },
+        created_at: "2026-11-07T00:00:00.000Z",
+        updated_at: "2026-11-07T00:00:00.000Z",
+      },
+    ]);
+    api.fetchTlsPin.mockResolvedValue(null);
+
+    renderWithQueryClient(<PrintersSettingsCard engineReady />);
+    await screen.findByRole("button", { name: "Test connection" });
+    await waitFor(() => expect(api.fetchTlsPin).toHaveBeenCalledWith("host-x1c"));
+    expect(screen.queryByText(/Certificate|Not pinned/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset certificate" })).toBeNull();
+  });
+
   it("hides printer connection controls on the hosted planning host", async () => {
     healthState.health = { ok: true, capabilities: ["hosted_planning"] };
     api.fetchPrinters.mockResolvedValue([]);

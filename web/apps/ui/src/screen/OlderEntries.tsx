@@ -34,6 +34,7 @@ export function OlderEntries<P>({
   table: RefObject<HTMLTableElement | null>;
 }) {
   const focusRow = useRef<number | null>(null);
+  const retry = useRef<HTMLButtonElement>(null);
   const loaded = query.data?.pages.length ?? 0;
   useEffect(() => {
     if (focusRow.current === null) return;
@@ -42,17 +43,22 @@ export function OlderEntries<P>({
     focusRow.current = null;
     row.focus();
   }, [loaded, table]);
+  // The focused button turns into the alert, so focus moves to its Retry.
+  const failed = query.isFetchNextPageError && !query.isFetchingNextPage;
+  useEffect(() => {
+    if (failed) retry.current?.focus();
+  }, [failed]);
   if (!query.hasNextPage) return null;
   const load = () => {
     focusRow.current = table.current?.tBodies[0]?.rows.length ?? null;
     void query.fetchNextPage();
   };
-  if (query.isFetchNextPageError) {
+  if (failed) {
     return (
       <div role="alert" className="pp-banner" data-kind="error">
         <p>Could not load older entries.</p>
         <p className="pp-banner-detail">{query.error?.message}</p>
-        <button type="button" className="pp-button" onClick={load}>
+        <button ref={retry} type="button" className="pp-button" onClick={load}>
           Retry
         </button>
       </div>

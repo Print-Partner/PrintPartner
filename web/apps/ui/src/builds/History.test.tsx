@@ -151,6 +151,7 @@ describe("UI8-01 History lists the Build's records from one read", () => {
     expect(alert.textContent).toContain("Could not load older entries.");
     expect(screen.queryByText(/Could not refresh/)).toBeNull();
     expect(rows()).toHaveLength(5);
+    expect(document.activeElement).toBe(within(alert).getByRole("button", { name: "Retry" }));
     olderUp = true;
     fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     await screen.findByText("Accepted revision 1");
@@ -176,7 +177,7 @@ describe("UI8-03 History says which entries cannot be undone and why", () => {
       "Not undoableA printer command cannot be undone",
     );
     expect(row("3 units checked off").lastElementChild!.textContent).toBe(
-      "Not undoableRecorded before Checkoff kept an undo for it",
+      "Not undoableHistory cannot undo checkoff bursts yet. Undo a recent one from the Farm log",
     );
     expect(row("Accepted revision 2").lastElementChild!.textContent).toBe("");
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();

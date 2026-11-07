@@ -111,13 +111,19 @@ const PAGE: FarmLogPage = {
 };
 
 /** The log, and after an undo the log with the burst undone and its undo entry on top. */
-function farmLog(undoAnswer: () => Response = () => json(UNDONE)) {
+/** `undoAnswer` answers each undo POST; it calls `land` when the core applied that undo. */
+function farmLog(
+  undoAnswer: (land: () => void) => Response = (land) => {
+    land();
+    return json(UNDONE);
+  },
+) {
   let undone = false;
   const handler: Handler = (path, init) => {
     if (path === "/api/v2/farm-log/checkoff_burst%3A3/undo" && init?.method === "POST") {
-      const answer = undoAnswer();
-      undone = answer.ok;
-      return answer;
+      return undoAnswer(() => {
+        undone = true;
+      });
     }
     if (path !== "/api/v2/farm-log") return json({ title: "Not Found", status: 404 }, 404);
     if (!undone) return json(PAGE);
@@ -201,9 +207,13 @@ describe("UI8-04 farm log with undo where allowed", () => {
 
   it("counts an undo whose answer was lost as done when the resend finds it already undone", async () => {
     let sends = 0;
-    const fetchMock = farmLog(() => {
+    const fetchMock = farmLog((land) => {
       sends += 1;
-      if (sends === 1) throw new TypeError("Failed to fetch");
+      // The first send lands, but its answer is lost on the way back.
+      if (sends === 1) {
+        land();
+        throw new TypeError("Failed to fetch");
+      }
       return json(
         { title: "Conflict", status: 409, detail: "This Checkoff burst was already undone" },
         409,
@@ -217,6 +227,11 @@ describe("UI8-04 farm log with undo where allowed", () => {
     );
     expect(screen.queryByRole("alert")).toBeNull();
     expect(sends).toBe(2);
+    await screen.findByText("Undid the burst on Voron 2.4", { selector: "span" });
+    expect(row("Verified 1 bed on Voron 2.4").lastElementChild!.textContent).toBe(
+      "Not undoableAlready undone",
+    );
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
   });
 
   it("says an undo may not have reached the core when every send is lost", async () => {

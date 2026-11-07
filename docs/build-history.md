@@ -30,9 +30,10 @@ Every entry has:
 - `link`: `{"kind": type, "id": row id as a string}`, the record the entry opens.
 - `undo`: on checkoff bursts and sends only.
 
-No checkoff burst can be undone yet. Bursts recorded today carry no undo
-token, so every burst reports `no_undo_token`. A send is a printer command, so
-it is never undoable.
+No checkoff burst can be undone from History yet. History does not read burst
+undo tokens, so every burst reports `no_undo_token`, including a printer burst
+the farm log can undo (GRE-1259 adds that). A send is a printer command, so it
+is never undoable.
 
 Old rows stay readable. A decision or snapshot with empty text gets a summary
 from its label, kind or source. A timestamp that is not RFC 3339 is returned as

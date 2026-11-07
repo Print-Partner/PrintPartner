@@ -19,7 +19,8 @@ with drafts through the crate-private `loopback` module.
 List responses are `{ "profiles": [ <ProfileSummary>, ... ] }`. Detail
 responses are a bare `ProfileSummary` (`id`, `name`, `order_number`,
 `special_request`, `part_count`, `accepted_progress`, `build_stale`,
-`freshness`, `archived_at`, `last_used_at`). Missing or cross-tenant ids answer
+`freshness`, `archived_at`, `last_used_at`, and under `desktop_rebuild` the
+header's `customer` and `due_date` from GRE-1100). Missing or cross-tenant ids answer
 404 with `"Profile not found"`. Unauthenticated requests answer 401 with
 `"Authentication required"`. HEAD shares status and auth with GET and returns
 an empty body.

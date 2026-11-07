@@ -1,10 +1,15 @@
 name: Droid Auto Review
 
-# Factory Droid reviews every ready PR head. Droid is optional: the required
-# check is `review-gate` (review-gate.yml), which accepts a head on which this
-# `droid-review` job succeeded, or one of the other review paths. Required
-# review-thread resolution makes open Droid findings block the merge. Runs on
-# synchronize too, so each new head gets its own review.
+# SUSPENDED (GRE-1222): the Factory quota is out, so the job below runs only when
+# the repository variable PP_DROID_REVIEW is `on`. It is unset, so the job reports
+# `skipped`. review-gate treats a skipped droid-review as no Droid review and
+# passes on the Claude reviews or the coordinator marker instead. Set the
+# variable to `on` when the quota returns; a provider-neutral gate replaces Droid
+# otherwise.
+#
+# When active, Factory Droid reviews every ready PR head. Droid is optional: the
+# required check is `review-gate` (review-gate.yml), which accepts a head on which
+# this `droid-review` job succeeded, or one of the other review paths.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
@@ -17,7 +22,7 @@ concurrency:
 
 jobs:
   droid-review:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (vars.PP_DROID_REVIEW == 'on')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

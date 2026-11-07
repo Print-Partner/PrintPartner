@@ -47,7 +47,7 @@ jobs:
             echo "::error::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set, so Claude cannot review this PR. The owner runs 'claude setup-token' and stores the token as the CLAUDE_CODE_OAUTH_TOKEN secret in the Actions secrets and, for Dependabot PRs, the Dependabot secrets."
             exit 1
           fi
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -119,7 +119,7 @@ jobs:
             echo "::error::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set, so Claude cannot review this PR. The owner runs 'claude setup-token' and stores the token as the CLAUDE_CODE_OAUTH_TOKEN secret in the Actions secrets and, for Dependabot PRs, the Dependabot secrets."
             exit 1
           fi
-      - uses: useblacksmith/checkout@v1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false

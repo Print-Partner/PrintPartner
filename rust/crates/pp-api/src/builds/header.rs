@@ -1,7 +1,7 @@
 //! Node's PATCH /plans/{id} and POST /plans/{id}/archive through the Build
 //! router (GRE-421 part 2).
 
-use super::http::{App, SummaryContract, failure, missing_build, run, unreadable};
+use super::http::{App, Refusal, SummaryContract, failure, missing_build, run, unreadable};
 use crate::loopback::PresentedCredential;
 use axum::{
     body::to_bytes,
@@ -9,7 +9,9 @@ use axum::{
     http::{Method, StatusCode, header},
     response::Response,
 };
-use pp_storage::build_graph::{ArchiveRefusal, BuildCommand, BuildPatch, PositiveId};
+use pp_storage::build_graph::{
+    ArchiveRefusal, BuildCommand, BuildPatch, PositiveId, SpecialRequest,
+};
 use serde::de::IgnoredAny;
 use serde_json::Value;
 
@@ -53,8 +55,9 @@ pub(super) async fn update(
             .and_then(Value::as_str)
             .map(str::to_owned),
         special_request: fields.get("special_request").map(|value| match value {
-            Value::Null => None,
-            value => Some(js_string(value)),
+            Value::Null => SpecialRequest::Clear,
+            value if uncoercible(value) => SpecialRequest::Uncoercible,
+            value => SpecialRequest::Text(crate::catalog::wire::js_string(value)),
         }),
         archive: fields.get("archived") == Some(&Value::Bool(true)),
         touch: fields.get("touch_last_used") == Some(&Value::Bool(true)),
@@ -108,23 +111,26 @@ pub(super) async fn archive(
         Method::POST,
         path,
         contract,
-        BuildCommand::Archive { build, legacy },
+        BuildCommand::Update {
+            build,
+            patch: BuildPatch {
+                archive: true,
+                ..BuildPatch::default()
+            },
+            legacy,
+        },
     )
     .await
 }
 
-/// JavaScript's `String(value)` for a JSON value other than `null`.
-fn js_string(value: &Value) -> String {
+/// Whether JavaScript's `String(value)` throws: an object with its own
+/// `toString` member, which JSON can only make non-callable, or an array
+/// holding one.
+fn uncoercible(value: &Value) -> bool {
     match value {
-        Value::String(text) => text.clone(),
-        Value::Number(number) => match number.as_f64() {
-            Some(n) => ryu_js::Buffer::new().format(n).to_owned(),
-            None => number.to_string(),
-        },
-        Value::Bool(flag) => flag.to_string(),
-        Value::Null => String::new(),
-        Value::Array(items) => items.iter().map(js_string).collect::<Vec<_>>().join(","),
-        Value::Object(_) => "[object Object]".to_owned(),
+        Value::Object(fields) => fields.contains_key("toString"),
+        Value::Array(items) => items.iter().any(uncoercible),
+        _ => false,
     }
 }
 
@@ -134,17 +140,8 @@ pub(super) fn archive_refused(refusal: ArchiveRefusal) -> Response {
             StatusCode::BAD_REQUEST,
             "Archive only when print remaining is 0",
         ),
-        ArchiveRefusal::CompatibilityDirty => failure(
-            StatusCode::CONFLICT,
-            "Accepted Plan requires compatibility repair",
-        ),
-        ArchiveRefusal::Uninitialized => failure(
-            StatusCode::CONFLICT,
-            "Accepted Plan operational state is not initialized",
-        ),
-        ArchiveRefusal::Integrity => failure(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Accepted Plan data is inconsistent",
-        ),
+        ArchiveRefusal::CompatibilityDirty => Refusal::CompatibilityDirty.response(),
+        ArchiveRefusal::Uninitialized => Refusal::Uninitialized.response(),
+        ArchiveRefusal::Integrity => Refusal::Integrity.response(),
     }
 }

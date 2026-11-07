@@ -843,7 +843,7 @@ fn locate_coordinate(
 }
 
 /// Mirrors `assertCompleteProgress`. Each Part must have one tenant row per unit.
-fn complete_rows(tx: &Transaction<'_>, tenant: &str, snapshot: &Snapshot) -> Result<()> {
+pub(crate) fn complete_rows(tx: &Transaction<'_>, tenant: &str, snapshot: &Snapshot) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT tenant_id,unit_index FROM print_progress WHERE part_id=?1 AND unit_index<?2 ORDER BY unit_index",
     )?;

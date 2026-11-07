@@ -74,6 +74,9 @@ const PHASES = [
     patch("special_request_array_v1", { special_request: ["a", null, 2] }, "/api/v1/plans/1"),
     patch("special_request_null", { special_request: null }),
     patch("name_and_request", { name: "Both", special_request: "x", touch_last_used: true }),
+    // String() throws on an own non-callable toString, after the rename saved.
+    patch("special_request_uncoercible", { special_request: { toString: 0 } }),
+    patch("uncoercible_after_rename_with_archive", { name: "Renamed first", special_request: [1, { toString: "x" }], archived: true }),
   ] },
   { name: "orders_plan_off", seed: ORDERS_ON + setting("feature_toggles:plan:1", "{\"orders\":false}"), requests: [
     patch("plan_turns_orders_off", { special_request: "x" }),
@@ -102,6 +105,10 @@ const PHASES = [
     patch("rename_then_remaining", { name: "Kept", archived: true }),
     patch("blank_name_with_archive", { name: " ", archived: true }),
     patch("rename_remaining_v1", { name: "Legacy remaining" }, "/api/v1/plans/1"),
+  ] },
+  { name: "incomplete_rows", seed: "DELETE FROM print_progress WHERE part_id=1;", requests: [
+    archive("archive_incomplete_rows"),
+    patch("rename_with_incomplete_archive", { name: "Partial", archived: true }),
   ] },
   { name: "uninitialized", seed: "UPDATE build_profiles SET accepted_plan_revision_id=NULL WHERE id=1;", requests: [
     archive("archive_uninitialized"),

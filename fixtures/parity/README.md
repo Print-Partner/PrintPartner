@@ -115,7 +115,7 @@ node fixtures/parity/manifest-checkouts-http/generate.mjs --check
 
 ## build-header/node.json (GRE-1231)
 
-`generate.mjs` runs Node's `PATCH /plans/:id` and `POST /plans/:id/archive` with `PP_DESKTOP_REBUILD=1` on copies of `accepted-plate-node.db`, in 12 phases that each seed their own SQL: renames, the `orders` feature gate and special requests, duplicate names, archives of printed, unprinted, uninitialized, already archived and empty Builds, and the `/api/v1` legacy refusal. Times written during a request are recorded as `"<now>"`. `build_header_http` replays the 50 cases through `build_router`: 46 exact, 4 declared corrections.
+`generate.mjs` runs Node's `PATCH /plans/:id` and `POST /plans/:id/archive` with `PP_DESKTOP_REBUILD=1` on copies of `accepted-plate-node.db`, in 14 phases that each seed their own SQL: renames, the `orders` feature gate and special requests (including values whose `String()` throws), duplicate names, bodies that are not JSON, `null` or empty, archives of printed, unprinted, uninitialized, already archived and empty Builds and of a Build missing a progress row, and the `/api/v1` legacy refusal. Times written during a request are recorded as `"<now>"`. `build_header_http` replays the 58 cases through `build_router`: 51 exact, 7 declared corrections. A case with no body is sent with no content type, as the generator sends it.
 
 ```sh
 node fixtures/parity/build-header/generate.mjs --check

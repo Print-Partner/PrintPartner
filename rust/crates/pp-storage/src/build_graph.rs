@@ -3,7 +3,7 @@ mod model;
 pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 pub mod header;
-pub use header::{ArchiveRefusal, BuildPatch};
+pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub(crate) mod projection;
 use crate::{Envelope, Shared, WriterOwner, auth, read_model};
 use anyhow::{Result, anyhow, ensure};
@@ -70,10 +70,6 @@ pub enum BuildCommand {
         patch: BuildPatch,
         legacy: bool,
     },
-    Archive {
-        build: PositiveId,
-        legacy: bool,
-    },
     SetBase {
         build: PositiveId,
         source: PositiveId,
@@ -122,8 +118,11 @@ pub enum BuildOutcome {
         name: String,
     },
     NameRequired,
-    FeatureDisabled {
-        feature: &'static str,
+    FeatureDisabled,
+    /// `String(special_request)` threw after any rename was saved: Node's 500
+    /// beside an archive, else its 400.
+    Uncoercible {
+        archive: bool,
     },
     FeatureTogglesInvalid,
     ArchiveRefused(ArchiveRefusal),
@@ -431,9 +430,6 @@ fn mutation(
             patch,
             legacy,
         } => header::update(tx, tenant, *build, patch, *legacy, repos),
-        BuildCommand::Archive { build, legacy } => {
-            header::archive(tx, tenant, *build, *legacy, repos)
-        }
         BuildCommand::SetBase { build, source } => {
             let build = build.get() as i64;
             let source = source.get() as i64;

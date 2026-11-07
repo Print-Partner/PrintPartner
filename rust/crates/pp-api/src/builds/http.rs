@@ -545,10 +545,17 @@ fn present(
         }
         BuildOutcome::RenameTaken { name } => crate::problem::duplicate_build_name(&name),
         BuildOutcome::NameRequired => failure(StatusCode::BAD_REQUEST, "Profile name is required"),
-        BuildOutcome::FeatureDisabled { feature } => crate::problem::coded(
+        BuildOutcome::FeatureDisabled => crate::problem::coded(
             StatusCode::FORBIDDEN,
-            &format!("Feature {feature} is disabled."),
+            "Feature orders is disabled.",
             "FEATURE_DISABLED",
+        ),
+        BuildOutcome::Uncoercible { archive: true } => {
+            failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        }
+        BuildOutcome::Uncoercible { archive: false } => failure(
+            StatusCode::BAD_REQUEST,
+            "Cannot convert object to primitive value",
         ),
         BuildOutcome::FeatureTogglesInvalid => crate::problem::coded(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -614,7 +621,7 @@ fn present(
 /// Why the legacy v1 contract cannot present a Plan whose accepted progress
 /// is unavailable.
 #[derive(Debug, PartialEq, Eq)]
-enum Refusal {
+pub(super) enum Refusal {
     Integrity,
     CompatibilityDirty,
     Uninitialized,
@@ -624,7 +631,7 @@ enum Refusal {
 }
 
 impl Refusal {
-    fn response(self) -> Response {
+    pub(super) fn response(self) -> Response {
         match self {
             Self::Integrity => failure(
                 StatusCode::INTERNAL_SERVER_ERROR,

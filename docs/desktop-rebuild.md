@@ -3131,8 +3131,8 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --fea
 
 GRE-421's second part. `pp_api::builds::build_router` serves Node's
 `PATCH /plans/{id}` and `POST /plans/{id}/archive` at `/`, `/api/v1` and
-`/api/v2`, as `BuildCommand::Update` and `BuildCommand::Archive` in
-`pp_storage::build_graph::header`. With `desktop_rebuild` and
+`/api/v2`, both as `BuildCommand::Update` in `pp_storage::build_graph::header`
+(an archive is an update with only `archive` set). With `desktop_rebuild` and
 `PP_DESKTOP_REBUILD=1` or `true`, Rust alone writes a Build's name, special
 request, `archived_at` and `last_used_at` through these routes. Draft headers
 and Accept's header copy stay where GRE-1207 put them.
@@ -3152,21 +3152,27 @@ A PATCH checks in Node's order:
    409 `{"code":"duplicate_build_name","name":...}` (Node answered 400
    `Profile already exists`). A `name` that is not a string is ignored.
 6. `special_request` is `String(value)` trimmed, and blank or `null` clears it.
+   When `String()` throws (an object with its own `toString` member, or an
+   array holding one), any rename stays saved and the answer is Node's: 500
+   `Internal Server Error` beside an archive, else 400 `Cannot convert object
+   to primitive value`.
 7. `archived: true` archives as below, then `touch_last_used: true` sets
    `last_used_at`.
 
 As in Node, each step writes as it goes: a rename saved before an archive
 refusal stays saved. The answer is the Build summary on the mount's contract.
 
-An archive keeps an archived Build as it is. Otherwise the accepted Plan must
-have units and none remaining (else 400 `Archive only when print remaining is
+An archive keeps an archived Build as it is. Otherwise every Part of the
+accepted Plan needs one progress row per unit (Node's `assertCompleteProgress`,
+through `checkoff_progress::complete_rows`; a missing row is 500 `Accepted Plan
+data is inconsistent`), and the Plan must have units and none remaining (else 400 `Archive only when print remaining is
 0`). Compatibility-dirty or uninitialized progress is 409, and an integrity
 failure is 500 `Accepted Plan data is inconsistent`.
 
 `fixtures/parity/build-header/node.json` is Node's answer, with
-`PP_DESKTOP_REBUILD=1`, for 54 requests in 13 phases on copies of
+`PP_DESKTOP_REBUILD=1`, for 58 requests in 14 phases on copies of
 `accepted-plate-node.db`. `build_header_patch_and_archive_match_node` replays
-it through `build_router`: 47 cases match Node's status, body and changed
+it through `build_router`: 51 cases match Node's status, body and changed
 tables. Seven are declared corrections that write nothing: the two
 duplicate-name renames (409 above), a blank name beside an archive (400, where
 Node answered 500), a PATCH or archive body that is not JSON under

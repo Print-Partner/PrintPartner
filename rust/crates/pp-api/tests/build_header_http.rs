@@ -210,5 +210,5 @@ async fn build_header_patch_and_archive_match_node() {
         drop(router);
         owner.shutdown().unwrap();
     }
-    assert_eq!((matched, corrected), (47, 7));
+    assert_eq!((matched, corrected), (51, 7));
 }

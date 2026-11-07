@@ -20,8 +20,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: validate-manifests-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || (github.event_name == 'push' && github.run_attempt == '1' && !startsWith(github.ref, 'refs/tags/')) && 'push' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.run_attempt == '1' && !startsWith(github.ref, 'refs/tags/')) }}
+  group: validate-manifests-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   schema:

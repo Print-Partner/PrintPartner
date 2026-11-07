@@ -757,6 +757,11 @@ fn upload_refusals() -> Vec<(Parts<'static>, u16, &'static str)> {
             "filename is required",
         ),
         (
+            vec![("profile_id", None, b"1"), ("file", Some("dir/.."), gcode)],
+            400,
+            "filename is required",
+        ),
+        (
             vec![("constructor", None, b"x"), ("profile_id", None, b"1")],
             400,
             "That upload could not be read",

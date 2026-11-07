@@ -499,7 +499,7 @@ fn printer(
 
 /// The upload route's form fields in Node's order: `profile_id` as
 /// `Number()` reads it, then the file part, then its name: busboy keeps what
-/// follows the last `/` or `\`, and Node trims it. Returns the Build and
+/// follows the last `/` or `\` unless that is `.` or `..`, and Node trims it. Returns the Build and
 /// file name, or the 400 detail.
 pub fn upload_form(
     profile_id: &str,
@@ -512,7 +512,8 @@ pub fn upload_form(
         return Err("Attach the print file as the file part");
     }
     let path = uploaded_name.replace('\\', "/");
-    let name = links::js_trim(path.rsplit('/').next().unwrap_or_default());
+    let last = path.rsplit('/').next().unwrap_or_default();
+    let name = links::js_trim(if matches!(last, "." | "..") { "" } else { last });
     if name.is_empty() || js_len(name) > 500 {
         return Err("filename is required");
     }

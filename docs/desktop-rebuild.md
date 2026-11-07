@@ -2990,7 +2990,7 @@ for the upload.
   `@fastify/multipart` refuses it. Node has no cap on the whole body; here it
   is 65 MiB, and a body past it that is still inside the file part is the
   413, anywhere else the unreadable 400. It then checks `profile_id`, the
-  `file` part, its file name (what follows the last `/` or `\${B}, trimmed)
+  `file` part, its file name (what follows the last `/` or `\`, unless that is `.` or `..`, trimmed)
   and extension in Node's order, reads the Build's Accepted Plan (a missing Build is a 500,
   as for the preview), classifies the bytes off the async workers (409 with
   Node's rejection detail), and holds the classification for 15 minutes under

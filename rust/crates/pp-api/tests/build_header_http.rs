@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 
+#[path = "support/header_fields.rs"]
+mod header_fields;
 #[path = "support/loopback.rs"]
 mod loopback;
 #[path = "support/node_view.rs"]
@@ -159,7 +161,7 @@ async fn build_header_patch_and_archive_match_node() {
     ))
     .unwrap();
     assert!(golden.generated.contains("build-header/generate.mjs"));
-    let (mut matched, mut corrected) = (0, 0);
+    let (mut matched, mut corrected, mut stripped) = (0, 0, 0);
     for phase in &golden.phases {
         let dir = tempfile::tempdir().unwrap();
         let (owner, router) = open(dir.path(), &phase.seed);
@@ -185,7 +187,9 @@ async fn build_header_patch_and_archive_match_node() {
                 .filter(|(old, new)| old != new)
                 .map(|(old, _)| old.0.clone())
                 .collect();
-            let actual = (status.as_u16(), stamp(node_view::node_view(actual)));
+            let mut actual = node_view::node_view(actual);
+            stripped += header_fields::strip_header_fields(&mut actual);
+            let actual = (status.as_u16(), stamp(actual));
             let label = format!("{}/{}", phase.name, case.id);
             match correction(&case.id) {
                 Some(expected) => {
@@ -211,4 +215,8 @@ async fn build_header_patch_and_archive_match_node() {
         owner.shutdown().unwrap();
     }
     assert_eq!((matched, corrected), (51, 7));
+    assert!(
+        stripped > 0,
+        "no Rust summary carried the GRE-1100 header fields"
+    );
 }

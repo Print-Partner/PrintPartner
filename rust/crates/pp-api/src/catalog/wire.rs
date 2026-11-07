@@ -192,7 +192,8 @@ fn object(body: &Value, key: &str) -> Option<Map<String, Value>> {
     body.get(key).and_then(Value::as_object).cloned()
 }
 
-fn js_string(value: &Value) -> String {
+/// JavaScript's `String(value)` for a JSON value; `null` inside an array is empty.
+pub(crate) fn js_string(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
         Value::Null => "null".into(),

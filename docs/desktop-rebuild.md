@@ -2739,6 +2739,8 @@ is refused (see Writer admission above), so no Node verify, monitor or claim
 writes `printer.checkoff_links`, progress or outcomes beside a burst. A burst
 does not run Node's unattributed-print claim or Spoolman deduction after verify;
 those are GRE-1169 and GRE-411 (deduction intent).
+MCP `propose_verify_printer_checkoff` applies through the same burst
+(GRE-1170, below).
 
 A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
 "additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
@@ -2780,6 +2782,48 @@ without that hash or its unit list (written before they existed) refuses with
 every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
+#### Reconcile by operation id (GRE-1170)
+
+`GET /printer-checkoff/verify-batch?idempotency_key=...` (also at `/api/v2`,
+same admission) answers what a key settled to without resending the body. The
+key is read like the burst's key (JS-trimmed, 1 to 200 characters), and it must
+appear exactly once, otherwise the answer is 400. The read writes no Checkoff
+state; as on every route, an API key's `last_used_at` may be recorded.
+
+| State | Body | Meaning |
+| --- | --- | --- |
+| `applied` | `{idempotency_key, state, applied_at, undone_at: null, receipt}` | The burst committed; `receipt` is the stored response |
+| `undone` | the same with `undone_at` | The burst committed and was undone |
+| `expired` | `applied_at`, `undone_at` and `receipt` are null | The burst committed, its receipt was trimmed, and the key cannot run again |
+| `unknown` | `applied_at`, `undone_at` and `receipt` are null | The key is in neither list, but the retired list is full (5,000 keys), so a key older than the newest 5,100 bursts may have been dropped. The lookup cannot tell whether it ran, and replay would treat it as new |
+| 404 `burst_not_found` | problem body | The key is in neither list and no key was ever dropped, so no burst used it and nothing was applied. Resending the same request with the same key is safe |
+
+#### MCP `propose_verify_printer_checkoff` (GRE-1170)
+
+The Rust MCP (`/mcp`, `/api/v1/mcp`, API key always required) ports Node's
+`propose_verify_printer_checkoff` with the same name and schema
+(`{link_id, decisions}`). The propose step reads the link in a writer
+transaction that changes no Checkoff state and refuses as Node does: `link_id
+and decisions are required`, `Checkoff link not found`, or `Checkoff link is
+not awaiting verification`. Nothing is written until `confirm_apply`.
+`confirm_apply` runs the proposal as a one-bed burst with the idempotency key
+`mcp:<action_id>`, so it shares this burst's receipt, replay, undo and farm log.
+It answers `{ok: true, result: <burst receipt>}`, which carries `undo_token`.
+Node answered with the single-verify body. A refused burst answers
+`{ok: false, status, detail}`, writes nothing and stays pending for a retry or
+dismiss.
+
+The action id is the operation id. `confirm_apply` for an action this session
+no longer holds (applied already, or proposed before a restart or in another
+session) looks up `mcp:<action_id>`. If that burst exists, the call answers
+`{ok, reconciled: true, action_id, detail, result, undone_at}` instead of
+Node's unknown-action error: `ok` is true while the burst stands, and false
+once it was undone or its receipt expired. Otherwise, including an `unknown`
+lookup, the call answers Node's unknown-action error. If the lookup cannot run
+(the writer is busy or past its deadline, or authentication fails), the call
+answers `{"error": "Checkoff is unavailable"}` and the action is not reported
+as unknown.
+
 The replacement UI's Today screen confirms one bed, or units picked on several
 beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a
 lost send with the same key; see `web/apps/ui/README.md` (Today).
@@ -2791,7 +2835,7 @@ unit decisions and imported-extra `additional_decisions`, and leaves out beds wi
 nothing to decide (a plate still `watching`), which the route would refuse.
 
 ```sh
-cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild,pp-api/desktop_rebuild -E 'test(verify_batch)'
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 
@@ -3264,6 +3308,67 @@ router. Regenerate the golden with
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
+```
+
+### Build header edit and archive in Rust (GRE-1231)
+
+GRE-421's second part. `pp_api::builds::build_router` serves Node's
+`PATCH /plans/{id}` and `POST /plans/{id}/archive` at `/`, `/api/v1` and
+`/api/v2`, both as `BuildCommand::Update` in `pp_storage::build_graph::header`
+(an archive is an update with only `archive` set). With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone writes a Build's name, special
+request, `archived_at` and `last_used_at` through these routes. Draft headers
+and Accept's header copy stay where GRE-1207 put them.
+
+A PATCH checks in Node's order:
+
+1. `archived: false` is 400 `Cannot unarchive; duplicate the archived template
+   instead`, before the Build is looked up.
+2. The id is `Number(id)` as a positive integer (through `plates::build_id`),
+   and the Build must be the tenant's, else 404 `Profile not found`.
+3. On `/api/v1`, a Build whose accepted progress is unavailable gets the legacy
+   refusal before anything is written.
+4. A `special_request` key needs the `orders` feature: 403 `FEATURE_DISABLED`,
+   or 500 `FEATURE_TOGGLES_INVALID` when the stored toggles do not read.
+5. A string `name` is trimmed. Blank is 400 `Profile name is required`. A name
+   another Build has is the Build rename rule Accept uses:
+   409 `{"code":"duplicate_build_name","name":...}` (Node answered 400
+   `Profile already exists`). The web client's `engineFetch` shows that 409 as
+   `Profile already exists: <name>`, the message Node gave. A `name` that is not a string is ignored.
+6. `special_request` is `String(value)` trimmed, and blank or `null` clears it.
+   When `String()` throws (an object with its own `toString` member, or an
+   array holding one), any rename stays saved and the answer is Node's: 500
+   `Internal Server Error` beside an archive, else 400 `Cannot convert object
+   to primitive value`.
+7. `archived: true` archives as below, then `touch_last_used: true` sets
+   `last_used_at`.
+
+As in Node, each step writes as it goes: a rename saved before an archive
+refusal stays saved. The answer is the Build summary on the mount's contract.
+
+An archive keeps an archived Build as it is. Otherwise every Part of the
+accepted Plan needs one progress row per unit (Node's `assertCompleteProgress`,
+through `checkoff_progress::complete_rows`; a missing row is 500 `Accepted Plan
+data is inconsistent`), and the Plan must have units and none remaining (else 400 `Archive only when print remaining is
+0`). Compatibility-dirty or uninitialized progress is 409, and an integrity
+failure is 500 `Accepted Plan data is inconsistent`.
+
+`fixtures/parity/build-header/node.json` is Node's answer, with
+`PP_DESKTOP_REBUILD=1`, for 58 requests in 14 phases on copies of
+`accepted-plate-node.db`. `build_header_patch_and_archive_match_node` replays
+it through `build_router`: 51 cases match Node's status, body and changed
+tables. Seven are declared corrections that write nothing: the two
+duplicate-name renames (409 above), a blank name beside an archive (400, where
+Node answered 500), a PATCH or archive body that is not JSON under
+`Content-Type: application/json` and an empty archive body under that type
+(400 `Request is invalid` without Fastify's parser codes), and a `null` PATCH
+body (400 `Request is invalid`, where Node answered 500). An archive otherwise
+ignores its body. Like the other Rust routes, it does not reproduce Fastify's
+415 for a body under a content type Fastify has no parser for, so that request
+archives. The web client always sends `{}` as JSON.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api --test build_header_http
 ```
 
 ### Variant dimensions and selection in Rust (GRE-1221)

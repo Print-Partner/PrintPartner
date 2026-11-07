@@ -52,7 +52,7 @@ async fn send(
     cookie: bool,
 ) -> (StatusCode, Value) {
     let cookie = cookie.then_some("pp_session=read-fixture-secret");
-    loopback::send(router, method, path, &body.to_string(), cookie).await
+    loopback::send(router, method, path, Some(&body.to_string()), cookie).await
 }
 
 async fn get(router: &Router, path: &str, cookie: bool) -> (StatusCode, Value) {
@@ -418,7 +418,7 @@ async fn plates_http_serves_production_setup_at_the_root_only() {
         )
     );
     let cookie = Some("pp_session=read-fixture-secret");
-    let (status, body) = loopback::send(&router, "PATCH", setup, "{", cookie).await;
+    let (status, body) = loopback::send(&router, "PATCH", setup, Some("{"), cookie).await;
     assert_eq!(
         (status, &body["detail"]),
         (StatusCode::BAD_REQUEST, &json!("Invalid JSON body"))

@@ -39,7 +39,7 @@ awaiting links and its `GET /printer-send-queue` reconciles live sends first;
 the Rust reads do neither. A row Node would repair or drop is skipped, and a
 `sending` item stays `sending` until the send's owner reconciles it.
 
-Printer state comes from the Moonraker watchers' read-only port
+Printer state comes from the Moonraker and PrusaLink status watchers' read-only port
 (`PrinterObservations`, GRE-449), never from a request to a printer. Monitoring
 never sends, checks off or dispatches. The launcher test checks that the only
 printer requests are status GETs and that every production table and setting
@@ -62,13 +62,13 @@ the two.
 | No `integration_id` | `not_set_up` | `not_set_up` |
 | `integration_id` names no integration, or a non-printer one such as Spoolman | `not_set_up` | `integration_missing` |
 | Integration disabled | `manual` | `monitoring_disabled` |
-| PrusaLink or Bambu (no Rust watcher yet), an HTTPS or redirecting Moonraker host, or a Moonraker host the watchers never poll (no address, or past the 128-host cap) | `manual` | `monitoring_not_supported` |
-| Moonraker with no status yet, or monitoring stopped | `unknown` | `awaiting_status` |
-| Moonraker that did not answer its last poll | `unreachable` | `unreachable` |
-| Moonraker `printing`, `paused` | `printing`, `paused` | `null` |
-| Moonraker `idle` or `complete` | `idle` | `null` |
-| Moonraker `error` | `failed` | `null` |
-| Moonraker `unknown` | `unknown` | `null` |
+| Bambu (no Rust watcher yet), an HTTPS Moonraker or PrusaLink host, a redirecting Moonraker host, or a Moonraker or PrusaLink host the watchers never poll (no address, or past the 128-host cap; PrusaLink rows come after every Moonraker row) | `manual` | `monitoring_not_supported` |
+| Moonraker or PrusaLink with no status yet, or monitoring stopped | `unknown` | `awaiting_status` |
+| Moonraker or PrusaLink that did not answer its last poll | `unreachable` | `unreachable` |
+| Moonraker or PrusaLink `printing`, `paused` | `printing`, `paused` | `null` |
+| Moonraker or PrusaLink `idle` or `complete` | `idle` | `null` |
+| Moonraker or PrusaLink `error` | `failed` | `null` |
+| Moonraker or PrusaLink `unknown` | `unknown` | `null` |
 
 `last_heard_at` is the time of the last successful status poll, kept while the
 printer is unreachable and `null` when no watcher has heard from it.

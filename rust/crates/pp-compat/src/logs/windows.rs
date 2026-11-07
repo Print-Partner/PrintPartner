@@ -461,4 +461,16 @@ pub(crate) mod test_support {
         )
         .unwrap();
     }
+
+    /// A junction, the directory link npm creates on Windows.
+    pub(crate) fn junction(target: &Path, link: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link.components().collect::<std::path::PathBuf>())
+            .arg(target.components().collect::<std::path::PathBuf>())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J failed: {status}");
+    }
 }

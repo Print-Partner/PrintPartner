@@ -39,15 +39,6 @@ threads-required = "num-test-threads"
 filter = 'binary(=runtime_m0) & test(=crash_guard_stops_after_five_failures_and_recovers_explicitly)'
 slow-timeout = { period = "60s", terminate-after = 17 }
 
-# pp-source's 10,000-entry snapshot test, and the scratch check that reruns its
-# binary, take 330-570s on hosted Windows against seconds on Linux, so the
-# default 600s limit times them out at random. GRE-1205 tracks the Windows
-# publish cost and removes this override.
-[[profile.default.overrides]]
-platform = 'cfg(windows)'
-filter = 'package(=pp-source) & binary(=capabilities) & (test(=max_flat_snapshot_publishes_and_retries_cleanly) | test(=scratch_root_is_empty_after_tests))'
-slow-timeout = { period = "60s", terminate-after = 20 }
-
 [profile.pp-local-linux]
 test-threads = 3
 

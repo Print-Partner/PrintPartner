@@ -27,15 +27,19 @@ const SHORT: &str = include_str!("../../../../fixtures/integrations/spoolman/spo
 const NODE_OUTCOMES: &str =
     include_str!("../../../../fixtures/integrations/spoolman/print-outcomes-node.sql");
 /// The included Part (ID 2, one remaining unit) prints filament 2 of
-/// integration `local`; one completed job measured 42 g for it.
+/// integration `local`; one unit was checked off under send `link-a`.
 const SETUP: &str = "
     UPDATE parts SET filament_color_id=' spoolman:local:filament:2 ' WHERE id=2;
     INSERT INTO app_settings(tenant_id,key,value)
       VALUES('default','feature_toggles','{\"spoolman\":true}');
-    INSERT INTO print_jobs(id,tenant_id,profile_id,at,status,filament_consumed_g)
-      VALUES('job-1','default',1,'2026-10-03T00:00:00.000Z','completed',42);
-    INSERT INTO print_job_parts(id,tenant_id,job_id,at,profile_id,part_id,result)
-      VALUES('job-1-0','default','job-1','2026-10-03T00:00:00.000Z',1,2,'confirmed');";
+    INSERT INTO print_jobs(id,tenant_id,profile_id,at,status,filament_consumed_g,link_id)
+      VALUES('job-1','default',1,'2026-10-03T00:00:00.000Z','sent',NULL,'link-a');
+    INSERT INTO print_job_parts(id,tenant_id,job_id,at,profile_id,part_id,result,link_id)
+      VALUES('job-1-0','default','job-1','2026-10-03T00:00:00.000Z',1,2,'confirmed','link-a');";
+/// The printer measured 42 g for `link-a`'s one unit. Step 46 installs the
+/// table, so this runs after the writer opens.
+const GRAMS: &str = "INSERT INTO print_link_grams(tenant_id,link_id,grams,units,basis,updated_at)
+    VALUES('default','link-a',42,1,'measured','2026-10-03T01:00:00.000Z');";
 
 /// The Spoolman stand-in: fixed bodies, and a `(method, path, authorization)`
 /// log of every request.
@@ -104,9 +108,12 @@ impl Harness {
             [integrations.to_string()],
         )
         .unwrap();
-        db.execute_batch(sql).unwrap();
         drop(db);
         let owner = WriterOwner::open(&directory, Limits::default()).unwrap().0;
+        let db = rusqlite::Connection::open(&database).unwrap();
+        db.execute_batch(GRAMS).unwrap();
+        db.execute_batch(sql).unwrap();
+        drop(db);
         let reads = owner.accepted_reads().unwrap();
         let (origin, task) = serve(|origin| {
             let config = AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap();
@@ -150,7 +157,13 @@ impl Harness {
     fn dump(&self) -> Vec<String> {
         let db = rusqlite::Connection::open(self.directory.join("print-partner.db")).unwrap();
         let mut rows = Vec::new();
-        for table in ["print_jobs", "print_job_parts", "app_settings", "parts"] {
+        for table in [
+            "print_jobs",
+            "print_job_parts",
+            "print_link_grams",
+            "app_settings",
+            "parts",
+        ] {
             let mut statement = db.prepare(&format!("SELECT * FROM {table}")).unwrap();
             let width = statement.column_count();
             let mut query = statement.query([]).unwrap();
@@ -256,7 +269,7 @@ async fn unavailable_inventory_and_unprinted_parts_stay_unknown() {
     assert!(disabled.requests().is_empty());
     disabled.stop();
 
-    let unprinted = Harness::new(SUFFICIENT, "DELETE FROM print_jobs;").await;
+    let unprinted = Harness::new(SUFFICIENT, "DELETE FROM print_link_grams;").await;
     let stock = json!({"kind": "spoolman", "grams": 752, "spool_ids": [7, 8]});
     ready(
         &unprinted.shortfalls().await,
@@ -267,13 +280,14 @@ async fn unavailable_inventory_and_unprinted_parts_stay_unknown() {
     unprinted.stop();
 }
 
-/// No code in Node or Rust records measured grams yet, so a real library
-/// reads `grams_not_recorded`. The same Node-shaped rows, once completed
-/// with grams, take the measured path.
+/// Node's checkoff rows alone carry no grams, so they read
+/// `grams_not_recorded`. The same rows, once their send has grams, read as
+/// that send's basis.
 #[tokio::test]
 async fn node_shaped_outcomes_report_grams_not_recorded() {
     let stock = json!({"kind": "spoolman", "grams": 752, "spool_ids": [7, 8]});
-    let clear = "DELETE FROM print_job_parts; DELETE FROM print_jobs;";
+    let clear =
+        "DELETE FROM print_job_parts; DELETE FROM print_jobs; DELETE FROM print_link_grams;";
     let today = Harness::new(SUFFICIENT, &format!("{clear}{NODE_OUTCOMES}")).await;
     let unknown = json!({"kind": "unknown"});
     ready(
@@ -284,13 +298,24 @@ async fn node_shaped_outcomes_report_grams_not_recorded() {
     );
     today.stop();
 
-    let complete = "UPDATE print_jobs SET status='completed', filament_consumed_g=84,
-        completed_at='2026-10-03T01:00:00.000Z';";
-    let sql = format!("{clear}{NODE_OUTCOMES}{complete}");
-    let recorded = Harness::new(SUFFICIENT, &sql).await;
     let sufficient = json!({"kind": "sufficient"});
-    ready(&recorded.shortfalls().await, stock, sufficient, measured());
-    recorded.stop();
+    for (basis, needed) in [
+        (
+            "estimated",
+            json!({"kind": "estimated", "grams": 42, "job_count": 1}),
+        ),
+        ("measured", measured()),
+    ] {
+        let grams = format!(
+            "INSERT INTO print_link_grams(tenant_id,link_id,grams,units,basis,updated_at)
+             VALUES('default','link-1',84,2,'{basis}','2026-10-03T01:00:00.000Z');"
+        );
+        let sql = format!("{clear}{NODE_OUTCOMES}{grams}");
+        let recorded = Harness::new(SUFFICIENT, &sql).await;
+        let body = recorded.shortfalls().await;
+        ready(&body, stock.clone(), sufficient.clone(), needed);
+        recorded.stop();
+    }
 }
 
 #[tokio::test]

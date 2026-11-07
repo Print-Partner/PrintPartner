@@ -1,12 +1,12 @@
 //! Spoolman shortfalls for accepted Build work.
 //!
-//! Grams needed come from past prints: each completed print job's
-//! `filament_consumed_g` divided by the units that job printed, averaged over
-//! the Part's most recent [`MEASURED_JOBS`] jobs and multiplied by the Part's
-//! remaining units. A Part never printed has unknown need. Nothing in Node or
-//! Rust records `filament_consumed_g` yet (Node's `appendPrintOutcomes`
-//! writes `sent` jobs with no grams), so on real data every need is unknown
-//! with [`NeedUnknown::GramsNotRecorded`] until a writer exists. Grams available
+//! Grams needed come from past sends: each Printer Checkoff link's grams
+//! (`print_link_grams`, see [`crate::print_grams`]) divided by the units that
+//! send prints, averaged over the most recent [`MEASURED_JOBS`] sends with a
+//! unit checked off for the Part, and multiplied by the Part's remaining
+//! units. Measured grams win: a Part with any measured send uses only those,
+//! and its estimated sends count only when none is measured. A Part with no
+//! checked-off unit under a send with grams has unknown need. Grams available
 //! come from Spoolman, which alone owns stock counts. Unreadable inventory is
 //! unknown, never zero, and an unknown on either side never yields a shortfall.
 //!
@@ -14,13 +14,14 @@
 
 use super::{AcceptedRead, Snapshot};
 use crate::features::modules::{self, Module, ModuleOffReason, ModuleStatus};
+pub use crate::print_grams::Basis;
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// Completed jobs averaged per Part, most recent first.
+/// Sends averaged per Part, most recent first.
 pub const MEASURED_JOBS: usize = 5;
 /// Node's `PUT /integrations` setting key: a JSON array of integrations.
 const INTEGRATIONS_KEY: &str = "integrations";
@@ -47,11 +48,14 @@ impl std::fmt::Debug for SpoolmanIntegration {
     }
 }
 
-/// Measured grams for one projection Part.
+/// Recorded grams for one projection Part.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Measured {
+pub struct PartGrams {
     pub grams_per_unit: f64,
-    pub job_ids: Vec<String>,
+    /// `Measured` when every averaged send was measured, else `Estimated`.
+    pub basis: Basis,
+    /// The averaged sends' Checkoff link IDs, most recent first.
+    pub link_ids: Vec<String>,
 }
 
 /// Stock inputs read in the same transaction as the accepted snapshot.
@@ -61,7 +65,7 @@ pub enum StockInputs {
     On {
         integrations: Vec<SpoolmanIntegration>,
         /// Keyed by projection Part ID.
-        measured: HashMap<i64, Measured>,
+        grams: HashMap<i64, PartGrams>,
     },
 }
 
@@ -136,14 +140,14 @@ pub struct PartNeed {
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GramsNeeded {
-    /// From past prints, rounded up. `job_count` is the distinct jobs used.
+    /// From the grams printers measured, rounded up. `job_count` is the
+    /// distinct sends used.
     Measured { grams: u64, job_count: u64 },
     /// From slicer estimates recorded at send, rounded up; a finished print
     /// replaces its estimate with the measured value. A filament is
-    /// `estimated` when any of its Parts is. Nothing records estimates yet
-    /// (GRE-1165), so no read returns this today.
+    /// `estimated` when any of its Parts is.
     Estimated { grams: u64, job_count: u64 },
-    /// At least one Part has no completed print with measured grams.
+    /// At least one Part has no checked-off unit under a send with grams.
     Unknown { reason: NeedUnknown },
 }
 
@@ -160,10 +164,9 @@ impl GramsNeeded {
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum NeedUnknown {
-    /// No print job of this Build has measured grams. Print Partner does not
-    /// record grams per print yet, so every real library reads this today.
+    /// No checked-off unit of this Build belongs to a send with grams.
     GramsNotRecorded,
-    /// Other Parts of this Build have measured prints; this Part has none.
+    /// Other Parts of this Build have sends with grams; this Part has none.
     PartNotPrinted,
 }
 
@@ -212,7 +215,7 @@ pub enum Sufficiency {
     Unknown,
 }
 
-/// The Spoolman Module state, configured integrations and measured grams for
+/// The Spoolman Module state, configured integrations and recorded grams for
 /// `profile_id`, read on the accepted-read transaction.
 pub(super) fn read_inputs(
     connection: &Connection,
@@ -230,7 +233,7 @@ pub(super) fn read_inputs(
     };
     Ok(StockInputs::On {
         integrations,
-        measured: read_measured(connection, tenant, profile_id)?,
+        grams: read_grams(connection, tenant, profile_id)?,
     })
 }
 
@@ -262,47 +265,53 @@ fn parse_integrations(value: &str) -> Vec<SpoolmanIntegration> {
         .collect()
 }
 
-fn read_measured(
+fn read_grams(
     connection: &Connection,
     tenant: &str,
     profile_id: i64,
-) -> Result<HashMap<i64, Measured>> {
+) -> Result<HashMap<i64, PartGrams>> {
     let mut statement = connection.prepare(
-        "SELECT part_id, id, grams, units FROM (
-           SELECT p.part_id, j.id, j.filament_consumed_g AS grams,
-                  (SELECT count(*) FROM print_job_parts u
-                    WHERE u.tenant_id=j.tenant_id AND u.job_id=j.id) AS units,
-                  ROW_NUMBER() OVER (PARTITION BY p.part_id
-                    ORDER BY COALESCE(j.completed_at, j.at) DESC, j.id DESC) AS recency
-             FROM print_jobs j
-             JOIN print_job_parts p ON p.tenant_id=j.tenant_id AND p.job_id=j.id
-            WHERE j.tenant_id=?1 AND j.profile_id=?2 AND j.status='completed'
-              AND typeof(j.filament_consumed_g) IN ('integer','real') AND j.filament_consumed_g>0
-            GROUP BY p.part_id, j.id)
+        "SELECT part_id, link_id, grams, units, basis FROM (
+           SELECT p.part_id, g.link_id, g.grams, g.units, g.basis,
+                  ROW_NUMBER() OVER (PARTITION BY p.part_id, g.basis
+                    ORDER BY max(p.at) DESC, g.link_id DESC) AS recency
+             FROM print_job_parts p
+             JOIN print_link_grams g ON g.tenant_id=p.tenant_id AND g.link_id=p.link_id
+            WHERE p.tenant_id=?1 AND p.profile_id=?2
+            GROUP BY p.part_id, g.link_id)
           WHERE recency<=?3
-          ORDER BY part_id, recency",
+          ORDER BY part_id, basis DESC, recency",
     )?;
     let mut rows = statement.query(rusqlite::params![tenant, profile_id, MEASURED_JOBS as i64])?;
-    let mut per_unit = BTreeMap::<i64, Vec<(String, f64)>>::new();
+    let mut sends = BTreeMap::<i64, (Basis, Vec<(String, f64)>)>::new();
     while let Some(row) = rows.next()? {
-        let (part, job, grams, units): (i64, String, f64, i64) =
-            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
-        let jobs = per_unit.entry(part).or_default();
-        if units > 0 && jobs.len() < MEASURED_JOBS {
-            jobs.push((job, grams / units as f64));
+        let (part, link, grams, units, basis): (i64, String, f64, i64, String) = (
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        );
+        let basis = match basis.as_str() {
+            "measured" => Basis::Measured,
+            _ => Basis::Estimated,
+        };
+        let (kept, links) = sends.entry(part).or_insert((basis, Vec::new()));
+        if *kept == basis {
+            links.push((link, grams / units as f64));
         }
     }
-    Ok(per_unit
+    Ok(sends
         .into_iter()
-        .filter(|(_, jobs)| !jobs.is_empty())
-        .map(|(part, jobs)| {
-            let grams_per_unit = jobs.iter().map(|(_, g)| g).sum::<f64>() / jobs.len() as f64;
-            let job_ids = jobs.into_iter().map(|(job, _)| job).collect();
+        .map(|(part, (basis, links))| {
+            let grams_per_unit = links.iter().map(|(_, g)| g).sum::<f64>() / links.len() as f64;
+            let link_ids = links.into_iter().map(|(link, _)| link).collect();
             (
                 part,
-                Measured {
+                PartGrams {
                     grams_per_unit,
-                    job_ids,
+                    basis,
+                    link_ids,
                 },
             )
         })
@@ -372,15 +381,15 @@ pub fn shortfalls(
         }
         _ => return None,
     };
-    let (integrations, measured) = match inputs {
+    let (integrations, recorded) = match inputs {
         StockInputs::Off(reason) => return Some(module_off(*reason)),
         StockInputs::On {
             integrations,
-            measured,
-        } => (integrations, measured),
+            grams,
+        } => (integrations, grams),
     };
     let missing = GramsNeeded::Unknown {
-        reason: match measured.is_empty() {
+        reason: match recorded.is_empty() {
             true => NeedUnknown::GramsNotRecorded,
             false => NeedUnknown::PartNotPrinted,
         },
@@ -391,19 +400,23 @@ pub fn shortfalls(
             let parts: Vec<(PartNeed, Vec<&str>)> = parts
                 .into_iter()
                 .map(|(part, remaining)| {
-                    let measured = measured.get(&part.projection_part_id);
+                    let recorded = recorded.get(&part.projection_part_id);
                     let need = PartNeed {
                         part_id: part.projection_part_id,
                         filename: part.filename.clone(),
                         remaining_units: remaining,
-                        grams_needed: measured.map_or(missing.clone(), |m| GramsNeeded::Measured {
-                            grams: (m.grams_per_unit * remaining as f64).ceil() as u64,
-                            job_count: m.job_ids.len() as u64,
+                        grams_needed: recorded.map_or(missing.clone(), |r| {
+                            let grams = (r.grams_per_unit * remaining as f64).ceil() as u64;
+                            let job_count = r.link_ids.len() as u64;
+                            match r.basis {
+                                Basis::Measured => GramsNeeded::Measured { grams, job_count },
+                                Basis::Estimated => GramsNeeded::Estimated { grams, job_count },
+                            }
                         }),
                     };
-                    let jobs =
-                        measured.map_or(vec![], |m| m.job_ids.iter().map(String::as_str).collect());
-                    (need, jobs)
+                    let links = recorded
+                        .map_or(vec![], |r| r.link_ids.iter().map(String::as_str).collect());
+                    (need, links)
                 })
                 .collect();
             let needed = group_need(&parts);

@@ -1,7 +1,8 @@
 //! GRE-360 and GRE-1044: the Rust-only launcher serves the Moonraker and
 //! PrusaLink printer-host reads (capabilities, print-file browse, cameras and
-//! the connection test) from stored settings through the gateway's drivers,
-//! behind an account session. Results match the Node adapters' oracles for
+//! the connection test) and the streamed print-file download and camera view
+//! (GRE-1174) from stored settings through the gateway's drivers, behind an
+//! account session. Results match the Node adapters' oracles for
 //! the same recorded traffic, and the printers see only read-only GETs: no
 //! upload and no print start.
 use super::farm_reads::settings_rows;
@@ -42,12 +43,22 @@ fn fixture(name: &str) -> Vec<u8> {
 /// for the same traffic from `node-oracle.json`.
 fn recorded() -> (RoutedPrinter, Value) {
     let routes: Value = serde_json::from_slice(&fixture("routes.json")).unwrap();
-    let routes = routes["routes"]
+    let mut routes: Vec<_> = routes["routes"]
         .as_object()
         .unwrap()
         .iter()
         .map(|(target, name)| (target.clone(), 200, fixture(name.as_str().unwrap())))
         .collect();
+    routes.push((
+        "/server/files/gcodes/plates/bracket.gcode".into(),
+        200,
+        b"G28\n".to_vec(),
+    ));
+    routes.push((
+        "/webcam/?action=stream".into(),
+        200,
+        b"mjpeg-frame".to_vec(),
+    ));
     let oracle: Value = serde_json::from_slice(&fixture("node-oracle.json")).unwrap();
     (
         RoutedPrinter::start(routes).unwrap(),
@@ -72,6 +83,17 @@ fn recorded_prusalink() -> (RoutedPrinter, Value) {
         .collect();
     routes.push(("/api/v1/info".into(), 200, read("info.json")));
     routes.push(("/api/v1/status".into(), 200, read("status-printing.json")));
+    let metadata = json!({"refs": {"download": "/api/v1/files/usb/BENCHY~1.BGC/raw"}});
+    routes.push((
+        "/api/v1/files/usb/BENCHY~1.BGC".into(),
+        200,
+        metadata.to_string().into_bytes(),
+    ));
+    routes.push((
+        "/api/v1/cameras/cam1/snap".into(),
+        200,
+        b"jpeg-snapshot".to_vec(),
+    ));
     let oracle: Value = serde_json::from_slice(&read("driver/node-oracle-reads.json")).unwrap();
     (
         RoutedPrinter::start(routes).unwrap(),
@@ -144,6 +166,11 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
         ("GET", "/printers/p-moon/capabilities"),
         ("GET", "/printers/p-moon/files"),
         ("GET", "/printers/p-moon/cameras"),
+        (
+            "GET",
+            "/printers/p-moon/files/content?path=plates%2Fbracket.gcode",
+        ),
+        ("GET", "/printers/p-moon/cameras/view?id=camera-0"),
     ] {
         let (code, body) = call(&origin, Some(&desktop), method, path).await;
         assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}: {body}");
@@ -151,6 +178,7 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
     let cookie = signed_in(&origin, &desktop, 1).await;
     capabilities_and_files(&origin, &cookie, &oracle).await;
     cameras_and_test(&origin, &cookie, &oracle, &prusa_oracle).await;
+    streams(&origin, &cookie).await;
 
     shut_down(runtime).await;
     let lines = printer.request_lines();
@@ -166,13 +194,25 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
             "{target}: {lines:?}"
         );
     }
-    let prusa_lines = prusa.request_lines();
     assert!(
-        prusa_lines
+        lines
             .iter()
-            .any(|line| line.starts_with("GET /api/v1/files/usb/ ")),
-        "{prusa_lines:?}"
+            .any(|line| line.starts_with("GET /webcam/?action=stream ")),
+        "{lines:?}"
     );
+    let prusa_lines = prusa.request_lines();
+    for target in [
+        "/api/v1/files/usb/",
+        "/api/v1/files/usb/BENCHY~1.BGC/raw",
+        "/api/v1/cameras/cam1/snap",
+    ] {
+        assert!(
+            prusa_lines
+                .iter()
+                .any(|line| line.starts_with(&format!("GET {target} "))),
+            "{target}: {prusa_lines:?}"
+        );
+    }
     for line in lines.iter().chain(&prusa_lines) {
         assert!(line.starts_with("GET "), "the printer saw {line}");
         assert!(
@@ -342,4 +382,125 @@ async fn cameras_and_test(origin: &str, cookie: &str, oracle: &Value, prusa_orac
             json!({"ok": false, "message": "Unknown integration type: mystery"})
         )
     );
+}
+
+/// Status, `Content-Length`, `Cache-Control` and body of one streamed GET.
+async fn stream(origin: &str, cookie: &str, path: &str) -> (u16, [Option<String>; 2], Vec<u8>) {
+    let (code, headers, body) = request(origin, path, "GET", Some(cookie), None, None, None).await;
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_owned())
+    };
+    (
+        code.as_u16(),
+        [header("content-length"), header("cache-control")],
+        body,
+    )
+}
+
+/// The print-file download and camera view stream the recorded printers'
+/// bytes through, and refuse what Node refuses before reading a printer body.
+async fn streams(origin: &str, cookie: &str) {
+    // The route sends Node's "private, no-store"; the gateway then stamps
+    // every admitted reply "no-store", as for every other Rust route.
+    let private = |length: usize| [Some(length.to_string()), Some("no-store".into())];
+    let file = stream(
+        origin,
+        cookie,
+        "/printers/p-moon/files/content?path=%2Fplates%2Fbracket.gcode",
+    )
+    .await;
+    assert_eq!(file, (200, private(4), b"G28\n".to_vec()));
+    let view = stream(
+        origin,
+        cookie,
+        "/api/v1/printers/p-moon/cameras/view?id=55d3b9f7-3c2b-4f6e-9a8e-1c1f2b7a0e01",
+    )
+    .await;
+    assert_eq!(view, (200, private(11), b"mjpeg-frame".to_vec()));
+    // RoutedPrinter serves bodies as lossy UTF-8.
+    let gcode = std::fs::read(Path::new(PRUSALINK).join("driver/print-file.gcode")).unwrap();
+    let gcode = String::from_utf8_lossy(&gcode).into_owned().into_bytes();
+    let prusa = stream(
+        origin,
+        cookie,
+        "/printers/p-prusa/files/content?path=BENCHY~1.BGC",
+    )
+    .await;
+    assert_eq!(prusa, (200, private(gcode.len()), gcode));
+    let snap = stream(origin, cookie, "/printers/p-prusa/cameras/view?id=cam1").await;
+    assert_eq!(snap, (200, private(13), b"jpeg-snapshot".to_vec()));
+
+    // The gateway keeps the routes' guards against printer-served pages.
+    let (_, headers, _) = request(
+        origin,
+        "/printers/p-moon/files/content?path=plates%2Fbracket.gcode",
+        "GET",
+        Some(cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    for (name, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("content-security-policy", "default-src 'none'; sandbox"),
+        ("content-disposition", "attachment"),
+    ] {
+        assert_eq!(headers[name], value, "{name}");
+    }
+
+    for (path, code, detail) in [
+        (
+            "p-moon/files/content?path=plates%2Fmissing.gcode",
+            404,
+            "Printer file not found",
+        ),
+        (
+            "p-moon/files/content?path=..%2Fescape",
+            400,
+            "path is not a valid printer storage path",
+        ),
+        ("p-moon/files/content", 400, "path is required"),
+        (
+            "p-moon/files/content?path=plates%2Fbracket.gcode&profile_id=1",
+            501,
+            "Print-file inspection for a Build is not available in this runtime yet",
+        ),
+        (
+            "p-bambu/files/content?path=a.gcode",
+            501,
+            "Printer host does not support file browsing",
+        ),
+        (
+            "7/files/content?path=a.gcode",
+            409,
+            "Printer is not linked to a host",
+        ),
+        (
+            "p-moon/cameras/view?id=cross-origin-stream",
+            404,
+            "Printer camera not found",
+        ),
+        (
+            "p-moon/cameras/view?id=disabled",
+            404,
+            "Printer camera not found",
+        ),
+        ("p-moon/cameras/view", 400, "id is required"),
+        ("p-bambu/cameras/view?id=0", 404, "Printer camera not found"),
+        (
+            "p-prusa/cameras/view?id=cam3",
+            404,
+            "Printer camera not found",
+        ),
+    ] {
+        let (status, problem) = get(origin, cookie, format!("/api/v1/printers/{path}")).await;
+        assert_eq!(
+            (status.as_u16(), problem["detail"].as_str()),
+            (code, Some(detail)),
+            "{path}"
+        );
+    }
 }

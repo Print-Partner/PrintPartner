@@ -12,6 +12,7 @@ desktop_rebuild = ["pp-compat/desktop_rebuild", "pp-storage/desktop_rebuild", "d
 [dependencies]
 pp-storage = { path = "../pp-storage" }
 pp-perf = { path = "../pp-perf" }
+pp-os = { path = "../pp-os" }
 anyhow.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -46,5 +47,9 @@ hyper-util.workspace = true
 http-body-util.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
+socket2 = "=0.6.5"
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "json"] }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

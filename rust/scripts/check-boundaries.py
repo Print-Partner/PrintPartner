@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-ALLOWED = {"pp-api": {"pp-storage", "pp-services"}, "pp-source": {"pp-os"}, "pp-storage": {"pp-domain", "pp-contracts", "pp-os"}, "pp-core": {"pp-gateway", "pp-compat", "pp-storage", "pp-source", "pp-net", "pp-api", "pp-perf"}, "pp-gateway": {"pp-compat", "pp-drivers", "pp-net"}, "pp-compat": {"pp-os"}, "pp-server": {"pp-core"}, "pp-contracts": {"pp-api-types"}, "pp-desktop": {"pp-core"}, "pp-domain": set(), "pp-api-types": {"pp-domain"}, "pp-net": set(), "pp-drivers": {"pp-net", "pp-api-types"}, "pp-services": set(), "pp-perf": set(), "pp-testkit": set(), "pp-os": set()}
+ALLOWED = {"pp-api": {"pp-storage", "pp-services"}, "pp-source": {"pp-os"}, "pp-storage": {"pp-domain", "pp-contracts", "pp-os"}, "pp-core": {"pp-gateway", "pp-compat", "pp-storage", "pp-source", "pp-net", "pp-api", "pp-perf", "pp-os"}, "pp-gateway": {"pp-compat", "pp-drivers", "pp-net", "pp-os"}, "pp-compat": {"pp-os"}, "pp-server": {"pp-core"}, "pp-contracts": {"pp-api-types"}, "pp-desktop": {"pp-core"}, "pp-domain": set(), "pp-api-types": {"pp-domain"}, "pp-net": set(), "pp-drivers": {"pp-net", "pp-api-types"}, "pp-services": set(), "pp-perf": set(), "pp-testkit": set(), "pp-os": set()}
 GATED = {"pp-core": {"pp-source", "pp-net", "pp-api"}, "pp-storage": {"pp-domain", "pp-contracts"}, "pp-api": {"pp-services"}}
 assert all(GATED[package] <= ALLOWED[package] for package in GATED), GATED
 # Test-support crates. Any package may use them, but only under [dev-dependencies],

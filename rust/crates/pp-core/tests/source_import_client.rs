@@ -213,12 +213,23 @@ fn source_import_client_refuses_invalid_directory_input() {
     let fixture = Fixture::open();
     fixture.write("part.stl", b"solid a");
     let link = fixture.supplied().join("link.stl");
-    std::os::unix::fs::symlink(fixture.supplied().join("part.stl"), &link).unwrap();
-    assert_eq!(os_error(&fixture.supplied()), Some(libc::ELOOP));
-    assert_eq!(os_error(&fixture.root.join("missing")), Some(libc::ENOENT));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(fixture.supplied().join("part.stl"), &link).unwrap();
+        assert_eq!(os_error(&fixture.supplied()), Some(libc::ELOOP));
+        assert_eq!(os_error(&fixture.root.join("missing")), Some(libc::ENOENT));
+    }
+    // pp-os refuses a Windows reparse point without an OS error code.
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(fixture.supplied().join("part.stl"), &link).unwrap();
+        assert_eq!(os_error(&fixture.supplied()), None);
+        assert_eq!(os_error(&fixture.root.join("missing")), Some(2));
+    }
     std::fs::remove_file(link).unwrap();
     let before = fixture.files();
     let rows = fixture.rows();
+    let missing = format!("io: {}", std::io::Error::from_raw_os_error(2));
 
     let refusals = [
         (
@@ -226,7 +237,7 @@ fn source_import_client_refuses_invalid_directory_input() {
                 paths: vec!["absent.stl".into()],
             },
             1024,
-            "io: No such file or directory (os error 2)",
+            missing.as_str(),
         ),
         (
             Input::Files {
@@ -240,7 +251,7 @@ fn source_import_client_refuses_invalid_directory_input() {
                 path: "absent.zip".into(),
             },
             1024,
-            "io: No such file or directory (os error 2)",
+            missing.as_str(),
         ),
         (
             Input::Files {

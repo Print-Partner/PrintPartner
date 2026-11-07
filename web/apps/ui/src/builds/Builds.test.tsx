@@ -215,6 +215,13 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
       due_date: "2026-11-01",
       accepted_progress: { kind: "ready", total_units: 4, remaining_units: 0 },
     }),
+    summary(5, "Late but archived", {
+      order_number: "SO-7",
+      due_date: "2026-11-02",
+      archived_at: "2026-11-03T00:00:00Z",
+    }),
+    summary(6, "Blank order", { order_number: " " }),
+    summary(7, "Also blank", { order_number: "" }),
   ];
   const dated: Handler = (path) =>
     path === "/api/v2/plans"
@@ -226,21 +233,42 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
     within(table())
       .getAllByRole("row")
       .slice(1)
-      .map((row) => row.querySelector("th")!.textContent);
+      .map((row) => row.querySelector("th a")!.textContent);
 
   it("sorts by due date, earliest first and none last, and filters overdue and undated Builds", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 10, 15, 12) });
     renderAt("/builds", core(dated));
     await screen.findByRole("link", { name: "Late" });
-    expect(names()).toEqual(["Late but printed", "Late", "Due later", "Undated"]);
+    expect(names()).toEqual([
+      "Late but printed",
+      "Late but archived",
+      "Late",
+      "Due later",
+      "Undated",
+      "Blank order",
+      "Also blank",
+    ]);
     const show = screen.getByRole("radiogroup", { name: "Show Builds" });
     fireEvent.click(within(show).getByRole("radio", { name: "Overdue (1)" }));
     expect(names()).toEqual(["Late"]);
     expect(within(table()).getByText("Overdue")).toBeTruthy();
-    fireEvent.click(within(show).getByRole("radio", { name: "No due date (1)" }));
-    expect(names()).toEqual(["Undated"]);
-    fireEvent.click(within(show).getByRole("radio", { name: "All (4)" }));
-    expect(names()).toHaveLength(4);
+    fireEvent.click(within(show).getByRole("radio", { name: "No due date (3)" }));
+    expect(names()).toEqual(["Undated", "Blank order", "Also blank"]);
+    fireEvent.click(within(show).getByRole("radio", { name: "All (7)" }));
+    expect(names()).toHaveLength(7);
+  });
+
+  it("moves Overdue past midnight while the list stays open", async () => {
+    vi.useFakeTimers({
+      toFake: ["Date", "setInterval", "clearInterval"],
+      now: new Date(2026, 10, 20, 23, 59),
+    });
+    renderAt("/builds", core(dated));
+    await screen.findByRole("link", { name: "Late" });
+    const show = screen.getByRole("radiogroup", { name: "Show Builds" });
+    expect(within(show).getByRole("radio", { name: "Overdue (1)" })).toBeTruthy();
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(within(show).getByRole("radio", { name: "Overdue (2)" })).toBeTruthy();
   });
 
   it("lists Builds that share an order number each on its own row, marked, not merged", async () => {
@@ -251,6 +279,10 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
     expect(within(row("Undated")).getByText("Also on Late")).toBeTruthy();
     expect(within(row("Late")).getByText("Also on Undated")).toBeTruthy();
     expect(within(row("Due later")).queryByText("Duplicate order")).toBeNull();
+    expect(within(row("Late")).queryByText(/Late but archived/)).toBeNull();
+    expect(within(row("Late but archived")).queryByText("Duplicate order")).toBeNull();
+    expect(within(row("Blank order")).queryByText("Duplicate order")).toBeNull();
+    expect(within(row("Also blank")).queryByText("Duplicate order")).toBeNull();
     // A filter that hides one of the pair still says the order is shared.
     fireEvent.click(screen.getByRole("radio", { name: /No due date/ }));
     expect(within(row("Undated")).getByText("Also on Late")).toBeTruthy();

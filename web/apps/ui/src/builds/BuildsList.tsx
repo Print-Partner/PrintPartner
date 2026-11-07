@@ -1,6 +1,6 @@
 import type { ProfileSummary } from "@print-partner/rust-client";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router";
 import { useModule } from "../core/modules";
 import { readCore } from "../core/rust";
@@ -92,11 +92,24 @@ function today(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-/** Past its due date with units still to print. A finished Build is not overdue. */
+/** Today's date, rechecked every minute so the list moves past midnight while it stays open. */
+function useToday(): string {
+  const [on, setOn] = useState(today);
+  useEffect(() => {
+    const timer = setInterval(() => setOn(today()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  return on;
+}
+
+/**
+ * Past its due date with units still to print. A finished or archived Build is not overdue, as
+ * the task feed ranks only unarchived Builds.
+ */
 function isOverdue(build: ProfileSummary, on: string): boolean {
   const done =
     build.accepted_progress.kind === "ready" && build.accepted_progress.remaining_units === 0;
-  return build.due_date !== null && build.due_date < on && !done;
+  return build.archived_at === null && build.due_date !== null && build.due_date < on && !done;
 }
 
 /** Earliest due date first and Builds without one last; ties keep the core's order. */
@@ -109,11 +122,14 @@ function byDueDate(builds: ProfileSummary[]): ProfileSummary[] {
   });
 }
 
-/** For each Build whose order number another Build also carries, those other Builds. */
+/**
+ * For each unarchived Build whose order number another unarchived Build also carries, those other
+ * Builds. Blank order numbers don't count, matching the Accept preview's duplicate check.
+ */
 function sharedOrders(builds: ProfileSummary[]): Map<number, ProfileSummary[]> {
   const byOrder = new Map<string, ProfileSummary[]>();
   for (const build of builds) {
-    if (build.order_number === null) continue;
+    if (build.archived_at !== null || !build.order_number?.trim()) continue;
     byOrder.set(build.order_number, [...(byOrder.get(build.order_number) ?? []), build]);
   }
   const shared = new Map<number, ProfileSummary[]>();
@@ -279,7 +295,7 @@ export function BuildsList() {
   const [filter, setFilter] = useState<DueFilter>("all");
   const state = queryScreenState(builds, connection, (data) => data.profiles.length === 0);
   const showOrder = orders?.state === "on";
-  const on = today();
+  const on = useToday();
   return (
     <ScreenTemplate
       title="Builds"

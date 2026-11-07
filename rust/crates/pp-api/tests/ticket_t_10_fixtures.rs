@@ -1731,6 +1731,45 @@ mod ticket_t_10_fixtures {
     /// each write the Plan's stored layer text, or the decision rows it added,
     /// must equal Node's. A case Node ran with the flag off goes to a router
     /// built with the flag off, which mounts nothing.
+    fn last_decision(database: &std::path::Path) -> i64 {
+        rusqlite::Connection::open(database)
+            .unwrap()
+            .query_row(
+                "SELECT coalesce(max(id),0) FROM plan_decisions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Node's onRequest hook checks the session before Fastify parses the
+    /// body, so a malformed body from an unknown session is 401 and writes
+    /// nothing.
+    async fn assert_malformed_body_needs_a_session(served: &Served, sandbox: &Sandbox) {
+        for (method, path) in [
+            ("PATCH", "/plans/3/features"),
+            ("POST", "/api/v2/plans/12/decisions"),
+        ] {
+            let before = StateGraph::capture(sandbox.path()).unwrap();
+            let response = served
+                .client
+                .request(
+                    Method::from_bytes(method.as_bytes()).unwrap(),
+                    format!("{}{path}", served.origin),
+                )
+                .header("Origin", &served.origin)
+                .header("Cookie", "pp_session=unknown")
+                .header("Content-Type", "application/json")
+                .body("{")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 401, "{method} {path}");
+            let after = StateGraph::capture(sandbox.path()).unwrap();
+            assert!(before.changed(&after).is_empty(), "{method} {path} wrote");
+        }
+    }
+
     #[tokio::test]
     async fn plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables() {
         use pp_api::{
@@ -1794,14 +1833,7 @@ mod ticket_t_10_fixtures {
                 off += 1;
                 continue;
             }
-            let since: i64 = rusqlite::Connection::open(&database)
-                .unwrap()
-                .query_row(
-                    "SELECT coalesce(max(id),0) FROM plan_decisions",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
+            let since = last_decision(&database);
             let (mut actual, changed) =
                 send_case(&served, FIXTURE_COOKIE, &sandbox, case, &case.path).await;
             stamp_created_at(&mut actual.body);
@@ -1828,28 +1860,7 @@ mod ticket_t_10_fixtures {
             assert_eq!(actual, *stored, "{}: stored text", case.id);
             checked += 1;
         }
-        for (method, path) in [
-            ("PATCH", "/plans/3/features"),
-            ("POST", "/api/v2/plans/12/decisions"),
-        ] {
-            let before = StateGraph::capture(sandbox.path()).unwrap();
-            let response = served
-                .client
-                .request(
-                    Method::from_bytes(method.as_bytes()).unwrap(),
-                    format!("{}{path}", served.origin),
-                )
-                .header("Origin", &served.origin)
-                .header("Cookie", "pp_session=unknown")
-                .header("Content-Type", "application/json")
-                .body("{")
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status().as_u16(), 401, "{method} {path}");
-            let after = StateGraph::capture(sandbox.path()).unwrap();
-            assert!(before.changed(&after).is_empty(), "{method} {path} wrote");
-        }
+        assert_malformed_body_needs_a_session(&served, &sandbox).await;
         served.stop().await.unwrap();
         unmounted.stop().await.unwrap();
         owner.shutdown().unwrap();

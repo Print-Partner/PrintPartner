@@ -83,8 +83,11 @@ pub enum Request {
         id: String,
     },
     /// The user's answer for an item whose last send has an unknown outcome.
+    /// `job_id` is the item's `upload_job_id` the user answered about, so
+    /// a late answer never closes a newer send.
     Reconcile {
         id: String,
+        job_id: Option<String>,
         printed: bool,
     },
 }
@@ -260,7 +263,11 @@ fn transact(
             }
             Request::Remove { id } => remove(&tx, &tenant, &subject, &id)?,
             Request::Missing { id } => missing(&tx, &tenant, &id)?,
-            Request::Reconcile { id, printed } => reconcile(&tx, &tenant, &subject, &id, printed)?,
+            Request::Reconcile {
+                id,
+                job_id,
+                printed,
+            } => reconcile(&tx, &tenant, &subject, &id, job_id.as_deref(), printed)?,
         }
     };
     if !matches!(reply, Reply::Refused { .. }) {
@@ -535,6 +542,7 @@ fn reconcile(
     tenant: &str,
     subject: &str,
     id: &str,
+    job_id: Option<&str>,
     printed: bool,
 ) -> Result<Reply> {
     let stored = match resendable(tx, tenant, id)? {
@@ -544,6 +552,9 @@ fn reconcile(
     };
     if !outcome_unknown(tx, tenant, &stored)? {
         return Ok(OUTCOME_KNOWN);
+    }
+    if stored.upload_job_id.as_deref() != job_id {
+        return Ok(SEND_CHANGED);
     }
     if let Some(job) = &stored.upload_job_id
         && jobs::printer_upload_state(tx, tenant, job)?.is_some()
@@ -567,6 +578,12 @@ const OUTCOME_KNOWN: Reply = Reply::Refused {
     status: 409,
     detail: "This item has no send with an unknown printer outcome",
     code: None,
+};
+
+const SEND_CHANGED: Reply = Reply::Refused {
+    status: 409,
+    detail: "This answer is for an earlier send of this item",
+    code: Some("send_changed"),
 };
 
 #[cfg(test)]

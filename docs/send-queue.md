@@ -128,7 +128,10 @@ nothing is resent automatically:
 
 - `Dispatch` and `Missing` on the item are refused with 409 and problem code
   `send_outcome_unknown`.
-- `Reconcile` with `printed: true` makes the item `done`. The job succeeds,
+- `Reconcile` names the send it answers for with `job_id`, the item's
+  `upload_job_id`. An answer for any other send, or none, is refused with
+  409 and problem code `send_changed`, so a late answer from a stale view
+  never closes a newer send. With `printed: true` it makes the item `done`. The job succeeds,
   with the printer's receipt as its result, only when a kept receipt proves
   the send (the upload, and the start when the item starts the print), as
   the generic job reconciliation requires. Without that proof the job fails,

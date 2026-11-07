@@ -53,8 +53,9 @@ fi
 id "$user" >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/pp-iso --shell /usr/sbin/nologin "$user"
 chown "$user:$user" /var/lib/pp-iso
 chmod 0700 /var/lib/pp-iso
-grep -q "^$user:" /etc/subuid || usermod --add-subuids 200000-265535 "$user"
-grep -q "^$user:" /etc/subgid || usermod --add-subgids 200000-265535 "$user"
+first_free=$(awk -F: '{ e = $2 + $3; if (e > m) m = e } END { print (m < 100000 ? 100000 : m) }' /etc/subuid /etc/subgid)
+grep -q "^$user:" /etc/subuid || usermod --add-subuids "$first_free-$((first_free + 65535))" "$user"
+grep -q "^$user:" /etc/subgid || usermod --add-subgids "$first_free-$((first_free + 65535))" "$user"
 loginctl enable-linger "$user"
 if getent group docker | grep -qw "$user"; then
   echo "$user is in the docker group; remove it. pp-iso must not reach a host docker socket." >&2

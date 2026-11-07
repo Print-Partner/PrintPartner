@@ -24,10 +24,10 @@ scratch=${RUNTIME_DIRECTORY:-${TMPDIR:-/tmp}}
 [ -r "$token_file" ] || { echo "cannot read the token file $token_file" >&2; exit 1; }
 umask 077
 header=$(mktemp "$scratch/pp-iso-header.XXXXXX")
-runlog=$(mktemp "$scratch/pp-iso-log.XXXXXX")
+jobflag="$scratch/pp-iso-job-started"
 name=
 cleanup() {
-  rm -f "$header" "$runlog"
+  rm -f "$header" "$jobflag"
   [ -z "$name" ] || "$engine" rm -f "$name" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -72,8 +72,12 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
     continue
   fi
   unset jit response
-  : > "$runlog"
-  { "$engine" logs -f "$name" 2>&1 | tee "$runlog"; } &
+  rm -f "$jobflag"
+  # The log is printed, not stored; only a marker file records that the runner took a job.
+  { "$engine" logs -f "$name" 2>&1 | while IFS= read -r line; do
+      printf '%s\n' "$line"
+      case "$line" in *'Running job'*) : > "$jobflag" ;; esac
+    done; } &
   logs_pid=$!
   # Wait for the container to exit. The run time limit counts from the moment the runner starts a
   # job (Runner.Worker appears), so a slot that waited a long time for work does not cut a job short.
@@ -88,7 +92,7 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
     fi
     ps_errors=0
     [ -n "$alive" ] || break
-    if [ "$job_start" -eq 0 ] && "$engine" top "$name" 2>/dev/null | grep -q 'Runner.Worker'; then
+    if [ "$job_start" -eq 0 ] && [ -e "$jobflag" ]; then
       job_start=$(date +%s)
     fi
     if [ "$job_start" -ne 0 ] && [ $(( $(date +%s) - job_start )) -gt "$max_job_seconds" ]; then
@@ -98,19 +102,24 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
     sleep 5
   done
   if ! "$engine" rm -f "$name" >/dev/null 2>&1; then
-    left=$("$engine" ps -aq --filter "name=^$name\$" 2>/dev/null) || left=unknown
+    for _ in 1 2 3; do
+      left=unknown
+      if listed=$("$engine" ps -aq --filter "name=^$name\$" 2>/dev/null); then left=$listed; break; fi
+      sleep 2
+    done
   fi
   if [ -n "$left" ]; then
     echo "pp-iso slot $slot: could not remove $name; stopping the slot so systemd restarts it and the exit trap retries" >&2
     exit 1
   fi
   sleep 1
+  pkill -P "$logs_pid" 2>/dev/null || true
   kill "$logs_pid" 2>/dev/null || true
   wait "$logs_pid" 2>/dev/null || true
   name=
   jobs_done=$((jobs_done + 1))
   ran_job=0
-  { [ "$job_start" -ne 0 ] || grep -q 'Running job' "$runlog"; } && ran_job=1
+  { [ "$job_start" -ne 0 ] || [ -e "$jobflag" ]; } && ran_job=1
   if [ "$ran_job" -eq 0 ] && [ $(( $(date +%s) - begun )) -lt 30 ]; then
     failures=$((failures + 1))
     delay=$((failures < 6 ? 5 * (1 << failures) : 300))

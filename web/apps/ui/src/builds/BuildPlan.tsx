@@ -31,6 +31,7 @@ import {
   refusalText,
   sameHeader,
   valueText,
+  type BuildHeader,
   type HeaderFields,
   type PartView,
   type PlanChoice,
@@ -150,22 +151,35 @@ const HEADER_FIELDS = [
 ] as const;
 
 /**
- * The header form. Each field saves to the draft when it loses focus or on Enter. A newly
- * saved header replaces only the fields the user has not changed since the last one.
+ * The header form. Each field saves to the draft when it loses focus or on Enter. Once the
+ * draft writes settle, the saved header replaces every field not typed in since the last
+ * save was sent.
  */
-function HeaderForm({ data, writes }: { data: PlanData; writes: Writes }) {
+function HeaderForm({
+  data,
+  writes,
+  busy,
+  saving,
+}: {
+  data: PlanData;
+  writes: Writes;
+  busy: boolean;
+  saving: () => boolean;
+}) {
   const saved = data.draft?.header?.header ?? data.build;
   const [fields, setFields] = useState(() => fieldsOf(saved));
   const [shown, setShown] = useState(saved);
-  if (!sameHeader(saved, shown)) {
-    const [before, after] = [fieldsOf(shown), fieldsOf(saved)];
+  const [typed, setTyped] = useState<ReadonlySet<string>>(new Set());
+  const [sent, setSent] = useState<BuildHeader | null>(null);
+  if (!busy && !sameHeader(saved, shown)) {
+    const after = fieldsOf(saved);
     setShown(saved);
     setFields(
       Object.fromEntries(
-        Object.entries(fields).map(([k, v]) => {
-          const field = k as keyof HeaderFields;
-          return [field, v === before[field] ? after[field] : v];
-        }),
+        Object.entries(fields).map(([field, v]) => [
+          field,
+          typed.has(field) ? v : after[field as keyof HeaderFields],
+        ]),
       ) as HeaderFields,
     );
   }
@@ -176,7 +190,10 @@ function HeaderForm({ data, writes }: { data: PlanData; writes: Writes }) {
   const commit = () => {
     const header = headerOf(fields);
     setInvalid(header.name === "");
-    if (header.name === "" || sameHeader(header, saved) || offline) return;
+    const last = saving() && sent ? sent : saved;
+    if (header.name === "" || sameHeader(header, last) || offline) return;
+    setSent(header);
+    setTyped(new Set());
     writes.header.mutate({ fields, key: newKey() });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -199,7 +216,10 @@ function HeaderForm({ data, writes }: { data: PlanData; writes: Writes }) {
                   .filter(Boolean)
                   .join(" ") || undefined
               }
-              onChange={(event) => setFields({ ...fields, [f.field]: event.target.value })}
+              onChange={(event) => {
+                setFields({ ...fields, [f.field]: event.target.value });
+                setTyped(new Set(typed).add(f.field));
+              }}
               onBlur={commit}
               onKeyDown={onKeyDown}
             />
@@ -583,7 +603,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
         )}
       </div>
       <SaveStatus writes={writes} />
-      <HeaderForm data={data} writes={writes} />
+      <HeaderForm key={id} data={data} writes={writes} busy={busy} saving={saving} />
       {draft && <PartsTable parts={draft.workspace.parts} writes={writes} />}
       {gate && draft && !busy && (
         <AcceptGate

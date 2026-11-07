@@ -122,8 +122,10 @@ these routes through the generated client:
   while the preview lists running work in `blocked_by` or checkoff links and
   queued sends in `production`: the tab sends `remap_checkoff_links: false`,
   so Accept would refuse with `production_active`.
-- A saved header replaces only the fields the user has not changed since the
-  last save, so typing in one field while another saves is kept.
+- Once the draft writes settle, the saved header replaces every field not
+  typed in since the last save was sent. Typing in one field while another
+  saves is kept, and a field changed back to its old value while a save runs
+  is sent too.
 - Review and accept opens the gate only after every draft write has landed,
   so the preview, and the revision Accept sends, include the edit made just
   before the click. Start a draft does nothing while a save is running,

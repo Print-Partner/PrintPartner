@@ -349,6 +349,43 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(previews()).toBeGreaterThan(0);
   });
 
+  it("sends a field changed back to its saved value while an earlier save is running", async () => {
+    let saved = draftHeader(1);
+    const releases: (() => void)[] = [];
+    const inner = core();
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans/2/drafts/9/header") return Promise.resolve(json(saved));
+      if (path !== "/api/v2/plans/2/drafts/header" || init?.method !== "PUT") {
+        return inner(path, init);
+      }
+      const header = JSON.parse(String(init.body)).header;
+      return new Promise<Response>((resolve) => {
+        releases.push(() => {
+          const version = saved.draft!.header_version + 1;
+          saved = { ...saved, draft: { ...saved.draft!, header, header_version: version } };
+          resolve(
+            json({ receipt: { profile_id: 2, draft_id: 9, header: saved.draft }, header: saved }),
+          );
+        });
+      });
+    });
+    const calls = fetchMock as unknown as ReturnType<typeof core>;
+    renderAt(calls);
+    const customer = await screen.findByRole<HTMLInputElement>("textbox", { name: "Customer" });
+    fireEvent.change(customer, { target: { value: "Beta" } });
+    fireEvent.blur(customer);
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    fireEvent.change(customer, { target: { value: "Acme" } });
+    fireEvent.blur(customer);
+    act(() => releases.shift()!());
+    await waitFor(() => expect(writes(calls)).toHaveLength(2));
+    act(() => releases.shift()!());
+    await screen.findByText(/Saved to the draft/);
+    await waitFor(() => expect(saved.draft!.header_version).toBe(3));
+    expect(writes(calls).map((w) => w.body.header.customer)).toEqual(["Beta", "Acme"]);
+    expect(field("Customer").value).toBe("Acme");
+  });
+
   it("refuses a blank name without sending", async () => {
     const fetchMock = core();
     renderAt(fetchMock);

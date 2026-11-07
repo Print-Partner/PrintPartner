@@ -373,6 +373,18 @@ async fn gre_1236_mcp_refuses_a_draft_the_brief_does_not_select_or_unresolved_ch
     let (failed, other) = propose().await;
     assert!(failed);
     assert_eq!(other, json!({"error": "Selected Working Plan not found"}));
+    // Hydration drops the selection once the pinned Source revisions moved.
+    brief(&server, 2, json!([]), json!({}));
+    server
+        .sql()
+        .execute(
+            "UPDATE app_settings SET value=json_set(value,'$.draft_source_revisions',json('{\"1\":\"moved\"}')) WHERE key='build_planning.v1.1'",
+            [],
+        )
+        .unwrap();
+    let (failed, moved) = propose().await;
+    assert!(failed);
+    assert_eq!(moved, json!({"error": "Selected Working Plan not found"}));
     let (differences, resolutions) = unresolved_choices();
     brief(&server, 2, differences.clone(), resolutions.clone());
     let (failed, unresolved) = propose().await;
@@ -404,9 +416,10 @@ async fn gre_1236_mcp_refuses_a_draft_the_brief_does_not_select_or_unresolved_ch
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gre_1236_mcp_selects_the_automatic_reconciliation_before_it_previews() {
+async fn gre_1236_mcp_confirm_selects_the_automatic_reconciliation_propose_writes_nothing() {
     let server = header_draft(false).await;
     let mcp = Mcp::start(&server).await;
+    let before = plan_rows(&server);
     let (failed, proposed) = mcp
         .call(
             "propose_apply_plan_draft",
@@ -414,10 +427,13 @@ async fn gre_1236_mcp_selects_the_automatic_reconciliation_before_it_previews() 
         )
         .await;
     assert!(!failed, "{proposed}");
-    assert_eq!(proposed["preview"]["kind"], "changed");
+    assert_eq!(proposed["action"]["params"]["revision"], Value::Null);
+    assert_eq!(proposed["reconciliation"]["reason"], "missing");
+    assert_eq!(plan_rows(&server), before, "a proposal writes nothing");
     let id = proposed["action"]["id"].as_str().unwrap();
     let (failed, confirmed) = mcp.call("confirm_apply", json!({"action_id": id})).await;
     assert!(!failed, "{confirmed}");
+    assert_eq!(confirmed["result"]["apply_result"]["kind"], "applied");
     assert_eq!(build_name(&server), "Renamed by MCP");
     drop(mcp);
     server.close().await;

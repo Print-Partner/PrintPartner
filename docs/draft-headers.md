@@ -148,14 +148,18 @@ version, so a replay of the same key answers the existing receipt.
 
 Rust MCP (`/mcp`, `/api/v1/mcp` under `PP_DESKTOP_REBUILD`) accepts through
 the same preview and Accept (GRE-1236). `propose_apply_plan_draft`
-`{ plan_id, draft_id }` first runs Node's guards with the caller's API key:
-the Build planning brief must exist and select `draft_id`, and its source
-choices must resolve (Node's `resolvedSourcePathExclusions`: no `custom`
-resolution, and every excluded `.stl` path names a Source in the brief's
-evidence). It then reads the Accept preview. When the preview needs a
-Required-unit reconciliation and the draft has none selected, it selects the
-automatic one first, as Node's `prepareForApply` and the Rust HTTP Accept do;
-that is its only write. When Accept would run, it proposes an action whose
+`{ plan_id, draft_id }` first runs Node's guards with the caller's API key on
+the brief as the Build planning read hydrates it: the brief must exist and
+select `draft_id` (hydration drops the selection when the Sources, their
+pinned revisions or the resolutions moved), and its source choices must
+resolve (Node's `resolvedSourcePathExclusions`: no `custom` resolution, and
+every excluded `.stl` path names a Source in the brief's evidence). It then
+reads the Accept preview and writes nothing. When the preview needs a
+Required-unit reconciliation and the draft has none selected, it proposes the
+action with `params.revision: null` and returns the `reconciliation` reason;
+`confirm_apply` then selects the automatic reconciliation, as Node's
+`prepareForApply` and the Rust HTTP Accept do, and accepts the revision it
+previews after the same checks. When Accept would run, it proposes an action whose
 `params.revision` is the preview's `revision` without `draft_id`, and its
 result carries the `preview`. When Accept would refuse, it proposes nothing
 and returns the refusal as `preview_result`. It also proposes nothing, and
@@ -164,8 +168,8 @@ or checkoff links and queued sends in `production`. `confirm_apply` of that acti
 sends exactly that revision to Accept with the action id as the idempotency
 key and `remap_checkoff_links: false`, after running the brief guards again, so a
 header saved after the proposal is refused with `draft_changed`. Success
-answers Node's shape: `apply_result` is `{ kind, receipt }` with Node's
-camelCase receipt keys, beside `build_workflow` (or `null`) and
+answers Node's shape: `apply_result` is `{ kind: "applied", receipt }`, also
+for a replay or a draft already accepted, with Node's camelCase receipt keys, beside `build_workflow` (or `null`) and
 `planning_phase: { kind: "applied", draft_id, revision_id }`. A refusal keeps
 the action pending, as Node does. Only this tool and `get_build_workflow` have Rust ports; every other
 product tool still answers that it has no Rust port.

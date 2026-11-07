@@ -183,24 +183,9 @@ impl PlanningClient {
             },
             reply,
         })?;
-        if let Some(draft_id) = guard {
+        if guard.is_some() && !matches!(facts, Facts::Brief { .. }) {
             return Ok(match facts {
                 Facts::MissingBuild => Outcome::MissingBuild,
-                Facts::Brief { brief, sources, .. } => Outcome::AcceptGuard(
-                    if brief.draft_id.and_then(|id| u64::try_from(id).ok()) != Some(draft_id.get())
-                    {
-                        AcceptGuard::NotSelected
-                    } else {
-                        let names = sources
-                            .into_iter()
-                            .map(|(id, name, ..)| (id, name))
-                            .collect();
-                        match source_choice_blockers(&brief, &names) {
-                            blockers if blockers.is_empty() => AcceptGuard::Clear,
-                            blockers => AcceptGuard::SourceChoices(blockers),
-                        }
-                    },
-                ),
                 _ => Outcome::AcceptGuard(AcceptGuard::NoBrief),
             });
         }
@@ -229,6 +214,11 @@ impl PlanningClient {
                     })
                     .collect();
                 let brief = hydrate(*brief, &sources)?;
+                if let Some(draft_id) = guard {
+                    return Ok(Outcome::AcceptGuard(accept_guard(
+                        &brief, &sources, draft_id,
+                    )));
+                }
                 if refuse_draft_id {
                     return Ok(Outcome::InvalidDraftId);
                 }
@@ -252,6 +242,22 @@ impl PlanningClient {
                 }))
             }
         })
+    }
+}
+
+/// Node's `confirm_apply` checks of a hydrated brief: hydration clears
+/// `draft_id` when the Sources, pinned revisions or resolutions moved.
+fn accept_guard(
+    brief: &BuildPlanningBrief,
+    sources: &HashMap<i64, PlanningSource>,
+    draft_id: PositiveId,
+) -> AcceptGuard {
+    if brief.draft_id.and_then(|id| u64::try_from(id).ok()) != Some(draft_id.get()) {
+        return AcceptGuard::NotSelected;
+    }
+    match source_choice_blockers(brief, sources) {
+        blockers if blockers.is_empty() => AcceptGuard::Clear,
+        blockers => AcceptGuard::SourceChoices(blockers),
     }
 }
 

@@ -1005,16 +1005,15 @@ pub(crate) fn readiness(brief: &BuildPlanningBrief) -> BuildPlanningReadiness {
 
 /// Node's `resolvedSourcePathExclusions` blockers: a custom resolution, or a
 /// resolved printable path whose Source the brief's evidence does not name.
-/// `source_names` maps the evidence's Source ids to their names.
 pub(crate) fn source_choice_blockers(
     brief: &BuildPlanningBrief,
-    source_names: &HashMap<i64, String>,
+    sources: &HashMap<i64, PlanningSource>,
 ) -> Vec<String> {
     let named: HashSet<&str> = brief
         .evidence
         .iter()
-        .filter_map(|item| source_names.get(&item.source_id?))
-        .map(String::as_str)
+        .filter_map(|item| sources.get(&item.source_id?))
+        .map(|source| source.name.as_str())
         .collect();
     let mut groups: Vec<(&str, Vec<&BuildDifference>)> = Vec::new();
     for difference in &brief.differences {

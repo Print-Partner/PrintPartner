@@ -2126,6 +2126,7 @@ async fn accept_preview_of_an_unchanged_draft_refuses_exactly_as_accept() {
         [job.to_string()],
     )
     .unwrap();
+    drop(sql);
     let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
     assert_eq!(
         preview,
@@ -2418,6 +2419,7 @@ async fn reconciliation_under_write_contention_is_transaction_unavailable() {
     );
     assert!(started.elapsed() < Duration::from_secs(30));
     holder.execute_batch("ROLLBACK").unwrap();
+    drop(holder);
     assert!(draft_events(&server).is_empty());
     server.close().await;
 }

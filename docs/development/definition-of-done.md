@@ -72,6 +72,8 @@ Remaining risk: a PR can still add a `pull_request` workflow with a job named `r
 
 ### Factory Droid
 
+**Suspended (GRE-1222).** The Factory quota is out, so `droid-review` runs only when the repository variable `PP_DROID_REVIEW` is `on`; it is unset, so the job reports `skipped`. The gate then passes through the Claude reviews or the coordinator marker. Droid stays off until a provider-neutral gate replaces it or the quota returns; to restore it, set `PP_DROID_REVIEW` to `on`. The rest of this section describes the job when it runs.
+
 Droid is optional. `.github/workflows/droid-review.yml` runs Droid code and security review on every ready PR and on each new push. When Droid's weekly usage runs out, the job fails and one of the other paths carries the PR; when Droid does review, its threads still have to be resolved. Critical and high security findings also request changes. The job fails when the `FACTORY_API_KEY` secret is missing. On a PR that adds or changes `droid-review.yml` itself, droid-action skips the review and the job still passes, so ask for `@droid review` after merging such a change. Because the job conclusion does not show a skip, the gate reads the job log and requires exactly one whole runner line for droid-action's review step, `##[end-action id=__Factory-AI_droid-action.droid;outcome=success;conclusion=...;duration_ms=...]`, after the timestamp. Text that only contains that string, or a second line for the step, fails. That line belongs to the pinned droid-action version; if an update renames the step, the Droid path stops counting until the gate is updated, which fails closed.
 
 Mention `@droid` in a PR or issue comment to ask Droid a question or request another review (`.github/workflows/droid.yml`).

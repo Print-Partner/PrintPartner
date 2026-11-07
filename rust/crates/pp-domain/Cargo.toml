@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 serde.workspace = true
 schemars = { version = "=0.8.22", optional = true }
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "=1.12.0"
@@ -16,4 +17,4 @@ serde_json.workspace = true
 
 [features]
 codegen = ["dep:schemars"]
-desktop_rebuild = []
+desktop_rebuild = ["dep:sha2"]

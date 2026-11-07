@@ -640,6 +640,8 @@ fn transact(
         .map_err(anyhow::Error::msg)?,
         expected_base: request.expected_base().clone(),
         remap_checkoff_links: request.remap_checkoff_links(),
+        expected_header_version: crate::working_drafts::header::read(tx, tenant, id)?
+            .map(|state| state.header_version),
     };
     let applied = publication::publish_in_transaction(
         tx,

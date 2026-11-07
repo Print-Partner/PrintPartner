@@ -116,6 +116,11 @@ jobs:
           started_at = time.monotonic()
 
 
+          def newest(run):
+              """Sort key for the latest run of a check: a queued run has no start time yet and is the newest."""
+              return run.get("started_at") or "9999"
+
+
           def moved():
               """Whether the PR head or base changed since this run read them."""
               current = json.loads(subprocess.run(["gh", "api", f"repos/{REPO}/pulls/{PR}"], check=True,
@@ -128,14 +133,14 @@ jobs:
               for page in pages(f"repos/{REPO}/commits/{HEAD}/check-runs?filter=all&per_page=100"):
                   for item in page["check_runs"]:
                       if item["name"] in CLAUDE_JOBS:
-                          if item["name"] not in seen or (item.get("started_at") or "") > seen[item["name"]][0]:
-                              seen[item["name"]] = (item.get("started_at") or "", item["status"])
+                          if item["name"] not in seen or newest(item) > newest(seen[item["name"]]):
+                              seen[item["name"]] = item
               if moved():
                   print(f"::error::The PR head or base moved while waiting for {HEAD}; the run for the "
                         "change judges it.")
                   sys.exit(1)
               waiting = [name for name in CLAUDE_JOBS
-                         if name in seen and seen[name][1] != "completed"
+                         if name in seen and seen[name]["status"] != "completed"
                          or (name not in seen and time.monotonic() - started_at < GRACE)]
               if not waiting or time.monotonic() - started_at >= MAX_WAIT:
                   break
@@ -191,7 +196,7 @@ jobs:
               if where != ORIGINS[name]:
                   problems.append(f"check run {name} ({run['id']}) comes from {where or 'another app'}, "
                                   f"not {ORIGINS[name][0]} on {ORIGINS[name][1]}.")
-              elif name not in latest or (run.get("started_at") or "") > (latest[name].get("started_at") or ""):
+              elif name not in latest or newest(run) > newest(latest[name]):
                   latest[name] = run
 
 

@@ -607,6 +607,7 @@ anything and, because the original has finished, does not wait.
 | `push` of a tag, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
 | rerun of a non-PR run | the original run's `run_id` | `false` |
 | rerun of a `pull_request` run | same as the PR group | `true` |
+
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.
 

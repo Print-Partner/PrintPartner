@@ -146,7 +146,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |
 | Build planning phase | `GET /plans/:id/build-planning` | Exists in Rust behind `desktop_rebuild` (GRE-1119) |
 | Assistant decisions | `GET /plans/:id/decisions` | Exists in Rust behind `desktop_rebuild` (GRE-1119); History lists them too |
-| Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker observed; PrusaLink and Bambu read as Manual until they have Rust status watchers (GRE-1175, GRE-362). See [Farm reads](../farm-reads.md) |
+| Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker and PrusaLink observed; Bambu reads as Manual until it has a Rust status watcher (GRE-362). See [Farm reads](../farm-reads.md) |
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Send queue | `GET /api/v2/printer-send-queue` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |

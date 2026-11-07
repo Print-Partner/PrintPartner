@@ -160,6 +160,7 @@ impl Simulator {
             base_url: format!("http://{hostname}:{}", self.port),
             api_key: Some(key.into()),
             enabled: true,
+            kind: Default::default(),
         }
     }
 

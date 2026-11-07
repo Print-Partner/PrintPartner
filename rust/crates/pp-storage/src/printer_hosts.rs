@@ -1,7 +1,9 @@
 //! The Moonraker hosts in the stored `integrations` setting, projected the way
 //! Node's private `/__desktop/moonraker-hosts` route does
 //! (`web/apps/server/src/moonraker-host-snapshot.ts`). The Rust-only runtime
-//! feeds this to the status watchers in place of that Node route. Read-only.
+//! feeds this to the status watchers in place of that Node route, together
+//! with the stored PrusaLink hosts (GRE-1175), which Node polls on demand
+//! instead. Read-only.
 //!
 //! One deliberate difference: a setting that `serde_json` cannot parse, such as
 //! one with an unpaired UTF-16 surrogate escape, is invalid here, so monitoring
@@ -34,14 +36,98 @@ pub struct MoonrakerHost {
     pub enabled: bool,
 }
 
+/// The hosts the Rust-only status watchers poll, from one read of the setting.
+/// Not `Debug`: it holds PrusaLink passwords.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WatchedHosts {
+    /// Node's Moonraker host snapshot.
+    pub moonraker: Vec<MoonrakerHost>,
+    /// The PrusaLink rows the watchers take, in stored order: the first row
+    /// per usable id, skipping an id a Moonraker host already has, while the
+    /// total stays within [`MAX_HOSTS`], so PrusaLink rows never push the
+    /// Moonraker snapshot over the cap. A row with an oversized `base_url`,
+    /// username or password keeps its id with an empty `base_url`, so it is
+    /// never polled.
+    pub prusalink: Vec<StoredIntegration>,
+}
+
 /// Read and project the stored setting. `Ok(None)` means the setting is
 /// malformed and monitoring must fail closed; `Err` means storage was busy.
-pub fn read(client: &SettingsClient, wait: Duration) -> Result<Option<Vec<MoonrakerHost>>> {
+pub fn read(client: &SettingsClient, wait: Duration) -> Result<Option<WatchedHosts>> {
     let raw = match client.reader(wait)?.snapshot(TENANT, INTEGRATIONS_KEY)? {
         SettingSnapshot::Stored { value } => Some(value),
         SettingSnapshot::Missing => None,
     };
-    Ok(project(raw.as_deref()))
+    Ok(watched(raw.as_deref()))
+}
+
+/// The ids of the hosts the watchers actually poll: a watched Moonraker or
+/// PrusaLink host with an address. `None` for an unusable setting.
+pub fn polled_ids(raw: Option<&str>) -> Option<Vec<String>> {
+    let hosts = watched(raw)?;
+    let moonraker = hosts
+        .moonraker
+        .into_iter()
+        .map(|host| (host.id, host.base_url));
+    let prusalink = hosts
+        .prusalink
+        .into_iter()
+        .map(|host| (host.id, host.base_url));
+    Some(
+        moonraker
+            .chain(prusalink)
+            .filter(|(_, base_url)| !base_url.trim().is_empty())
+            .map(|(id, _)| id)
+            .collect(),
+    )
+}
+
+/// [`project`] plus the PrusaLink rows of the same setting that the
+/// watchers take.
+pub fn watched(raw: Option<&str>) -> Option<WatchedHosts> {
+    let moonraker = project(raw)?;
+    let items = raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    let mut prusalink: Vec<StoredIntegration> = Vec::new();
+    for item in items
+        .as_ref()
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if item["type"].as_str() != Some("prusalink") {
+            continue;
+        }
+        let Some(id) = item["id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= MAX_ID_BYTES)
+        else {
+            continue;
+        };
+        if moonraker.len() + prusalink.len() >= MAX_HOSTS {
+            break;
+        }
+        if moonraker.iter().any(|host| host.id == id) || prusalink.iter().any(|host| host.id == id)
+        {
+            continue;
+        }
+        let mut host = stored(item, id);
+        let oversized = [
+            Some(&host.base_url),
+            Some(&host.username),
+            host.password.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value.len() > MAX_CONFIG_BYTES);
+        if oversized {
+            host.base_url.clear();
+        }
+        prusalink.push(host);
+    }
+    Some(WatchedHosts {
+        moonraker,
+        prusalink,
+    })
 }
 
 /// Node's `moonrakerHostSnapshot`: `None` for an unusable setting.
@@ -207,13 +293,18 @@ fn find_integration(items: &Value, id: &str) -> Option<StoredIntegration> {
         .as_array()?
         .iter()
         .find(|item| item.is_object() && item["id"].as_str() == Some(id))?;
+    Some(stored(item, id))
+}
+
+/// One stored integration row with id `id`, read as Node's adapters read it.
+fn stored(item: &Value, id: &str) -> StoredIntegration {
     let config = item["config"].as_object();
     let field = |names: [&str; 2]| {
         names
             .iter()
             .find_map(|name| config?.get(*name).filter(|value| !value.is_null()))
     };
-    Some(StoredIntegration {
+    StoredIntegration {
         id: id.to_owned(),
         kind: item["type"].as_str().unwrap_or_default().to_owned(),
         base_url: field(["base_url", "baseUrl"])
@@ -233,7 +324,7 @@ fn find_integration(items: &Value, id: &str) -> Option<StoredIntegration> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         enabled: config.and_then(|config| config.get("enabled")) != Some(&Value::Bool(false)),
-    })
+    }
 }
 
 /// JavaScript's `String(value)` for the scalar ids Node's fleet parser reads.
@@ -385,5 +476,78 @@ mod tests {
         assert_eq!(find_integration(&json!({"id": "moon"}), "moon"), None);
         assert_eq!(js_string(&json!(7)).as_deref(), Some("7"));
         assert_eq!(js_string(&Value::Null), None);
+    }
+
+    #[test]
+    fn ticket_t_22_watched_hosts_add_prusalink_rows() {
+        let big = "p".repeat(MAX_CONFIG_BYTES + 1);
+        let stored = json!([
+            {"id": "moon", "type": "moonraker", "config": {"base_url": "http://m.test"}},
+            {"id": "mk4", "type": "prusalink", "config": {"base_url": "http://p.test", "username": "maker", "password": "secret"}},
+            {"id": "mk4", "type": "prusalink", "config": {"base_url": "http://other.test"}},
+            {"id": "off", "type": "prusalink", "config": {"baseUrl": "http://q.test", "user": 7, "api_key": "key", "enabled": false}},
+            {"id": "big", "type": "prusalink", "config": {"base_url": "http://r.test", "password": big}},
+            {"id": "", "type": "prusalink", "config": {"base_url": "http://s.test"}},
+            {"id": 9, "type": "prusalink", "config": {"base_url": "http://t.test"}},
+            {"id": "spool", "type": "spoolman", "config": {"base_url": "http://u.test"}},
+        ])
+        .to_string();
+        let hosts = watched(Some(&stored)).unwrap();
+        assert_eq!(hosts.moonraker, project(Some(&stored)).unwrap());
+        let read: Vec<_> = hosts
+            .prusalink
+            .iter()
+            .map(|host| {
+                (
+                    host.id.as_str(),
+                    host.base_url.as_str(),
+                    host.username.as_str(),
+                    host.password.as_deref(),
+                    host.enabled,
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("mk4", "http://p.test", "maker", Some("secret")),
+                ("off", "http://q.test", "7", Some("key")),
+                ("big", "", "", Some(big.as_str())),
+            ]
+            .into_iter()
+            .zip([true, false, true])
+            .map(|((id, url, user, password), enabled)| (id, url, user, password, enabled))
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            polled_ids(Some(&stored)).unwrap(),
+            ["moon", "mk4", "off"],
+            "a row without a usable address is never polled"
+        );
+        // PrusaLink rows never take a Moonraker id or push the total past the cap.
+        let capped = |moonraker: usize| {
+            let mut rows: Vec<Value> = (0..moonraker)
+                .map(|i| json!({"id": format!("m{i}"), "type": "moonraker", "config": {"base_url": "http://m.test"}}))
+                .collect();
+            rows.push(
+                json!({"id": "m0", "type": "prusalink", "config": {"base_url": "http://p.test"}}),
+            );
+            rows.push(
+                json!({"id": "mk4", "type": "prusalink", "config": {"base_url": "http://p.test"}}),
+            );
+            watched(Some(&Value::Array(rows).to_string())).map(|hosts| {
+                hosts
+                    .prusalink
+                    .into_iter()
+                    .map(|host| host.id)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(capped(1).unwrap(), ["mk4"]);
+        assert_eq!(capped(MAX_HOSTS - 1).unwrap(), ["mk4"]);
+        assert_eq!(capped(MAX_HOSTS).unwrap(), Vec::<String>::new());
+        // A malformed setting still fails closed as a whole.
+        assert!(watched(Some("{")).is_none());
+        assert_eq!(watched(None).unwrap().prusalink, []);
     }
 }

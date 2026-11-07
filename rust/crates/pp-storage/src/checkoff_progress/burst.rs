@@ -63,11 +63,7 @@ impl Burst {
     /// the transaction, as `POST /printer-checkoff/verify` checks it.
     pub(super) fn parse(body: &Value) -> std::result::Result<Self, Response> {
         let bad = |detail: &str| Response::failure(400, detail, None);
-        let key = field(body, "idempotency_key")
-            .as_str()
-            .map(links::js_trim)
-            .filter(|k| !k.is_empty() && k.chars().count() <= 200)
-            .ok_or_else(|| bad("idempotency_key must be 1 to 200 characters"))?;
+        let key = super::lookup::key(field(body, "idempotency_key").as_str().unwrap_or_default())?;
         let beds = field(body, "beds")
             .as_array()
             .filter(|beds| (1..=MAX_BEDS).contains(&beds.len()))

@@ -372,6 +372,19 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         self.assertEqual(rerun["jobs"]["rerun"]["permissions"], {"actions": "write", "pull-requests": "read"})
         self.assertIn("review-gate.yml/runs?event=pull_request_target", rerun["jobs"]["rerun"]["steps"][0]["run"])
 
+    def test_superseded_gate_and_rerun_runs_collapse_per_pr(self):
+        gate = load("review-gate.yml")["concurrency"]
+        self.assertEqual(gate["group"], "${{ github.workflow }}-${{ github.event.pull_request.number }}")
+        self.assertEqual(gate["cancel-in-progress"], "true")
+        rerun = load("review-gate-rerun.yml")
+        self.assertEqual(rerun["concurrency"]["cancel-in-progress"], "true")
+        self.assertIn("github.event.issue.number || github.event.workflow_run.pull_requests[0].number",
+                      rerun["concurrency"]["group"])
+        condition = rerun["jobs"]["rerun"]["if"]
+        for conclusion in ("cancelled", "skipped"):
+            self.assertIn(f"github.event.workflow_run.conclusion != '{conclusion}'", condition)
+        self.assertIn("pulls/$pr", rerun["jobs"]["rerun"]["steps"][0]["run"])
+
     def test_claude_jobs_are_limited_to_owner_prs_with_minimal_permissions(self):
         workflow = load("claude-review.yml")
         self.assertEqual(workflow["permissions"], {})

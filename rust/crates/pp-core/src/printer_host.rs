@@ -1,11 +1,12 @@
 //! Printer-host reads in the Rust-only runtime (GRE-360, GRE-1044). The
 //! `pp-api` routes resolve a printer through storage's fleet and integration
 //! settings and read Moonraker and PrusaLink hosts through the gateway's drivers. Every read is
-//! user-initiated and read-only: no upload, start or Checkoff change. The only
+//! user-initiated and read-only: no upload, start or Checkoff change. The
+//! print-file download and camera view stream the printer's reply through. The only
 //! resend is PrusaLink's single Digest resend after a 401 (see
 //! `pp_gateway::printer_host`).
-use pp_api::printer_host::{Answer, Capabilities, HostAnswer, PrinterHostPort};
-use pp_gateway::printer_host::{HostReads, HostTarget};
+use pp_api::printer_host::{Answer, Capabilities, HostAnswer, HostStream, PrinterHostPort};
+use pp_gateway::printer_host::{HostReads, HostTarget, Opened};
 use pp_storage::{
     SettingsClient,
     printer_hosts::{self, PrinterLink, StoredIntegration},
@@ -74,8 +75,37 @@ async fn linked<T>(settings: &SettingsClient, printer: String) -> Result<Host, H
     }
 }
 
-fn failed(error: anyhow::Error) -> HostAnswer<Value> {
-    HostAnswer::Failed(error.to_string())
+/// The readable host linked to `printer`, or the answer that ends the request.
+async fn readable<T>(
+    settings: &SettingsClient,
+    printer: String,
+) -> Result<HostTarget, HostAnswer<T>> {
+    match linked(settings, printer).await? {
+        Host::Read(target) => Ok(target),
+        Host::Unported => Err(HostAnswer::Unsupported),
+    }
+}
+
+fn answer<T>(result: anyhow::Result<T>) -> HostAnswer<T> {
+    result.map_or_else(
+        |error| HostAnswer::Failed(error.to_string()),
+        HostAnswer::Ok,
+    )
+}
+
+fn stream(opened: Option<Opened>) -> Option<HostStream> {
+    opened.map(|opened| HostStream {
+        status: opened.status,
+        content_type: opened.content_type,
+        content_length: opened.content_length,
+        body: opened.body,
+    })
+}
+
+/// A streamed read: a print file at a path, or one camera's view.
+enum Open {
+    File(String),
+    Camera(String),
 }
 
 impl StoredPrinterHosts {
@@ -83,16 +113,31 @@ impl StoredPrinterHosts {
     fn read(&self, printer: String, path: Option<String>) -> Answer<Value> {
         let (settings, reads) = (self.settings.clone(), self.reads.clone());
         Box::pin(async move {
-            let target = match linked(&settings, printer).await {
-                Ok(Host::Read(target)) => target,
-                Ok(Host::Unported) => return HostAnswer::Unsupported,
+            let target = match readable(&settings, printer).await {
+                Ok(target) => target,
                 Err(answer) => return answer,
             };
-            match path {
+            answer(match path {
                 Some(path) => reads.browse(&target, &path).await,
                 None => reads.cameras(&target).await,
-            }
-            .map_or_else(failed, HostAnswer::Ok)
+            })
+        })
+    }
+
+    fn open(&self, printer: String, open: Open) -> Answer<Option<HostStream>> {
+        let (settings, reads) = (self.settings.clone(), self.reads.clone());
+        Box::pin(async move {
+            let target = match readable(&settings, printer).await {
+                Ok(target) => target,
+                Err(answer) => return answer,
+            };
+            answer(
+                match open {
+                    Open::File(path) => reads.open_file(&target, &path).await,
+                    Open::Camera(id) => reads.open_camera(&target, &id).await,
+                }
+                .map(stream),
+            )
         })
     }
 }
@@ -120,6 +165,14 @@ impl PrinterHostPort for StoredPrinterHosts {
 
     fn cameras(&self, printer: String) -> Answer<Value> {
         self.read(printer, None)
+    }
+
+    fn file(&self, printer: String, path: String) -> Answer<Option<HostStream>> {
+        self.open(printer, Open::File(path))
+    }
+
+    fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>> {
+        self.open(printer, Open::Camera(camera))
     }
 
     fn test(&self, integration: String) -> Answer<Value> {

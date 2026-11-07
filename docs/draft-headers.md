@@ -1,10 +1,10 @@
 # Draft header fields
 
-GRE-1197 part A. A draft can propose a new Build name, order number, customer
-and due date. The proposal autosaves into the durable draft, and only Accept
-copies it to the Build. Part A is storage, the draft write and the draft read.
-Part B, the Accept copy into `build_profiles` and `build_profile_details`, is a
-separate ticket. Everything here is Rust-only, behind `desktop_rebuild` and
+A draft can propose a new Build name, order number, customer and due date. The
+proposal autosaves into the durable draft, and only Accept copies it to the
+Build. GRE-1197 built the storage, the draft write and the draft read; GRE-1207
+built the Accept copy, its preview and schema step 45 ([Accept](#accept)).
+Everything here is Rust-only, behind `desktop_rebuild` and
 `PP_DESKTOP_REBUILD=1`.
 
 ## Schema 43
@@ -20,7 +20,7 @@ in one transaction. It alters no table Node uses.
 | `plan_draft_header_receipts` | tenant, Plan, actor and hashed `Idempotency-Key` | `payload_digest`, `draft_id` (cascades with its draft), and the saved header and version, never updated |
 
 `build_profile_details` holds the Build's customer and due date. Part A creates
-it empty; Accept writes it in part B. GRE-1100 and GRE-1095 read the due date
+it empty; Accept writes it ([Accept](#accept)). GRE-1100 and GRE-1095 read the due date
 and customer from it.
 
 Step 43 takes a `pre-schema43.db` copy before it writes, like every step
@@ -110,3 +110,67 @@ must choose.
 
 Passing `Origin::New` in recompute or Save, or dropping the carry for
 `Rebased`, makes the matching test fail; this was checked by hand for this change.
+
+## Accept
+
+Accept (`POST /plans/{id}/drafts/{draft_id}/apply`) of a draft with a
+`plan_draft_headers` row copies it to the Build inside Accept's transaction,
+after the new revision is published: name and order number to
+`build_profiles`, customer and due date to `build_profile_details` (inserted,
+or updated in place). A draft with no header row changes neither, so an Accept
+without a header writes exactly what it wrote before. A replay of the same
+Accept answers its receipt and writes nothing, and a refused Accept writes no
+header. Under `PP_DESKTOP_REBUILD` the Rust gateway serves Accept, so no Node
+route writes these columns in the same flow.
+
+Before its selection, which writes, Accept refuses a header whose name another
+Build of the tenant already has, the rule a Build rename checks: 409
+`{ code: "duplicate_build_name", name }`. The Accept preview returns the same
+refusal from the same point. Duplicate order numbers are reported, not refused
+(`duplicate_orders`; GRE-1095 owns the refusal).
+
+The preview (`GET .../accept-preview`) lists the header fields the draft
+changes in `changes.header`: `{ field, old, new }` for `name`,
+`order_number`, `customer` and `due_date`, `null` for an empty field. A
+draft whose Parts and inputs equal its base but whose header differs is
+`changed`, not `no_change`. `duplicate_orders` checks the order number the
+Build has after Accept.
+
+A header save changes neither the snapshot digest nor the lifecycle version,
+so the preview's `revision` also carries `expected_header_version`: the
+draft's `header_version`, or `null` without a header row. Accept compares it
+with the stored version in its revision gate and answers `draft_changed` when
+they differ, including when a header row exists and the request omits the
+field. A header saved after the preview therefore never reaches the Build
+unreviewed. The field is only a precondition. It is not part of the request
+digest, because the admission row Accept shares with Node stores no header
+version, so a replay of the same key answers the existing receipt.
+
+Two limits remain:
+
+- **Save.** The publishing Save in Rust (`WorkingDraftClient::save`) has no
+  HTTP route; Node serves `POST /plans/:id/save`, and Node's Accept never
+  reads `plan_draft_headers`. Rust Save publishes the source draft's header as
+  it stands in Save's transaction, because Node's `SavePlanChoicesRequest`
+  carries no header version. Whatever routes Save to Rust must add a
+  client-observed version first.
+- **Web client.** `applyPlanDraft` in `web/apps/web/src/api/endpoints/planDrafts.ts`
+  sends no `expected_header_version`, so Accept from the web UI answers
+  `draft_changed` for a draft that has a header row. No UI flow creates a
+  header row today, and no web code calls the Accept preview yet. GRE-1120,
+  not built yet, adds the Accept gate. It must show the preview, header
+  included, and send that preview's `revision` without `draft_id` (the draft
+  id goes in the path), `expected_header_version` included, as the Accept body.
+
+## Schema 45
+
+When Accept saves its `pre_apply` snapshot of the replaced Plan, it also saves
+the Build's header as it stood in `plan_snapshot_headers`, keyed by that
+snapshot's id, so a restore (GRE-1094) can bring the header back. Node's
+snapshot payload is unchanged. The 44 to 45 step installs the table from
+`pp-storage/src/plan_publication/snapshot_header_schema.sql`, takes
+`pre-schema45.db`, and alters no table Node uses.
+
+| Table | Key | Columns |
+| --- | --- | --- |
+| `plan_snapshot_headers` | `snapshot_id`, cascades with its `plan_snapshots` row | `name`, `order_number`, `customer`, `due_date`, `captured_at` |

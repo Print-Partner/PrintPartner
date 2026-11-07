@@ -11,11 +11,11 @@ On ready PRs, the jobs are selected as follows:
 
 - `rust (linux)` and `rust (windows)` run when a `changes` job finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, the workflow itself, or the CI filter scripts and their tests. Other changes skip both jobs while keeping their check reports present.
 - `rust (macos)` uses the same path selection. It runs only when relevant inputs change and the PR has the exact `macos` label and is not a draft. Adding or removing the label, marking the PR ready for review and converting it to a draft each start a new run.
-- When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (Windows excludes every reverse dependent of pp-core, for example) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
+- When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (for example, a change only to a crate the Windows job excludes, such as `pp-server`) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
 
 The selection is made at job level by `scripts/ci-path-filter.py`, not with workflow `paths:`, so a skipped job still reports `skipped` and the required `rust (linux)` and `rust (windows)` checks never stay pending. A PR that changes only docs, other workflows or other non-Rust files skips both: PR #1548, which changed one workflow and `ci.md`, reported `rust (linux)` and `rust (windows)` as skipped, and a PR that touches a path above, such as this filter, runs them. Markdown is not a Rust input and does not select them, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed with `include_str!`, and anything under `fixtures/`, where parity READMEs sit inside hashed fixture trees. A UI-only change under `web/apps/web/` still selects them on purpose: the Rust jobs run `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` on that UI, then test the desktop bundle against the measured manifest. Skipping those PRs would drop that check from the required set. Web CI covers the UI's own lint, tests and build.
 
-Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a new push to `main` cancels the older `main` run (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
+Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a push to `main` never cancels another `main` run (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
@@ -465,15 +465,14 @@ Do not scatter `#[cfg(...)]` on statements or `if cfg!(...)` checks through shar
 
 ## Windows exclusions
 
-These crates do not build on Windows yet. The Windows job excludes them with `--exclude` items in `CARGO_SCOPE`. The table below names each port ticket.
+The Windows job excludes these crates with `--exclude` items in `CARGO_SCOPE`, so it does not lint or test their own targets. The table below names each port ticket.
 
 | Crate | Port ticket | Why it is excluded |
 |-------|-------------|--------------------|
-| `pp-core` | GRE-1188 | Its runtime and its tests are not yet ported to Windows. |
-| `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | They depend on an excluded crate. |
-| `pp-desktop` | GRE-656 | It is the Tauri shell and depends on an excluded crate. GRE-656 ends with the Windows job building the whole workspace. |
+| `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | Their own code and tests are not ported yet: `pp-server` and pp-api's `auth-http-fixture` use Unix signals, and their tests use Unix sockets, Unix symlinks, `libc` and mode bits. `pp-gateway`'s library already compiles on Windows as a `pp-core` dependency, and so does `pp-api`'s with `desktop_rebuild` on; only their own tests, binaries and clippy are skipped. |
+| `pp-desktop` | GRE-656 | It is the Tauri shell, and its own code and tests are not ported yet. GRE-656 ends with the Windows job building the whole workspace. |
 
-`pp-os`, `pp-storage`, `pp-source` and `pp-compat` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests still build only on Unix until GRE-1194. The Windows job builds and tests `pp-os`, including
+`pp-os`, `pp-storage`, `pp-source`, `pp-compat` and `pp-core` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests still build only on Unix until GRE-1194. `pp-core` reads and publishes its state files through `pp-os` handles (GRE-1188) and runs its runtime tests against the real Node child on Windows. On Windows its tests use `TerminateProcess` for SIGKILL, `NtSuspendProcess` and `NtResumeProcess` for SIGSTOP and SIGCONT, a junction where Unix uses a FIFO, an `icacls` deny where Unix uses mode 000, and a ToolHelp process snapshot where Unix reads `/proc` or `ps`. A runtime test whose restart fails prints the redacted recent logs. Each test that stays Unix-only names its Windows counterpart in a comment. The Windows job builds and tests `pp-os`, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
 tests for symbolic links, junctions, directory locks, write-through renames,
@@ -507,7 +506,7 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
   - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `macos` label, is not a draft, and changes desktop inputs. The selector includes the Rust inputs above, the native workflow, its cleanup tests and the Rust verification helper directory. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
   - Pushes to `main` or `master`, merge groups, nightly and manual runs select every job, including the Intel bundle.
 
-  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A new push to `main` cancels the older `main` run; reruns, merge groups, nightly and manual runs each keep their own group.
+  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels an older `main` run; pushes to `main`, merge groups, nightly and manual runs each have their own group, and a rerun keeps its run's group: a rerun of a push, merge group, schedule or manual run shares that run's group without cancelling anything, and a rerun of a pull request run stays in the PR group.
   The source fixture registers the named `cleanup_source_fixture` function with `trap cleanup_source_fixture EXIT` after a successful attach. It captures `$?` immediately and exits with that status on every cleanup path. Cleanup targets only this step's owned mount. It tries normal detach of the mount three times, with `sleep 2` between failures. If all three fail, it records holders and then forces detach of the whole-disk device that `hdiutil attach` printed first, again up to three times with `sleep 2` between failures. A forced unmount can succeed while ejecting the backing device returns `Resource busy`. The mount path is then an ordinary directory, so the forced retries target the device. The explicit sleeps total at most eight seconds. The `hdiutil` calls and holder diagnostics add time, so eight seconds is not a wall-clock cleanup bound.
 
   After normal detach retries fail, `lsof +f -- "$fixture_mount"` records open files on the source fixture's owned APFS filesystem before forced detach. A diagnostic failure, or failure of all three forced attempts, warns without changing the test exit status. Run `python3 scripts/test_native_image_cleanup.py -v` for executable cleanup fixtures. The same suite runs in `macos-storage-gate`, including a macOS-only disposable APFS image held open by a child process. Linux skips that native proof.
@@ -586,15 +585,30 @@ is new.
 
 ### Superseded runs
 
-Every CI workflow that runs on pushes to `main` groups those pushes by workflow
-and ref and cancels the older run when a newer push arrives, except the ast-grep
-ratchet above and the [duplication check](#duplicated-code). Both compare each
-push with the commit it replaced. The newest `main` run tests every earlier merge, so a burst of
-merges no longer queues one full run per merge. The cost is attribution: a
-cancelled merge has no result of its own. To find the merge that broke `main`,
-dispatch the workflow on each candidate SHA. Reruns (attempt 2 and later, which
-`main-red` starts) keep their own group so they never cancel the newer run. Tag
-pushes, merge groups, the schedule and manual runs never cancel each other.
+Only pull request runs cancel superseded runs. Every CI workflow groups a pull
+request by workflow and ref (or PR number) with `cancel-in-progress: true`, so a
+new push replaces the older run. Every other event, pushes to `main` included,
+gets a group of its own (`github.run_id`) with cancelling off, so the validation
+of one merge is never killed by the next. This changed on 2026-11-06 (GRE-1228):
+a sample of 60 `main` push runs had 25 cancelled, 23 succeeded and 12 in progress,
+because a newer merge cancelled each older run and left that merge with no result.
+
+The run count stays bounded because `main` only receives merges of reviewed pull
+requests, one `push` event each, and a workflow starts at most one run per event.
+The path filters still skip jobs that a merge cannot affect. Tag pushes, merge groups,
+the schedule and manual runs each have their own group too. A rerun (attempt 2 and
+later, which `main-red` starts for failed `main` runs) keeps its run's event and
+`run_id`, so a `main` rerun shares the original run's group; it never cancels
+anything and, because the original has finished, does not wait.
+
+| Event | Group | `cancel-in-progress` |
+| --- | --- | --- |
+| `pull_request` | workflow and ref (or PR number) | `true` |
+| `push` to `main` | `run_id` | `false` |
+| `push` of a tag, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
+| rerun of a non-PR run | the original run's `run_id` | `false` |
+| rerun of a `pull_request` run | same as the PR group | `true` |
+
 `pages.yml` keeps `cancel-in-progress: false`, because cancelling a Pages deploy
 can leave the site half-published, and `release.yml` runs only on tags.
 
@@ -606,11 +620,13 @@ PRs and non-PR runs keep 20 minutes.
 | Hosted check | Workflow | Local command |
 | --- | --- | --- |
 | `review-gate` (required) | `review-gate.yml` on `pull_request_target`, rerun by `review-gate-rerun.yml` | `python3 -B -m unittest discover -s scripts -p test_review_gate.py -v` |
-| `droid-review` | `droid-review.yml` | none; needs the `FACTORY_API_KEY` secret |
+| `droid-review` (suspended) | `droid-review.yml` | none; the job runs only when the repository variable `PP_DROID_REVIEW` is `on`, so it reports `skipped` until a provider-neutral gate replaces it or the Factory quota returns |
 | `claude-code-review`, `claude-security-review` | `claude-review.yml` | none; needs the `CLAUDE_CODE_OAUTH_TOKEN` secret, or `ANTHROPIC_API_KEY` as a fallback |
 
 `scripts/test_review_gate.py` runs the gate's Python step unchanged against a fake `gh` and checks each pass and fail case: a Droid success, a Claude code review with its security review, an owner marker for the head, markers for another head or from another account, same-named checks from another workflow, event, or app, a review from a workflow file the PR changes, and a non-owner PR that changes workflows, `.github/zizmor.yml`, or the safety guard. It also checks that the gate runs on `pull_request_target` with no checkout or secrets, that its expected origins match the review workflows, and that the Claude jobs keep their author filter, permissions, and tool lists. The `changes` job in `actionlint.yml` runs it on every PR.
 
-`review-gate.yml` has a `concurrency` group per PR number with `cancel-in-progress: true`, so a push cancels the previous head's gate run instead of leaving it queued. Reruns (`run_attempt` above 1, started by `review-gate-rerun.yml`) get their own group and never cancel the current head's run. Every other `pull_request` workflow except `linear-pr-sync.yml` and `droid.yml` already cancels superseded PR runs. This change adds no cancellation for `main` pushes, merge groups or tags; see [Superseded runs](#superseded-runs) for how existing workflows treat `main`. `linear-pr-sync.yml` keeps `cancel-in-progress: false` so a state sync always finishes, and `droid.yml` has no group because its comment and review events share the workflow with PR events and a PR-keyed group would cancel a live `@droid` run.
+The gate waits up to 30 minutes for the head's `claude-code-review` and `claude-security-review` jobs to finish before it judges the head, so a new push no longer shows a red gate while the review is still running. It reads the final state, so waiting cannot create a pass. A job that never appears within two minutes counts as not running, and a run that is still waiting stops if the PR head or base moves. The run also re-reads the head and base right before it can pass and fails if either moved, which closes the gap between the last cancellation point and the pass. Only a PR into `main` can pass on a Droid or Claude run; a PR into any other base, such as a stacked PR, fails unless the owner posts the marker for its head, because a review of a head against another base does not cover the same head against `main`. The gate also runs on `edited` events, so retargeting a PR judges it again against its new base. While waiting it follows only the latest run of each Claude job, so an older run from another PR that shares the head does not delay it. An edit run is a full run in the same group as a push run, so a newer edit or push run cancels an older one and the newest run decides. The gate has no job-level `if`, so an edit can never replace a failing gate with a skipped one, because GitHub counts a skipped required job as a pass. After a review workflow finishes, `review-gate-rerun.yml` waits up to about 40 minutes, longer than the gate's 30-minute wait, for the gate run to end and reruns it.
+
+`review-gate.yml` puts every first-attempt run, whether a push or an edit, in one `concurrency` group per PR number with `cancel-in-progress: true`, so the newest run for the PR wins and an older run, including one that read the old base, is cancelled instead of finishing after a retarget. Every run does the full judgement, so a newer edit run replaces a cancelled one without losing anything. Reruns (`run_attempt` above 1, started by `review-gate-rerun.yml`) get their own group and never cancel anything. Every other `pull_request` workflow except `linear-pr-sync.yml` and `droid.yml` already cancels superseded PR runs. This change adds no cancellation for `main` pushes, merge groups or tags; see [Superseded runs](#superseded-runs) for how existing workflows treat `main`. `linear-pr-sync.yml` keeps `cancel-in-progress: false` so a state sync always finishes, and `droid.yml` has no group because its comment and review events share the workflow with PR events and a PR-keyed group would cancel a live `@droid` run.
 
 [Code review](definition-of-done.md#code-review) describes the three ways to pass the gate, the coordinator's marker, and how the Claude jobs use the owner's subscription.

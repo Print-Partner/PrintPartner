@@ -73,7 +73,7 @@ where
         }
     }
     if removed {
-        std::fs::File::open(owner.data_dir())?.sync_all()?;
+        pp_os::sync_directory(owner.data_dir())?;
     }
     let config = state_file::read(owner, "desktop.toml")?;
     let port = config

@@ -1,9 +1,6 @@
 use super::*;
-use std::os::unix::fs::DirBuilderExt;
-use std::{
-    os::unix::fs::{PermissionsExt, symlink},
-    path::PathBuf,
-};
+use crate::tests::platform;
+use std::path::PathBuf;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -12,11 +9,7 @@ impl Fixture {
             "pp-prefs-{}",
             hex::encode(rand::random::<[u8; 8]>())
         ));
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&path)
-            .unwrap();
+        pp_os::create_private_dir_all(&path).unwrap();
         Self(path)
     }
 }
@@ -88,14 +81,7 @@ async fn owner_commands_roundtrip_clear_restart_copy_and_preserve_product_bytes(
         cleared.printer_poll_interval,
         expected.printer_poll_interval
     );
-    assert_eq!(
-        std::fs::metadata(fixture.0.join(FILE))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    platform::assert_private_file(&fixture.0.join(FILE));
     stop.send(()).unwrap();
     worker.await.unwrap();
     assert!(
@@ -215,19 +201,16 @@ async fn invalid_preferences_are_refused_by_owner_without_overwrite() {
 
 #[tokio::test]
 async fn unsafe_preferences_are_refused_by_owner() {
-    for kind in ["link", "directory", "fifo"] {
+    for kind in ["link", "directory", "special"] {
         let fixture = Fixture::new();
         let path = fixture.0.join(FILE);
         match kind {
             "link" => {
                 std::fs::write(fixture.0.join("target"), b"untouched").unwrap();
-                symlink("target", &path).unwrap();
+                platform::symlink_file("target", &path).unwrap();
             }
             "directory" => std::fs::create_dir(&path).unwrap(),
-            "fifo" => {
-                let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-                assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
-            }
+            "special" => platform::special_entry(&path),
             _ => unreachable!(),
         }
         let owner = StorageLease::acquire(&fixture.0).unwrap();

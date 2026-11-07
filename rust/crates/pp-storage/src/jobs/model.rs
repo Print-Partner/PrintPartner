@@ -274,6 +274,13 @@ pub(super) fn text(value: &str, max: usize) -> Result<()> {
     );
     Ok(())
 }
+/// [`text`] bounded in UTF-16 code units, as Node bounds the printer upload's
+/// host and object names, so a name Node accepted stays sendable.
+fn utf16_text(value: &str, max: usize) -> Result<()> {
+    text(value, max * 3)?;
+    ensure!(value.encode_utf16().count() <= max, "Invalid bounded text");
+    Ok(())
+}
 pub(super) fn digest(value: &str) -> Result<()> {
     ensure!(
         value.len() == 64
@@ -405,7 +412,7 @@ impl Payload {
         } = self
         {
             if let Some(host) = host_name {
-                text(host, 200)?;
+                utf16_text(host, 200)?;
             }
             ensure!(
                 checkoff_units.len() <= 1000 && unlabeled_names.len() <= 200,
@@ -420,11 +427,11 @@ impl Payload {
                     "Invalid checkoff unit"
                 );
                 if let Some(name) = &unit.object_name {
-                    text(name, 200)?;
+                    utf16_text(name, 200)?;
                 }
             }
             for name in unlabeled_names {
-                text(name, 200)?;
+                utf16_text(name, 200)?;
             }
         }
         Ok(())

@@ -47,7 +47,7 @@ env:
 jobs:
   changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:
       contents: read
@@ -58,7 +58,7 @@ jobs:
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: useblacksmith/checkout@v1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -482,7 +482,7 @@ jobs:
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     env:
       RUST_OS: macos
       CARGO_SCOPE: --workspace
@@ -495,7 +495,7 @@ jobs:
     needs: changes
     # Explicit jobs keep each required check present when selection skips it.
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     env:
       RUST_OS: windows
       # Unix-only crates; remove each exclusion when its port ticket is fixed.
@@ -510,14 +510,14 @@ jobs:
   alert-macos-main:
     needs: [rust-linux, rust-macos, rust-windows]
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (failure() && github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:
       contents: read
       actions: read
       issues: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: useblacksmith/checkout@v1 # v7.0.1
         with:
           persist-credentials: false
       - name: Open or update the macOS main failure issue

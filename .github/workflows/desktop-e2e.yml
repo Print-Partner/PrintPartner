@@ -13,6 +13,7 @@ on:
       - 'rust/Cargo.toml'
       - 'rust/Cargo.lock'
       - '.github/workflows/desktop-e2e.yml'
+      - '.github/actions/linux-gui-deps/**'
   push:
     branches: [main]
   merge_group:
@@ -41,12 +42,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install WebKitGTK and a virtual display
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
-            libayatana-appindicator3-dev librsvg2-dev pkg-config \
-            webkit2gtk-driver xvfb xauth dbus-x11 libgl1-mesa-dri libegl1 binutils file
+        uses: ./.github/actions/linux-gui-deps
+        with:
+          packages: libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev pkg-config webkit2gtk-driver xvfb xauth dbus-x11 libgl1-mesa-dri libegl1 binutils file
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.23.3'

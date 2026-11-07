@@ -4,6 +4,8 @@ pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 pub mod header;
 pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
+pub mod variants;
+pub use variants::{VariantCommand, VariantOutcome};
 pub(crate) mod projection;
 use crate::{Envelope, Shared, WriterOwner, auth, read_model};
 use anyhow::{Result, anyhow, ensure};
@@ -50,6 +52,7 @@ impl std::error::Error for Failure {}
 #[derive(Clone)]
 pub enum BuildCommand {
     Manifest(ManifestOptionsCommand),
+    Variants(VariantCommand),
     List,
     Read {
         build: PositiveId,
@@ -94,6 +97,7 @@ pub enum BuildCommand {
 #[derive(Debug)]
 pub enum BuildOutcome {
     Manifest(ManifestOptionsOutcome),
+    Variants(VariantOutcome),
     Listed {
         profiles: Vec<ProfileSummary>,
     },
@@ -208,6 +212,9 @@ impl BuildGraphClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<BuildOutcome> {
+        if let BuildCommand::Variants(command) = command {
+            return self.execute_variants(credential, command, cancelled, wait);
+        }
         if let BuildCommand::Manifest(manifest) = &command
             && !manifest.is_read()
         {
@@ -569,6 +576,7 @@ fn mutation(
             );
             Ok(BuildOutcome::Deleted)
         }
+        BuildCommand::Variants(command) => variants::commit(tx, tenant, command),
         BuildCommand::Manifest(_)
         | BuildCommand::List
         | BuildCommand::Read { .. }

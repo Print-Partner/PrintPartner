@@ -1,6 +1,7 @@
 mod header;
 mod http;
 mod manifest_options;
+mod variants;
 
 pub use http::{BuildHttpConfig, build_router};
 #[cfg(test)]

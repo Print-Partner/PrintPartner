@@ -128,8 +128,8 @@ impl SummaryContract {
 }
 
 /// Mounts Plan list/detail GET+HEAD, create/delete, layer list/mutate, touch,
-/// kit-manifest ReadKit plus SaveKit (`PUT`), and plan-manifest-builder ReadBuilder
-/// at `/`, `/api/v1`, and `/api/v2` when `PP_DESKTOP_REBUILD` was exactly `1` or
+/// kit-manifest ReadKit plus SaveKit (`PUT`), plan-manifest-builder ReadBuilder,
+/// and variant-dimensions GET+HEAD plus variant-selection `POST` (GRE-1221) at `/`, `/api/v1`, and `/api/v2` when `PP_DESKTOP_REBUILD` was exactly `1` or
 /// `true`. Otherwise mounts nothing. Jobs stay unregistered. `/api/v1` answers
 /// with the legacy Plan summary (see [`SummaryContract`]).
 pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router {
@@ -163,6 +163,11 @@ pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router
         .route(
             "/plans/{id}/plan-manifest-builder",
             get(super::manifest_options::read_builder),
+        )
+        .route("/plans/{id}/variant-dimensions", get(super::variants::read))
+        .route(
+            "/plans/{id}/variant-selection",
+            post(super::variants::select),
         );
     Router::new()
         .merge(routes.clone())
@@ -592,6 +597,7 @@ fn present(
             StatusCode::NO_CONTENT.into_response()
         }
         BuildOutcome::Manifest(outcome) => super::manifest_options::present(method, outcome),
+        BuildOutcome::Variants(outcome) => super::variants::present(method, outcome),
         BuildOutcome::MissingBuild => failure(StatusCode::NOT_FOUND, "Profile not found"),
         BuildOutcome::InvalidBaseSource => failure(StatusCode::BAD_REQUEST, "Project not found"),
         BuildOutcome::MissingSource => failure(StatusCode::NOT_FOUND, "Project not found"),

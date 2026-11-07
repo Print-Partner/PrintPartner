@@ -806,6 +806,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: None,
+            customer: None,
+            due_date: None,
         });
         assert_eq!(summary.id, 7);
         assert!(matches!(
@@ -850,6 +852,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: Some("used".into()),
+            customer: Some("Acme".into()),
+            due_date: Some("2026-12-01".into()),
         }))
         .unwrap();
         assert_eq!(wire["build_stale"], true);
@@ -893,6 +897,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: None,
+            customer: None,
+            due_date: None,
         }
     }
 

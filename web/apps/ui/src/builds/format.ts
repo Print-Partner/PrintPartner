@@ -31,6 +31,16 @@ export function dateText(iso: string | null): string | null {
   );
 }
 
+/** A stored `YYYY-MM-DD` due date as a calendar date, read as local so it never shifts a day. */
+export function dueDateText(date: string | null): string | null {
+  if (!date) return null;
+  const [year, month, day] = date.split("-").map(Number);
+  if (!year || !month || !day) return date;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
+    new Date(year, month - 1, day),
+  );
+}
+
 type StaleReason = Extract<Freshness, { status: "stale" }>["reasons"][number];
 type UntrackedReason = Extract<Freshness, { status: "untracked" }>["reasons"][number];
 

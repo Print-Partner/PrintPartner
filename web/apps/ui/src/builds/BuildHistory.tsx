@@ -1,9 +1,10 @@
 import type { BuildHistoryPage } from "@print-partner/rust-client";
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { useRef, type RefObject } from "react";
 import { useOutletContext } from "react-router";
 import { readCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
-import { queryScreenState } from "../screen/queryState";
+import { OlderEntries, pagedScreenState } from "../screen/OlderEntries";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
 import { dateText } from "./format";
@@ -50,9 +51,15 @@ function UndoCell({ undo }: { undo: Entry["undo"] }) {
   );
 }
 
-function HistoryTable({ entries }: { entries: Entry[] }) {
+function HistoryTable({
+  entries,
+  table,
+}: {
+  entries: Entry[];
+  table: RefObject<HTMLTableElement | null>;
+}) {
   return (
-    <table className="pp-farm-table" aria-label="History">
+    <table ref={table} className="pp-farm-table" aria-label="History">
       <thead>
         <tr>
           <th scope="col">When</th>
@@ -63,7 +70,7 @@ function HistoryTable({ entries }: { entries: Entry[] }) {
       </thead>
       <tbody>
         {entries.map((entry) => (
-          <tr key={entry.id} data-entry={entry.id}>
+          <tr key={entry.id} data-entry={entry.id} tabIndex={-1}>
             <td>{dateText(entry.at)}</td>
             <th scope="row">
               {TYPE_WORDS[entry.type]}
@@ -88,7 +95,8 @@ export function BuildHistory() {
   const { id } = useOutletContext<WorkspaceContext>();
   const connection = useConnection();
   const query = useInfiniteQuery(historyQuery(id));
-  const state = queryScreenState(query, connection, (data) => data.pages[0]?.entries.length === 0);
+  const table = useRef<HTMLTableElement>(null);
+  const state = pagedScreenState(query, connection, (data) => data.pages[0]?.entries.length === 0);
   return (
     <ScreenTemplate
       title="History"
@@ -96,17 +104,8 @@ export function BuildHistory() {
       state={state}
       renderData={(data) => (
         <>
-          <HistoryTable entries={data.pages.flatMap((page) => page.entries)} />
-          {query.hasNextPage && (
-            <button
-              type="button"
-              className="pp-button"
-              disabled={query.isFetchingNextPage}
-              onClick={() => void query.fetchNextPage()}
-            >
-              {query.isFetchingNextPage ? "Loading older entries" : "Show older entries"}
-            </button>
-          )}
+          <HistoryTable entries={data.pages.flatMap((page) => page.entries)} table={table} />
+          <OlderEntries query={query} table={table} />
         </>
       )}
       empty={{ message: "Nothing has happened to this Build yet." }}

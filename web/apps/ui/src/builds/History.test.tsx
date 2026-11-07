@@ -42,6 +42,7 @@ function renderAt(path: string, fetchImpl: ReturnType<typeof core>) {
   const queryClient = createQueryClient();
   queryClient.setDefaultOptions({
     queries: { ...queryClient.getDefaultOptions().queries, retryDelay: 0 },
+    mutations: { ...queryClient.getDefaultOptions().mutations, retryDelay: 0 },
   });
   render(<App router={router} queryClient={queryClient} />);
   return { router, queryClient };
@@ -136,6 +137,25 @@ describe("UI8-01 History lists the Build's records from one read", () => {
     expect(rows()).toHaveLength(6);
     expect(requested(fetchMock)).toContain("/api/v2/plans/2/history?cursor=older-1");
     expect(screen.queryByRole("button", { name: "Show older entries" })).toBeNull();
+    expect(document.activeElement).toBe(row("Accepted revision 1"));
+  });
+
+  it("keeps the loaded entries when an older page fails, and retries that page", async () => {
+    let olderUp = false;
+    const fetchMock = core((path) =>
+      path.includes("cursor=") && !olderUp ? json({}, 503) : history(path),
+    );
+    renderAt("/builds/2/history", fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Show older entries" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not load older entries.");
+    expect(screen.queryByText(/Could not refresh/)).toBeNull();
+    expect(rows()).toHaveLength(5);
+    olderUp = true;
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await screen.findByText("Accepted revision 1");
+    expect(rows()).toHaveLength(6);
+    expect(requested(fetchMock).filter((p) => p === "/api/v2/plans/2/history")).toHaveLength(1);
   });
 
   it("says when nothing has happened yet", async () => {

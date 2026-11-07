@@ -42,6 +42,7 @@ function renderAt(path: string, fetchImpl: ReturnType<typeof core>) {
   const queryClient = createQueryClient();
   queryClient.setDefaultOptions({
     queries: { ...queryClient.getDefaultOptions().queries, retryDelay: 0 },
+    mutations: { ...queryClient.getDefaultOptions().mutations, retryDelay: 0 },
   });
   render(<App router={router} queryClient={queryClient} />);
   return { router, queryClient };
@@ -182,13 +183,60 @@ describe("UI8-04 farm log with undo where allowed", () => {
     await screen.findByText("Verified 1 bed on Voron 2.4");
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Could not undo checkoff burst.");
+    expect(alert.textContent).toContain("Could not undo the checkoff burst.");
     expect(alert.textContent).toContain(detail);
+  });
+
+  it("sends one undo however often Undo is clicked while it is in flight", async () => {
+    const fetchMock = farmLog();
+    renderAt("/farm/log", fetchMock);
+    await screen.findByText("Verified 1 bed on Voron 2.4");
+    const button = screen.getByRole("button", { name: "Undo" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await screen.findByText("Undid the burst on Voron 2.4", { selector: "p" });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(document.activeElement?.textContent).toBe("Undid the burst on Voron 2.4");
+  });
+
+  it("counts an undo whose answer was lost as done when the resend finds it already undone", async () => {
+    let sends = 0;
+    const fetchMock = farmLog(() => {
+      sends += 1;
+      if (sends === 1) throw new TypeError("Failed to fetch");
+      return json(
+        { title: "Conflict", status: 409, detail: "This Checkoff burst was already undone" },
+        409,
+      );
+    });
+    renderAt("/farm/log", fetchMock);
+    await screen.findByText("Verified 1 bed on Voron 2.4");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect((await screen.findByText("Undid the checkoff burst.")).getAttribute("role")).toBe(
+      "status",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(sends).toBe(2);
+  });
+
+  it("says an undo may not have reached the core when every send is lost", async () => {
+    const fetchMock = farmLog(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    renderAt("/farm/log", fetchMock);
+    await screen.findByText("Verified 1 bed on Voron 2.4");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "The undo of the checkoff burst may not have reached the core.",
+    );
+    expect(alert.textContent).not.toContain("Could not undo");
   });
 
   it("with the Farm module off, says what it would show", async () => {
     const fetchMock = core(() => json(PAGE), "off");
     renderAt("/farm/log", fetchMock);
     expect(await screen.findByText("The Farm module is off.")).toBeTruthy();
+    expect(requested(fetchMock)).not.toContain("/api/v2/farm-log");
   });
 });

@@ -680,7 +680,6 @@ mod codegen {
         )
     }
 
-    /// One entry per kind and undo reason, filled and null.
     /// One entry of each type, with each undo state History reports.
     fn build_history() -> BuildHistoryPage {
         let refused = |reason| {
@@ -723,6 +722,7 @@ mod codegen {
         }
     }
 
+    /// One entry per kind and undo reason, filled and null.
     fn farm_log() -> FarmLogPage {
         let refused = |reason| FarmLogUndo {
             undoable: false,

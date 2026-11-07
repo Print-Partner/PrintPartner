@@ -209,26 +209,22 @@ async fn list(State(app): State<App>, request: axum::extract::Request) -> Respon
 
 async fn detail(
     State(app): State<App>,
-    Path(id): Path<String>,
+    BuildId(build): BuildId,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(build) = parse_build_id(&id) else {
-        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
-    };
     execute(app, request, BuildCommand::Read { build }).await
 }
 
-async fn create(State(app): State<App>, request: axum::extract::Request) -> Response {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
-    };
-    let path = request.uri().path().to_owned();
-    let contract = SummaryContract::of(&request);
-    let limit = app.config.body_limit;
-    let bytes = match to_bytes(request.into_body(), limit).await {
-        Ok(bytes) => bytes,
-        Err(_) => return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large"),
-    };
+async fn create(
+    State(app): State<App>,
+    Received {
+        presented,
+        path,
+        contract,
+        bytes,
+        ..
+    }: Received,
+) -> Response {
     let body: CreateBuildRequest = match serde_json::from_slice(&bytes) {
         Ok(body) => body,
         Err(_) if !crate::problem::is_json_object(&bytes) => return unreadable(),
@@ -268,45 +264,33 @@ async fn create(State(app): State<App>, request: axum::extract::Request) -> Resp
 
 async fn remove(
     State(app): State<App>,
-    Path(id): Path<String>,
+    BuildId(build): BuildId,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(build) = parse_build_id(&id) else {
-        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
-    };
     execute(app, request, BuildCommand::Delete { build }).await
 }
 
 async fn list_layers(
     State(app): State<App>,
-    Path(id): Path<String>,
+    BuildId(build): BuildId,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(build) = parse_build_id(&id) else {
-        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
-    };
     execute(app, request, BuildCommand::ListLayers { build }).await
 }
 
 async fn touch(
     State(app): State<App>,
-    Path(id): Path<String>,
+    BuildId(build): BuildId,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(build) = parse_build_id(&id) else {
-        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
-    };
     execute(app, request, BuildCommand::Touch { build }).await
 }
 
 async fn set_base(
     State(app): State<App>,
-    Path(id): Path<String>,
+    BuildId(build): BuildId,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(build) = parse_build_id(&id) else {
-        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
-    };
     attachment(app, request, Method::PUT, build, None, |source| {
         BuildCommand::SetBase { build, source }
     })
@@ -315,12 +299,9 @@ async fn set_base(
 
 async fn attach_addon(
     State(app): State<App>,
-    Path(id): Path<String>,
+    BuildId(build): BuildId,
     request: axum::extract::Request,
 ) -> Response {
-    let Some(build) = parse_build_id(&id) else {
-        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
-    };
     attachment(app, request, Method::POST, build, None, |source| {
         BuildCommand::AttachAddon { build, source }
     })
@@ -375,14 +356,14 @@ async fn attachment(
     layer: Option<PositiveId>,
     command: impl FnOnce(PositiveId) -> BuildCommand,
 ) -> Response {
-    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
-        return failure(StatusCode::UNAUTHORIZED, "Authentication required");
-    };
-    let path = request.uri().path().to_owned();
-    let limit = app.config.body_limit;
-    let bytes = match to_bytes(request.into_body(), limit).await {
-        Ok(bytes) => bytes,
-        Err(_) => return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large"),
+    let Received {
+        presented,
+        path,
+        bytes,
+        ..
+    } = match receive(&app, request).await {
+        Ok(received) => received,
+        Err(response) => return *response,
     };
     let source = match serde_json::from_slice::<Value>(&bytes) {
         Ok(Value::Object(body)) => body
@@ -434,10 +415,86 @@ fn source_id(value: &Value) -> Option<u64> {
     })
 }
 
+/// A Plan id path segment that is a positive integer, else 400 "Request is
+/// invalid".
+struct BuildId(PositiveId);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for BuildId {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Response> {
+        let Path(id) = Path::<String>::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        parse_build_id(&id)
+            .map(Self)
+            .ok_or_else(|| failure(StatusCode::BAD_REQUEST, "Request is invalid"))
+    }
+}
+
 pub(super) fn parse_build_id(id: &str) -> Option<PositiveId> {
     id.parse::<u64>()
         .ok()
         .and_then(|value| PositiveId::new(value).ok())
+}
+
+/// Node reads the id with `Number(id)`, so `0x3`, `3e0` and `" 3 "` name Plan 3.
+pub(super) fn number_build_id(id: &str) -> Option<PositiveId> {
+    let id = pp_storage::plates::build_id(id)??;
+    PositiveId::new(u64::try_from(id).ok()?).ok()
+}
+
+/// A Build request with its credential, mount and body read.
+pub(super) struct Received {
+    pub(super) presented: PresentedCredential,
+    pub(super) path: String,
+    pub(super) contract: SummaryContract,
+    pub(super) json: bool,
+    pub(super) bytes: axum::body::Bytes,
+}
+
+pub(super) async fn receive(
+    app: &App,
+    request: axum::extract::Request,
+) -> Result<Received, Box<Response>> {
+    let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
+        return Err(Box::new(failure(
+            StatusCode::UNAUTHORIZED,
+            "Authentication required",
+        )));
+    };
+    let path = request.uri().path().to_owned();
+    let contract = SummaryContract::of(&request);
+    let json = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+    let Ok(bytes) = to_bytes(request.into_body(), app.body_limit()).await else {
+        return Err(Box::new(failure(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Request body too large",
+        )));
+    };
+    Ok(Received {
+        presented,
+        path,
+        contract,
+        json,
+        bytes,
+    })
+}
+
+impl axum::extract::FromRequest<App> for Received {
+    type Rejection = Response;
+
+    async fn from_request(request: axum::extract::Request, app: &App) -> Result<Self, Response> {
+        receive(app, request).await.map_err(|response| *response)
+    }
 }
 
 /// Node reads a Plan id with `Number()`, so an id that cannot name a Plan
@@ -447,6 +504,11 @@ pub(super) async fn unknown_build(app: App, request: axum::extract::Request) -> 
     let Some(presented) = request.extensions().get::<PresentedCredential>().cloned() else {
         return failure(StatusCode::UNAUTHORIZED, "Authentication required");
     };
+    missing_build(app, presented).await
+}
+
+/// [`unknown_build`] once the request is read.
+pub(super) async fn missing_build(app: App, presented: PresentedCredential) -> Response {
     match outcome(app, presented, BuildCommand::List).await {
         Ok(_) => failure(StatusCode::NOT_FOUND, "Profile not found"),
         Err(response) => *response,

@@ -250,13 +250,18 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
 function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
   const offline = useConnection() === "offline";
   const target = JSON.stringify(includeChoice(part, true).target);
-  const queued = useMutationState({
+  const pending = useMutationState({
     filters: { mutationKey: writes.mutationKey, status: "pending" },
     select: (mutation) => (mutation.state.variables as { choice?: PlanChoice } | undefined)?.choice,
-  }).findLast(
-    (choice) => choice?.kind === "set_included" && JSON.stringify(choice.target) === target,
-  );
-  const included = queued?.kind === "set_included" ? queued.value : part.included;
+  }).filter((choice) => choice && JSON.stringify(choice.target) === target);
+  const queued = (kind: PlanChoice["kind"]) => pending.findLast((choice) => choice?.kind === kind);
+  const queuedInclude = queued("set_included");
+  const included = queuedInclude?.kind === "set_included" ? queuedInclude.value : part.included;
+  const queuedQuantity = queued("set_quantity_override");
+  const sentQuantity =
+    queuedQuantity?.kind === "set_quantity_override"
+      ? queuedQuantity.value
+      : part.quantity_override;
   const [quantity, setQuantity] = useState(part.quantity_override?.toString() ?? "");
   const [invalid, setInvalid] = useState(false);
   const errorId = useId();
@@ -264,7 +269,7 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
   const commitQuantity = () => {
     const value = quantityValue(quantity);
     setInvalid(value === "invalid");
-    if (value === "invalid" || value === part.quantity_override || offline) return;
+    if (value === "invalid" || value === sentQuantity || offline) return;
     save(quantityChoice(part, value));
   };
   return (

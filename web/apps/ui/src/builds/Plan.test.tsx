@@ -504,6 +504,37 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(screen.queryByText(/Not saved/)).toBeNull();
   });
 
+  it("sends a quantity once when Enter is followed by a blur while it saves", async () => {
+    const held: (() => void)[] = [];
+    const receipt = {
+      profile_id: 2,
+      draft_id: 9,
+      reconciliation_id: 1,
+      snapshot_digest: DIGEST,
+      saved_at: "2026-11-07T00:00:00.000Z",
+    };
+    const fetchMock = core({
+      write: (path) =>
+        path === "/api/v2/plans/2/drafts/save"
+          ? new Promise<Response>((resolve) => {
+              held.push(() => resolve(json({ receipt, workspace: workspace() })));
+            })
+          : undefined,
+    });
+    renderAt(fetchMock);
+    const quantity = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: /Quantity of bracket\.stl/,
+    });
+    fireEvent.change(quantity, { target: { value: "5" } });
+    fireEvent.keyDown(quantity, { key: "Enter" });
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(1));
+    fireEvent.blur(quantity);
+    act(() => held.splice(0).forEach((release) => release()));
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    act(() => held.splice(0).forEach((release) => release()));
+    expect(writes(fetchMock)).toHaveLength(1);
+  });
+
   it("refuses a blank name without sending", async () => {
     const fetchMock = core();
     renderAt(fetchMock);

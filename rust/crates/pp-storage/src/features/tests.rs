@@ -240,7 +240,7 @@ fn plan_override_applies_only_to_that_plan() {
 }
 
 #[test]
-fn clearing_the_last_choice_deletes_the_layer_row() {
+fn clearing_the_last_tenant_choice_deletes_its_row_and_a_plan_layer_stays_empty() {
     let f = Fixture::new();
     let alice = f.account("alice");
     let plan = f.plan(&alice, "Workshop");
@@ -282,7 +282,8 @@ fn clearing_the_last_choice_deletes_the_layer_row() {
         .unwrap();
     assert_eq!(cleared.plan(), Some((plan, &Toggles::default())));
     assert_eq!(summary(&cleared)[2], ("bambu", true, Source::User));
-    assert_eq!(f.count(), 1);
+    // Node's Plan feature PATCH writes the emptied layer as `{}`.
+    assert_eq!(f.count(), 2);
 
     for _ in 0..2 {
         let view = f
@@ -298,7 +299,10 @@ fn clearing_the_last_choice_deletes_the_layer_row() {
             .unwrap();
         assert_eq!(summary(&view), DEFAULTS);
     }
-    assert_eq!(f.count(), 0);
+    assert_eq!(
+        f.rows(&alice),
+        [row(&format!("feature_toggles:plan:{}", plan.get()), "{}")]
+    );
 }
 
 #[test]
@@ -393,7 +397,7 @@ fn unreadable_stored_layer_fails_instead_of_resetting() {
             params![alice.tenant, r#"{"farm":"yes"}"#],
         )
         .unwrap();
-    let expected = r#"Stored feature_toggles is invalid: invalid type: string "yes", expected a boolean at line 1 column 13"#;
+    let expected = "Stored feature_toggles is invalid: expected an object of feature booleans";
     let read = f.client.read(alice.session(), None, &ACTIVE, WAIT);
     assert_eq!(read.unwrap_err().to_string(), expected);
     let set = f.client.set(
@@ -610,7 +614,8 @@ fn concurrent_distinct_patches_preserve_every_choice() {
             ("spoolman", true, Source::User),
         ]
     );
-    assert_eq!(f.count(), 1);
+    // The emptied Plan layer stays as `{}`, as Node writes it.
+    assert_eq!(f.count(), 2);
 }
 
 #[test]

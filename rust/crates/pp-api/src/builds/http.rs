@@ -129,7 +129,8 @@ impl SummaryContract {
 
 /// Mounts Plan list/detail GET+HEAD, create/delete, layer list/mutate, touch,
 /// kit-manifest ReadKit plus SaveKit (`PUT`), plan-manifest-builder ReadBuilder,
-/// and variant-dimensions GET+HEAD plus variant-selection `POST` (GRE-1221) at `/`, `/api/v1`, and `/api/v2` when `PP_DESKTOP_REBUILD` was exactly `1` or
+/// variant-dimensions GET+HEAD plus variant-selection `POST` (GRE-1221), and
+/// Plan features GET+PATCH plus decision append `POST` (GRE-1243) at `/`, `/api/v1`, and `/api/v2` when `PP_DESKTOP_REBUILD` was exactly `1` or
 /// `true`. Otherwise mounts nothing. Jobs stay unregistered. `/api/v1` answers
 /// with the legacy Plan summary (see [`SummaryContract`]).
 pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router {
@@ -164,7 +165,12 @@ pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router
         .route(
             "/plans/{id}/variant-selection",
             post(super::variants::select),
-        );
+        )
+        .route(
+            "/plans/{id}/features",
+            get(super::features::read).patch(super::features::patch),
+        )
+        .route("/plans/{id}/decisions", post(super::decisions::append));
     Router::new()
         .merge(routes.clone())
         .nest(
@@ -509,8 +515,23 @@ pub(super) async fn unknown_build(app: App, request: axum::extract::Request) -> 
 
 /// [`unknown_build`] once the request is read.
 pub(super) async fn missing_build(app: App, presented: PresentedCredential) -> Response {
+    refuse_after_auth(
+        app,
+        presented,
+        failure(StatusCode::NOT_FOUND, "Profile not found"),
+    )
+    .await
+}
+
+/// `refusal` once the credential is proven, as Node's auth hook answers
+/// before its route reads the request.
+pub(super) async fn refuse_after_auth(
+    app: App,
+    presented: PresentedCredential,
+    refusal: Response,
+) -> Response {
     match outcome(app, presented, BuildCommand::List).await {
-        Ok(_) => failure(StatusCode::NOT_FOUND, "Profile not found"),
+        Ok(_) => refusal,
         Err(response) => *response,
     }
 }
@@ -631,6 +652,8 @@ fn present(
         }
         BuildOutcome::Manifest(outcome) => super::manifest_options::present(method, outcome),
         BuildOutcome::Variants(outcome) => super::variants::present(method, outcome),
+        BuildOutcome::PlanFeatures(outcome) => super::features::present(outcome),
+        BuildOutcome::Decision(outcome) => super::decisions::present(outcome),
         BuildOutcome::MissingBuild => failure(StatusCode::NOT_FOUND, "Profile not found"),
         BuildOutcome::InvalidBaseSource => failure(StatusCode::BAD_REQUEST, "Project not found"),
         BuildOutcome::MissingSource => failure(StatusCode::NOT_FOUND, "Project not found"),

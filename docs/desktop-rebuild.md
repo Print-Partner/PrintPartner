@@ -3321,6 +3321,94 @@ and after each of the 18 saves the stored selection text and the Source's
 cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(variants_flat)'
 ```
 
+### Plan features and decision append in Rust (GRE-1243)
+
+GRE-421's seventh part (GRE-1243). `pp_api::builds::build_router` serves Node's
+`GET` and `PATCH /plans/{id}/features` and `POST /plans/{id}/decisions` at `/`,
+`/api/v1` and `/api/v2`, as `BuildCommand::PlanFeatures` and
+`BuildCommand::AppendDecision`. With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone reads and writes
+`feature_toggles:plan:<id>` through these routes and alone appends
+`plan_decisions` rows. With the flag off the router mounts nothing and Node
+keeps both. `GET /plans/{id}/decisions` stays in the planning router
+(GRE-1119), and `/settings/features`, the tenant layer, stays Node's.
+
+A features request checks in Node's order:
+
+0. A PATCH body Fastify's parser refuses (empty, not JSON, or a `__proto__` or
+   `constructor.prototype` key under `application/json`) is 400 `Request is
+   invalid`.
+1. The id must match `/^[1-9]\d*$/` and be a safe integer, and a PATCH body
+   must be an object whose keys are all features (`farm`, `orders`, `bambu`,
+   `spoolman`) and whose values are all booleans or `null`. Otherwise the
+   answer is 400 `Invalid plan feature input` once the credential checks. So
+   `0x1`, `01` and `1.0` are 400 here, unlike the `Number()` ids of the other
+   Build routes.
+2. The Plan must be the tenant's, else 404 `Plan not found`.
+3. The tenant layer `feature_toggles` and the Plan layer must both be JSON
+   objects whose feature keys hold booleans, else 500
+   `FEATURE_TOGGLES_INVALID`.
+
+A patch applies in registry order (`farm`, `orders`, `bambu`, `spoolman`):
+`null` removes the key, a boolean replaces it in place or appends it. Layers
+are read as Node's `parseFeatureLayer` reads them
+(`pp_storage::source_scan::node_json::RawObject`): unknown keys, JavaScript
+property order and each number's source text (`1.50`, `1E+2`, `-0`,
+`12345678901234567890`) survive, and strings are re-escaped as
+`JSON.stringify` writes them. One immediate writer transaction checks the
+Plan, reads both layers and writes the Plan layer's text even when it is
+unchanged or empty, so an emptied layer is `{}` and the row is never deleted.
+The read and the write share that transaction, so Node's 409 compare-and-set
+conflict cannot occur. `FeatureClient`'s Plan-scope `set` writes the same
+way; its tenant-scope `set` keeps sorted keys and deletes an empty row, as
+before, because Node owns that operation. The answer is Node's
+`{profile_id, overrides, effective}`, where `effective` gives each feature's
+`enabled` and its `source` (`plan`, `user` or `default`).
+
+A decision append reads the id with `Number()`, so `0xc` and `12.0` name Plan
+12. A missing, foreign or non-numeric Plan is 404 `Profile not found` before
+the body is read. `kind` defaults to `user_note` when it is absent or `null`
+and must be `applied_action`, `dismissed_action`, `user_note` or `choice`,
+else 400 `Invalid kind`. `actor` is `assistant` only for exactly that string,
+else `user`. `params` (default `{}`) and `result` (default `null`) are stored
+as `JSON.stringify` writes them. Node hands `action_type`, `label`, `summary`
+and `rationale` to better-sqlite3 unchecked, with only `null` falling back to
+`""` or `null`, and Rust binds them the same way:
+
+- A number is bound as a double that the TEXT column stores as text: `5` is
+  `"5.0"`, `1e21` is `"1.0e+21"` and `-0` is `"0.0"`. A lone surrogate becomes
+  U+FFFD.
+- An array is spread into the parameter list, so `["x"]` stores `"x"`, and
+  `[]` beside `["a","b"]` shifts the later values into the neighbouring
+  columns as Node does. An object is a named-parameter bag that binds nothing.
+- A boolean, or an array element that is not a string, number or `null`, is
+  400 `SQLite3 can only bind numbers, strings, bigints, buffers, and null`. A
+  second object is 400 `You cannot specify named parameters in two different
+  objects`. Any count other than eleven parameters is 400 `Too few parameter
+  values were provided` or `Too many parameter values were provided`. A
+  NOT NULL failure is 400 with SQLite's message.
+
+The answer is the inserted row as Node's `mapPlanDecision` returns it. The
+append writes only `plan_decisions`: no publication row or blocker.
+
+`fixtures/parity/plan-features-decisions/node.json` is Node's answer for 106
+requests on one database, run with `PP_DESKTOP_REBUILD=1` except four with it
+unset. `plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables`
+in `ticket_t_10_fixtures` replays them through `build_router` merged with
+`planning_router`, as `pp-core` composes them. 94 match Node's status, body
+and changed tables. Eight bodies Fastify's parser refuses are declared
+corrections (400 `Request is invalid` without Fastify's codes). The four
+flag-off cases reach a router built with the flag off, which mounts nothing:
+404 and nothing written, where Node answers its own 404 `Plan not found` for
+features and still appends the decision. After each of the 32 writes, the
+Plan's stored layer text or the decision rows it added equal Node's byte for
+byte. Regenerate the golden with
+`node fixtures/parity/plan-features-decisions/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(plan_features_decisions) | test(plan_feature_ids)'
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

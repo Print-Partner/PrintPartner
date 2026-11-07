@@ -1,10 +1,12 @@
+use crate::source_scan::node_json::RawObject;
 use crate::{Envelope, SettingSnapshot, Shared, WriterOwner, auth, read_model::Credential};
 use anyhow::{Result, anyhow, ensure};
 use pp_domain::{
     PositiveId,
-    features::{Effective, Feature, Toggles, resolve},
+    features::{Effective, Feature, Source, Toggles, resolve},
 };
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -42,6 +44,49 @@ impl View {
     pub fn effective(&self) -> &Effective {
         &self.effective
     }
+}
+
+/// Node's `featurePatchSchema`: for each named feature a choice, or `None` to
+/// clear it. It applies in registry order, as Node walks `featureKeys`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeaturePatch(BTreeMap<Feature, Option<bool>>);
+
+impl FeaturePatch {
+    /// A JSON object whose keys are all features and whose values are all
+    /// booleans or `null`; anything else is `None`.
+    pub fn from_json(bytes: &[u8]) -> Option<Self> {
+        let Value::Object(fields) = serde_json::from_slice(bytes).ok()? else {
+            return None;
+        };
+        fields
+            .into_iter()
+            .map(|(key, value)| {
+                let choice = match value {
+                    Value::Bool(enabled) => Some(enabled),
+                    Value::Null => None,
+                    _ => return None,
+                };
+                Some((Feature::from_key(&key)?, choice))
+            })
+            .collect::<Option<_>>()
+            .map(Self)
+    }
+}
+
+/// Node's `GET` (no patch) or `PATCH /plans/{id}/features`.
+#[derive(Debug, Clone)]
+pub struct PlanFeatureRequest {
+    pub plan: PositiveId,
+    pub patch: Option<FeaturePatch>,
+}
+
+#[derive(Debug)]
+pub enum PlanFeatureOutcome {
+    /// Node's `{profile_id, overrides, effective}` body.
+    View(Value),
+    MissingPlan,
+    /// The tenant or Plan layer is not an object whose features are booleans.
+    InvalidStorage,
 }
 
 #[derive(Clone)]
@@ -158,16 +203,17 @@ pub(super) fn execute(
     };
     let mut layers = load_layers(&tx, &tenant, plan)?;
     if let Some((feature, choice)) = command.patch {
-        let (key, layer) = match &mut layers.plan {
-            Some((_, key, toggles)) => (key.as_str(), toggles),
-            None => (USER_KEY, &mut layers.user),
-        };
-        layer.toggles.set(feature, choice);
-        match choice {
-            Some(enabled) => layer.raw.insert(feature.key().into(), enabled.into()),
-            None => layer.raw.remove(feature.key()),
-        };
-        store(&tx, &tenant, key, layer)?;
+        let patch = FeaturePatch(BTreeMap::from([(feature, choice)]));
+        match &mut layers.plan {
+            Some((_, key, layer)) => {
+                layer.apply(&patch);
+                write(&tx, &tenant, key, &layer.raw.text())?;
+            }
+            None => {
+                layers.user.apply(&patch);
+                store_user(&tx, &tenant, &layers.user)?;
+            }
+        }
     }
     tx.commit()?;
     Ok(layers.into_view())
@@ -193,13 +239,8 @@ fn load_layers(tx: &Transaction<'_>, tenant: &str, plan: Option<PositiveId>) -> 
     let plan = match plan {
         None => None,
         Some(id) => {
-            let owned: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE id=?1 AND tenant_id=?2)",
-                params![i64::try_from(id.get())?, tenant],
-                |row| row.get(0),
-            )?;
-            ensure!(owned, "Plan not found");
-            let key = format!("{USER_KEY}:plan:{}", id.get());
+            ensure!(owned(tx, tenant, id)?, "Plan not found");
+            let key = plan_key(id);
             let toggles = load(tx, tenant, &key)?;
             Some((id, key, toggles))
         }
@@ -216,37 +257,125 @@ pub(crate) fn resolve_for_tenant(
     Ok(load_layers(tx, tenant, plan)?.into_view())
 }
 
+/// Node's `GET` and `PATCH /plans/{id}/features` in one transaction: the
+/// Plan must be the tenant's, then both layers must parse. A patch writes the
+/// Plan layer's text even when it is unchanged or empty, as Node's
+/// compare-and-set does, and never deletes the row.
+pub(crate) fn plan_features(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    request: &PlanFeatureRequest,
+) -> Result<PlanFeatureOutcome> {
+    if !owned(tx, tenant, request.plan)? {
+        return Ok(PlanFeatureOutcome::MissingPlan);
+    }
+    let key = plan_key(request.plan);
+    let (Some(user), Some(mut plan)) = (read(tx, tenant, USER_KEY)?, read(tx, tenant, &key)?)
+    else {
+        return Ok(PlanFeatureOutcome::InvalidStorage);
+    };
+    if let Some(patch) = &request.patch {
+        plan.apply(patch);
+        write(tx, tenant, &key, &plan.raw.text())?;
+    }
+    let effective: Map<String, Value> = resolve(&user.toggles, Some(&plan.toggles))
+        .iter()
+        .map(|resolved| {
+            let source = match resolved.source {
+                Source::Plan => "plan",
+                Source::User => "user",
+                Source::Default => "default",
+            };
+            (
+                resolved.feature.key().into(),
+                json!({"enabled": resolved.enabled, "source": source}),
+            )
+        })
+        .collect();
+    Ok(PlanFeatureOutcome::View(json!({
+        "profile_id": request.plan.get(),
+        "overrides": plan.toggles,
+        "effective": effective,
+    })))
+}
+
+fn owned(tx: &Transaction<'_>, tenant: &str, plan: PositiveId) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE id=?1 AND tenant_id=?2)",
+        params![i64::try_from(plan.get())?, tenant],
+        |row| row.get(0),
+    )?)
+}
+
+fn plan_key(plan: PositiveId) -> String {
+    format!("{USER_KEY}:plan:{}", plan.get())
+}
+
+/// A stored layer: its members as Node's `parseFeatureLayer` keeps them,
+/// unknown keys and number text included, and its feature choices.
 #[derive(Default)]
 struct Layer {
-    raw: BTreeMap<String, serde_json::Value>,
+    raw: RawObject,
     toggles: Toggles,
 }
 
-fn load(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Layer> {
-    match crate::snapshot(tx, tenant, key)? {
-        SettingSnapshot::Missing => Ok(Layer::default()),
-        SettingSnapshot::Stored { value } => {
-            let toggles = serde_json::from_str(&value)
-                .map_err(|error| anyhow!("Stored {key} is invalid: {error}"))?;
-            let raw = serde_json::from_str(&value)
-                .map_err(|error| anyhow!("Stored {key} is invalid: {error}"))?;
-            Ok(Layer { raw, toggles })
+impl Layer {
+    fn apply(&mut self, patch: &FeaturePatch) {
+        for (&feature, &choice) in &patch.0 {
+            self.toggles.set(feature, choice);
+            match choice {
+                Some(enabled) => self.raw.set(feature.key(), &enabled.to_string()),
+                None => self.raw.remove(feature.key()),
+            }
         }
     }
 }
 
-fn store(tx: &Transaction<'_>, tenant: &str, key: &str, layer: &Layer) -> Result<()> {
-    if layer.raw.is_empty() {
+/// The layer stored at `key`, empty when there is none, or `None` when it is
+/// not a JSON object whose feature keys all hold booleans.
+fn read(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Option<Layer>> {
+    let SettingSnapshot::Stored { value } = crate::snapshot(tx, tenant, key)? else {
+        return Ok(Some(Layer::default()));
+    };
+    let Some(raw) = RawObject::parse(&value) else {
+        return Ok(None);
+    };
+    let mut toggles = Toggles::default();
+    for feature in Feature::ALL {
+        match raw.get(feature.key()) {
+            None => {}
+            Some("true") => toggles.set(feature, Some(true)),
+            Some("false") => toggles.set(feature, Some(false)),
+            Some(_) => return Ok(None),
+        }
+    }
+    Ok(Some(Layer { raw, toggles }))
+}
+
+fn load(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Layer> {
+    read(tx, tenant, key)?
+        .ok_or_else(|| anyhow!("Stored {key} is invalid: expected an object of feature booleans"))
+}
+
+/// The tenant layer keeps this client's own format: sorted keys, and no row
+/// once it is empty. Node owns `PATCH /settings/features`.
+fn store_user(tx: &Transaction<'_>, tenant: &str, layer: &Layer) -> Result<()> {
+    let raw: BTreeMap<String, Value> = serde_json::from_str(&layer.raw.text())?;
+    if raw.is_empty() {
         tx.execute(
             "DELETE FROM app_settings WHERE tenant_id=?1 AND key=?2",
-            params![tenant, key],
+            params![tenant, USER_KEY],
         )?;
-    } else {
-        tx.execute(
-            "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
-            params![tenant, key, serde_json::to_string(&layer.raw)?],
-        )?;
+        return Ok(());
     }
+    write(tx, tenant, USER_KEY, &serde_json::to_string(&raw)?)
+}
+
+fn write(tx: &Transaction<'_>, tenant: &str, key: &str, value: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
+        params![tenant, key, value],
+    )?;
     Ok(())
 }
 

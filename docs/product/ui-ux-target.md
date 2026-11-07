@@ -145,7 +145,8 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
 | Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |
 | Build planning phase | `GET /plans/:id/build-planning` | Exists in Rust behind `desktop_rebuild` (GRE-1119) |
-| Assistant decisions | `GET /plans/:id/decisions` | Exists in Rust behind `desktop_rebuild` (GRE-1119); History lists them too |
+| Assistant decisions | `GET /plans/:id/decisions`, `POST /plans/{id}/decisions` (also at `/api/v1` and `/api/v2`) | Exists in Rust behind `desktop_rebuild` (read GRE-1119, append GRE-1243); History lists them too |
+| Plan feature overrides | `GET` and `PATCH /plans/{id}/features` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1243); see [Plan features and decision append in Rust](../desktop-rebuild.md#plan-features-and-decision-append-in-rust-gre-1243) |
 | Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker and PrusaLink observed; Bambu reads as Manual until it has a Rust status watcher (GRE-362). See [Farm reads](../farm-reads.md) |
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Send queue | `GET /api/v2/printer-send-queue` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |

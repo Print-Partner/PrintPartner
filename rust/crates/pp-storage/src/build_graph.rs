@@ -4,6 +4,8 @@ pub mod wire;
 pub use manifest_options::{ManifestOptionsCommand, ManifestOptionsOutcome};
 pub mod variants;
 pub use variants::{VariantCommand, VariantOutcome};
+mod decisions;
+pub use decisions::DecisionOutcome;
 pub(crate) mod projection;
 use crate::{Envelope, Shared, WriterOwner, auth, read_model};
 use anyhow::{Result, anyhow, ensure};
@@ -51,6 +53,13 @@ impl std::error::Error for Failure {}
 pub enum BuildCommand {
     Manifest(ManifestOptionsCommand),
     Variants(VariantCommand),
+    /// Node's GET or PATCH /plans/{id}/features; read-only without a patch.
+    PlanFeatures(crate::features::PlanFeatureRequest),
+    /// Node's POST /plans/{id}/decisions with its JSON body.
+    AppendDecision {
+        build: PositiveId,
+        body: Vec<u8>,
+    },
     List,
     Read {
         build: PositiveId,
@@ -90,6 +99,8 @@ pub enum BuildCommand {
 pub enum BuildOutcome {
     Manifest(ManifestOptionsOutcome),
     Variants(VariantOutcome),
+    PlanFeatures(crate::features::PlanFeatureOutcome),
+    Decision(DecisionOutcome),
     Listed {
         profiles: Vec<ProfileSummary>,
     },
@@ -551,6 +562,10 @@ fn mutation(
             Ok(BuildOutcome::Deleted)
         }
         BuildCommand::Variants(command) => variants::commit(tx, tenant, command),
+        BuildCommand::PlanFeatures(request) => Ok(BuildOutcome::PlanFeatures(
+            crate::features::plan_features(tx, tenant, request)?,
+        )),
+        BuildCommand::AppendDecision { build, body } => decisions::append(tx, tenant, *build, body),
         BuildCommand::Manifest(_)
         | BuildCommand::List
         | BuildCommand::Read { .. }
@@ -616,6 +631,9 @@ fn read(
                 layers: layers(tx, tenant, build, cancelled)?,
             })
         }
+        BuildCommand::PlanFeatures(request) => Ok(BuildOutcome::PlanFeatures(
+            crate::features::plan_features(tx, tenant, request)?,
+        )),
         _ => unreachable!("mutation command in read transaction"),
     }
 }
@@ -632,7 +650,8 @@ pub(super) fn execute(
     let read_only = matches!(
         command.command,
         BuildCommand::List | BuildCommand::Read { .. } | BuildCommand::ListLayers { .. }
-    ) || matches!(&command.command, BuildCommand::Manifest(command) if command.is_read());
+    ) || matches!(&command.command, BuildCommand::Manifest(command) if command.is_read())
+        || matches!(&command.command, BuildCommand::PlanFeatures(request) if request.patch.is_none());
     let tx = if read_only {
         connection.transaction()?
     } else {

@@ -47,7 +47,6 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
     sleep "$delay"
     continue
   fi
-  failures=0
   jit=$(printf '%s' "$response" | jq -er .encoded_jit_config)
 
   echo "pp-iso slot $slot: starting container $name"
@@ -76,7 +75,16 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
   # Wait for the container to exit. The run time limit counts from the moment the runner starts a
   # job (Runner.Worker appears), so a slot that waited a long time for work does not cut a job short.
   job_start=0
-  while [ -n "$("$engine" ps -q --filter "name=^$name\$" 2>/dev/null)" ]; do
+  ps_errors=0
+  while :; do
+    if ! alive=$("$engine" ps -q --filter "name=^$name\$" 2>/dev/null); then
+      ps_errors=$((ps_errors + 1))
+      [ "$ps_errors" -lt 12 ] || { echo "pp-iso slot $slot: cannot list containers; removing $name" >&2; break; }
+      sleep 5
+      continue
+    fi
+    ps_errors=0
+    [ -n "$alive" ] || break
     if [ "$job_start" -eq 0 ] && "$engine" top "$name" 2>/dev/null | grep -q 'Runner.Worker'; then
       job_start=$(date +%s)
     fi

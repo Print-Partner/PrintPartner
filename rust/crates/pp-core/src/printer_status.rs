@@ -64,10 +64,8 @@ impl MoonrakerHosts for StoredMoonrakerHosts {
     }
 }
 
-/// The Moonraker snapshot, then the PrusaLink hosts while they fit under the
-/// watchers' host cap. A PrusaLink row whose id a Moonraker row already has,
-/// or past the cap, is not watched (the status route answers it as not
-/// watched), so PrusaLink rows can never push the Moonraker hosts over the cap.
+/// The Moonraker snapshot, then the PrusaLink hosts storage selected for the
+/// watchers (`printer_hosts::WatchedHosts` applies the cap and id rules).
 fn watched_hosts(hosts: printer_hosts::WatchedHosts) -> Vec<MoonrakerHost> {
     let mut watched: Vec<MoonrakerHost> = hosts
         .moonraker
@@ -81,12 +79,6 @@ fn watched_hosts(hosts: printer_hosts::WatchedHosts) -> Vec<MoonrakerHost> {
         })
         .collect();
     for host in hosts.prusalink {
-        if watched.len() >= pp_gateway::MAX_HOSTS {
-            break;
-        }
-        if watched.iter().any(|known| known.id == host.id) {
-            continue;
-        }
         watched.push(MoonrakerHost {
             id: host.id,
             base_url: host.base_url,
@@ -328,40 +320,21 @@ mod tests {
     }
 
     #[test]
-    fn ticket_t_22_prusalink_hosts_follow_moonraker_within_the_cap() {
+    fn ticket_t_22_prusalink_hosts_follow_moonraker_with_their_credentials() {
         let hosts = watched_hosts(WatchedHosts {
-            moonraker: vec![moonraker("a"), moonraker("shared")],
-            prusalink: vec![prusalink("shared"), prusalink("mk4")],
+            moonraker: vec![moonraker("a")],
+            prusalink: vec![prusalink("mk4")],
         });
         let ids: Vec<_> = hosts.iter().map(|host| host.id.as_str()).collect();
-        assert_eq!(ids, ["a", "shared", "mk4"]);
-        assert!(hosts[1].kind == HostKind::Moonraker);
+        assert_eq!(ids, ["a", "mk4"]);
+        assert!(hosts[0].kind == HostKind::Moonraker);
         assert!(
-            hosts[2].kind
+            hosts[1].kind
                 == HostKind::PrusaLink {
                     username: "maker".into(),
                     password: Some("secret".into()),
                 }
         );
-        assert_eq!(hosts[2].api_key, None);
-
-        // PrusaLink rows never push the snapshot past the cap, and never join
-        // a Moonraker snapshot that is already over it.
-        let full = |count: usize| WatchedHosts {
-            moonraker: (0..count).map(|i| moonraker(&format!("m{i}"))).collect(),
-            prusalink: vec![prusalink("mk4")],
-        };
-        assert_eq!(
-            watched_hosts(full(pp_gateway::MAX_HOSTS - 1)).len(),
-            pp_gateway::MAX_HOSTS
-        );
-        assert_eq!(
-            watched_hosts(full(pp_gateway::MAX_HOSTS)).len(),
-            pp_gateway::MAX_HOSTS
-        );
-        assert_eq!(
-            watched_hosts(full(pp_gateway::MAX_HOSTS + 1)).len(),
-            pp_gateway::MAX_HOSTS + 1
-        );
+        assert_eq!(hosts[1].api_key, None);
     }
 }

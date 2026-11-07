@@ -37,13 +37,17 @@ pub struct MoonrakerHost {
 }
 
 /// The hosts the Rust-only status watchers poll, from one read of the setting.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Not `Debug`: it holds PrusaLink passwords.
+#[derive(Clone, PartialEq, Eq)]
 pub struct WatchedHosts {
     /// Node's Moonraker host snapshot.
     pub moonraker: Vec<MoonrakerHost>,
-    /// Every PrusaLink row with a usable id, in stored order, first row per id.
-    /// A row with an oversized `base_url`, username or password keeps its
-    /// id with an empty `base_url`, so it is never polled.
+    /// The PrusaLink rows the watchers take, in stored order: the first row
+    /// per usable id, skipping an id a Moonraker host already has, while the
+    /// total stays within [`MAX_HOSTS`], so PrusaLink rows never push the
+    /// Moonraker snapshot over the cap. A row with an oversized `base_url`,
+    /// username or password keeps its id with an empty `base_url`, so it is
+    /// never polled.
     pub prusalink: Vec<StoredIntegration>,
 }
 
@@ -57,7 +61,29 @@ pub fn read(client: &SettingsClient, wait: Duration) -> Result<Option<WatchedHos
     Ok(watched(raw.as_deref()))
 }
 
-/// [`project`] plus the PrusaLink rows of the same setting.
+/// The ids of the hosts the watchers actually poll: a watched Moonraker or
+/// PrusaLink host with an address. `None` for an unusable setting.
+pub fn polled_ids(raw: Option<&str>) -> Option<Vec<String>> {
+    let hosts = watched(raw)?;
+    let moonraker = hosts
+        .moonraker
+        .into_iter()
+        .map(|host| (host.id, host.base_url));
+    let prusalink = hosts
+        .prusalink
+        .into_iter()
+        .map(|host| (host.id, host.base_url));
+    Some(
+        moonraker
+            .chain(prusalink)
+            .filter(|(_, base_url)| !base_url.trim().is_empty())
+            .map(|(id, _)| id)
+            .collect(),
+    )
+}
+
+/// [`project`] plus the PrusaLink rows of the same setting that the
+/// watchers take.
 pub fn watched(raw: Option<&str>) -> Option<WatchedHosts> {
     let moonraker = project(raw)?;
     let items = raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
@@ -77,7 +103,11 @@ pub fn watched(raw: Option<&str>) -> Option<WatchedHosts> {
         else {
             continue;
         };
-        if prusalink.iter().any(|host| host.id == id) {
+        if moonraker.len() + prusalink.len() >= MAX_HOSTS {
+            break;
+        }
+        if moonraker.iter().any(|host| host.id == id) || prusalink.iter().any(|host| host.id == id)
+        {
             continue;
         }
         let mut host = stored(item, id);
@@ -489,8 +519,35 @@ mod tests {
             .map(|((id, url, user, password), enabled)| (id, url, user, password, enabled))
             .collect::<Vec<_>>()
         );
+        assert_eq!(
+            polled_ids(Some(&stored)).unwrap(),
+            ["moon", "mk4", "off"],
+            "a row without a usable address is never polled"
+        );
+        // PrusaLink rows never take a Moonraker id or push the total past the cap.
+        let capped = |moonraker: usize| {
+            let mut rows: Vec<Value> = (0..moonraker)
+                .map(|i| json!({"id": format!("m{i}"), "type": "moonraker", "config": {"base_url": "http://m.test"}}))
+                .collect();
+            rows.push(
+                json!({"id": "m0", "type": "prusalink", "config": {"base_url": "http://p.test"}}),
+            );
+            rows.push(
+                json!({"id": "mk4", "type": "prusalink", "config": {"base_url": "http://p.test"}}),
+            );
+            watched(Some(&Value::Array(rows).to_string())).map(|hosts| {
+                hosts
+                    .prusalink
+                    .into_iter()
+                    .map(|host| host.id)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(capped(1).unwrap(), ["mk4"]);
+        assert_eq!(capped(MAX_HOSTS - 1).unwrap(), ["mk4"]);
+        assert_eq!(capped(MAX_HOSTS).unwrap(), Vec::<String>::new());
         // A malformed setting still fails closed as a whole.
-        assert_eq!(watched(Some("{")), None);
+        assert!(watched(Some("{")).is_none());
         assert_eq!(watched(None).unwrap().prusalink, []);
     }
 }

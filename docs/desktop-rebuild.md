@@ -119,12 +119,14 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   with an id a Moonraker row already has, is not watched.
   `GET`/`HEAD /api/v1/integrations/{id}/status` is the `pp-api`
   `printer_status` route. It authenticates like every Rust route, then answers
-  the cached `PrinterHostStatus`; it never polls a printer on demand. A
+  the cached `PrinterHostStatus`; it never polls a printer on demand. An
   id that is not a watched Moonraker or PrusaLink host answers 404
   `Integration not found`; nothing goes to Node.
   An HTTPS host reports `offline` with `HTTPS printer monitoring is not
-  available yet` until GRE-359, and a host that redirects reports `offline`
-  and stops polling. Hiding the window keeps polling; `suspend_monitoring`
+  available yet` until GRE-359, and a Moonraker host that redirects reports
+  `offline` and stops polling. A PrusaLink redirect is the driver's
+  `PrusaLink returned HTTP <status>` offline status, as in Node, and the
+  poller keeps backing off. Hiding the window keeps polling; `suspend_monitoring`
   (sleep) stops every poller and `resume_monitoring` starts them again.
   Monitoring only reads: no Checkoff, queue or job writes and no sends.
   `Gateway::printer_observations()` is the read-only in-process port for later

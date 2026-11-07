@@ -62,7 +62,7 @@ the two.
 | No `integration_id` | `not_set_up` | `not_set_up` |
 | `integration_id` names no integration, or a non-printer one such as Spoolman | `not_set_up` | `integration_missing` |
 | Integration disabled | `manual` | `monitoring_disabled` |
-| Bambu (no Rust watcher yet), an HTTPS or redirecting Moonraker host, or a Moonraker host the watchers never poll (no address, or past the 128-host cap) | `manual` | `monitoring_not_supported` |
+| Bambu (no Rust watcher yet), an HTTPS or redirecting Moonraker host, or a Moonraker or PrusaLink host the watchers never poll (no address, or past the 128-host cap; PrusaLink rows come after every Moonraker row) | `manual` | `monitoring_not_supported` |
 | Moonraker or PrusaLink with no status yet, or monitoring stopped | `unknown` | `awaiting_status` |
 | Moonraker or PrusaLink that did not answer its last poll | `unreachable` | `unreachable` |
 | Moonraker or PrusaLink `printing`, `paused` | `printing`, `paused` | `null` |

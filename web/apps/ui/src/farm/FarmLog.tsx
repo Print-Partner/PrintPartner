@@ -1,11 +1,11 @@
 import type { FarmLogPage } from "@print-partner/rust-client";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, type RefObject } from "react";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef, type RefObject } from "react";
 import { Link } from "react-router";
-import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
-import { readCore, RequestContractError, writeCore } from "../core/rust";
+import { readCore, writeCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
+import { UndoOutcome, useBurstUndo } from "../screen/BurstUndo";
 import { OlderEntries, pagedScreenState } from "../screen/OlderEntries";
 import { MutationButton, ScreenTemplate, type ScreenState } from "../screen/ScreenTemplate";
 import { dateText } from "../builds/format";
@@ -28,13 +28,6 @@ const UNDO_REASONS: Record<UndoReason, string> = {
   printer_command: "A printer command cannot be undone",
   undo_entry: "An undo cannot be undone",
 };
-
-// A send that never reached the core, or whose answer was lost: the undo may have landed.
-// A body the client refused to send was not lost.
-const lostSend = (error: Error) =>
-  !(error instanceof CoreError) && !(error instanceof RequestContractError);
-// A resent undo whose first answer was lost finds the burst already undone.
-const ALREADY_UNDONE = "This Checkoff burst was already undone";
 
 /**
  * `GET /api/v2/farm-log`, newest first, one page at a time. Older pages load from the
@@ -126,39 +119,15 @@ export function FarmLog() {
     enabled: farm !== undefined && farm.state !== "off",
   });
   const table = useRef<HTMLTableElement>(null);
-  const message = useRef<HTMLDivElement>(null);
-  // One undo at a time: a second click before the first answer would send it again.
-  const inFlight = useRef(false);
-  // Entries whose undo send was lost: a later "already undone" means it landed.
-  const lostUndos = useRef(new Set<string>());
-  const undo = useMutation({
-    mutationFn: async (entry: Entry) => {
-      try {
-        return await writeCore("undoFarmLogEntry", { id: entry.id });
-      } catch (error) {
-        if (error instanceof Error && lostSend(error)) lostUndos.current.add(entry.id);
-        const landed =
-          error instanceof CoreError &&
-          error.detail === ALREADY_UNDONE &&
-          lostUndos.current.has(entry.id);
-        if (!landed) throw error;
-        return null;
-      }
-    },
-    retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
+  const { undo, start, message } = useBurstUndo(
+    (entry: Entry) => writeCore("undoFarmLogEntry", { id: entry.id }),
     // An undo changes Checkoff progress and History too.
-    onSettled: () => {
-      inFlight.current = false;
-      return Promise.all([
+    () =>
+      Promise.all([
         client.invalidateQueries({ queryKey: farmLogQuery.queryKey }),
         client.invalidateQueries({ queryKey: ["core", "history"] }),
-      ]);
-    },
-  });
-  // The Undo button goes away with the undo, so focus moves to what happened.
-  useEffect(() => {
-    if (undo.isSuccess || undo.isError) message.current?.focus();
-  }, [undo.isSuccess, undo.isError, undo.submittedAt]);
+      ]),
+  );
   const state: ScreenState<{ pages: FarmLogPage[] }> =
     farm?.state === "off"
       ? { kind: "module-off", module: "Farm", wouldShow: "the farm log" }
@@ -170,31 +139,16 @@ export function FarmLog() {
       state={state}
       renderData={(data) => (
         <>
-          <div ref={message} tabIndex={-1}>
-            {undo.isError &&
-              (lostSend(undo.error) ? (
-                <div role="alert" className="pp-banner" data-kind="stale">
-                  <p>
-                    The undo of the {what} may not have reached the core. The log was reloaded and
-                    shows what happened.
-                  </p>
-                  <p className="pp-banner-detail">{undo.error.message}</p>
-                </div>
-              ) : (
-                <div role="alert" className="pp-banner" data-kind="error">
-                  <p>Could not undo the {what}.</p>
-                  <p className="pp-banner-detail">{undo.error.message}</p>
-                </div>
-              ))}
-            {undo.isSuccess && <p role="status">{undo.data?.summary ?? `Undid the ${what}.`}</p>}
-          </div>
+          <UndoOutcome
+            undo={undo}
+            message={message}
+            what={what}
+            done={undo.data?.summary ?? `Undid the ${what}.`}
+            reloaded="The log"
+          />
           <LogTable
             entries={data.pages.flatMap((page) => page.entries)}
-            onUndo={(entry) => {
-              if (inFlight.current) return;
-              inFlight.current = true;
-              undo.mutate(entry);
-            }}
+            onUndo={start}
             table={table}
           />
           <OlderEntries query={query} table={table} />

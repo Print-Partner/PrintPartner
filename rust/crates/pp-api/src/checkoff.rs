@@ -11,8 +11,9 @@
 //!
 //! `GET /printer-checkoff/verify-batch?idempotency_key=...` answers what that
 //! key settled to without resending the body (GRE-1170): `applied` or
-//! `undone` with the stored receipt, `expired` once the receipt is trimmed, or
-//! 404 `burst_not_found` when nothing was applied.
+//! `undone` with the stored receipt, `expired` once the receipt is trimmed,
+//! `unknown` when the retired-key list is full, or 404 `burst_not_found`
+//! when nothing was applied.
 //!
 //! Node's `POST /printer-checkoff/{id}/manual-complete` (GRE-1169) shares it
 //! too: it marks a watching print on a hand-tracked printer finished and

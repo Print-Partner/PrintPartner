@@ -2819,7 +2819,10 @@ session) looks up `mcp:<action_id>`. If that burst exists, the call answers
 `{ok, reconciled: true, action_id, detail, result, undone_at}` instead of
 Node's unknown-action error: `ok` is true while the burst stands, and false
 once it was undone or its receipt expired. Otherwise, including an `unknown`
-lookup, the call answers Node's unknown-action error.
+lookup, the call answers Node's unknown-action error. If the lookup cannot run
+(the writer is busy or past its deadline, or authentication fails), the call
+answers `{"error": "Checkoff is unavailable"}` and the action is not reported
+as unknown.
 
 The replacement UI's Today screen confirms one bed, or units picked on several
 beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a

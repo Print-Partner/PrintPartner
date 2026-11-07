@@ -3246,6 +3246,67 @@ router. Regenerate the golden with
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
 ```
 
+### Build header edit and archive in Rust (GRE-1231)
+
+GRE-421's second part. `pp_api::builds::build_router` serves Node's
+`PATCH /plans/{id}` and `POST /plans/{id}/archive` at `/`, `/api/v1` and
+`/api/v2`, both as `BuildCommand::Update` in `pp_storage::build_graph::header`
+(an archive is an update with only `archive` set). With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone writes a Build's name, special
+request, `archived_at` and `last_used_at` through these routes. Draft headers
+and Accept's header copy stay where GRE-1207 put them.
+
+A PATCH checks in Node's order:
+
+1. `archived: false` is 400 `Cannot unarchive; duplicate the archived template
+   instead`, before the Build is looked up.
+2. The id is `Number(id)` as a positive integer (through `plates::build_id`),
+   and the Build must be the tenant's, else 404 `Profile not found`.
+3. On `/api/v1`, a Build whose accepted progress is unavailable gets the legacy
+   refusal before anything is written.
+4. A `special_request` key needs the `orders` feature: 403 `FEATURE_DISABLED`,
+   or 500 `FEATURE_TOGGLES_INVALID` when the stored toggles do not read.
+5. A string `name` is trimmed. Blank is 400 `Profile name is required`. A name
+   another Build has is the Build rename rule Accept uses:
+   409 `{"code":"duplicate_build_name","name":...}` (Node answered 400
+   `Profile already exists`). The web client's `engineFetch` shows that 409 as
+   `Profile already exists: <name>`, the message Node gave. A `name` that is not a string is ignored.
+6. `special_request` is `String(value)` trimmed, and blank or `null` clears it.
+   When `String()` throws (an object with its own `toString` member, or an
+   array holding one), any rename stays saved and the answer is Node's: 500
+   `Internal Server Error` beside an archive, else 400 `Cannot convert object
+   to primitive value`.
+7. `archived: true` archives as below, then `touch_last_used: true` sets
+   `last_used_at`.
+
+As in Node, each step writes as it goes: a rename saved before an archive
+refusal stays saved. The answer is the Build summary on the mount's contract.
+
+An archive keeps an archived Build as it is. Otherwise every Part of the
+accepted Plan needs one progress row per unit (Node's `assertCompleteProgress`,
+through `checkoff_progress::complete_rows`; a missing row is 500 `Accepted Plan
+data is inconsistent`), and the Plan must have units and none remaining (else 400 `Archive only when print remaining is
+0`). Compatibility-dirty or uninitialized progress is 409, and an integrity
+failure is 500 `Accepted Plan data is inconsistent`.
+
+`fixtures/parity/build-header/node.json` is Node's answer, with
+`PP_DESKTOP_REBUILD=1`, for 58 requests in 14 phases on copies of
+`accepted-plate-node.db`. `build_header_patch_and_archive_match_node` replays
+it through `build_router`: 51 cases match Node's status, body and changed
+tables. Seven are declared corrections that write nothing: the two
+duplicate-name renames (409 above), a blank name beside an archive (400, where
+Node answered 500), a PATCH or archive body that is not JSON under
+`Content-Type: application/json` and an empty archive body under that type
+(400 `Request is invalid` without Fastify's parser codes), and a `null` PATCH
+body (400 `Request is invalid`, where Node answered 500). An archive otherwise
+ignores its body. Like the other Rust routes, it does not reproduce Fastify's
+415 for a body under a content type Fastify has no parser for, so that request
+archives. The web client always sends `{}` as JSON.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api --test build_header_http
+```
+
 ### Variant dimensions and selection in Rust (GRE-1221)
 
 GRE-421's sixth part (GRE-1221). `pp_api::builds::build_router` serves Node's

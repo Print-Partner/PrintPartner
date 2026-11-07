@@ -3,10 +3,16 @@ Description=pp-iso ephemeral runner slot %i
 After=network-online.target
 Wants=network-online.target
 RequiresMountsFor=/var/lib/pp-iso
+# install.sh puts the uid of the pp-iso user in place of the uid placeholder below. The slot needs that user's lingering
+# runtime directory and a delegated cgroup, so podman can apply --cpus and --memory.
+Requires=user@__UID__.service
+After=user@__UID__.service
 
 [Service]
 User=pp-iso
 Group=pp-iso
+Delegate=yes
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
 EnvironmentFile=/etc/pp-iso/runner.env
 # The root-only token file is handed to this service as a credential and is not readable by other users.
 LoadCredential=token:/etc/pp-iso/token

@@ -58,7 +58,7 @@ A PR adds its own workflow that targets `pp-iso`.
   environment, or any mounted file.
 - When the job ends the container is deleted. A job that runs longer than
   `PP_ISO_MAX_JOB_SECONDS` (default 21600), counted from when the runner starts the job, is
-  killed. A container that fails to start or exits at once makes the loop back off, up to 300 s,
+  killed. A container that fails to start, or exits within 30 s without the runner logging `Running job`, makes the loop back off, up to 300 s,
   and each retry registers one new runner, so a broken host does not flood the runner list.
 - It can use the JIT config for its own runner, which is good for that job only.
 - It can use host CPU and memory up to the per-job limits, and the network the container
@@ -90,7 +90,9 @@ Use the Linux hosts that run pp-local today. Each host needs systemd, rootless p
 5. Edit `/etc/pp-iso/runner.env`: set `PP_ISO_SLOTS` and the pp-local reserve (see sizing).
 6. `sudo ./install.sh --set-token` and type the token at the hidden prompt.
 7. `sudo ./install.sh` again. It checks the pool fits the host, builds the image as the
-   `pp-iso` user, installs the units and starts the slots.
+   `pp-iso` user, installs the units (with cgroup delegation, so CPU and memory limits apply),
+   starts a test container with those limits from a system service as `pp-iso`, and only then
+   starts the slots. If the test container fails, nothing starts.
 8. In GitHub, Settings, Actions, Runners: each slot shows as an idle `pp-iso` runner only
    while it waits; it disappears after its job.
 9. Run the **pp-iso proof** workflow from the Actions tab. It must pass.

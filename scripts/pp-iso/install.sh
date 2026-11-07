@@ -79,12 +79,19 @@ rootless=$(runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")
 
 install -d -m 0755 "$lib"
 install -m 0755 "$here/pp-iso-loop.sh" "$lib/pp-iso-loop.sh"
-install -m 0644 "$here/pp-iso-runner@.service" /etc/systemd/system/pp-iso-runner@.service
+uid=$(id -u "$user")
+sed "s/__UID__/$uid/g" "$here/pp-iso-runner@.service" > /etc/systemd/system/pp-iso-runner@.service
+chmod 0644 /etc/systemd/system/pp-iso-runner@.service
 systemctl daemon-reload
 
 version=$(sed -n 's/^ARG RUNNER_VERSION=//p' "$here/Dockerfile")
 image="localhost/pp-iso-runner:$version"
 runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" HOME=/var/lib/pp-iso podman build -t "$image" "$here"
+systemctl start "user@$uid.service"
+systemd-run --wait --pipe --collect -p User="$user" -p Delegate=yes \
+  -p Environment="XDG_RUNTIME_DIR=/run/user/$uid" -p Environment=HOME=/var/lib/pp-iso \
+  podman run --rm --cpus 1 --memory 256m --entrypoint true "$image" \
+  || { echo "podman cannot start a container with cpu and memory limits from a system service as $user; fix this before starting the slots" >&2; exit 1; }
 [ "${PP_ISO_IMAGE:-}" = "$image" ] || echo "note: set PP_ISO_IMAGE=$image in $etc/runner.env"
 
 [ -s "$etc/token" ] || { echo "no token yet: run 'sudo $0 --set-token', then run this again" >&2; exit 1; }

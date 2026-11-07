@@ -409,7 +409,10 @@ class Launch:
             self.app.kill()
             self.app.wait()
         for pid in alive(self.owned):
-            os.kill(pid, signal.SIGKILL)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def expect_usable(launch, receipt, fixture, database):
@@ -459,9 +462,9 @@ def expect_refusal(launch, receipt, data, before):
     )
     receipt["windowSeconds"] = launch.elapsed()
     launch.wait("the dialog to paint", lambda: launch.screenshot("refusal.png"), 60)
-    diagnostic = launch.stderr.read_text(errors="replace")
-    if "desktop_startup_failed: core_startup" not in diagnostic:
-        raise SmokeFailure("the refusal did not report desktop_startup_failed: core_startup")
+    diagnostic = launch.stderr.read_text(errors="replace").strip()
+    if diagnostic != "desktop_startup_failed: core_startup":
+        raise SmokeFailure(f"expected only desktop_startup_failed: core_startup, got {diagnostic!r}")
     code, survivors = stop(launch.app, launch.owned, 30)
     receipt.update(exitCode=code, survivors=survivors)
     if survivors:

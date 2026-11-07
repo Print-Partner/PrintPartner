@@ -42,6 +42,8 @@ pub trait SendTargets: Send + Sync + 'static {
     /// The host name to label the send with, or why it cannot be sent.
     /// `idle` asks for an idle printer. Called on a blocking thread.
     fn prepare(&self, item: &Value, idle: bool) -> Prepared;
+    /// A dispatch committed: wake the send worker.
+    fn dispatched(&self);
     /// Deletes a removed item's staged file directory.
     fn discard(&self, item: &Value);
 }
@@ -139,7 +141,13 @@ impl Writes<'_> {
         };
         let idle = item["wait_for_idle"] == true && !force;
         match targets.prepare(&item, idle) {
-            Prepared::Ready { host_name } => self.apply(Request::Dispatch { id, host_name }),
+            Prepared::Ready { host_name } => {
+                let reply = self.apply(Request::Dispatch { id, host_name })?;
+                if matches!(reply, Reply::Dispatched { .. }) {
+                    targets.dispatched();
+                }
+                Ok(reply)
+            }
             Prepared::Missing => match self.apply(Request::Missing { id })? {
                 Reply::Item(_) => Ok(Reply::Refused {
                     status: 409,

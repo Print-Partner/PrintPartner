@@ -168,7 +168,11 @@ multipart upload) is not ported yet.
 | `DELETE /printer-send-queue/{id}` (Remove) | 200 `{item}`, and the item's staged directory is deleted. |
 
 Send now checks storage first, so an unknown outcome is always 409
-`send_outcome_unknown`. Then it checks the printer without contacting it:
+`send_outcome_unknown`. Storage also requires the Farm feature for the item's
+Plan, or for the user when the Plan is gone, as Node's
+`storedQueueAdmissionProblem` does: 403 `FEATURE_DISABLED` when it is off and
+500 `FEATURE_TOGGLES_INVALID` when the stored toggles cannot be read. Then it
+checks the printer without contacting it:
 
 - the file name must end in `.gcode`, `.bgcode` or `.gco` (400);
 - the staged file must be under `exports` in a `printer-uploads` directory
@@ -183,19 +187,24 @@ Send now checks storage first, so an unknown outcome is always 409
 
 Send ready does the same for each queued item it reads (up to 8), sends at
 most one per printer, and skips an item refused with 409. That item stays as
-it is.
+it is, except an item whose staged file is gone, which becomes `error` as in
+Send now. Any other refusal is listed as `{item_id, error}`.
 
 ## Upload worker (GRE-365, GRE-1215)
 
 `pp_core::send_worker::SendWorker` is the only code that uploads to a
 printer, and only `printer-upload` jobs that a dispatch enqueued. It starts
-with the Rust-only runtime. Shutdown lets an upload in flight finish for up
+with the Rust-only runtime. When idle it waits for a dispatch to wake it, or
+30 seconds for an attempt whose lease expired, so it does not poll storage.
+Shutdown lets an upload in flight finish for up
 to the mutation drain bound. For each job it:
 
 1. checks the job's original authority, resolves the host, and reads the
    staged file (at most 64 MiB);
 2. admits one effect (`printer_upload`, or `printer_upload_and_start`)
-   before any request;
+   before any request. Storage admits it only while Farm is still on, so a
+   send whose Farm was turned off after Send now fails with `Feature farm is
+   disabled.` and contacts no printer;
 3. sends once through the Moonraker or PrusaLink driver. An upload-only send
    never calls `print/start`. A confirmed send finishes the job with the
    printer, host and remote path, creates the Build's Checkoff link, and

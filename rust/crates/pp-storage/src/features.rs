@@ -216,6 +216,27 @@ pub(crate) fn resolve_for_tenant(
     Ok(load_layers(tx, tenant, plan)?.into_view())
 }
 
+/// A send's features, as Node's `readFeatureAccess` reads them: a Plan that
+/// no longer exists has no layer, so the user's choices apply.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn resolve_for_send(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    plan: Option<PositiveId>,
+) -> Result<View> {
+    let plan = match plan {
+        Some(id) => tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE id=?1 AND tenant_id=?2)",
+                params![i64::try_from(id.get())?, tenant],
+                |row| row.get::<_, bool>(0),
+            )?
+            .then_some(id),
+        None => None,
+    };
+    resolve_for_tenant(tx, tenant, plan)
+}
+
 #[derive(Default)]
 struct Layer {
     raw: BTreeMap<String, serde_json::Value>,

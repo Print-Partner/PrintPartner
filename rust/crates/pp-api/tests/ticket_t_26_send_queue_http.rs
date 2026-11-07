@@ -39,6 +39,8 @@ struct Targets {
     /// Items whose staged file is gone.
     missing: Vec<&'static str>,
     discarded: Mutex<Vec<String>>,
+    /// Wakes sent to the worker.
+    dispatches: Mutex<usize>,
 }
 
 impl SendTargets for Targets {
@@ -57,6 +59,10 @@ impl SendTargets for Targets {
         Prepared::Ready {
             host_name: format!("{printer} host"),
         }
+    }
+
+    fn dispatched(&self) {
+        *self.dispatches.lock().unwrap() += 1;
     }
 
     fn discard(&self, item: &Value) {
@@ -80,6 +86,11 @@ impl Queue {
         std::fs::write(root.join("print-partner.db"), DATABASE).unwrap();
         let owner = WriterOwner::open(&root, Limits::default()).unwrap().0;
         let sql = rusqlite::Connection::open(root.join("print-partner.db")).unwrap();
+        sql.execute(
+            "INSERT OR REPLACE INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"farm\":true}')",
+            [],
+        )
+        .unwrap();
         for (position, (id, printer, state, error)) in items.iter().enumerate() {
             sql.execute(
                 "INSERT INTO printer_send_queue(tenant_id,position,id,filename,artifact_path,printer_id,profile_id,match,wait_for_idle,start,state,checkoff_units,upload_job_id,error,host_name,created_at,updated_at)
@@ -187,6 +198,7 @@ async fn ticket_t_26_send_now_enqueues_one_upload_and_waits_for_an_idle_printer(
         queue.item("q1"),
         ("sending".into(), None, Some("queued".into()))
     );
+    assert_eq!(*queue.targets.dispatches.lock().unwrap(), 1);
     let (status, body) = queue
         .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
         .await;
@@ -399,4 +411,40 @@ async fn ticket_t_26_remove_cancels_a_waiting_item_and_deletes_its_staged_file()
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "a sending item stays");
     assert_eq!(*queue.targets.discarded.lock().unwrap(), ["q1"]);
+}
+
+#[tokio::test]
+async fn ticket_t_26_a_send_needs_the_farm_feature() {
+    let queue = Queue::open("1", Targets::default(), &[("q1", "p-a", "queued", None)]);
+    let sql = rusqlite::Connection::open(queue.root.join("print-partner.db")).unwrap();
+    sql.execute(
+        "UPDATE app_settings SET value='{\"farm\":false}' WHERE tenant_id='default' AND key='feature_toggles'",
+        [],
+    )
+    .unwrap();
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "FEATURE_DISABLED", "{body}");
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/drain", "")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["results"][0]["error"], "Feature farm is disabled.",
+        "{body}"
+    );
+    sql.execute(
+        "UPDATE app_settings SET value='not json' WHERE tenant_id='default' AND key='feature_toggles'",
+        [],
+    )
+    .unwrap();
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
+        .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["code"], "FEATURE_TOGGLES_INVALID", "{body}");
+    assert_eq!(queue.item("q1"), ("queued".into(), None, None));
+    assert_eq!(*queue.targets.dispatches.lock().unwrap(), 0);
 }

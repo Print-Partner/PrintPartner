@@ -3537,10 +3537,19 @@ fn advance(
                 }
             }
             #[cfg(feature = "desktop_rebuild")]
-            if matches!(_effect_policy, EffectAdmissionPolicy::EnforceFeatures)
-                && intent.operation == EffectOperation::SpoolmanDeduction
-            {
-                require_spoolman(tx, &job)?;
+            if matches!(_effect_policy, EffectAdmissionPolicy::EnforceFeatures) {
+                use pp_domain::features::Feature;
+                match intent.operation {
+                    EffectOperation::SpoolmanDeduction => {
+                        require_feature(tx, &job, Feature::Spoolman)?;
+                    }
+                    EffectOperation::PrinterUpload | EffectOperation::PrinterUploadAndStart
+                        if crate::send_queue::owns(tx, &job)? =>
+                    {
+                        require_feature(tx, &job, Feature::Farm)?;
+                    }
+                    _ => {}
+                }
             }
             job.effects.push(EffectReceipt {
                 intent,
@@ -3747,22 +3756,30 @@ fn refuse_advance(
 }
 
 #[cfg(feature = "desktop_rebuild")]
-fn require_spoolman(tx: &Transaction<'_>, job: &JobRecord) -> Result<()> {
+/// `feature` is on for the printer upload's Plan, or for the user when it
+/// has none: Spoolman for a deduction, Farm for a send.
+fn require_feature(
+    tx: &Transaction<'_>,
+    job: &JobRecord,
+    feature: pp_domain::features::Feature,
+) -> Result<()> {
     use pp_domain::{PositiveId, features::Feature};
 
     let Payload::PrinterUpload { profile_id, .. } = &job.payload else {
-        return Err(anyhow!("Spoolman deduction requires printer upload"));
+        return Err(anyhow!("Feature admission requires printer upload"));
     };
     let plan = profile_id
         .map(PositiveId::new)
         .transpose()
         .map_err(anyhow::Error::msg)?;
-    let view = crate::features::resolve_for_tenant(tx, &job.tenant, plan)?;
+    let view = if feature == Feature::Farm {
+        crate::features::resolve_for_send(tx, &job.tenant, plan)?
+    } else {
+        crate::features::resolve_for_tenant(tx, &job.tenant, plan)?
+    };
     ensure!(
-        view.effective().enabled(Feature::Spoolman),
-        JobFailure::FeatureDisabled {
-            feature: Feature::Spoolman
-        }
+        view.effective().enabled(feature),
+        JobFailure::FeatureDisabled { feature }
     );
     Ok(())
 }

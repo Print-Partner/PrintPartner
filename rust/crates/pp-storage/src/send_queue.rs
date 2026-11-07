@@ -203,6 +203,17 @@ pub(crate) fn settle(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<()
     Ok(())
 }
 
+/// True when `job` is the upload a send queue item dispatched. Its send
+/// needs the Farm feature, as Node's queue requires.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn owns(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM printer_send_queue WHERE tenant_id=?1 AND upload_job_id=?2)",
+        params![job.tenant, job.job_id],
+        |row| row.get(0),
+    )?)
+}
+
 /// At startup, the item of an upload that job recovery left awaiting
 /// reconciliation says the restart interrupted it, as Node's restart does. A
 /// lease that expired while the process kept running keeps the

@@ -132,6 +132,12 @@ impl Harness {
     /// Stores items `(id, printer, state, upload_job_id)` in this order.
     fn seed(&self, items: &[(&str, &str, &str, Option<&str>)]) {
         let connection = self.database();
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO app_settings(tenant_id,key,value) VALUES(?1,'feature_toggles','{\"farm\":true}')",
+                [&self.tenant],
+            )
+            .unwrap();
         for (position, (id, printer, state, job)) in items.iter().enumerate() {
             connection
                 .execute(

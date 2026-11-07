@@ -529,12 +529,12 @@ async fn start_rust_resources(
         bind_origin(writer.lease().context("Storage lease unavailable")?).await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let hosts = Arc::new(printer_status::StoredMoonrakerHosts::new(writer.client()));
-    let status_routes = printer_status::StatusRoutes::new(&writer, &origin)?;
     let send_worker = send_worker::SendWorker::new(
         &writer,
         rebuild_api::desktop_policy(),
         pp_gateway::printer_host::HostSends::new()?,
     )?;
+    let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let product = rebuild_api::product_router(
         desktop_rebuild,

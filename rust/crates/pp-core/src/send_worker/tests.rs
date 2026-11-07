@@ -23,7 +23,8 @@ impl Farm {
     /// and the queue items `(id, start, staged)` for it.
     fn open(url: &str, items: &[(&str, bool, bool)]) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let (owner, _) = WriterOwner::open(root.path(), Limits::default()).unwrap();
+        let (owner, _) =
+            WriterOwner::open_with_job_feature_admission(root.path(), Limits::default()).unwrap();
         let AuthOutcome::Session { token, .. } = owner
             .auth_with_policy(desktop_policy())
             .unwrap()
@@ -50,6 +51,7 @@ impl Farm {
         };
         let database = farm.database();
         for (key, value) in [
+            ("feature_toggles", json!({"farm": true})),
             (
                 "printer.fleet",
                 json!([{"id": "p-moon", "name": "Micron", "integration_id": "moon"}]),
@@ -355,5 +357,29 @@ async fn ticket_t_26_a_missing_or_foreign_file_fails_without_contacting_the_prin
         Reply::Refused { status: 400, .. }
     ));
     assert_eq!(worker.run_next().await.unwrap(), None);
+    assert!(printer.request_lines().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ticket_t_26_farm_turned_off_after_send_now_fails_the_send_without_contacting_the_printer()
+{
+    let printer = printer(&[(UPLOAD, 201)]);
+    let farm = Farm::open(printer.url(), &[("q1", false, true)]);
+    assert!(matches!(farm.send("q1"), Reply::Dispatched { .. }));
+    farm.database()
+        .execute(
+            "UPDATE app_settings SET value='{\"farm\":false}' WHERE tenant_id='default' AND key='feature_toggles'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        farm.worker().run_next().await.unwrap(),
+        Some(Sent::Failed("Feature farm is disabled.".into()))
+    );
+    let (state, error, job, _) = farm.outcome("q1");
+    assert_eq!(
+        (state.as_str(), error.as_deref(), job.as_str()),
+        ("error", Some("Feature farm is disabled."), "failed")
+    );
     assert!(printer.request_lines().is_empty());
 }

@@ -362,6 +362,9 @@ fn dispatch(
     if outcome_unknown(tx, tenant, &stored)? {
         return Ok(OUTCOME_UNKNOWN);
     }
+    if let Some(refusal) = farm_refusal(tx, tenant, id)? {
+        return Ok(refusal);
+    }
     let sending: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM printer_send_queue WHERE tenant_id=?1 AND printer_id=?2 AND state='sending')",
         params![tenant, stored.printer_id],
@@ -450,6 +453,30 @@ fn dispatch(
     })
 }
 
+/// Node's `storedQueueAdmissionProblem`: a send needs the Farm feature on
+/// for the item's Plan, or for the user when it has none.
+fn farm_refusal(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Option<Reply>> {
+    let profile: Option<i64> = tx.query_row(
+        "SELECT profile_id FROM printer_send_queue WHERE tenant_id=?1 AND id=?2",
+        params![tenant, id],
+        |row| row.get(0),
+    )?;
+    let plan = profile.and_then(|id| pp_domain::PositiveId::new(id.unsigned_abs()).ok());
+    Ok(match crate::features::resolve_for_send(tx, tenant, plan) {
+        Ok(view) if view.effective().enabled(pp_domain::features::Feature::Farm) => None,
+        Ok(_) => Some(Reply::Refused {
+            status: 403,
+            detail: "Feature farm is disabled.",
+            code: Some("FEATURE_DISABLED"),
+        }),
+        Err(_) => Some(Reply::Refused {
+            status: 500,
+            detail: "Stored feature toggles are invalid.",
+            code: Some("FEATURE_TOGGLES_INVALID"),
+        }),
+    })
+}
+
 fn check(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Reply> {
     let stored = match resendable(tx, tenant, id)? {
         Ok(stored) => stored,
@@ -457,6 +484,9 @@ fn check(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Reply> {
     };
     if outcome_unknown(tx, tenant, &stored)? {
         return Ok(OUTCOME_UNKNOWN);
+    }
+    if let Some(refusal) = farm_refusal(tx, tenant, id)? {
+        return Ok(refusal);
     }
     Ok(item(tx, tenant, id)?.map_or(NOT_FOUND, Reply::Item))
 }

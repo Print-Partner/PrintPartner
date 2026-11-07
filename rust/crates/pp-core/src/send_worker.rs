@@ -26,8 +26,8 @@ use pp_storage::{
     SettingsClient, WriterOwner,
     auth::AuthPolicy,
     jobs::{
-        AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobKind,
-        Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission,
+        AttemptLease, ClaimedAttempt, CompletedResult, EffectIntent, EffectOperation, JobFailure,
+        JobKind, Payload, PrinterUploadResult, ResultArtifact, ServerWorkerClient, WorkerAdmission,
         WorkerOperation,
     },
     printer_hosts::{self, PrinterLink},
@@ -44,6 +44,7 @@ use std::{
     },
     time::Duration,
 };
+use tokio::sync::Notify;
 
 /// Node's `MAX_PRINT_FILE_UPLOAD_BYTES`.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -64,6 +65,8 @@ fn sliced(filename: &str) -> bool {
 }
 /// Longer than one upload and start (120 s and 15 s in the drivers).
 const LEASE_SECONDS: u32 = 300;
+/// How long an idle worker waits without a dispatch's wake.
+const IDLE_RECHECK: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct SendWorker {
@@ -71,6 +74,7 @@ pub struct SendWorker {
     settings: SettingsClient,
     sends: HostSends,
     exports: PathBuf,
+    wake: Arc<Notify>,
 }
 
 /// What one claimed upload ended as, for logs and tests.
@@ -106,11 +110,18 @@ impl SendWorker {
             settings: owner.client(),
             sends,
             exports,
+            wake: Arc::new(Notify::new()),
         })
     }
 
-    /// Claims and runs printer uploads until `cancelled` is set. Waiting for a
-    /// job blocks a worker thread, never the runtime.
+    /// Wakes an idle worker after a dispatch commits.
+    pub fn waker(&self) -> Arc<Notify> {
+        Arc::clone(&self.wake)
+    }
+
+    /// Claims and runs printer uploads until `cancelled` is set. With nothing
+    /// to claim it waits for a dispatch's wake, or [`IDLE_RECHECK`] for an
+    /// attempt whose lease expired. Storage calls run on blocking threads.
     pub fn spawn(self, cancelled: Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             while !cancelled.load(Ordering::Acquire) {
@@ -128,7 +139,9 @@ impl SendWorker {
                             tracing::warn!(error = %error, "printer upload stopped");
                         }
                     }
-                    Ok(Ok(None)) => {}
+                    Ok(Ok(None)) => {
+                        let _ = tokio::time::timeout(IDLE_RECHECK, self.wake.notified()).await;
+                    }
                     Ok(Err(_)) | Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
                 }
             }
@@ -176,12 +189,8 @@ impl SendWorker {
         };
         let content_hash = hex::encode(Sha256::digest(&file));
         let intent = intent(&job.job_id, &printer_id, &filename, start, &content_hash);
-        if self
-            .advance(&mut lease, WorkerOperation::BeginEffect(intent))
-            .await
-            .is_err()
-        {
-            return Ok(Sent::Refused);
+        if let Some(refused) = self.begin(&mut lease, intent).await? {
+            return Ok(refused);
         }
         let result = self.sends.upload(&target, file, &filename, start).await;
         let sent = classify(&result, start);
@@ -242,6 +251,25 @@ impl SendWorker {
             Sent::Refused => {}
         }
         Ok(sent)
+    }
+
+    /// Admits the send's effect, or returns how the attempt ended instead. A
+    /// Farm feature turned off since the dispatch fails the job: nothing was
+    /// sent.
+    async fn begin(&self, lease: &mut AttemptLease, intent: EffectIntent) -> Result<Option<Sent>> {
+        let Err(error) = self
+            .advance(lease, WorkerOperation::BeginEffect(intent))
+            .await
+        else {
+            return Ok(None);
+        };
+        let Some(failure @ JobFailure::FeatureDisabled { .. }) = error.downcast_ref() else {
+            return Ok(Some(Sent::Refused));
+        };
+        let reason = failure.to_string();
+        self.advance(lease, WorkerOperation::FailWith(reason.clone()))
+            .await?;
+        Ok(Some(Sent::Failed(reason)))
     }
 
     /// Applies one worker operation off the async runtime and keeps the
@@ -344,6 +372,7 @@ pub(crate) struct QueueTargets {
     pub(crate) settings: SettingsClient,
     pub(crate) exports: PathBuf,
     pub(crate) status: MoonrakerStatus,
+    pub(crate) wake: Arc<Notify>,
 }
 
 impl SendTargets for QueueTargets {
@@ -417,6 +446,10 @@ impl SendTargets for QueueTargets {
             },
             Err(_) => refused(StatusCode::SERVICE_UNAVAILABLE, SETTINGS_UNAVAILABLE),
         }
+    }
+
+    fn dispatched(&self) {
+        self.wake.notify_one();
     }
 
     fn discard(&self, item: &Value) {

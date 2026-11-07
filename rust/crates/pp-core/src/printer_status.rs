@@ -224,10 +224,12 @@ pub struct StatusRoutes {
     send_config: AcceptedHttpConfig,
     send_queue: SendQueueClient,
     exports: std::path::PathBuf,
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl StatusRoutes {
-    pub fn new(owner: &WriterOwner, origin: &str) -> Result<Self> {
+    /// `wake` is the send worker's: each dispatch wakes it.
+    pub fn new(owner: &WriterOwner, origin: &str, wake: Arc<tokio::sync::Notify>) -> Result<Self> {
         let tenant = crate::rebuild_api::DESKTOP_TENANT;
         let policy = crate::rebuild_api::desktop_policy();
         Ok(Self {
@@ -245,6 +247,7 @@ impl StatusRoutes {
                 .context("Storage lease unavailable")?
                 .data_dir()
                 .join("exports"),
+            wake,
         })
     }
 
@@ -257,6 +260,7 @@ impl StatusRoutes {
             settings: settings.clone(),
             exports: self.exports,
             status: status.clone(),
+            wake: self.wake,
         };
         status.spawn_observer(move |observations, cancelled| {
             produce(settings, producer, observations, cancelled)

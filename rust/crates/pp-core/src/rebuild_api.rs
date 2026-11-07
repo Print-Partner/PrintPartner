@@ -669,6 +669,15 @@ mod tests {
                 "expected_draft": null, "expected_header_version": null,
                 "header": {"name": "Client contract", "order_number": null, "customer": null, "due_date": null}})
             }
+            "SavePlanChoicesRequest" => {
+                json!({"expected_base": {"revision_id": null, "plan_version": 0},
+                "expected_draft": null, "remap_checkoff_links": false, "decisions": [{"kind": "set_included",
+                    "target": {"part_key": "client.stl", "relative_path": "client.stl", "source_layer": null},
+                    "value": true}]})
+            }
+            "AcceptDraftRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
+                "expected_lifecycle_version": 0,
+                "expected_base": {"revision_id": null, "plan_version": 0}}),
             "ReconcileDraftRequest" => {
                 json!({"expected_snapshot_digest": "0".repeat(64), "decisions": []})
             }

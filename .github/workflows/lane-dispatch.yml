@@ -8,7 +8,7 @@ on:
 permissions: {}
 jobs:
   dispatch:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 1
     steps:
       - name: Refuse to run

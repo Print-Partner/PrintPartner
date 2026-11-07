@@ -592,9 +592,10 @@ cache goes stale: Ubuntu security updates change what `apt-get update` resolves,
 cache then still downloads the newer packages, and the first hosted run on `main` of a new week saves a
 fresh set. Only a GitHub-hosted run on `main` that is not a pull request saves, and only when the exact key
 missed: pushes and manual runs of `desktop-e2e` and `desktop-webkit` (always hosted), the nightly
-`rust-cross-os` schedule (the build job package set), and a `rust (linux)` push that
-`scripts/ci-rust-runner.py` sends to a hosted runner (the only run that saves the rebuild job package set).
-A `rust (linux)` push on pp-local skips the cache steps and saves nothing. Pull requests restore only. Each install logs
+`rust-cross-os` schedule (the build job package set), and a `rust (linux)` push or manual run on
+`main` that `scripts/ci-rust-runner.py` sends to a hosted runner (the schedule does not run the rebuild
+job, so only these runs save its package set). A run on pp-local skips the cache steps and saves nothing.
+Pull requests restore only. Each install logs
 `apt install took N s (cache hit: ...)`. `chain-tip-gate` keeps its inline install.
 
 ### Superseded runs

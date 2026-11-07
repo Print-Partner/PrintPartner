@@ -22,7 +22,7 @@ rules:
       - release.yml:23
       # The apt package cache action (GRE-1229) is a local composite action that runs at the
       # same commit as its caller; it holds no secrets and saves its cache only on main.
-      - chain-tip-gate.yml:46
+      # chain-tip-gate.yml keeps its inline install: it checks out any ref, which may predate the action.
       - desktop-e2e.yml:45
       - desktop-webkit.yml:46
       - rust-cross-os.yml:162

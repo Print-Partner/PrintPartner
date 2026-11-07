@@ -32,3 +32,14 @@ npm run test -w @print-partner/server -- src/integrations/adapters/bambu.fixture
 
 The Vitest suite name includes the discovered fixture count. Every JSON file
 must have an expected adapter status in the test.
+
+`driver/prints.json` lists these four fixtures by path plus inline `print`
+objects for edge cases (string and hex numbers, padded tokens, blank and
+missing fields). `driver/node-oracle-status.json` is the Node adapter's status
+for each case, and the Rust driver test
+(`rust/crates/pp-drivers/tests/ticket_t_23_bambu.rs`) checks its own mapping
+against it. Regenerate it from `web` after changing a case:
+
+```sh
+UPDATE_BAMBU_ORACLE=1 npm run test -w @print-partner/server -- src/integrations/adapters/bambu.driver-oracle.test.ts
+```

@@ -1,4 +1,5 @@
 //! Printer monitoring and drivers.
+pub mod bambu;
 pub mod digest;
 pub mod moonraker;
 pub mod moonraker_driver;

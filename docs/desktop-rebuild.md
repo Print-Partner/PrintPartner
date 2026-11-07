@@ -2985,14 +2985,34 @@ its 1 MiB JSON limit.
 - The assignment itself is `Request::AssignFile` (previous section).
 
 `checkoff_progress::print_file::SnapshotStore` is Node's
-`printer-file-snapshots.ts` for this process: one capture at a time, at most
+`printer-file-snapshots.ts` for one database, as Node keeps one per repository:
+every `SettingsClient` of a writer returns the same store from
+`print_file_snapshots()`, and both routers take it from there. One capture at a time, at most
 128 tokens, 15 minutes each. The files/content route calls
 `SnapshotStore::begin` with `print_file::file_source` read before and after
 it asks the printer, `Capture::push` for each chunk it streams, and
 `Capture::finish` at EOF, which classifies the bytes and makes the token
 redeemable. A capture dropped before EOF releases the store and leaves no
-token. The files/content route does not capture yet; GRE-1214 passes one store
-to both routers and replaces its 501.
+token.
+
+`GET /printers/{id}/files/content?profile_id=` captures (GRE-1214). As in Node:
+
+- `profile_id` is read with `Number()` and must name a stored Build, or the
+  route answers 400 `Choose an existing Build before opening a print file`
+  before it checks the path or asks the printer.
+- Only a 2xx reply for a file the host lists is captured. Any other reply is
+  answered as without a Build.
+- A refused capture (another capture running, 128 tokens held, or the host's
+  fingerprint changed while the file opened) answers 502 `File inspection
+  unavailable. Finish the current file, then reopen this file.` without the
+  body.
+- A captured reply carries `X-PrintPartner-Snapshot: <token>` and
+  `Access-Control-Expose-Headers: X-PrintPartner-Snapshot` and drops
+  `Content-Length`, so the client waits for the end of the body. A file
+  past the inspection limit, or one that does not classify, ends the body with
+  an error and no token.
+- The listing's `size_bytes` and `modified_at` become the snapshot's
+  identity, then the capture's `size_bytes` and `sha256` replace them.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test file_assignments_http

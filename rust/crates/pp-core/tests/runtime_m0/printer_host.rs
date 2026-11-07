@@ -160,6 +160,14 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
     let (printer, oracle) = recorded();
     let (prusa, prusa_oracle) = recorded_prusalink();
     seed(&data, printer.url(), prusa.url());
+    rusqlite::Connection::open(data.join("print-partner.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO build_profiles(id,tenant_id,name,config_modified_at,last_used_at)
+             VALUES(1,'default','Snapshot Build','2026-11-07T00:00:00.000Z','2026-11-07T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
     let rows = production_rows(&data);
     let settings = settings_rows(&data);
     let (runtime, origin, desktop) = start_rust_only(&data).await;
@@ -186,6 +194,7 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
     cameras_and_test(&origin, &cookie, &oracle, &prusa_oracle).await;
     prusalink_status(&origin, &cookie).await;
     streams(&origin, &cookie).await;
+    snapshot_capture(&origin, &cookie).await;
 
     shut_down(runtime).await;
     let lines = printer.request_lines();
@@ -470,9 +479,9 @@ async fn streams(origin: &str, cookie: &str) {
         ),
         ("p-moon/files/content", 400, "path is required"),
         (
-            "p-moon/files/content?path=plates%2Fbracket.gcode&profile_id=1",
-            501,
-            "Print-file inspection for a Build is not available in this runtime yet",
+            "p-moon/files/content?path=plates%2Fbracket.gcode&profile_id=2",
+            400,
+            "Choose an existing Build before opening a print file",
         ),
         (
             "p-bambu/files/content?path=a.gcode",
@@ -537,4 +546,36 @@ async fn prusalink_status(origin: &str, cookie: &str) {
     );
     // The active job's name comes from `/api/v1/job`, as in Node.
     assert_eq!(status["message"], "Printing BENCHY~1.BGC", "{status}");
+}
+
+/// GRE-1214: files/content with a Build streams the file with a snapshot
+/// token the client may redeem once the body ends; without a stored Build it
+/// is refused before the printer is asked (the refusal list above).
+async fn snapshot_capture(origin: &str, cookie: &str) {
+    let (code, headers, body) = request(
+        origin,
+        "/api/v1/printers/p-moon/files/content?path=plates%2Fbracket.gcode&profile_id=1",
+        "GET",
+        Some(cookie),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (code.as_u16(), body.as_slice()),
+        (
+            200,
+            b"G28
+"
+            .as_slice()
+        )
+    );
+    assert!(headers.get("content-length").is_none(), "{headers:?}");
+    assert_eq!(
+        headers["access-control-expose-headers"],
+        "X-PrintPartner-Snapshot"
+    );
+    let token = headers["x-printpartner-snapshot"].to_str().unwrap();
+    assert_eq!(token.len(), 36, "{token}");
 }

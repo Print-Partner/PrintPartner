@@ -55,6 +55,14 @@ pub struct Opened {
     pub body: Body,
 }
 
+/// A listed print file and the printer's reply for it.
+pub struct OpenedFile {
+    pub name: String,
+    /// Node's `printerStoredFileIdentity` of the listing entry.
+    pub identity: Value,
+    pub opened: Opened,
+}
+
 /// Chunks a pump task reads from the printer, a few at a time, so the
 /// printer is read only as fast as the client takes the body. `stopped`
 /// fires when the pump gives up on a client that stopped reading.
@@ -200,24 +208,42 @@ impl HostReads {
     /// Opens `path` for download when the host lists it as a file in its
     /// directory, so a crafted path cannot reach a file outside the browsable
     /// storage tree; `None` when it is not listed.
-    pub async fn open_file(&self, target: &HostTarget, path: &str) -> Result<Option<Opened>> {
+    pub async fn open_file(&self, target: &HostTarget, path: &str) -> Result<Option<OpenedFile>> {
         let directory = path.rsplit_once('/').map_or("", |(directory, _)| directory);
         let driver = self.driver(target);
         let listing = match &driver {
             Driver::Moonraker(driver) => driver.browse(directory).await?,
             Driver::PrusaLink(driver) => driver.browse(directory).await?,
         };
-        let listed = listing.entries.iter().any(
-            |entry| matches!(entry, StorageEntry::File { path: listed, .. } if listed == path),
-        );
-        if !listed {
+        let Some((name, identity)) = listing.entries.into_iter().find_map(|entry| match entry {
+            StorageEntry::File {
+                path: listed,
+                name,
+                size_bytes,
+                modified_at,
+            } if listed == path => {
+                let mut identity = serde_json::Map::new();
+                if let Some(size) = size_bytes {
+                    identity.insert("size_bytes".into(), size.into());
+                }
+                if let Some(modified) = modified_at {
+                    identity.insert("modified_at".into(), modified.into());
+                }
+                Some((name, Value::Object(identity)))
+            }
+            _ => None,
+        }) else {
             return Ok(None);
-        }
+        };
         let reply = match driver {
             Driver::Moonraker(driver) => driver.open_file(path).await?,
             Driver::PrusaLink(driver) => driver.open_file(path).await?,
         };
-        Ok(Some(opened(reply)))
+        Ok(Some(OpenedFile {
+            name,
+            identity,
+            opened: opened(reply),
+        }))
     }
 
     /// Opens a camera's view when the host lists a camera with that id;

@@ -28,6 +28,7 @@ use pp_storage::{
         rebuild::AuthLifetimes, rebuild::RebuildAuthClient,
     },
     build_graph::BuildGraphClient,
+    checkoff_progress::print_file::SnapshotStore,
     read_model::build_workflow::PendingInputs,
     working_drafts::{
         WorkingDraftClient,
@@ -179,6 +180,16 @@ pub fn router(
 ///
 /// `origin` must match `auth.http`'s listener origin. `api_key_tenant` is the
 /// configured API-key tenant for build and catalog admission.
+/// The print-file snapshot store of `owner`'s database, which the printer
+/// routes capture into.
+fn snapshots(owner: &Mutex<WriterOwner>) -> Result<Arc<SnapshotStore>> {
+    Ok(owner
+        .lock()
+        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
+        .client()
+        .print_file_snapshots())
+}
+
 pub fn read_router(
     rebuild: DesktopRebuild,
     owner: Arc<Mutex<WriterOwner>>,
@@ -264,7 +275,7 @@ pub fn read_router(
     );
     let checkoff_config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     let checkoff = checkoff_router(checkoff_config.clone(), checkoff_client.clone()).merge(
-        file_assignments_router(checkoff_config, checkoff_client, Arc::default()),
+        file_assignments_router(checkoff_config, checkoff_client, snapshots(&owner)?),
     );
     let plates = plates_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,

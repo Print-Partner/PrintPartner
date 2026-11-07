@@ -5,10 +5,13 @@
 //! print-file download and camera view stream the printer's reply through. The only
 //! resend is PrusaLink's single Digest resend after a 401 (see
 //! `pp_gateway::printer_host`).
-use pp_api::printer_host::{Answer, Capabilities, HostAnswer, HostStream, PrinterHostPort};
-use pp_gateway::printer_host::{HostReads, HostTarget, Opened};
+use pp_api::printer_host::{
+    Answer, Capabilities, HostAnswer, HostFile, HostStream, PrinterHostPort,
+};
+use pp_gateway::printer_host::{HostReads, HostTarget, Opened, OpenedFile};
 use pp_storage::{
     SettingsClient,
+    checkoff_progress::print_file,
     printer_hosts::{self, PrinterLink, StoredIntegration},
 };
 use serde_json::{Value, json};
@@ -129,19 +132,21 @@ fn answer<T>(result: anyhow::Result<T>) -> HostAnswer<T> {
     )
 }
 
-fn stream(opened: Option<Opened>) -> Option<HostStream> {
-    opened.map(|opened| HostStream {
+fn stream(opened: Opened) -> HostStream {
+    HostStream {
         status: opened.status,
         content_type: opened.content_type,
         content_length: opened.content_length,
         body: opened.body,
-    })
+    }
 }
 
-/// A streamed read: a print file at a path, or one camera's view.
-enum Open {
-    File(String),
-    Camera(String),
+fn file(opened: OpenedFile) -> HostFile {
+    HostFile {
+        stream: stream(opened.opened),
+        name: opened.name,
+        identity: opened.identity,
+    }
 }
 
 impl StoredPrinterHosts {
@@ -160,20 +165,22 @@ impl StoredPrinterHosts {
         })
     }
 
-    fn open(&self, printer: String, open: Open) -> Answer<Option<HostStream>> {
+    /// A streamed read off the printer's readable host.
+    fn open<T, F>(
+        &self,
+        printer: String,
+        read: impl FnOnce(HostReads, HostTarget) -> F + Send + 'static,
+    ) -> Answer<Option<T>>
+    where
+        F: std::future::Future<Output = anyhow::Result<Option<T>>> + Send,
+        T: Send + 'static,
+    {
         let (settings, reads) = (self.settings.clone(), self.reads.clone());
         Box::pin(async move {
-            let target = match readable(&settings, printer).await {
-                Ok(target) => target,
-                Err(answer) => return answer,
-            };
-            answer(
-                match open {
-                    Open::File(path) => reads.open_file(&target, &path).await,
-                    Open::Camera(id) => reads.open_camera(&target, &id).await,
-                }
-                .map(stream),
-            )
+            match readable(&settings, printer).await {
+                Ok(target) => answer(read(reads, target).await),
+                Err(answer) => answer,
+            }
         })
     }
 }
@@ -203,12 +210,44 @@ impl PrinterHostPort for StoredPrinterHosts {
         self.read(printer, None)
     }
 
-    fn file(&self, printer: String, path: String) -> Answer<Option<HostStream>> {
-        self.open(printer, Open::File(path))
+    fn file(&self, printer: String, path: String) -> Answer<Option<HostFile>> {
+        self.open(printer, |reads, target| async move {
+            Ok(reads.open_file(&target, &path).await?.map(file))
+        })
     }
 
     fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>> {
-        self.open(printer, Open::Camera(camera))
+        self.open(printer, |reads, target| async move {
+            Ok(reads.open_camera(&target, &camera).await?.map(stream))
+        })
+    }
+
+    fn snapshot_source(&self, printer: String) -> Answer<Option<String>> {
+        let settings = self.settings.clone();
+        Box::pin(async move {
+            let read = tokio::task::spawn_blocking(move || {
+                print_file::file_source(&settings, READER_WAIT, &printer)
+            })
+            .await;
+            match read {
+                Ok(Ok(source)) => HostAnswer::Ok(source),
+                Ok(Err(_)) | Err(_) => HostAnswer::Busy,
+            }
+        })
+    }
+
+    fn build_exists(&self, profile_id: i64) -> Answer<bool> {
+        let settings = self.settings.clone();
+        Box::pin(async move {
+            let read = tokio::task::spawn_blocking(move || {
+                print_file::build_exists(&settings, READER_WAIT, profile_id)
+            })
+            .await;
+            match read {
+                Ok(Ok(exists)) => HostAnswer::Ok(exists),
+                Ok(Err(_)) | Err(_) => HostAnswer::Busy,
+            }
+        })
     }
 
     fn test(&self, integration: String) -> Answer<Value> {

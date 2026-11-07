@@ -27,10 +27,11 @@ Every route is read-only on the printer and sends only GETs. It never uploads, s
 ## Not served here yet
 
 - Bambu reads (GRE-362). Bambu reads as having no capabilities. The status-only driver exists ([Bambu LAN driver](bambu-lan.md)), but no route or watcher uses it yet (GRE-1245, GRE-1176).
-- The print-file snapshot for a Build. Node's `files/content?profile_id=` saves the bytes it streams and returns an `X-PrintPartner-Snapshot` token that only the print-file assignment route redeems. That route is not served here yet (GRE-1210 builds the snapshot store; GRE-1214 wires it in), so a request with `profile_id` answers 501 `Print-file inspection for a Build is not available in this runtime yet` and never reaches the printer.
 - Uploads and the send queue (GRE-365). Uploading needs an explicit user send and durable effect records (GRE-354). No Rust route calls `upload_file`.
 
 ## Streamed downloads and camera views
+
+With `profile_id`, `files/content` also captures the file for the print-file assignment route and returns an `X-PrintPartner-Snapshot` token ([Print-file assignment routes](desktop-rebuild.md#print-file-assignment-routes-gre-1220)).
 
 `files/content` and `cameras/view` stream the printer's reply as Node's `sendUpstreamResponse` does. A 2xx reply streams through with its `Content-Type`, `Content-Length` and `Cache-Control: private, no-store` (the gateway then sets `no-store` on every admitted reply). Unlike Node, both add `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`, `files/content` adds `Content-Disposition: attachment`, and `cameras/view` passes only `image/jpeg`, `image/png`, `image/webp`, `image/gif` and `multipart/x-mixed-replace`, sending any other type as `application/octet-stream`. A printer can serve a listed file or a same-origin camera URL as HTML or SVG, and these replies come from Print Partner's own origin, so this keeps such a reply from running as a page of the app. The web client reads `files/content` with `fetch` and shows `cameras/view` in an `<img>`, which these headers do not change. A 404 from the printer answers 404 `Printer resource not found`; any other status answers 502 `Printer host returned HTTP <status>`. Neither reads the printer's body. A failed driver request answers 502 with its message, as the other routes do.
 

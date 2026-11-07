@@ -117,6 +117,21 @@ fn source(fleet: &[Value], integrations: &[Value], printer_id: &str) -> Option<S
     Some(hex::encode(Sha256::digest(integration.to_string())))
 }
 
+/// Node's `getProfileHeader(profileId)` check before a capture: whether
+/// Build `profile_id` exists for the desktop tenant.
+pub fn build_exists(
+    client: &crate::SettingsClient,
+    wait: Duration,
+    profile_id: i64,
+) -> Result<bool> {
+    let reader = client.reader(wait)?;
+    Ok(reader.connection().query_row(
+        "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id='default' AND id=?1)",
+        [profile_id],
+        |row| row.get(0),
+    )?)
+}
+
 /// The snapshot fingerprint of `printer_id`'s linked host, read the way the
 /// assignment route reads it. The files/content route passes it to
 /// [`SnapshotStore::begin`].
@@ -773,5 +788,36 @@ impl Drop for Capture {
         if !self.done {
             self.store.held().active = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Limits, WriterOwner, tests::directory};
+    use std::sync::Arc;
+
+    /// GRE-1214: the files/content route and the assignment route take the
+    /// store from different clients of one database, so they must share it.
+    #[test]
+    fn gre_1214_one_database_shares_one_snapshot_store() {
+        let (owner, _) =
+            WriterOwner::open(&directory("snapshot-store"), Limits::default()).unwrap();
+        let (other, _) =
+            WriterOwner::open(&directory("snapshot-store-other"), Limits::default()).unwrap();
+        let client = owner.client();
+        assert!(Arc::ptr_eq(
+            &client.print_file_snapshots(),
+            &client.clone().print_file_snapshots()
+        ));
+        assert!(Arc::ptr_eq(
+            &client.print_file_snapshots(),
+            &owner.client().print_file_snapshots()
+        ));
+        assert!(!Arc::ptr_eq(
+            &client.print_file_snapshots(),
+            &other.client().print_file_snapshots()
+        ));
+        owner.shutdown().unwrap();
+        other.shutdown().unwrap();
     }
 }

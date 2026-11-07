@@ -270,6 +270,7 @@ impl StatusRoutes {
         let producer = stream.clone();
         let settings = self.settings;
         let hosts = StoredPrinterHosts::new(settings.clone(), self.reads);
+        let snapshots = settings.print_file_snapshots();
         status.spawn_observer(move |observations, cancelled| {
             produce(settings, producer, observations, cancelled)
         });
@@ -282,6 +283,7 @@ impl StatusRoutes {
             self.config,
             self.client,
             Arc::new(hosts),
+            snapshots,
         ))
         .merge(farm_router(
             self.farm_config,

@@ -466,7 +466,10 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     renderAt(fetchMock);
     const box = await screen.findByRole<HTMLInputElement>("checkbox", { name: "Include gear.stl" });
     fireEvent.click(box);
-    await screen.findByText(/Not saved/);
+    await screen.findByText(
+      "Not saved: The draft changed somewhere else. The latest draft is shown; make the change again.",
+    );
+    expect(screen.queryByText(/preview/)).toBeNull();
     await waitFor(() => expect(box.checked).toBe(false));
     fireEvent.change(field("Name"), { target: { value: "Bracket kit v3" } });
     fireEvent.blur(field("Name"));

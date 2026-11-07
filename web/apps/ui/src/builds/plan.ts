@@ -128,7 +128,8 @@ export function valueText(value: FieldValue | string | null): string {
 
 const REFUSALS: Record<string, string> = {
   draft_changed: "The draft changed after this preview. Review the new preview before accepting.",
-  base_changed: "The accepted Plan changed since this draft was made. Rebase the draft first.",
+  base_changed:
+    "The accepted Plan changed since this draft was made, so this draft cannot be accepted.",
   header_changed: "The header was changed somewhere else. The latest values are shown.",
   duplicate_build_name: "Another Build already has this name. Choose a different name.",
   build_archived: "This Build is archived, so its Plan cannot change.",
@@ -136,10 +137,23 @@ const REFUSALS: Record<string, string> = {
   idempotency_conflict: "A different change was already sent with this request. Try again.",
 };
 
-/** A refusal in words: the code's sentence, else the core's detail, else the error. */
-export function refusalText(error: Error): string {
+/** Draft saves preview nothing, so their stale refusals say what to redo instead. */
+const SAVE_REFUSALS: Record<string, string> = {
+  ...REFUSALS,
+  draft_changed:
+    "The draft changed somewhere else. The latest draft is shown; make the change again.",
+  base_changed:
+    "The accepted Plan changed since this draft was made, so this draft takes no more changes.",
+};
+
+/**
+ * A refusal in words: the code's sentence for an Accept or a draft save, else the core's
+ * detail, else the error.
+ */
+export function refusalText(error: Error, write: "accept" | "save" = "accept"): string {
   if (error instanceof CoreError) {
-    return (error.code && REFUSALS[error.code]) || error.detail || error.message;
+    const texts = write === "save" ? SAVE_REFUSALS : REFUSALS;
+    return (error.code && texts[error.code]) || error.detail || error.message;
   }
   return error.message;
 }

@@ -140,12 +140,13 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Checkoff tab units and manual bursts | `GET /api/v2/plans/{id}/checkoff/units`, `POST /plans/{id}/checkoff/bursts` and `/bursts/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1191); see [Manual Checkoff bursts](../desktop-rebuild.md#manual-checkoff-bursts-gre-1191) |
 | Plates workspace, initialize, arrange, edits and restore | `GET /plans/{id}/plates`, `POST /plans/{id}/plates/initialize`, `/arrange`, `/restore`, and the unit routes under `/plans/{id}/plates/{plateId}/units/{token}` (also at `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-419); see [Accepted Plate routes in Rust](../desktop-rebuild.md#accepted-plate-routes-in-rust-gre-419) |
 | Production setup | `GET` and `PATCH /plans/{id}/production-setup` (root only, as in Node) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1209); see [Production setup in Rust](../desktop-rebuild.md#production-setup-in-rust-gre-1209) |
+| Variant dimensions and selection | `GET /plans/{id}/variant-dimensions`, `POST /plans/{id}/variant-selection` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1221); see [Variant dimensions and selection in Rust](../desktop-rebuild.md#variant-dimensions-and-selection-in-rust-gre-1221) |
 | Sources | `GET /sources`, `/sources/activity`, naming, import rules | Exists |
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
 | Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |
 | Build planning phase | `GET /plans/:id/build-planning` | Exists in Rust behind `desktop_rebuild` (GRE-1119) |
 | Assistant decisions | `GET /plans/:id/decisions` | Exists in Rust behind `desktop_rebuild` (GRE-1119); History lists them too |
-| Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker observed; PrusaLink and Bambu read as Manual until they have Rust status watchers (GRE-1175, GRE-362). See [Farm reads](../farm-reads.md) |
+| Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker and PrusaLink observed; Bambu reads as Manual until it has a Rust status watcher (GRE-362). See [Farm reads](../farm-reads.md) |
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Send queue | `GET /api/v2/printer-send-queue`; `POST .../{id}/dispatch`, `.../drain`, `.../{id}/reconcile`, `DELETE .../{id}` | Exists in Rust behind `desktop_rebuild`: the read (GRE-1125), plus Send now, Send ready, Reconcile and Remove with the upload worker (GRE-365). Adding to the queue is still Node only. Reconcile has no UI yet (GRE-1219). See [Send queue](../send-queue.md) |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |

@@ -1,18 +1,34 @@
+//! The group tests drive a Unix child that handles SIGTERM. On Windows the
+//! group is a Job Object that only pp-compat can create, and stdin EOF is the
+//! only stop request, so pp-compat's tests are their Windows counterparts:
+//! `ticket_t_3_drain_process_stop_sigterms_cooperative_child` (SIGTERM and
+//! EOF stops), `ticket_t_3_drain_process_stop_force_kills_after_sigterm_grace`
+//! (forced stop after the grace), `ticket_t_3_drain_job_remains_until_every_member_exits`
+//! (group presence) and `ticket_t_3_drain_reaps_job_when_leader_is_already_gone`
+//! (cleanup without the leader).
+
+#[cfg(unix)]
 use pp_core::{
-    GroupStopReport, MUTATION_DRAIN, SIGTERM_GRACE, ShutdownGate, drive_shutdown_group,
-    process_alive, process_group_absent, reap_process_group, reject_and_arm_eof, restarts_allowed,
+    GroupStopReport, drive_shutdown_group, process_alive, process_group_absent, reap_process_group,
+    reject_and_arm_eof,
 };
+use pp_core::{MUTATION_DRAIN, SIGTERM_GRACE, ShutdownGate, restarts_allowed};
+#[cfg(unix)]
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+};
+use std::{
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
+#[cfg(unix)]
 use tokio::process::Command;
 
+#[cfg(unix)]
 fn child_program() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
         .prefix("pp-t3-child-")
@@ -33,16 +49,19 @@ fn child_program() -> (tempfile::TempDir, PathBuf) {
     (dir, binary)
 }
 
+#[cfg(unix)]
 struct GroupGuard {
     pid: u32,
     _program: tempfile::TempDir,
 }
+#[cfg(unix)]
 impl Drop for GroupGuard {
     fn drop(&mut self) {
         reap_process_group(self.pid);
     }
 }
 
+#[cfg(unix)]
 async fn spawn(mode: &str, argument: &Path) -> (tokio::process::Child, u32, GroupGuard) {
     let (program, binary) = child_program();
     let mut command = Command::new(binary);
@@ -66,6 +85,7 @@ async fn spawn(mode: &str, argument: &Path) -> (tokio::process::Child, u32, Grou
     )
 }
 
+#[cfg(unix)]
 async fn wait_for_text(path: &Path, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -80,6 +100,7 @@ async fn wait_for_text(path: &Path, expected: &str) {
     }
 }
 
+#[cfg(unix)]
 async fn wait_for_pid(path: &Path) -> u32 {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -94,6 +115,7 @@ async fn wait_for_pid(path: &Path) -> u32 {
     }
 }
 
+#[cfg(unix)]
 fn arm_shutdown(
     stdin: &mut Option<tokio::process::ChildStdin>,
     eof_watchdog: bool,
@@ -102,6 +124,7 @@ fn arm_shutdown(
     reject_and_arm_eof(eof_watchdog, stdin, &mut reject)
 }
 
+#[cfg(unix)]
 async fn finish_shutdown(
     child: &mut tokio::process::Child,
     pid: u32,
@@ -163,6 +186,7 @@ async fn ticket_t_3_drain_waits_out_blocking_work_before_close() {
     assert!(gate.wait_idle(Duration::from_millis(50)).await);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_3_drain_sigterm_reaps_the_group() {
     let scratch = tempfile::Builder::new()
@@ -192,6 +216,7 @@ async fn ticket_t_3_drain_sigterm_reaps_the_group() {
     assert!(elapsed < Duration::from_secs(2));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_3_drain_force_kill_waits_out_the_grace() {
     let scratch = tempfile::Builder::new()
@@ -220,6 +245,7 @@ async fn ticket_t_3_drain_force_kill_waits_out_the_grace() {
     assert!(stdin.is_some());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_3_drain_second_start_sees_a_dead_group() {
     let mut pids = Vec::new();
@@ -243,6 +269,7 @@ async fn ticket_t_3_drain_second_start_sees_a_dead_group() {
     assert_ne!(pids[0], pids[1]);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_3_drain_eof_watchdog_follows_the_compat_flag() {
     let scratch = tempfile::Builder::new()
@@ -298,6 +325,12 @@ fn scratch_root_is_empty_after_drain_tests() {
     ]);
 }
 
+// Unix only: it unwinds through the group guard of a Unix process group.
+// Windows counterpart: pp-compat's
+// `ticket_t_3_drain_job_object_kills_children_when_core_is_killed`, where the
+// owner ends without running any cleanup and its child and detached
+// grandchild still die with the job.
+#[cfg(unix)]
 #[tokio::test]
 async fn scratch_cleanup_on_child_panic() {
     let path = std::sync::Arc::new(std::sync::Mutex::new(None));

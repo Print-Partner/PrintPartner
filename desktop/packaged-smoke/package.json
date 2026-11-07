@@ -1,0 +1,9 @@
+{
+  "name": "@print-partner/packaged-smoke",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pinned Tauri CLI that builds the package the packaged smoke launches",
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1"
+  }
+}

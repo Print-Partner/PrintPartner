@@ -138,7 +138,7 @@ fn scalar(text: JsText, style: ScalarStyle, tag: Option<&Tag>) -> ReadResult<Nod
         }),
     }
 }
-fn number_text(n: f64) -> String {
+pub(super) fn number_text(n: f64) -> String {
     if n.is_nan() {
         "NaN".into()
     } else if n == f64::INFINITY {
@@ -1202,6 +1202,13 @@ impl Document {
                 budget.visit(depth)?;
                 budget.expansion(s.units().len() * 2)?;
                 return Ok(s.clone());
+            }
+            Node::Mapping(entries)
+                if entries
+                    .iter()
+                    .any(|(key, _)| key.units().iter().copied().eq("toString".encode_utf16())) =>
+            {
+                return Err(ReadFailure::InvalidDocument);
             }
             Node::Mapping(_) => JsText::scalar("[object Object]"),
             Node::Sequence(_) if active.iter().any(|n| std::ptr::eq(*n, node)) => {

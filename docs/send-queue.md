@@ -128,8 +128,11 @@ nothing is resent automatically:
 
 - `Dispatch` and `Missing` on the item are refused with 409 and problem code
   `send_outcome_unknown`.
-- `Reconcile` with `printed: true` marks the job succeeded and the item
-  `done`. With `printed: false` it marks the job failed and leaves the item
+- `Reconcile` with `printed: true` makes the item `done`. The job succeeds,
+  with the printer's receipt as its result, only when a kept receipt proves
+  the upload, as the generic job reconciliation requires. Without one the
+  job fails with `You reconciled this send: it printed. The printer never
+  confirmed the upload, so this job keeps no result.` With `printed: false` it marks the job failed and leaves the item
   `error` with `You reconciled this send: the printer did not print it. Send
   now sends it again.` The answer is stored in
   `durable_job_reconciliations` as `UserPrinted` or `UserDidNotPrint`

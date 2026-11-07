@@ -440,7 +440,16 @@ fn ticket_t_26_it_printed_finishes_the_item_and_node_interrupted_sends_reconcile
         (item["state"].clone(), item.get("error")),
         (json!("done"), None)
     );
-    assert_eq!(queue.job(&printed).0, "succeeded");
+    // No receipt proves the upload, so the job fails with the user's answer
+    // stated and only the item is done.
+    let (state, document) = queue.job(&printed);
+    assert_eq!(state, "failed");
+    assert!(document["result"].is_null());
+    assert_eq!(
+        document["recovery"],
+        "You reconciled this send: it printed. The printer never confirmed the upload, so this job keeps no result."
+    );
+    assert!(!jobs_reserve(&queue, "p-b"));
     assert_eq!(
         queue.apply(Request::Reconcile {
             id: "q3".into(),
@@ -537,7 +546,20 @@ fn ticket_t_26_reconcile_and_remove_resolve_a_receipt_kept_after_a_refused_autho
     let (state, document) = queue.job(&printed);
     assert_eq!(state, "succeeded");
     assert_eq!(document["effects"][0]["confirmed"], true);
+    assert_eq!(document["result"]["receipt_id"], "upload-1");
     assert_eq!(queue.item("printed").0, "done");
+    let kept: String = queue
+        .database()
+        .query_row(
+            "SELECT receipt FROM durable_job_reconciliations WHERE job_id=?1",
+            [&printed],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&kept).unwrap()["receipt_id"],
+        "upload-1"
+    );
 
     let removed = observed_upload(&queue, &worker, "removed", "p-b");
     assert!(matches!(

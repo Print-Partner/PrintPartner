@@ -1782,6 +1782,7 @@ fn close_unresolved_upload(
             }
             if printed {
                 effect.confirmed = true;
+                observed.clone_from(&effect.receipt);
             } else {
                 observed = effect.receipt.take();
             }
@@ -1806,14 +1807,29 @@ fn close_unresolved_upload(
             ],
         )?;
     }
-    job.state = if printed {
+    // A success needs the printer's receipt, as the generic reconciliation
+    // requires. "It printed" with none is the user's word alone: the job
+    // fails with that stated, and only the queue item shows it printed.
+    let proven = printed
+        .then(|| proven_primary_printer_receipt(&job).cloned())
+        .flatten();
+    job.recovery = Some(if printed && proven.is_none() {
+        PRINTED_WITHOUT_RECEIPT.into()
+    } else {
+        recovery.into()
+    });
+    job.state = if proven.is_some() {
         PersistentState::Succeeded
     } else {
         PersistentState::Failed
     };
-    job.recovery = Some(recovery.into());
+    if proven.is_some() {
+        job.result = proven;
+    }
     save(tx, &mut job, event)
 }
+#[cfg(feature = "desktop_rebuild")]
+const PRINTED_WITHOUT_RECEIPT: &str = "You reconciled this send: it printed. The printer never confirmed the upload, so this job keeps no result.";
 /// True when a queued, running or unresolved job holds `printer_id`.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn printer_reserved(

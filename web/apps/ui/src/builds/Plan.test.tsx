@@ -72,6 +72,11 @@ const workspace = (draft = DRAFT): DraftWorkspace => ({
   reconciliation: { kind: "ready", reused_units: 6, new_units: 0, surplus_units: 0 },
 });
 
+const overridden = (quantity: number): DraftWorkspace => ({
+  ...workspace(),
+  parts: [part(11, "bracket.stl", true, quantity), part(12, "gear.stl", false, 4)],
+});
+
 const draftHeader = (version: number | null): DraftHeaderView => ({
   draft_id: 9,
   build: BUILD,
@@ -517,7 +522,7 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
       write: (path) =>
         path === "/api/v2/plans/2/drafts/save"
           ? new Promise<Response>((resolve) => {
-              held.push(() => resolve(json({ receipt, workspace: workspace() })));
+              held.push(() => resolve(json({ receipt, workspace: overridden(5) })));
             })
           : undefined,
     });
@@ -533,6 +538,45 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     await screen.findByText("Saved to the draft. The Build changes only when you accept.");
     act(() => held.splice(0).forEach((release) => release()));
     expect(writes(fetchMock)).toHaveLength(1);
+    expect(quantity.isConnected).toBe(true);
+  });
+
+  it("keeps focus and later typing in a quantity when its save lands", async () => {
+    const held: (() => void)[] = [];
+    const receipt = {
+      profile_id: 2,
+      draft_id: 9,
+      reconciliation_id: 1,
+      snapshot_digest: DIGEST,
+      saved_at: "2026-11-07T00:00:00.000Z",
+    };
+    let current = workspace();
+    const fetchMock = core({
+      draft: () => current,
+      write: (path) =>
+        path === "/api/v2/plans/2/drafts/save"
+          ? new Promise<Response>((resolve) => {
+              held.push(() => {
+                current = overridden(5);
+                resolve(json({ receipt, workspace: current }));
+              });
+            })
+          : undefined,
+    });
+    renderAt(fetchMock);
+    const quantity = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: /Quantity of bracket\.stl/,
+    });
+    quantity.focus();
+    fireEvent.change(quantity, { target: { value: "5" } });
+    fireEvent.keyDown(quantity, { key: "Enter" });
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(1));
+    fireEvent.change(quantity, { target: { value: "6" } });
+    act(() => held.splice(0).forEach((release) => release()));
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    expect(quantity.isConnected).toBe(true);
+    expect(document.activeElement).toBe(quantity);
+    expect(quantity.value).toBe("6");
   });
 
   it("refuses a blank name without sending", async () => {

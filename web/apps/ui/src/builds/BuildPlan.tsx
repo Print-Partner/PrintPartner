@@ -263,13 +263,21 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
       ? queuedQuantity.value
       : part.quantity_override;
   const [quantity, setQuantity] = useState(part.quantity_override?.toString() ?? "");
+  const [shown, setShown] = useState(part.quantity_override);
+  const [edited, setEdited] = useState(false);
+  if (!queuedQuantity && part.quantity_override !== shown) {
+    setShown(part.quantity_override);
+    if (!edited) setQuantity(part.quantity_override?.toString() ?? "");
+  }
   const [invalid, setInvalid] = useState(false);
   const errorId = useId();
   const save = (choice: PlanChoice) => writes.parts.mutate({ choice, key: newKey() });
   const commitQuantity = () => {
     const value = quantityValue(quantity);
     setInvalid(value === "invalid");
-    if (value === "invalid" || value === sentQuantity || offline) return;
+    if (value === "invalid" || offline) return;
+    setEdited(false);
+    if (value === sentQuantity) return;
     save(quantityChoice(part, value));
   };
   return (
@@ -301,7 +309,10 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
           aria-label={`Quantity of ${part.filename}, blank for ${part.quantity_inferred} from the Source`}
           aria-invalid={invalid || undefined}
           aria-describedby={invalid ? errorId : undefined}
-          onChange={(event) => setQuantity(event.target.value)}
+          onChange={(event) => {
+            setQuantity(event.target.value);
+            setEdited(true);
+          }}
           onBlur={commitQuantity}
           onKeyDown={(event) => event.key === "Enter" && commitQuantity()}
         />
@@ -332,11 +343,7 @@ function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
         </thead>
         <tbody>
           {parts.map((part) => (
-            <PartRow
-              key={`${part.draft_part_id}-${part.quantity_override ?? ""}`}
-              part={part}
-              writes={writes}
-            />
+            <PartRow key={part.draft_part_id} part={part} writes={writes} />
           ))}
         </tbody>
       </table>
@@ -635,6 +642,8 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
           onClose={() => setGate(false)}
           onAccepted={(receipt) => {
             setGate(false);
+            writes.header.reset();
+            writes.parts.reset();
             setAccepted(receipt);
             void refreshAfterAccept(client, id);
           }}

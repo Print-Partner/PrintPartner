@@ -28,16 +28,12 @@ use crate::{
     jobs::{self, CheckoffUnit, JobFailure, Outcome, Payload, UserOperation},
     read_model::{Credential, farm::iso_time},
 };
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    time::{Duration, Instant, SystemTime},
+    sync::{Arc, atomic::AtomicBool},
+    time::{Duration, SystemTime},
 };
 
 /// Node's `DRAIN_ITEM_CAP`: queued items one Send ready examines.
@@ -162,44 +158,21 @@ impl SendQueueClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Reply> {
-        let deadline = Instant::now() + wait;
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
-        loop {
-            ensure!(!queue.closed, "Storage stopped");
-            ensure!(
-                !cancelled.load(Ordering::Acquire),
-                "Cancelled before admission"
-            );
-            if queue.pending.len() < self.shared.capacity {
-                break;
-            }
-            ensure!(Instant::now() < deadline, "Writer queue full");
-            queue = self
-                .shared
-                .changed
-                .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
-                .0;
-        }
-        let (reply, receiver) = mpsc::channel();
-        queue.pending.push_back(Envelope::SendQueue {
-            command: Command {
-                credential,
-                policy: self.policy,
-                storage: self.shared.clone(),
-                request,
+        crate::read_model::submit(
+            &self.shared,
+            cancelled,
+            wait,
+            "Send queue reply lost after admission; reread the queue",
+            |reply| Envelope::SendQueue {
+                command: Command {
+                    credential,
+                    policy: self.policy,
+                    storage: self.shared.clone(),
+                    request,
+                },
+                reply,
             },
-            reply,
-        });
-        self.shared.changed.notify_all();
-        drop(queue);
-        receiver
-            .recv()
-            .map_err(|_| anyhow!("Send queue reply lost after admission; reread the queue"))?
+        )
     }
 }
 
@@ -239,6 +212,7 @@ fn transact(
     };
     let (tenant, subject, authority) =
         auth::authority::admit(&tx, credential, command.policy, &command.storage)?;
+    let writes = !matches!(command.request, Request::Get { .. } | Request::Ready { .. });
     let reply = if legacy(&tx, &tenant)? {
         LEGACY
     } else {
@@ -271,6 +245,9 @@ fn transact(
         }
     };
     if !matches!(reply, Reply::Refused { .. }) {
+        if writes {
+            super::trim(&tx, &tenant)?;
+        }
         tx.commit()
             .map_err(|_| anyhow!(JobFailure::CommitUnknown))?;
     }

@@ -171,6 +171,9 @@ pub enum FileRoute {
     /// uploaded file. The body holds the checked `profile_id` and `filename`
     /// and the raw `object_names` form field.
     Upload,
+    /// Only authenticates the caller, as Node's `onRequest` hooks do before
+    /// the upload route reads its body. The body is ignored.
+    Admit,
 }
 
 /// What the assignment route parses beyond the shared print-file request.
@@ -235,6 +238,10 @@ pub(super) fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> O
             body,
             route: FileRoute::Upload,
         } => upload(tx, tenant, &body, repos),
+        Op::Request {
+            route: FileRoute::Admit,
+            ..
+        } => Ok(Ok(Response::ok(Body::Suggestion(Box::new(Value::Null))))),
         Op::Request { body, route } => request(tx, tenant, &body, route, repos),
     }
 }
@@ -312,7 +319,11 @@ fn request(
         assign: None,
     };
     match route {
-        FileRoute::Preview | FileRoute::Upload => {
+        FileRoute::Assign => match assign_input(body) {
+            Ok(input) => parsed.assign = Some(input),
+            Err(response) => return refused(response),
+        },
+        _ => {
             match preview(
                 tx,
                 tenant,
@@ -326,10 +337,6 @@ fn request(
                 Err(refusal) => return Ok(Err(refusal)),
             }
         }
-        FileRoute::Assign => match assign_input(body) {
-            Ok(input) => parsed.assign = Some(input),
-            Err(response) => return refused(response),
-        },
     }
     Ok(Ok(Response::ok(Body::FileRequest(Box::new(parsed)))))
 }
@@ -491,9 +498,9 @@ fn printer(
 }
 
 /// The upload route's form fields in Node's order: `profile_id` as
-/// `Number()` reads it, then the file part, then its name as
-/// `basename(name.replace(/\\/g, "/")).trim()`. Returns the Build and file
-/// name, or the 400 detail.
+/// `Number()` reads it, then the file part, then its name: busboy keeps what
+/// follows the last `/` or `\`, and Node trims it. Returns the Build and
+/// file name, or the 400 detail.
 pub fn upload_form(
     profile_id: &str,
     has_file: bool,
@@ -505,12 +512,7 @@ pub fn upload_form(
         return Err("Attach the print file as the file part");
     }
     let path = uploaded_name.replace('\\', "/");
-    let name = links::js_trim(
-        path.trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or_default(),
-    );
+    let name = links::js_trim(path.rsplit('/').next().unwrap_or_default());
     if name.is_empty() || js_len(name) > 500 {
         return Err("filename is required");
     }
@@ -870,14 +872,12 @@ struct Upload {
     size: usize,
     expires: Instant,
     inspected: Inspected,
+    /// An assignment holds it; previews still read it.
+    reserved: bool,
 }
 
 #[derive(Default)]
-struct Uploads {
-    ready: HashMap<String, Upload>,
-    /// Bytes of uploads an assignment holds; they still count toward the cap.
-    reserved: usize,
-}
+struct Uploads(HashMap<String, Upload>);
 
 /// Uploaded print files between the upload and the assignment that records
 /// them. Only the inspection is kept, since the bytes classify the same way
@@ -890,7 +890,9 @@ impl UploadStore {
     fn uploads(&self) -> MutexGuard<'_, Uploads> {
         let mut uploads = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        uploads.ready.retain(|_, upload| upload.expires > now);
+        uploads
+            .0
+            .retain(|_, upload| upload.reserved || upload.expires > now);
         uploads
     }
 
@@ -904,8 +906,8 @@ impl UploadStore {
         let classified =
             classify(bytes).map_err(|reason| UploadRefusal::Rejected(reason.message()))?;
         let mut uploads = self.uploads();
-        let held: usize = uploads.ready.values().map(|upload| upload.size).sum();
-        if held + uploads.reserved + bytes.len() > MAX_HELD_UPLOAD_BYTES {
+        let held: usize = uploads.0.values().map(|upload| upload.size).sum();
+        if held + bytes.len() > MAX_HELD_UPLOAD_BYTES {
             return Err(UploadRefusal::Full);
         }
         let token = links::uuid();
@@ -913,40 +915,43 @@ impl UploadStore {
             classification: classified.classification,
             identity: json!({ "size_bytes": classified.size_bytes, "sha256": classified.sha256 }),
         };
-        uploads.ready.insert(
+        uploads.0.insert(
             token.clone(),
             Upload {
                 profile_id,
                 size: bytes.len(),
                 expires: Instant::now() + TTL,
                 inspected: inspected.clone(),
+                reserved: false,
             },
         );
         Ok((token, inspected))
     }
 
-    /// The upload held under `token` for `profile_id`, without spending it.
+    /// The upload held under `token` for `profile_id`, without spending it,
+    /// while an assignment holds it too.
     pub fn read(&self, token: &str, profile_id: i64) -> Option<Inspected> {
         let uploads = self.uploads();
-        let upload = uploads.ready.get(token)?;
-        (upload.profile_id == profile_id).then(|| upload.inspected.clone())
+        let upload = uploads.0.get(token)?;
+        (upload.profile_id == profile_id && upload.expires > Instant::now())
+            .then(|| upload.inspected.clone())
     }
 
-    /// Take the upload for one assignment, as [`Self::read`] matches it. No
-    /// other request can read or take it until the hold is spent or dropped;
-    /// dropping it puts the upload back.
+    /// Hold the upload for one assignment, as [`Self::read`] matches it. No
+    /// other assignment can take it until the hold is spent or dropped;
+    /// dropping it releases the upload.
     pub fn reserve(self: &Arc<Self>, token: &str, profile_id: i64) -> Option<HeldUpload> {
         let mut uploads = self.uploads();
-        if uploads.ready.get(token)?.profile_id != profile_id {
+        let upload = uploads.0.get_mut(token)?;
+        if upload.profile_id != profile_id || upload.reserved || upload.expires <= Instant::now() {
             return None;
         }
-        let upload = uploads.ready.remove(token)?;
-        uploads.reserved += upload.size;
+        upload.reserved = true;
         Some(HeldUpload {
             store: Arc::clone(self),
             token: token.to_owned(),
-            size: upload.size,
-            upload: Some(upload),
+            inspected: upload.inspected.clone(),
+            spent: false,
         })
     }
 }
@@ -955,29 +960,28 @@ impl UploadStore {
 pub struct HeldUpload {
     store: Arc<UploadStore>,
     token: String,
-    size: usize,
-    upload: Option<Upload>,
+    inspected: Inspected,
+    spent: bool,
 }
 
 impl HeldUpload {
     pub fn inspected(&self) -> Option<&Inspected> {
-        self.upload.as_ref().map(|upload| &upload.inspected)
+        Some(&self.inspected)
     }
 
     /// The link now records what the bytes said, so the upload is gone.
     pub fn spend(mut self) {
-        self.upload = None;
+        self.spent = true;
     }
 }
 
 impl Drop for HeldUpload {
     fn drop(&mut self) {
         let mut uploads = self.store.uploads();
-        uploads.reserved -= self.size;
-        if let Some(upload) = self.upload.take() {
-            uploads
-                .ready
-                .insert(std::mem::take(&mut self.token), upload);
+        if self.spent {
+            uploads.0.remove(&self.token);
+        } else if let Some(upload) = uploads.0.get_mut(&self.token) {
+            upload.reserved = false;
         }
     }
 }

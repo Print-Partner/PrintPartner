@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 #[path = "loopback.rs"]
-mod loopback;
+pub mod loopback;
 const NODE: &str = include_str!("../../../../../fixtures/parity/printer-checkoff-verify/node.json");
 const DATABASE: &[u8] =
     include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db");

@@ -57,6 +57,22 @@ const UPLOAD_TOO_LARGE: &str =
     "That print file is larger than the 64 MB PrintPartner will take as an upload";
 const UPLOAD_UNREADABLE: &str = "That upload could not be read";
 const UPLOADS_FULL: &str = "PrintPartner is holding as many uploaded print files as it will; record one of them, then try again";
+/// Field names `@fastify/multipart` refuses because they are
+/// `Object.prototype` members.
+const PROTOTYPE: [&str; 12] = [
+    "__proto__",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+    "constructor",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "toLocaleString",
+    "toString",
+    "valueOf",
+];
 const UNPORTED: &str = "Reading a print file off a printer is not available in this runtime yet; reopen the file from its preview";
 
 #[derive(Clone)]
@@ -357,8 +373,8 @@ struct Form {
     file: Option<Vec<u8>>,
 }
 
-/// One part's bytes, or `Err(true)` past `cap` and `Err(false)` when the
-/// body cannot be read (`true` too when that is the body limit). A
+/// One part's bytes, or `Err(true)` past `cap` or the body limit and
+/// `Err(false)` when the body cannot be read. A
 /// `truncate` part keeps its first `cap` bytes instead, as busboy cuts a
 /// field at `fieldSize`.
 async fn part_bytes(part: &mut Field<'_>, cap: usize, truncate: bool) -> Result<Vec<u8>, bool> {
@@ -377,7 +393,10 @@ async fn part_bytes(part: &mut Field<'_>, cap: usize, truncate: bool) -> Result<
     Ok(bytes)
 }
 
-/// The multipart form under Node's limits: one file part of up to 64 MB (a
+/// The multipart form under Node's limits. A part is a file when it has a
+/// file name or an `application/octet-stream` type, as busboy decides, and a
+/// part named after an `Object.prototype` member is refused as
+/// `@fastify/multipart` refuses it. One file part of up to 64 MB (a
 /// file part not named `file` is read and ignored), and four fields cut at
 /// 64 KiB, of which `profile_id` and `object_names` are kept.
 async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response>> {
@@ -414,14 +433,24 @@ async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response
         let mut part = match parts.next_field().await {
             Ok(Some(part)) => part,
             Ok(None) => return Ok(form),
-            Err(error) => return Err(refused(error.status() == StatusCode::PAYLOAD_TOO_LARGE)),
+            Err(_) => return Err(bad(UPLOAD_UNREADABLE)),
         };
         let name = part.name().map(str::to_owned);
-        let Some(file_name) = part.file_name().map(str::to_owned) else {
+        if name
+            .as_deref()
+            .is_some_and(|name| PROTOTYPE.contains(&name))
+        {
+            return Err(bad(UPLOAD_UNREADABLE));
+        }
+        let octets = part
+            .content_type()
+            .is_some_and(|value| value == "application/octet-stream");
+        let file_name = part.file_name().map(str::to_owned);
+        if file_name.is_none() && !octets {
             fields += 1;
             let value = part_bytes(&mut part, UPLOAD_FIELD_BYTES, true)
                 .await
-                .map_err(refused)?;
+                .map_err(|_| bad(UPLOAD_UNREADABLE))?;
             if fields > UPLOAD_FIELDS {
                 return Err(bad(UPLOAD_UNREADABLE));
             }
@@ -432,7 +461,7 @@ async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response
                 _ => {}
             }
             continue;
-        };
+        }
         files += 1;
         if files > 1 {
             return Err(bad("Upload one print file at a time"));
@@ -441,13 +470,13 @@ async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response
             .await
             .map_err(refused)?;
         if name.as_deref() == Some("file") {
-            form.name = file_name;
+            form.name = file_name.unwrap_or_default();
             form.file = Some(bytes);
         }
     }
 }
 
-/// Node's upload route: the form fields in its order, then the Build's
+/// Node's upload route: the credential, then the form fields in its order, then the Build's
 /// Accepted Plan, then the bytes, which are classified off the async workers
 /// and held under a new `upload_token`. The answer is the preview's body.
 async fn upload(
@@ -455,6 +484,15 @@ async fn upload(
     Extension(presented): Extension<PresentedCredential>,
     request: axum::extract::Request,
 ) -> Response {
+    // Node authenticates in `onRequest` hooks, before the route's rate window
+    // and before it reads a byte of the body.
+    let admit = Request::FileRequest {
+        body: Value::Null,
+        route: FileRoute::Admit,
+    };
+    if let Err(response) = storage(&app, presented.clone(), admit, None).await {
+        return *response;
+    }
     if let Some(after) = app.windows.consume("upload", UPLOAD_LIMIT) {
         return throttled(after);
     }

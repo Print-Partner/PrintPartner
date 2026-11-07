@@ -2977,13 +2977,21 @@ for the upload.
   writer transaction checks
   the printer's host fingerprint again, so a settings change after the route's
   read refuses with the same 409.
-- The upload route takes `multipart/form-data` (else 415 `Send the print file
-  as multipart/form-data`) under Node's busboy limits: one file part of up to
-  64 MB (413 `That print file is larger than the 64 MB PrintPartner will take
-  as an upload`, 400 `Upload one print file at a time` for a second), and
-  four fields cut at 64 KiB (a fifth is 400 `That upload could not be read`).
-  It then checks `profile_id`, the `file` part, its base name and extension
-  in Node's order, reads the Build's Accepted Plan (a missing Build is a 500,
+- The upload route authenticates the caller first, as Node's `onRequest`
+  hooks do, so a bad credential is 401 before the rate window counts it or
+  the body is read. It takes `multipart/form-data` (else 415 `Send the print
+  file as multipart/form-data`) under Node's busboy limits: one file part of
+  up to 64 MB (413 `That print file is larger than the 64 MB PrintPartner
+  will take as an upload`, 400 `Upload one print file at a time` for a
+  second), and four fields cut at 64 KiB (a fifth is 400 `That upload could
+  not be read`). A part is a file when it has a file name or an
+  `application/octet-stream` type, as busboy decides, and a part named after
+  an `Object.prototype` member is 400 `That upload could not be read`, as
+  `@fastify/multipart` refuses it. Node has no cap on the whole body; here it
+  is 65 MiB, and a body past it that is still inside the file part is the
+  413, anywhere else the unreadable 400. It then checks `profile_id`, the
+  `file` part, its file name (what follows the last `/` or `\${B}, trimmed)
+  and extension in Node's order, reads the Build's Accepted Plan (a missing Build is a 500,
   as for the preview), classifies the bytes off the async workers (409 with
   Node's rejection detail), and holds the classification for 15 minutes under
   a new `upload_token`. The answer is the preview's body with that token.
@@ -2996,9 +3004,10 @@ for the upload.
   unknown, expired or foreign one answers Node's 409 `That upload is no longer
   available; upload the print file again`. The assignment reserves it as it
   reserves a snapshot: a successful or unknown outcome spends it, and a
-  refusal puts it back, so the operator does not upload the file again after
+  refusal releases it, so the operator does not upload the file again after
   a stale plan revision. Node reads the upload without reserving it; here a
-  concurrent second assignment of the same token is refused.
+  concurrent second assignment of the same token is refused, while a preview
+  still reads it.
 - A `remote_path` without a snapshot on a Moonraker or
   PrusaLink host answers 501 instead of recording the print unread, because
   this runtime does not read a printer's file itself yet. A printer tracked by

@@ -718,12 +718,10 @@ async fn an_upload_is_held_for_its_build_and_spent_by_one_assignment() {
     owner.shutdown().unwrap();
 }
 
-#[tokio::test]
-async fn the_upload_route_refuses_in_nodes_order() {
-    let (fixture, owner, router) = mounted("true");
-    let before = links(&fixture);
+/// Upload refusals in Node's order, each with its status and detail.
+fn upload_refusals() -> Vec<(Parts<'static>, u16, &'static str)> {
     let gcode: &[u8] = b"G28\n";
-    let cases: Vec<(Parts, u16, &str)> = vec![
+    vec![
         (
             vec![("file", Some("a.gcode"), gcode)],
             400,
@@ -749,6 +747,19 @@ async fn the_upload_route_refuses_in_nodes_order() {
             vec![("profile_id", None, b"1"), ("file", Some("dir/ "), gcode)],
             400,
             "filename is required",
+        ),
+        (
+            vec![
+                ("profile_id", None, b"1"),
+                ("file", Some("dir/a.gcode/"), gcode),
+            ],
+            400,
+            "filename is required",
+        ),
+        (
+            vec![("constructor", None, b"x"), ("profile_id", None, b"1")],
+            400,
+            "That upload could not be read",
         ),
         (
             vec![("profile_id", None, b"1"), ("file", Some("a.stl"), gcode)],
@@ -783,9 +794,19 @@ async fn the_upload_route_refuses_in_nodes_order() {
             500,
             "Internal Server Error",
         ),
-    ];
-    for (parts, status, expected) in cases {
-        let (got, body) = upload(&router, &parts).await;
+    ]
+}
+
+#[tokio::test]
+async fn the_upload_route_refuses_in_nodes_order() {
+    let (fixture, owner, router) = mounted("true");
+    let before = links(&fixture);
+    let cases = upload_refusals();
+    // Both mounts, so the cases stay inside each one's 10-a-minute window.
+    for (index, (parts, status, expected)) in cases.into_iter().enumerate() {
+        let (content_type, body) = multipart(&parts);
+        let path = ["", "/api/v1"][index % 2];
+        let (got, body) = post_as(&router, &format!("{path}{UPLOAD}"), &content_type, body).await;
         assert_eq!(
             (got, &body["detail"]),
             (StatusCode::from_u16(status).unwrap(), &json!(expected)),
@@ -801,6 +822,23 @@ async fn the_upload_route_refuses_in_nodes_order() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+    let octets = concat!(
+        "--pp\r\nContent-Disposition: form-data; name=\"profile_id\"\r\n\r\n1\r\n",
+        "--pp\r\nContent-Disposition: form-data; name=\"file\"\r\n",
+        "Content-Type: application/octet-stream\r\n\r\nG28\n\r\n--pp--\r\n",
+    );
+    let (status, unnamed) = post_as(
+        &router,
+        UPLOAD,
+        "multipart/form-data; boundary=pp",
+        octets.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(
+        (status, &unnamed["detail"]),
+        (StatusCode::BAD_REQUEST, &json!("filename is required")),
+        "an octet-stream part is a file without a name"
+    );
     let (status, json) = post(&router, UPLOAD, "{}", true).await;
     assert_eq!(
         (status, &json["detail"]),
@@ -814,9 +852,25 @@ async fn the_upload_route_refuses_in_nodes_order() {
 }
 
 #[tokio::test]
-async fn an_upload_past_64_mb_is_413_and_the_route_takes_ten_a_minute() {
+async fn uploads_up_to_64_mb_are_held_to_two_and_the_route_takes_ten_a_minute() {
     let (_fixture, owner, router) = mounted("1");
-    let big = vec![b'G'; MAX_UPLOAD_BYTES + 1];
+    let full = b"G28\n".repeat(MAX_UPLOAD_BYTES / 4);
+    for _ in 0..2 {
+        let (status, body) = upload(&router, &upload_gcode(&full)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = upload(&router, &upload_gcode(b"G28\n")).await;
+    assert_eq!(
+        (status, &body["detail"]),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!(
+                "PrintPartner is holding as many uploaded print files as it will; record one of them, then try again"
+            )
+        )
+    );
+    let mut big = full;
+    big.push(b'\n');
     let (status, body) = upload(
         &router,
         &[
@@ -832,12 +886,19 @@ async fn an_upload_past_64_mb_is_413_and_the_route_takes_ten_a_minute() {
             &json!("That print file is larger than the 64 MB PrintPartner will take as an upload")
         )
     );
-    for _ in 0..9 {
+    for _ in 0..6 {
         let (status, _) = post(&router, UPLOAD, "{}", true).await;
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
     let (status, _) = post(&router, UPLOAD, "{}", true).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let junk = Some("pp_session=junk");
+    let (status, _) = checkoff_http::loopback::send(&router, "POST", UPLOAD, "{}", junk).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a bad credential is refused before the window and the body"
+    );
     let (status, _) = post(&router, &format!("/api/v1{UPLOAD}"), "{}", true).await;
     assert_eq!(
         status,
@@ -856,8 +917,12 @@ fn held_uploads_are_bound_to_their_build_and_capped_at_two_files() {
     assert!(uploads.reserve(&token, 2).is_none());
     let held = uploads.reserve(&token, 1).unwrap();
     assert!(
-        uploads.read(&token, 1).is_none(),
+        uploads.reserve(&token, 1).is_none(),
         "one assignment at a time"
+    );
+    assert!(
+        uploads.read(&token, 1).is_some(),
+        "a preview still reads a held upload"
     );
     drop(held);
     assert!(

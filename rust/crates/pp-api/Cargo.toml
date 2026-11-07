@@ -15,6 +15,7 @@ desktop_rebuild = [
     "dep:pp-services",
     "dep:rmcp",
     "dep:serde_path_to_error",
+    "axum/multipart",
 ]
 codegen = ["desktop_rebuild", "dep:schemars", "pp-storage/codegen"]
 
@@ -28,7 +29,7 @@ pp-services = { path = "../pp-services", optional = true }
 rmcp = { version = "=3.5.0", default-features = false, features = ["server", "transport-streamable-http-server"], optional = true }
 anyhow.workspace = true
 log = "=0.4.34"
-axum = { workspace = true, features = ["multipart"] }
+axum.workspace = true
 tower = { version = "=0.5.3", default-features = false }
 http-body = { version = "=1.0.1", optional = true }
 tokio.workspace = true

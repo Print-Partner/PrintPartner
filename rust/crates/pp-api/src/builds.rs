@@ -1,5 +1,6 @@
 mod decisions;
 mod features;
+mod header;
 mod http;
 mod manifest_options;
 mod variants;

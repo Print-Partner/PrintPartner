@@ -113,6 +113,14 @@ It sends 20 requests in order on the flat, `/api/v1` and `/api/v2` mounts: build
 node fixtures/parity/manifest-checkouts-http/generate.mjs --check
 ```
 
+## build-header/node.json (GRE-1231)
+
+`generate.mjs` runs Node's `PATCH /plans/:id` and `POST /plans/:id/archive` with `PP_DESKTOP_REBUILD=1` on copies of `accepted-plate-node.db`, in 14 phases that each seed their own SQL: renames, the `orders` feature gate and special requests (including values whose `String()` throws), duplicate names, bodies that are not JSON, `null` or empty, archives of printed, unprinted, uninitialized, already archived and empty Builds and of a Build missing a progress row, and the `/api/v1` legacy refusal. Times written during a request are recorded as `"<now>"`. `build_header_http` replays the 58 cases through `build_router`: 51 exact, 7 declared corrections. A case with no body is sent with no content type, as the generator sends it.
+
+```sh
+node fixtures/parity/build-header/generate.mjs --check
+```
+
 ## variants-http/node.json (GRE-1221)
 
 `generate.mjs` uses the same copied database after its `seed` SQL adds Sources 2-10, Plans 3-13 and four stored selections (not JSON, a number, empty, and an object whose keys and numbers Node reorders and reformats). `files` holds the checkouts: Source 2's manifest declares `variant_dimensions` with strings, numbers (`1.5`, `2.0`, `.nan`, `.inf`, `1e21`, `-0`), entries Node drops (booleans, null, objects, lists, a non-list value) and anchors; Source 4's manifest is invalid YAML, Source 5's lists its dimensions, Source 6's is a string, Source 8 has no manifest, and Source 9's manifest does not load because a selection is empty, and Source 10's does not load because `String(project)` throws on a mapping with its own `toString` key. Source 2 also declares a `__proto__` dimension, which Node drops. Source 3 has no `local_path` and Source 7's checkout does not exist.

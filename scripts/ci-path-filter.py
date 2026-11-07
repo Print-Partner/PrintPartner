@@ -39,6 +39,7 @@ def relevant(path, kind):
 
 
 WINDOWS_LABELS = {"ci:full", "ci:windows"}
+WINDOWS_MARKERS = (b"windows", b"std::os::unix", b"cfg(unix)", b"target_family", b"target_os", b"libc::")
 WINDOWS_PATHS = ("rust/crates/pp-os/", ".github/workflows/", ".github/actions/")
 WINDOWS_FILES = {"rust/Cargo.lock", "rust-toolchain.toml", ".github/actionlint.yaml",
                  "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}
@@ -53,7 +54,8 @@ def windows_relevant(path, head):
         text = subprocess.check_output(["git", "show", f"{head}:{path}"], stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
         return True
-    return b"windows" in text.lower()
+    text = text.lower()
+    return any(marker in text for marker in WINDOWS_MARKERS)
 
 
 def select(event, base, head, kind, labels=()):

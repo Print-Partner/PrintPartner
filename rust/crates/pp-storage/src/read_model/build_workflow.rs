@@ -10,9 +10,9 @@
 
 use super::{Credential, context, graph, workflow};
 use crate::{Envelope, Shared, WriterOwner, auth};
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use pp_domain::PositiveId;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 use std::{
     path::PathBuf,
@@ -41,12 +41,11 @@ impl std::fmt::Display for Failure {
 
 impl std::error::Error for Failure {}
 
-/// What other owners know about a Build. Storage has no due-date field until
-/// order fields land (slice 7), and stock shortfall belongs to the Spoolman
-/// computation.
+/// What other owners know about a Build: stock shortfall belongs to the
+/// Spoolman computation. The due date is the Build's own, read from
+/// `build_profile_details` in the same transaction as its facts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BuildInputs {
-    pub due_date: Option<time::Date>,
     pub stock: Stock,
 }
 
@@ -56,7 +55,7 @@ pub trait WorkflowInputs: Send + Sync {
     fn inputs(&self, tenant: &str, build: i64) -> BuildInputs;
 }
 
-/// No due dates and stock not ready: the inputs until their owners exist.
+/// Stock not ready: the input until its owner exists.
 pub struct PendingInputs;
 
 impl WorkflowInputs for PendingInputs {
@@ -136,10 +135,14 @@ pub(crate) struct Command {
     cancelled: Arc<AtomicBool>,
 }
 
-/// The caller's tenant, the facts of each Build read and the task feed's
-/// unreadable Builds, in id order. `None` when the requested Build does not
-/// exist.
-pub(crate) type Read = Option<(String, Vec<Facts>, Vec<UnavailableBuild>)>;
+/// The caller's tenant, the facts and due date of each Build read and the task
+/// feed's unreadable Builds, in id order. `None` when the requested Build does
+/// not exist.
+pub(crate) type Read = Option<(
+    String,
+    Vec<(Facts, Option<time::Date>)>,
+    Vec<UnavailableBuild>,
+)>;
 
 impl WriterOwner {
     pub fn build_workflow(
@@ -185,10 +188,9 @@ impl WorkflowClient {
             return Ok(Outcome::MissingBuild);
         };
         let mut resolved = Vec::with_capacity(facts.len());
-        for mut facts in facts {
-            let inputs = self.inputs.inputs(&tenant, facts.build.id);
-            facts.stock = inputs.stock;
-            resolved.push((workflow::resolve(&facts)?, inputs.due_date));
+        for (mut facts, due) in facts {
+            facts.stock = self.inputs.inputs(&tenant, facts.build.id).stock;
+            resolved.push((workflow::resolve(&facts)?, due));
         }
         Ok(match request {
             Request::Build(_) => Outcome::Workspace(Box::new(
@@ -277,15 +279,17 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
     for (id, name) in ids {
         ensure!(!cancelled(), "Cancelled before admission");
         let accepted = super::accepted_read(&tx, &tenant, id, &command.repos, &mut budget)?;
-        match context::capture(&tx, &tenant, id, &accepted, &mut budget) {
-            Ok(captured) => {
+        let captured = context::capture(&tx, &tenant, id, &accepted, &mut budget)
+            .and_then(|captured| Ok((captured, due_date(&tx, &tenant, id)?)));
+        match captured {
+            Ok((captured, due)) => {
                 let mut build = captured
                     .ok_or_else(|| anyhow!("Build context missing"))?
                     .facts;
                 build.checkoff.beds_to_clear =
                     farm.beds(id).min(build.checkoff.awaiting_verification);
                 build.checkoff.match_suggestions = farm.matches(id);
-                facts.push(build);
+                facts.push((build, due));
             }
             Err(error)
                 if command.request == Request::Tasks
@@ -305,4 +309,21 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<R
     }
     tx.commit()?;
     Ok(Some((tenant, facts, unavailable)))
+}
+
+/// The Build's `due_date` from `build_profile_details`, which Accept writes and
+/// whose CHECK keeps it a calendar date.
+fn due_date(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Option<time::Date>> {
+    let stored: Option<String> = tx
+        .query_row(
+            "SELECT due_date FROM build_profile_details WHERE tenant_id=?1 AND profile_id=?2",
+            params![tenant, build],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let format = time::format_description::well_known::Iso8601::DATE;
+    stored
+        .map(|date| time::Date::parse(&date, &format).context("Invalid stored due date"))
+        .transpose()
 }

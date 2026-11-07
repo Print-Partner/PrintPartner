@@ -1,5 +1,6 @@
 //! A loopback request to a mounted router, with the Host, Origin and peer
-//! address the accepted gate admits, and the JSON body of its answer.
+//! address the accepted gate admits, and the JSON body of its answer. A body
+//! is sent as `application/json`; `None` sends no body and no type.
 use axum::{
     Router,
     body::Body,
@@ -16,19 +17,23 @@ pub async fn send(
     router: &Router,
     method: &str,
     path: &str,
-    body: &str,
+    body: Option<&str>,
     cookie: Option<&str>,
 ) -> (StatusCode, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(path)
         .header("host", "127.0.0.1:4100")
-        .header("origin", ORIGIN)
-        .header("content-type", "application/json");
+        .header("origin", ORIGIN);
+    if body.is_some() {
+        request = request.header("content-type", "application/json");
+    }
     if let Some(cookie) = cookie {
         request = request.header("cookie", cookie);
     }
-    let mut request = request.body(Body::from(body.to_owned())).unwrap();
+    let mut request = request
+        .body(Body::from(body.unwrap_or_default().to_owned()))
+        .unwrap();
     request
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));

@@ -1,3 +1,4 @@
+mod header;
 mod http;
 mod manifest_options;
 mod variants;

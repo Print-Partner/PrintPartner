@@ -29,11 +29,16 @@ type EngineMultipartRequest = Omit<EngineRequest, "body"> &
   }>;
 
 function errorDetail(value: unknown): string | undefined {
-  if (typeof value !== "object" || value === null || !("detail" in value)) {
-    return undefined;
+  if (typeof value !== "object" || value === null) return undefined;
+  if ("detail" in value && typeof value.detail === "string" && value.detail.trim()) {
+    return value.detail;
   }
-  const detail = value.detail;
-  return typeof detail === "string" && detail.trim() ? detail : undefined;
+  // The Build rename rule's 409 carries the taken name instead of a detail.
+  if ("code" in value && value.code === "duplicate_build_name" && "name" in value
+    && typeof value.name === "string") {
+    return `Profile already exists: ${value.name}`;
+  }
+  return undefined;
 }
 
 function isCurrentPasswordRejection(value: unknown): boolean {

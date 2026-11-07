@@ -348,17 +348,7 @@ fn ticket_t_26_upload_outcomes_settle_the_item_in_the_job_transaction() {
         ("error".into(), Some("Upload failed".into()), Some(job))
     );
 
-    let job = queue.dispatch("unknown");
-    let mut attempt = claim(&worker);
-    worker
-        .update(
-            &mut attempt.lease,
-            WorkerOperation::BeginEffect(intent("p-c")),
-        )
-        .unwrap();
-    worker
-        .update(&mut attempt.lease, WorkerOperation::Fail)
-        .unwrap();
+    let job = queue.unknown_outcome(&worker, "unknown", "p-c");
     assert_eq!(queue.job(&job).0, "reconciliation_required");
     assert_eq!(
         queue.item("unknown"),
@@ -689,17 +679,7 @@ fn ticket_t_26_remove_cancels_only_waiting_items_and_releases_an_unresolved_uplo
         .update(&mut attempt.lease, WorkerOperation::Fail)
         .unwrap();
 
-    let job = queue.dispatch("unknown");
-    let mut attempt = claim(&worker);
-    worker
-        .update(
-            &mut attempt.lease,
-            WorkerOperation::BeginEffect(intent("p-c")),
-        )
-        .unwrap();
-    worker
-        .update(&mut attempt.lease, WorkerOperation::Fail)
-        .unwrap();
+    let job = queue.unknown_outcome(&worker, "unknown", "p-c");
     assert!(matches!(
         queue.apply(Request::Remove {
             id: "unknown".into()
@@ -787,6 +767,32 @@ fn ticket_t_26_a_lease_lost_while_running_is_an_unknown_outcome_not_a_restart() 
         )
     );
     assert_eq!(queue.send("admitted"), OUTCOME_UNKNOWN);
+}
+
+#[test]
+fn ticket_t_26_a_lease_lost_before_the_upload_began_never_sends_on_its_own() {
+    let queue = Harness::open();
+    queue.seed(&[("stalled", "p-c", "queued", None)]);
+    let worker = queue.worker();
+    let job = queue.dispatch("stalled");
+    claim(&worker);
+    queue
+        .database()
+        .execute("UPDATE durable_jobs SET lease_until=1 WHERE id=?1", [&job])
+        .unwrap();
+    // Recovery fails the attempt instead of queueing it for a later claim.
+    assert!(worker.claim().unwrap().is_none());
+    assert_eq!(queue.job(&job).0, "failed");
+    assert_eq!(
+        queue.item("stalled"),
+        (
+            "error".into(),
+            Some(crate::send_queue::NOT_ADMITTED_ERROR.into()),
+            Some(job)
+        )
+    );
+    assert!(worker.claim().unwrap().is_none(), "nothing runs on its own");
+    assert!(matches!(queue.send("stalled"), Reply::Dispatched { .. }));
 }
 
 #[test]
@@ -879,37 +885,33 @@ fn ticket_t_26_writes_keep_nodes_fifty_item_terminal_history() {
             .map(Result::unwrap)
             .collect()
     };
-    // Node's "keeps newest terminal history within remaining capacity".
-    let queue = Harness::open();
-    let done = ids("t", 60);
-    let mut items = vec![("a", "p-a", "queued", None)];
-    items.extend(done.iter().map(|id| (id.as_str(), "p-b", "done", None)));
-    queue.seed(&items);
-    assert!(matches!(
-        queue.apply(Request::Remove { id: "a".into() }),
-        Reply::Item(_)
-    ));
-    let kept = stored(&queue);
-    assert_eq!(kept.len(), 50);
-    assert_eq!(kept[0].0, "t10", "the oldest terminal items go first");
-    assert_eq!(kept[49].0, "t59");
-
-    // Node's "never drops active items even when over MAX_ITEMS".
-    let queue = Harness::open();
-    let (queued, done) = (ids("q", 55), ids("t", 10));
-    let mut items: Vec<_> = queued
-        .iter()
-        .map(|id| (id.as_str(), "p-a", "queued", None))
-        .collect();
-    items.extend(done.iter().map(|id| (id.as_str(), "p-b", "done", None)));
-    queue.seed(&items);
-    assert!(matches!(
-        queue.apply(Request::Remove { id: "q0".into() }),
-        Reply::Item(_)
-    ));
-    let kept = stored(&queue);
-    assert_eq!(kept.len(), 54);
-    assert!(kept.iter().all(|(_, state)| state == "queued"));
+    // Node's "keeps newest terminal history within remaining capacity" and
+    // "never drops active items even when over MAX_ITEMS": seed, remove the
+    // first item, and compare every row that stays, in order.
+    let rows =
+        |prefix: &str, range: std::ops::Range<usize>, state: &str| -> Vec<(String, String)> {
+            range
+                .map(|i| (format!("{prefix}{i}"), state.to_owned()))
+                .collect()
+        };
+    for (queued, done, expected) in [
+        (1, 60, rows("t", 10..60, "done")),
+        (55, 10, rows("q", 1..55, "queued")),
+    ] {
+        let queue = Harness::open();
+        let (queued, done) = (ids("q", queued), ids("t", done));
+        let mut items: Vec<_> = queued
+            .iter()
+            .map(|id| (id.as_str(), "p-a", "queued", None))
+            .collect();
+        items.extend(done.iter().map(|id| (id.as_str(), "p-b", "done", None)));
+        queue.seed(&items);
+        assert!(matches!(
+            queue.apply(Request::Remove { id: "q0".into() }),
+            Reply::Item(_)
+        ));
+        assert_eq!(stored(&queue), expected);
+    }
 }
 
 #[test]

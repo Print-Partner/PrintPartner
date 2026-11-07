@@ -43,6 +43,10 @@ pub const INTERRUPTED_ERROR: &str = "Interrupted by process restart. Printer out
 /// An item whose Rust upload was dispatched but had not started when the
 /// process stopped. Nothing was sent.
 pub const NOT_STARTED_ERROR: &str = "Interrupted by process restart before the upload began. Nothing was sent to the printer. Send now sends it.";
+/// An item whose upload lost its worker before the upload began while this
+/// process kept running, for example when storage refused both the upload's
+/// admission and the failure that should have followed it. Nothing was sent.
+pub const NOT_ADMITTED_ERROR: &str = "The send did not start because storage could not admit it. Nothing was sent to the printer. Send now sends it.";
 /// An item whose upload stopped with its printer outcome unknown while this
 /// process kept running.
 pub const UNKNOWN_OUTCOME_ERROR: &str = "Printer outcome is unknown, so this send was not marked successful. The staged file remains for an explicit retry. This process will not retry a print on its own.";

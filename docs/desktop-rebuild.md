@@ -108,13 +108,25 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   the setting every second, so a changed, disabled or removed host replaces or
   cancels its one poller. A malformed setting stops every poller and the route
   answers 503 `Printer monitoring unavailable`.
+  PrusaLink status (GRE-1175): the same watchers also poll the stored
+  PrusaLink hosts, through the PrusaLink driver's Digest-authenticated status
+  read, every 5 s (the web client's default status cadence; Moonraker polls
+  every 2 s). Node reads PrusaLink status on demand, so the published status is
+  the one Node's adapter reports, including its offline messages. An offline
+  read backs off like a failed Moonraker poll and does not count as heard.
+  PrusaLink rows come after the Moonraker snapshot and are watched only while
+  the total stays within the 128-host cap; a PrusaLink row past the cap, or
+  with an id a Moonraker row already has, is not watched.
   `GET`/`HEAD /api/v1/integrations/{id}/status` is the `pp-api`
   `printer_status` route. It authenticates like every Rust route, then answers
-  the cached `PrinterHostStatus`; it never polls a printer on demand. A
-  non-Moonraker id answers 404 `Integration not found`; nothing goes to Node.
+  the cached `PrinterHostStatus`; it never polls a printer on demand. An
+  id that is not a watched Moonraker or PrusaLink host answers 404
+  `Integration not found`; nothing goes to Node.
   An HTTPS host reports `offline` with `HTTPS printer monitoring is not
-  available yet` until GRE-359, and a host that redirects reports `offline`
-  and stops polling. Hiding the window keeps polling; `suspend_monitoring`
+  available yet` until GRE-359, and a Moonraker host that redirects reports
+  `offline` and stops polling. A PrusaLink redirect is the driver's
+  `PrusaLink returned HTTP <status>` offline status, as in Node, and the
+  poller keeps backing off. Hiding the window keeps polling; `suspend_monitoring`
   (sleep) stops every poller and `resume_monitoring` starts them again.
   Monitoring only reads: no Checkoff, queue or job writes and no sends.
   `Gateway::printer_observations()` is the read-only in-process port for later
@@ -146,7 +158,7 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   event. Refusals keep Node's status and detail (400 `profile_id is required`,
   404 `Unattributed print not found`, 409 `Print already claimed`, `That print
   file is already assigned`, and the rest of `materializeProblem`) and write
-  nothing. Node's per-IP rate limit is not carried over because the routes are
+  nothing. A Build that does not exist is a 500, as in Node (GRE-1217). Node's per-IP rate limit is not carried over because the routes are
   loopback-only. Tests: `pp-storage/tests/unattributed_claim.rs` and
   `pp-api/tests/unattributed_claim_http.rs`.
 - Printer stream (GRE-1014): `GET /ws/printers` sends a snapshot of every
@@ -176,9 +188,9 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   `/files` and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are
   read-only on the printer: no upload or print start, and only PrusaLink's
-  single Digest resend after a 401. PrusaLink reports
-  no status capability because only Moonraker has a watcher; Bambu reads as
-  having no capabilities. See
+  single Digest resend after a 401. Moonraker and PrusaLink both report the
+  status capability, except a PrusaLink row the watchers do not poll (see
+  above); Bambu reads as having no capabilities. See
   [Printer-host reads](printer-host-reads.md).
 
   ```sh
@@ -2883,6 +2895,113 @@ cd web && node --conditions=development --import tsx ../fixtures/parity/print-fi
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-domain --features desktop_rebuild --test print_file_parity
 ```
 
+### Print-file assignment storage (GRE-1217)
+
+`Request::AssignFile` in `pp-storage::checkoff_progress` (feature
+`desktop_rebuild`) is the create path of Node's
+`materializeAcceptedPrinterLink`. It is what `POST
+/printer-checkoff/file-assignments` records once the route has parsed the
+request and read the file. GRE-1220 mounts it (next section). In one
+writer transaction, against the Build's Accepted Plan:
+
+- The plan revision must be the one the operator saw, or 409 `The Accepted
+  Plan moved on; reload the Build and choose the file again`.
+- Every confirmed unit must be an incomplete Required unit of an included
+  Part, picked once, and every object mapping must point an unmatched or
+  ambiguous object at a distinct confirmed unit. Otherwise 409 `That print
+  file does not map to an incomplete Required unit in this Build`.
+- No watching or awaiting-verify link may already hold the same file name
+  (basename, any case) on that integration, or 409 `That print file is already
+  assigned`.
+- The link is created watching with the confirmed units (each with its
+  Required-unit object name), the unmatched names as `unlabeled_names`, the
+  remote path, identity and classification, and, with `retain_unmatched`, the
+  unmatched objects (or the file itself) as pending imported extras. With
+  `completed` it is created awaiting verify with Node's host-completed fields.
+  Node applies that patch in a second transaction; here it is the same write.
+- The response is `{ link, attribution }`, with Node's camelCase
+  `attribution` object.
+
+`checkoff_progress::attribution` is now the one port of
+`resolveAcceptedPrinterAttribution` (per-name outcomes, the positive-only rule
+that drops fuzzy file-name matches, the file-name fallback),
+`confirmAcceptedPrinterUnits` and `applyConfirmedObjectMappings`. The
+unattributed-print claim uses it too. `pp_domain::gcode_objects::match_object_name_exact`
+is the matcher without its fuzzy step.
+
+A Build that does not exist is a 500 for both claim and assignment, because
+Node's operational read throws `Profile not found` and both routes answer that
+with a plain 500. The claim answered 409 `Accepted Plan operational state is
+not initialized` before.
+
+`fixtures/parity/printer-file-assignment/node.json` replays 18 create commands
+through Node's repository (and its completed patch) on a copy of the
+required-units fixture: matches by Required-unit name and by file name,
+confirmed and mapped units, every refusal the fixture can reach, kept extras, a
+completed print and a missing Build. The Rust test replays them and compares
+every response and stored row.
+
+```sh
+cd web && node --conditions=development --import tsx ../fixtures/parity/printer-file-assignment/generate.mjs --check
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
+```
+
+### Print-file assignment routes (GRE-1220)
+
+`pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`
+and `POST /printer-checkoff/file-assignments/preview` at the root and under
+`/api/v1`, where Node registers them, behind `desktop_rebuild` and
+`PP_DESKTOP_REBUILD`. Each mount has Node's 20-per-minute window per route and
+its 1 MiB JSON limit.
+
+- Storage parses the body in Node's `parsePrintFileRequest` order and resolves
+  the printer as `resolveAssignmentPrinter` does: a fleet printer by id, its
+  host or `manual:<id>` with `tracking: "manual"`, or, with no `printer_id`,
+  the unmanaged printer (`manual:unmanaged`). The assignment route then checks
+  `plan_revision_id`, `unit_tokens` and `object_mappings`; the preview reads
+  the Build's Accepted Plan and builds `suggestPrintFileAttribution`'s
+  suggestion and match review. Every refusal keeps Node's status and detail.
+- The route reads the file. A `snapshot_token` is trimmed and needs a
+  `remote_path` and no `upload_token`, or 400 `A snapshot token requires its
+  original printer file path`. It redeems the classification and identity
+  captured for exactly that Build, printer, path and file name while the
+  printer's linked integration is unchanged; anything else is 409 `This file
+  preview expired or its source changed. Cancel and reopen the file.` A
+  redeemed file is not re-observed for drift, and a successful assignment
+  spends the token. Node redeems and records in one synchronous step; here the
+  assignment reserves the token inside the storage call, so a concurrent
+  assignment of the same token is refused, and an admitted write spends it
+  even if the request is dropped. An outcome that is unknown after admission (a
+  lost writer reply or `CommitUnknown`) spends it too, so the operator reopens
+  the preview instead of recording the file twice. Any other answer, a refusal
+  or a credential failure such as an expired session, wrote nothing and puts the
+  token back. A reserved token keeps its place in the 128-token limit, and the
+  writer transaction checks
+  the printer's host fingerprint again, so a settings change after the route's
+  read refuses with the same 409.
+- An `upload_token` answers Node's unknown-upload 409 `That upload is no longer
+  available; upload the print file again`, because this runtime serves no
+  upload route yet. A `remote_path` without a snapshot on a Moonraker or
+  PrusaLink host answers 501 instead of recording the print unread, because
+  this runtime does not read a printer's file itself yet. A printer tracked by
+  hand, or a host type Node has no file reader for, records the print unread
+  as Node does, and an unread 3MF is refused with Node's 409.
+- The assignment itself is `Request::AssignFile` (previous section).
+
+`checkoff_progress::print_file::SnapshotStore` is Node's
+`printer-file-snapshots.ts` for this process: one capture at a time, at most
+128 tokens, 15 minutes each. The files/content route calls
+`SnapshotStore::begin` with `print_file::file_source` read before and after
+it asks the printer, `Capture::push` for each chunk it streams, and
+`Capture::finish` at EOF, which classifies the bytes and makes the token
+redeemable. A capture dropped before EOF releases the store and leaves no
+token. The files/content route does not capture yet; GRE-1214 passes one store
+to both routers and replaces its 501.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test file_assignments_http
+```
+
 ### Accepted Plate workspace read (GRE-1189)
 
 `pp-storage::plates` serves Node's `GET /plans/{id}/plates`
@@ -3129,6 +3248,81 @@ router. Regenerate the golden with
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
+```
+
+### Variant dimensions and selection in Rust (GRE-1221)
+
+GRE-421's sixth part (GRE-1221). `pp_api::builds::build_router` serves Node's
+`GET /plans/{id}/variant-dimensions` (with `HEAD`) and
+`POST /plans/{id}/variant-selection` at `/`, `/api/v1` and `/api/v2`, as
+`BuildCommand::Variants` in `pp_storage::build_graph::variants`. With
+`desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, Rust alone writes
+`plan_variant_selection_<id>` and the base Source's import rules for a
+selection. The import-rules write is `catalog::save_import_rules`, the same
+code `PUT /sources/{id}/import-rules` runs, so both routes store the same
+normalized rules and mark the same Plans modified.
+
+The read takes the Build, its base Source (the lowest `layer_order` base
+layer), that Source's `local_path` and the stored selection in one read
+transaction. It then reads `print-partner.manifest.yaml` through the
+production `SourceReads` adapter, outside any transaction, as the manifest
+builder does. Dimensions are empty when the Build has no base Source, the
+Source has no checkout, the manifest is missing or unreadable, or the manifest
+does not load (Node's `loadManifestYaml` throws, for example on an empty
+`selections` list, or a mapping with its own `toString` key where Node calls
+`String()` on it). Otherwise each entry of `variant_dimensions` whose value is
+a list keeps its strings and numbers in JavaScript property order; a list
+`variant_dimensions` reads as index keys, a `__proto__` entry is dropped (Node's
+assignment calls the prototype setter), and a non-finite number is `null` in
+JSON. The stored selection is returned as `JSON.stringify(JSON.parse(text))`,
+or `{}` when it is missing, empty or not JSON.
+
+A selection checks in Node's order:
+
+0. Under `Content-Type: application/json`, an empty body, a body that is not
+   JSON, or one Fastify's parser refuses as prototype poisoning (a `__proto__`
+   key, or a `constructor` key whose object has a `prototype` key) is 400
+   `Request is invalid` before the id is read, as Fastify answers before Node's
+   route runs. Like the other Rust routes, a body under another content type is
+   read as JSON rather than refused with Fastify's 415.
+1. The id is `Number(id)` as a positive integer (so `0x3`, `3e0` and `" 3 "`
+   name Plan 3, through `plates::build_id`), else 404 `Profile not found`,
+   before the body is read. The dimensions read does the same.
+2. The body is `{ selection?: Record<string, string>, source_id?: positive safe
+   integer }` (no body or `null` is `{}`), else 400 `Invalid variant
+   selection`.
+3. Without a base Source, 400 `No base source on plan`; a `source_id` other
+   than the base Source, 400 `Source must match the plan's base source`.
+4. Each selected dimension, in JavaScript property order, must be a dimension
+   (400 `Unknown variant dimension: <name>`) and its value must equal
+   `String(option)` for one option (400 `Unsupported option for variant
+   dimension: <name>`). `String()` is JavaScript's, so `2.0` is `"2"` and
+   `.nan` is `"NaN"`.
+
+One immediate writer transaction then rechecks the Build and its base Source,
+stores the selection as `JSON.stringify` writes it, and saves each non-empty
+value plus `/` as an import rule. The stored selection and the response keep a
+lone UTF-16 surrogate, but an import rule carries U+FFFD in its place, so
+`imported_paths` stays readable by Rust's `serde_json` readers of that column;
+Node stores the escape. The refusal detail for an unknown dimension does the
+same. A read failure other than a missing or
+unreadable file, such as an exhausted `PreparationLimits` budget (each
+copied dimension name and text option, aliases included, is charged to it), is 503
+`source_observation_failed`, as for the manifest builder; Node has no limits.
+
+`fixtures/parity/variants-http/node.json` is Node's answer for 78 requests on
+one database. `variants_flat_v1_v2_match_node_responses_and_changed_tables`
+in `ticket_t_10_fixtures` replays every case through `build_router` over the
+production `SourceReads`: 74 match Node's status, body and changed tables, and
+four bodies Fastify's parser refuses (poisoned, not JSON, or empty under
+`application/json`, including on a missing or non-numeric Plan) are declared
+corrections (400 `Request is invalid` without Fastify's parser codes);
+and after each of the 18 saves the stored selection text and the Source's
+`imported_paths` equal Node's byte for byte. Regenerate the golden with
+`node fixtures/parity/variants-http/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(variants_flat)'
 ```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1

@@ -23,6 +23,7 @@ use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     fmt,
+    fs::File,
     io::{self, Read, Write},
     path::Path,
     sync::{Arc, Mutex, PoisonError},
@@ -620,6 +621,25 @@ fn validate_request_policy(
 fn digest(files: &[ContentFile]) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(files)?)))
 }
+/// Flushes every file before the caller publishes, then closes them all. Each flush
+/// still reaches stable storage; only the waiting overlaps. The handles drop here
+/// because Windows refuses to rename a directory while a handle below it is open.
+fn sync_all_parallel(files: Vec<File>) -> io::Result<()> {
+    const WORKERS: usize = 16;
+    let group = files.len().div_ceil(WORKERS).max(1);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = files
+            .chunks(group)
+            .map(|chunk| scope.spawn(move || chunk.iter().try_for_each(File::sync_all)))
+            .collect();
+        workers.into_iter().try_for_each(|worker| {
+            worker
+                .join()
+                .unwrap_or_else(|_| Err(io::Error::other("flush worker panicked")))
+        })
+    })
+}
+
 fn copy_hash(mut input: impl Read, mut output: impl Write, limit: u64) -> Result<(u64, String)> {
     let mut hash = Sha256::new();
     let mut count = 0u64;
@@ -832,6 +852,7 @@ impl SourceRoot {
         let mut docs = 0;
         let mut stls = 0;
         let mut files = Vec::new();
+        let mut unsynced = Vec::new();
         let mut directories = BTreeMap::new();
         let omitted_paths: BTreeSet<_> = request
             .selection
@@ -860,7 +881,15 @@ impl SourceRoot {
             if length != size_bytes {
                 return Err(Error::CorruptSnapshot);
             }
-            destination.sync_all()?;
+            // FlushFileBuffers commits the NTFS journal, about 33 ms a file on hosted
+            // Windows, so 10,000 inline flushes took 330 to 570 s (GRE-1205). Windows
+            // keeps the handles and flushes them in parallel once the copy is done;
+            // other systems flush inline and never hold the descriptors open.
+            if cfg!(windows) {
+                unsynced.push(destination);
+            } else {
+                destination.sync_all()?;
+            }
             bytes += size_bytes;
             if selected.kind == FileKind::Stl {
                 stls += 1;
@@ -879,6 +908,7 @@ impl SourceRoot {
                 sha256,
             });
         }
+        sync_all_parallel(unsynced)?;
         files.sort_by(|a, b| compare_paths(a.path.as_str(), b.path.as_str()));
         let manifest = Manifest {
             version: 1,

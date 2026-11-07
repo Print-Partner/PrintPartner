@@ -4,7 +4,7 @@ With the `desktop_rebuild` Cargo feature and `PP_DESKTOP_REBUILD` exactly `1` or
 
 | Route | Answer |
 | --- | --- |
-| `GET /printers/{id}/capabilities` | `{files, cameras, status}`. All three are `true` for a printer linked to an enabled Moonraker integration. An enabled PrusaLink integration has `files` and `cameras` but `status: false`, because only Moonraker has a status watcher here so far. A printer with no link, a missing or disabled integration, or a host type this runtime cannot read answers all `false`. An unknown printer answers 404 `Printer not found`. |
+| `GET /printers/{id}/capabilities` | `{files, cameras, status}`. All three are `true` for a printer linked to an enabled Moonraker or PrusaLink integration; both have status watchers (PrusaLink since GRE-1175). A PrusaLink row the watchers do not poll (past the 128-host cap, on an id a Moonraker row already has, or with no address) answers `status: false`. A printer with no link, a missing or disabled integration, or a host type this runtime cannot read answers all `false`. An unknown printer answers 404 `Printer not found`. |
 | `GET /printers/{id}/files?path=` | One directory as `{path, entries}`: of the Moonraker `gcodes` root, or of the PrusaLink pinned or first available storage. An empty or missing `path` is the root. PrusaLink listings may be up to 8 MiB, as in Node. |
 | `GET /printers/{id}/cameras` | `{cameras}` from Moonraker's `/server/webcams/list` or PrusaLink's `/api/v1/cameras`. A host type without cameras in this runtime answers `{cameras: []}`. |
 | `GET /printers/{id}/files/content?path=` | The print file's bytes, streamed from the printer with its `Content-Type` and `Content-Length`. The path must be listed as a file when the route browses its directory first, as Node does, so a crafted path cannot reach a file outside the browsable tree; an unlisted path answers 404 `Printer file not found`. A missing or blank `path` answers 400 `path is required`. A request with `profile_id` answers 501 (see below). |
@@ -24,12 +24,12 @@ Node's per-route budgets apply, one window per route per minute: capabilities 12
 
 Every route is read-only on the printer and sends only GETs. It never uploads, starts a print, deletes or changes Checkoff. A Moonraker read sends each GET once. A PrusaLink read with a password sends a bodyless `GET /api/v1/status` before each GET, to get the Digest challenge. Without a password, a files read or connection test fails before sending anything, and the cameras list sends its GET unauthenticated, with no probe. A files read also lists storage when no storage is pinned. A GET sent with a password that gets a 401 with a fresh challenge is sent once more, as Node's adapter does. Nothing else is retried.
 
+Uploads go through the send queue's worker, which calls each driver's `upload_file` through `HostSends::upload` after an explicit Send now ([Send queue](send-queue.md)).
+
 ## Not served here yet
 
-- PrusaLink status. The status route, farm reads and `/ws/printers` read only the Moonraker watchers, so PrusaLink printers read as Manual there.
-- Bambu reads (GRE-362). Bambu reads as having no capabilities.
+- Bambu reads (GRE-362). Bambu reads as having no capabilities. The status-only driver exists ([Bambu LAN driver](bambu-lan.md)), but no route or watcher uses it yet (GRE-1245, GRE-1176).
 - The print-file snapshot for a Build. Node's `files/content?profile_id=` saves the bytes it streams and returns an `X-PrintPartner-Snapshot` token that only the print-file assignment route redeems. That route is not served here yet (GRE-1210 builds the snapshot store; GRE-1214 wires it in), so a request with `profile_id` answers 501 `Print-file inspection for a Build is not available in this runtime yet` and never reaches the printer.
-- Uploads and the send queue (GRE-365). Uploading needs an explicit user send and durable effect records (GRE-354). No Rust route calls `upload_file`.
 
 ## Streamed downloads and camera views
 

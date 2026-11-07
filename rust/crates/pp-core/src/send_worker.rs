@@ -56,7 +56,8 @@ const NOT_AUTHORIZED: &str =
 /// Storage could not admit the send (for example a busy writer). Failing it
 /// now, rather than letting its lease expire, keeps it from starting minutes
 /// later with no user action.
-const NOT_STARTED: &str = "The send did not start because storage could not admit it. Nothing was sent to the printer. Send now sends it.";
+const NOT_STARTED: &str = pp_storage::send_queue::NOT_ADMITTED_ERROR;
+const STOPPING: &str = "The send did not start because Print Partner was stopping. Nothing was sent to the printer. Send now sends it.";
 /// Node's `isAllowedPrinterUploadFilename` refusal: only sliced files print.
 /// Storage refuses to enqueue any other upload; the route says why first.
 const NOT_SLICED: &str = "Only .gcode / .bgcode / .gco files can be sent to a printer";
@@ -141,7 +142,7 @@ impl SendWorker {
                 .await;
                 match claimed {
                     Ok(Ok(Some(claimed))) => {
-                        if let Err(error) = self.run(claimed).await {
+                        if let Err(error) = self.start(claimed, &cancelled).await {
                             tracing::warn!(error = %error, "printer upload stopped");
                         }
                     }
@@ -152,6 +153,16 @@ impl SendWorker {
                 }
             }
         })
+    }
+
+    /// Runs a claimed upload unless shutdown began while it was being
+    /// claimed; then it fails without contacting the printer.
+    async fn start(&self, claimed: ClaimedAttempt, cancelled: &AtomicBool) -> Result<Sent> {
+        if !cancelled.load(Ordering::Acquire) {
+            return self.run(claimed).await;
+        }
+        let ClaimedAttempt { mut lease, .. } = claimed;
+        Ok(self.give_up(&mut lease, STOPPING).await)
     }
 
     /// Claims one waiting printer upload and runs it, or returns `None`.
@@ -215,10 +226,15 @@ impl SendWorker {
                 )
                 .await?;
                 let (settings, printer) = (self.settings.clone(), printer_id.clone());
+                // The printer has the file: labels are display text, so a failed
+                // read must not keep the send from finishing.
                 let labels = tokio::task::spawn_blocking(move || {
                     printer_hosts::send_labels(&settings, READER_WAIT, &printer)
                 })
-                .await??;
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
                 let host_name = host_name
                     .or(labels.host_name)
                     .unwrap_or_else(|| "Printer".into());
@@ -438,17 +454,19 @@ impl SendTargets for QueueTargets {
                 crate::printer_status::observed(&self.status, &id),
             ) {
                 (
-                    "moonraker",
+                    "moonraker" | "prusalink",
                     Observation::Seen {
                         state: HostState::Idle | HostState::Complete,
                         ..
                     },
                 ) => None,
-                ("moonraker", Observation::Seen { state, .. }) => Some(format!(
+                ("moonraker" | "prusalink", Observation::Seen { state, .. }) => Some(format!(
                     "Printer is {} — {wait}",
                     format!("{state:?}").to_lowercase()
                 )),
-                ("moonraker", _) => Some(format!("Printer status is unavailable — {wait}")),
+                ("moonraker" | "prusalink", _) => {
+                    Some(format!("Printer status is unavailable — {wait}"))
+                }
                 _ => Some(format!(
                     "Printer status is not watched for {kind} hosts — {wait}"
                 )),
@@ -540,11 +558,14 @@ fn classify(result: &UploadResult, start: bool) -> Sent {
 }
 
 /// The printer's path as a receipt id: at most 128 characters.
+/// The remote path cut to the 128 bytes a receipt id may hold, on a
+/// character boundary.
 fn receipt_id(remote_path: &str) -> String {
-    match remote_path.char_indices().nth(128) {
-        Some((end, _)) => remote_path[..end].to_owned(),
-        None => remote_path.to_owned(),
+    let mut end = remote_path.len().min(128);
+    while !remote_path.is_char_boundary(end) {
+        end -= 1;
     }
+    remote_path[..end].to_owned()
 }
 
 #[cfg(test)]

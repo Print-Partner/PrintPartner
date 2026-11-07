@@ -350,7 +350,7 @@ impl CompatHandle {
 }
 
 pub struct Supervisor {
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     health_probes_completed: watch::Receiver<usize>,
     pub handle: CompatHandle,
     stop: CancellationToken,
@@ -519,7 +519,7 @@ impl Process {
             .canonicalize()
             .context("Measured desktop preload unavailable")?;
         let mut root_argument = std::ffi::OsString::from("--pp-desktop-package-root=");
-        root_argument.push(package_root);
+        root_argument.push(platform::node_path(&package_root));
         let generation = hex::encode(rand::random::<[u8; 16]>());
         let key = rand::random::<[u8; 32]>();
         let endpoint = Arc::new(Endpoint {
@@ -542,8 +542,8 @@ impl Process {
         command
             .arg("--no-global-search-paths")
             .arg("--import")
-            .arg(preload)
-            .arg(&spec.bundle.entry)
+            .arg(platform::import_specifier(&preload).context("Desktop preload unavailable")?)
+            .arg(platform::node_path(&spec.bundle.entry))
             .arg(root_argument)
             .env_remove("NODE_OPTIONS")
             .env_remove("NODE_PATH")
@@ -806,7 +806,8 @@ impl Process {
                     }
                 }
             }
-            if drain::reap_process_group(pid) {
+            let leader_exited = matches!(outcome, Some(StopOutcome::Observed(_)));
+            if drain::reap_settled_group(pid, leader_exited).await {
                 outcome = outcome.map(|outcome| match outcome {
                     StopOutcome::Observed(status) | StopOutcome::Forced(status) => {
                         StopOutcome::Forced(status)
@@ -961,7 +962,7 @@ impl Supervisor {
         let logs = logs::Logs::open(source.data_dir().join("logs"))?;
         let (endpoints, endpoint) = watch::channel(None);
         let (states, status) = watch::channel(Status::Starting);
-        #[cfg(all(test, unix))]
+        #[cfg(test)]
         let (probe_completions, health_probes_completed) = watch::channel(0);
         let (recover, mut recovery) = mpsc::channel(1);
         let stop = CancellationToken::new();
@@ -1015,7 +1016,7 @@ impl Supervisor {
                             match probe {
                                 None => break,
                                 Some(probe_ready) => {
-                                    #[cfg(all(test, unix))]
+                                    #[cfg(test)]
                                     probe_completions.send_modify(|count| *count += 1);
                                     ready = startup_probe_publishes(
                                         restarts_blocked(&cancelled, &disarmed),
@@ -1055,7 +1056,7 @@ impl Supervisor {
                                 },
                                 _ = tokio::time::sleep(Duration::from_secs(10)) => {
                                     if process.endpoint.ready(source.bundle(), &cancelled).await { failures = 0; } else { failures += 1; }
-                                    #[cfg(all(test, unix))]
+                                    #[cfg(test)]
                                     probe_completions.send_modify(|count| *count += 1);
                                     if failures >= 3 { break; }
                                 }
@@ -1151,7 +1152,7 @@ impl Supervisor {
             Ok(exit)
         });
         Ok(Self {
-            #[cfg(all(test, unix))]
+            #[cfg(test)]
             health_probes_completed,
             handle: CompatHandle {
                 endpoint,
@@ -1183,8 +1184,7 @@ impl Drop for Supervisor {
     }
 }
 
-// GRE-1194 ports these supervisor tests to Windows.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod ticket_t_2;
 
 #[cfg(test)]
@@ -2061,6 +2061,15 @@ if sys.argv[1] == "wait":
         (child, stdout)
     }
 
+    /// Spawns [`test_support::STUBBORN`] and returns once it ignores stop requests.
+    async fn spawn_stubborn_child() -> Spawned {
+        let mut child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
+        let (stdout, line) = first_line(child.0.stdout.take().unwrap()).await;
+        assert_eq!(line, "ready\n");
+        child.0.stdout = Some(stdout.into_inner());
+        child
+    }
+
     #[tokio::test]
     async fn ticket_t_3_drain_process_stop_sigterms_cooperative_child() {
         let (child, _stdout) = spawn_cooperative_child().await;
@@ -2107,15 +2116,14 @@ if sys.argv[1] == "wait":
     #[cfg(windows)]
     #[tokio::test]
     async fn ticket_t_3_drain_restart_cleanup_becomes_planned_stop_when_shutdown_starts() {
-        let child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
+        let child = spawn_stubborn_child().await;
         let outcome = stop_owned_child_at(child, false, Some(Duration::from_millis(100))).await;
         assert_forced_after_grace(&outcome);
     }
 
     #[tokio::test]
     async fn ticket_t_3_drain_process_stop_force_kills_after_sigterm_grace() {
-        let child = test_support::spawn_group(&mut test_shell(test_support::STUBBORN));
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let child = spawn_stubborn_child().await;
         let outcome = stop_owned_child(child, false).await;
         assert_forced_after_grace(&outcome);
     }
@@ -2290,9 +2298,10 @@ if sys.argv[1] == "wait":
     const SPAWN_MEMBER: &str = concat!(
         "const {spawn}=require('node:child_process'); ",
         "const member=spawn(process.execPath, ['-e', ",
-        "\"const fs=require('node:fs'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0); }, 20)\", ",
-        "process.argv[1]], {stdio: 'ignore', detached: true}); member.unref(); ",
-        "console.log(member.pid); process.stdin.on('end', () => process.exit(0)); process.stdin.resume();",
+        "\"const fs=require('node:fs'); console.log('up'); setInterval(() => { if (fs.existsSync(process.argv[1])) process.exit(0); }, 20)\", ",
+        "process.argv[1]], {stdio: ['ignore', 'pipe', 'ignore'], detached: true}); member.unref(); ",
+        "member.stdout.once('data', () => { member.stdout.destroy(); console.log(member.pid); }); ",
+        "process.stdin.on('end', () => process.exit(0)); process.stdin.resume();",
     );
 
     #[cfg(windows)]
@@ -2358,6 +2367,77 @@ if sys.argv[1] == "wait":
                 "planned={planned}, already_exited={already_exited}"
             );
         }
+    }
+
+    /// A job member that exits on its own shortly after its leader exits
+    /// cleanly, like the conhost.exe of Node's hidden console, does not turn the
+    /// clean exit into a forced one: the drain waits for the job to empty.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_leader_exit_with_short_lived_job_member_is_graceful() {
+        for (planned, already_exited) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
+            let release = member_release("settle");
+            let ((mut child, guard), member) = spawn_with_member(&release).await;
+            let leader = child.id().unwrap();
+            let releaser = tokio::spawn({
+                let release = release.clone();
+                async move {
+                    assert!(exits(leader).await, "leader did not exit on EOF");
+                    std::fs::write(&release, b"").unwrap();
+                }
+            });
+            let observed = observe_exit(&mut child, already_exited).await;
+            let cancelled = tokio_util::sync::CancellationToken::new();
+            if planned {
+                cancelled.cancel();
+            }
+            let stopped = stop_owned_child_with((child, guard), true, observed, cancelled).await;
+            releaser.await.unwrap();
+            assert!(exits(member).await, "job member outlived the stop");
+            assert!(stopped.group_absent);
+            assert!(stopped.rejected);
+            assert_eq!(
+                stopped.exit,
+                super::CompatExit::Graceful,
+                "planned={planned}, already_exited={already_exited}"
+            );
+            assert!(
+                stopped.elapsed < Duration::from_secs(3),
+                "{:?}",
+                stopped.elapsed
+            );
+            let _ = std::fs::remove_file(&release);
+        }
+    }
+
+    /// Fifty job members that started and exited during the generation leave
+    /// nothing behind that delays or forces a clean stop.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ticket_t_3_drain_many_finished_job_members_still_stop_gracefully() {
+        let mut child = test_support::spawn_group(&mut test_shell(concat!(
+            "const {spawnSync}=require('node:child_process'); ",
+            "for (let i = 0; i < 50; i++) { if (spawnSync('cmd.exe', ['/d', '/c', 'exit']).status !== 0) process.exit(9); } ",
+            "process.stdin.on('end', () => process.exit(0)); process.stdin.resume(); console.log('ready');",
+        )));
+        let (_stdout, line) = first_line(child.0.stdout.take().unwrap()).await;
+        assert_eq!(
+            line,
+            "ready
+"
+        );
+        let outcome = stop_owned_child(child, true).await;
+        assert_eq!(outcome.intent, super::StopIntent::PlannedShutdown);
+        assert_eq!(outcome.exit, super::CompatExit::Graceful);
+        assert!(
+            outcome.elapsed < Duration::from_secs(3),
+            "{:?}",
+            outcome.elapsed
+        );
+        assert!(outcome.rejected);
+        assert!(outcome.group_absent);
     }
 
     /// A leader that is already gone when the drain starts does not keep the

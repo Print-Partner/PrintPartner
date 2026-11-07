@@ -383,3 +383,49 @@ fn farm_names_result_parts_from_the_tenants_rows_only() {
         "another tenant's Part, an empty file name and a missing Part stay null"
     );
 }
+
+#[test]
+fn ticket_t_22_unpolled_prusalink_hosts_never_wait_on_a_status() {
+    // A PrusaLink host past the watchers' cap, or without an address, is
+    // never polled, so it reads as not supported instead of awaiting status.
+    let mut integrations: Vec<Value> = (0..crate::printer_hosts::MAX_HOSTS - 1)
+        .map(|i| json!({"id": format!("m{i}"), "type": "moonraker", "config": {"base_url": "http://m.test"}}))
+        .collect();
+    integrations.extend([
+        json!({"id": "mk4", "type": "prusalink", "config": {"base_url": "http://p.test"}}),
+        json!({"id": "late", "type": "prusalink", "config": {"base_url": "http://q.test"}}),
+    ]);
+    let farm = Farm::parse(
+        vec![
+            json!({"id": "p-mk4", "name": "MK4", "integration_id": "mk4"}),
+            json!({"id": "p-late", "name": "Late", "integration_id": "late"}),
+        ],
+        integrations,
+        vec![],
+        vec![],
+        vec![],
+    );
+    let printers = farm
+        .printers(|integration| {
+            assert_eq!(integration.id, "mk4", "only the polled host is observed");
+            Observation::Unavailable
+        })
+        .printers;
+    assert_eq!(printers[0].reason, Some(PrinterReason::AwaitingStatus));
+    assert_eq!(
+        printers[1].reason,
+        Some(PrinterReason::MonitoringNotSupported)
+    );
+    let blank = Farm::parse(
+        vec![json!({"id": "p-blank", "name": "Blank", "integration_id": "blank"})],
+        vec![json!({"id": "blank", "type": "prusalink", "config": {"base_url": " "}})],
+        vec![],
+        vec![],
+        vec![],
+    )
+    .printers(|_| panic!("a host no watcher polls is not observed"));
+    assert_eq!(
+        blank.printers[0].reason,
+        Some(PrinterReason::MonitoringNotSupported)
+    );
+}

@@ -1,0 +1,96 @@
+{
+  "pushall-idle": {
+    "state": "idle",
+    "message": "Idle"
+  },
+  "pushall-printing": {
+    "state": "printing",
+    "progress": 42,
+    "filename": "frame_x.3mf",
+    "eta_seconds": 720,
+    "nozzle_temperature_c": 218.4,
+    "nozzle_target_c": 220,
+    "bed_temperature_c": 59.7,
+    "bed_target_c": 60,
+    "message": "Printing frame_x.3mf"
+  },
+  "pushall-error": {
+    "state": "error",
+    "message": "Error"
+  },
+  "ams-tray-synthetic": {
+    "state": "idle",
+    "message": "Idle"
+  },
+  "paused-string-numbers": {
+    "state": "paused",
+    "progress": 43,
+    "filename": "plate_1.gcode",
+    "eta_seconds": 420,
+    "nozzle_temperature_c": 215,
+    "bed_temperature_c": 60,
+    "message": "Paused"
+  },
+  "running-lowercase-padded": {
+    "state": "printing",
+    "progress": 100,
+    "filename": "part.3mf",
+    "eta_seconds": 24,
+    "message": "Printing part.3mf"
+  },
+  "prepare-negative-progress": {
+    "state": "printing",
+    "progress": 0,
+    "message": "gcode_state: PREPARE"
+  },
+  "slicing-no-file": {
+    "state": "printing",
+    "message": "gcode_state: SLICING"
+  },
+  "init-blank-numbers": {
+    "state": "printing",
+    "progress": 0,
+    "nozzle_temperature_c": 0,
+    "bed_target_c": 100,
+    "message": "gcode_state: INIT"
+  },
+  "finish-with-file": {
+    "state": "complete",
+    "filename": "done.3mf",
+    "message": "Complete · done.3mf"
+  },
+  "finish-no-file": {
+    "state": "complete",
+    "message": "Complete"
+  },
+  "offline-token": {
+    "state": "offline",
+    "message": "gcode_state: OFFLINE"
+  },
+  "unknown-token": {
+    "state": "unknown",
+    "filename": "cal",
+    "message": "gcode_state: CALIBRATING"
+  },
+  "blank-state": {
+    "state": "unknown"
+  },
+  "missing-state": {
+    "state": "unknown",
+    "bed_temperature_c": 5
+  },
+  "half-percent": {
+    "state": "printing",
+    "progress": 43,
+    "filename": "half",
+    "eta_seconds": 30,
+    "message": "Printing half"
+  },
+  "hex-and-octal": {
+    "state": "printing",
+    "progress": 16,
+    "eta_seconds": 420,
+    "nozzle_temperature_c": 31,
+    "message": "gcode_state: RUNNING"
+  }
+}

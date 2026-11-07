@@ -496,28 +496,7 @@ impl HttpGuard {
             "Invalid port"
         );
         let port = uri.port_u16().unwrap_or(80);
-        ensure!(port != 0, "Invalid port");
-        let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
-            vec![ip]
-        } else {
-            self.resolver.resolve(host.into()).await?
-        };
-        ensure!(
-            !addresses.is_empty()
-                && addresses.len() <= 32
-                && addresses.iter().all(|ip| permitted(*ip)),
-            "Prohibited DNS answer"
-        );
-        // Race only the checked, pinned addresses. The request deadline bounds
-        // the whole race, and dropping the JoinSet cancels every losing socket.
-        let stream = connect_addresses(
-            addresses
-                .into_iter()
-                .map(|ip| SocketAddr::new(ip, port))
-                .collect(),
-            TcpStream::connect,
-        )
-        .await?;
+        let stream = self.connect(host, port).await?;
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake::<_, B>(TokioIo::new(stream)).await?;
         let connection = Connection(tokio::spawn(connection));
@@ -540,6 +519,38 @@ impl HttpGuard {
         written.store(true, Ordering::SeqCst);
         let response = sender.send_request(request).await?;
         Ok((response, connection))
+    }
+}
+
+impl HttpGuard {
+    /// One TCP connection to `host`:`port` through the same checks as every
+    /// HTTP request: an IP literal or one DNS lookup, every answer
+    /// `permitted`, and connects only to those checked addresses, with no
+    /// proxy. Non-HTTP printer protocols (Bambu's MQTT) use this too. The
+    /// caller bounds it with its own deadline.
+    pub async fn connect(&self, host: &str, port: u16) -> Result<TcpStream> {
+        ensure!(port != 0, "Invalid port");
+        let addresses = if let Ok(ip) = host.parse::<IpAddr>() {
+            vec![ip]
+        } else {
+            self.resolver.resolve(host.into()).await?
+        };
+        ensure!(
+            !addresses.is_empty()
+                && addresses.len() <= 32
+                && addresses.iter().all(|ip| permitted(*ip)),
+            "Prohibited DNS answer"
+        );
+        // Race only the checked, pinned addresses. The caller's deadline bounds
+        // the whole race, and dropping the JoinSet cancels every losing socket.
+        connect_addresses(
+            addresses
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, port))
+                .collect(),
+            TcpStream::connect,
+        )
+        .await
     }
 }
 

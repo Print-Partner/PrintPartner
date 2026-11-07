@@ -272,5 +272,46 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         self.assertEqual(summary.read_text(), result.stdout)
 
 
+class PullRequestEditTests(unittest.TestCase):
+    """Edits to a PR must never turn a required check into a skipped one.
+
+    GitHub counts a skipped required job as a pass, and a newer run for the head replaces an
+    earlier failing one, so a job-level `if` that skips edits would let an edit clear a failure.
+    """
+
+    def workflow(self, name):
+        return yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
+
+    def test_lint_evidence_reruns_on_edits_and_skips_only_drafts(self):
+        evidence = self.workflow("pr-evidence.yml")
+        self.assertIn("edited", evidence["on"]["pull_request"]["types"])
+        self.assertEqual(evidence["jobs"]["lint-pr-body"]["if"],
+                         "github.event_name != 'pull_request' || !github.event.pull_request.draft")
+
+
+class MainPushConcurrencyTests(unittest.TestCase):
+    """A push to main must never cancel an earlier main run (GRE-1228)."""
+
+    def test_only_pull_requests_cancel_and_other_events_get_their_own_group(self):
+        checked = 0
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+            events = workflow.get("on", {})
+            concurrency = workflow.get("concurrency")
+            if not isinstance(events, dict) or "push" not in events or not isinstance(concurrency, dict):
+                continue
+            cancel = concurrency["cancel-in-progress"]
+            if cancel in {"false", "true"}:
+                self.assertEqual(cancel, "false", f"{path.name} cancels runs on every event")
+                continue
+            checked += 1
+            with self.subTest(workflow=path.name):
+                self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
+                self.assertIn("github.run_id", concurrency["group"])
+                self.assertNotIn("'push'", concurrency["group"])
+                self.assertNotIn("run_attempt", concurrency["group"] + cancel)
+        self.assertGreaterEqual(checked, 13)
+
+
 if __name__ == "__main__":
     unittest.main()

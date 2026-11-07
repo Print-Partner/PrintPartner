@@ -339,16 +339,10 @@ fn dispatch(
     id: &str,
     host_name: &str,
 ) -> Result<Reply> {
-    let stored = match resendable(tx, tenant, id)? {
+    let stored = match sendable(tx, tenant, id)? {
         Ok(stored) => stored,
         Err(refusal) => return Ok(refusal),
     };
-    if outcome_unknown(tx, tenant, &stored)? {
-        return Ok(OUTCOME_UNKNOWN);
-    }
-    if let Some(refusal) = farm_refusal(tx, tenant, id)? {
-        return Ok(refusal);
-    }
     let sending: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM printer_send_queue WHERE tenant_id=?1 AND printer_id=?2 AND state='sending')",
         params![tenant, stored.printer_id],
@@ -462,17 +456,26 @@ fn farm_refusal(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Option<R
 }
 
 fn check(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Reply> {
-    let stored = match resendable(tx, tenant, id)? {
-        Ok(stored) => stored,
-        Err(refusal) => return Ok(refusal),
-    };
-    if outcome_unknown(tx, tenant, &stored)? {
-        return Ok(OUTCOME_UNKNOWN);
-    }
-    if let Some(refusal) = farm_refusal(tx, tenant, id)? {
+    if let Err(refusal) = sendable(tx, tenant, id)? {
         return Ok(refusal);
     }
     Ok(item(tx, tenant, id)?.map_or(NOT_FOUND, Reply::Item))
+}
+
+/// The item when Send now may send it: resendable, its last outcome known,
+/// and Farm on for its Plan; otherwise the refusal.
+fn sendable(tx: &Transaction<'_>, tenant: &str, id: &str) -> Result<Result<Stored, Reply>> {
+    let stored = match resendable(tx, tenant, id)? {
+        Ok(stored) => stored,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if outcome_unknown(tx, tenant, &stored)? {
+        return Ok(Err(OUTCOME_UNKNOWN));
+    }
+    if let Some(refusal) = farm_refusal(tx, tenant, id)? {
+        return Ok(Err(refusal));
+    }
+    Ok(Ok(stored))
 }
 
 fn remove(tx: &Transaction<'_>, tenant: &str, subject: &str, id: &str) -> Result<Reply> {

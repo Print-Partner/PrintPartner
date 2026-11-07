@@ -10,8 +10,9 @@ the app with a disposable HOME and requires:
 1. a visible native window owned by the app whose title is "Print Partner";
 2. the fixture's Build name as a link or table cell inside the web page, read
    from the accessibility tree (AT-SPI on Linux, the Accessibility API on macOS);
-3. a clean exit after SIGTERM (exit code 0 and a shutdown receipt with no
-   errors and storage_released) with no surviving child processes;
+3. a clean exit after SIGTERM, or after the tray menu's Quit item with
+   --quit tray on macOS (exit code 0 and a shutdown receipt with no errors and
+   storage_released), with no surviving child processes;
 4. the database migrated past the fixture's stamp with every preserved Plan
    and Plate row unchanged.
 
@@ -150,12 +151,12 @@ def directory_state(data):
     return state
 
 
-def stop(ui, app, owned, timeout, quit=None):
-    """Quit the app (SIGTERM unless quit is given) and wait for it and its children."""
-    if quit is None:
+def stop(ui, app, owned, timeout, request_quit=None):
+    """Quit the app (SIGTERM unless request_quit is given) and wait for it and its children."""
+    if request_quit is None:
         app.send_signal(signal.SIGTERM)
     else:
-        quit()
+        request_quit()
     try:
         code = app.wait(timeout)
     except subprocess.TimeoutExpired as error:
@@ -257,7 +258,7 @@ def expect_usable(launch, receipt, fixture, database):
                 "Email": "packaged-smoke@example.invalid",
                 "Password": secrets.token_urlsafe(18),
             }
-            launch.ui.complete_setup(receipt["window"], form, values)
+            receipt["setupTyping"] = launch.ui.complete_setup(receipt["window"], form, values)
             receipt["setupCompleted"] = launch.elapsed()
         return None
 
@@ -268,16 +269,16 @@ def expect_usable(launch, receipt, fixture, database):
     )
     launch.pids()
     receipt["ownedProcesses"] = len(launch.owned)
-    quit = None
+    request_quit = None
     if launch.args.quit == "tray":
 
-        def quit():
-            receipt["trayQuit"] = report = launch.ui.tray_quit(launch.app.pid, TRAY_QUIT)
-            if not report.get("pressed"):
-                raise SmokeFailure(f"could not choose {TRAY_QUIT!r} from the tray: {report}")
+        def request_quit():
+            # The exit code and shutdown receipt decide; the probe's report is
+            # evidence, since pressing Quit can race the app's own teardown.
+            receipt["trayQuit"] = launch.ui.tray_quit(launch.app.pid, TRAY_QUIT)
 
     receipt["quit"] = launch.args.quit
-    code, survivors = stop(launch.ui, launch.app, launch.owned, 60, quit)
+    code, survivors = stop(launch.ui, launch.app, launch.owned, 60, request_quit)
     receipt.update(exitCode=code, survivors=survivors)
     receipt["shutdownReceipt"] = shutdown = last_json_line(launch.stdout)
     if code != 0:

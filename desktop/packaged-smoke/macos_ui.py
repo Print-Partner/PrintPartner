@@ -98,9 +98,12 @@ class MacUI:
         return {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"}
 
     def call(self, *args):
-        result = subprocess.run(
-            [self.probe, *map(str, args)], capture_output=True, text=True, timeout=60
-        )
+        try:
+            result = subprocess.run(
+                [self.probe, *map(str, args)], capture_output=True, text=True, timeout=60
+            )
+        except subprocess.TimeoutExpired:
+            return None
         if result.returncode != 0:
             return None
         return json.loads(result.stdout)
@@ -108,53 +111,54 @@ class MacUI:
     def dump(self, pids):
         return self.call("dump", DUMP_LIMIT, *sorted(pids)) or {"apps": []}
 
+    def on_screen(self, pids):
+        """Normal-layer windows that are on screen, by (pid, frame)."""
+        return {
+            (n["pid"], (n["x"], n["y"], n["w"], n["h"])): n["id"]
+            for n in self.call("cgwindows", *sorted(pids)) or []
+            if n["layer"] == 0 and n["onscreen"]
+        }
+
     def windows(self, pids):
-        numbers = self.call("cgwindows", *sorted(pids)) or []
+        """AX windows; visible only when a matching on-screen window exists."""
+        shown = self.on_screen(pids)
         found = []
+        windows = {}
         for pid, path, node, ancestors in walk(self.dump(pids)):
-            if ancestors or node.get("r") != "AXWindow":
-                continue
-            frame = (node.get("x"), node.get("y"), node.get("w"), node.get("h"))
-            match = [
-                n["id"]
-                for n in numbers
-                if n["pid"] == pid and n["layer"] == 0 and (n["x"], n["y"], n["w"], n["h"]) == frame
-            ]
-            found.append(
-                {
-                    "id": match[0] if match else None,
-                    "pid": pid,
-                    "title": node.get("t", ""),
-                    "visible": not node.get("min", False),
-                    "width": node.get("w", 0),
-                    "height": node.get("h", 0),
-                }
-            )
+            if not ancestors and node.get("r") == "AXWindow":
+                windows[(pid, path)] = node
+                frame = (node.get("x"), node.get("y"), node.get("w"), node.get("h"))
+                number = shown.get((pid, frame))
+                found.append(
+                    {
+                        "id": number,
+                        "pid": pid,
+                        "title": node.get("t", ""),
+                        "visible": number is not None and not node.get("min", False),
+                        "width": node.get("w", 0),
+                        "height": node.get("h", 0),
+                    }
+                )
+            elif node.get("r") == "AXWebArea" and found and (pid, path.split(".")[0]) in windows:
+                found[-1].setdefault(
+                    "page", [node.get("x"), node.get("y"), node.get("w"), node.get("h")]
+                )
         return found
 
     def startup_error(self, pids, title):
-        dump = self.dump(pids)
-        windows = {}
-        for pid, path, node, ancestors in walk(dump):
-            if not ancestors:
-                windows[(pid, path)] = node
-        for (pid, path), window in windows.items():
-            if window.get("t") == title or title in node_text(window):
-                return {
-                    "pid": pid,
-                    "title": window.get("t", ""),
-                    "text": title,
-                    "width": window.get("w", 0),
-                    "height": window.get("h", 0),
-                    "id": self.window_number(pid, window),
-                }
-        return None
-
-    def window_number(self, pid, window):
-        frame = (window.get("x"), window.get("y"), window.get("w"), window.get("h"))
-        for n in self.call("cgwindows", pid) or []:
-            if (n["x"], n["y"], n["w"], n["h"]) == frame:
-                return n["id"]
+        shown = self.on_screen(pids)
+        for pid, path, node, ancestors in walk(self.dump(pids)):
+            if ancestors or not (node.get("t") == title or title in node_text(node)):
+                continue
+            frame = (node.get("x"), node.get("y"), node.get("w"), node.get("h"))
+            return {
+                "id": shown.get((pid, frame)),
+                "pid": pid,
+                "title": node.get("t", ""),
+                "text": title,
+                "width": node.get("w", 0),
+                "height": node.get("h", 0),
+            }
         return None
 
     def find_content(self, pids, needle):
@@ -179,12 +183,15 @@ class MacUI:
         return (fields, button) if button is not None and len(fields) == len(labels) else None
 
     def complete_setup(self, window, form, values):
+        """Type each value into its field and press the button; return the probe's reports."""
         fields, button = form
+        reports = {}
         for name, value in values.items():
             pid, path = fields[name]
-            self.call("type", pid, path, value)
+            reports[name] = self.call("type", pid, path, value)
         pid, path = button
-        self.call("press", pid, path)
+        reports["submit"] = self.call("press", pid, path)
+        return reports
 
     def press(self, pids, button_name):
         for pid, path, node, ancestors in walk(self.dump(pids)):
@@ -201,8 +208,19 @@ class MacUI:
         return self.call("tray", pid, item) or {"pressed": False}
 
     def screenshot(self, window, path):
-        target = ["-l", str(window["id"])] if window and window.get("id") else []
-        subprocess.run(["screencapture", "-x", "-o", *target, str(path)], check=False)
+        """Capture the page area of the window (or the window, for a dialog).
+
+        Without an on-screen window number there is nothing of the app's to
+        capture, so the count is 0 rather than a full-screen capture of the
+        wallpaper.
+        """
+        if not window or window.get("id") is None:
+            return 0
+        if window.get("page") and all(isinstance(v, int) for v in window["page"]):
+            target = ["-R", ",".join(map(str, window["page"]))]
+        else:
+            target = ["-o", "-l", str(window["id"])]
+        subprocess.run(["screencapture", "-x", *target, str(path)], check=False)
         return (self.call("colors", path) or {}).get("colors", 0)
 
     def snapshot(self, pids, path):

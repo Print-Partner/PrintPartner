@@ -220,6 +220,7 @@ class LinuxUI:
             fields[name].get_component_iface().grab_focus()
             self.x11("xdotool", "type", "--delay", "15", "--", value)
         button.get_action_iface().do_action(0)
+        return None
 
     def press(self, pids, button_name):
         for node, role, name, path in walk(pids):

@@ -2,7 +2,7 @@ name: Desktop packaged smoke
 
 # Builds the Linux .deb and the macOS app, installs each into a disposable
 # location and launches the installed app on a schema 31 database: a native window titled Print Partner,
-# the fixture's Build in the accessibility tree, a clean SIGTERM shutdown and
+# the fixture's Build in the accessibility tree, a clean shutdown and
 # unchanged Plan and Plate rows after migration. Not a required check.
 # docs/development/packaged-smoke.md explains each step.
 

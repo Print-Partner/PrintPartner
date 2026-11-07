@@ -202,6 +202,10 @@ class MacTreeTest(unittest.TestCase):
                                 "c": [
                                     {
                                         "r": "AXWebArea",
+                                        "x": 0,
+                                        "y": 60,
+                                        "w": 1280,
+                                        "h": 815,
                                         "c": [
                                             {"r": "AXTextField", "l": "Display name"},
                                             {"r": "AXTextField", "t": "Email"},
@@ -244,6 +248,8 @@ class MacTreeTest(unittest.TestCase):
         ]
     }
 
+    onscreen = True
+
     def ui(self, calls):
         ui = macos_ui.MacUI()
 
@@ -252,7 +258,18 @@ class MacTreeTest(unittest.TestCase):
             if args[0] == "dump":
                 return self.dump
             if args[0] == "cgwindows":
-                return [{"id": 41, "pid": 7, "layer": 0, "x": 0, "y": 25, "w": 1280, "h": 850}]
+                return [
+                    {
+                        "id": 41,
+                        "pid": 7,
+                        "layer": 0,
+                        "onscreen": self.onscreen,
+                        "x": 0,
+                        "y": 25,
+                        "w": 1280,
+                        "h": 850,
+                    }
+                ]
             return {"pressed": True}
 
         ui.call = call
@@ -276,6 +293,16 @@ class MacTreeTest(unittest.TestCase):
         self.assertEqual(
             (window["title"], window["id"], window["visible"]), ("Print Partner", 41, True)
         )
+
+    def test_window_records_its_page_frame(self):
+        self.assertEqual(self.ui([]).windows({7})[0]["page"], [0, 60, 1280, 815])
+
+    def test_off_screen_window_is_not_visible_and_not_captured(self):
+        self.onscreen = False
+        ui = self.ui([])
+        window = ui.windows({7})[0]
+        self.assertEqual((window["visible"], window["id"]), (False, None))
+        self.assertEqual(ui.screenshot(window, "/nonexistent.png"), 0)
 
     def test_setup_form_types_each_field_then_presses_the_button(self):
         calls = []

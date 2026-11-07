@@ -61,6 +61,11 @@ jobs:
           fi
           # A running gate cannot be rerun, so wait for it to finish first.
           for _ in $(seq 1 40); do
+            now=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+            if [ "$now" != "$head" ]; then
+              echo "#$pr moved from $head to $now while waiting; the new head's own gate run judges it."
+              exit 0
+            fi
             run=$(gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?event=pull_request_target&head_sha=$head&per_page=1" \
               --jq '.workflow_runs[0] // empty | "\(.id) \(.status)"')
             if [ -z "$run" ]; then
@@ -68,7 +73,8 @@ jobs:
               exit 0
             fi
             read -r id status <<< "$run"
-            if [ "$status" = completed ] && gh api -X POST "repos/$REPO/actions/runs/$id/rerun" > /dev/null; then
+            if [ "$status" = completed ] && [ "$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)" = "$head" ] \
+              && gh api -X POST "repos/$REPO/actions/runs/$id/rerun" > /dev/null; then
               echo "Reran review-gate run $id for $head."
               exit 0
             fi

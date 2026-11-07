@@ -386,6 +386,39 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(field("Customer").value).toBe("Acme");
   });
 
+  it("retries a refused header save on the next blur, even while a Part write runs", async () => {
+    const puts: string[] = [];
+    const held: (() => void)[] = [];
+    const fetchMock = core({
+      write: (path, init) => {
+        if (path === "/api/v2/plans/2/drafts/header") {
+          puts.push(JSON.parse(String(init!.body)).header.name);
+          return problem(409, "header_changed");
+        }
+        const receipt = {
+          profile_id: 2,
+          draft_id: 9,
+          reconciliation_id: 1,
+          snapshot_digest: DIGEST,
+          saved_at: "2026-11-07T00:00:00.000Z",
+        };
+        return new Promise<Response>((resolve) => {
+          held.push(() => resolve(json({ receipt, workspace: workspace() })));
+        });
+      },
+    });
+    renderAt(fetchMock);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    await screen.findByText(/Not saved/);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include gear.stl" }));
+    await waitFor(() => expect(writes(fetchMock).some((w) => w.path.endsWith("/save"))).toBe(true));
+    fireEvent.blur(field("Name"));
+    act(() => held.splice(0).forEach((release) => release()));
+    await waitFor(() => expect(puts).toEqual(["Bracket kit v3", "Bracket kit v3"]));
+  });
+
   it("refuses a blank name without sending", async () => {
     const fetchMock = core();
     renderAt(fetchMock);

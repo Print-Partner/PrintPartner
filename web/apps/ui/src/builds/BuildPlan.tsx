@@ -155,17 +155,7 @@ const HEADER_FIELDS = [
  * draft writes settle, the saved header replaces every field not typed in since the last
  * save was sent.
  */
-function HeaderForm({
-  data,
-  writes,
-  busy,
-  saving,
-}: {
-  data: PlanData;
-  writes: Writes;
-  busy: boolean;
-  saving: () => boolean;
-}) {
+function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; busy: boolean }) {
   const saved = data.draft?.header?.header ?? data.build;
   const [fields, setFields] = useState(() => fieldsOf(saved));
   const [shown, setShown] = useState(saved);
@@ -190,11 +180,14 @@ function HeaderForm({
   const commit = () => {
     const header = headerOf(fields);
     setInvalid(header.name === "");
-    const last = saving() && sent ? sent : saved;
-    if (header.name === "" || sameHeader(header, last) || offline) return;
+    if (header.name === "" || sameHeader(header, sent ?? saved) || offline) return;
     setSent(header);
     setTyped(new Set());
-    writes.header.mutate({ fields, key: newKey() });
+    // Only the latest header write calls this, and only it can still be the one sent.
+    writes.header.mutate(
+      { fields, key: newKey() },
+      { onSettled: () => setSent((current) => (current === header ? null : current)) },
+    );
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") commit();
@@ -603,7 +596,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
         )}
       </div>
       <SaveStatus writes={writes} />
-      <HeaderForm key={id} data={data} writes={writes} busy={busy} saving={saving} />
+      <HeaderForm key={id} data={data} writes={writes} busy={busy} />
       {draft && <PartsTable parts={draft.workspace.parts} writes={writes} />}
       {gate && draft && !busy && (
         <AcceptGate

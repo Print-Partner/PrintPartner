@@ -45,8 +45,8 @@ jobs:
         run: |
           set -euo pipefail
           smoke=$HAS_LABEL
-          if git diff --name-only "$BASE_SHA...$HEAD_SHA" \
-              | grep -qE '^(desktop/packaged-smoke/|\.github/workflows/desktop-packaged-smoke\.yml$)'; then
+          changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          if grep -qE '^(desktop/packaged-smoke/|\.github/workflows/desktop-packaged-smoke\.yml$)' <<<"$changed"; then
             smoke=true
           fi
           echo "smoke=$smoke" >> "$GITHUB_OUTPUT"

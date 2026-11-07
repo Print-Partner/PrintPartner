@@ -250,7 +250,7 @@ def complete_setup(display, window, form):
     x11(display, "xdotool", "windowfocus", "--sync", window["id"])
     for name in SETUP_FIELDS:
         fields[name].get_component_iface().grab_focus()
-        x11(display, "xdotool", "type", "--delay", "15", values[name])
+        x11(display, "xdotool", "type", "--delay", "15", "--", values[name])
     button.get_action_iface().do_action(0)
 
 

@@ -77,7 +77,7 @@ impl Farm {
                 .join("a.gcode");
             if *staged {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, b"G28\nG1 X10\n").unwrap();
+                std::fs::write(&path, b"G28\nG1 X10\n; filament used [g] = 12.5\n").unwrap();
             }
             database
                 .execute(
@@ -182,6 +182,16 @@ async fn ticket_t_26_upload_only_send_uploads_once_and_never_calls_print_start()
     let link = &farm.links()[0];
     assert_eq!(result["checkoff_link_id"], link["id"]);
     assert_eq!(result["checkoff_units"], 1);
+    assert_eq!(result["filament_estimate_g"], 12.5);
+    let grams: (f64, i64, String) = farm
+        .database()
+        .query_row(
+            "SELECT grams,units,basis FROM print_link_grams WHERE tenant_id='default' AND link_id=?1",
+            [link["id"].as_str().unwrap()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(grams, (12.5, 1, "estimated".into()));
     assert_eq!(
         (
             link["profile_id"].clone(),

@@ -7,6 +7,7 @@ pub mod gcode_objects;
 pub mod print_file;
 #[cfg(feature = "desktop_rebuild")]
 pub mod printer_display_state;
+pub mod slicer_grams;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::fmt;

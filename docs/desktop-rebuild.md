@@ -3641,9 +3641,10 @@ never writes it.
 `pp_storage::print_grams::record` writes a row. The owner decided on
 2026-11-04 to record the slicer's estimate at send and replace it with the
 measured value when the print finishes, so a measured value replaces an
-estimate and an estimate never replaces a measured value. Nothing calls it
-yet: the send path writes the estimate in GRE-1238, and the status watcher
-writes the measured value in GRE-1165's last part.
+estimate and an estimate never replaces a measured value. The send queue's
+upload worker writes the estimate when an upload with Checkoff units succeeds
+(GRE-1238, see [send-queue.md](send-queue.md)); the status watcher writes the
+measured value in GRE-1165's last part.
 
 The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
 grams from this table instead of `print_jobs.filament_consumed_g`, which

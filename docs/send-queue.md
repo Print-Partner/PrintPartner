@@ -215,7 +215,10 @@ to the mutation drain bound. For each job it:
 3. sends once through the Moonraker or PrusaLink driver. An upload-only send
    never calls `print/start`. A confirmed send finishes the job with the
    printer, host and remote path, creates the Build's Checkoff link, and
-   deletes the staged directory, as Node does. A definite refusal, including
+   deletes the staged directory, as Node does. When the file states the
+   slicer's filament estimate (see below), the job result carries it as
+   `filament_estimate_g` and the same transaction records it for the link in
+   `print_link_grams` with basis `estimated`, covering the link's Checkoff units. A definite refusal, including
    a start the printer refused after the upload, denies the effect, so the
    job fails, the item is `error` with the reason, and the printer is free.
    An unknown outcome (for example a connection closed with no answer) leaves
@@ -226,6 +229,22 @@ file, an authority or effect admission that storage refuses) fails with its
 reason at once and contacts no printer, so its item is `error` and the
 printer is free. Shutdown stops claiming new uploads before the gateway
 drains.
+
+## Slicer gram estimate (GRE-1238)
+
+`pp_domain::slicer_grams::estimate` reads the estimate from the bytes the worker
+already read for the upload, before the upload, and contacts nothing:
+
+- text G-code: within the first and last MiB, `; total filament used [g] = ``
+  (PrusaSlicer, SuperSlicer), else `; total filament weight [g] : `` (OrcaSlicer,
+  BambuStudio), else `; filament used [g] = `` with one value per extruder summed;
+- binary G-code (`.bgcode`): the same keys in the uncompressed print metadata
+  block, else the printer metadata block, before the first G-code block.
+
+A file with no such value, a compressed metadata block, a value that is not a
+positive number, or Cura's metres-only comment gives no estimate, and the link
+then has no grams until the print's measured value arrives. A send without
+Checkoff units creates no link and records nothing.
 
 ## Tests
 

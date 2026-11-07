@@ -28,7 +28,7 @@ def runtime_entries(stage):
     names = []
     for source, destination in resources.items():
         name = destination.removeprefix(RUNTIME)
-        if destination == name or "/" in name or Path(source) != stage / name:
+        if destination == name or "/" in name or Path(source).resolve() != stage / name:
             raise SystemExit(f"unexpected Linux resource mapping {source} -> {destination}")
         names.append(name)
     if not names:
@@ -36,7 +36,14 @@ def runtime_entries(stage):
     return sorted(names)
 
 
-def inventory(root, names):
+def bundled_mode(path):
+    """The mode Tauri's deb bundler writes: tar-rs Deterministic headers."""
+    if path.is_dir():
+        return 0o755
+    return 0o755 if path.stat().st_mode & 0o100 else 0o644
+
+
+def inventory(root, names, mode=lambda path: path.stat().st_mode & 0o7777):
     entries = {}
     for name in names:
         top = root / name
@@ -48,10 +55,10 @@ def inventory(root, names):
             if path.is_symlink():
                 entries[relative] = ("link", os.readlink(path))
             elif path.is_dir():
-                entries[relative] = ("dir", path.stat().st_mode & 0o7777)
+                entries[relative] = ("dir", mode(path))
             elif path.is_file():
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                entries[relative] = ("file", digest, path.stat().st_mode & 0o7777)
+                entries[relative] = ("file", digest, mode(path))
             else:
                 entries[relative] = ("other", None)
     return entries
@@ -90,7 +97,7 @@ def runtime_of(root):
 def assemble(stage, deb):
     links = json.loads((stage / "bundle-manifest.json").read_text())["dependencies"]["links"]
     names = runtime_entries(stage)
-    expected = inventory(stage, names)
+    expected = inventory(stage, names, bundled_mode)
     with tempfile.TemporaryDirectory(prefix=".deb-assembly-", dir=deb.parent) as temporary:
         work = Path(temporary) / "package"
         subprocess.run(["dpkg-deb", "-R", str(deb), str(work)], check=True)
@@ -101,7 +108,7 @@ def assemble(stage, deb):
                 directory = runtime / parent
                 if not directory.exists():
                     directory.mkdir()
-                    directory.chmod(expected[parent.as_posix()][1])
+                    directory.chmod(0o755)
             (runtime / name).symlink_to(links[name])
         if inventory(runtime, names) != expected:
             raise SystemExit("the assembled runtime differs from the stage")

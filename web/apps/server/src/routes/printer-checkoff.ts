@@ -187,9 +187,12 @@ type MaterializeProblem = { status: number; title: string; detail: string };
 /**
  * One wording for every way materializing a printer link can fail, so the
  * assignment route and the unattributed-claim route cannot drift apart. Returns
- * null for the outcomes that produced a link.
+ * null for the outcomes that produced a link. Also used by
+ * fixtures/parity/printer-file-assignment/generate.mjs.
+ *
+ * @public
  */
-function materializeProblem(
+export function materializeProblem(
   materialized: MaterializeAcceptedPrinterLinkResult,
 ): MaterializeProblem | null {
   switch (materialized.kind) {

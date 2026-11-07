@@ -396,7 +396,7 @@ async fn part_bytes(part: &mut Field<'_>, cap: usize, truncate: bool) -> Result<
 /// The multipart form under Node's limits. A part is a file when it has a
 /// file name or an `application/octet-stream` type, as busboy decides, and a
 /// part named after an `Object.prototype` member is refused as
-/// `@fastify/multipart` refuses it. One file part of up to 64 MB (a
+/// `@fastify/multipart` refuses it, when the form ends. One file part of up to 64 MB (a
 /// file part not named `file` is read and ignored), and four fields cut at
 /// 64 KiB, of which `profile_id` and `object_names` are kept.
 async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response>> {
@@ -440,9 +440,10 @@ async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response
         let name = part.name().map(str::to_owned);
         // @fastify/multipart records this refusal and raises it when the
         // stream ends, so a limit hit later still answers first.
-        prototype |= name
+        let proto = name
             .as_deref()
             .is_some_and(|name| PROTOTYPE.contains(&name));
+        prototype |= proto;
         let octets = part.content_type().is_some_and(|value| {
             value
                 .split(';')
@@ -472,9 +473,10 @@ async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response
         if files > 1 {
             return Err(bad("Upload one print file at a time"));
         }
-        let bytes = part_bytes(&mut part, MAX_UPLOAD_BYTES, false)
+        // Node drains a refused part without its size limit.
+        let bytes = part_bytes(&mut part, MAX_UPLOAD_BYTES, proto)
             .await
-            .map_err(refused)?;
+            .map_err(|too_large| refused(too_large && !proto))?;
         if name.as_deref() == Some("file") {
             form.name = file_name.unwrap_or_default();
             form.file = Some(bytes);

@@ -900,7 +900,23 @@ async fn uploads_up_to_64_mb_are_held_to_two_and_the_route_takes_ten_a_minute() 
             &json!("That print file is larger than the 64 MB PrintPartner will take as an upload")
         )
     );
-    for _ in 0..6 {
+    let (status, body) = upload(
+        &router,
+        &[
+            ("profile_id", None, b"1"),
+            ("valueOf", Some("big.gcode"), &big),
+        ],
+    )
+    .await;
+    assert_eq!(
+        (status, &body["detail"]),
+        (
+            StatusCode::BAD_REQUEST,
+            &json!("That upload could not be read")
+        ),
+        "Node drains a prototype-named part without its size limit"
+    );
+    for _ in 0..5 {
         let (status, _) = post(&router, UPLOAD, "{}", true).await;
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }

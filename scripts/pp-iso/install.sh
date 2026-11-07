@@ -34,7 +34,15 @@ command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
 # shellcheck disable=SC1091
 . "$etc/runner.env"
 
-mountpoint -q /var/lib/pp-iso || { echo "/var/lib/pp-iso must be its own filesystem (a dedicated partition or a loop-mounted image of fixed size), so a job cannot fill the host disk; see docs/development/pp-iso.md" >&2; exit 1; }
+[ "$(stat -c %d /var/lib/pp-iso)" != "$(stat -c %d /)" ] && mountpoint -q /var/lib/pp-iso || { echo "/var/lib/pp-iso must be its own filesystem (a dedicated partition or a loop-mounted image of fixed size), so a job cannot fill the host disk; see docs/development/pp-iso.md" >&2; exit 1; }
+src=$(findmnt -n -o SOURCE /var/lib/pp-iso)
+case "$src" in
+  /dev/loop*)
+    backing=$(losetup -nl -O BACK-FILE "$src" | head -n1 | tr -d ' ')
+    [ -f "$backing" ] && [ $(( $(stat -c %b "$backing") * $(stat -c %B "$backing") )) -ge "$(stat -c %s "$backing")" ] || { echo "the backing file of /var/lib/pp-iso ($backing) is sparse; fully allocate it (fallocate), so its size is really reserved on the host disk" >&2; exit 1; } ;;
+  /dev/*) ;;
+  *) echo "/var/lib/pp-iso is mounted from $src; use a block device or a fully allocated loop image" >&2; exit 1 ;;
+esac
 running=$(systemctl list-units --state=active --plain --no-legend 'pp-iso-runner@*.service' | awk '{print $1}')
 if [ -n "$running" ] && [ "${1:-}" != "--restart" ]; then
   echo "pp-iso slots are running and keep their old settings until restarted. Re-run with --restart to restart them now (a job in flight is cancelled and GitHub can re-run it), or stop them first." >&2

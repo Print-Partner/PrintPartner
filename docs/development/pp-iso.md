@@ -74,9 +74,12 @@ Use the Linux hosts that run pp-local today. Each host needs systemd, rootless p
    installation token) for `poitee/PrintPartner` only, with the repository permission
    **Administration: read and write** and nothing else. Do not paste it anywhere except the
    hidden prompt below.
-2. Give pp-iso a bounded disk. `install.sh` refuses unless `/var/lib/pp-iso` is its own
-   mounted filesystem, so a job that fills its disk cannot starve pp-local or the OS. For
-   example, a 200 GB loop image: `sudo mkdir -p /var/lib/pp-iso && sudo truncate -s 200G /var/pp-iso.img && sudo mkfs.ext4 -q /var/pp-iso.img`,
+2. Give pp-iso a bounded disk. `install.sh` refuses unless `/var/lib/pp-iso` is a separate
+   filesystem on a block device or on a fully allocated loop image (not a bind mount or a
+   sparse file), so a job that fills its disk uses only space reserved for it and cannot
+   starve pp-local or the OS. The slot units also require that mount, so after a reboot with
+   the mount missing they do not start. For example, a loop image of a size the host disk
+   really has free (check `df -h /var`): `sudo mkdir -p /var/lib/pp-iso && sudo fallocate -l 200G /var/pp-iso.img && sudo mkfs.ext4 -q /var/pp-iso.img`,
    then add `/var/pp-iso.img /var/lib/pp-iso ext4 loop,nofail 0 2` to `/etc/fstab` and run
    `sudo mount /var/lib/pp-iso`. Container layers, job workspaces and the image live there.
 3. On the host, check out this repository and `cd scripts/pp-iso`.

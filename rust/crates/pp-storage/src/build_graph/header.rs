@@ -172,14 +172,20 @@ fn archive_in(
     if profile.archived_at.is_some() {
         return Ok(Ok(()));
     }
-    if let read_model::AcceptedRead::Ready { snapshot } = read_model::graph::read(
+    let complete = read_model::graph::read(
         tx,
         tenant,
         id,
         repos,
         &mut read_model::graph::Budget::default(),
-    )? && let Err(error) = crate::checkoff_progress::complete_rows(tx, tenant, &snapshot)
-    {
+    )
+    .and_then(|read| match read {
+        read_model::AcceptedRead::Ready { snapshot } => {
+            crate::checkoff_progress::complete_rows(tx, tenant, &snapshot)
+        }
+        _ => Ok(()),
+    });
+    if let Err(error) = complete {
         if error
             .downcast_ref::<read_model::graph::Integrity>()
             .is_some()

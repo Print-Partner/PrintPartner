@@ -9,12 +9,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { normalizer } from '../checkoff-normalizer.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '../../..');
 const server = join(root, 'web/apps/server');
 const { createSelfHostPorts } = await import(join(server, 'src/adapters/self-host/index.ts'));
 const { updatePrinterCheckoffLink } = await import(join(server, 'src/services/printer-checkoff-store.ts'));
+const { HOST_COMPLETED_PATCH } = await import(join(server, 'src/routes/printer-checkoff.ts'));
 
 const database = 'rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db';
 const queries = {
@@ -38,7 +40,6 @@ const problems = {
   no_match: 'That print file does not map to an incomplete Required unit in this Build',
   already_linked: 'That print file is already assigned',
 };
-const HOST_COMPLETED_PATCH = { state: 'awaiting_verify', host_outcome: 'success', saw_active: true, last_progress: 100 };
 
 const name = (token) => 'bracket__ppu_0000000000000000000000000000000' + token;
 const link = (filename, extra = {}) => ({ integrationId: 'sim-moonraker', printerId: 'sim-1', hostName: 'Simulated Voron', filename, started: false, ...extra });
@@ -92,23 +93,6 @@ function receipt(command, repo) {
   return { status: 200, body: JSON.parse(JSON.stringify({ link: done, attribution: materialized.attribution })) };
 }
 
-// Generated ids and times differ per run. Seeded times use 2020, so any other ISO time is "now".
-function normalizer() {
-  const ids = new Map();
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-  const iso = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
-  const walk = (value) => {
-    if (Array.isArray(value)) return value.map(walk);
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
-    if (typeof value !== 'string') return value;
-    if (uuid.test(value)) {
-      if (!ids.has(value)) ids.set(value, '<uuid:' + ids.size + '>');
-      return ids.get(value);
-    }
-    return iso.test(value) && !value.startsWith('2020-') ? '<now>' : value;
-  };
-  return walk;
-}
 
 const directory = mkdtempSync(join(tmpdir(), 'pp-printer-file-assignment-'));
 copyFileSync(join(root, database), join(directory, 'print-partner.db'));

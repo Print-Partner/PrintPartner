@@ -40,7 +40,7 @@ For other paths, including documentation-only PRs, both jobs are skipped and sti
 Non-PR runs always execute both linters.
 Both jobs fail if the `changes` job fails, so a broken filter cannot skip a required check.
 Both jobs have only `contents: read` permission and disable persisted checkout credentials.
-A new PR push cancels that PR's older run. Every non-PR run has its own concurrency group, so it never waits for or cancels another run.
+A new PR push cancels that PR's older run. Pushes to `main` share one group per workflow: one run executes and one waits, and a newer push replaces the waiting run, which GitHub reports as cancelled. Other non-PR runs have their own group and never wait for or cancel another run.
 
 Actionlint 1.7.12 checks workflow syntax and embedded shell commands with ShellCheck.
 The job verifies the actionlint download against its SHA-256 checksum before execution.

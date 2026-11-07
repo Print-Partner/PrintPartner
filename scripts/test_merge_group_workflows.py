@@ -290,10 +290,13 @@ class PullRequestEditTests(unittest.TestCase):
 
 
 class MainPushConcurrencyTests(unittest.TestCase):
-    """A push to main must never cancel an earlier main run (GRE-1228)."""
+    """Main pushes never cancel a running run (GRE-1228) and queue at most one pending run per workflow."""
+
+    EACH_PUSH = {"duplication.yml", "desktop-fleet-rust.yml"}
+    MAIN_GROUP = "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main'"
 
     def test_only_pull_requests_cancel_and_other_events_get_their_own_group(self):
-        checked = 0
+        checked = bounded = 0
         for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
             workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
             events = workflow.get("on", {})
@@ -308,9 +311,14 @@ class MainPushConcurrencyTests(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
                 self.assertIn("github.run_id", concurrency["group"])
-                self.assertNotIn("'push'", concurrency["group"])
-                self.assertNotIn("run_attempt", concurrency["group"] + cancel)
+                if path.name in self.EACH_PUSH:
+                    self.assertNotIn("'main'", concurrency["group"], f"{path.name} compares each push with the one before")
+                    self.assertNotIn("run_attempt", concurrency["group"] + cancel)
+                    continue
+                bounded += 1
+                self.assertIn(self.MAIN_GROUP, concurrency["group"])
         self.assertGreaterEqual(checked, 13)
+        self.assertGreaterEqual(bounded, 11)
 
 
 if __name__ == "__main__":

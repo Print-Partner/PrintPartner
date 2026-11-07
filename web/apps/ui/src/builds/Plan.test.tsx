@@ -245,6 +245,52 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(writes(fetchMock).some((w) => w.path.endsWith("/apply"))).toBe(false);
   });
 
+  it("keeps a field being typed while an earlier field's save lands", async () => {
+    let saved = draftHeader(1);
+    let release = () => {};
+    const inner = core();
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      if (path === "/api/v2/plans/2/drafts/9/header") return Promise.resolve(json(saved));
+      if (path !== "/api/v2/plans/2/drafts/header" || init?.method !== "PUT") {
+        return inner(path, init);
+      }
+      const header = JSON.parse(String(init.body)).header;
+      const next = {
+        ...saved,
+        draft: { ...saved.draft!, header, header_version: saved.draft!.header_version + 1 },
+      };
+      return new Promise<Response>((resolve) => {
+        release = () => {
+          saved = next;
+          resolve(
+            json({ receipt: { profile_id: 2, draft_id: 9, header: next.draft }, header: next }),
+          );
+        };
+      });
+    });
+    renderAt(fetchMock as unknown as ReturnType<typeof core>);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.keyDown(name, { key: "Enter" });
+    await waitFor(() =>
+      expect(writes(fetchMock as unknown as ReturnType<typeof core>)).toHaveLength(1),
+    );
+    fireEvent.change(field("Customer"), { target: { value: "Beta" } });
+    act(() => release());
+    await screen.findByText(/Saved to the draft/);
+    expect(field("Name").value).toBe("Bracket kit v3");
+    expect(field("Customer").value).toBe("Beta");
+    fireEvent.blur(field("Customer"));
+    await waitFor(() =>
+      expect(writes(fetchMock as unknown as ReturnType<typeof core>)).toHaveLength(2),
+    );
+    act(() => release());
+    expect(writes(fetchMock as unknown as ReturnType<typeof core>)[1]!.body).toMatchObject({
+      expected_header_version: 2,
+      header: { name: "Bracket kit v3", customer: "Beta" },
+    });
+  });
+
   it("refuses a blank name without sending", async () => {
     const fetchMock = core();
     renderAt(fetchMock);
@@ -354,6 +400,25 @@ describe("UI6-02 Accept gate", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
     const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
     await within(gate).findByText(/Accept waits for running work to finish: print job/);
+    const accept = within(gate).getByRole("button", { name: "Accept" });
+    expect(accept.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(accept);
+    expect(writes(fetchMock)).toHaveLength(0);
+  });
+  it("keeps Accept off while checkoff links or queued sends point at the Plan", async () => {
+    const held = preview(1);
+    if (held.kind === "changed") {
+      held.changes.production = {
+        checkoff_link_count: 2,
+        send_queue_item_count: 1,
+        unmappable: [],
+      };
+    }
+    const fetchMock = core({ preview: () => json(held) });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/2 checkoff links and 1 queued send point at this Plan/);
     const accept = within(gate).getByRole("button", { name: "Accept" });
     expect(accept.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(accept);

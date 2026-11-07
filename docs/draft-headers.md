@@ -118,7 +118,12 @@ these routes through the generated client:
   Required units affected, cleared Plates, stock impact and duplicate orders,
   and sends the preview's `revision` without `draft_id` as the `acceptDraft`
   body with a new `Idempotency-Key`. A refusal shows its reason and previews
-  again; the next Accept uses a new key.
+  again; the next Accept uses a new key. Accept stays off, with the reason,
+  while the preview lists running work in `blocked_by` or checkoff links and
+  queued sends in `production`: the tab sends `remap_checkoff_links: false`,
+  so Accept would refuse with `production_active`.
+- A saved header replaces only the fields the user has not changed since the
+  last save, so typing in one field while another saves is kept.
 - Offline, every field is read-only and every button is `aria-disabled` with
   the reason. With the Orders module off, the order number, customer and due
   date fields are hidden and the tab says why.

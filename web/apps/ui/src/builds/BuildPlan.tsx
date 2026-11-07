@@ -139,10 +139,26 @@ const HEADER_FIELDS = [
   { field: "due_date", label: "Due date", type: "date", orders: true },
 ] as const;
 
-/** The header form. Each field saves to the draft when it loses focus or on Enter. */
+/**
+ * The header form. Each field saves to the draft when it loses focus or on Enter. A newly
+ * saved header replaces only the fields the user has not changed since the last one.
+ */
 function HeaderForm({ data, writes }: { data: PlanData; writes: Writes }) {
   const saved = data.draft?.header?.header ?? data.build;
   const [fields, setFields] = useState(() => fieldsOf(saved));
+  const [shown, setShown] = useState(saved);
+  if (!sameHeader(saved, shown)) {
+    const [before, after] = [fieldsOf(shown), fieldsOf(saved)];
+    setShown(saved);
+    setFields(
+      Object.fromEntries(
+        Object.entries(fields).map(([k, v]) => {
+          const field = k as keyof HeaderFields;
+          return [field, v === before[field] ? after[field] : v];
+        }),
+      ) as HeaderFields,
+    );
+  }
   const [invalid, setInvalid] = useState(false);
   const offline = useConnection() === "offline";
   const orders = useModule("orders");
@@ -403,9 +419,16 @@ function Changes({ changes }: { changes: PreviewChanges }) {
 function acceptBlocked(preview: DraftAcceptPreview | undefined, offline: boolean): string | null {
   if (offline) return OFFLINE_REASON;
   if (!preview) return "The preview has not loaded yet.";
-  if (preview.kind === "changed" && preview.changes.blocked_by.length > 0) {
-    const kinds = preview.changes.blocked_by.map((b) => b.kind.replaceAll("_", " "));
+  if (preview.kind !== "changed") return null;
+  const { blocked_by, production } = preview.changes;
+  if (blocked_by.length > 0) {
+    const kinds = blocked_by.map((b) => b.kind.replaceAll("_", " "));
     return `Accept waits for running work to finish: ${kinds.join(", ")}.`;
+  }
+  if (production) {
+    const links = plural(production.checkoff_link_count, "checkoff link");
+    const sends = plural(production.send_queue_item_count, "queued send");
+    return `Accept is off while ${links} and ${sends} point at this Plan. Finish or clear them first.`;
   }
   return null;
 }
@@ -512,7 +535,6 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
   const [gate, setGate] = useState(false);
   const [accepted, setAccepted] = useState<AcceptDraftReceipt | null>(null);
   const draft = data.draft;
-  const headerKey = `${draft?.workspace.draft.draft_id ?? "none"}-${draft?.header?.header_version ?? 0}`;
   return (
     <>
       <div className="pp-plan-status">
@@ -545,7 +567,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
         )}
       </div>
       <SaveStatus writes={writes} />
-      <HeaderForm key={headerKey} data={data} writes={writes} />
+      <HeaderForm data={data} writes={writes} />
       {draft && <PartsTable parts={draft.workspace.parts} writes={writes} />}
       {gate && draft && (
         <AcceptGate

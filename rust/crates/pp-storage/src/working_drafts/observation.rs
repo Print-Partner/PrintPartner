@@ -12,6 +12,15 @@ pub(crate) fn parse_builder_manifest(
     super::manifest::parse(bytes, budget)
 }
 
+pub(crate) use super::manifest::{DimensionOption, Dimensions};
+
+pub(crate) fn parse_variant_dimensions(
+    bytes: &[u8],
+    budget: &mut PreparationBudget<'_>,
+) -> ReadResult<Dimensions> {
+    super::manifest::variant_dimensions(bytes, budget)
+}
+
 pub(crate) fn merge_builder_groups(target: &mut BuilderGroups, incoming: BuilderGroups) {
     let Ok(()) = super::manifest::merge_with(target, incoming, &mut |_| {
         Ok::<_, std::convert::Infallible>(())

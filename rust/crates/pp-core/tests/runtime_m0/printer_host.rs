@@ -82,7 +82,13 @@ fn recorded_prusalink() -> (RoutedPrinter, Value) {
         })
         .collect();
     routes.push(("/api/v1/info".into(), 200, read("info.json")));
-    routes.push(("/api/v1/status".into(), 200, read("status-printing.json")));
+    // The PrusaLink fixtures wrap each reply body with its status and headers.
+    let printing: Value = serde_json::from_slice(&read("status-printing.json")).unwrap();
+    routes.push((
+        "/api/v1/status".into(),
+        200,
+        printing["body"].to_string().into_bytes(),
+    ));
     let metadata = json!({"refs": {"download": "/api/v1/files/usb/BENCHY~1.BGC/raw"}});
     routes.push((
         "/api/v1/files/usb/BENCHY~1.BGC".into(),
@@ -180,6 +186,7 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
     let cookie = signed_in(&origin, &desktop, 1).await;
     capabilities_and_files(&origin, &cookie, &oracle).await;
     cameras_and_test(&origin, &cookie, &oracle, &prusa_oracle).await;
+    prusalink_status(&origin, &cookie).await;
     streams(&origin, &cookie).await;
 
     shut_down(runtime).await;
@@ -245,12 +252,11 @@ async fn capabilities_and_files(origin: &str, cookie: &str, oracle: &Value) {
 
     let all = json!({"files": true, "cameras": true, "status": true});
     let none = json!({"files": false, "cameras": false, "status": false});
-    let unwatched = json!({"files": true, "cameras": true, "status": false});
     for (printer, expected) in [
         ("p-moon", &all),
         ("p-off", &none),
         ("p-down", &all),
-        ("p-prusa", &unwatched),
+        ("p-prusa", &all),
         ("p-bambu", &none),
         ("p-odd", &none),
         ("p-gone", &none),
@@ -512,4 +518,32 @@ async fn streams(origin: &str, cookie: &str) {
             "{path}"
         );
     }
+}
+
+/// GRE-1175: the status watchers poll the recorded PrusaLink, so its status
+/// route answers the driver's status for the recorded printing reply.
+async fn prusalink_status(origin: &str, cookie: &str) {
+    let status = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let (code, body) =
+                get(origin, cookie, "/api/v1/integrations/prusa-1/status".into()).await;
+            if code == StatusCode::OK && body["state"] == "printing" {
+                return body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the runtime never served the recorded PrusaLink status");
+    assert_eq!(
+        (
+            &status["progress"],
+            &status["nozzle_temperature_c"],
+            &status["bed_target_c"]
+        ),
+        (&json!(33.0), &json!(214.5), &json!(60.0)),
+        "{status}"
+    );
+    // The active job's name comes from `/api/v1/job`, as in Node.
+    assert_eq!(status["message"], "Printing BENCHY~1.BGC", "{status}");
 }

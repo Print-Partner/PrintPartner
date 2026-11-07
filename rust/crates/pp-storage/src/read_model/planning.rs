@@ -74,6 +74,21 @@ pub enum Query {
         draft_id_valid: bool,
     },
     Decisions,
+    /// The guards Node's `propose_apply_plan_draft` runs before Accept.
+    AcceptGuard {
+        draft_id: PositiveId,
+    },
+}
+
+/// Whether MCP may accept a draft, as Node's `confirm_apply` decides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcceptGuard {
+    NoBrief,
+    /// The brief selects another draft, or none.
+    NotSelected,
+    /// `resolvedSourcePathExclusions` blockers.
+    SourceChoices(Vec<String>),
+    Clear,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +103,7 @@ pub struct Request {
 pub enum Outcome {
     BuildPlanning(Box<BuildPlanningResponse>),
     Decisions(PlanDecisionList),
+    AcceptGuard(AcceptGuard),
     /// A brief exists, hydrated, and the request's `draft_id` is invalid.
     InvalidDraftId,
     MissingBuild,
@@ -153,6 +169,10 @@ impl PlanningClient {
             == Query::BuildPlanning {
                 draft_id_valid: false,
             };
+        let guard = match request.query {
+            Query::AcceptGuard { draft_id } => Some(draft_id),
+            _ => None,
+        };
         let flag = cancelled.clone();
         let facts = super::submit_read(&self.shared, &flag, wait, |reply| Envelope::Planning {
             command: Command {
@@ -163,6 +183,12 @@ impl PlanningClient {
             },
             reply,
         })?;
+        if guard.is_some() && !matches!(facts, Facts::Brief { .. }) {
+            return Ok(match facts {
+                Facts::MissingBuild => Outcome::MissingBuild,
+                _ => Outcome::AcceptGuard(AcceptGuard::NoBrief),
+            });
+        }
         Ok(match facts {
             Facts::MissingBuild => Outcome::MissingBuild,
             Facts::NoBrief => {
@@ -188,6 +214,11 @@ impl PlanningClient {
                     })
                     .collect();
                 let brief = hydrate(*brief, &sources)?;
+                if let Some(draft_id) = guard {
+                    return Ok(Outcome::AcceptGuard(accept_guard(
+                        &brief, &sources, draft_id,
+                    )));
+                }
                 if refuse_draft_id {
                     return Ok(Outcome::InvalidDraftId);
                 }
@@ -214,6 +245,22 @@ impl PlanningClient {
     }
 }
 
+/// Node's `confirm_apply` checks of a hydrated brief: hydration clears
+/// `draft_id` when the Sources, pinned revisions or resolutions moved.
+fn accept_guard(
+    brief: &BuildPlanningBrief,
+    sources: &HashMap<i64, PlanningSource>,
+    draft_id: PositiveId,
+) -> AcceptGuard {
+    if brief.draft_id.and_then(|id| u64::try_from(id).ok()) != Some(draft_id.get()) {
+        return AcceptGuard::NotSelected;
+    }
+    match source_choice_blockers(brief, sources) {
+        blockers if blockers.is_empty() => AcceptGuard::Clear,
+        blockers => AcceptGuard::SourceChoices(blockers),
+    }
+}
+
 pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<Facts> {
     let (tx, found) = super::owned_build(
         connection,
@@ -227,7 +274,9 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
         (Some((tenant, build)), Query::Decisions) => {
             Facts::Decisions(decisions(&tx, &tenant, build)?)
         }
-        (Some((tenant, build)), Query::BuildPlanning { .. }) => planning(&tx, &tenant, build)?,
+        (Some((tenant, build)), Query::BuildPlanning { .. } | Query::AcceptGuard { .. }) => {
+            planning(&tx, &tenant, build)?
+        }
     };
     tx.commit()?;
     Ok(facts)

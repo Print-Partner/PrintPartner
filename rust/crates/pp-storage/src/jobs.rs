@@ -1704,7 +1704,7 @@ pub(crate) fn release_printer_upload(
         return Ok(false);
     }
     let job = owned(tx, job_id, tenant)?;
-    close_unresolved_upload(tx, job, subject, "UserRemoved", false, reason, event)?;
+    close_unresolved_upload(tx, job, subject, UploadAnswer::Removed, reason, event)?;
     Ok(true)
 }
 /// The state of the tenant's printer upload `job_id`, or `None` when no Rust
@@ -1740,11 +1740,14 @@ pub(crate) fn reconcile_printer_upload(
         job.kind == JobKind::PrinterUpload && job.state == PersistentState::ReconciliationRequired,
         "Printer upload is not awaiting reconciliation"
     );
-    let (decision, recovery) = if printed {
-        ("UserPrinted", "You reconciled this send: it printed")
+    let (answer, recovery) = if printed {
+        (
+            UploadAnswer::Printed,
+            "You reconciled this send: it printed",
+        )
     } else {
         (
-            "UserDidNotPrint",
+            UploadAnswer::NotPrinted,
             "You reconciled this send: it did not print",
         )
     };
@@ -1752,11 +1755,29 @@ pub(crate) fn reconcile_printer_upload(
         tx,
         job,
         subject,
-        decision,
-        printed,
+        answer,
         recovery,
-        &format!("reconciled:{decision}"),
+        &format!("reconciled:{}", answer.decision()),
     )
+}
+/// How the user closed an unresolved printer upload.
+#[cfg(feature = "desktop_rebuild")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UploadAnswer {
+    Printed,
+    NotPrinted,
+    Removed,
+}
+#[cfg(feature = "desktop_rebuild")]
+impl UploadAnswer {
+    /// The decision stored in the reconciliation history.
+    fn decision(self) -> &'static str {
+        match self {
+            Self::Printed => "UserPrinted",
+            Self::NotPrinted => "UserDidNotPrint",
+            Self::Removed => "UserRemoved",
+        }
+    }
 }
 /// Ends a queued or unresolved printer upload as succeeded (`printed`) or
 /// failed, so it stops reserving its printer. For an unresolved one the
@@ -1769,11 +1790,11 @@ fn close_unresolved_upload(
     tx: &Transaction<'_>,
     mut job: JobRecord,
     subject: &str,
-    decision: &str,
-    printed: bool,
+    answer: UploadAnswer,
     recovery: &str,
     event: &str,
 ) -> Result<()> {
+    let printed = answer == UploadAnswer::Printed;
     if job.state == PersistentState::ReconciliationRequired {
         let mut observed = None;
         for effect in &mut job.effects {
@@ -1801,7 +1822,7 @@ fn close_unresolved_upload(
                 effect.intent.content_hash,
                 effect.intent.basis_hash,
                 effect.intent.target,
-                decision,
+                answer.decision(),
                 serde_json::to_string(&observed)?,
                 now()
             ],
@@ -2332,13 +2353,14 @@ pub(crate) fn execute(
         .map_err(|_| anyhow!(JobFailure::CommitUnknown))?;
     #[cfg(feature = "desktop_rebuild")]
     {
-        if tx.commit().is_err() {
-            subscriptions::finish_collection();
-            subscriptions.stop();
-            return Err(anyhow!(JobFailure::CommitUnknown));
+        let error = tx
+            .commit()
+            .is_err()
+            .then(|| anyhow!(JobFailure::CommitUnknown));
+        end_job_collection(subscriptions, error.is_none(), error.as_ref());
+        if let Some(error) = error {
+            return Err(error);
         }
-        subscriptions::mark_committed();
-        subscriptions.publish(subscriptions::finish_collection());
     }
     match decision {
         TransactionDecision::Outcome(outcome) => Ok(outcome),

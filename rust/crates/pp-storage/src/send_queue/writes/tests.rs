@@ -383,8 +383,25 @@ fn ticket_t_26_send_now_refuses_an_unknown_outcome_until_the_user_reconciles() {
     );
     assert!(worker.claim().unwrap().is_none());
 
+    // An answer about another send of the item, or none, changes nothing.
+    for job_id in [Some("job-earlier".into()), None] {
+        assert_eq!(
+            queue.apply(Request::Reconcile {
+                id: "q1".into(),
+                job_id,
+                printed: true,
+            }),
+            Reply::Refused {
+                status: 409,
+                detail: "This answer is for an earlier send of this item",
+                code: Some("send_changed"),
+            }
+        );
+    }
+    assert_eq!(queue.job(&first).0, "reconciliation_required");
     let Reply::Item(item) = queue.apply(Request::Reconcile {
         id: "q1".into(),
+        job_id: Some(first.clone()),
         printed: false,
     }) else {
         panic!("reconcile refused")
@@ -432,6 +449,7 @@ fn ticket_t_26_it_printed_finishes_the_item_and_node_interrupted_sends_reconcile
     let printed = queue.unknown_outcome(&worker, "q3", "p-b");
     let Reply::Item(item) = queue.apply(Request::Reconcile {
         id: "q3".into(),
+        job_id: Some(printed.clone()),
         printed: true,
     }) else {
         panic!("reconcile refused")
@@ -453,6 +471,7 @@ fn ticket_t_26_it_printed_finishes_the_item_and_node_interrupted_sends_reconcile
     assert_eq!(
         queue.apply(Request::Reconcile {
             id: "q3".into(),
+            job_id: Some(printed.clone()),
             printed: false,
         }),
         refused(409, "This item has no send with an unknown printer outcome")
@@ -467,6 +486,7 @@ fn ticket_t_26_it_printed_finishes_the_item_and_node_interrupted_sends_reconcile
     assert!(matches!(
         queue.apply(Request::Reconcile {
             id: "node".into(),
+            job_id: Some("job-node".into()),
             printed: false,
         }),
         Reply::Item(_)
@@ -539,6 +559,7 @@ fn ticket_t_26_reconcile_and_remove_resolve_a_receipt_kept_after_a_refused_autho
     assert!(matches!(
         queue.apply(Request::Reconcile {
             id: "printed".into(),
+            job_id: Some(printed.clone()),
             printed: true,
         }),
         Reply::Item(_)
@@ -828,6 +849,7 @@ fn ticket_t_26_a_queue_left_in_the_legacy_setting_cannot_change() {
         Request::Missing { id: "a".into() },
         Request::Reconcile {
             id: "a".into(),
+            job_id: None,
             printed: true,
         },
     ] {

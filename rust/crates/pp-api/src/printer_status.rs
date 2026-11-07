@@ -1,5 +1,5 @@
 //! `GET`/`HEAD /api/v1/integrations/{id}/status` for the Rust-only runtime,
-//! answered from the Moonraker status watchers through [`PrinterStatusPort`].
+//! answered from the Moonraker and PrusaLink status watchers through [`PrinterStatusPort`].
 //! Node registers this route under `/api/v1` only. The route reads cached
 //! observations: it never polls a printer on demand, sends, retries, or
 //! touches Checkoff. Admission and the credential proof are the admin
@@ -22,9 +22,9 @@ use std::{future::Future, pin::Pin, sync::Arc};
 pub enum StatusLookup {
     /// The `PrinterHostStatus` JSON object, as Node returns it.
     Status(serde_json::Value),
-    /// The id is not a Moonraker host in the stored settings.
+    /// The id is not a watched Moonraker or PrusaLink host in the stored settings.
     NotWatched,
-    /// A Moonraker host with no current status (no valid snapshot, or its
+    /// A watched host with no current status (no valid snapshot, or its
     /// poller is stopped).
     Unavailable,
 }

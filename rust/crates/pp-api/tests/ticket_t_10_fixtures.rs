@@ -1121,6 +1121,9 @@ mod ticket_t_10_fixtures {
         /// External effects Node's stubs recorded instead of running.
         #[serde(default)]
         effects: Vec<Value>,
+        /// Stored text Node left after a write, where the corpus records it.
+        #[serde(default)]
+        stored: Option<Value>,
     }
 
     /// Sends one recorded request to `path` with the session cookie and
@@ -1626,6 +1629,105 @@ mod ticket_t_10_fixtures {
         assert_eq!(report.matched, 17);
         assert_eq!(report.corrected.len(), 3);
     }
+
+    /// Variant dimension reads and selection saves (GRE-1221) over real
+    /// checkouts under `repos/<id>`, read through the production `SourceReads`.
+    /// After each save the stored selection text and the Source's import rules
+    /// must equal Node's byte for byte.
+    #[tokio::test]
+    async fn variants_flat_v1_v2_match_node_responses_and_changed_tables() {
+        use pp_api::builds::{BuildHttpConfig, build_router};
+        use pp_storage::working_drafts::observation::{DraftReads, PreparationLimits};
+        use std::sync::Arc;
+
+        let fixture = seeded_fixture(
+            include_str!("../../../../fixtures/parity/variants-http/node.json"),
+            "variants-http",
+            78,
+        );
+        assert!(fixture.seed.is_some());
+        let sandbox = Sandbox::new("t10-variants").unwrap();
+        let owner = open_seeded(&sandbox, &fixture);
+        let reads: Arc<dyn DraftReads> = Arc::new(owner.source_reads().unwrap());
+        let graph = owner
+            .build_graph_with_observations(ACCOUNT_POLICY, reads, PreparationLimits::default())
+            .unwrap();
+        let served = Served::start(|origin| {
+            build_router(
+                BuildHttpConfig::from_startup(origin, "default", Some("1")).unwrap(),
+                graph,
+            )
+        })
+        .await
+        .unwrap();
+        let (mut matched, mut checked) = (0, 0);
+        for case in &fixture.cases {
+            let report = replay_seeded(
+                &served,
+                &sandbox,
+                FIXTURE_COOKIE,
+                std::slice::from_ref(case),
+                REFUSED_BODIES
+                    .iter()
+                    .find(|id| **id == case.id)
+                    .map(|id| {
+                        vec![Correction {
+                            case: id,
+                            kind: CorrectionKind::Security,
+                            reason: "Rust refuses what Fastify's parser refuses, without its code",
+                            rust: Exchange {
+                                status: 400,
+                                body: json!({"detail": "Request is invalid"}),
+                                set_cookie: vec![],
+                            },
+                        }]
+                    })
+                    .unwrap_or_default(),
+            )
+            .await;
+            matched += report.matched;
+            let Some(stored) = &case.stored else {
+                continue;
+            };
+            let plan = case.node.body["profile_id"].as_i64().unwrap();
+            let source = case.node.body["source_id"].as_i64().unwrap();
+            let connection =
+                rusqlite::Connection::open(sandbox.path().join("print-partner.db")).unwrap();
+            let selection: String = connection
+                .query_row(
+                    "SELECT value FROM app_settings WHERE tenant_id='default' AND key=?1",
+                    [format!("plan_variant_selection_{plan}")],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let rules: Option<String> = connection
+                .query_row(
+                    "SELECT imported_paths FROM projects WHERE id=?1",
+                    [source],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                json!({"selection": selection, "imported_paths": rules}),
+                *stored,
+                "{}: stored text",
+                case.id
+            );
+            checked += 1;
+        }
+        served.stop().await.unwrap();
+        owner.shutdown().unwrap();
+        assert_eq!(matched, 74);
+        assert_eq!(checked, 18);
+    }
+
+    /// The variants cases Fastify's JSON parser refuses before the route runs.
+    const REFUSED_BODIES: [&str; 4] = [
+        "prototype_dimension_flat",
+        "prototype_missing_build_v1",
+        "not_json_text_id_v2",
+        "empty_json_body_flat",
+    ];
 
     #[tokio::test]
     async fn catalog_flat_v1_match_node_responses_and_changed_tables() {

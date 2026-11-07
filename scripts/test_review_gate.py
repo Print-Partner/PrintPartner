@@ -454,7 +454,7 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         names = {load(name)["name"] for name in ("droid-review.yml", "claude-review.yml")}
         self.assertEqual(set(rerun["on"]["workflow_run"]["workflows"]), names)
         condition = rerun["jobs"]["rerun"]["if"]
-        self.assertIn("github.event.comment.user.login == github.repository_owner", condition)
+        self.assertIn("github.event.comment.user.login == 'poitee'", condition)
         self.assertEqual(rerun["jobs"]["rerun"]["permissions"], {"actions": "write", "pull-requests": "read"})
         self.assertIn("review-gate.yml/runs?event=pull_request_target", rerun["jobs"]["rerun"]["steps"][0]["run"])
 
@@ -479,7 +479,7 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
             with self.subTest(job=job_id):
                 self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "write"})
                 self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", job["if"])
-                self.assertIn("github.event.pull_request.user.login == github.repository_owner", job["if"])
+                self.assertIn("github.event.pull_request.user.login == 'poitee'", job["if"])
                 self.assertIn("github.event.pull_request.user.login == 'dependabot[bot]'", job["if"])
                 steps = job["steps"]
                 self.assertIn("Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set", steps[0]["run"])

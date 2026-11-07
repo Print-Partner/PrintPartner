@@ -2980,3 +2980,5 @@ async fn ticket_t_61_autosave_refusals_write_nothing() {
 mod accept_header;
 #[path = "tests/header.rs"]
 mod header;
+#[path = "tests/mcp_accept.rs"]
+mod mcp_accept;

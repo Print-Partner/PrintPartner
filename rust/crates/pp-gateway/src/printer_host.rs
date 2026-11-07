@@ -461,19 +461,9 @@ mod tests {
 
     #[tokio::test]
     async fn ticket_t_23_a_pin_counts_only_for_its_host_and_port() {
-        use pp_testkit::bambu::{Broker, Identity, Script};
-        let report = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../fixtures/drivers/bambu/pushall-idle.json"
-        ))
-        .unwrap();
-        let printer = Identity::generate().unwrap();
-        let broker = Broker::start(
-            printer.clone(),
-            Script::reporting("synthetic-code", "FIXTURE01", &report),
-        )
-        .await
-        .unwrap();
+        let (broker, printer) = pp_testkit::bambu::idle_printer("synthetic-code", "FIXTURE01")
+            .await
+            .unwrap();
         let port = broker.addr.port();
         let config = serde_json::json!({
             "host": "127.0.0.1", "port": port, "serial": "FIXTURE01", "access_code": "synthetic-code",

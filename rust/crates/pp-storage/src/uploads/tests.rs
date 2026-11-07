@@ -6,6 +6,10 @@ use crate::{Limits, WriterOwner, schema::SchemaReady, tests::directory};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
+/// Tables that schema steps after 40 add. Dropping them, then stamping an
+/// older version, rewinds a fresh database to that version's shape.
+const LATER_TABLES: &str = "DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_tls_pins; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue;";
+
 fn immutable(path: &Path) -> Connection {
     Connection::open_with_flags(
         crate::sqlite_uri::immutable_uri(path).unwrap(),
@@ -123,7 +127,7 @@ fn each_upgrade_step_backs_up_its_input_before_writing() {
     let schema35 = directory("uploads-schema35");
     std::fs::write(schema35.join("schema37.db"), at37).unwrap();
     let raw = Connection::open(schema35.join("schema37.db")).unwrap();
-    raw.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_tls_pins; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'")
+    raw.execute_batch(&format!("DROP TABLE plan_apply_admissions; {LATER_TABLES} UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'"))
         .unwrap();
     raw.backup("main", schema35.join("schema35.db"), None)
         .unwrap();
@@ -169,7 +173,7 @@ fn restored_database_gets_its_own_legacy_backup() {
     let scratch = directory.join("scratch.db");
     std::fs::copy(directory.join("backups/pre-schema38.db"), &scratch).unwrap();
     let raw = Connection::open(&scratch).unwrap();
-    raw.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_tls_pins; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'")
+    raw.execute_batch(&format!("DROP TABLE plan_apply_admissions; {LATER_TABLES} UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'"))
         .unwrap();
     raw.backup("main", directory.join("schema35.db"), None)
         .unwrap();
@@ -620,11 +624,11 @@ fn schema39_input(label: &str) -> PathBuf {
     owner.shutdown().unwrap();
     let connection = Connection::open(directory.join("print-partner.db")).unwrap();
     connection.execute_batch(
-        "DROP TABLE IF EXISTS source_sync_targets;
+        &format!("DROP TABLE IF EXISTS source_sync_targets;
          DROP TABLE IF EXISTS source_sync_batches;
          DROP TABLE IF EXISTS source_scan_executions;
-         DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_tls_pins; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='39' WHERE tenant_id='default' AND key='schema_version';
-         INSERT INTO app_settings(tenant_id,key,value) VALUES('default','scan-migration-marker','preserved');"
+         {LATER_TABLES} UPDATE app_settings SET value='39' WHERE tenant_id='default' AND key='schema_version';
+         INSERT INTO app_settings(tenant_id,key,value) VALUES('default','scan-migration-marker','preserved');")
     ).unwrap();
     directory
 }
@@ -749,12 +753,12 @@ fn schema40_input(label: &str) -> PathBuf {
     owner.shutdown().unwrap();
     Connection::open(directory.join("print-partner.db"))
         .unwrap()
-        .execute_batch(
+        .execute_batch(&format!(
             "DROP TABLE source_sync_targets;
              DROP TABLE source_sync_batches;
-             DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_tls_pins; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='40' WHERE tenant_id='default' AND key='schema_version';
+             {LATER_TABLES} UPDATE app_settings SET value='40' WHERE tenant_id='default' AND key='schema_version';
              INSERT INTO app_settings(tenant_id,key,value) VALUES('default','sync-migration-marker','preserved');",
-        )
+        ))
         .unwrap();
     directory
 }

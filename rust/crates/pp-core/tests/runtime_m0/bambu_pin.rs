@@ -8,7 +8,7 @@ use super::ticket_t_4_watcher_proof::{
 };
 use super::{request, temporary};
 use axum::http::StatusCode;
-use pp_testkit::bambu::{Broker, Identity, Script};
+use pp_testkit::bambu::{Broker, Identity, idle_printer};
 use serde_json::{Value, json};
 
 const SERIAL: &str = "FIXTURE01";
@@ -41,15 +41,7 @@ fn prefix(fingerprint: &[u8; 32]) -> Value {
 /// A broker for one synthetic printer, seeded as integration `bambu-1` with
 /// the Bambu feature on.
 async fn seeded_printer(data: &std::path::Path) -> (Broker, Identity) {
-    let report = std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../fixtures/drivers/bambu/pushall-idle.json"
-    ))
-    .unwrap();
-    let printer = Identity::generate().unwrap();
-    let broker = Broker::start(printer.clone(), Script::reporting(CODE, SERIAL, &report))
-        .await
-        .unwrap();
+    let (broker, printer) = idle_printer(CODE, SERIAL).await.unwrap();
     seed_settings(
         data,
         &[

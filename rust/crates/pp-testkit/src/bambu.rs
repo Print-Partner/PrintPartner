@@ -179,6 +179,23 @@ impl Script {
     }
 }
 
+/// A broker for one synthetic printer that answers pushall with the recorded
+/// idle report (`fixtures/drivers/bambu/pushall-idle.json`), and that
+/// printer's identity.
+pub async fn idle_printer(access_code: &str, serial: &str) -> std::io::Result<(Broker, Identity)> {
+    let report = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../fixtures/drivers/bambu/pushall-idle.json"
+    ))?;
+    let printer = Identity::generate().map_err(std::io::Error::other)?;
+    let broker = Broker::start(
+        printer.clone(),
+        Script::reporting(access_code, serial, &report),
+    )
+    .await?;
+    Ok((broker, printer))
+}
+
 pub struct Broker {
     pub addr: SocketAddr,
     log: Arc<Mutex<Vec<String>>>,

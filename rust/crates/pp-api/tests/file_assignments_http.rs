@@ -81,16 +81,22 @@ fn fixture() -> Fixture {
 
 /// A printer host serving the files in its map, by storage path, with a
 /// fixed modification time; it lists them as Node's `StorageListing` does.
-/// Like the stored hosts, it serves a file only through a listing, so a
-/// failing listing (`broken`) fails the read too.
+/// While `broken` is set its listing fails, and so does every read, as a
+/// stored host's read fails when its listing does.
 #[derive(Default)]
-struct Host(Mutex<HashMap<String, Vec<u8>>>, AtomicBool);
+struct Host {
+    files: Mutex<HashMap<String, Vec<u8>>>,
+    broken: AtomicBool,
+}
 
 const MODIFIED: &str = "2026-11-01T00:00:00.000Z";
 
 impl Host {
     fn serve(&self, path: &str, bytes: &[u8]) {
-        self.0.lock().unwrap().insert(path.into(), bytes.to_vec());
+        self.files
+            .lock()
+            .unwrap()
+            .insert(path.into(), bytes.to_vec());
     }
 }
 
@@ -100,11 +106,11 @@ impl PrinterHostPort for Host {
     }
 
     fn files(&self, _: String, path: String) -> Answer<Value> {
-        if self.1.load(Ordering::Relaxed) {
+        if self.broken.load(Ordering::Relaxed) {
             return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
         }
         let entries: Vec<Value> = self
-            .0
+            .files
             .lock()
             .unwrap()
             .iter()
@@ -119,10 +125,10 @@ impl PrinterHostPort for Host {
     }
 
     fn file(&self, _: String, path: String) -> Answer<Option<HostStream>> {
-        if self.1.load(Ordering::Relaxed) {
+        if self.broken.load(Ordering::Relaxed) {
             return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
         }
-        let bytes = self.0.lock().unwrap().get(&path).cloned();
+        let bytes = self.files.lock().unwrap().get(&path).cloned();
         Box::pin(async move {
             HostAnswer::Ok(bytes.map(|bytes| HostStream {
                 status: 200,
@@ -1086,14 +1092,14 @@ async fn a_printer_file_is_read_classified_and_recorded_with_its_identity() {
         (StatusCode::OK, &json!(false)),
         "a file the host does not serve is unread"
     );
-    host.1.store(true, Ordering::Relaxed);
+    host.broken.store(true, Ordering::Relaxed);
     let (status, unlisted) = post(&router, PREVIEW, &request(remote.clone()), true).await;
     assert_eq!(
         (status, &unlisted["inspected"]),
         (StatusCode::OK, &json!(false)),
         "a host whose listing fails serves nothing"
     );
-    host.1.store(false, Ordering::Relaxed);
+    host.broken.store(false, Ordering::Relaxed);
     let bad = json!({ "remote_path": "gcodes/bad.gcode", "filename": "bad.gcode" });
     assert_eq!(
         detail(&router, ASSIGN, &assignment(bad)).await,

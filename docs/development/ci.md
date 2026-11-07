@@ -528,14 +528,19 @@ Required Rust and lint jobs fail if their input-selection job fails, so a broken
 
 Jobs run on Blacksmith runners (`blacksmith-4vcpu-ubuntu-2404`, and 8 vCPU Ubuntu and
 Windows for the heavy Rust jobs below), except the macOS jobs (`macos-26`,
-`macos-26-intel`, `macos-latest`), `release.yml` and `pages.yml`, which stay on
-GitHub-hosted runners, and the Linux Rust jobs on pp-local or pp-iso below. Each
+`macos-26-intel`, `macos-latest`), `release.yml`, `pages.yml`, `release-signing-check.yml` and the
+`rust-verify` job of `desktop-runtime.yml`, which stay on GitHub-hosted runners, and the Linux Rust jobs on pp-local or pp-iso below. Each
 Blacksmith or hosted job gets a fresh VM. Blacksmith's Docker layer cache and sticky
 disks are not used, so the Docker builds in Web CI keep the `type=gha` cache that PRs
 read but never write. The macOS jobs stay on GitHub because Blacksmith's macOS runners are
 ARM64 while `bundle-intel` asserts x86_64, and a different macOS image would change what
 the jobs test; the release and Pages jobs stay because their signing and publishing path has not
-been shown to work on Blacksmith.
+been shown to work on Blacksmith. `release-signing-check.yml` stays because on a Blacksmith
+runner `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'` printed the whole
+manifest instead of the digest, so `cosign verify` got a malformed reference. `rust-verify`
+stays because its LAN guard rejects new connections to `192.168.0.0/16` and counted 2630 blocked
+packets on Blacksmith (the runner's own services appear to use that range), and the
+artifact upload then failed with `ECONNREFUSED`.
 
 ### Linux Rust runner
 

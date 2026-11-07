@@ -16,7 +16,7 @@ const root = join(here, '../../..');
 const server = join(root, 'web/apps/server');
 const { createSelfHostPorts } = await import(join(server, 'src/adapters/self-host/index.ts'));
 const { updatePrinterCheckoffLink } = await import(join(server, 'src/services/printer-checkoff-store.ts'));
-const { HOST_COMPLETED_PATCH } = await import(join(server, 'src/routes/printer-checkoff.ts'));
+const { HOST_COMPLETED_PATCH, materializeProblem } = await import(join(server, 'src/routes/printer-checkoff.ts'));
 
 const database = 'rust/crates/pp-storage/tests/fixtures/required-units/unchanged.db';
 const queries = {
@@ -32,14 +32,6 @@ const setup = [
   'UPDATE print_progress SET completed=1 WHERE part_id=1 AND unit_index=0',
   "INSERT INTO app_settings (tenant_id, key, value) VALUES ('default', 'printer.checkoff_links', '" + JSON.stringify(links).replaceAll("'", "''") + "')",
 ];
-
-// `materializeProblem` in routes/printer-checkoff.ts for the outcomes the create path returns.
-const problems = {
-  empty: 'Accepted Plan has no Required units',
-  stale_plan_revision: 'The Accepted Plan moved on; reload the Build and choose the file again',
-  no_match: 'That print file does not map to an incomplete Required unit in this Build',
-  already_linked: 'That print file is already assigned',
-};
 
 const name = (token) => 'bracket__ppu_0000000000000000000000000000000' + token;
 const link = (filename, extra = {}) => ({ integrationId: 'sim-moonraker', printerId: 'sim-1', hostName: 'Simulated Voron', filename, started: false, ...extra });
@@ -82,11 +74,8 @@ function receipt(command, repo) {
   } catch {
     return { status: 500, body: { detail: 'Internal Server Error' } };
   }
-  if (materialized.kind === 'accepted_state_unavailable') {
-    const detail = materialized.reason === 'compatibility_dirty' ? 'Accepted Plan requires compatibility repair' : 'Accepted Plan operational state is not initialized';
-    return { status: 409, body: { detail } };
-  }
-  if (materialized.kind !== 'created') return { status: 409, body: { detail: problems[materialized.kind] } };
+  const problem = materializeProblem(materialized);
+  if (problem) return { status: problem.status, body: { detail: problem.detail } };
   if (!completed) return { status: 200, body: JSON.parse(JSON.stringify({ link: materialized.link, attribution: materialized.attribution })) };
   const done = updatePrinterCheckoffLink(repo, materialized.link.id, { ...HOST_COMPLETED_PATCH, completed_at: new Date().toISOString() }, { requireState: 'watching' });
   assert.ok(done, 'the completed patch applies');

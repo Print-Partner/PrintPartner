@@ -316,7 +316,7 @@ fn domain_events_objects_below_42_are_refused_by_preflight_before_any_write() {
     assert_eq!(contents(&data), before);
 }
 
-/// Sets up a 37 to 45 upgrade interrupted after step `at` committed: the
+/// Sets up a 37 to 46 upgrade interrupted after step `at` committed: the
 /// live database is at `at` and copies 38 to `at` are on disk, oldest first.
 #[cfg(feature = "desktop_rebuild")]
 fn interrupted(name: &str, at: u64) -> (Scratch, PathBuf) {
@@ -333,7 +333,7 @@ fn interrupted(name: &str, at: u64) -> (Scratch, PathBuf) {
     Connection::open(data.join("print-partner.db"))
         .unwrap()
         .execute_batch(&format!(
-            "DROP TABLE plan_snapshot_headers; DROP TABLE plan_draft_header_receipts; DROP TABLE plan_draft_headers; DROP TABLE build_profile_details; DROP TABLE printer_send_queue; {events} UPDATE app_settings SET value='{at}' WHERE tenant_id='default' AND key='schema_version'"
+            "DROP TABLE print_link_grams; DROP TABLE plan_snapshot_headers; DROP TABLE plan_draft_header_receipts; DROP TABLE plan_draft_headers; DROP TABLE build_profile_details; DROP TABLE printer_send_queue; {events} UPDATE app_settings SET value='{at}' WHERE tenant_id='default' AND key='schema_version'"
         ))
         .unwrap();
     for (index, step) in (38..=at).enumerate() {
@@ -431,7 +431,7 @@ fn ticket_t_8_archive_retention_retry_from_unmarked_41_keeps_the_older_run_input
     let (owner, ready) = WriterOwner::open(&data, Limits::default()).unwrap();
     owner.shutdown().unwrap();
     assert_eq!(ready.previous_version, 41);
-    for step in 38..=45 {
+    for step in 38..=46 {
         assert!(
             backups.join(format!("pre-schema{step}.db")).exists(),
             "{step} {:?}",

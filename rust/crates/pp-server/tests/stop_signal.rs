@@ -11,27 +11,26 @@ mod scratch;
 use std::{
     io::{BufRead, BufReader, Read},
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     time::{Duration, Instant},
 };
 
+/// SIGTERM reaches only the process it names, so Unix needs no group.
 #[cfg(unix)]
-fn own_process_group(_command: &mut Command) {}
+fn own_process_group<T>(_command: &mut T) {}
 
 #[cfg(unix)]
 fn send_stop_signal(child: &Child) {
-    let status = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap();
-    assert!(status.success(), "kill -TERM failed");
+    let pid = libc::pid_t::try_from(child.id()).unwrap();
+    // SAFETY: plain FFI call with the child's pid; no memory is shared.
+    let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert_eq!(sent, 0, "SIGTERM: {}", std::io::Error::last_os_error());
 }
 
 /// Ctrl+Break reaches a process group; a new group keeps it away from the
 /// test itself.
 #[cfg(windows)]
-fn own_process_group(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
+fn own_process_group(command: &mut impl std::os::windows::process::CommandExt) {
     command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
 }
 

@@ -13,10 +13,12 @@ installed and `PP_PR_RUNNER=pp-iso` is set; the switch covers the Linux Rust job
 
 [Cargo cache trust](cargo-cache-trust.md) explains why pp-local must not run
 PR-editable jobs: its registry and sccache are shared across jobs, so one job can
-poison what a later job builds. PRs therefore run on Blacksmith runners (or GitHub-hosted
+poison what a later job builds.
+PRs therefore run on Blacksmith runners (or GitHub-hosted
 `ubuntu-latest` with `PP_PR_RUNNER=hosted`), which cost money per minute and share one
 plan's concurrency. pp-iso gives PRs self-hosted
 capacity without sharing state.
+With `PP_PR_RUNNER=pp-iso`, fork pull requests also run on pp-iso, because `ci-rust-runner.py` does not check the head repository. Each pp-iso runner is ephemeral and shares no state.
 
 | | pp-local | pp-iso |
 | --- | --- | --- |

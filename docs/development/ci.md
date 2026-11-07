@@ -239,7 +239,7 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 | `rust (macos)` | `macos-26` | The whole workspace | All except [macOS exclusions](#macos-exclusions) |
 | `rust (windows)` | `blacksmith-8vcpu-windows-2025` (`windows-latest` with `PP_PR_RUNNER=hosted`) | The workspace without [Windows exclusions](#windows-exclusions) | All in those packages |
 
-`rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or on `ubuntu-latest`; see [Linux Rust runner](#linux-rust-runner).
+`rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or `ubuntu-latest` for non-PR events, and on `blacksmith-8vcpu-ubuntu-2404` or pp-iso for pull requests ([the switch](#pull-request-runner-switch)); see [Linux Rust runner](#linux-rust-runner).
 
 Build caching and linking differ by OS:
 
@@ -546,9 +546,9 @@ is six ephemeral JIT slots, two on each of three VMs, and each job runs in a fre
 `pp-slot-N` container. Job names do not change with the runner, so the required
 checks stay the same.
 
-PRs stay hosted because pp-local ran the PR suite more slowly than hosted. On PR
+PRs stay off pp-local because it ran the PR suite more slowly than hosted. On PR
 #1349, `rust (linux) build` took 60m02s on pp-local with a 99.57 % sccache hit rate,
-and 87m42s with a cold cache, against 33m40s hosted. Compiling was as fast as hosted;
+and 87m42s with a cold cache, against 33m40s on a hosted runner. Compiling was as fast as hosted;
 the nextest steps were 2.0-2.6x slower. On `main`, pp-local still moves the Linux
 jobs off the hosted pool that PRs wait for. The 3 rebuild jobs start within seconds
 there, instead of after the 13-17 minute hosted waits seen on main pushes.
@@ -556,7 +556,7 @@ there, instead of after the 13-17 minute hosted waits seen on main pushes.
 The `changes` job picks the runner with `scripts/ci-rust-runner.py` and passes it
 on as a job output. It picks `ubuntu-latest` when:
 
-- the event is a pull request (same-repository or fork) or the nightly schedule;
+- the event is the nightly schedule (pull requests use the [runner switch](#pull-request-runner-switch));
 - the `PP_RUST_RUNNER` repository variable is `hosted` (unset or `local` means pp-local;
   any other value means hosted);
 - the optional `PP_RUNNER_READ_TOKEN` secret can list runners and no online pp-local
@@ -596,7 +596,7 @@ The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It i
 | `hosted` | `ubuntu-latest` | `windows-latest` | `ubuntu-24.04` |
 | `pp-iso` | `[self-hosted, linux, x64, pp-iso]` ([pp-iso](pp-iso.md)) | `blacksmith-8vcpu-windows-2025` | `blacksmith-4vcpu-ubuntu-2404` |
 
-- Every job keeps its name, so the required checks do not change, and a PR that skips a job still reports it. `scripts/ci-rust-runner.py` makes the choice in the `changes` job of each workflow and has tests for every value and event. A PR runs its own copy of that script, so the script and its test are in CODEOWNERS: a change to the routing needs Chad's review, like a workflow change. The small jobs (selectors, lint, review gates, Web CI) use `blacksmith-4vcpu-ubuntu-2404`.
+- Every job keeps its name, so the required checks do not change, and a PR that skips a job still reports it. `scripts/ci-rust-runner.py` makes the choice in the `changes` job of `rust-cross-os.yml` and `desktop-packaged-smoke.yml` and has tests for every value and event. A PR runs its own copy of that script, so the script and its test are in CODEOWNERS: a change to the routing needs Chad's review, like a workflow change. The small jobs (selectors, lint, review gates, Web CI) use `blacksmith-4vcpu-ubuntu-2404`.
 - Sizing comes from the hosted medians on 4 vCPU over the last PR runs: `rust (linux) build` 36.6 min (8 runs), `rust (windows)` 58.7 min (5 runs) and packaged smoke 7.6 min (4 runs). The two compile-bound jobs get 8 vCPU and the smoke job 4 vCPU. The numbers are a starting point; the one-day Blacksmith measurement against hosted decides whether they change.
 - Jobs get the same permissions and secrets as on hosted runners; the switch adds none. The workflows add no Blacksmith sticky disk and no cache that outlives a pull request. The existing cache steps are unchanged: `Swatinem/rust-cache` saves only on `main`, and the apt package cache of `linux-gui-deps` runs only on GitHub-hosted runners, so Blacksmith jobs run a plain `apt-get install` and the "Free disk" step is skipped. The packaged smoke job also uses `actions/setup-node` with `cache: npm`, which saves on any ref, so a PR run writes an npm cache entry under its own ref. Blacksmith scopes cache entries to their branch by default and has an organization setting that shares them across branches; that setting must stay off, because with it on a PR-written npm entry could be restored by another PR. This repository does not verify the setting; because `blacksmith` is the default, check it in the Blacksmith dashboard before this change merges.
 - Steps adapt to the runner kind, not to `runner.environment`. pp-local runs the self-hosted setup, Rust toolchain and sccache steps; pp-iso runs the self-hosted setup and Rust toolchain steps and then `Swatinem/rust-cache` from `actions/cache`, with no shared registry or sccache; Blacksmith and hosted runners use their images and `Swatinem/rust-cache`.

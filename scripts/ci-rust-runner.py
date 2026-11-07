@@ -26,8 +26,8 @@ LOCAL = ["self-hosted", "linux", "x64", "pp-local"]
 ISOLATED = ["self-hosted", "linux", "x64", "pp-iso"]
 HOSTED = "ubuntu-latest"
 # Sized from hosted medians on 4 vCPU: rust (linux) build 36.6 min, rust (windows) 58.7 min,
-# packaged smoke 7.6 min (docs/development/ci.md). pp-iso and Blacksmith cover pull requests only
-# for the Linux Rust jobs; everything else picks its runner in the workflow files.
+# packaged smoke 7.6 min (docs/development/ci.md). pp-iso covers pull requests only for the Linux
+# Rust jobs; Blacksmith also runs Windows and packaged smoke on every event.
 BLACKSMITH = {"linux": "blacksmith-8vcpu-ubuntu-2404", "windows": "blacksmith-8vcpu-windows-2025",
               "smoke": "blacksmith-4vcpu-ubuntu-2404"}
 LOCAL_EVENTS = {"push", "merge_group", "workflow_dispatch"}

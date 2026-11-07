@@ -31,8 +31,7 @@ lockfile updates for `/rust`. Those updates can introduce new dependency code.
 
 [Embedded-driver smoke](../../.github/workflows/desktop-e2e.yml) and
 [WebKit smoke](../../.github/workflows/desktop-webkit.yml) use the same Linux
-routing predicate. Embedded-driver smoke and WebKit smoke skip `Swatinem/rust-cache` when
-`runner.environment == 'self-hosted'` and `runner.os == 'Linux'`; Rust cross-OS skips it
+routing predicate. Embedded-driver smoke and WebKit smoke run `Swatinem/rust-cache` on every runner; Rust cross-OS skips it
 only when the runner kind is pp-local (`PP_RUNNER_KIND`). Hosted, Blacksmith and pp-iso
 runners and the shared Rust steps on macOS and Windows retain that action.
 

@@ -709,6 +709,9 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
     expect(within(gate).queryByText(/saves a snapshot/)).toBeNull();
     const accept = within(gate).getByRole("button", { name: "Accept" });
     expect(accept.getAttribute("aria-disabled")).toBe("true");
+    expect(
+      within(gate).getByText("The preview failed. Check again before you accept."),
+    ).toBeTruthy();
     fireEvent.click(accept);
     expect(writes(fetchMock).filter((w) => w.path.endsWith("/apply"))).toHaveLength(1);
   });

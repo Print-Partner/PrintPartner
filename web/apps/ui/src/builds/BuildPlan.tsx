@@ -514,6 +514,7 @@ function AcceptGate({
   // A failed re-preview keeps the old data; that preview is no longer what Accept checks.
   const data = preview.isError ? undefined : preview.data;
   const blocked =
+    (preview.isError && !offline ? "The preview failed. Check again before you accept." : null) ??
     acceptBlocked(data, offline) ??
     (accept.isPending
       ? "Accepting."

@@ -8,6 +8,7 @@ import unittest
 
 import install_deb
 import legacy_fixture
+import macos_ui
 import smoke
 
 
@@ -178,6 +179,136 @@ class InstallTreeTest(unittest.TestCase):
     def test_extra_file_fails(self):
         tree = self.packaged(**{"web/b.js": ("file", "3", False)})
         self.assertEqual(install_deb.differences(self.stage, tree)["extra"], ["web/b.js"])
+
+
+class MacTreeTest(unittest.TestCase):
+    """The macOS UI's tree logic on a dump shaped like ax_probe.swift output."""
+
+    dump = {
+        "apps": [
+            {
+                "pid": 7,
+                "windows": [
+                    {
+                        "r": "AXWindow",
+                        "t": "Print Partner",
+                        "w": 1280,
+                        "h": 850,
+                        "x": 0,
+                        "y": 25,
+                        "c": [
+                            {
+                                "r": "AXGroup",
+                                "c": [
+                                    {
+                                        "r": "AXWebArea",
+                                        "c": [
+                                            {"r": "AXTextField", "l": "Display name"},
+                                            {"r": "AXTextField", "t": "Email"},
+                                            {
+                                                "r": "AXTextField",
+                                                "s": "AXSecureTextField",
+                                                "d": "Password",
+                                            },
+                                            {
+                                                "r": "AXButton",
+                                                "c": [
+                                                    {
+                                                        "r": "AXStaticText",
+                                                        "v": "Create administrator",
+                                                    }
+                                                ],
+                                            },
+                                            {
+                                                "r": "AXCell",
+                                                "c": [
+                                                    {
+                                                        "r": "AXLink",
+                                                        "c": [
+                                                            {
+                                                                "r": "AXStaticText",
+                                                                "v": "Parity Build",
+                                                            }
+                                                        ],
+                                                    }
+                                                ],
+                                            },
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    def ui(self, calls):
+        ui = macos_ui.MacUI()
+
+        def call(*args):
+            calls.append(args)
+            if args[0] == "dump":
+                return self.dump
+            if args[0] == "cgwindows":
+                return [{"id": 41, "pid": 7, "layer": 0, "x": 0, "y": 25, "w": 1280, "h": 850}]
+            return {"pressed": True}
+
+        ui.call = call
+        return ui
+
+    def test_walk_paths_follow_window_and_child_indices(self):
+        paths = {path: node.get("r") for _, path, node, _ in macos_ui.walk(self.dump)}
+        self.assertEqual(paths["0"], "AXWindow")
+        self.assertEqual(paths["0.0.0.4.0"], "AXLink")
+
+    def test_finds_the_build_as_page_content(self):
+        found = self.ui([]).find_content({7}, "Parity Build")
+        self.assertIn(found["role"], macos_ui.CONTENT_ROLES)
+        self.assertIn("AXWebArea", found["path"])
+
+    def test_window_title_alone_is_not_page_content(self):
+        self.assertIsNone(self.ui([]).find_content({7}, "Print Partner"))
+
+    def test_window_carries_its_screencapture_number(self):
+        window = self.ui([]).windows({7})[0]
+        self.assertEqual(
+            (window["title"], window["id"], window["visible"]), ("Print Partner", 41, True)
+        )
+
+    def test_setup_form_types_each_field_then_presses_the_button(self):
+        calls = []
+        ui = self.ui(calls)
+        form = ui.setup_form({7}, smoke.SETUP_FIELDS, smoke.SETUP_BUTTON)
+        self.assertIsNotNone(form)
+        ui.complete_setup(None, form, {name: "x" for name in smoke.SETUP_FIELDS})
+        actions = [call[:3] for call in calls if call[0] in ("type", "press")]
+        self.assertEqual(
+            actions,
+            [
+                ("type", 7, "0.0.0.0"),
+                ("type", 7, "0.0.0.1"),
+                ("type", 7, "0.0.0.2"),
+                ("press", 7, "0.0.0.3"),
+            ],
+        )
+
+    def test_startup_error_is_found_by_its_message_text(self):
+        self.dump = {
+            "apps": [
+                {
+                    "pid": 7,
+                    "windows": [
+                        {
+                            "r": "AXWindow",
+                            "c": [{"r": "AXStaticText", "v": smoke.STARTUP_ERROR_TITLE}],
+                        }
+                    ],
+                }
+            ]
+        }
+        self.assertIsNotNone(self.ui([]).startup_error({7}, smoke.STARTUP_ERROR_TITLE))
 
 
 if __name__ == "__main__":

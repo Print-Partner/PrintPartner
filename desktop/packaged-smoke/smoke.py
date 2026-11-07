@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Launch the packaged Linux app on an older database and prove it is usable.
+"""Launch the packaged app on an older database and prove it is usable.
 
 The smoke extracts nothing and builds nothing: it takes the installed
-executable from an unpacked .deb, a fixture directory from legacy_fixture.py
-and an evidence directory. It starts its own Xvfb display, launches the app
-with a disposable HOME, and then requires:
+executable (usr/bin/pp-desktop from the unpacked .deb on Linux, or
+Contents/MacOS/pp-desktop inside the installed Print Partner.app on macOS), a
+fixture directory from legacy_fixture.py and an evidence directory. It launches
+the app with a disposable HOME and requires:
 
-1. a mapped native X11 window owned by the app whose title is "Print Partner";
-2. the fixture's Build name in the app's AT-SPI accessibility tree, which
-   includes the WebKitGTK page content;
-3. a clean exit after SIGTERM (exit code 0, which the app only returns after a
-   complete core shutdown receipt) with no surviving child processes;
+1. a visible native window owned by the app whose title is "Print Partner";
+2. the fixture's Build name as a link or table cell inside the web page, read
+   from the accessibility tree (AT-SPI on Linux, the Accessibility API on macOS);
+3. a clean exit after SIGTERM (exit code 0 and a shutdown receipt with no
+   errors and storage_released) with no surviving child processes;
 4. the database migrated past the fixture's stamp with every preserved Plan
    and Plate row unchanged.
 
@@ -18,7 +19,9 @@ With --expect-refusal it instead requires the startup error dialog and a data
 directory whose entries and bytes did not change. The rebuild build refuses an
 existing installation that has no .pp-rust-owned.json marker (docs/storage.md).
 
-Run it inside "dbus-run-session" so the accessibility bus is private to the run.
+On Linux, run it inside "dbus-run-session" so the accessibility bus is private
+to the run; it starts its own Xvfb display (linux_ui.py). On macOS it uses the
+logged-in session and ax_probe.swift (macos_ui.py).
 """
 
 import argparse
@@ -39,223 +42,34 @@ import legacy_fixture
 
 WINDOW_TITLE = "Print Partner"
 STARTUP_ERROR_TITLE = "Print Partner could not start"
-DISPLAY_SIZE = "1280x1024x24"
-# The Build name must be page content (the Builds table link or cell), not only window chrome.
-CONTENT_ROLES = ("link", "table cell", "cell")
 PAINTED_COLORS = 64
 # The first-run administrator form the rebuild build shows when the migrated
 # installation has no account (web/apps/web/src/pages/LoginPage.tsx).
 SETUP_FIELDS = ("Display name", "Email", "Password")
 SETUP_BUTTON = "Create administrator"
 CONTINUE_BUTTON = "Continue to Print Partner"
-WALK_LIMIT = 50000
 
 
 class SmokeFailure(Exception):
     pass
 
 
-def proc_parents():
-    parents = {}
-    for entry in pathlib.Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            status = (entry / "status").read_text()
-        except OSError:
-            continue
-        for line in status.splitlines():
-            if line.startswith("PPid:"):
-                parents.setdefault(int(line.split()[1]), []).append(int(entry.name))
-                break
-    return parents
+def platform_ui():
+    if sys.platform.startswith("linux"):
+        import linux_ui
+
+        return linux_ui.LinuxUI()
+    if sys.platform == "darwin":
+        import macos_ui
+
+        return macos_ui.MacUI()
+    raise SmokeFailure(f"no packaged smoke UI for {sys.platform}")
 
 
-def start_identity(pid):
-    try:
-        text = pathlib.Path(f"/proc/{pid}/stat").read_text()
-        return text[text.rindex(")") + 2 :].split()[19]
-    except (OSError, ValueError, IndexError):
-        return None
-
-
-def descendants(root):
-    parents = proc_parents()
-    found, pending = {}, list(parents.get(root, []))
-    while pending:
-        pid = pending.pop()
-        if pid in found:
-            continue
-        found[pid] = start_identity(pid)
-        pending.extend(parents.get(pid, []))
-    return found
-
-
-def alive(owned):
+def alive(ui, owned):
     return sorted(
-        pid for pid, identity in owned.items() if identity and start_identity(pid) == identity
+        pid for pid, identity in owned.items() if identity and ui.start_identity(pid) == identity
     )
-
-
-def free_display():
-    for number in range(140, 200):
-        if not os.path.exists(f"/tmp/.X11-unix/X{number}") and not os.path.exists(
-            f"/tmp/.X{number}-lock"
-        ):
-            return number
-    raise SmokeFailure("no free X display")
-
-
-def start_display():
-    number = free_display()
-    xvfb = subprocess.Popen(
-        ["Xvfb", f":{number}", "-screen", "0", DISPLAY_SIZE, "-nolisten", "tcp"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    deadline = time.monotonic() + 10
-    while not os.path.exists(f"/tmp/.X11-unix/X{number}"):
-        if xvfb.poll() is not None or time.monotonic() > deadline:
-            xvfb.kill()
-            raise SmokeFailure("Xvfb did not start")
-        time.sleep(0.05)
-    return xvfb, f":{number}"
-
-
-def x11(display, *args):
-    result = subprocess.run(
-        list(args),
-        env={**os.environ, "DISPLAY": display},
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    return result.stdout if result.returncode == 0 else ""
-
-
-def windows(display, pids):
-    """Return mapped X11 windows that belong to any of the pids."""
-    found = []
-    for pid in pids:
-        for wid in x11(
-            display, "xdotool", "search", "--all", "--onlyvisible", "--pid", str(pid), "--name", ""
-        ).split():
-            info = x11(display, "xwininfo", "-id", wid)
-            facts = dict(line.strip().split(": ", 1) for line in info.splitlines() if ": " in line)
-            found.append(
-                {
-                    "id": wid,
-                    "pid": pid,
-                    "title": x11(display, "xdotool", "getwindowname", wid).rstrip("\n"),
-                    "mapState": facts.get("Map State"),
-                    "width": int(facts.get("Width", 0)),
-                    "height": int(facts.get("Height", 0)),
-                }
-            )
-    return found
-
-
-def accessible_text(node, name):
-    parts = [name]
-    try:
-        text = node.get_text_iface()
-        if text is not None:
-            parts.append(atspi().Text.get_text(text, 0, atspi().Text.get_character_count(text)))
-    except Exception:
-        pass
-    return " ".join(part for part in parts if part)
-
-
-def atspi():
-    import gi
-
-    gi.require_version("Atspi", "2.0")
-    from gi.repository import Atspi
-
-    return Atspi
-
-
-def walk(pids):
-    """Yield (node, role, name, ancestor roles) for every application owned by pids."""
-    desktop = atspi().get_desktop(0)
-    visited = 0
-    for index in range(desktop.get_child_count()):
-        application = desktop.get_child_at_index(index)
-        try:
-            if application is None or application.get_process_id() not in pids:
-                continue
-        except Exception:
-            continue
-        pending = [(application, [])]
-        while pending and visited < WALK_LIMIT:
-            node, path = pending.pop()
-            visited += 1
-            try:
-                role = node.get_role_name()
-                name = node.get_name() or ""
-                count = node.get_child_count()
-            except Exception:
-                continue
-            yield node, role, name, path
-            for child_index in range(count - 1, -1, -1):
-                try:
-                    child = node.get_child_at_index(child_index)
-                except Exception:
-                    child = None
-                if child is not None:
-                    pending.append((child, path + [role]))
-
-
-def search_accessibility(pids, needle):
-    """Find needle as a link or table cell inside the page, not in window chrome."""
-    for node, role, name, path in walk(pids):
-        if (
-            role in CONTENT_ROLES
-            and "document web" in path
-            and needle in accessible_text(node, name)
-        ):
-            return {"found": True, "role": role, "path": path + [role]}
-    return {"found": False}
-
-
-def setup_form(pids):
-    """Return the first-run administrator form's fields and button, if it is showing."""
-    fields, button = {}, None
-    for node, role, name, path in walk(pids):
-        if "document web" not in path:
-            continue
-        if role in ("entry", "password text") and name in SETUP_FIELDS:
-            fields[name] = node
-        elif role == "push button" and name == SETUP_BUTTON:
-            button = node
-    return (fields, button) if button is not None and len(fields) == len(SETUP_FIELDS) else None
-
-
-def press_continue(pids):
-    """Press the page's Continue button; return whether it was pressed."""
-    for node, role, name, path in walk(pids):
-        if "document web" in path and role in ("push button", "link") and name == CONTINUE_BUTTON:
-            try:
-                node.get_action_iface().do_action(0)
-            except Exception:
-                return False
-            return True
-    return False
-
-
-def complete_setup(display, window, form):
-    """Type a disposable administrator into the first-run form and submit it."""
-    fields, button = form
-    values = {
-        "Display name": "Packaged Smoke",
-        "Email": "packaged-smoke@example.invalid",
-        "Password": secrets.token_urlsafe(18),
-    }
-    x11(display, "xdotool", "windowfocus", "--sync", window["id"])
-    for name in SETUP_FIELDS:
-        fields[name].get_component_iface().grab_focus()
-        x11(display, "xdotool", "type", "--delay", "15", "--", values[name])
-    button.get_action_iface().do_action(0)
 
 
 def wait_for(description, probe, timeout, app):
@@ -272,24 +86,12 @@ def wait_for(description, probe, timeout, app):
     raise SmokeFailure(f"timed out after {timeout}s waiting for {description}")
 
 
-def app_env(display, home, rebuild):
-    env = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+def app_env(ui, home, rebuild):
+    return {
+        **ui.env(home),
         "HOME": str(home),
-        "DISPLAY": display,
-        "LANG": "C.UTF-8",
-        "XDG_DATA_HOME": str(home / ".local/share"),
-        "XDG_CONFIG_HOME": str(home / ".config"),
-        "XDG_CACHE_HOME": str(home / ".cache"),
-        "XDG_STATE_HOME": str(home / ".local/state"),
-        "LIBGL_ALWAYS_SOFTWARE": "1",
-        "WEBKIT_DISABLE_DMABUF_RENDERER": "1",
         "PP_DESKTOP_REBUILD": "1" if rebuild else "0",
     }
-    for name in ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"):
-        if os.environ.get(name):
-            env[name] = os.environ[name]
-    return env
 
 
 def verify_database(database, fixture):
@@ -347,16 +149,16 @@ def directory_state(data):
     return state
 
 
-def stop(app, owned, timeout):
+def stop(ui, app, owned, timeout):
     app.send_signal(signal.SIGTERM)
     try:
         code = app.wait(timeout)
     except subprocess.TimeoutExpired as error:
         raise SmokeFailure(f"the app did not exit within {timeout}s of SIGTERM") from error
     deadline = time.monotonic() + 10
-    while alive(owned) and time.monotonic() < deadline:
+    while alive(ui, owned) and time.monotonic() < deadline:
         time.sleep(0.2)
-    return code, alive(owned)
+    return code, alive(ui, owned)
 
 
 def last_json_line(path):
@@ -371,43 +173,43 @@ def last_json_line(path):
 
 
 class Launch:
-    """One app process on its own display, with the processes it started."""
+    """One app process with the processes it started."""
 
-    def __init__(self, args, display, home):
-        self.args, self.display = args, display
+    def __init__(self, args, ui, home):
+        self.args, self.ui = args, ui
         self.started = time.monotonic()
         self.stdout = args.output / "app-stdout.log"
         self.stderr = args.output / "app-stderr.log"
         with self.stdout.open("wb") as out, self.stderr.open("wb") as err:
             self.app = subprocess.Popen(
                 [str(args.app)],
-                env=app_env(display, home, args.rebuild),
+                env=app_env(ui, home, args.rebuild),
                 cwd=home,
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=err,
             )
-        self.owned = {self.app.pid: start_identity(self.app.pid)}
+        self.owned = {self.app.pid: ui.start_identity(self.app.pid)}
 
     def elapsed(self):
         return round(time.monotonic() - self.started, 1)
 
     def pids(self):
-        self.owned.update(descendants(self.app.pid))
+        self.owned.update(self.ui.descendants(self.app.pid))
         return {self.app.pid, *self.owned}
 
-    def window(self, title, refuse=None):
-        found = windows(self.display, self.pids())
-        if refuse and any(window["title"] == refuse for window in found):
-            raise SmokeFailure(f"the app showed the window {refuse!r}")
-        matches = [w for w in found if w["title"] == title and w["mapState"] == "IsViewable"]
-        return matches[0] if matches else None
+    def main_window(self):
+        pids = self.pids()
+        if self.ui.startup_error(pids, STARTUP_ERROR_TITLE):
+            raise SmokeFailure(f"the app showed {STARTUP_ERROR_TITLE!r}")
+        for window in self.ui.windows(pids):
+            if window["title"] == WINDOW_TITLE and window["visible"]:
+                return window
+        return None
 
-    def screenshot(self, name):
-        path = self.args.output / name
-        x11(self.display, "import", "-window", "root", str(path))
-        colors = x11(self.display, "identify", "-format", "%k", str(path)).strip()
-        return int(colors) if colors.isdigit() and int(colors) >= PAINTED_COLORS else None
+    def screenshot(self, window, name):
+        colors = self.ui.screenshot(window, self.args.output / name)
+        return colors if colors >= PAINTED_COLORS else None
 
     def wait(self, description, probe, timeout=None):
         return wait_for(description, probe, timeout or self.args.timeout, self.app)
@@ -416,7 +218,7 @@ class Launch:
         if self.app.poll() is None:
             self.app.kill()
             self.app.wait()
-        for pid in alive(self.owned):
+        for pid in alive(self.ui, self.owned):
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -427,34 +229,41 @@ def expect_usable(launch, receipt, fixture, database):
     needle = receipt["expectText"]
 
     def main_window():
-        window = launch.window(WINDOW_TITLE, refuse=STARTUP_ERROR_TITLE)
+        window = launch.main_window()
         return window if window and window["width"] >= 900 and window["height"] >= 650 else None
 
     receipt["window"] = launch.wait("the native window", main_window)
     receipt["windowSeconds"] = launch.elapsed()
 
     def content():
-        result = search_accessibility(launch.pids(), needle)
-        if result["found"]:
+        result = launch.ui.find_content(launch.pids(), needle)
+        if result:
             return result
         if receipt.get("setupCompleted"):
-            if not receipt.get("setupContinued") and press_continue(launch.pids()):
+            if not receipt.get("setupContinued") and launch.ui.press(
+                launch.pids(), CONTINUE_BUTTON
+            ):
                 receipt["setupContinued"] = launch.elapsed()
             return None
-        form = setup_form(launch.pids())
+        form = launch.ui.setup_form(launch.pids(), SETUP_FIELDS, SETUP_BUTTON)
         if form:
-            complete_setup(launch.display, receipt["window"], form)
+            values = {
+                "Display name": "Packaged Smoke",
+                "Email": "packaged-smoke@example.invalid",
+                "Password": secrets.token_urlsafe(18),
+            }
+            launch.ui.complete_setup(receipt["window"], form, values)
             receipt["setupCompleted"] = launch.elapsed()
         return None
 
     receipt["content"] = launch.wait(f"{needle!r} in the accessibility tree", content)
     receipt["contentSeconds"] = launch.elapsed()
     receipt["screenshotColors"] = launch.wait(
-        "the page to paint", lambda: launch.screenshot("window.png"), 60
+        "the page to paint", lambda: launch.screenshot(receipt["window"], "window.png"), 60
     )
     launch.pids()
     receipt["ownedProcesses"] = len(launch.owned)
-    code, survivors = stop(launch.app, launch.owned, 60)
+    code, survivors = stop(launch.ui, launch.app, launch.owned, 60)
     receipt.update(exitCode=code, survivors=survivors)
     receipt["shutdownReceipt"] = shutdown = last_json_line(launch.stdout)
     if code != 0:
@@ -468,14 +277,19 @@ def expect_usable(launch, receipt, fixture, database):
 
 def expect_refusal(launch, receipt, data, before):
     receipt["window"] = launch.wait(
-        "the startup error dialog", lambda: launch.window(STARTUP_ERROR_TITLE)
+        "the startup error dialog",
+        lambda: launch.ui.startup_error(launch.pids(), STARTUP_ERROR_TITLE),
     )
     receipt["windowSeconds"] = launch.elapsed()
-    launch.wait("the dialog to paint", lambda: launch.screenshot("refusal.png"), 60)
+    launch.wait(
+        "the dialog to paint", lambda: launch.screenshot(receipt["window"], "refusal.png"), 60
+    )
     diagnostic = launch.stderr.read_text(errors="replace").strip()
     if diagnostic != "desktop_startup_failed: core_startup":
-        raise SmokeFailure(f"expected only desktop_startup_failed: core_startup, got {diagnostic!r}")
-    code, survivors = stop(launch.app, launch.owned, 30)
+        raise SmokeFailure(
+            f"expected only desktop_startup_failed: core_startup, got {diagnostic!r}"
+        )
+    code, survivors = stop(launch.ui, launch.app, launch.owned, 30)
     receipt.update(exitCode=code, survivors=survivors)
     if survivors:
         raise SmokeFailure(f"child processes survived the refusal: {survivors}")
@@ -502,10 +316,11 @@ def run(args):
         "startingVersionStamp": fixture["startingVersionStamp"],
         "expectText": args.expect_text or fixture["builds"][0],
     }
-    xvfb, display = start_display()
+    ui = platform_ui()
     launch = None
     try:
-        launch = Launch(args, display, home)
+        ui.start()
+        launch = Launch(args, ui, home)
         if args.expect_refusal:
             expect_refusal(launch, receipt, data, before)
         else:
@@ -518,14 +333,14 @@ def run(args):
             failure = f"{type(failure).__name__}: {failure}"
         receipt.update(status="failed", failure=str(failure))
         if launch is not None and launch.app.poll() is None:
-            launch.screenshot("failure.png")
+            launch.screenshot(receipt.get("window"), "failure.png")
+            ui.snapshot(launch.pids(), args.output / "accessibility.json")
         print(f"packaged smoke failed: {failure}", file=sys.stderr)
         return 1
     finally:
         if launch is not None:
             launch.close()
-        xvfb.terminate()
-        xvfb.wait()
+        ui.stop()
         shutil.rmtree(root, ignore_errors=True)
         text = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
         (args.output / "receipt.json").write_text(text)

@@ -6,7 +6,7 @@ The macOS bundle job's `installed_bundle_start_health_shutdown` test checks back
 
 ## What a run does
 
-Each job runs on a GitHub-hosted `ubuntu-24.04` runner, never on the pp-local runners. The `default` job builds the app without features. The `desktop_rebuild` job builds with `--features desktop_rebuild` and launches with `PP_DESKTOP_REBUILD=1`. The flag stays off in every other build. See [Scenarios](#scenarios) for what each job launches.
+Each job runs on a GitHub-hosted runner (`ubuntu-24.04` for Linux, `macos-26` arm64 for macOS), never on the pp-local runners. The steps below describe Linux; [macOS](#macos) lists what differs. The `default` job builds the app without features. The `desktop_rebuild` job builds with `--features desktop_rebuild` and launches with `PP_DESKTOP_REBUILD=1`. The flag stays off in every other build. See [Scenarios](#scenarios) for what each job launches.
 
 1. **Fixture.** `web/scripts/storage-fixtures/prepare.mts` (Node 22.23.3) writes its `immutable-corpus` case: a schema 34 database whose rows come from the autosave golden, with the Build "Parity Build", 3 accepted Plan revisions and 2 Plates. `desktop/packaged-smoke/legacy_fixture.py` copies it and applies the transformations `prepare.mts` uses for its schema-31 case: drop `board_posts` and `board_comments`, drop `projects.legacy_manifest_cutover`, and stamp `schema_version` 31. It records the row counts and a digest of every Plan and Plate table in `fixture.json`. Nothing is committed or hand-edited; the fixture is regenerated on every run.
 2. **Package.** With Node 24.21.0 and freshly installed web dependencies, the job builds the desktop assets and stages the runtime with `rust/scripts/stage-desktop.py`, then builds the shipped `.deb` with `rust/scripts/desktop-deb.sh` and the Tauri CLI 2.12.1 pinned in `desktop/packaged-smoke/package-lock.json` (see [Linux package](../desktop.md#linux-package)).
@@ -33,7 +33,7 @@ The app runs without network sharing, with loopback ports only, and sends nothin
 
 ## When it runs
 
-Every push to `main`, nightly at 06:41 UTC, and on manual dispatch. On a ready pull request a small `changes` job runs, and the smoke jobs run when the PR changes `desktop/packaged-smoke/`, the workflow, `rust/scripts/desktop-deb.sh` or `rust/scripts/assemble-linux-deb.py`, or has the `ci:packaged-smoke` label; otherwise they skip. Draft pull requests skip everything.
+Every push to `main`, nightly at 06:41 UTC, and on manual dispatch. On a ready pull request a small `changes` job runs, and the smoke jobs run when the PR changes `desktop/packaged-smoke/`, the workflow, `rust/scripts/desktop-deb.sh`, `rust/scripts/desktop-bundle.sh` or `rust/scripts/assemble-linux-deb.py`, or has the `ci:packaged-smoke` label; otherwise they skip. Draft pull requests skip everything.
 
 ## Run it locally
 
@@ -55,6 +55,15 @@ dbus-run-session -- python3 desktop/packaged-smoke/smoke.py --app /tmp/pp-root/u
 
 For the rebuild mode, pass `--features desktop_rebuild` to `desktop-deb.sh` and run `smoke.py` with `--rebuild --expect-refusal`, then with `--rebuild --rust-owned`. Each output path must be a new directory.
 
-## Windows and macOS
+## macOS
 
-Not yet covered. GRE-1234 adds them on hosted runners once the Linux jobs are green.
+The `macos` jobs run the same scenarios on `macos-26` (Apple silicon). What differs from Linux:
+
+- **Package.** `rust/scripts/desktop-bundle.sh` builds the unsigned `Print Partner.app` from the stage with the same pinned Tauri CLI (`PP_TAURI`), passing `--features desktop_rebuild` for the rebuild job. That is the script the macOS bundle workflow ships with.
+- **Install.** `ditto` copies the app into a disposable `Applications` folder, and `rust/scripts/check-macos-bundle.py` verifies the installed copy against the stage's `bundle-manifest.json` before any launch.
+- **Launch.** `smoke.py` runs `Print Partner.app/Contents/MacOS/pp-desktop` in the runner's logged-in session with a disposable `HOME`. `macos_ui.py` reads windows and the page through the Accessibility API with `ax_probe.swift`, which the job compiles first and checks for Accessibility trust before it builds anything. The window must be an `AXWindow` titled `Print Partner`; the Build must be an `AXLink` or `AXCell` under the page's `AXWebArea`. The first-run form is filled by focusing each field and typing key events. The refusal dialog is the window that shows "Print Partner could not start". Screenshots use `screencapture -l` on the app's window. A failed launch also saves the accessibility tree as `accessibility.json`.
+- Process tracking uses `ps` instead of `/proc`. Artifacts are `packaged-smoke-macos-<mode>`.
+
+## Windows
+
+Not covered yet. `pp-desktop` is still excluded from the Windows build (`rust-cross-os.yml`, together with `pp-api`, `pp-gateway` and `pp-server`), and `stage-desktop.py` stages only macOS and Linux, so no Windows package exists to launch. The Windows packaged smoke follows the Windows port of those crates and a Windows stage and installer.

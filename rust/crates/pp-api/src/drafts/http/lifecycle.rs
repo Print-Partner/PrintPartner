@@ -324,11 +324,9 @@ impl Accept {
             AcceptOutcome::AcceptedBaselineRequired => conflict("accepted_baseline_required", None),
             AcceptOutcome::InputsChanged => conflict("inputs_changed", None),
             AcceptOutcome::IdempotencyConflict => conflict("idempotency_conflict", None),
-            AcceptOutcome::DuplicateBuildName { name } => refusal(
-                StatusCode::CONFLICT,
-                "duplicate_build_name",
-                [("name", json!(name))],
-            ),
+            AcceptOutcome::DuplicateBuildName { name } => {
+                crate::problem::duplicate_build_name(&name)
+            }
             AcceptOutcome::BuildArchived => domain_error("build_archived"),
             AcceptOutcome::TokenAllocationFailed => domain_error("token_allocation_failed"),
             AcceptOutcome::ReconciliationRequired { reason } => refusal(

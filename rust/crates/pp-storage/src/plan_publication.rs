@@ -1695,18 +1695,15 @@ fn draft_header(
     let Some(name) = header.as_ref().map(|state| state.header.name.as_str()) else {
         return Ok(Ok(None));
     };
-    let taken: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id=?1 AND name=?2 AND id<>?3)",
-        params![tenant, name, profile],
-        |row| row.get(0),
-    )?;
-    Ok(if taken {
-        Err(Outcome::DuplicateBuildName {
-            name: name.to_owned(),
-        })
-    } else {
-        Ok(header)
-    })
+    Ok(
+        if crate::build_graph::header::name_taken(tx, tenant, name, profile)? {
+            Err(Outcome::DuplicateBuildName {
+                name: name.to_owned(),
+            })
+        } else {
+            Ok(header)
+        },
+    )
 }
 
 /// Copies the accepted draft's header to Build `profile`: name and order

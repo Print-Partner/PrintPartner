@@ -54,6 +54,9 @@ pub struct PartGrams {
     pub grams_per_unit: f64,
     /// `Measured` when every averaged send was measured, else `Estimated`.
     pub basis: Basis,
+    /// An averaged estimated send has a printer-measured length that its
+    /// file gave no grams per millimetre to convert.
+    pub unconverted: bool,
     /// The averaged sends' Checkoff link IDs, most recent first.
     pub link_ids: Vec<String>,
 }
@@ -146,7 +149,13 @@ pub enum GramsNeeded {
     /// From slicer estimates recorded at send, rounded up; a finished print
     /// replaces its estimate with the measured value. A filament is
     /// `estimated` when any of its Parts is.
-    Estimated { grams: u64, job_count: u64 },
+    Estimated {
+        grams: u64,
+        job_count: u64,
+        /// Why a printer's measurement did not replace the estimate.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<EstimateKept>,
+    },
     /// At least one Part has no checked-off unit under a send with grams.
     Unknown { reason: NeedUnknown },
 }
@@ -158,6 +167,15 @@ impl GramsNeeded {
             Self::Unknown { .. } => None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateKept {
+    /// The printer measured the filament length at finish, but the sent file
+    /// stated no length, so there was no grams per millimetre to convert it.
+    MeasuredLengthNotConvertible,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -271,8 +289,9 @@ fn read_grams(
     profile_id: i64,
 ) -> Result<HashMap<i64, PartGrams>> {
     let mut statement = connection.prepare(
-        "SELECT part_id, link_id, grams, units, basis FROM (
+        "SELECT part_id, link_id, grams, units, basis, unconverted FROM (
            SELECT p.part_id, g.link_id, g.grams, g.units, g.basis,
+                  g.measured_mm IS NOT NULL AND g.basis='estimated' AS unconverted,
                   ROW_NUMBER() OVER (PARTITION BY p.part_id, g.basis
                     ORDER BY max(p.at) DESC, g.link_id DESC) AS recency
              FROM print_job_parts p
@@ -283,7 +302,7 @@ fn read_grams(
           ORDER BY part_id, basis DESC, recency",
     )?;
     let mut rows = statement.query(rusqlite::params![tenant, profile_id, MEASURED_JOBS as i64])?;
-    let mut sends = BTreeMap::<i64, (Basis, Vec<(String, f64)>)>::new();
+    let mut sends = BTreeMap::<i64, (Basis, bool, Vec<(String, f64)>)>::new();
     while let Some(row) = rows.next()? {
         let (part, link, grams, units, basis): (i64, String, f64, i64, String) = (
             row.get(0)?,
@@ -292,18 +311,21 @@ fn read_grams(
             row.get(3)?,
             row.get(4)?,
         );
+        let unconverted: bool = row.get(5)?;
         let basis = match basis.as_str() {
             "measured" => Basis::Measured,
             _ => Basis::Estimated,
         };
-        let (kept, links) = sends.entry(part).or_insert((basis, Vec::new()));
+        let (kept, any_unconverted, links) =
+            sends.entry(part).or_insert((basis, false, Vec::new()));
         if *kept == basis {
+            *any_unconverted |= unconverted;
             links.push((link, grams / units as f64));
         }
     }
     Ok(sends
         .into_iter()
-        .map(|(part, (basis, links))| {
+        .map(|(part, (basis, unconverted, links))| {
             let grams_per_unit = links.iter().map(|(_, g)| g).sum::<f64>() / links.len() as f64;
             let link_ids = links.into_iter().map(|(link, _)| link).collect();
             (
@@ -311,6 +333,7 @@ fn read_grams(
                 PartGrams {
                     grams_per_unit,
                     basis,
+                    unconverted,
                     link_ids,
                 },
             )
@@ -410,7 +433,13 @@ pub fn shortfalls(
                             let job_count = r.link_ids.len() as u64;
                             match r.basis {
                                 Basis::Measured => GramsNeeded::Measured { grams, job_count },
-                                Basis::Estimated => GramsNeeded::Estimated { grams, job_count },
+                                Basis::Estimated => GramsNeeded::Estimated {
+                                    grams,
+                                    job_count,
+                                    reason: r
+                                        .unconverted
+                                        .then_some(EstimateKept::MeasuredLengthNotConvertible),
+                                },
                             }
                         }),
                     };
@@ -461,17 +490,25 @@ fn group_need(parts: &[(PartNeed, Vec<&str>)]) -> GramsNeeded {
     let mut grams = 0u64;
     let mut jobs = BTreeSet::new();
     let mut estimated = false;
+    let mut kept = None;
     for (part, part_jobs) in parts {
         let Some(g) = part.grams_needed.known() else {
             return part.grams_needed.clone();
         };
-        estimated |= matches!(part.grams_needed, GramsNeeded::Estimated { .. });
+        if let GramsNeeded::Estimated { reason, .. } = part.grams_needed {
+            estimated = true;
+            kept = kept.or(reason);
+        }
         grams = grams.saturating_add(g);
         jobs.extend(part_jobs.iter().copied());
     }
     let job_count = jobs.len() as u64;
     match estimated {
-        true => GramsNeeded::Estimated { grams, job_count },
+        true => GramsNeeded::Estimated {
+            grams,
+            job_count,
+            reason: kept,
+        },
         false => GramsNeeded::Measured { grams, job_count },
     }
 }

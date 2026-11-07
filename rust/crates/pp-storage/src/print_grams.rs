@@ -14,8 +14,13 @@
 //! evenly over its `units` and gives each Part the grams of the units checked
 //! off for it under that link.
 
-use anyhow::{Result, ensure};
-use rusqlite::{OptionalExtension, Transaction, params};
+use crate::{Envelope, Shared};
+use anyhow::{Result, anyhow, ensure};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use std::{
+    sync::{Arc, mpsc},
+    time::{Duration, Instant},
+};
 
 /// The schema step that installs the table.
 pub(crate) const SCHEMA_STEP: u64 = 46;
@@ -116,6 +121,98 @@ pub fn record_measured(
         params![tenant, link_id, grams, measured_mm, at],
     )?;
     Ok(Measurement::Recorded)
+}
+
+/// Records the lengths the status watcher reads when a print finishes. The
+/// watcher writes nothing else: Checkoff state is never touched here.
+#[derive(Clone)]
+pub struct PrintGramsClient {
+    shared: Arc<Shared>,
+    tenant: String,
+}
+
+impl crate::WriterOwner {
+    pub fn print_grams(&self, tenant: &str) -> PrintGramsClient {
+        PrintGramsClient {
+            shared: self.client.shared.clone(),
+            tenant: tenant.to_owned(),
+        }
+    }
+}
+
+pub(crate) struct Command {
+    tenant: String,
+    integration_id: String,
+    filename: String,
+    measured_mm: f64,
+}
+
+impl PrintGramsClient {
+    /// Records `measured_mm` for the newest watching Checkoff link of host
+    /// `integration_id` whose file is `filename`. `None` when no watching
+    /// link matches.
+    pub fn measured(
+        &self,
+        integration_id: &str,
+        filename: &str,
+        measured_mm: f64,
+        wait: Duration,
+    ) -> Result<Option<Measurement>> {
+        let deadline = Instant::now() + wait;
+        let mut queue = self
+            .shared
+            .queue
+            .lock()
+            .map_err(|_| anyhow!("Writer admission poisoned"))?;
+        loop {
+            ensure!(!queue.closed, "Storage stopped");
+            if queue.pending.len() < self.shared.capacity {
+                break;
+            }
+            ensure!(Instant::now() < deadline, "Writer queue full");
+            queue = self
+                .shared
+                .changed
+                .wait_timeout(queue, Duration::from_millis(5))
+                .map_err(|_| anyhow!("Writer admission poisoned"))?
+                .0;
+        }
+        let (reply, receiver) = mpsc::channel();
+        queue.pending.push_back(Envelope::PrintGrams {
+            command: Command {
+                tenant: self.tenant.clone(),
+                integration_id: integration_id.to_owned(),
+                filename: filename.to_owned(),
+                measured_mm,
+            },
+            reply,
+        });
+        self.shared.changed.notify_all();
+        drop(queue);
+        receiver
+            .recv()
+            .map_err(|_| anyhow!("Storage stopped without a print grams result"))?
+    }
+}
+
+pub(crate) fn execute(
+    connection: &mut Connection,
+    command: Command,
+    admission: crate::writer_admission::Deadline,
+) -> Result<Option<Measurement>> {
+    let tx = crate::writer_admission::begin_immediate(connection, admission)?;
+    let link = crate::checkoff_progress::watching_link(
+        &tx,
+        &command.tenant,
+        &command.integration_id,
+        &command.filename,
+    )?;
+    let Some(link) = link else {
+        return Ok(None);
+    };
+    let measured = record_measured(&tx, &command.tenant, &link, command.measured_mm)?;
+    tx.commit()?;
+    Ok(Some(measured))
 }
 
 fn positive(value: f64) -> bool {

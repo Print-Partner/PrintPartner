@@ -149,7 +149,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Send queue | `GET /api/v2/printer-send-queue`; `POST .../{id}/dispatch`, `.../drain`, `.../{id}/reconcile`, `DELETE .../{id}` | Exists in Rust behind `desktop_rebuild`: the read (GRE-1125), plus Send now, Send ready, Reconcile and Remove with the upload worker (GRE-365). Adding to the queue is still Node only. Reconcile has no UI yet (GRE-1219). See [Send queue](../send-queue.md) |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |
-| Spoolman shortfalls | `GET /plans/:id/filament-shortfalls` (Rust-only) | Exists; grams needed reads the per-send grams table (schema 46) and stays `unknown` (`grams_not_recorded`) until the GRE-1165 writers record grams per send (slicer estimate at send, measured at finish); basis is `measured`, `estimated` or `unknown` with a reason. The workflow projection consumes it next |
+| Spoolman shortfalls | `GET /plans/:id/filament-shortfalls` (Rust-only) | Exists; grams needed reads the per-send grams table (schema 46): the slicer estimate recorded at send, replaced by the printer's measured length at finish (GRE-1165); basis is `measured`, `estimated` (with `measured_length_not_convertible` when a measurement could not be converted) or `unknown` with a reason. The workflow projection consumes it next |
 | Accept | `POST /plans/:id/drafts/:draftId/apply` | Port |
 | Verify one result | `POST /printer-checkoff/verify`, `/reconcile`, `/dismiss` | Port |
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |

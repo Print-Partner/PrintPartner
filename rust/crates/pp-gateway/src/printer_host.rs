@@ -185,6 +185,16 @@ impl HostReads {
         }
     }
 
+    /// The filament length in millimetres the printer reports for its current
+    /// or last print: Moonraker's `print_stats.filament_used`, PrusaLink's
+    /// `consumed_material`. One read; `None` when it gives none.
+    pub async fn filament_used(&self, target: &HostTarget) -> Option<f64> {
+        match self.driver(target) {
+            Driver::Moonraker(driver) => driver.filament_used().await,
+            Driver::PrusaLink(driver) => driver.filament_used().await,
+        }
+    }
+
     /// Node's `IntegrationTestResult`: `{ok, message}`, never an error.
     pub async fn test(&self, target: &HostTarget) -> Value {
         let result = match self.driver(target) {

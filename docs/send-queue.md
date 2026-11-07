@@ -249,8 +249,9 @@ measures at finish. A file with grams but no positive length records the
 estimate with no factor, so the estimate stays after the print.
 
 A file with no such value, a compressed metadata block, a value that is not a
-positive number, or Cura's metres-only comment gives no estimate, and the link
-then has no grams until the print's measured value arrives. A send without
+positive number, or Cura's metres-only comment gives no estimate. The link then
+has no grams row, and the printer's measured length at finish is not recorded
+either, because there is no grams per millimetre to convert it with. A send without
 Checkoff units creates no link and records nothing.
 
 ## Tests

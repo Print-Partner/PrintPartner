@@ -3653,8 +3653,28 @@ factor is kept at send (Alfala, 2026-11-07):
   with no estimate is left alone (`NoEstimate`).
 
 The send queue's upload worker calls `record_estimate` when an upload with
-Checkoff units succeeds (GRE-1238, see [send-queue.md](send-queue.md)); the
-status watcher calls `record_measured` in GRE-1165's last part.
+Checkoff units succeeds (GRE-1238, see [send-queue.md](send-queue.md)).
+
+The measured value (GRE-1165, part c) comes from `pp_core::measured_grams`, an
+observer on the Moonraker status watchers' ordered transitions. When a host
+goes to `complete` straight from `printing` or `paused` (an `offline` or
+`unknown` reading in between does not break the run), it asks the host once
+for the filament length of that print (Moonraker `print_stats.filament_used`;
+`HostReads::filament_used` also reads PrusaLink's `consumed_material` as
+millimetres). Storage then picks the newest `watching` Checkoff link of that
+host whose `filename` or `remote_path` has the finished file's base name
+(trimmed, `\` read as `/`, case-insensitive, like Node's
+`printerFilenamesMatch`) and calls `record_measured` for it in one write. The
+observer records nothing when:
+
+- it did not see the print running, such as a `complete` already showing at
+  startup, or after it lagged behind the transition stream;
+- the read fails or reports no positive length (the read is not retried);
+- no watching link names the file.
+
+In each case the estimate stays. The observer never changes Checkoff state and
+never dispatches a send, and it does not port Node's guess that a print near
+100% that turns idle has finished.
 
 The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
 grams from this table instead of `print_jobs.filament_consumed_g`, which
@@ -3663,5 +3683,7 @@ whose units are only partly checked off still costs each checked-off unit its
 share. Each Part averages its five most recent sends that have a checked-off
 unit for it (`print_job_parts` rows with the send's `link_id`). A Part with any
 measured send uses only measured sends and reads `measured`; a Part with only
-estimates reads `estimated`. The read no longer requires
+estimates reads `estimated`. When one of those estimated sends has a
+measured length but no `grams_per_mm`, its Part and filament read
+`estimated` with `reason: measured_length_not_convertible`. The read no longer requires
 `print_jobs.status = 'completed'`, which nothing sets either.

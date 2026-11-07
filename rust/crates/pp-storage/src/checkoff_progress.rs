@@ -280,6 +280,10 @@ pub enum Body {
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip_serializing)]
     FileRequest(Box<FileRequest>),
+    /// An uploaded print file's suggestion, which the upload route answers.
+    #[cfg(feature = "desktop_rebuild")]
+    #[serde(skip_serializing)]
+    Suggestion(Box<Value>),
     /// A dismissed unattributed print.
     Dismissed {
         ok: bool,

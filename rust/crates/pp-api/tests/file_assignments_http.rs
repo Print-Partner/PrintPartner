@@ -1,14 +1,18 @@
 #![cfg(feature = "desktop_rebuild")]
 //! GRE-1220 through the mounted Rust routes: print-file preview and
 //! assignment on a disposable copy of a real SQLite fixture, redeeming a
-//! files/content snapshot exactly once, and Node's refusals.
+//! files/content snapshot exactly once, and Node's refusals; GRE-1255's
+//! upload route and the `upload_token` it issues.
 use axum::{Router, http::StatusCode};
-use checkoff_http::{Fixture, post};
+use checkoff_http::{Fixture, post, post_as};
 use pp_api::file_assignments::file_assignments_router;
 use pp_storage::{
     SettingsClient,
     auth::Secret,
-    checkoff_progress::print_file::{CAPTURE_UNAVAILABLE, Scope, SnapshotStore, file_source},
+    checkoff_progress::print_file::{
+        CAPTURE_UNAVAILABLE, MAX_UPLOAD_BYTES, Scope, SnapshotStore, UploadRefusal, UploadStore,
+        file_source,
+    },
     checkoff_progress::{AssignedLink, Assignment, Request, attribution::Unit},
     read_model::Credential,
 };
@@ -591,4 +595,288 @@ async fn the_assignment_transaction_refuses_a_host_changed_since_redemption() {
     assert_eq!(links(&fixture), before);
     assert_eq!(apply(current).status, 200);
     owner.shutdown().unwrap();
+}
+
+const UPLOAD: &str = "/printer-checkoff/file-assignments/upload";
+const GONE: &str = "That upload is no longer available; upload the print file again";
+
+/// A multipart body of `(field, file name, bytes)` parts.
+fn multipart(parts: &[(&str, Option<&str>, &[u8])]) -> (String, Vec<u8>) {
+    let mut body = Vec::new();
+    for (name, file_name, bytes) in parts {
+        let file = file_name.map_or(String::new(), |file| format!("; filename=\"{file}\""));
+        body.extend_from_slice(
+            format!("--pp\r\nContent-Disposition: form-data; name=\"{name}\"{file}\r\n\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--pp--\r\n");
+    ("multipart/form-data; boundary=pp".to_owned(), body)
+}
+
+async fn upload(router: &Router, parts: &[(&str, Option<&str>, &[u8])]) -> (StatusCode, Value) {
+    let (content_type, body) = multipart(parts);
+    post_as(router, UPLOAD, &content_type, body).await
+}
+
+type Parts<'a> = Vec<(&'a str, Option<&'a str>, &'a [u8])>;
+
+/// A fixture with the routes mounted, for the upload tests.
+fn mounted(flag: &str) -> (Fixture, pp_storage::WriterOwner, Router) {
+    let fixture = fixture();
+    let (owner, router) = open(&fixture, flag, &Arc::new(SnapshotStore::default()));
+    (fixture, owner, router)
+}
+
+fn upload_gcode(bytes: &[u8]) -> Parts<'_> {
+    vec![
+        ("profile_id", None, b"1"),
+        ("object_names", None, br#"[" gear.stl ", 7]"#),
+        ("file", Some(r"C:\prints\ gear.gcode "), bytes),
+    ]
+}
+
+#[tokio::test]
+async fn an_upload_is_held_for_its_build_and_spent_by_one_assignment() {
+    let (fixture, owner, router) = mounted("1");
+    let before = links(&fixture);
+
+    let (status, held) = upload(&router, &upload_gcode(b"G1 X1\n")).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(
+        (
+            &held["inspected"],
+            &held["classification"],
+            &held["print_ready"],
+            &held["next_action"],
+            &held["suggestion_basis"],
+            &held["suggested_units"][0]["part_id"],
+            &held["plan_revision_id"],
+        ),
+        (
+            &json!(true),
+            &json!({ "format": "gcode" }),
+            &json!(true),
+            &json!(""),
+            &json!("object_names"),
+            &json!(3),
+            &json!(1)
+        )
+    );
+    assert_eq!(links(&fixture), before, "an upload writes nothing");
+    let token = held["upload_token"].as_str().unwrap().to_owned();
+    let unmanaged = |extra: Value| {
+        let mut body = json!({ "printer_id": null, "upload_token": format!(" {token} ") });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assignment(body)
+    };
+
+    let (status, preview) = post(&router, PREVIEW, &unmanaged(json!({})), true).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(preview["classification"], json!({ "format": "gcode" }));
+
+    let (status, failed) = post(
+        &router,
+        ASSIGN,
+        &unmanaged(json!({ "plan_revision_id": 2 })),
+        true,
+    )
+    .await;
+    assert!(status.is_client_error(), "{status} {failed}");
+    assert_eq!(
+        links(&fixture),
+        before,
+        "a failed assignment writes nothing"
+    );
+
+    let (status, assigned) = post(&router, ASSIGN, &unmanaged(json!({})), true).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a failed assignment keeps the upload: {assigned}"
+    );
+    assert_eq!(
+        assigned["link"]["classification"],
+        json!({ "format": "gcode" })
+    );
+    assert!(stored(&fixture, &assigned["link"]["id"]));
+
+    assert_eq!(
+        detail(
+            &router,
+            ASSIGN,
+            &unmanaged(json!({ "filename": "again.gcode" }))
+        )
+        .await,
+        (StatusCode::CONFLICT, json!(GONE)),
+        "a recorded upload is spent"
+    );
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn the_upload_route_refuses_in_nodes_order() {
+    let (fixture, owner, router) = mounted("true");
+    let before = links(&fixture);
+    let gcode: &[u8] = b"G28\n";
+    let cases: Vec<(Parts, u16, &str)> = vec![
+        (
+            vec![("file", Some("a.gcode"), gcode)],
+            400,
+            "profile_id is required",
+        ),
+        (
+            vec![
+                ("profile_id", None, b"1.5"),
+                ("file", Some("a.gcode"), gcode),
+            ],
+            400,
+            "profile_id is required",
+        ),
+        (
+            vec![
+                ("profile_id", None, b"1"),
+                ("other", Some("a.gcode"), gcode),
+            ],
+            400,
+            "Attach the print file as the file part",
+        ),
+        (
+            vec![("profile_id", None, b"1"), ("file", Some("dir/ "), gcode)],
+            400,
+            "filename is required",
+        ),
+        (
+            vec![("profile_id", None, b"1"), ("file", Some("a.stl"), gcode)],
+            400,
+            "Choose a .gcode, .gco, .bgcode, or .3mf print file",
+        ),
+        (
+            vec![
+                ("profile_id", None, b"1"),
+                ("file", Some("a.gcode"), gcode),
+                ("file", Some("b.gcode"), gcode),
+            ],
+            400,
+            "Upload one print file at a time",
+        ),
+        (
+            vec![
+                ("a", None, b""),
+                ("b", None, b""),
+                ("c", None, b""),
+                ("d", None, b""),
+                ("profile_id", None, b"1"),
+            ],
+            400,
+            "That upload could not be read",
+        ),
+        (
+            vec![
+                ("profile_id", None, b"999"),
+                ("file", Some("a.gcode"), gcode),
+            ],
+            500,
+            "Internal Server Error",
+        ),
+    ];
+    for (parts, status, expected) in cases {
+        let (got, body) = upload(&router, &parts).await;
+        assert_eq!(
+            (got, &body["detail"]),
+            (StatusCode::from_u16(status).unwrap(), &json!(expected)),
+            "{expected}"
+        );
+    }
+    let (status, rejected) = upload(
+        &router,
+        &[
+            ("profile_id", None, b"1"),
+            ("file", Some("a.gcode"), b"\0\0binary"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+    let (status, json) = post(&router, UPLOAD, "{}", true).await;
+    assert_eq!(
+        (status, &json["detail"]),
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            &json!("Send the print file as multipart/form-data")
+        )
+    );
+    assert_eq!(links(&fixture), before, "no refusal writes");
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn an_upload_past_64_mb_is_413_and_the_route_takes_ten_a_minute() {
+    let (_fixture, owner, router) = mounted("1");
+    let big = vec![b'G'; MAX_UPLOAD_BYTES + 1];
+    let (status, body) = upload(
+        &router,
+        &[
+            ("profile_id", None, b"1"),
+            ("file", Some("big.gcode"), &big),
+        ],
+    )
+    .await;
+    assert_eq!(
+        (status, &body["detail"]),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            &json!("That print file is larger than the 64 MB PrintPartner will take as an upload")
+        )
+    );
+    for _ in 0..9 {
+        let (status, _) = post(&router, UPLOAD, "{}", true).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+    let (status, _) = post(&router, UPLOAD, "{}", true).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let (status, _) = post(&router, &format!("/api/v1{UPLOAD}"), "{}", true).await;
+    assert_eq!(
+        status,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "each mount counts alone"
+    );
+    owner.shutdown().unwrap();
+}
+
+#[test]
+fn held_uploads_are_bound_to_their_build_and_capped_at_two_files() {
+    let uploads = Arc::new(UploadStore::default());
+    let (token, inspected) = uploads.hold(1, b"G28\n").unwrap();
+    assert_eq!(inspected.identity["size_bytes"], 4);
+    assert!(uploads.read(&token, 2).is_none(), "another Build's token");
+    assert!(uploads.reserve(&token, 2).is_none());
+    let held = uploads.reserve(&token, 1).unwrap();
+    assert!(
+        uploads.read(&token, 1).is_none(),
+        "one assignment at a time"
+    );
+    drop(held);
+    assert!(
+        uploads.read(&token, 1).is_some(),
+        "a failed assignment puts it back"
+    );
+    uploads.reserve(&token, 1).unwrap().spend();
+    assert!(uploads.read(&token, 1).is_none(), "spent");
+
+    let mut big = b"G28\n".repeat(MAX_UPLOAD_BYTES / 4);
+    big.truncate(MAX_UPLOAD_BYTES);
+    let (first, _) = uploads.hold(1, &big).unwrap();
+    let held = uploads.reserve(&first, 1).unwrap();
+    uploads.hold(1, &big).unwrap();
+    assert_eq!(
+        uploads.hold(1, b"G28\n").err(),
+        Some(UploadRefusal::Full),
+        "a reservation still counts"
+    );
+    held.spend();
+    uploads.hold(1, b"G28\n").unwrap();
 }

@@ -19,16 +19,29 @@ pub async fn send(
     body: &str,
     cookie: Option<&str>,
 ) -> (StatusCode, Value) {
+    let body = body.as_bytes().to_vec();
+    send_as(router, method, path, "application/json", body, cookie).await
+}
+
+/// [`send`] with any content type and body, as a multipart upload is sent.
+pub async fn send_as(
+    router: &Router,
+    method: &str,
+    path: &str,
+    content_type: &str,
+    body: Vec<u8>,
+    cookie: Option<&str>,
+) -> (StatusCode, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(path)
         .header("host", "127.0.0.1:4100")
         .header("origin", ORIGIN)
-        .header("content-type", "application/json");
+        .header("content-type", content_type);
     if let Some(cookie) = cookie {
         request = request.header("cookie", cookie);
     }
-    let mut request = request.body(Body::from(body.to_owned())).unwrap();
+    let mut request = request.body(Body::from(body)).unwrap();
     request
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));

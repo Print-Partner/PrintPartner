@@ -6,7 +6,7 @@ Golden data captured from the TypeScript app, used as the reference for the Rust
 
 `pp_api::fixtures`, behind the default-off `desktop_rebuild` feature, replays copied fixtures against Rust routers on disposable data directories with no OAuth provider and no mailer. `Ledger` requires each Rust response to equal Node's status, complete JSON body and literal `Set-Cookie` headers, unless the case has a declared `Correction`. A correction names its kind (security, WebSocket, or durable-store) and reason, and holds the literal Rust response. It fails if Rust now matches Node, if it is never used, or if it is declared twice. `StateGraph` records every row of every SQLite table and the SHA-256 of every other file, so a test can compare state changes as well as responses.
 
-`rust/crates/pp-api/tests/ticket_t_10_fixtures.rs` runs `auth-login` (11 exact, 3 security corrections, no state change on any refusal) and `auth-session` (4 exact, 3 clearing-cookie corrections, Node's session row count, and only the `sessions` table changing when that count moves). It also runs `jobs-http`, `jobs-ws`, `plans-http`, `drafts-http`, `layers-http`, `manifest-http`, `manifest-checkouts-http`, `catalog-http` and `accepted-http` (see below). Run it with `cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_10_fixtures)'`.
+`rust/crates/pp-api/tests/ticket_t_10_fixtures.rs` runs `auth-login` (11 exact, 3 security corrections, no state change on any refusal) and `auth-session` (4 exact, 3 clearing-cookie corrections, Node's session row count, and only the `sessions` table changing when that count moves). It also runs `jobs-http`, `jobs-ws`, `plans-http`, `drafts-http`, `layers-http`, `manifest-http`, `manifest-checkouts-http`, `variants-http`, `catalog-http` and `accepted-http` (see below). Run it with `cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_10_fixtures)'`.
 
 ## jobs-http/node.json (GRE-451)
 
@@ -111,6 +111,18 @@ It sends 20 requests in order on the flat, `/api/v1` and `/api/v2` mounts: build
 
 ```sh
 node fixtures/parity/manifest-checkouts-http/generate.mjs --check
+```
+
+## variants-http/node.json (GRE-1221)
+
+`generate.mjs` uses the same copied database after its `seed` SQL adds Sources 2-10, Plans 3-13 and four stored selections (not JSON, a number, empty, and an object whose keys and numbers Node reorders and reformats). `files` holds the checkouts: Source 2's manifest declares `variant_dimensions` with strings, numbers (`1.5`, `2.0`, `.nan`, `.inf`, `1e21`, `-0`), entries Node drops (booleans, null, objects, lists, a non-list value) and anchors; Source 4's manifest is invalid YAML, Source 5's lists its dimensions, Source 6's is a string, Source 8 has no manifest, and Source 9's manifest does not load because a selection is empty, and Source 10's does not load because `String(project)` throws on a mapping with its own `toString` key. Source 2 also declares a `__proto__` dimension, which Node drops. Source 3 has no `local_path` and Source 7's checkout does not exist.
+
+It sends 78 requests in order on the flat, `/api/v1` and `/api/v2` mounts: dimension reads for every shape, missing, foreign and non-numeric Plans, ids Node's `Number()` reads (`0x3`, `" 3e0 "`, `3.0`), saves that match strings and JavaScript `String()` of numbers, raw bodies whose key order Node reorders, duplicate keys, a `null` and an empty body, bodies Fastify's parser refuses (`__proto__`, not JSON, empty under `application/json`, also on a missing or non-numeric Plan), and each refusal (body shape, `source_id`, no base Source, another Source, unknown dimension, unsupported option). Each case records the complete response and the tables it changed; each save also records the stored selection text and the Source's `imported_paths`.
+
+`ticket_t_10_fixtures` writes the same files and replays every case against `build_router` over the production `SourceReads`: 74 exact matches and four declared corrections (the parser refusals), and the stored text after all 18 saves equals Node's.
+
+```sh
+node fixtures/parity/variants-http/generate.mjs --check
 ```
 
 ## catalog-http/node.json (GRE-451)

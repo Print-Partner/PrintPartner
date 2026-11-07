@@ -54,7 +54,7 @@ Modules behind `#[cfg(feature = "desktop_rebuild")]`:
 | `build_graph` | `build_graph_with_policy`, `build_graph_with_observations` (`BuildGraphClient`); `wire`, `manifest_options`. |
 | `plan_publication` | `publication_with_policy` (`PublicationClient`): the acceptance transaction. |
 | `required_units` | `required_units_with_policy` (`ReconciliationClient`). |
-| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). |
+| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). `Request::FileRequest` and `Request::AssignFile` back the print-file assignment routes, and `print_file::SnapshotStore` holds files/content snapshots ([Print-file assignment routes](../../../docs/desktop-rebuild.md#print-file-assignment-routes-gre-1220)). |
 | `domain_events` | `domain_events`, `domain_events_with_policy` (`DomainEventsClient`): the transactional domain event log, cursor reads and live wake-ups ([Domain events](../../../docs/domain-events.md)). |
 | `features` | `features_with_policy` (`FeatureClient`), `View`, `Scope`. |
 | `send_queue` | The `printer_send_queue` table (schema 44). `WriterOwner::open` moves a clean legacy `printer.send_queue` setting into it and marks `sending` items interrupted; readers read the table, or the setting while it exists ([Send queue storage](../../../docs/send-queue.md)). `INTERRUPTED_ERROR`. |

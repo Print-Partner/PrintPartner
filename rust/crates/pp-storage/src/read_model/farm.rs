@@ -404,8 +404,8 @@ struct StoredPrinter {
 struct StoredIntegration {
     kind: Option<IntegrationKind>,
     enabled: bool,
-    /// False for a Moonraker host the watchers never poll: no usable address,
-    /// or past their host cap.
+    /// False for a Moonraker or PrusaLink host the watchers never poll: no
+    /// usable address, or past their host cap.
     monitorable: bool,
 }
 
@@ -674,15 +674,8 @@ impl Farm {
             })
             .collect();
         open.drain(..open.len().saturating_sub(MAX_UNMATCHED));
-        let polled: Option<Vec<String>> =
-            crate::printer_hosts::project(Some(&Value::Array(integrations.clone()).to_string()))
-                .map(|hosts| {
-                    hosts
-                        .into_iter()
-                        .filter(|host| !host.base_url.trim().is_empty())
-                        .map(|host| host.id)
-                        .collect()
-                });
+        let polled =
+            crate::printer_hosts::polled_ids(Some(&Value::Array(integrations.clone()).to_string()));
         Self {
             printers: fleet.iter().filter_map(printer).collect(),
             integrations: integrations
@@ -696,7 +689,11 @@ impl Farm {
                         _ => None,
                     };
                     let enabled = item["config"]["enabled"] != Value::Bool(false);
-                    let monitorable = kind != Some(IntegrationKind::Moonraker)
+                    let watched = matches!(
+                        kind,
+                        Some(IntegrationKind::Moonraker | IntegrationKind::Prusalink)
+                    );
+                    let monitorable = !watched
                         || polled
                             .as_ref()
                             .is_none_or(|ids| ids.iter().any(|known| known == id));

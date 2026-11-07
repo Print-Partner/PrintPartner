@@ -1003,6 +1003,28 @@ fn normalize_rule(s: &str) -> String {
         format!("{s}/")
     }
 }
+/// Node's `updateImportRules` on an existing Source: stores the normalized,
+/// deduplicated rules and marks every Plan using the Source modified.
+pub(crate) fn save_import_rules(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    id: i64,
+    rules: Vec<String>,
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for r in rules {
+        let r = normalize_rule(&r);
+        if !r.is_empty() && !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    tx.execute(
+        "UPDATE projects SET imported_paths=?1 WHERE tenant_id=?2 AND id=?3",
+        params![serde_json::to_string(&out)?, tenant, id],
+    )?;
+    tx.execute("UPDATE build_profiles SET config_modified_at=?1 WHERE tenant_id=?2 AND id IN (SELECT profile_id FROM profile_layers WHERE tenant_id=?2 AND project_id=?3)",params![auth::catalog_timestamp(),tenant,id])?;
+    Ok(out)
+}
 pub(crate) fn run(
     tx: &Transaction<'_>,
     state: &State,
@@ -1062,19 +1084,7 @@ pub(crate) fn run(
         }
         Request::SaveImportRules { id, rules } => {
             require(tx, tenant, id)?;
-            let mut out = Vec::new();
-            for r in rules {
-                let r = normalize_rule(&r);
-                if !r.is_empty() && !out.contains(&r) {
-                    out.push(r);
-                }
-            }
-            tx.execute(
-                "UPDATE projects SET imported_paths=?1 WHERE tenant_id=?2 AND id=?3",
-                params![serde_json::to_string(&out)?, tenant, id],
-            )?;
-            tx.execute("UPDATE build_profiles SET config_modified_at=?1 WHERE tenant_id=?2 AND id IN (SELECT profile_id FROM profile_layers WHERE tenant_id=?2 AND project_id=?3)",params![auth::catalog_timestamp(),tenant,id])?;
-            Outcome::Data(json!({"rules":out}))
+            Outcome::Data(json!({"rules":save_import_rules(tx, tenant, id, rules)?}))
         }
         Request::BulkCategory {
             source_ids,

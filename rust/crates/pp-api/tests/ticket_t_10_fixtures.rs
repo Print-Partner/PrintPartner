@@ -1217,6 +1217,25 @@ mod ticket_t_10_fixtures {
         }]
     }
 
+    /// GRE-1100 adds the header's `customer` and `due_date` to Rust's Plan
+    /// summary, from `build_profile_details`. Node's summary has no such keys
+    /// and Node isn't grown, so each Rust summary must carry both as null (no
+    /// case writes a header) and they're removed before the Node comparison.
+    /// Returns how many summaries carried them.
+    fn strip_header_fields(value: &mut serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(map) if map.contains_key("part_count") => {
+                for key in ["customer", "due_date"] {
+                    assert_eq!(map.remove(key), Some(serde_json::Value::Null), "{key}");
+                }
+                map.values_mut().map(strip_header_fields).sum::<usize>() + 1
+            }
+            serde_json::Value::Object(map) => map.values_mut().map(strip_header_fields).sum(),
+            serde_json::Value::Array(items) => items.iter_mut().map(strip_header_fields).sum(),
+            _ => 0,
+        }
+    }
+
     #[tokio::test]
     async fn plans_flat_v1_v2_match_node_responses_and_changed_tables() {
         use pp_api::{
@@ -1251,6 +1270,7 @@ mod ticket_t_10_fixtures {
         )]);
         let mut ledger = Ledger::new(plans_corrections(&fixture)).unwrap();
         let mut atomic = false;
+        let mut stripped = 0;
         for case in &fixture.cases {
             let path = fixture
                 .ids
@@ -1260,6 +1280,7 @@ mod ticket_t_10_fixtures {
                 });
             let (mut actual, changed) = send_case(&served, &cookie, &sandbox, case, &path).await;
             labels.scrub(&mut actual);
+            stripped += strip_header_fields(&mut actual.body);
             ledger
                 .compare(&case.id, &case.node, &actual)
                 .unwrap_or_else(|error| panic!("{error}"));
@@ -1272,6 +1293,10 @@ mod ticket_t_10_fixtures {
             }
         }
         assert!(atomic, "{ATOMIC_CREATE} not replayed");
+        assert!(
+            stripped > 0,
+            "no Rust summary carried the GRE-1100 header fields"
+        );
         served.stop().await.unwrap();
         owner.shutdown().unwrap();
         let report = ledger.finish().unwrap();

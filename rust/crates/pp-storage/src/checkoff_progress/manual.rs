@@ -72,12 +72,12 @@ impl ManualBurst {
         {
             return Err(bad(&format!("Unknown field {extra}")));
         }
-        let key = object
-            .get("idempotency_key")
-            .and_then(Value::as_str)
-            .map(links::js_trim)
-            .filter(|k| !k.is_empty() && k.chars().count() <= 200)
-            .ok_or_else(|| bad("idempotency_key must be 1 to 200 characters"))?;
+        let key = super::burst::idempotency_key(
+            object
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )?;
         let expected = object
             .get("expected")
             .cloned()

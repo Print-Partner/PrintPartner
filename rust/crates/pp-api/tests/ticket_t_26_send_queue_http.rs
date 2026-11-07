@@ -123,7 +123,7 @@ impl Queue {
 
     async fn send(&self, method: &str, path: &str, body: &str) -> (StatusCode, Value) {
         let cookie = Some("pp_session=required-unit-fixture-secret");
-        loopback::send(&self.router, method, path, body, cookie).await
+        loopback::send(&self.router, method, path, Some(body), cookie).await
     }
 
     /// The item's state and error, and its upload job's state.
@@ -163,7 +163,7 @@ async fn ticket_t_26_send_queue_routes_mount_only_with_the_flag_and_need_a_sessi
         &queue.router,
         "POST",
         "/api/v2/printer-send-queue/q1/dispatch",
-        "",
+        Some(""),
         None,
     )
     .await;

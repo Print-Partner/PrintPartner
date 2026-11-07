@@ -5,9 +5,12 @@
 mod child_process;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
+#[path = "../../pp-storage/tests/common/scratch.rs"]
+mod scratch;
 
 use std::{
     io::{BufRead, BufReader, Read},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -40,12 +43,19 @@ fn send_stop_signal(child: &Child) {
     assert_ne!(sent, 0, "Ctrl+Break: {}", std::io::Error::last_os_error());
 }
 
+fn server_binary() -> PathBuf {
+    if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {
+        child_process::bin_exe("pp-server")
+    } else {
+        env!("CARGO_BIN_EXE_pp-server").into()
+    }
+}
+
 #[test]
 fn stop_signal_finishes_the_shutdown_and_releases_storage() {
-    let root = std::env::temp_dir().join(format!("pp-stop-signal-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let root = scratch::Scratch::new("pp-stop-signal-");
     let bundle = release::launch(root.join("data")).bundle;
-    let mut command = child_process::command(child_process::bin_exe("pp-server"));
+    let mut command = child_process::command(server_binary());
     command
         .args(["--data".as_ref(), root.join("data").as_os_str()])
         .args(["--web".as_ref(), bundle.web_root.as_os_str()])
@@ -58,20 +68,30 @@ fn stop_signal_finishes_the_shutdown_and_releases_storage() {
     let mut origin = String::new();
     stdout.read_line(&mut origin).unwrap();
     assert!(origin.starts_with("http://"), "{origin}");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut rest = String::new();
+        let _ = stdout.read_to_string(&mut rest);
+        let _ = sender.send(rest);
+    });
     send_stop_signal(&child);
-    let mut rest = String::new();
-    stdout.read_to_string(&mut rest).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        assert!(Instant::now() < deadline, "pp-server did not stop");
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("pp-server did not stop within 30 s of the stop signal");
+        }
         std::thread::sleep(Duration::from_millis(50));
     };
+    let rest = receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .expect("pp-server stdout closes after it exits");
     assert!(status.success(), "{rest}");
     let receipt: serde_json::Value = serde_json::from_str(rest.trim()).unwrap();
     assert_eq!(receipt["storage_released"], true, "{receipt}");
     assert_eq!(receipt["errors"], serde_json::json!([]), "{receipt}");
-    std::fs::remove_dir_all(&root).unwrap();
 }

@@ -11,8 +11,6 @@ use super::{
 use pp_compat::CompatExit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -436,11 +434,7 @@ fn write_record(data_dir: &Path, record: &CutoverRecord) -> std::io::Result<()> 
         "{TEMPORARY_PREFIX}{}{TEMPORARY_SUFFIX}",
         hex::encode(rand::random::<[u8; 16]>())
     ));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(&temporary)?;
+    let mut file = pp_os::create_new_private_file(&temporary)?;
     let written = (|| {
         file.write_all(&encoded)?;
         file.sync_all()?;
@@ -609,6 +603,7 @@ fn append_evidence_with_directory_sync(
 /// following a link or blocking on a FIFO planted at its name.
 #[cfg(unix)]
 fn open_evidence_log(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
     fs::OpenOptions::new()
         .append(true)
         .create(true)

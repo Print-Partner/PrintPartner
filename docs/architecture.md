@@ -150,7 +150,9 @@ its log writes relative to the pinned log directory: append opens,
 exclusive creates, the archive security open and the replacing rotation
 rename. Read-only tail reads still open by path. Its Unix logs still call `openat` and `renameat` through libc.
 On every platform it hands Node paths in `pp_os::display_path` spelling, and
-`pp-storage` stores, returns and compares Source paths in that spelling.
+`pp-storage` stores, returns and compares Source paths in that spelling, and
+`pp-core`'s review observations compare a snapshot root with the repos root
+in it.
 `pp-core` uses it for its state files (`desktop.toml`, browser preferences and
 desktop settings): no-follow reads relative to the data directory handle, identity
 rechecks, private creation and durable publication, and for the review thumbnail

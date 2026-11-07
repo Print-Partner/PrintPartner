@@ -15,5 +15,8 @@ tokio.workspace = true
 serde_json.workspace = true
 pp-core = { path = "../pp-core" }
 
+[dev-dependencies]
+tempfile = "=3.27.0"
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

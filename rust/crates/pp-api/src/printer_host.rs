@@ -109,11 +109,11 @@ const TEST_LIMIT: u32 = 5;
 const WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
-struct Windows(Mutex<HashMap<&'static str, (Instant, u32)>>);
+pub(crate) struct Windows(Mutex<HashMap<&'static str, (Instant, u32)>>);
 
 impl Windows {
     /// `None` when admitted, else the seconds until the window resets.
-    fn consume(&self, route: &'static str, limit: u32) -> Option<u64> {
+    pub(crate) fn consume(&self, route: &'static str, limit: u32) -> Option<u64> {
         let mut windows = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let window = windows.entry(route).or_insert((now, 0));
@@ -172,7 +172,7 @@ fn routes(port: Arc<dyn PrinterHostPort>) -> Router {
         .nest("/api/v1", mount(v1, port))
 }
 
-fn throttled(seconds: u64) -> Response {
+pub(crate) fn throttled(seconds: u64) -> Response {
     let after = if seconds == 60 {
         "1 minute".to_owned()
     } else if seconds == 1 {

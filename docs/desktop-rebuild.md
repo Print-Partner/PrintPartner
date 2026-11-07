@@ -108,13 +108,25 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   the setting every second, so a changed, disabled or removed host replaces or
   cancels its one poller. A malformed setting stops every poller and the route
   answers 503 `Printer monitoring unavailable`.
+  PrusaLink status (GRE-1175): the same watchers also poll the stored
+  PrusaLink hosts, through the PrusaLink driver's Digest-authenticated status
+  read, every 5 s (the web client's default status cadence; Moonraker polls
+  every 2 s). Node reads PrusaLink status on demand, so the published status is
+  the one Node's adapter reports, including its offline messages. An offline
+  read backs off like a failed Moonraker poll and does not count as heard.
+  PrusaLink rows come after the Moonraker snapshot and are watched only while
+  the total stays within the 128-host cap; a PrusaLink row past the cap, or
+  with an id a Moonraker row already has, is not watched.
   `GET`/`HEAD /api/v1/integrations/{id}/status` is the `pp-api`
   `printer_status` route. It authenticates like every Rust route, then answers
-  the cached `PrinterHostStatus`; it never polls a printer on demand. A
-  non-Moonraker id answers 404 `Integration not found`; nothing goes to Node.
+  the cached `PrinterHostStatus`; it never polls a printer on demand. An
+  id that is not a watched Moonraker or PrusaLink host answers 404
+  `Integration not found`; nothing goes to Node.
   An HTTPS host reports `offline` with `HTTPS printer monitoring is not
-  available yet` until GRE-359, and a host that redirects reports `offline`
-  and stops polling. Hiding the window keeps polling; `suspend_monitoring`
+  available yet` until GRE-359, and a Moonraker host that redirects reports
+  `offline` and stops polling. A PrusaLink redirect is the driver's
+  `PrusaLink returned HTTP <status>` offline status, as in Node, and the
+  poller keeps backing off. Hiding the window keeps polling; `suspend_monitoring`
   (sleep) stops every poller and `resume_monitoring` starts them again.
   Monitoring only reads: no Checkoff, queue or job writes and no sends.
   `Gateway::printer_observations()` is the read-only in-process port for later
@@ -172,9 +184,9 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   `/files` and `/cameras` (root and `/api/v1`), and `POST /api/v1/integrations/{id}/test`, read a
   Moonraker or PrusaLink host on demand through the gateway's drivers. They are
   read-only on the printer: no upload or print start, and only PrusaLink's
-  single Digest resend after a 401. PrusaLink reports
-  no status capability because only Moonraker has a watcher; Bambu reads as
-  having no capabilities. See
+  single Digest resend after a 401. Moonraker and PrusaLink both report the
+  status capability, except a PrusaLink row the watchers do not poll (see
+  above); Bambu reads as having no capabilities. See
   [Printer-host reads](printer-host-reads.md).
 
   ```sh
@@ -2885,7 +2897,7 @@ cargo test --locked --manifest-path rust/Cargo.toml -p pp-domain --features desk
 `desktop_rebuild`) is the create path of Node's
 `materializeAcceptedPrinterLink`. It is what `POST
 /printer-checkoff/file-assignments` records once the route has parsed the
-request and read the file. No route uses it yet; GRE-1210 mounts it. In one
+request and read the file. GRE-1220 mounts it (next section). In one
 writer transaction, against the Build's Accepted Plan:
 
 - The plan revision must be the one the operator saw, or 409 `The Accepted
@@ -2928,6 +2940,62 @@ every response and stored row.
 ```sh
 cd web && node --conditions=development --import tsx ../fixtures/parity/printer-file-assignment/generate.mjs --check
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
+```
+
+### Print-file assignment routes (GRE-1220)
+
+`pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`
+and `POST /printer-checkoff/file-assignments/preview` at the root and under
+`/api/v1`, where Node registers them, behind `desktop_rebuild` and
+`PP_DESKTOP_REBUILD`. Each mount has Node's 20-per-minute window per route and
+its 1 MiB JSON limit.
+
+- Storage parses the body in Node's `parsePrintFileRequest` order and resolves
+  the printer as `resolveAssignmentPrinter` does: a fleet printer by id, its
+  host or `manual:<id>` with `tracking: "manual"`, or, with no `printer_id`,
+  the unmanaged printer (`manual:unmanaged`). The assignment route then checks
+  `plan_revision_id`, `unit_tokens` and `object_mappings`; the preview reads
+  the Build's Accepted Plan and builds `suggestPrintFileAttribution`'s
+  suggestion and match review. Every refusal keeps Node's status and detail.
+- The route reads the file. A `snapshot_token` is trimmed and needs a
+  `remote_path` and no `upload_token`, or 400 `A snapshot token requires its
+  original printer file path`. It redeems the classification and identity
+  captured for exactly that Build, printer, path and file name while the
+  printer's linked integration is unchanged; anything else is 409 `This file
+  preview expired or its source changed. Cancel and reopen the file.` A
+  redeemed file is not re-observed for drift, and a successful assignment
+  spends the token. Node redeems and records in one synchronous step; here the
+  assignment reserves the token inside the storage call, so a concurrent
+  assignment of the same token is refused, and an admitted write spends it
+  even if the request is dropped. An outcome that is unknown after admission (a
+  lost writer reply or `CommitUnknown`) spends it too, so the operator reopens
+  the preview instead of recording the file twice. Any other answer, a refusal
+  or a credential failure such as an expired session, wrote nothing and puts the
+  token back. A reserved token keeps its place in the 128-token limit, and the
+  writer transaction checks
+  the printer's host fingerprint again, so a settings change after the route's
+  read refuses with the same 409.
+- An `upload_token` answers Node's unknown-upload 409 `That upload is no longer
+  available; upload the print file again`, because this runtime serves no
+  upload route yet. A `remote_path` without a snapshot on a Moonraker or
+  PrusaLink host answers 501 instead of recording the print unread, because
+  this runtime does not read a printer's file itself yet. A printer tracked by
+  hand, or a host type Node has no file reader for, records the print unread
+  as Node does, and an unread 3MF is refused with Node's 409.
+- The assignment itself is `Request::AssignFile` (previous section).
+
+`checkoff_progress::print_file::SnapshotStore` is Node's
+`printer-file-snapshots.ts` for this process: one capture at a time, at most
+128 tokens, 15 minutes each. The files/content route calls
+`SnapshotStore::begin` with `print_file::file_source` read before and after
+it asks the printer, `Capture::push` for each chunk it streams, and
+`Capture::finish` at EOF, which classifies the bytes and makes the token
+redeemable. A capture dropped before EOF releases the store and leaves no
+token. The files/content route does not capture yet; GRE-1214 passes one store
+to both routers and replaces its 501.
+
+```sh
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test file_assignments_http
 ```
 
 ### Accepted Plate workspace read (GRE-1189)

@@ -358,10 +358,7 @@ impl Scratch {
             .map_or(0, |since| since.as_nanos());
         let path =
             std::env::temp_dir().join(format!("pp-perf-seed-{}-{nanos}", std::process::id()));
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&path)?;
+        pp_os::create_private_dir(&path)?;
         Ok(Self(path))
     }
 }

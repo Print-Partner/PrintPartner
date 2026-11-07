@@ -98,7 +98,7 @@ pub fn match_objects_to_filenames<S: AsRef<str>>(
     plate_matches
         .iter()
         .map(|plate| {
-            let filenames = matched_filenames(&plate.stl_basename, &index);
+            let filenames = matched_filenames(&plate.stl_basename, &index, true);
             (plate.stl_basename.clone(), filenames)
         })
         .collect()
@@ -108,11 +108,22 @@ pub fn match_objects_to_filenames<S: AsRef<str>>(
 /// `createSlicedObjectMatcher(filenames)(rawName)` does: one filename when
 /// matched, every candidate when ambiguous, none when unmatched.
 pub fn match_object_name<S: AsRef<str>>(raw_name: &str, filenames: &[S]) -> Vec<String> {
-    matched_filenames(raw_name, &index_filenames(filenames))
+    matched_filenames(raw_name, &index_filenames(filenames), true)
 }
 
-fn matched_filenames(raw_name: &str, index: &[IndexedFilename<'_>]) -> Vec<String> {
-    match match_indexed_name(&interpret_sliced_object_name(raw_name), index) {
+/// `match_object_name` without the fuzzy step: a fuzzy match or fuzzy
+/// ambiguity is no match. This is `matchingAcceptedParts` with
+/// `positiveOnly` in Node's `accepted-printer-attribution.ts`.
+pub fn match_object_name_exact<S: AsRef<str>>(raw_name: &str, filenames: &[S]) -> Vec<String> {
+    matched_filenames(raw_name, &index_filenames(filenames), false)
+}
+
+fn matched_filenames(
+    raw_name: &str,
+    index: &[IndexedFilename<'_>],
+    allow_fuzzy: bool,
+) -> Vec<String> {
+    match match_indexed_name(&interpret_sliced_object_name(raw_name), index, allow_fuzzy) {
         SlicedObjectNameMatch::Matched(filename) => vec![filename.to_owned()],
         SlicedObjectNameMatch::Ambiguous(filenames) => {
             filenames.into_iter().map(str::to_owned).collect()
@@ -509,6 +520,7 @@ struct FuzzyRow<'a> {
 fn match_indexed_name<'a>(
     observed: &InterpretedSlicedObjectName,
     indexed: &[IndexedFilename<'a>],
+    allow_fuzzy: bool,
 ) -> SlicedObjectNameMatch<'a> {
     if observed.basename_key.is_empty() {
         return SlicedObjectNameMatch::Unmatched;
@@ -532,6 +544,9 @@ fn match_indexed_name<'a>(
         return found;
     }
 
+    if !allow_fuzzy {
+        return SlicedObjectNameMatch::Unmatched;
+    }
     let mut fuzzy: Vec<FuzzyRow<'a>> = indexed
         .iter()
         .map(|row| {

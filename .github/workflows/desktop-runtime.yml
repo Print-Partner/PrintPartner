@@ -41,8 +41,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || (github.event_name == 'push' && github.run_attempt == '1' && !startsWith(github.ref, 'refs/tags/')) && 'push' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.run_attempt == '1' && !startsWith(github.ref, 'refs/tags/')) }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -75,6 +75,7 @@ jobs:
         run: |
           python3 rust/scripts/stress-group-cleanup.py --self-test 2>&1 | tee "$PP_EVIDENCE/stress-group-cleanup-self-tests.log"
           python3 rust/scripts/stage-desktop.py --self-test 2>&1 | tee "$PP_EVIDENCE/stage-desktop-self-tests.log"
+          python3 rust/scripts/assemble-linux-deb.py --self-test 2>&1 | tee "$PP_EVIDENCE/assemble-linux-deb-self-tests.log"
           python3 rust/scripts/gateway-operations.py rust/crates/pp-gateway/operations.json --self-test 2>&1 | tee "$PP_EVIDENCE/gateway-operations-self-tests.log"
           python3 rust/scripts/native-process-probe.py --self-test 2>&1 | tee "$PP_EVIDENCE/native-process-probe-self-tests.log"
       - name: Install pinned storage-fixture Node

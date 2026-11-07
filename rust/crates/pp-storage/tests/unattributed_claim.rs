@@ -270,12 +270,11 @@ fn a_refused_claim_answers_like_node_and_writes_nothing() {
         refused("dismissed", json!({ "profile_id": 1 })),
         (409, detail("Print changed or was already claimed"))
     );
+    // Node's operational read throws "Profile not found" for a Build that does
+    // not exist, and the claim route answers that with a plain 500.
     assert_eq!(
         refused("open", json!({ "profile_id": 99 })),
-        (
-            409,
-            detail("Accepted Plan operational state is not initialized")
-        )
+        (500, detail("Internal Server Error"))
     );
     assert_eq!(
         refused("mystery", json!({ "profile_id": 1 })),

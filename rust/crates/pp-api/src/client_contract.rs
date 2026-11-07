@@ -699,6 +699,7 @@ mod codegen {
                 undoable: false,
                 reason: Some(reason),
                 detail: Some(UNICODE.into()),
+                scope: None,
             })
         };
         let burst = |undo| (EntryType::CheckoffBurst, Actor::User, undo);
@@ -714,6 +715,7 @@ mod codegen {
                 undoable: true,
                 reason: None,
                 detail: None,
+                scope: Some(UNICODE.into()),
             })),
             burst(refused(UndoReason::NoUndoToken)),
             burst(refused(UndoReason::AlreadyUndone)),

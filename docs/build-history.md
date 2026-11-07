@@ -35,7 +35,9 @@ Every entry has:
 - `link`: `{"kind": type, "id": row id as a string}`, the record the entry opens.
 - `undo`: on checkoff bursts and sends only. `{"undoable": true}`, or
   `{"undoable": false, "reason": ..., "detail": ...}`, where `detail` is the
-  text the undo route would refuse with.
+  text the undo route would refuse with. An undoable printer burst whose
+  burst covered more than this one bed of the Build also has `scope`, such as
+  `Undo reverses the whole burst: 3 beds on Builds 2 and 5`.
 
 A manual burst's summary counts what its receipt changed, for example
 `Checked off 2 units, assembled 1` or `Unchecked 1 unit`. A printer burst's
@@ -119,10 +121,13 @@ each `undo` reason in words, with the core's detail for `state_changed`.
 
 An undoable burst gets an Undo button (GRE-1259). It works as the farm log's
 does: one bodyless POST at a time (clicks while it is in flight send nothing),
-a lost send is resent, an `already undone` answer after a lost send counts as
-done, and if every send is lost the tab says the undo may not have reached the
-core. Focus moves to the outcome message. After an undo the tab reloads
-History, the farm log and the Build's Checkoff units.
+a lost send is resent, and if every send is lost the tab says the undo may not
+have reached the core. After a lost send, a resend answered `409` `This
+Checkoff burst was already undone` (a manual burst) or `404` `History entry
+not found` (a printer burst, whose undo removed its entry) means the first
+send landed, so the tab counts the undo as done. An undo's `scope` shows
+beside its Undo button. Focus moves to the outcome message. After an undo the
+tab reloads History, the farm log and every Build's Checkoff units.
 
 ## Undo
 
@@ -137,6 +142,11 @@ or `POST /plans/{id}/checkoff/bursts/undo`. A refusal writes nothing.
 ```json
 {"undone_at": "2026-11-07T14:31:01.906Z", "entry": {"id": "checkoff_burst:manual-…", "undo": {"undoable": false, "reason": "already_undone", "detail": "This Checkoff burst was already undone"}, ...}}
 ```
+
+A printer burst's undo covers every bed and Build in that burst, as
+`POST /printer-checkoff/verify-batch/undo` does: one burst is one undo, so
+undoing one of its History entries removes the entries for its other beds too,
+including those on other Builds. `undo.scope` says so before the click.
 
 `entry` is the entry as History lists it after the undo: a manual burst stays,
 marked undone. It is `null` for a printer burst, whose undo removes it.

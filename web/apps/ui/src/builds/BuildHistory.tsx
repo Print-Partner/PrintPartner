@@ -47,7 +47,14 @@ const historyQuery = (id: number) => ({
 function UndoCell({ entry, onUndo }: { entry: Entry; onUndo: (entry: Entry) => void }) {
   const { undo } = entry;
   if (!undo) return null;
-  if (undo.undoable) return <MutationButton onClick={() => onUndo(entry)}>Undo</MutationButton>;
+  if (undo.undoable) {
+    return (
+      <>
+        <MutationButton onClick={() => onUndo(entry)}>Undo</MutationButton>
+        {undo.scope && <span className="pp-fact-detail">{undo.scope}</span>}
+      </>
+    );
+  }
   return (
     <>
       Not undoable
@@ -110,13 +117,19 @@ export function BuildHistory() {
   const table = useRef<HTMLTableElement>(null);
   const { undo, start, message } = useBurstUndo(
     (entry: Entry) => writeCore("undoBuildHistoryEntry", { id, entry_id: entry.id }),
-    // An undo changes the Build's Checkoff progress and the farm log too.
+    // An undo changes Checkoff progress, on every Build a printer burst touched, and the
+    // farm log too.
     () =>
       Promise.all([
         client.invalidateQueries({ queryKey: ["core", "history"] }),
         client.invalidateQueries({ queryKey: ["core", "farm-log"] }),
-        client.invalidateQueries({ queryKey: ["core", "checkoff-units", id] }),
+        client.invalidateQueries({ queryKey: ["core", "checkoff-units"] }),
       ]),
+    // A printer burst's undo deletes its entry, so a resend after a lost answer finds none.
+    (error, entry) =>
+      entry.type === "checkoff_burst" &&
+      error.status === 404 &&
+      error.detail === "History entry not found",
   );
   const state = pagedScreenState(query, connection, (data) => data.pages[0]?.entries.length === 0);
   const what = undo.variables && TYPE_WORDS[undo.variables.type].toLowerCase();

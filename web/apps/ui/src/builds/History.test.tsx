@@ -190,10 +190,11 @@ const refused = (reason: NonNullable<Undo["reason"]>, detail = "Refused"): Undo 
   reason,
   detail,
 });
-const BURST = entry("checkoff_burst", "manual-a", 45, "Checked off 2 units", {
-  undo: { undoable: true },
+const SCOPE = "Undo reverses the whole burst: 2 beds on Builds 2 and 5";
+const BURST = entry("checkoff_burst", "job-a", 45, "Checked off 2 units", {
+  undo: { undoable: true, scope: SCOPE },
 });
-const UNDO_PATH = "/api/v2/plans/2/history/checkoff_burst%3Amanual-a/undo";
+const UNDO_PATH = "/api/v2/plans/2/history/checkoff_burst%3Ajob-a/undo";
 const BURSTS: BuildHistoryPage = {
   plan_id: 2,
   entries: [
@@ -241,6 +242,7 @@ describe("UI8-03 Undo of a checkoff burst works from History", () => {
     renderAt("/builds/2/history", undoable());
     await screen.findByText("Checked off 2 units");
     expect(within(row("Checked off 2 units")).getByRole("button", { name: "Undo" })).toBeTruthy();
+    expect(undoCell("Checked off 2 units")).toBe(`Undo${SCOPE}`);
     expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(1);
     expect(undoCell("Unchecked 1 unit")).toBe(
       "Not undoableCheckoff changed sinceCheckoff changed since this burst",
@@ -270,7 +272,7 @@ describe("UI8-03 Undo of a checkoff burst works from History", () => {
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
       ["core", "history"],
       ["core", "farm-log"],
-      ["core", "checkoff-units", 2],
+      ["core", "checkoff-units"],
     ]);
   });
 
@@ -298,28 +300,34 @@ describe("UI8-03 Undo of a checkoff burst works from History", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 
-  it("counts an undo whose answer was lost as done when the resend finds it already undone", async () => {
-    let sends = 0;
-    const fetchMock = undoable((land) => {
-      sends += 1;
-      // The first send lands, but its answer is lost on the way back.
-      if (sends === 1) {
-        land();
-        throw new TypeError("Failed to fetch");
-      }
-      return json(
-        { title: "Conflict", status: 409, detail: "This Checkoff burst was already undone" },
-        409,
+  it.each([
+    [409, "This Checkoff burst was already undone"],
+    // A printer burst's undo deletes its entry.
+    [404, "History entry not found"],
+  ])(
+    "counts an undo whose answer was lost as done when the resend answers %i %s",
+    async (code, detail) => {
+      let sends = 0;
+      const fetchMock = undoable((land) => {
+        sends += 1;
+        // The first send lands, but its answer is lost on the way back.
+        if (sends === 1) {
+          land();
+          throw new TypeError("Failed to fetch");
+        }
+        return json({ title: "Refused", status: code, detail }, code);
+      });
+      renderAt("/builds/2/history", fetchMock);
+      await screen.findByText("Checked off 2 units");
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await screen.findByText("Undid the checkoff burst: Checked off 2 units.");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(sends).toBe(2);
+      await waitFor(() =>
+        expect(undoCell("Checked off 2 units")).toBe("Not undoableAlready undone"),
       );
-    });
-    renderAt("/builds/2/history", fetchMock);
-    await screen.findByText("Checked off 2 units");
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    await screen.findByText("Undid the checkoff burst: Checked off 2 units.");
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(sends).toBe(2);
-    await waitFor(() => expect(undoCell("Checked off 2 units")).toBe("Not undoableAlready undone"));
-  });
+    },
+  );
 
   it("says an undo may not have reached the core when every send is lost", async () => {
     renderAt(

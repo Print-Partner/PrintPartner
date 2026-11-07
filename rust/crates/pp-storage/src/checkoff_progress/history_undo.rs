@@ -73,6 +73,32 @@ impl Receipts {
         Ok(jobs)
     }
 
+    /// What undoing the printer burst reverses, when that is more than one bed
+    /// of `build`: its undo covers every bed and Build of the burst.
+    fn printer_scope(&self, token: &str, build: i64) -> Option<String> {
+        let receipt = self.printer.iter().find(|r| r["undo_token"] == token)?;
+        let beds = receipt["response"]["beds"].as_array()?;
+        let mut builds: Vec<i64> = beds
+            .iter()
+            .filter_map(|bed| bed["link"]["profile_id"].as_i64())
+            .collect();
+        builds.sort_unstable();
+        builds.dedup();
+        if beds.len() < 2 && builds.iter().all(|b| *b == build) {
+            return None;
+        }
+        let names: Vec<String> = builds.iter().map(i64::to_string).collect();
+        let names = match names.split_last()? {
+            (last, []) => format!("Build {last}"),
+            (last, rest) => format!("Builds {} and {last}", rest.join(", ")),
+        };
+        let bed = if beds.len() == 1 { "bed" } else { "beds" };
+        Some(format!(
+            "Undo reverses the whole burst: {} {bed} on {names}",
+            beds.len()
+        ))
+    }
+
     /// What the burst's undo would answer now. Writes nothing.
     pub(crate) fn undo(
         &self,
@@ -91,7 +117,14 @@ impl Receipts {
             }
         };
         let Some(blocked) = blocked else {
-            return Ok(Undo::allowed());
+            let scope = match receipt {
+                Receipt::Printer(token) => self.printer_scope(token, build),
+                Receipt::Manual(_) => None,
+            };
+            return Ok(Undo {
+                scope,
+                ..Undo::allowed()
+            });
         };
         let reason = match blocked {
             Blocked::NotFound => UndoReason::NoUndoToken,

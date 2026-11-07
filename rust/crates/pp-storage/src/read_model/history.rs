@@ -134,6 +134,11 @@ pub struct Undo {
     /// with. Omitted when `undoable`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// What Undo reverses, when that reaches beyond this entry: a printer
+    /// burst's undo covers every bed and Build of its burst. Omitted
+    /// otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl Undo {
@@ -142,6 +147,7 @@ impl Undo {
             undoable: true,
             reason: None,
             detail: None,
+            scope: None,
         }
     }
 
@@ -150,6 +156,7 @@ impl Undo {
             undoable: false,
             reason: Some(reason),
             detail: Some(detail.to_owned()),
+            scope: None,
         }
     }
 }

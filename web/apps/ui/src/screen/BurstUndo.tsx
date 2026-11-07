@@ -13,12 +13,14 @@ const ALREADY_UNDONE = "This Checkoff burst was already undone";
 /**
  * Undo of a checkoff burst, one at a time: a second click before the first answer would
  * send it again. A lost send is retried, and "already undone" after a lost send means the
- * undo landed, so it counts as done (`null`). `reload` runs once the undo settles, and
- * focus moves to the outcome, because the Undo button goes away with the undo.
+ * undo landed, so it counts as done (`null`); so does any refusal `landed` says only a
+ * landed undo gets. `reload` runs once the undo settles, and focus moves to the outcome,
+ * because the Undo button goes away with the undo.
  */
 export function useBurstUndo<E extends { id: string }, R>(
   send: (entry: E) => Promise<R>,
   reload: () => Promise<unknown>,
+  landed: (error: CoreError, entry: E) => boolean = () => false,
 ) {
   const inFlight = useRef(false);
   // Entries whose undo send was lost: a later "already undone" means it landed.
@@ -30,11 +32,11 @@ export function useBurstUndo<E extends { id: string }, R>(
         return await send(entry);
       } catch (error) {
         if (error instanceof Error && lostSend(error)) lostUndos.current.add(entry.id);
-        const landed =
+        const done =
           error instanceof CoreError &&
-          error.detail === ALREADY_UNDONE &&
-          lostUndos.current.has(entry.id);
-        if (!landed) throw error;
+          lostUndos.current.has(entry.id) &&
+          (error.detail === ALREADY_UNDONE || landed(error, entry));
+        if (!done) throw error;
         return null;
       }
     },

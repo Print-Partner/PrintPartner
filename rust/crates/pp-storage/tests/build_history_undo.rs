@@ -273,3 +273,43 @@ fn build_history_burst_without_a_kept_receipt_has_no_undo() {
     assert_eq!(stored(&fixture), before, "a refusal writes nothing");
     owner.shutdown().unwrap();
 }
+
+#[test]
+fn build_history_printer_undo_reverses_every_bed_of_its_burst() {
+    let fixture = Fixture::new();
+    let owner = fixture.open();
+    let bed = |link: &str, part: i64| {
+        json!({ "link_id": link,
+        "decisions": [{ "part_id": part, "unit_index": 0, "result": "confirmed" }] })
+    };
+    let body = json!({ "idempotency_key": "two-beds",
+        "beds": [bed("link-burst", 2), bed("link-verify", 3)] });
+    let done = apply(&owner, Request::VerifyBatch { body });
+    assert_eq!(done["status"], 200, "{done}");
+    let jobs: Vec<String> = {
+        let db = fixture.sql();
+        let mut statement = db.prepare("SELECT 'checkoff_burst:' || id FROM print_jobs WHERE link_id IN ('link-burst','link-verify')").unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(jobs.len(), 2, "one job per bed");
+    let listed = bursts(&owner);
+    for id in &jobs {
+        assert_eq!(
+            find(&listed, id)["undo"],
+            json!({"undoable": true, "scope": "Undo reverses the whole burst: 2 beds on Build 1"})
+        );
+    }
+    let undone = undo(&owner, &jobs[0]);
+    assert_eq!(undone["status"], 200, "{undone}");
+    let listed = bursts(&owner);
+    assert!(
+        jobs.iter()
+            .all(|id| listed.iter().all(|entry| entry["id"] != id.as_str())),
+        "one undo removes both beds' entries"
+    );
+    owner.shutdown().unwrap();
+}

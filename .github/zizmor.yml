@@ -20,3 +20,10 @@ rules:
       # resolve at the same commit as the caller without a mutable external ref.
       - release.yml:20
       - release.yml:23
+      # The apt package cache action (GRE-1229) is a local composite action that runs at the
+      # same commit as its caller; it holds no secrets and saves its cache only on main.
+      - chain-tip-gate.yml:46
+      - desktop-e2e.yml:45
+      - desktop-webkit.yml:46
+      - rust-cross-os.yml:162
+      - rust-cross-os.yml:374

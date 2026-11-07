@@ -27,7 +27,8 @@ def relevant(path, kind):
             or path in {"rust-toolchain.toml", ".github/workflows/rust-cross-os.yml",
                         "web/scripts/atomic-package-build.mjs", "scripts/setup-ci-linux.sh",
                         "scripts/ci-rust-runner.py", "scripts/test_ci_rust_runner.py",
-                        "scripts/ci-pp-local-sccache.sh"}
+                        "scripts/ci-pp-local-sccache.sh",
+                        ".github/actions/linux-gui-deps/action.yml"}
             or re.fullmatch(r"web/tsconfig[^/]*\.json", path) is not None
             or re.fullmatch(r"web/package[^/]*\.json", path) is not None)
 

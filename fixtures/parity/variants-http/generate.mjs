@@ -2,7 +2,7 @@
 // Node's real app for GET /plans/:id/variant-dimensions and
 // POST /plans/:id/variant-selection on the flat, /api/v1 and /api/v2 mounts,
 // plus the database tables each request changed. Node opens a copy of the
-// required-units unchanged.db fixture after SEED adds Sources 2-9, Plans 3-12
+// required-units unchanged.db fixture after SEED adds Sources 2-10, Plans 3-13
 // and four stored selections. FILES lays out the Source checkouts (manifests
 // with variant_dimensions in several shapes, an invalid manifest, a manifest
 // whose selections Node refuses, a checkout without a manifest), and CHECKOUTS
@@ -39,17 +39,18 @@ const SEED = [
   "(6, 'default', 'Scalar Dimensions', 'https://example.test/scalar', NULL),",
   "(7, 'default', 'Missing Checkout', 'https://example.test/missing', NULL),",
   "(8, 'default', 'No Manifest', 'https://example.test/bare', NULL),",
-  "(9, 'default', 'Refused Selections', 'https://example.test/refused', NULL);",
+  "(9, 'default', 'Refused Selections', 'https://example.test/refused', NULL),",
+  "(10, 'default', 'Uncoercible Project', 'https://example.test/uncoercible', NULL);",
   "INSERT INTO build_profiles (id, tenant_id, name) VALUES",
   "(3, 'default', 'Variant Plan'), (4, 'default', 'Empty Plan'), (5, 'default', 'Unchecked Plan'),",
   "(6, 'default', 'Broken Plan'), (7, 'default', 'Listed Plan'), (8, 'default', 'Scalar Plan'),",
   "(9, 'default', 'Missing Plan'), (10, 'default', 'Bare Plan'), (11, 'default', 'Refused Plan'),",
-  "(12, 'default', 'Addon Plan');",
+  "(12, 'default', 'Addon Plan'), (13, 'default', 'Uncoercible Plan');",
   "INSERT INTO profile_layers (tenant_id, profile_id, layer_order, layer_type, project_id) VALUES",
   "('default', 3, 0, 'base', 2), ('default', 3, 1, 'addon', 5), ('default', 5, 0, 'base', 3),",
   "('default', 6, 0, 'base', 4), ('default', 7, 0, 'base', 5), ('default', 8, 0, 'base', 6),",
   "('default', 9, 0, 'base', 7), ('default', 10, 0, 'base', 8), ('default', 11, 0, 'base', 9),",
-  "('default', 12, 0, 'addon', 2);",
+  "('default', 12, 0, 'addon', 2), ('default', 13, 0, 'base', 10);",
   "INSERT INTO app_settings (tenant_id, key, value) VALUES",
   "('default', 'plan_variant_selection_5', 'not json'),",
   "('default', 'plan_variant_selection_6', '5'),",
@@ -57,7 +58,7 @@ const SEED = [
   "('default', 'plan_variant_selection_9', '{\"b\": \"x\", \"10\": \"y\", \"2\": 1.0, \"n\": {\"z\": 1, \"1\": [2.50]}}');",
 ].join(" ");
 // Each Source's local_path, relative to the data directory.
-const CHECKOUTS = { 2: "repos/2", 4: "repos/4", 5: "repos/5", 6: "repos/6", 7: "repos/7", 8: "repos/8", 9: "repos/9" };
+const CHECKOUTS = { 2: "repos/2", 4: "repos/4", 5: "repos/5", 6: "repos/6", 7: "repos/7", 8: "repos/8", 9: "repos/9", 10: "repos/10" };
 const MANIFEST = "print-partner.manifest.yaml";
 // Files relative to the data directory.
 const FILES = {
@@ -89,6 +90,7 @@ const FILES = {
     "  dup: [large]",
     "  anchored: &opts [red, blue]",
     "  aliased: *opts",
+    "  __proto__: [small]",
     "",
   ].join("\n"),
   "repos/2/size/large/part.stl": "solid large",
@@ -96,6 +98,8 @@ const FILES = {
   ["repos/5/" + MANIFEST]: "variant_dimensions:\n  - [x, 1]\n  - lone\n  - [y]\n",
   ["repos/6/" + MANIFEST]: "variant_dimensions: just text\n",
   "repos/8/part.stl": "solid bare",
+  // String(project) throws: its own toString is not callable.
+  ["repos/10/" + MANIFEST]: "project: {toString: broken}\nvariant_dimensions:\n  size: [small]\n",
   ["repos/9/" + MANIFEST]: "option_groups:\n  color:\n    variants:\n      - id: red\nselections:\n  color: []\nvariant_dimensions:\n  color: [red]\n",
 };
 
@@ -116,6 +120,8 @@ const REQUESTS = [
   get("no_manifest_flat", "/plans/10/variant-dimensions"),
   get("refused_selections_v2", "/api/v2/plans/11/variant-dimensions"),
   get("addon_only_flat", "/plans/12/variant-dimensions"),
+  get("uncoercible_project_v1", "/api/v1/plans/13/variant-dimensions"),
+  post("uncoercible_select_v2", "/api/v2/plans/13/variant-selection", { selection: { size: "small" } }),
   get("missing_build_flat", "/plans/99/variant-dimensions"),
   get("foreign_build_v1", "/api/v1/plans/2/variant-dimensions"),
   get("text_id_v2", "/api/v2/plans/abc/variant-dimensions"),
@@ -145,6 +151,7 @@ const REQUESTS = [
   raw("index_key_first_v2", "/api/v2/plans/3/variant-selection", '{"selection":{"size":"huge","5":"x"}}'),
   post("not_array_dimension_flat", "/plans/3/variant-selection", { selection: { notes: "plain text" } }),
   post("inherited_name_v1", "/api/v1/plans/3/variant-selection", { selection: { toString: "x" } }),
+  raw("prototype_dimension_flat", "/plans/3/variant-selection", '{"selection":{"__proto__":"small"}}'),
   post("other_source_v2", "/api/v2/plans/3/variant-selection", { selection: {}, source_id: 5 }),
   post("unknown_source_flat", "/plans/3/variant-selection", { selection: { size: "large" }, source_id: 99 }),
   post("source_id_zero_v1", "/api/v1/plans/3/variant-selection", { source_id: 0 }),

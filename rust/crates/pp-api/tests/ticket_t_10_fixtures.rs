@@ -1621,7 +1621,7 @@ mod ticket_t_10_fixtures {
         let fixture = seeded_fixture(
             include_str!("../../../../fixtures/parity/variants-http/node.json"),
             "variants-http",
-            72,
+            75,
         );
         assert!(fixture.seed.is_some());
         let sandbox = Sandbox::new("t10-variants").unwrap();
@@ -1645,7 +1645,20 @@ mod ticket_t_10_fixtures {
                 &sandbox,
                 FIXTURE_COOKIE,
                 std::slice::from_ref(case),
-                vec![],
+                if case.id == "prototype_dimension_flat" {
+                    vec![Correction {
+                        case: "prototype_dimension_flat",
+                        kind: CorrectionKind::Security,
+                        reason: "Rust refuses a poisoned body without Fastify's parser code",
+                        rust: Exchange {
+                            status: 400,
+                            body: json!({"detail": "Request is invalid"}),
+                            set_cookie: vec![],
+                        },
+                    }]
+                } else {
+                    vec![]
+                },
             )
             .await;
             matched += report.matched;
@@ -1680,7 +1693,7 @@ mod ticket_t_10_fixtures {
         }
         served.stop().await.unwrap();
         owner.shutdown().unwrap();
-        assert_eq!(matched, 72);
+        assert_eq!(matched, 74);
         assert_eq!(checked, 18);
     }
 

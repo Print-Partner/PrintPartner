@@ -1203,6 +1203,13 @@ impl Document {
                 budget.expansion(s.units().len() * 2)?;
                 return Ok(s.clone());
             }
+            Node::Mapping(entries)
+                if entries
+                    .iter()
+                    .any(|(key, _)| key.units().iter().copied().eq("toString".encode_utf16())) =>
+            {
+                return Err(ReadFailure::InvalidDocument);
+            }
             Node::Mapping(_) => JsText::scalar("[object Object]"),
             Node::Sequence(_) if active.iter().any(|n| std::ptr::eq(*n, node)) => {
                 JsText::scalar("")

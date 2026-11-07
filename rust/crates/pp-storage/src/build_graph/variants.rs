@@ -291,6 +291,9 @@ fn parse_request(bytes: &[u8]) -> std::result::Result<Request, VariantOutcome> {
     else {
         return Err(VariantOutcome::Unreadable);
     };
+    if poisoned(&body) {
+        return Err(VariantOutcome::Unreadable);
+    }
     if body.get() == "null" {
         return Ok((Vec::new(), None));
     }
@@ -320,6 +323,29 @@ fn parse_request(bytes: &[u8]) -> std::result::Result<Request, VariantOutcome> {
         ),
     };
     Ok((selection, source))
+}
+
+/// Fastify's default JSON parser refuses a body with a `__proto__` key, or a
+/// `constructor` key whose object value has a `prototype` key, at any depth.
+fn poisoned(value: &RawValue) -> bool {
+    let text = value.get();
+    match text.as_bytes().first() {
+        Some(b'{') => js_members(text).is_some_and(|members| {
+            members.iter().any(|(key, value)| {
+                *key == JsText::scalar("__proto__")
+                    || (*key == JsText::scalar("constructor")
+                        && js_members(value.get()).is_some_and(|inner| {
+                            inner
+                                .iter()
+                                .any(|(key, _)| *key == JsText::scalar("prototype"))
+                        }))
+                    || poisoned(value)
+            })
+        }),
+        Some(b'[') => serde_json::from_str::<Vec<Box<RawValue>>>(text)
+            .is_ok_and(|items| items.iter().any(|item| poisoned(item))),
+        _ => false,
+    }
 }
 
 /// The writer half of Node's `savePlanVariantSelection`.

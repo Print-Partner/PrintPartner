@@ -3092,9 +3092,11 @@ production `SourceReads` adapter, outside any transaction, as the manifest
 builder does. Dimensions are empty when the Build has no base Source, the
 Source has no checkout, the manifest is missing or unreadable, or the manifest
 does not load (Node's `loadManifestYaml` throws, for example on an empty
-`selections` list). Otherwise each entry of `variant_dimensions` whose value is
+`selections` list, or a mapping with its own `toString` key where Node calls
+`String()` on it). Otherwise each entry of `variant_dimensions` whose value is
 a list keeps its strings and numbers in JavaScript property order; a list
-`variant_dimensions` reads as index keys, and a non-finite number is `null` in
+`variant_dimensions` reads as index keys, a `__proto__` entry is dropped (Node's
+assignment calls the prototype setter), and a non-finite number is `null` in
 JSON. The stored selection is returned as `JSON.stringify(JSON.parse(text))`,
 or `{}` when it is missing, empty or not JSON.
 
@@ -3105,7 +3107,9 @@ A selection checks in Node's order:
    before the body is read. The dimensions read does the same.
 2. The body is `{ selection?: Record<string, string>, source_id?: positive safe
    integer }` (an empty body or `null` is `{}`), else 400 `Invalid variant
-   selection`. A body that is not JSON is 400 `Request is invalid`.
+   selection`. A body that is not JSON, or that Fastify's parser refuses as
+   prototype poisoning (a `__proto__` key, or a `constructor` key whose object
+   has a `prototype` key), is 400 `Request is invalid`.
 3. Without a base Source, 400 `No base source on plan`; a `source_id` other
    than the base Source, 400 `Source must match the plan's base source`.
 4. Each selected dimension, in JavaScript property order, must be a dimension
@@ -3116,15 +3120,21 @@ A selection checks in Node's order:
 
 One immediate writer transaction then rechecks the Build and its base Source,
 stores the selection as `JSON.stringify` writes it, and saves each non-empty
-value plus `/` as an import rule. A read failure other than a missing or
+value plus `/` as an import rule. The stored selection and the response keep a
+lone UTF-16 surrogate, but an import rule carries U+FFFD in its place, so
+`imported_paths` stays readable by Rust's `serde_json` readers of that column;
+Node stores the escape. The refusal detail for an unknown dimension does the
+same. A read failure other than a missing or
 unreadable file, such as an exhausted `PreparationLimits` budget (each
 copied dimension name and text option, aliases included, is charged to it), is 503
 `source_observation_failed`, as for the manifest builder; Node has no limits.
 
-`fixtures/parity/variants-http/node.json` is Node's answer for 72 requests on
+`fixtures/parity/variants-http/node.json` is Node's answer for 75 requests on
 one database. `variants_flat_v1_v2_match_node_responses_and_changed_tables`
 in `ticket_t_10_fixtures` replays every case through `build_router` over the
-production `SourceReads`: all 72 match Node's status, body and changed tables,
+production `SourceReads`: 74 match Node's status, body and changed tables, and
+the poisoned body is a declared correction (400 `Request is invalid` without
+Fastify's parser code);
 and after each of the 18 saves the stored selection text and the Source's
 `imported_paths` equal Node's byte for byte. Regenerate the golden with
 `node fixtures/parity/variants-http/generate.mjs`.

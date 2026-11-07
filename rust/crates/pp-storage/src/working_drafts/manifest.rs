@@ -333,10 +333,14 @@ pub(crate) fn variant_dimensions(
         _ => return Ok(Vec::new()),
     };
     let mut out = Vec::new();
+    let prototype = JsText::scalar("__proto__");
     for (key, value) in entries {
         let Node::Sequence(items) = d.node(value, b)? else {
             continue;
         };
+        if key == prototype {
+            continue;
+        }
         let mut options = Vec::new();
         for item in items {
             match d.node(*item, b)? {

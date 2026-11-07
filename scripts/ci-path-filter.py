@@ -41,21 +41,27 @@ def relevant(path, kind):
 WINDOWS_LABELS = {"ci:full", "ci:windows"}
 WINDOWS_MARKERS = (b"windows", b"std::os::unix", b"cfg(unix)", b"target_family", b"target_os", b"libc::")
 WINDOWS_PATHS = ("rust/crates/pp-os/", ".github/workflows/", ".github/actions/")
-WINDOWS_FILES = {"rust/Cargo.lock", "rust-toolchain.toml", ".github/actionlint.yaml",
+WINDOWS_FILES = {"rust/Cargo.lock", "web/scripts/atomic-package-build.mjs",
+                 "rust/scripts/build-desktop-manifest.py", "rust-toolchain.toml", ".github/actionlint.yaml",
                  "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}
 
 
-def windows_relevant(path, head):
+def windows_relevant(path, base, head):
     if path in WINDOWS_FILES or path.startswith(WINDOWS_PATHS):
         return True
     if not path.startswith("rust/") or not path.endswith((".rs", ".toml")):
         return False
-    try:
-        text = subprocess.check_output(["git", "show", f"{head}:{path}"], stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
-        return True
-    text = text.lower()
-    return any(marker in text for marker in WINDOWS_MARKERS)
+    for sha in (head, base):
+        try:
+            text = subprocess.check_output(["git", "show", f"{sha}:{path}"], stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError:
+            if sha == head:
+                return True
+            continue
+        text = text.lower()
+        if any(marker in text for marker in WINDOWS_MARKERS):
+            return True
+    return False
 
 
 def select(event, base, head, kind, labels=()):
@@ -73,7 +79,7 @@ def select(event, base, head, kind, labels=()):
     except subprocess.CalledProcessError:
         return True
     if kind == "windows":
-        return any(windows_relevant(path, head) for path in paths if path)
+        return any(windows_relevant(path, base, head) for path in paths if path)
     return any(relevant(path, kind) for path in paths if path)
 
 

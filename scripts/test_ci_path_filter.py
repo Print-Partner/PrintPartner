@@ -166,6 +166,8 @@ class CiPathFilterTests(unittest.TestCase):
                 ("rust/crates/pp-core/src/fam.rs", "#[cfg(target_family = \"unix\")]\nfn a() {}\n", "windows=true\n"),
                 ("rust/crates/pp-core/Cargo.toml", "[target.'cfg(windows)'.dependencies]\n", "windows=true\n"),
                 ("rust/Cargo.lock", "lock\n", "windows=true\n"),
+                ("web/scripts/atomic-package-build.mjs", "x\n", "windows=true\n"),
+                ("rust/scripts/build-desktop-manifest.py", "x\n", "windows=true\n"),
                 (".github/workflows/web-ci.yml", "name: x\n", "windows=true\n"),
                 ("scripts/ci-path-filter.py", "x\n", "windows=true\n"),
             ]
@@ -174,6 +176,11 @@ class CiPathFilterTests(unittest.TestCase):
                 head = commit(path, text)
                 with self.subTest(path=path):
                     self.assertEqual(windows(base, head), expected)
+            git("checkout", "-q", "--detach", base)
+            with_marker = commit("rust/crates/pp-core/src/w.rs", "#[cfg(windows)]\nmod w;\n")
+            git("checkout", "-q", with_marker)
+            head = commit("rust/crates/pp-core/src/w.rs", "fn a() {}\n")
+            self.assertEqual(windows(with_marker, head), "windows=true\n")
             git("checkout", "-q", "--detach", base)
             head = commit("rust/crates/pp-api/src/lib.rs", "fn a() {}\n")
             self.assertEqual(windows(base, head, ["ci:windows"]), "windows=true\n")

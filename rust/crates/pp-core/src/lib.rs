@@ -62,6 +62,9 @@ pub mod uploads;
 #[cfg(test)]
 mod origin_tests;
 
+#[cfg(test)]
+mod tests;
+
 pub use rebuild::DesktopRebuild;
 
 pub use drain::{ShutdownGate, TrackedShutdownWork};

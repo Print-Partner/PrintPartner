@@ -15,6 +15,9 @@ impl Store {
         let fixture = include_bytes!("../../../tests/fixtures/accepted-plan-node.db");
         std::fs::write(&database, fixture).unwrap();
         let connection = Connection::open(database).unwrap();
+        connection
+            .execute_batch(include_str!("../../print_grams/schema.sql"))
+            .unwrap();
         Self(root, connection)
     }
 
@@ -22,16 +25,32 @@ impl Store {
         self.1.execute_batch(sql).unwrap();
     }
 
-    /// A job with one `print_job_parts` row per entry of `parts`.
-    fn job(&self, tenant: &str, id: &str, day: u32, status: &str, grams: &str, parts: &[i64]) {
+    /// A send (Checkoff link `link`) with `grams` for `units` units, when
+    /// it has grams, and one checked-off unit per entry of `parts`, recorded
+    /// on `day` as Node's `appendPrintOutcomes` records them.
+    fn send(
+        &self,
+        tenant: &str,
+        link: &str,
+        day: u32,
+        grams: Option<(&str, f64, u32)>,
+        parts: &[i64],
+    ) {
+        if let Some((basis, grams, units)) = grams {
+            self.run(&format!(
+                "INSERT INTO print_link_grams(tenant_id,link_id,grams,units,basis,updated_at)
+                 VALUES('{tenant}','{link}',{grams},{units},'{basis}','x')"
+            ));
+        }
+        let at = format!("2026-01-{day:02}T00:00:00.000Z");
         self.run(&format!(
-            "INSERT INTO print_jobs(id,tenant_id,profile_id,at,status,filament_consumed_g)
-             VALUES('{id}','{tenant}',1,'2026-01-{day:02}T00:00:00.000Z','{status}',{grams})"
+            "INSERT INTO print_jobs(id,tenant_id,profile_id,at,status,filament_consumed_g,link_id)
+             VALUES('{link}-job','{tenant}',1,'{at}','sent',NULL,'{link}')"
         ));
         for (index, part) in parts.iter().enumerate() {
             self.run(&format!(
-                "INSERT INTO print_job_parts(id,tenant_id,job_id,at,profile_id,part_id,result)
-                 VALUES('{id}-{index}','{tenant}','{id}','x',1,{part},'confirmed')"
+                "INSERT INTO print_job_parts(id,tenant_id,job_id,at,profile_id,part_id,result,link_id)
+                 VALUES('{link}-{index}','{tenant}','{link}-job','{at}',1,{part},'confirmed','{link}')"
             ));
         }
     }
@@ -95,14 +114,15 @@ fn scenario() -> (
         api_key: None,
         enabled: id != "off",
     };
-    let measured = (10..=18)
+    let grams = (10..=18)
         .map(|part| {
-            let job_ids = vec!["shared".into(), format!("own-{part}")];
-            let m = Measured {
+            let link_ids = vec!["shared".into(), format!("own-{part}")];
+            let recorded = PartGrams {
                 grams_per_unit: 10.5,
-                job_ids,
+                basis: Basis::Measured,
+                link_ids,
             };
-            (part, m)
+            (part, recorded)
         })
         .collect();
     let inputs = StockInputs::On {
@@ -111,7 +131,7 @@ fn scenario() -> (
             integration("local"),
             integration("off"),
         ],
-        measured,
+        grams,
     };
     let filament = |label: &str| InventoryFilament {
         label: label.into(),
@@ -208,10 +228,10 @@ fn unknowns_never_read_as_zero_and_shared_jobs_count_once() {
 fn unknown_need_says_whether_any_grams_were_recorded() {
     let snapshot = plan(&[(10, "spoolman:local:filament:2"), (11, "")]);
     let accepted = AcceptedRead::Ready { snapshot };
-    let need = |measured: HashMap<i64, Measured>| {
+    let need = |grams: HashMap<i64, PartGrams>| {
         let inputs = StockInputs::On {
             integrations: vec![],
-            measured,
+            grams,
         };
         let Some(FilamentShortfalls::Ready { filaments, .. }) =
             shortfalls(1, &accepted, &inputs, &HashMap::new())
@@ -226,16 +246,24 @@ fn unknown_need_says_whether_any_grams_were_recorded() {
     let unknown = |reason| GramsNeeded::Unknown { reason };
     let none = unknown(NeedUnknown::GramsNotRecorded);
     assert_eq!(need(HashMap::new()), [none.clone(), none]);
-    let part_10 = Measured {
+    let part_10 = |basis| PartGrams {
         grams_per_unit: 3.0,
-        job_ids: vec!["job".into()],
+        basis,
+        link_ids: vec!["link".into()],
     };
     let measured = GramsNeeded::Measured {
         grams: 3,
         job_count: 1,
     };
     let unprinted = unknown(NeedUnknown::PartNotPrinted);
-    assert_eq!(need(HashMap::from([(10, part_10)])), [unprinted, measured]);
+    let recorded = HashMap::from([(10, part_10(Basis::Measured))]);
+    assert_eq!(need(recorded), [unprinted.clone(), measured]);
+    let estimated = GramsNeeded::Estimated {
+        grams: 3,
+        job_count: 1,
+    };
+    let recorded = HashMap::from([(10, part_10(Basis::Estimated))]);
+    assert_eq!(need(recorded), [unprinted, estimated]);
 }
 
 #[test]
@@ -279,26 +307,32 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
              {"id":"alt","type":"spoolman","config":{"baseUrl":"http://10.0.0.2","apiKey":"","enabled":false}},
              {"id":"broken","type":"spoolman","config":{}}]')"#,
     );
-    store.job("default", "old", 1, "completed", "90", &[2, 2, 2]);
-    store.job("default", "new", 3, "completed", "50.5", &[2, 1]);
-    // Ignored: not completed, no grams, another tenant.
-    store.job("default", "sent", 4, "sent", "999", &[2]);
-    store.job("default", "none", 5, "completed", "NULL", &[2]);
-    store.job("other", "foreign", 6, "completed", "999", &[2]);
+    let measured = |grams, units| Some(("measured", grams, units));
+    let estimated = |grams, units| Some(("estimated", grams, units));
+    store.send("default", "old", 1, measured(90.0, 3), &[2, 2, 2]);
+    store.send("default", "new", 3, measured(50.5, 2), &[2, 1]);
+    // Ignored for Part 2: an estimate beside measured sends, a send with no
+    // grams, and another tenant's send.
+    store.send("default", "guess", 4, estimated(999.0, 1), &[2]);
+    store.send("default", "none", 5, None, &[2]);
+    store.send("other", "foreign", 6, measured(999.0, 1), &[2]);
+    // Part 4 has only an estimate; Part 5 one checked-off unit of a ten-unit
+    // send, which still costs a tenth of the send's grams.
+    store.send("default", "est", 7, estimated(12.0, 4), &[4]);
+    store.send("default", "partial", 8, measured(100.0, 10), &[5]);
     for n in 1..=7 {
-        let grams = (10 * n).to_string();
-        store.job(
+        let grams = f64::from(10 * n);
+        store.send(
             "default",
             &format!("p3-{n}"),
             10 + n,
-            "completed",
-            &grams,
+            measured(grams, 1),
             &[3],
         );
     }
     let StockInputs::On {
         integrations,
-        measured,
+        grams,
     } = inputs()
     else {
         panic!("module is on")
@@ -318,21 +352,22 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
     assert_eq!(integrations, [local, alt]);
     let debug = format!("{:?}", integrations[0]);
     assert!(!debug.contains("\"k\""), "Debug hides the key");
-    // (50.5 / 2 + 90 / 3) / 2: a job's grams, fractional ones included, split
-    // over all of its units.
+    // (50.5 / 2 + 90 / 3) / 2: a send's grams, fractional ones included,
+    // split over all of its units.
     let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
-    let part_2 = Measured {
-        grams_per_unit: 27.625,
-        job_ids: ids(&["new", "old"]),
+    let part = |grams_per_unit, basis, links: &[&str]| PartGrams {
+        grams_per_unit,
+        basis,
+        link_ids: ids(links),
     };
-    assert_eq!(measured[&2], part_2);
-    assert_eq!(measured[&1].grams_per_unit, 25.25);
-    // The five most recent of seven jobs: 70, 60, 50, 40, 30.
-    let part_3 = Measured {
-        grams_per_unit: 50.0,
-        job_ids: ids(&["p3-7", "p3-6", "p3-5", "p3-4", "p3-3"]),
-    };
-    assert_eq!(measured[&3], part_3);
+    assert_eq!(grams[&2], part(27.625, Basis::Measured, &["new", "old"]));
+    assert_eq!(grams[&1], part(25.25, Basis::Measured, &["new"]));
+    // The five most recent of seven sends: 70, 60, 50, 40, 30.
+    let recent = ["p3-7", "p3-6", "p3-5", "p3-4", "p3-3"];
+    assert_eq!(grams[&3], part(50.0, Basis::Measured, &recent));
+    assert_eq!(grams[&4], part(3.0, Basis::Estimated, &["est"]));
+    assert_eq!(grams[&5], part(10.0, Basis::Measured, &["partial"]));
+    assert_eq!(grams.len(), 5);
 
     let off = r#"UPDATE app_settings SET value='{"spoolman":false}' WHERE key='feature_toggles'"#;
     store.run(off);

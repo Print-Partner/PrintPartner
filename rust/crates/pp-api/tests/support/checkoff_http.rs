@@ -72,5 +72,5 @@ pub async fn send(
     cookie: bool,
 ) -> (StatusCode, Value) {
     let cookie = cookie.then_some("pp_session=required-unit-fixture-secret");
-    loopback::send(router, method, path, body, cookie).await
+    loopback::send(router, method, path, Some(body), cookie).await
 }

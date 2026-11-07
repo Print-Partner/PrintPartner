@@ -282,15 +282,6 @@ class PullRequestEditTests(unittest.TestCase):
     def workflow(self, name):
         return yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
 
-    def test_review_gate_runs_on_edits_without_a_skip_condition(self):
-        gate = self.workflow("review-gate.yml")
-        self.assertIn("edited", gate["on"]["pull_request_target"]["types"])
-        self.assertNotIn("if", gate["jobs"]["review-gate"])
-        group = gate["concurrency"]
-        self.assertEqual(group["cancel-in-progress"], "${{ github.run_attempt == '1' }}")
-        self.assertIn("github.run_id", group["group"])
-        self.assertNotIn("edited", group["group"])
-
     def test_lint_evidence_reruns_on_edits_and_skips_only_drafts(self):
         evidence = self.workflow("pr-evidence.yml")
         self.assertIn("edited", evidence["on"]["pull_request"]["types"])

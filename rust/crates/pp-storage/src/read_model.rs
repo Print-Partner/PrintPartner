@@ -250,6 +250,24 @@ pub(crate) fn submit_read<T>(
     wait: Duration,
     envelope: impl FnOnce(mpsc::Sender<Result<T>>) -> Envelope,
 ) -> Result<T> {
+    submit(
+        shared,
+        cancelled,
+        wait,
+        "Storage stopped without read result",
+        envelope,
+    )
+}
+
+/// [`submit_read`] for any writer command; `lost` is the error when the
+/// writer drops the reply after admission.
+pub(crate) fn submit<T>(
+    shared: &Shared,
+    cancelled: &AtomicBool,
+    wait: Duration,
+    lost: &'static str,
+    envelope: impl FnOnce(mpsc::Sender<Result<T>>) -> Envelope,
+) -> Result<T> {
     let deadline = Instant::now() + wait;
     let mut queue = shared
         .queue
@@ -275,9 +293,7 @@ pub(crate) fn submit_read<T>(
     queue.pending.push_back(envelope(reply));
     shared.changed.notify_all();
     drop(queue);
-    receiver
-        .recv()
-        .map_err(|_| anyhow!("Storage stopped without read result"))?
+    receiver.recv().map_err(|_| anyhow!(lost))?
 }
 /// Opens a deferred read transaction unless `cancelled` is set, then returns
 /// it with the caller's tenant and the Build `build` names, when that tenant

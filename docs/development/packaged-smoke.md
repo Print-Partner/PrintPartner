@@ -10,7 +10,7 @@ Each job runs on a GitHub-hosted `ubuntu-24.04` runner, never on the pp-local ru
 
 1. **Fixture.** `web/scripts/storage-fixtures/prepare.mts` (Node 22.23.3) writes its `immutable-corpus` case: a schema 34 database whose rows come from the autosave golden, with the Build "Parity Build", 3 accepted Plan revisions and 2 Plates. `desktop/packaged-smoke/legacy_fixture.py` copies it and applies the transformations `prepare.mts` uses for its schema-31 case: drop `board_posts` and `board_comments`, drop `projects.legacy_manifest_cutover`, and stamp `schema_version` 31. It records the row counts and a digest of every Plan and Plate table in `fixture.json`. Nothing is committed or hand-edited; the fixture is regenerated on every run.
 2. **Package.** With Node 24.21.0 and freshly installed web dependencies, the job builds the desktop assets and stages the runtime with `rust/scripts/stage-desktop.py`, then builds the shipped `.deb` with `rust/scripts/desktop-deb.sh` and the Tauri CLI 2.12.1 pinned in `desktop/packaged-smoke/package-lock.json` (see [Linux package](../desktop.md#linux-package)).
-3. **Install.** `install_deb.py` unpacks the `.deb` as shipped into a disposable root with `dpkg-deb -x` and fails unless its `desktop-runtime` tree equals the stage: the same files, SHA-256 and executable bits, the same symlinks and targets, nothing extra. It changes nothing.
+3. **Install.** `install_deb.py` unpacks the `.deb` as shipped into a disposable root with `dpkg-deb -x` and fails unless its `desktop-runtime` tree equals the stage, with the inventory from `rust/scripts/assemble-linux-deb.py`: the same files by SHA-256 and the mode Tauri's bundler writes, the same directories, the same symlinks and targets, nothing extra. It changes nothing.
 4. **Launch.** `smoke.py`, inside `dbus-run-session`, starts its own Xvfb display and launches `usr/bin/pp-desktop` with a disposable `HOME` whose `.print-partner/print-partner.db` is the fixture. It then requires, in order:
    - a mapped X11 window owned by the app, titled `Print Partner`, at least 900 x 650 (the startup error dialog fails the run at once);
    - the fixture's Build name as a link or table cell inside the page's `document web` node of the app's AT-SPI accessibility tree. If the page shows the first-run "Set up Print Partner" form instead, the smoke types a disposable administrator (`packaged-smoke@example.invalid` with a random password that is never written down), submits it, and follows "Continue to Print Partner";
@@ -33,7 +33,7 @@ The app runs without network sharing, with loopback ports only, and sends nothin
 
 ## When it runs
 
-Every push to `main`, nightly at 06:41 UTC, and on manual dispatch. On a ready pull request a small `changes` job runs, and the smoke jobs run when the PR changes `desktop/packaged-smoke/` or the workflow, or has the `ci:packaged-smoke` label; otherwise they skip. Draft pull requests skip everything.
+Every push to `main`, nightly at 06:41 UTC, and on manual dispatch. On a ready pull request a small `changes` job runs, and the smoke jobs run when the PR changes `desktop/packaged-smoke/`, the workflow, `rust/scripts/desktop-deb.sh` or `rust/scripts/assemble-linux-deb.py`, or has the `ci:packaged-smoke` label; otherwise they skip. Draft pull requests skip everything.
 
 ## Run it locally
 

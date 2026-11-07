@@ -48,6 +48,7 @@ PAINTED_COLORS = 64
 SETUP_FIELDS = ("Display name", "Email", "Password")
 SETUP_BUTTON = "Create administrator"
 CONTINUE_BUTTON = "Continue to Print Partner"
+WALK_LIMIT = 50000
 
 
 class SmokeFailure(Exception):
@@ -154,12 +155,12 @@ def windows(display, pids):
     return found
 
 
-def accessible_text(node, atspi):
-    parts = [node.get_name() or ""]
+def accessible_text(node, name):
+    parts = [name]
     try:
         text = node.get_text_iface()
         if text is not None:
-            parts.append(atspi.Text.get_text(text, 0, atspi.Text.get_character_count(text)))
+            parts.append(atspi().Text.get_text(text, 0, atspi().Text.get_character_count(text)))
     except Exception:
         pass
     return " ".join(part for part in parts if part)
@@ -174,8 +175,8 @@ def atspi():
     return Atspi
 
 
-def walk(pids, limit=50000):
-    """Yield (node, role, ancestor roles) for every application owned by pids."""
+def walk(pids):
+    """Yield (node, role, name, ancestor roles) for every application owned by pids."""
     desktop = atspi().get_desktop(0)
     visited = 0
     for index in range(desktop.get_child_count()):
@@ -186,15 +187,16 @@ def walk(pids, limit=50000):
         except Exception:
             continue
         pending = [(application, [])]
-        while pending and visited < limit:
+        while pending and visited < WALK_LIMIT:
             node, path = pending.pop()
             visited += 1
             try:
                 role = node.get_role_name()
+                name = node.get_name() or ""
                 count = node.get_child_count()
             except Exception:
                 continue
-            yield node, role, path
+            yield node, role, name, path
             for child_index in range(count - 1, -1, -1):
                 try:
                     child = node.get_child_at_index(child_index)
@@ -206,11 +208,11 @@ def walk(pids, limit=50000):
 
 def search_accessibility(pids, needle):
     """Find needle as a link or table cell inside the page, not in window chrome."""
-    for node, role, path in walk(pids):
+    for node, role, name, path in walk(pids):
         if (
             role in CONTENT_ROLES
             and "document web" in path
-            and needle in accessible_text(node, atspi())
+            and needle in accessible_text(node, name)
         ):
             return {"found": True, "role": role, "path": path + [role]}
     return {"found": False}
@@ -219,10 +221,9 @@ def search_accessibility(pids, needle):
 def setup_form(pids):
     """Return the first-run administrator form's fields and button, if it is showing."""
     fields, button = {}, None
-    for node, role, path in walk(pids):
+    for node, role, name, path in walk(pids):
         if "document web" not in path:
             continue
-        name = node.get_name() or ""
         if role in ("entry", "password text") and name in SETUP_FIELDS:
             fields[name] = node
         elif role == "push button" and name == SETUP_BUTTON:
@@ -230,11 +231,14 @@ def setup_form(pids):
     return (fields, button) if button is not None and len(fields) == len(SETUP_FIELDS) else None
 
 
-def press(pids, name):
-    """Press the page button with this accessible name; return whether it was there."""
-    for node, role, path in walk(pids):
-        if "document web" in path and role in ("push button", "link") and node.get_name() == name:
-            node.get_action_iface().do_action(0)
+def press_continue(pids):
+    """Press the page's Continue button; return whether it was pressed."""
+    for node, role, name, path in walk(pids):
+        if "document web" in path and role in ("push button", "link") and name == CONTINUE_BUTTON:
+            try:
+                node.get_action_iface().do_action(0)
+            except Exception:
+                return False
             return True
     return False
 
@@ -434,7 +438,7 @@ def expect_usable(launch, receipt, fixture, database):
         if result["found"]:
             return result
         if receipt.get("setupCompleted"):
-            if not receipt.get("setupContinued") and press(launch.pids(), CONTINUE_BUTTON):
+            if not receipt.get("setupContinued") and press_continue(launch.pids()):
                 receipt["setupContinued"] = launch.elapsed()
             return None
         form = setup_form(launch.pids())
@@ -509,7 +513,9 @@ def run(args):
         receipt["seconds"] = launch.elapsed()
         receipt["status"] = "passed"
         return 0
-    except SmokeFailure as failure:
+    except Exception as failure:
+        if not isinstance(failure, SmokeFailure):
+            failure = f"{type(failure).__name__}: {failure}"
         receipt.update(status="failed", failure=str(failure))
         if launch is not None and launch.app.poll() is None:
             launch.screenshot("failure.png")

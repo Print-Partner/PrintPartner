@@ -24,11 +24,9 @@ name: Review gate
 # scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
 # the guard), as Dependabot's action bumps do, it needs both path 3 (the
 # owner's marker for that head) and path 1 or 2.
-# Every push or edit waits up to 30 minutes for the head's Claude jobs, then
-# fails unless one path holds. Only a PR into the default branch can pass on a
-# review run; a PR into any other base needs the owner's marker. An edit runs the
-# gate again, so retargeting a PR is judged against its new base.
-# review-gate-rerun.yml reruns it when a review ends or a marker changes. See docs/development/definition-of-done.md#code-review.
+# Every push or edit waits up to 30 minutes for the head's Claude jobs, then fails unless one
+# path holds. Only a PR into the default branch passes on a review run; any other base needs
+# the owner's marker. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]

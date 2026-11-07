@@ -383,3 +383,29 @@ async fn ticket_t_26_farm_turned_off_after_send_now_fails_the_send_without_conta
     );
     assert!(printer.request_lines().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ticket_t_26_a_claim_that_meets_shutdown_never_contacts_the_printer() {
+    let printer = printer(&[(UPLOAD, 201)]);
+    let farm = Farm::open(printer.url(), &[("q1", false, true)]);
+    farm.send("q1");
+    let worker = farm.worker();
+    let claimed = worker.worker.claim().unwrap().unwrap();
+    let sent = worker.start(claimed, &AtomicBool::new(true)).await.unwrap();
+    assert_eq!(sent, Sent::Failed(STOPPING.into()));
+    assert!(printer.request_lines().is_empty());
+    let (state, error, job, _) = farm.outcome("q1");
+    assert_eq!(
+        (state.as_str(), error.as_deref(), job.as_str()),
+        ("error", Some(STOPPING), "failed")
+    );
+}
+
+#[test]
+fn ticket_t_26_receipt_ids_fit_128_bytes_on_a_character_boundary() {
+    let name = format!("{}.gcode", "日".repeat(50));
+    let id = receipt_id(&name);
+    assert!(id.len() <= 128 && name.starts_with(&id), "{id}");
+    assert_eq!(id.chars().count(), 42);
+    assert_eq!(receipt_id("a.gcode"), "a.gcode");
+}

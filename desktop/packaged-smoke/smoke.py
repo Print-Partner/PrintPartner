@@ -297,7 +297,11 @@ def expect_refusal(launch, receipt, data, before):
     )
     receipt["windowSeconds"] = launch.elapsed()
     launch.wait(
-        "the dialog to paint", lambda: launch.screenshot(receipt["window"], "refusal.png"), 60
+        "the dialog to paint",
+        lambda: launch.screenshot(
+            launch.ui.startup_error(launch.pids(), STARTUP_ERROR_TITLE), "refusal.png"
+        ),
+        60,
     )
     diagnostic = launch.stderr.read_text(errors="replace").strip()
     if diagnostic != "desktop_startup_failed: core_startup":

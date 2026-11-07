@@ -91,7 +91,7 @@ func node(_ element: AXUIElement, _ depth: Int) -> [String: Any] {
 
 func find(_ element: AXUIElement, role: String, title: String, depth: Int = 0) -> AXUIElement? {
     if text(element, kAXRoleAttribute) == role && text(element, kAXTitleAttribute) == title { return element }
-    guard depth < 8 else { return nil }
+    guard depth < 12 else { return nil }
     for child in elements(element, kAXChildrenAttribute) {
         if let found = find(child, role: role, title: title, depth: depth + 1) { return found }
     }
@@ -151,24 +151,43 @@ case "type":
     emit(["focused": focused == .success, "typed": args[4].utf16.count])
 case "tray":
     guard args.count == 4, let pid = pid_t(args[2]) else { fail("tray PID ITEM") }
-    guard let value = copy(application(pid), "AXExtrasMenuBar"),
+    let app = application(pid)
+    guard let value = copy(app, "AXExtrasMenuBar"),
           CFGetTypeID(value) == AXUIElementGetTypeID(),
           let extra = elements(value as! AXUIElement, kAXChildrenAttribute).first else {
         emit(["pressed": false, "reason": "no menu bar extra"])
         exit(0)
     }
-    let opened = AXUIElementPerformAction(extra, kAXPressAction as CFString)
+    AXUIElementSetMessagingTimeout(extra, 3)
+    var report: [String: Any] = [:]
     var item: AXUIElement?
-    for _ in 0..<20 where item == nil {
-        usleep(250_000)
-        item = find(extra, role: kAXMenuItemRole, title: args[3])
+    for action in [kAXPressAction, "AXShowMenu"] where item == nil {
+        report[action] = Int(AXUIElementPerformAction(extra, action as CFString).rawValue)
+        for _ in 0..<12 where item == nil {
+            usleep(250_000)
+            item = find(extra, role: kAXMenuItemRole, title: args[3])
+                ?? find(app, role: kAXMenuItemRole, title: args[3])
+        }
     }
     guard let menuItem = item else {
-        emit(["pressed": false, "opened": opened == .success, "reason": "no menu item \(args[3])"])
+        var seen: [String] = []
+        func collect(_ element: AXUIElement, _ depth: Int) {
+            guard seen.count < 80, depth < 6 else { return }
+            seen.append(String(repeating: " ", count: depth)
+                + "\(text(element, kAXRoleAttribute) ?? "?") \(text(element, kAXTitleAttribute) ?? "")")
+            for child in elements(element, kAXChildrenAttribute) { collect(child, depth + 1) }
+        }
+        collect(extra, 0)
+        collect(app, 0)
+        report["pressed"] = false
+        report["reason"] = "no menu item \(args[3])"
+        report["seen"] = seen
+        emit(report)
         exit(0)
     }
     let status = AXUIElementPerformAction(menuItem, kAXPressAction as CFString)
-    emit(["pressed": status == .success, "opened": opened == .success])
+    report["pressed"] = status == .success
+    emit(report)
 case "cgwindows":
     let pids = Set(args.dropFirst(2).compactMap { Int($0) })
     let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []

@@ -8,7 +8,7 @@ blacksmith (the default when unset or unknown), hosted (GitHub's runners), or pp
 blacksmith runs rust (linux), rust (windows) and the packaged smoke job on Blacksmith
 runners; hosted puts all three back on GitHub's; pp-iso runs rust (linux) on the isolated
 pool while Windows and the smoke job stay on Blacksmith. Windows and the smoke job
-use Blacksmith on every other event too. Required check names do not depend on the runner. GITHUB_TOKEN cannot list runners,
+stay on GitHub's runners on every other event, because Blacksmith minutes cost money. Required check names do not depend on the runner. GITHUB_TOKEN cannot list runners,
 so the idle-runner check needs the optional PP_RUNNER_READ_TOKEN secret. Without
 it, a pp-local Rust job queued for STALE_MINUTES or more marks the fleet as
 unavailable. See docs/development/ci.md.
@@ -25,10 +25,10 @@ import urllib.request
 LOCAL = ["self-hosted", "linux", "x64", "pp-local"]
 ISOLATED = ["self-hosted", "linux", "x64", "pp-iso"]
 HOSTED = "ubuntu-latest"
-# Sized from hosted medians on 4 vCPU: rust (linux) build 36.6 min, rust (windows) 58.7 min,
-# packaged smoke 7.6 min (docs/development/ci.md). pp-iso covers pull requests only for the Linux
-# Rust jobs; Blacksmith also runs Windows and packaged smoke on every event.
-BLACKSMITH = {"linux": "blacksmith-8vcpu-ubuntu-2404", "windows": "blacksmith-8vcpu-windows-2025",
+# The smallest size whose hosted 4 vCPU median stays well under the job timeout (docs/development/ci.md).
+# pp-iso covers pull requests only for the Linux Rust jobs; Blacksmith runs Windows and packaged
+# smoke on pull requests only, and every other event stays on GitHub's free runners.
+BLACKSMITH = {"linux": "blacksmith-4vcpu-ubuntu-2404", "windows": "blacksmith-4vcpu-windows-2025",
               "smoke": "blacksmith-4vcpu-ubuntu-2404"}
 LOCAL_EVENTS = {"push", "merge_group", "workflow_dispatch"}
 STALE_MINUTES = 15
@@ -147,9 +147,9 @@ def github_fetch(path, token):
 def main():
     runs_on, reason = choose(os.environ, github_fetch, datetime.now(timezone.utc))
     value = json.dumps(runs_on, separators=(",", ":"))
-    hosted = os.environ.get("EVENT_NAME") == "pull_request" and pr_mode(os.environ) == "hosted"
-    windows = json.dumps("windows-latest" if hosted else BLACKSMITH["windows"])
-    smoke = json.dumps("ubuntu-24.04" if hosted else BLACKSMITH["smoke"])
+    paid = os.environ.get("EVENT_NAME") == "pull_request" and pr_mode(os.environ) != "hosted"
+    windows = json.dumps(BLACKSMITH["windows"] if paid else "windows-latest")
+    smoke = json.dumps(BLACKSMITH["smoke"] if paid else "ubuntu-24.04")
     message = f"Linux Rust runner: {value} ({reason}); windows {windows}; packaged smoke {smoke}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:

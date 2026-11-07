@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   report:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     # The repo is public, so commit, status and check reads need no extra scopes.
     permissions:

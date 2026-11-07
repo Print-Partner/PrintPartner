@@ -47,7 +47,7 @@ env:
 jobs:
   changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -502,7 +502,7 @@ jobs:
     needs: changes
     # Explicit jobs keep each required check present when selection skips it.
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
-    runs-on: ${{ fromJSON(needs.changes.outputs.windows_runs_on || '"blacksmith-8vcpu-windows-2025"') }}
+    runs-on: ${{ fromJSON(needs.changes.outputs.windows_runs_on || '"windows-latest"') }}
     env:
       RUST_OS: windows
       # Unix-only crates; remove each exclusion when its port ticket is fixed.
@@ -517,7 +517,7 @@ jobs:
   alert-macos-main:
     needs: [rust-linux, rust-macos, rust-windows]
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (failure() && github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read

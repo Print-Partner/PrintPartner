@@ -7,7 +7,7 @@ shared Cargo registry and sccache for trusted `main`, merge-group and manual run
 
 Status: the kit, the proof workflow and the `PP_PR_RUNNER` switch exist
 ([ci.md](ci.md#pull-request-runner-switch)). Nothing runs on pp-iso until a host is
-installed and `PP_PR_RUNNER=pp-iso` is set; the switch covers the Linux Rust jobs only.
+installed, except the manual `pp-iso-proof.yml` run, or until `PP_PR_RUNNER=pp-iso` is set; the switch covers the Linux Rust jobs only.
 
 ## Why
 
@@ -15,14 +15,14 @@ installed and `PP_PR_RUNNER=pp-iso` is set; the switch covers the Linux Rust job
 PR-editable jobs: its registry and sccache are shared across jobs, so one job can
 poison what a later job builds.
 PRs therefore run on Blacksmith runners (or GitHub-hosted
-`ubuntu-latest` with `PP_PR_RUNNER=hosted`), which cost money per minute and share one
-plan's concurrency. pp-iso gives PRs self-hosted
+`ubuntu-latest` with `PP_PR_RUNNER=hosted`). Blacksmith costs money per minute and shares one
+plan's concurrency, which is why only the three heavy jobs use it. pp-iso gives PRs self-hosted
 capacity without sharing state.
 With `PP_PR_RUNNER=pp-iso`, only pull requests whose head repository is this repository run on pp-iso; fork pull requests run on Blacksmith, as `cargo-cache-trust.md` requires for PR-editable code.
 
 | | pp-local | pp-iso |
 | --- | --- | --- |
-| Runs | `main`, merge groups, manual | Linux Rust PR jobs when `PP_PR_RUNNER=pp-iso` |
+| Runs | `main`, merge groups, manual | Linux Rust PR jobs when `PP_PR_RUNNER=pp-iso`, and the manual `pp-iso-proof.yml` run |
 | Runner | JIT, one job per container | JIT, one job per container |
 | Cargo registry, sccache | shared, host-mounted | none; `actions/cache` only |
 | Volumes from the host | yes | none |

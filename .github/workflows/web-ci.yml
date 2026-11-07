@@ -51,7 +51,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 45 || 20 }}
     defaults:
       run:
@@ -115,7 +115,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
@@ -152,7 +152,7 @@ jobs:
   # registry pull alone can take 4 minutes, so this job has its own time limit (GRE-638).
   sidecar:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,7 +179,7 @@ jobs:
   docker:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     needs: [web, web-build]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

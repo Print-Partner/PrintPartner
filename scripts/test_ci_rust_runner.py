@@ -145,14 +145,17 @@ class RustRunnerTests(unittest.TestCase):
         self.assertEqual(runner.runner_kind(runner.HOSTED), "hosted")
         self.assertNotIn("pp-local", runner.ISOLATED)
 
-    def test_cli_puts_windows_and_smoke_on_github_only_for_hosted_pull_requests(self):
-        windows_bs, smoke_bs = "blacksmith-8vcpu-windows-2025", "blacksmith-4vcpu-ubuntu-2404"
+    def test_cli_puts_windows_and_smoke_on_blacksmith_only_for_pull_requests(self):
+        windows_bs, smoke_bs = "blacksmith-4vcpu-windows-2025", "blacksmith-4vcpu-ubuntu-2404"
         for event, mode, windows, smoke, kind in (
             ("pull_request", "blacksmith", windows_bs, smoke_bs, "blacksmith"),
             ("pull_request", "pp-iso", windows_bs, smoke_bs, "pp-iso"),
             ("pull_request", "", windows_bs, smoke_bs, "blacksmith"),
             ("pull_request", "hosted", "windows-latest", "ubuntu-24.04", "hosted"),
-            ("schedule", "hosted", windows_bs, smoke_bs, "hosted"),
+            ("schedule", "blacksmith", "windows-latest", "ubuntu-24.04", "hosted"),
+            ("push", "blacksmith", "windows-latest", "ubuntu-24.04", "pp-local"),
+            ("merge_group", "pp-iso", "windows-latest", "ubuntu-24.04", "pp-local"),
+            ("workflow_dispatch", "blacksmith", "windows-latest", "ubuntu-24.04", "pp-local"),
         ):
             with self.subTest(event=event, mode=mode), tempfile.TemporaryDirectory() as directory:
                 output, summary = Path(directory, "output"), Path(directory, "summary")
@@ -173,8 +176,8 @@ class RustRunnerTests(unittest.TestCase):
             values = dict(line.partition("=")[::2] for line in output.read_text().splitlines())
             self.assertEqual(json.loads(values["linux_runs_on"]), runner.HOSTED)
             self.assertEqual(values["linux_kind"], "hosted")
-            self.assertEqual(json.loads(values["windows_runs_on"]), "blacksmith-8vcpu-windows-2025")
-            self.assertEqual(json.loads(values["smoke_runs_on"]), "blacksmith-4vcpu-ubuntu-2404")
+            self.assertEqual(json.loads(values["windows_runs_on"]), "windows-latest")
+            self.assertEqual(json.loads(values["smoke_runs_on"]), "ubuntu-24.04")
             self.assertIn("schedule events stay hosted", summary.read_text())
         self.assertEqual(json.loads(json.dumps(runner.LOCAL, separators=(",", ":"))), runner.LOCAL)
 

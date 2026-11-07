@@ -98,11 +98,6 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-/// Node takes Unix paths as they are.
-pub(crate) fn node_path(path: &Path) -> PathBuf {
-    path.to_path_buf()
-}
-
 /// `--import` takes an absolute Unix path.
 pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsString> {
     Ok(path.into())
@@ -154,6 +149,24 @@ impl Channel {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             result => result,
         }
+    }
+}
+
+/// A test child's end of the channel: it binds `<dir>/node.sock` and accepts
+/// the connections the core dials, as Node does.
+pub(crate) struct FakeChild(tokio::net::UnixListener);
+
+pub(crate) type FakeStream = Stream;
+
+pub(crate) fn fake_channel(dir: &Path) -> std::io::Result<(Channel, FakeChild)> {
+    let path = dir.join("node.sock");
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    Ok((Channel::unbound(path), FakeChild(listener)))
+}
+
+impl FakeChild {
+    pub(crate) async fn accept(&mut self) -> std::io::Result<FakeStream> {
+        Ok(self.0.accept().await?.0)
     }
 }
 

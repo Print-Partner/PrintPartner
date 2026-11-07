@@ -15,11 +15,11 @@
 //! off for it under that link.
 
 use crate::{Envelope, Shared};
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::{
-    sync::{Arc, mpsc},
-    time::{Duration, Instant},
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
 
 /// The schema step that installs the table.
@@ -158,40 +158,21 @@ impl PrintGramsClient {
         measured_mm: f64,
         wait: Duration,
     ) -> Result<Option<Measurement>> {
-        let deadline = Instant::now() + wait;
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
-        loop {
-            ensure!(!queue.closed, "Storage stopped");
-            if queue.pending.len() < self.shared.capacity {
-                break;
-            }
-            ensure!(Instant::now() < deadline, "Writer queue full");
-            queue = self
-                .shared
-                .changed
-                .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
-                .0;
-        }
-        let (reply, receiver) = mpsc::channel();
-        queue.pending.push_back(Envelope::PrintGrams {
-            command: Command {
-                tenant: self.tenant.clone(),
-                integration_id: integration_id.to_owned(),
-                filename: filename.to_owned(),
-                measured_mm,
+        crate::read_model::submit(
+            &self.shared,
+            &AtomicBool::new(false),
+            wait,
+            "Storage stopped without a print grams result",
+            |reply| Envelope::PrintGrams {
+                command: Command {
+                    tenant: self.tenant.clone(),
+                    integration_id: integration_id.to_owned(),
+                    filename: filename.to_owned(),
+                    measured_mm,
+                },
+                reply,
             },
-            reply,
-        });
-        self.shared.changed.notify_all();
-        drop(queue);
-        receiver
-            .recv()
-            .map_err(|_| anyhow!("Storage stopped without a print grams result"))?
+        )
     }
 }
 

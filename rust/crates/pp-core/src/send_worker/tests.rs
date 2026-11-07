@@ -409,27 +409,18 @@ async fn ticket_t_26_farm_turned_off_after_send_now_fails_the_send_without_conta
 
 const PRINT_STATS: &str = "/printer/objects/query?print_stats";
 
+fn estimate() -> Value {
+    json!([12.5, 1, "estimated", 0.0025, null])
+}
+
 impl Farm {
     /// A farm whose item `q1` was uploaded to `printer` with a 12.5 g estimate.
     async fn sent(printer: &RoutedPrinter) -> Self {
         let farm = Self::open(printer.url(), &[("q1", false, true)]);
         farm.send("q1");
         assert_eq!(farm.worker().run_next().await.unwrap(), Some(Sent::Done));
-        assert_eq!(farm.grams(), (12.5, "estimated".into(), None));
+        assert_eq!(farm.grams(), estimate());
         farm
-    }
-
-    /// The grams row of the newest Checkoff link: grams, basis, measured length.
-    fn grams(&self) -> (f64, String, Option<f64>) {
-        let links = self.links();
-        let link = links.as_array().unwrap().last().unwrap();
-        self.database()
-            .query_row(
-                "SELECT grams,basis,measured_mm FROM print_link_grams WHERE tenant_id='default' AND link_id=?1",
-                [link["id"].as_str().unwrap()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap()
     }
 
     async fn finish(&self, filename: &str) -> Option<pp_storage::print_grams::Measurement> {
@@ -455,13 +446,13 @@ async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
     .unwrap();
     let farm = Farm::sent(&printer).await;
     assert_eq!(farm.finish("other.gcode").await, None, "no link prints it");
-    assert_eq!(farm.grams(), (12.5, "estimated".into(), None));
+    assert_eq!(farm.grams(), estimate());
     assert_eq!(
         farm.finish("  gcodes\\A.GCODE ").await,
         Some(Measurement::Recorded),
         "matched like Node: trimmed base name, any case"
     );
-    assert_eq!(farm.grams(), (10.0, "measured".into(), Some(4000.0)));
+    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
     let reads = printer
         .request_lines()
         .iter()
@@ -500,6 +491,6 @@ async fn gre_1165_no_finished_length_for_the_file_keeps_the_estimate() {
         .unwrap();
         let farm = Farm::sent(&printer).await;
         assert_eq!(farm.finish("a.gcode").await, None, "{case}");
-        assert_eq!(farm.grams(), (12.5, "estimated".into(), None), "{case}");
+        assert_eq!(farm.grams(), estimate(), "{case}");
     }
 }

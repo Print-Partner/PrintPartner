@@ -152,8 +152,12 @@ pub enum GramsNeeded {
     Estimated {
         grams: u64,
         job_count: u64,
-        /// Why a printer's measurement did not replace the estimate.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Why a printer's measurement did not replace the estimate; `null`
+        /// when no measurement was kept back.
+        #[cfg_attr(
+            feature = "codegen",
+            schemars(with = "pp_contracts::RequiredNullable<EstimateKept>")
+        )]
         reason: Option<EstimateKept>,
     },
     /// At least one Part has no checked-off unit under a send with grams.

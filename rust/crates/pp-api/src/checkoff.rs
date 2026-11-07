@@ -122,6 +122,11 @@ async fn verify_batch(
     apply(app, presented, &body, |body| Request::VerifyBatch { body }).await
 }
 
+/// The raw query as a URL, so `query_pairs` decodes it as `history.rs` does.
+fn query_url(query: Option<String>) -> Option<reqwest::Url> {
+    reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default())).ok()
+}
+
 /// `GET /printer-checkoff/verify-batch?idempotency_key=...` (GRE-1170): what
 /// a burst key settled to, for a caller whose response was lost. Reads only.
 async fn burst_status(
@@ -129,8 +134,7 @@ async fn burst_status(
     Extension(presented): Extension<PresentedCredential>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    let Ok(url) = reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default()))
-    else {
+    let Some(url) = query_url(query) else {
         return failure(StatusCode::BAD_REQUEST, "Request is invalid");
     };
     let mut keys = url
@@ -227,8 +231,7 @@ async fn farm_log(
     Extension(presented): Extension<PresentedCredential>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    let Ok(url) = reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default()))
-    else {
+    let Some(url) = query_url(query) else {
         return failure(StatusCode::BAD_REQUEST, "Request is invalid");
     };
     let (mut cursor, mut limit) = (None, None);

@@ -27,16 +27,10 @@ use std::{
 mod checkoff_http;
 #[path = "../../pp-storage/tests/common/js_json.rs"]
 mod js_json;
+#[path = "support/mcp_rpc.rs"]
+mod mcp_rpc;
 
 const UNKNOWN_ACTION: &str = "Unknown, in-flight, or already applied/dismissed action_id";
-
-fn policy() -> auth::AuthPolicy {
-    auth::AuthPolicy {
-        registration: auth::RegistrationPolicy::Open,
-        session_tenant: auth::SessionTenantPolicy::AccountTenant,
-        first_user: auth::FirstUserTenant::NewUser,
-    }
-}
 
 /// The Checkoff routes and MCP from one owner on a loopback listener.
 struct Served {
@@ -50,11 +44,10 @@ struct Served {
 impl Served {
     async fn start(fixture: &Fixture, bearer: Option<String>) -> Self {
         let owner = WriterOwner::open(&fixture.0, Limits::default()).unwrap().0;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (listener, origin) = mcp_rpc::listen().await;
         let progress = owner.checkoff_progress().unwrap();
         let auth = owner
-            .rebuild_auth_with_policy(policy(), Default::default())
+            .rebuild_auth_with_policy(mcp_rpc::policy(), Default::default())
             .unwrap();
         let router = checkoff_router(
             AcceptedHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
@@ -64,7 +57,7 @@ impl Served {
             McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             auth.clone(),
             owner
-                .build_workflow(policy(), Arc::new(PendingInputs))
+                .build_workflow(mcp_rpc::policy(), Arc::new(PendingInputs))
                 .unwrap(),
             progress,
         ));
@@ -127,13 +120,7 @@ impl Served {
         if let Some(body) = body {
             request = request.body(body.to_string());
         }
-        let response = request.send().await.unwrap();
-        let status = response.status().as_u16();
-        let session = response
-            .headers()
-            .get("mcp-session-id")
-            .map(|value| value.to_str().unwrap().to_owned());
-        (status, response.text().await.unwrap(), session)
+        mcp_rpc::send(request).await
     }
 
     async fn http(&self, method: Method, path: &str, body: Option<&Value>) -> (u16, Value) {
@@ -189,13 +176,7 @@ impl Mcp<'_> {
             .request(Method::POST, "/api/v1/mcp", &self.headers(), Some(&call))
             .await;
         assert_eq!(status, 200, "{body}");
-        let data = body
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(str::trim)
-            .find(|data| !data.is_empty())
-            .unwrap_or(&body);
-        let rpc: Value = serde_json::from_str(data).unwrap();
+        let rpc = mcp_rpc::rpc(&body);
         let result = &rpc["result"];
         let text = result["content"][0]["text"].as_str().unwrap();
         (

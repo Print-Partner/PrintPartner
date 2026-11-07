@@ -148,17 +148,26 @@ version, so a replay of the same key answers the existing receipt.
 
 Rust MCP (`/mcp`, `/api/v1/mcp` under `PP_DESKTOP_REBUILD`) accepts through
 the same preview and Accept (GRE-1236). `propose_apply_plan_draft`
-`{ plan_id, draft_id }` reads the Accept preview with the caller's API key
-and writes nothing. When Accept would run, it proposes an action whose
+`{ plan_id, draft_id }` first runs Node's guards with the caller's API key:
+the Build planning brief must exist and select `draft_id`, and its source
+choices must resolve (Node's `resolvedSourcePathExclusions`: no `custom`
+resolution, and every excluded `.stl` path names a Source in the brief's
+evidence). It then reads the Accept preview. When the preview needs a
+Required-unit reconciliation and the draft has none selected, it selects the
+automatic one first, as Node's `prepareForApply` and the Rust HTTP Accept do;
+that is its only write. When Accept would run, it proposes an action whose
 `params.revision` is the preview's `revision` without `draft_id`, and its
 result carries the `preview`. When Accept would refuse, it proposes nothing
 and returns the refusal as `preview_result`. It also proposes nothing, and
 returns the `preview`, while the preview lists running work in `blocked_by`
 or checkoff links and queued sends in `production`. `confirm_apply` of that action
 sends exactly that revision to Accept with the action id as the idempotency
-key and `remap_checkoff_links: false`, so a header saved after the proposal is
-refused with `draft_changed`. A refusal keeps the action pending, as Node
-does. Only this tool and `get_build_workflow` have Rust ports; every other
+key and `remap_checkoff_links: false`, after running the brief guards again, so a
+header saved after the proposal is refused with `draft_changed`. Success
+answers Node's shape: `apply_result` is `{ kind, receipt }` with Node's
+camelCase receipt keys, beside `build_workflow` (or `null`) and
+`planning_phase: { kind: "applied", draft_id, revision_id }`. A refusal keeps
+the action pending, as Node does. Only this tool and `get_build_workflow` have Rust ports; every other
 product tool still answers that it has no Rust port.
 
 Two limits remain:

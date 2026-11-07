@@ -31,11 +31,15 @@ impl Mcp {
         let drafts = owner
             .working_drafts_with_observations(policy(), reads, Default::default())
             .unwrap();
+        let planning = owner
+            .build_planning(policy(), owner.source_reads().unwrap())
+            .unwrap();
         let router = mcp_router(
             McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             auth.clone(),
             workflow,
             drafts,
+            planning,
         );
         let task = tokio::spawn(async move {
             axum::serve(
@@ -125,11 +129,58 @@ impl Drop for Mcp {
     }
 }
 
-/// A Build with a selected draft and a header saved in the Plan tab.
-async fn proposed_header() -> ReadServer {
+/// Stores the Build planning brief: it selects `draft_id` and resolves
+/// `differences` with `resolutions`.
+fn brief(server: &ReadServer, draft_id: i64, differences: Value, resolutions: Value) {
+    let brief = json!({
+        "version": 1, "build_id": 1, "special_request": "", "requirements": [],
+        "evidence": [], "contributions": [], "differences": differences,
+        "resolutions": resolutions, "role_filaments": [], "draft_id": draft_id,
+        "draft_review_blockers": [], "created_at": "2026-11-07T12:00:00.000Z",
+        "updated_at": "2026-11-07T12:00:00.000Z",
+    });
+    let sql = server.sql();
+    sql.execute(
+        "DELETE FROM app_settings WHERE tenant_id='default' AND key='build_planning.v1.1'",
+        [],
+    )
+    .unwrap();
+    sql.execute(
+        "INSERT INTO app_settings (tenant_id,key,value) VALUES ('default','build_planning.v1.1',?1)",
+        [brief.to_string()],
+    )
+    .unwrap();
+}
+
+/// A custom resolution, and a chosen side whose excluded printable path
+/// names a Source the brief's evidence does not.
+fn unresolved_choices() -> (Value, Value) {
+    let difference = |id: &str, group: &str| {
+        json!({"id": id, "group_id": group, "family": "f", "kind": "changed",
+            "source_a": "Alpha", "source_b": "Beta", "path_a": "a/part.stl",
+            "path_b": "b/part.STL", "detail": "d"})
+    };
+    let resolution = |resolution: &str| {
+        json!({"resolution": resolution, "rationale": "r", "custom_resolution": null,
+            "resolved_at": "2026-11-07T12:00:00.000Z"})
+    };
+    (
+        json!([difference("d1", "g1"), difference("d2", "g2")]),
+        json!({"g1": resolution("custom"), "g2": resolution("choose_source_a")}),
+    )
+}
+
+const UNRESOLVED: &str = "Working Plan cannot apply source choices: g1: custom resolution requires explicit draft review; g2: resolved printable path is missing from the draft: Beta/b/part.STL";
+
+/// A Build whose brief selects draft 2, with a header saved in the Plan tab.
+/// `select` selects the draft's Required-unit reconciliation first.
+async fn header_draft(select: bool) -> ReadServer {
     let setup = aligned_setup();
     let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
-    select_units(&server).await;
+    if select {
+        select_units(&server).await;
+    }
+    brief(&server, 2, json!([]), json!({}));
     server
         .sql()
         .execute(
@@ -138,6 +189,10 @@ async fn proposed_header() -> ReadServer {
         )
         .unwrap();
     server
+}
+
+async fn proposed_header() -> ReadServer {
+    header_draft(true).await
 }
 
 fn build_name(server: &ReadServer) -> String {
@@ -194,7 +249,15 @@ async fn gre_1236_mcp_accepts_the_previewed_revision_and_copies_the_header_once(
     let (failed, confirmed) = mcp.call("confirm_apply", json!({"action_id": id})).await;
     assert!(!failed, "{confirmed}");
     assert_eq!(confirmed["ok"], true);
-    assert_eq!(confirmed["result"]["apply_result"]["revision_id"], 2);
+    let result = &confirmed["result"];
+    assert_eq!(result["apply_result"]["kind"], "applied");
+    assert_eq!(result["apply_result"]["receipt"]["revisionId"], 2);
+    assert_eq!(result["apply_result"]["receipt"]["draftId"], 2);
+    assert_eq!(
+        result["planning_phase"],
+        json!({"kind": "applied", "draft_id": 2, "revision_id": 2})
+    );
+    assert!(result["build_workflow"].is_object(), "{result}");
     assert_eq!(build_name(&server), "Renamed by MCP");
     assert_eq!(snapshot_headers(&server), 1);
 
@@ -241,6 +304,15 @@ async fn gre_1236_mcp_refuses_a_stale_proposal_and_keeps_it_pending() {
 async fn gre_1236_mcp_proposes_nothing_when_accept_would_refuse() {
     let server = ReadServer::start(Some("true"), "default").await;
     let mcp = Mcp::start(&server).await;
+    let (failed, no_brief) = mcp
+        .call(
+            "propose_apply_plan_draft",
+            json!({"plan_id": 1, "draft_id": 99}),
+        )
+        .await;
+    assert!(failed);
+    assert_eq!(no_brief, json!({"error": "Build planning brief not found"}));
+    brief(&server, 2, json!([]), json!({}));
     let (failed, missing) = mcp
         .call(
             "propose_apply_plan_draft",
@@ -264,6 +336,7 @@ async fn gre_1236_mcp_proposes_nothing_when_accept_would_refuse() {
 async fn gre_1236_mcp_proposes_nothing_while_production_would_refuse_accept() {
     let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
     changed_draft(&server).await;
+    brief(&server, 2, json!([]), json!({}));
     let mcp = Mcp::start(&server).await;
     let before = plan_rows(&server);
     let (failed, refused) = mcp
@@ -281,6 +354,71 @@ async fn gre_1236_mcp_proposes_nothing_while_production_would_refuse_accept() {
     let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
     assert_eq!(pending, json!({"actions": []}));
     assert_eq!(plan_rows(&server), before);
+    drop(mcp);
+    server.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gre_1236_mcp_refuses_a_draft_the_brief_does_not_select_or_unresolved_choices() {
+    let server = proposed_header().await;
+    let mcp = Mcp::start(&server).await;
+    let before = plan_rows(&server);
+    let propose = || {
+        mcp.call(
+            "propose_apply_plan_draft",
+            json!({"plan_id": 1, "draft_id": 2}),
+        )
+    };
+    brief(&server, 3, json!([]), json!({}));
+    let (failed, other) = propose().await;
+    assert!(failed);
+    assert_eq!(other, json!({"error": "Selected Working Plan not found"}));
+    let (differences, resolutions) = unresolved_choices();
+    brief(&server, 2, differences.clone(), resolutions.clone());
+    let (failed, unresolved) = propose().await;
+    assert!(failed);
+    assert_eq!(unresolved, json!({"error": UNRESOLVED}));
+    let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
+    assert_eq!(pending, json!({"actions": []}));
+
+    brief(&server, 2, json!([]), json!({}));
+    let (failed, proposed) = propose().await;
+    assert!(!failed, "{proposed}");
+    let id = proposed["action"]["id"].as_str().unwrap().to_owned();
+    brief(&server, 2, differences, resolutions);
+    let (failed, refused) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    assert!(failed, "{refused}");
+    assert_eq!(refused, json!({"ok": false, "detail": UNRESOLVED}));
+    brief(&server, 3, json!([]), json!({}));
+    let (failed, refused) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    assert!(failed, "{refused}");
+    assert_eq!(
+        refused,
+        json!({"ok": false, "detail": "Selected Working Plan not found"})
+    );
+    let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
+    assert_eq!(pending["actions"][0]["id"], id);
+    assert_eq!(plan_rows(&server), before);
+    drop(mcp);
+    server.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gre_1236_mcp_selects_the_automatic_reconciliation_before_it_previews() {
+    let server = header_draft(false).await;
+    let mcp = Mcp::start(&server).await;
+    let (failed, proposed) = mcp
+        .call(
+            "propose_apply_plan_draft",
+            json!({"plan_id": 1, "draft_id": 2}),
+        )
+        .await;
+    assert!(!failed, "{proposed}");
+    assert_eq!(proposed["preview"]["kind"], "changed");
+    let id = proposed["action"]["id"].as_str().unwrap();
+    let (failed, confirmed) = mcp.call("confirm_apply", json!({"action_id": id})).await;
+    assert!(!failed, "{confirmed}");
+    assert_eq!(build_name(&server), "Renamed by MCP");
     drop(mcp);
     server.close().await;
 }

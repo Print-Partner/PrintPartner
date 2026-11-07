@@ -67,7 +67,10 @@ impl McpServer {
         let drafts = owner
             .working_drafts_with_observations(policy(), reads, Default::default())
             .unwrap();
-        let router = mcp_router(config, auth, workflow, drafts);
+        let planning = owner
+            .build_planning(policy(), owner.source_reads().unwrap())
+            .unwrap();
+        let router = mcp_router(config, auth, workflow, drafts, planning);
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,

@@ -250,7 +250,7 @@ pub fn read_router(
     );
     let planning = planning_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        planning_client,
+        planning_client.clone(),
     );
     let workflow = workflow_router(
         AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
@@ -274,6 +274,7 @@ pub fn read_router(
         auth_client.clone(),
         workflow_client,
         drafts_client,
+        planning_client,
     );
     let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
     Ok(Some(

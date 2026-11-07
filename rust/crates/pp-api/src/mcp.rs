@@ -22,7 +22,10 @@ use pp_services::mcp_domain::{McpSession, ToolResult, UnportedDomain, server_inf
 use pp_storage::build_graph::PositiveId;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
-    read_model::build_workflow::{Outcome, Request, WorkflowClient},
+    read_model::{
+        build_workflow::{Outcome, Request, WorkflowClient},
+        planning::PlanningClient,
+    },
     working_drafts::WorkingDraftClient,
 };
 use rmcp::{
@@ -77,22 +80,26 @@ struct Guard {
 }
 
 /// The clients ported tools use: `get_build_workflow` reads the same client as
-/// `GET /plans/{id}/workflow`, and Plan Accept uses the draft routes' client.
+/// `GET /plans/{id}/workflow`, and Plan Accept uses the draft routes' client
+/// and checks the Build planning brief with the planning routes' client.
 #[derive(Clone)]
 struct Reads {
     workflow: WorkflowClient,
     drafts: WorkingDraftClient,
+    planning: PlanningClient,
     wait: Duration,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
 /// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
-/// `workflow` and Plan Accept uses `drafts`, each with the request's API key.
+/// `workflow` and Plan Accept uses `drafts` and `planning`, each with the
+/// request's API key.
 pub fn mcp_router(
     config: McpHttpConfig,
     auth: RebuildAuthClient,
     workflow: WorkflowClient,
     drafts: WorkingDraftClient,
+    planning: PlanningClient,
 ) -> Router {
     if !config.enabled {
         return Router::new();
@@ -105,6 +112,7 @@ pub fn mcp_router(
     let reads = Reads {
         workflow,
         drafts,
+        planning,
         wait: config.wait,
     };
     let service = StreamableHttpService::new(

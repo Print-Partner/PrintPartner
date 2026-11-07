@@ -1003,6 +1003,63 @@ pub(crate) fn readiness(brief: &BuildPlanningBrief) -> BuildPlanningReadiness {
     }
 }
 
+/// Node's `resolvedSourcePathExclusions` blockers: a custom resolution, or a
+/// resolved printable path whose Source the brief's evidence does not name.
+/// `source_names` maps the evidence's Source ids to their names.
+pub(crate) fn source_choice_blockers(
+    brief: &BuildPlanningBrief,
+    source_names: &HashMap<i64, String>,
+) -> Vec<String> {
+    let named: HashSet<&str> = brief
+        .evidence
+        .iter()
+        .filter_map(|item| source_names.get(&item.source_id?))
+        .map(String::as_str)
+        .collect();
+    let mut groups: Vec<(&str, Vec<&BuildDifference>)> = Vec::new();
+    for difference in &brief.differences {
+        match groups.iter_mut().find(|(id, _)| *id == difference.group_id) {
+            Some((_, members)) => members.push(difference),
+            None => groups.push((&difference.group_id, vec![difference])),
+        }
+    }
+    let mut blockers = Vec::new();
+    for (group, differences) in groups {
+        let Some(resolution) = brief.resolutions.get(group).map(|r| r.resolution) else {
+            continue;
+        };
+        let (keep_a, keep_b) = match resolution {
+            DifferenceResolution::IncludeBoth => continue,
+            DifferenceResolution::Custom => {
+                blockers.push(format!(
+                    "{group}: custom resolution requires explicit draft review"
+                ));
+                continue;
+            }
+            DifferenceResolution::ChooseSourceA => (true, false),
+            DifferenceResolution::ChooseSourceB => (false, true),
+            DifferenceResolution::NotApplicable => (false, false),
+        };
+        for difference in differences {
+            let sides = [
+                (keep_a, &difference.source_a, &difference.path_a),
+                (keep_b, &difference.source_b, &difference.path_b),
+            ];
+            for (kept, source, path) in sides {
+                let Some(path) = path.as_deref().filter(|_| !kept) else {
+                    continue;
+                };
+                if path.to_lowercase().ends_with(".stl") && !named.contains(source.as_str()) {
+                    blockers.push(format!(
+                        "{group}: resolved printable path is missing from the draft: {source}/{path}"
+                    ));
+                }
+            }
+        }
+    }
+    blockers
+}
+
 /// Node's `deriveBuildPlanningPhase`, from the stored draft row the hydrated
 /// brief names (`state`, `consumed_revision_id`), or `None` when it is gone.
 pub(crate) fn phase(

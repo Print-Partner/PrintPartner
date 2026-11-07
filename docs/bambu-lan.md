@@ -10,10 +10,10 @@
 2. TLS 1.2 or 1.3 with rustls. The verifier checks the certificate as described below.
 3. MQTT 3.1.1 CONNECT as user `bblp` with the access code, clean session, 30 s keep-alive.
 4. SUBSCRIBE to `device/<serial>/report`, then one PUBLISH of `{"pushing":{"sequence_id":"0","command":"pushall"}}` to `device/<serial>/request`.
-5. The first PUBLISH on the report topic whose `print.gcode_state` is a non-blank string is mapped to a `PrinterHostStatus`. Other packets and reports are skipped.
+5. The first PUBLISH on the report topic whose `print.gcode_state` is a non-blank string is mapped to a `PrinterHostStatus`. Other packets and reports are skipped. A usable report that arrives before SUBACK (a retained one, say) answers the read without a pushall, as Node's message listener does.
 6. DISCONNECT and close.
 
-Steps 1 to 3 have 8 s (Node's `CONNECT_TIMEOUT_MS`); the whole read has 10 s (`STATUS_TIMEOUT_MS`). A packet over 1 MiB fails the read before its body is read. Every failure is an `offline` status with Node's message, for example `Bambu MQTT connection closed (LAN mode off or connection refused?)` or `Connection refused: Not authorized`. The access code never appears in a status. Nothing is retried.
+Steps 1 to 3 have 8 s (Node's `CONNECT_TIMEOUT_MS`); the whole read has 10 s (`STATUS_TIMEOUT_MS`). A packet over 1 MiB fails the read before its body is read. Every failure is an `offline` status. Where Node has a message it is Node's, for example `Bambu MQTT connection closed (LAN mode off or connection refused?)` or `Connection refused: Not authorized`. Rust adds `Bambu MQTT TLS handshake failed`, `Bambu MQTT packet is too large`, the guard's `Prohibited DNS answer` and `Host unavailable`, and the certificate-changed message. A connect phase that runs out of its 8 s reports the closed message; mqtt.js would report `connack timeout`. `ip_address` is set once the host check passes, as in Node. The access code never appears in a status. Nothing is retried.
 
 The MQTT code (`bambu::mqtt`) can build only CONNECT, one SUBSCRIBE, the pushall PUBLISH and DISCONNECT, so no print command can leave the driver.
 
@@ -26,7 +26,7 @@ Node turns TLS verification off for private addresses. Rust never does. Every re
 - `Trust::Pinned(sha256)` accepts only the end-entity certificate whose SHA-256 over its DER is the stored pin. Any other certificate fails the TLS handshake with `Printer certificate changed. If you replaced or reset the printer, reset its certificate in Settings.`, so MQTT CONNECT and the access code never reach that peer. The printer's own self-signed chain and host name are not checked, because the pin identifies the certificate exactly.
 - `Trust::FirstUse` accepts the presented certificate. Only an explicit user action may use it (Settings → Test connection, GRE-1245), never a watcher.
 
-Both still verify the TLS handshake signatures, so the peer must hold the certificate's private key. `Read::certificate` reports the fingerprint the printer presented, so the caller can store it after a first-use read or show it after a mismatch.
+Both still verify the TLS 1.2 or 1.3 handshake signature against the certificate's public key, so the peer must hold its private key. The driver reads that key from the certificate itself instead of through webpki, which accepts only X.509 v3, because Node's adapter notes that Bambu printers present self-signed v1 certificates. `Read::certificate` reports the fingerprint the printer presented, so the caller can store it after a first-use read or show it after a mismatch.
 
 ## Status mapping
 
@@ -34,4 +34,4 @@ Both still verify the TLS handshake signatures, so the peer must hold the certif
 
 ## Tests
 
-`pp_testkit::bambu::Broker` is a loopback MQTT broker over TLS. Each test generates its certificate with rcgen, so the repository holds no key material. The broker logs each connection's steps (TCP, TLS or TLS refused, CONNECT with whether the access code matched, SUBSCRIBE, PUBLISH, DISCONNECT) and can switch to a new certificate to act as a replaced printer. The tests in `rust/crates/pp-drivers/tests/ticket_t_23_bambu.rs` cover the exchange, checked DNS to a pinned connection, a changed certificate refused before CONNECT, hosts the guard refuses, and broker failures. No test talks to a real printer.
+`pp_testkit::bambu::Broker` is a loopback MQTT broker over TLS. Each test generates its certificate with rcgen, so the repository holds no key material. The broker logs each connection's steps (TCP, TLS or TLS refused, CONNECT with whether the access code matched, SUBSCRIBE, PUBLISH, DISCONNECT) and can switch to a new certificate to act as a replaced printer. The tests in `rust/crates/pp-drivers/tests/ticket_t_23_bambu.rs` cover the exchange, checked DNS to a pinned connection, a changed certificate refused before CONNECT, v1 and v3 certificates over TLS 1.2 and 1.3, a matching pin served without its private key, a report before SUBACK, hosts the guard refuses, and broker failures. No test talks to a real printer.

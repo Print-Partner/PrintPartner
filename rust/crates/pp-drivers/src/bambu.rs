@@ -9,7 +9,8 @@
 //! connection is pinned. The host goes through `HttpGuard::connect` (checked
 //! DNS, permitted addresses only, no proxy). The TLS verifier then accepts
 //! exactly one end-entity certificate: the one whose SHA-256 is the stored pin,
-//! with handshake signatures still verified. [`Trust::FirstUse`] is for an
+//! with handshake signatures still verified against its public key (v1
+//! certificates included). [`Trust::FirstUse`] is for an
 //! explicit user action only; it accepts the presented certificate and reports
 //! its fingerprint so the caller can store it. A changed certificate fails the
 //! TLS handshake, so MQTT CONNECT and the access code never reach that peer.
@@ -19,10 +20,10 @@ use crate::moonraker_driver::js_trim;
 use pp_api_types::printer_status::{PrinterHostState as State, PrinterHostStatus as Status};
 use pp_net::outbound::HttpGuard;
 use rustls::{
-    DigitallySignedStruct, SignatureScheme,
+    CertificateError, DigitallySignedStruct, PeerMisbehaved, SignatureScheme,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::CryptoProvider,
-    pki_types::{CertificateDer, ServerName, UnixTime},
+    pki_types::{CertificateDer, ServerName, SubjectPublicKeyInfoDer, UnixTime},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -148,7 +149,8 @@ fn js_number(text: &str) -> Option<f64> {
             .filter(|head| head.eq_ignore_ascii_case(prefix))
             .map(|_| &text[2..]);
         if let Some(digits) = digits {
-            let valid = !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix));
+            let valid =
+                !digits.is_empty() && digits.chars().all(|c| c.is_ascii() && c.is_digit(radix));
             return valid.then(|| {
                 digits.chars().fold(0.0, |total, c| {
                     total * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
@@ -243,6 +245,62 @@ fn usable(payload: &[u8]) -> Option<Value> {
     (!js_trim(state).is_empty()).then(|| print.clone())
 }
 
+/// One DER element at the start of `input`: its tag, contents and the rest.
+fn der(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    let (&tag, rest) = input.split_first()?;
+    let (&first, mut rest) = rest.split_first()?;
+    let length = if first < 0x80 {
+        usize::from(first)
+    } else {
+        let count = usize::from(first & 0x7f);
+        if count == 0 || count > 4 || rest.len() < count {
+            return None;
+        }
+        let (bytes, tail) = rest.split_at(count);
+        rest = tail;
+        bytes
+            .iter()
+            .fold(0, |length, byte| length << 8 | usize::from(*byte))
+    };
+    (rest.len() >= length).then(|| (tag, &rest[..length], &rest[length..]))
+}
+
+/// The DER SubjectPublicKeyInfo of an X.509 certificate of any version.
+/// rustls's own signature helpers parse the certificate with webpki, which
+/// accepts only v3, and Node's adapter notes that Bambu printers present
+/// self-signed v1 certificates.
+fn spki(certificate: &[u8]) -> Option<&[u8]> {
+    let (0x30, certificate, _) = der(certificate)? else {
+        return None;
+    };
+    let (0x30, mut fields, _) = der(certificate)? else {
+        return None;
+    };
+    if let (0xa0, _, rest) = der(fields)? {
+        fields = rest;
+    }
+    for _ in ["serialNumber", "signature", "issuer", "validity", "subject"] {
+        fields = der(fields)?.2;
+    }
+    let (0x30, _, rest) = der(fields)? else {
+        return None;
+    };
+    Some(&fields[..fields.len() - rest.len()])
+}
+
+/// The certificate's public-key algorithm identifier (without its SEQUENCE
+/// header, as `AlgorithmIdentifier` holds it) and the public key bits.
+fn public_key(certificate: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (_, info, _) = der(spki(certificate)?)?;
+    let (0x30, algorithm, rest) = der(info)? else {
+        return None;
+    };
+    let (0x03, key, _) = der(rest)? else {
+        return None;
+    };
+    Some((algorithm, key.strip_prefix(&[0])?))
+}
+
 /// Accepts one end-entity certificate by fingerprint and records the
 /// fingerprint it saw. Handshake signatures are verified as usual.
 #[derive(Debug)]
@@ -280,12 +338,26 @@ impl ServerCertVerifier for Verifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.provider.signature_verification_algorithms,
-        )
+        let bad = || rustls::Error::InvalidCertificate(CertificateError::BadSignature);
+        let (algorithm, key) = public_key(cert).ok_or_else(bad)?;
+        let candidates = self
+            .provider
+            .signature_verification_algorithms
+            .mapping
+            .iter()
+            .filter(|(scheme, _)| *scheme == dss.scheme)
+            .flat_map(|(_, algorithms)| algorithms.iter());
+        for candidate in candidates {
+            if candidate.public_key_alg_id().as_ref() == algorithm {
+                return candidate
+                    .verify_signature(key, message, dss.signature())
+                    .map(|()| HandshakeSignatureValid::assertion())
+                    .map_err(|_| bad());
+            }
+        }
+        Err(rustls::Error::PeerMisbehaved(
+            PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme,
+        ))
     }
 
     fn verify_tls13_signature(
@@ -294,9 +366,12 @@ impl ServerCertVerifier for Verifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
+        let spki = spki(cert).ok_or(rustls::Error::InvalidCertificate(
+            CertificateError::BadEncoding,
+        ))?;
+        rustls::crypto::verify_tls13_signature_with_raw_key(
             message,
-            cert,
+            &SubjectPublicKeyInfoDer::from(spki),
             dss,
             &self.provider.signature_verification_algorithms,
         )
@@ -361,7 +436,8 @@ impl Driver {
 
     /// One status read, as Node's `getStatus`: connect, subscribe, pushall,
     /// the first usable report, disconnect. Every failure is an `offline`
-    /// status with Node's message; the access code never appears in one.
+    /// status, with Node's message where Node has one; the access code never
+    /// appears in one.
     pub async fn status(&self, trust: Trust) -> Read {
         let verifier = Arc::new(Verifier {
             trust,
@@ -399,7 +475,10 @@ impl Driver {
                 .guard
                 .connect(host, config.port)
                 .await
-                .map_err(|error| Failure::Refused(error.to_string()))?;
+                .map_err(|error| match error.to_string() {
+                    message if message == "Host unavailable" => Failure::Offline(message),
+                    message => Failure::Refused(message),
+                })?;
             let peer = tcp.peer_addr()?.ip();
             let tls = rustls::ClientConfig::builder_with_provider(verifier.provider.clone())
                 .with_safe_default_protocol_versions()
@@ -430,21 +509,34 @@ impl Driver {
         let report = format!("device/{}/report", config.serial);
         stream.write_all(&mqtt::subscribe(&report)).await?;
         stream.flush().await?;
-        loop {
+        // Like Node's message listener, a usable report that arrives before
+        // SUBACK (a retained one, say) answers the read.
+        let early = loop {
             match mqtt::read(&mut stream).await? {
-                mqtt::Packet::SubAck(codes) if codes.iter().all(|code| *code < 0x80) => break,
+                mqtt::Packet::SubAck(codes) if codes.iter().all(|code| *code < 0x80) => break None,
                 mqtt::Packet::SubAck(_) => return Err(Failure::Offline(SUBSCRIBE_FAILED.into())),
+                mqtt::Packet::Publish { topic, payload } if topic == report => {
+                    if let Some(print) = usable(&payload) {
+                        break Some(print);
+                    }
+                }
                 _ => {}
             }
-        }
-        stream.write_all(&mqtt::pushall(&config.serial)).await?;
-        stream.flush().await?;
-        let print = loop {
-            if let mqtt::Packet::Publish { topic, payload } = mqtt::read(&mut stream).await?
-                && topic == report
-                && let Some(print) = usable(&payload)
-            {
-                break print;
+        };
+        let print = match early {
+            Some(print) => print,
+            None => {
+                stream.write_all(&mqtt::pushall(&config.serial)).await?;
+                stream.flush().await?;
+                loop {
+                    if let mqtt::Packet::Publish { topic, payload } =
+                        mqtt::read(&mut stream).await?
+                        && topic == report
+                        && let Some(print) = usable(&payload)
+                    {
+                        break print;
+                    }
+                }
             }
         };
         let _ = stream.write_all(&mqtt::disconnect()).await;

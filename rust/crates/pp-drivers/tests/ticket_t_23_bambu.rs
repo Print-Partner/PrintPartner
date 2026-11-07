@@ -332,3 +332,93 @@ async fn ticket_t_23_skips_unusable_reports_until_a_status_arrives() {
         .await;
     assert_eq!(read.status.state, State::Error);
 }
+
+#[tokio::test]
+async fn ticket_t_23_v1_certificates_pin_over_tls13_and_tls12() {
+    let cases = [
+        ("v1, TLS 1.3", Identity::generate_v1().unwrap()),
+        ("v1, TLS 1.2", Identity::generate_v1().unwrap().tls12_only()),
+        ("v3, TLS 1.2", Identity::generate().unwrap().tls12_only()),
+    ];
+    for (name, identity) in cases {
+        let broker = Broker::start(
+            identity.clone(),
+            Script::reporting(CODE, SERIAL, &fixture("pushall-idle.json")),
+        )
+        .await
+        .unwrap();
+        let driver = driver("127.0.0.1", broker.addr.port());
+        let first = driver.status(Trust::FirstUse).await;
+        assert_eq!(
+            first.status.state,
+            State::Idle,
+            "{name}: {:?}",
+            first.status.message
+        );
+        assert_eq!(first.certificate, Some(identity.fingerprint), "{name}");
+        let pinned = driver.status(Trust::Pinned(identity.fingerprint)).await;
+        assert_eq!(
+            pinned.status.state,
+            State::Idle,
+            "{name}: {:?}",
+            pinned.status.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn ticket_t_23_a_matching_pin_without_the_private_key_fails_before_connect() {
+    let printer = Identity::generate_v1().unwrap();
+    let impostor = Identity::generate().unwrap();
+    for (name, presented) in [
+        ("TLS 1.3", printer.with_key_of(&impostor)),
+        ("TLS 1.2", printer.with_key_of(&impostor).tls12_only()),
+    ] {
+        let broker = Broker::start(
+            presented,
+            Script::reporting(CODE, SERIAL, &fixture("pushall-idle.json")),
+        )
+        .await
+        .unwrap();
+        let read = driver("127.0.0.1", broker.addr.port())
+            .status(Trust::Pinned(printer.fingerprint))
+            .await;
+        assert_eq!(read.status.state, State::Offline, "{name}");
+        assert_eq!(
+            read.status.message.as_deref(),
+            Some("Bambu MQTT TLS handshake failed"),
+            "{name}"
+        );
+        assert_eq!(read.certificate, Some(printer.fingerprint), "{name}");
+        let log = settled(&broker, 2).await;
+        assert!(
+            !log.iter().any(|line| line.starts_with("CONNECT")),
+            "{name}: {log:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ticket_t_23_a_report_before_suback_answers_the_read() {
+    let identity = Identity::generate().unwrap();
+    let script = Script {
+        retained: Some(fixture("pushall-printing.json")),
+        replies: vec![],
+        ..Script::reporting(CODE, SERIAL, b"")
+    };
+    let broker = Broker::start(identity.clone(), script).await.unwrap();
+    let read = driver("127.0.0.1", broker.addr.port())
+        .status(Trust::Pinned(identity.fingerprint))
+        .await;
+    assert_eq!(read.status.state, State::Printing);
+    assert_eq!(
+        settled(&broker, 5).await,
+        [
+            "TCP".to_owned(),
+            "TLS".into(),
+            "CONNECT bblp access code".into(),
+            format!("SUBSCRIBE device/{SERIAL}/report"),
+            "DISCONNECT".into(),
+        ]
+    );
+}

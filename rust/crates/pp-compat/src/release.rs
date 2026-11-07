@@ -57,7 +57,8 @@ fn inventory_key(path: &Path, root: &Path) -> Result<String> {
         .join("/"))
 }
 
-/// A junction under a `node_modules` segment is a module link: npm creates
+/// A junction under a `node_modules` segment, in any letter case since
+/// Windows paths are case-insensitive, is a module link: npm creates
 /// workspace links such as `node_modules/@print-partner/contracts` as
 /// junctions on Windows. It must resolve to the package its module path names:
 /// the `package.json` `name` at its target equals the path after the last
@@ -72,10 +73,17 @@ fn verify_junction_package(junction: &Path, key: &str) -> Result<()> {
         name: String,
     }
     let parts: Vec<&str> = key.split('/').collect();
-    let Some(segment) = parts.iter().rposition(|part| *part == "node_modules") else {
+    let Some(segment) = parts
+        .iter()
+        .rposition(|part| part.eq_ignore_ascii_case("node_modules"))
+    else {
         return Ok(());
     };
     let module = parts[segment + 1..].join("/");
+    ensure!(
+        !module.is_empty(),
+        "Dependency junction {key} names no module"
+    );
     let package: Package = std::fs::read(junction.join("package.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -560,6 +568,13 @@ mod tests {
             error.to_string(),
             "Dependency junction web/node_modules/@pp/contracts targets package @pp/domain"
         );
+        std::fs::rename(web.join("node_modules"), web.join("Node_Modules")).unwrap();
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Dependency junction web/Node_Modules/@pp/contracts targets package @pp/domain"
+        );
+        std::fs::rename(web.join("Node_Modules"), web.join("node_modules")).unwrap();
 
         let bare = web.join("packages/bare");
         std::fs::create_dir_all(&bare).unwrap();
@@ -579,6 +594,15 @@ mod tests {
         let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Dependency root escaped package");
         std::fs::remove_dir(&link).unwrap();
+
+        let unnamed = release.join("node_modules");
+        junction(&release.join("v1"), &unnamed);
+        let error = verify_dependencies(&web, &inventory, &stop).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Dependency junction web/apps/server/dist/node_modules names no module"
+        );
+        std::fs::remove_dir(&unnamed).unwrap();
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(outside).unwrap();
     }

@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS print_link_grams (
   grams REAL NOT NULL CHECK (grams > 0),
   units INTEGER NOT NULL CHECK (units > 0),
   basis TEXT NOT NULL CHECK (basis IN ('estimated', 'measured')),
+  grams_per_mm REAL CHECK (grams_per_mm IS NULL OR grams_per_mm > 0),
+  measured_mm REAL CHECK (measured_mm IS NULL OR measured_mm > 0),
   updated_at TEXT NOT NULL CHECK (length(updated_at) >= 1),
   PRIMARY KEY (tenant_id, link_id)
 );

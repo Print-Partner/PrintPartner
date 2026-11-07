@@ -33,6 +33,7 @@ mod preparation;
 #[cfg(test)]
 mod preparation_tests;
 mod rebase;
+pub mod restore;
 pub mod save;
 pub use rebase::{
     Conflict as RebaseConflict, Field as RebaseField, RebaseArgs, RebaseOutcome, RebaseRequest,
@@ -605,6 +606,13 @@ enum Operation {
         observations: Observations,
         reply: mpsc::Sender<Result<header::HeaderOutcome>>,
     },
+    Restore {
+        snapshot: PositiveId,
+        request: restore::RestoreSnapshotRequest,
+        key: String,
+        observations: Observations,
+        reply: mpsc::Sender<Result<restore::RestoreOutcome>>,
+    },
 }
 enum RecomputeReply {
     Draft(mpsc::Sender<Result<RecomputeOutcome>>),
@@ -1061,6 +1069,28 @@ pub(super) fn write(
                     credential: &credential,
                     policy,
                     profile,
+                    request: &request,
+                    key: &key,
+                    observations: &observations,
+                    cancelled: &cancelled,
+                },
+                admission,
+            ));
+        }
+        Operation::Restore {
+            snapshot,
+            request,
+            key,
+            observations,
+            reply,
+        } => {
+            let _ = reply.send(restore::execute(
+                connection,
+                restore::Args {
+                    credential: &credential,
+                    policy,
+                    profile,
+                    snapshot,
                     request: &request,
                     key: &key,
                     observations: &observations,
@@ -1614,7 +1644,7 @@ fn recompute(
             &actor,
             profile,
             key,
-            &prepared,
+            prepared.rows(),
             open.last().copied().map_or(Origin::New, Origin::Draft),
         )?;
         let created = draft(tx, &tenant, profile, id)?
@@ -1804,12 +1834,24 @@ fn carry_open_edits(
     Ok(changed)
 }
 
-/// The draft a new draft row comes from. Every origin but `New` carries that
-/// draft's header row forward.
+/// Where a new draft row comes from. `Draft` and `Rebased` carry that
+/// draft's header row forward; `Snapshot` writes the header the Plan
+/// snapshot saved.
+#[derive(Clone, Copy)]
 enum Origin<'a> {
     New,
     Draft(i64),
     Rebased(&'a rebase::Source<'a>),
+    Snapshot(i64),
+}
+
+/// The rows a new draft holds: its Accepted base, inputs and Parts, and their
+/// planning digest.
+struct DraftRows<'a> {
+    base: &'a Value,
+    inputs: &'a [Value],
+    parts: &'a [DraftPart],
+    digest: &'a str,
 }
 
 fn insert_snapshot(
@@ -1818,11 +1860,11 @@ fn insert_snapshot(
     actor: &str,
     profile: i64,
     key: &str,
-    prepared: &preparation::PreparedDraftSnapshot,
+    prepared: DraftRows<'_>,
     origin: Origin<'_>,
 ) -> Result<i64> {
     let (rebased_from, header_from) = match origin {
-        Origin::New => (None, None),
+        Origin::New | Origin::Snapshot(_) => (None, None),
         Origin::Draft(id) => (None, Some(id)),
         Origin::Rebased(source) => (Some(source), Some(source.id)),
     };
@@ -1832,7 +1874,7 @@ fn insert_snapshot(
             tenant,
             profile,
             sql_scalar(&prepared.base["baseRevisionId"])?,
-            num(&prepared.base, "basePlanVersion")?,
+            num(prepared.base, "basePlanVersion")?,
             prepared.digest,
             actor,
             key,
@@ -1847,7 +1889,10 @@ fn insert_snapshot(
     if let Some(from) = header_from {
         header::carry(tx, tenant, from, id)?;
     }
-    for input in &prepared.capture.inputs {
+    if let Origin::Snapshot(snapshot) = origin {
+        header::restore(tx, tenant, snapshot, id)?;
+    }
+    for input in prepared.inputs {
         let mut values = vec![tenant.to_owned().into(), id.into()];
         for field in model::INPUT_FIELDS {
             values.push(sql_scalar(&input[*field])?);
@@ -1858,7 +1903,7 @@ fn insert_snapshot(
         )?;
     }
     let fields = [vec!["baseRevisionPartId"], model::PART_FIELDS.to_vec()].concat();
-    for part in &prepared.parts {
+    for part in prepared.parts {
         let mut values = vec![tenant.to_owned().into(), id.into()];
         values.extend(
             part.sql_fields(&fields)?

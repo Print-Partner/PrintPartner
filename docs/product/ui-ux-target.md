@@ -160,7 +160,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
 | Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
 | Accept preview with checks | `POST /plans/:id/drafts/:draftId/preview` | New |
-| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant |
+| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | Exists in Rust behind `desktop_rebuild` (GRE-1094), for snapshots Accept saved; see [Build history](../build-history.md#restore-a-snapshot-as-a-draft) |
 | Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |
 

@@ -277,6 +277,16 @@ pub(crate) fn carry(tx: &Transaction<'_>, tenant: &str, from: i64, to: i64) -> R
     Ok(())
 }
 
+/// Writes the Build header Plan snapshot `snapshot` saved, if it saved one,
+/// as draft `to`'s first header version.
+pub(crate) fn restore(tx: &Transaction<'_>, tenant: &str, snapshot: i64, to: i64) -> Result<()> {
+    tx.execute(
+        "INSERT INTO plan_draft_headers (draft_id,tenant_id,name,order_number,customer,due_date,header_version,updated_at) SELECT ?3,tenant_id,name,order_number,customer,due_date,1,?4 FROM plan_snapshot_headers WHERE tenant_id=?1 AND snapshot_id=?2",
+        params![tenant, snapshot, to, auth::catalog_timestamp()],
+    )?;
+    Ok(())
+}
+
 fn write(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -489,7 +499,15 @@ fn write_observed(
                     Err(reason) => return Ok(Err(HeaderRefusal::Draft(reason))),
                 };
             budget.check()?;
-            let id = insert_snapshot(tx, tenant, actor, profile, key, &prepared, Origin::New)?;
+            let id = insert_snapshot(
+                tx,
+                tenant,
+                actor,
+                profile,
+                key,
+                prepared.rows(),
+                Origin::New,
+            )?;
             write(tx, tenant, id, &header, 1)?;
             id
         }

@@ -566,11 +566,11 @@ fn transact(
         actor,
         profile,
         &payload,
-        &preparation::PreparedDraftSnapshot {
-            base,
-            capture,
-            parts,
-            digest: digest.clone(),
+        DraftRows {
+            base: &base,
+            inputs: &capture.inputs,
+            parts: &parts,
+            digest: &digest,
         },
         match &source {
             Some(d) => Origin::Draft(num(&d.header, "id")?),

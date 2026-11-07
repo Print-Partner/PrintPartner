@@ -2953,3 +2953,5 @@ mod accept_header;
 mod header;
 #[path = "tests/mcp_accept.rs"]
 mod mcp_accept;
+#[path = "tests/restore_as_draft.rs"]
+mod restore_as_draft;

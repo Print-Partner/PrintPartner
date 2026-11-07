@@ -10,4 +10,6 @@ pub mod publication;
 #[cfg(feature = "desktop_rebuild")]
 pub mod reconciliation;
 #[cfg(feature = "desktop_rebuild")]
+pub mod snapshot_restore;
+#[cfg(feature = "desktop_rebuild")]
 pub mod working_drafts;

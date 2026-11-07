@@ -1,0 +1,491 @@
+//! Restore a Plan snapshot as a draft (GRE-1094): the restored draft, the
+//! Accept that publishes it, and the refusals.
+use super::*;
+use std::collections::BTreeMap;
+
+/// A completed and assembled bracket unit, a completed gear unit, one Checkoff
+/// burst and one finished send, all of Build 1.
+const EVIDENCE_SETUP: &str = "
+UPDATE print_progress SET completed=1, assembled=1 WHERE part_id=1 AND unit_index=0;
+UPDATE print_progress SET completed=1 WHERE part_id=3 AND unit_index=1;
+INSERT INTO print_jobs(id,tenant_id,profile_id,filename,at,printer_id,status)
+  VALUES('job-1','default',1,'bracket.3mf','2026-08-21T20:00:00.000Z','sim-1','done');
+INSERT INTO print_job_parts(id,tenant_id,job_id,at,profile_id,part_id,unit_index,result,filename,match_key)
+  VALUES('jp-1','default','job-1','2026-08-21T20:00:00.000Z',1,1,0,'confirmed','bracket.3mf','bracket.stl');
+INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.send_queue',
+  '[{\"id\":\"send-1\",\"state\":\"done\",\"filename\":\"bracket.3mf\",\"artifact_path\":\"exports/bracket.3mf\",\"printer_id\":\"sim-1\",\"profile_id\":1,\"created_at\":\"2026-08-21T19:00:00.000Z\"}]');
+";
+
+/// A Plate layout on Accepted revision 2 holding the first bracket unit.
+const PLATE_SETUP: &str = "
+INSERT INTO accepted_plate_revisions(id,tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,created_at)
+  SELECT 1,'default',1,2,2,r.snapshot_digest,s.mapping_digest,'layout',1,1,1,'2026-08-22T00:00:00.000Z'
+  FROM plan_revisions r JOIN plan_revision_required_unit_sets s ON s.revision_id=r.id WHERE r.id=2;
+INSERT INTO accepted_plates(tenant_id,revision_id,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um)
+  VALUES('default',1,'plate-a',1,'sim-1','Simulator','sim',256000,256000,256000,5000);
+INSERT INTO accepted_plate_units(tenant_id,revision_id,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um)
+  VALUES('default',1,'plate-a','ppu_00000000000000000000000000000001',0,0,1000,1000,1000);
+INSERT INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES('default',1,1);
+";
+
+/// Snapshots: 1 records Accepted revision 1 of Build 1; 2 is a Node snapshot;
+/// 3 belongs to another tenant's Build; 4 to Build 3 but names Build 1's
+/// revision.
+const SNAPSHOT_SETUP: &str = "
+INSERT INTO build_profiles(id,tenant_id,name) VALUES(3,'default','Other Build');
+INSERT INTO plan_snapshots(id,tenant_id,profile_id,name,created_at,source,payload_json) VALUES
+  (1,'default',1,'Before accepting draft 9','2026-08-21T00:00:00.000Z','pre_apply',
+   '{\"layers\":[],\"kit_manifest\":null,\"recipe_summary\":null,\"captured_at\":\"2026-08-21T00:00:00.000Z\",\"accepted_plan_revision_id\":1,\"accepted_plan_version\":1}'),
+  (2,'default',1,'Node snapshot','2026-08-21T00:00:00.000Z','user','{\"layers\":[],\"kit_manifest\":null}'),
+  (3,'foreign',2,'Foreign','2026-08-21T00:00:00.000Z','pre_apply','{\"accepted_plan_revision_id\":1}'),
+  (4,'default',3,'Other','2026-08-21T00:00:00.000Z','pre_apply','{\"accepted_plan_revision_id\":1}');
+";
+
+/// A server on [`SNAPSHOT_SETUP`] and a restore body naming its open draft.
+async fn snapshot_server() -> (ReadServer, Value) {
+    let server = ReadServer::start_limited(8 * 1024 * 1024, SNAPSHOT_SETUP).await;
+    (server, restore_body(json!(1), 1, open_draft()))
+}
+
+fn restore(
+    server: &ReadServer,
+    profile: i64,
+    snapshot: i64,
+    key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    keyed(
+        server,
+        &format!("/api/v2/plans/{profile}/snapshots/{snapshot}/restore"),
+        key,
+    )
+}
+
+fn restore_body(revision: Value, version: u32, draft: Value) -> Value {
+    json!({"mode": "draft", "expected_base": {"revision_id": revision, "plan_version": version},
+        "expected_draft": draft})
+}
+
+/// Every row outside the draft tables and the domain event log: the Accepted
+/// Plan, its history, Checkoff, sends, Plates and snapshots.
+fn accepted_state(server: &ReadServer) -> Vec<(String, Vec<String>)> {
+    logical_database(&server.sql())
+        .into_iter()
+        .filter(|(table, _)| {
+            !table.starts_with("plan_draft")
+                && !table.starts_with("domain_event")
+                && table != "sqlite_sequence"
+        })
+        .collect()
+}
+
+/// Printed evidence and printer commands: Checkoff bursts, the send queue,
+/// Checkoff links and Plate history.
+fn evidence(server: &ReadServer) -> Vec<(String, Vec<String>)> {
+    let tables = [
+        "print_jobs",
+        "print_job_parts",
+        "printer_send_queue",
+        "accepted_plate_revisions",
+        "accepted_plates",
+        "accepted_plate_units",
+    ];
+    let mut dump: Vec<_> = logical_database(&server.sql())
+        .into_iter()
+        .filter(|(table, _)| tables.contains(&table.as_str()))
+        .collect();
+    let connection = server.sql();
+    let mut statement = connection
+        .prepare("SELECT key,value FROM app_settings WHERE key IN ('printer.send_queue','printer.checkoff_links') ORDER BY key")
+        .unwrap();
+    let settings = statement
+        .query_map([], |row| {
+            Ok(format!(
+                "{}={}",
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    dump.push(("app_settings".into(), settings));
+    dump
+}
+
+/// The Accepted Plan's Required units by token: Object name, creation time,
+/// completed and assembled.
+fn units(server: &ReadServer) -> BTreeMap<String, (String, String, i64, i64)> {
+    let connection = server.sql();
+    let mut statement = connection
+        .prepare("SELECT u.token,u.object_name,u.created_at,COALESCE(p.completed,0),COALESCE(p.assembled,0) FROM build_profiles b JOIN plan_revision_required_units m ON m.revision_id=b.accepted_plan_revision_id JOIN required_units u ON u.token=m.required_unit_token JOIN plan_revision_parts r ON r.id=m.revision_part_id LEFT JOIN print_progress p ON p.part_id=r.projection_part_id AND p.unit_index=m.unit_index WHERE b.id=1")
+        .unwrap();
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// Part key, quantity, inclusion and artifact of each Part of revision
+/// `revision`, by key.
+fn revision_parts(server: &ReadServer, revision: i64) -> Vec<(String, i64, i64, Option<String>)> {
+    let connection = server.sql();
+    let mut statement = connection
+        .prepare("SELECT part_key,quantity_effective,included,artifact_digest FROM plan_revision_parts WHERE revision_id=?1 ORDER BY part_key")
+        .unwrap();
+    statement
+        .query_map([revision], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// Accepts the workspace's draft through HTTP Accept.
+async fn accept_workspace(
+    server: &ReadServer,
+    workspace: &Value,
+    key: &str,
+    header: Value,
+) -> Value {
+    let mut body = revision_of(workspace);
+    let draft_id = body.as_object_mut().unwrap().remove("draft_id").unwrap();
+    body["expected_header_version"] = header;
+    json_reply(
+        keyed(
+            server,
+            &format!("/api/v2/plans/1/drafts/{draft_id}/apply"),
+            Some(key),
+        )
+        .json(&body),
+        200,
+    )
+    .await
+}
+
+/// Sets the open draft's bracket quantity and accepts it as revision 2.
+async fn accept_bracket_quantity(server: &ReadServer, quantity: u32) -> Value {
+    let edit = json!({"expected_snapshot_digest": DIGEST,
+        "decision": {"kind": "set_quantity_override", "draft_part_ids": [4], "value": quantity}});
+    let workspace = json_reply(
+        server
+            .request(Method::PATCH, "/api/v2/plans/1/drafts/2/parts")
+            .json(&edit),
+        200,
+    )
+    .await;
+    let receipt = accept_workspace(server, &workspace, "accept-2", Value::Null).await;
+    assert_eq!(receipt["revision_id"], 2);
+    receipt
+}
+
+#[tokio::test]
+async fn restore_as_draft_creates_a_draft_that_accept_publishes_without_rewinding_evidence() {
+    let server = ReadServer::start_limited(8 * 1024 * 1024, EVIDENCE_SETUP).await;
+    // Revision 2 drops the third bracket unit; Accept saves snapshot 1 of
+    // revision 1 first.
+    accept_bracket_quantity(&server, 2).await;
+    server.sql().execute_batch(PLATE_SETUP).unwrap();
+    let snapshot: (i64, String) = server
+        .sql()
+        .query_row(
+            "SELECT id,source FROM plan_snapshots WHERE profile_id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(snapshot, (1, "pre_apply".to_owned()));
+    let (accepted, printed, units_before) =
+        (accepted_state(&server), evidence(&server), units(&server));
+    assert_eq!(units_before.len(), 5);
+    let body = restore_body(json!(2), 2, Value::Null);
+
+    // RST-01: the restore creates a draft and the Accepted Plan stays put.
+    let workspace = json_reply(restore(&server, 1, 1, Some("r-1")).json(&body), 200).await;
+    assert_eq!(workspace["draft"]["draft_id"], 3);
+    assert_eq!(workspace["draft"]["state"], "open");
+    assert_eq!(
+        workspace["draft"]["base"],
+        json!({"revision_id": 2, "plan_version": 2})
+    );
+    assert_eq!(workspace["reconciliation"]["kind"], "ready", "{workspace}");
+    assert_eq!(accepted_state(&server), accepted);
+    assert_eq!(evidence(&server), printed);
+    // RST-03: each restored Part's predecessor is the revision 2 Part holding
+    // its tokens.
+    let restored = triples::<String, i64, i64>(
+        &server,
+        "SELECT d.part_key,d.quantity_effective,r.revision_id FROM plan_draft_parts d JOIN plan_revision_parts r ON r.id=d.base_revision_part_id WHERE d.draft_id=3 AND r.part_key=d.part_key ORDER BY d.part_key",
+    );
+    assert_eq!(
+        restored,
+        vec![
+            ("bracket.stl".to_owned(), 3, 2),
+            ("excluded.stl".to_owned(), 1, 2),
+            ("gear.stl".to_owned(), 2, 2),
+        ]
+    );
+    let header: (String, u32) = server
+        .sql()
+        .query_row(
+            "SELECT name,header_version FROM plan_draft_headers WHERE draft_id=3",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(header, ("Fixture Build".to_owned(), 1));
+
+    // A retry answers the same draft and writes nothing; the key with another
+    // payload is refused.
+    let written = logical_database(&server.sql());
+    let replay = json_reply(restore(&server, 1, 1, Some("r-1")).json(&body), 200).await;
+    assert_eq!(replay["draft"], workspace["draft"]);
+    assert_eq!(
+        json_reply(
+            restore(&server, 1, 1, Some("r-1")).json(&restore_body(json!(1), 1, Value::Null)),
+            409
+        )
+        .await,
+        json!({"code": "idempotency_conflict"})
+    );
+    assert_eq!(logical_database(&server.sql()), written);
+
+    // The draft and its header survive a restart.
+    let server = server.restart().await;
+    let listed = json_reply(server.request(Method::GET, "/plans/1/drafts"), 200).await;
+    let open: Vec<_> = listed["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|draft| draft["state"] == "open")
+        .map(|draft| draft["draft_id"].clone())
+        .collect();
+    assert_eq!(open, vec![json!(3)]);
+    let reread = json_reply(server.request(Method::GET, "/plans/1/drafts/3"), 200).await;
+    assert_eq!(reread["draft"], workspace["draft"]);
+    let header_read =
+        json_reply(server.request(Method::GET, "/plans/1/drafts/3/header"), 200).await;
+    assert_eq!(header_read["draft"]["header"]["name"], "Fixture Build");
+    assert_eq!(accepted_state(&server), accepted);
+
+    // Accept publishes revision 1's Parts as revision 3.
+    let receipt = accept_workspace(&server, &reread, "accept-3", json!(1)).await;
+    assert_eq!(receipt["revision_id"], 3);
+    assert_eq!(revision_parts(&server, 3), revision_parts(&server, 1));
+    // RST-02: Checkoff, sends and Plate history are unchanged, and every
+    // surviving unit keeps its token, name and progress.
+    assert_eq!(evidence(&server), printed);
+    let after = units(&server);
+    for (token, unit) in &units_before {
+        assert_eq!(after.get(token), Some(unit), "{token}");
+    }
+    // RST-03: the regrown bracket unit is new; no token is reused.
+    let added: Vec<_> = after
+        .keys()
+        .filter(|token| !units_before.contains_key(*token))
+        .collect();
+    assert_eq!(added.len(), 1, "{after:?}");
+    assert!(
+        !["ppu_00000000000000000000000000000003"].contains(&added[0].as_str()),
+        "{added:?}"
+    );
+    assert_eq!(after[added[0]].2, 0);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn restore_as_draft_refuses_other_builds_snapshots_and_stale_state_without_writing() {
+    let (server, body) = snapshot_server().await;
+    let before = logical_database(&server.sql());
+    let refusals = [
+        // RST-04: another tenant's and another Build's snapshots are not found.
+        (
+            (1, 3),
+            body.clone(),
+            404,
+            json!({"code": "snapshot_not_found"}),
+        ),
+        (
+            (1, 4),
+            body.clone(),
+            404,
+            json!({"code": "snapshot_not_found"}),
+        ),
+        (
+            (1, 99),
+            body.clone(),
+            404,
+            json!({"code": "snapshot_not_found"}),
+        ),
+        (
+            (2, 3),
+            body.clone(),
+            404,
+            json!({"code": "profile_not_found"}),
+        ),
+        // Build 3's own snapshot names Build 1's revision.
+        (
+            (3, 4),
+            restore_body(Value::Null, 0, Value::Null),
+            409,
+            json!({"code": "snapshot_not_restorable"}),
+        ),
+        // A Node snapshot holds no Accepted revision.
+        (
+            (1, 2),
+            body.clone(),
+            409,
+            json!({"code": "snapshot_not_restorable"}),
+        ),
+        (
+            (1, 1),
+            restore_body(json!(1), 2, open_draft()),
+            409,
+            json!({"code": "base_changed"}),
+        ),
+        (
+            (1, 1),
+            restore_body(json!(1), 1, Value::Null),
+            409,
+            json!({"code": "draft_changed"}),
+        ),
+    ];
+    for (index, ((profile, snapshot), body, status, expected)) in refusals.into_iter().enumerate() {
+        let key = format!("refused-{index}");
+        let mut reply = json_reply(
+            restore(&server, profile, snapshot, Some(&key)).json(&body),
+            status,
+        )
+        .await;
+        let reply = reply.as_object_mut().unwrap();
+        reply.remove("detail");
+        reply.remove("status");
+        reply.remove("title");
+        reply.remove("type");
+        assert_eq!(
+            Value::Object(reply.clone()),
+            expected,
+            "{profile}/{snapshot}"
+        );
+    }
+    assert_eq!(logical_database(&server.sql()), before);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn restore_as_draft_refuses_invalid_requests_and_changed_layers() {
+    let (server, body) = snapshot_server().await;
+    let before = logical_database(&server.sql());
+    // Without a key, or in another mode, the request is invalid.
+    let response = restore(&server, 1, 1, None)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let mut direct = body.clone();
+    direct["mode"] = json!("direct");
+    let response = restore(&server, 1, 1, Some("direct"))
+        .json(&direct)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    // Source layers that differ from the snapshot's cannot be accepted.
+    server
+        .sql()
+        .execute(
+            "UPDATE profile_layers SET layer_order=5 WHERE profile_id=1",
+            [],
+        )
+        .unwrap();
+    let moved = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(restore(&server, 1, 1, Some("layers")).json(&body), 409).await,
+        json!({"code": "inputs_changed"})
+    );
+    assert_eq!(logical_database(&server.sql()), moved);
+    server
+        .sql()
+        .execute(
+            "UPDATE profile_layers SET layer_order=0 WHERE profile_id=1",
+            [],
+        )
+        .unwrap();
+    assert_eq!(logical_database(&server.sql()), before);
+    server.close().await;
+}
+
+/// The observed open draft is abandoned for the restored one, which has no
+/// header row because the snapshot saved none.
+#[tokio::test]
+async fn restore_as_draft_abandons_the_observed_open_draft() {
+    let (server, body) = snapshot_server().await;
+    let workspace = json_reply(restore(&server, 1, 1, Some("restored")).json(&body), 200).await;
+    assert_eq!(workspace["draft"]["draft_id"], 3);
+    let states = triples::<i64, String, i64>(
+        &server,
+        "SELECT id,state,lifecycle_version FROM plan_drafts WHERE profile_id=1 AND id>1 ORDER BY id",
+    );
+    assert_eq!(
+        states,
+        vec![(2, "abandoned".to_owned(), 1), (3, "open".to_owned(), 0)]
+    );
+    let bases = triples::<String, i64, i64>(
+        &server,
+        "SELECT part_key,base_revision_part_id,quantity_effective FROM plan_draft_parts WHERE draft_id=3 ORDER BY id",
+    );
+    assert_eq!(
+        bases,
+        vec![
+            ("bracket.stl".to_owned(), 1, 3),
+            ("excluded.stl".to_owned(), 2, 1),
+            ("gear.stl".to_owned(), 3, 2),
+        ]
+    );
+    let headers: i64 = server
+        .sql()
+        .query_row("SELECT count(*) FROM plan_draft_headers", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(headers, 0);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn restore_as_draft_refuses_to_drop_printed_units() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    // Revision 2 grows the bracket to 4 units and all of them are printed.
+    accept_bracket_quantity(&server, 4).await;
+    server
+        .sql()
+        .execute(
+            "UPDATE print_progress SET completed=1 WHERE part_id=(SELECT projection_part_id FROM plan_revision_parts WHERE revision_id=2 AND part_key='bracket.stl')",
+            [],
+        )
+        .unwrap();
+    let bracket: Vec<String> = units(&server)
+        .into_iter()
+        .filter(|(_, (name, _, completed, _))| name.starts_with("bracket") && *completed == 1)
+        .map(|(token, _)| token)
+        .collect();
+    assert_eq!(bracket.len(), 4);
+    let before = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(
+            restore(&server, 1, 1, Some("printed")).json(&restore_body(json!(2), 2, Value::Null)),
+            409
+        )
+        .await,
+        json!({"code": "printed_units_affected", "tokens": bracket})
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    server.close().await;
+}

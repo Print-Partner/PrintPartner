@@ -100,3 +100,83 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
 file under the data directory before and after a full paged walk.
 `pp-core`'s `rebuild_read_http` test pages the route through the composed
 `read_router` and checks each refusal in the table above.
+
+## Restore a snapshot as a draft
+
+`POST /plans/{id}/snapshots/{snapshot_id}/restore` (GRE-1094) turns a Plan
+snapshot into a new open draft. Only Accept publishes it, through the same gate
+as any draft. It is mounted on the draft router (`pp_api::drafts`, root and
+`/api/v2`) under the same `desktop_rebuild` and `PP_DESKTOP_REBUILD` gates,
+needs an `Idempotency-Key`, and is `restoreSnapshotAsDraft` in
+`@print-partner/rust-client`. Node's route of the same path restores Source
+layers and the kit manifest in place; under the Rust runtime that mode does not
+exist.
+
+```json
+{"mode": "draft", "expected_base": {"revision_id": 2, "plan_version": 2},
+ "expected_draft": null}
+```
+
+`mode` accepts only `draft`. `expected_draft` is the open draft the caller
+saw, or `null` for none. A 200 answers the restored draft's `DraftWorkspace`,
+with Required units selected as a recomputed draft's are; the gate previews and
+accepts that draft.
+
+One immediate transaction (`pp_storage::working_drafts::restore`):
+
+1. A draft this actor created with the same key answers again when the request
+   is the same (Plan, snapshot, expected base and draft), and `409
+   idempotency_conflict` otherwise. The draft's `idempotency_key` holds
+   `snapshot-restore-v1:<key SHA-256>:<request digest>`; no schema step.
+2. The snapshot must belong to this Build and tenant.
+3. The Accepted base and the observed draft are checked as for a draft header
+   save.
+4. The snapshot must record an Accepted revision of this Build
+   (`accepted_plan_revision_id`, which every `pre_apply` snapshot from Rust
+   Accept has). Node's user and assistant snapshots hold Source names and kit
+   choices only, which a draft cannot hold.
+5. The revision's inputs must name the Build's current Source layers, as Accept
+   requires.
+6. The draft's inputs and Parts are the revision's. Each Part's predecessor
+   (`base_revision_part_id`) is the current Accepted Part that holds its
+   Required-unit tokens, so the selection reuses them. A Part the current Plan
+   no longer has is new, and Accept gives it new tokens; a retired token is
+   never reused.
+7. A current Part with printed (completed) units must keep at least that many
+   units in the restored draft. The selection keeps completed units first, so
+   no printed unit leaves the Plan.
+8. Every open draft is abandoned (it stays rebasable), and the new draft gets
+   the Build header the snapshot saved (`plan_snapshot_headers`), if any, as
+   header version 1. Accept then needs `expected_header_version: 1`.
+
+Restore writes only draft rows and `plan.draft_changed` events. Accepted
+revisions, `parts`, `print_progress`, Required units, Checkoff bursts
+(`print_jobs`, `print_job_parts`), the send queue, Checkoff links and Plates
+are unchanged until Accept, and Accept leaves Checkoff bursts, sends and Plate
+history as they were.
+
+| Case | Response |
+| --- | --- |
+| Restored, or a replay | `200` `DraftWorkspace` |
+| Missing `Idempotency-Key`, bad ids, body or `mode` | `400` |
+| Build missing or another tenant's | `404` `profile_not_found` |
+| Snapshot missing, or another Build's or tenant's | `404` `snapshot_not_found` |
+| Archived Build | `422` `build_archived` |
+| No Accepted baseline, stale base or draft | `409` `accepted_baseline_required`, `base_changed`, `draft_changed` |
+| Snapshot records no Accepted revision of this Build | `409` `snapshot_not_restorable` |
+| Source layers differ from the snapshot's | `409` `inputs_changed` |
+| Printed units would leave the Plan | `409` `printed_units_affected` with `tokens` |
+| Same key, different request | `409` `idempotency_conflict` |
+
+Whole-installation backup restore is a different operation.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail \
+  --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(restore_as_draft)'
+```
+
+`restore_as_draft_creates_a_draft_that_accept_publishes_without_rewinding_evidence`
+accepts a change, restores the saved snapshot, restarts, and accepts the
+restored draft, comparing the Accepted Plan, Checkoff, sends, Plates and every
+Required unit's token and progress at each step. The other two cover the
+refusals and the printed-unit rule.

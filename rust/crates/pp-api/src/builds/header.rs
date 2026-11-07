@@ -95,7 +95,7 @@ pub(super) async fn archive(
     let Ok(bytes) = to_bytes(request.into_body(), limit).await else {
         return failure(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
     };
-    if json && !bytes.is_empty() && serde_json::from_slice::<IgnoredAny>(&bytes).is_err() {
+    if json && serde_json::from_slice::<IgnoredAny>(&bytes).is_err() {
         return unreadable();
     }
     let Some(build) = parse_build_id(&id) else {

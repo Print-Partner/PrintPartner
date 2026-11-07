@@ -84,6 +84,7 @@ const PHASES = [
   ] },
   { name: "archive", requests: [
     archive("archive_not_json", "/plans/1/archive", "{"),
+    archive("archive_empty_json", "/plans/1/archive", ""),
     archive("archive_flat"),
     archive("archive_again_v2", "/api/v2/plans/1/archive"),
     patch("patch_archived_again", { archived: true }),

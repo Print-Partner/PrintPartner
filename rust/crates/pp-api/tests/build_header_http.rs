@@ -145,7 +145,7 @@ fn correction(id: &str) -> Option<(u16, Value)> {
         "blank_name_with_archive" => Some((400, json!({"detail": "Profile name is required"}))),
         // Rust does not expose Fastify's parser codes or messages, and Node
         // reads `body.archived` from a `null` body and answers 500.
-        "not_json" | "archive_not_json" | "null_body" => {
+        "not_json" | "archive_not_json" | "archive_empty_json" | "null_body" => {
             Some((400, json!({"detail": "Request is invalid"})))
         }
         _ => None,
@@ -166,15 +166,15 @@ async fn build_header_patch_and_archive_match_node() {
         for case in &phase.cases {
             let before = tables(dir.path());
             let body = match (&case.payload, &case.body) {
-                (Some(payload), _) => payload.clone(),
-                (None, Some(body)) => body.to_string(),
-                (None, None) => String::new(),
+                (Some(payload), _) => Some(payload.clone()),
+                (None, Some(body)) => Some(body.to_string()),
+                (None, None) => None,
             };
             let (status, actual) = loopback::send(
                 &router,
                 &case.method,
                 &case.url,
-                &body,
+                body.as_deref(),
                 Some("pp_session=read-fixture-secret"),
             )
             .await;
@@ -210,5 +210,5 @@ async fn build_header_patch_and_archive_match_node() {
         drop(router);
         owner.shutdown().unwrap();
     }
-    assert_eq!((matched, corrected), (47, 6));
+    assert_eq!((matched, corrected), (47, 7));
 }

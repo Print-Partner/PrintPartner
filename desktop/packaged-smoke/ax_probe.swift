@@ -7,7 +7,8 @@
 //   type PID PATH TEXT          focus the element at PATH and type TEXT as key events
 //   tray PID ITEM               open the app's menu bar extra and press the menu item ITEM
 //   cgwindows PID...            on-screen window numbers and bounds for screencapture -l
-//   colors PNG                  the number of distinct pixel colors in PNG
+//   colors PNG [WIDTH X Y W H]  the number of distinct pixel colors in PNG, or only in the
+//                               rectangle X Y W H (points) of a window capture WIDTH points wide
 import AppKit
 import ApplicationServices
 import Foundation
@@ -186,11 +187,24 @@ case "cgwindows":
     }
     emit(found)
 case "colors":
-    guard args.count == 3 else { fail("colors PNG") }
+    guard args.count == 3 || args.count == 8 else { fail("colors PNG [WIDTH X Y W H]") }
     guard let image = NSImage(contentsOfFile: args[2]),
-          let picture = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+          let whole = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
         emit(["colors": 0])
         exit(0)
+    }
+    var picture = whole
+    if args.count == 8 {
+        let numbers = args[3...7].compactMap { Double($0) }
+        guard numbers.count == 5, numbers[0] > 0 else { fail("bad crop \(args[3...7])") }
+        let scale = Double(whole.width) / numbers[0]
+        let rect = CGRect(x: numbers[1] * scale, y: numbers[2] * scale,
+                          width: numbers[3] * scale, height: numbers[4] * scale)
+        guard let cropped = whole.cropping(to: rect) else {
+            emit(["colors": 0])
+            exit(0)
+        }
+        picture = cropped
     }
     let width = picture.width, height = picture.height
     guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,

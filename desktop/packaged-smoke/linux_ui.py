@@ -236,6 +236,13 @@ class LinuxUI:
         """The AppIndicator menu is exported over D-Bus, not AT-SPI; not driven here."""
         return {"pressed": False, "reason": "tray quit is macOS only"}
 
+    def dismiss(self, dialog):
+        """The GTK dialog belongs to the app process and closes with it."""
+        return True
+
+    def evidence_screenshot(self, path):
+        self.screenshot(None, path)
+
     def snapshot(self, pids, path):
         """The AT-SPI tree is not dumped; the screenshot is the failure evidence."""
 

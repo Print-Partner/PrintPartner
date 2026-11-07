@@ -51,6 +51,14 @@ def descendants(root):
     return found
 
 
+def notification_center():
+    """Pids of the agent that draws CFUserNotification alerts."""
+    result = subprocess.run(
+        ["pgrep", "-x", "UserNotificationCenter"], capture_output=True, text=True
+    )
+    return {int(pid) for pid in result.stdout.split() if pid.isdigit()}
+
+
 def label(node):
     return node.get("t") or node.get("d") or node.get("l") or node.get("p") or ""
 
@@ -87,7 +95,7 @@ class MacUI:
             subprocess.run(
                 ["swiftc", "-O", str(HERE / "ax_probe.swift"), "-o", self.probe], check=True
             )
-        if not self.call("trusted")["trusted"]:
+        if not (self.call("trusted") or {}).get("trusted"):
             raise RuntimeError("this process is not trusted for Accessibility")
 
     def stop(self):
@@ -111,22 +119,20 @@ class MacUI:
     def dump(self, pids):
         return self.call("dump", DUMP_LIMIT, *sorted(pids)) or {"apps": []}
 
-    def on_screen(self, pids):
-        """Normal-layer windows that are on screen, by (pid, frame)."""
+    def on_screen(self, pids, any_layer=False):
+        """On-screen windows by (pid, frame); normal-layer only unless any_layer."""
         return {
             (n["pid"], (n["x"], n["y"], n["w"], n["h"])): n["id"]
             for n in self.call("cgwindows", *sorted(pids)) or []
-            if n["layer"] == 0 and n["onscreen"]
+            if n["onscreen"] and (any_layer or n["layer"] == 0)
         }
 
     def windows(self, pids):
         """AX windows; visible only when a matching on-screen window exists."""
         shown = self.on_screen(pids)
         found = []
-        windows = {}
         for pid, path, node, ancestors in walk(self.dump(pids)):
             if not ancestors and node.get("r") == "AXWindow":
-                windows[(pid, path)] = node
                 frame = (node.get("x"), node.get("y"), node.get("w"), node.get("h"))
                 number = shown.get((pid, frame))
                 found.append(
@@ -135,31 +141,50 @@ class MacUI:
                         "pid": pid,
                         "title": node.get("t", ""),
                         "visible": number is not None and not node.get("min", False),
+                        "frame": list(frame),
                         "width": node.get("w", 0),
                         "height": node.get("h", 0),
                     }
                 )
-            elif node.get("r") == "AXWebArea" and found and (pid, path.split(".")[0]) in windows:
-                found[-1].setdefault(
-                    "page", [node.get("x"), node.get("y"), node.get("w"), node.get("h")]
-                )
+            elif node.get("r") == "AXWebArea" and found and "page" not in found[-1]:
+                origin = found[-1]["frame"]
+                if None not in (node.get("x"), node.get("y"), origin[0], origin[1]):
+                    found[-1]["page"] = [
+                        node["x"] - origin[0],
+                        node["y"] - origin[1],
+                        node.get("w", 0),
+                        node.get("h", 0),
+                    ]
         return found
 
     def startup_error(self, pids, title):
-        shown = self.on_screen(pids)
-        for pid, path, node, ancestors in walk(self.dump(pids)):
+        """The startup error alert. rfd shows it with CFUserNotificationDisplayAlert,
+        which the UserNotificationCenter agent draws, so its windows are searched too."""
+        owners = set(pids) | notification_center()
+        shown = self.on_screen(owners, any_layer=True)
+        for pid, path, node, ancestors in walk(self.dump(owners)):
             if ancestors or not (node.get("t") == title or title in node_text(node)):
                 continue
             frame = (node.get("x"), node.get("y"), node.get("w"), node.get("h"))
             return {
+                "kind": "dialog",
                 "id": shown.get((pid, frame)),
                 "pid": pid,
+                "path": path,
                 "title": node.get("t", ""),
                 "text": title,
                 "width": node.get("w", 0),
                 "height": node.get("h", 0),
             }
         return None
+
+    def dismiss(self, dialog):
+        """Press the alert's OK button, so it cannot outlive the launch."""
+        for pid, path, node, ancestors in walk(self.dump({dialog["pid"]})):
+            if path.split(".")[0] == dialog["path"] and node.get("r") == "AXButton":
+                if label(node) == "OK" or node_text(node) == "OK":
+                    return bool((self.call("press", pid, path) or {}).get("pressed"))
+        return False
 
     def find_content(self, pids, needle):
         for pid, path, node, ancestors in walk(self.dump(pids)):
@@ -208,20 +233,26 @@ class MacUI:
         return self.call("tray", pid, item) or {"pressed": False}
 
     def screenshot(self, window, path):
-        """Capture the page area of the window (or the window, for a dialog).
+        """Count the colors of the page area of the main window, or of a dialog.
 
-        Without an on-screen window number there is nothing of the app's to
-        capture, so the count is 0 rather than a full-screen capture of the
-        wallpaper.
+        The capture is the window's own image (screencapture -o -l), so other
+        windows cannot cover it; the count excludes the title bar. A main
+        window without a page area, or a window that is not on screen, counts 0.
         """
         if not window or window.get("id") is None:
             return 0
-        if window.get("page") and all(isinstance(v, int) for v in window["page"]):
-            target = ["-R", ",".join(map(str, window["page"]))]
-        else:
-            target = ["-o", "-l", str(window["id"])]
-        subprocess.run(["screencapture", "-x", *target, str(path)], check=False)
-        return (self.call("colors", path) or {}).get("colors", 0)
+        capture = ["screencapture", "-x", "-o", "-l", str(window["id"]), str(path)]
+        subprocess.run(capture, check=False)
+        if window.get("kind") == "dialog":
+            return (self.call("colors", path) or {}).get("colors", 0)
+        page = window.get("page")
+        if not page or not window.get("width"):
+            return 0
+        return (self.call("colors", path, window["width"], *page) or {}).get("colors", 0)
+
+    def evidence_screenshot(self, path):
+        """The whole screen, for a failed launch only."""
+        subprocess.run(["screencapture", "-x", str(path)], check=False)
 
     def snapshot(self, pids, path):
         """Write the AX tree for a failed run's evidence."""

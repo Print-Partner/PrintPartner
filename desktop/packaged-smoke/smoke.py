@@ -77,7 +77,7 @@ def alive(ui, owned):
 def wait_for(description, probe, timeout, app):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if app.poll() is not None:
+        if app is not None and app.poll() is not None:
             raise SmokeFailure(
                 f"the app exited with {app.returncode} while waiting for {description}"
             )
@@ -265,7 +265,7 @@ def expect_usable(launch, receipt, fixture, database):
     receipt["content"] = launch.wait(f"{needle!r} in the accessibility tree", content)
     receipt["contentSeconds"] = launch.elapsed()
     receipt["screenshotColors"] = launch.wait(
-        "the page to paint", lambda: launch.screenshot(receipt["window"], "window.png"), 60
+        "the page to paint", lambda: launch.screenshot(launch.main_window(), "window.png"), 60
     )
     launch.pids()
     receipt["ownedProcesses"] = len(launch.owned)
@@ -308,6 +308,13 @@ def expect_refusal(launch, receipt, data, before):
     receipt.update(exitCode=code, survivors=survivors)
     if survivors:
         raise SmokeFailure(f"child processes survived the refusal: {survivors}")
+    launch.ui.dismiss(receipt["window"])
+    wait_for(
+        "the startup error dialog to close",
+        lambda: not launch.ui.startup_error(set(), STARTUP_ERROR_TITLE),
+        10,
+        None,
+    )
     after = directory_state(data)
     receipt["dataDirectory"] = after
     if after != before:
@@ -335,6 +342,8 @@ def run(args):
     launch = None
     try:
         ui.start()
+        if ui.startup_error(set(), STARTUP_ERROR_TITLE):
+            raise SmokeFailure(f"{STARTUP_ERROR_TITLE!r} is already showing before the launch")
         launch = Launch(args, ui, home)
         if args.expect_refusal:
             expect_refusal(launch, receipt, data, before)
@@ -347,9 +356,10 @@ def run(args):
         if not isinstance(failure, SmokeFailure):
             failure = f"{type(failure).__name__}: {failure}"
         receipt.update(status="failed", failure=str(failure))
-        if launch is not None and launch.app.poll() is None:
-            launch.screenshot(receipt.get("window"), "failure.png")
-            ui.snapshot(launch.pids(), args.output / "accessibility.json")
+        if launch is not None:
+            ui.evidence_screenshot(args.output / "failure.png")
+            if launch.app.poll() is None:
+                ui.snapshot(launch.pids(), args.output / "accessibility.json")
         print(f"packaged smoke failed: {failure}", file=sys.stderr)
         return 1
     finally:

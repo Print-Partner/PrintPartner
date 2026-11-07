@@ -250,6 +250,13 @@ class MacTreeTest(unittest.TestCase):
 
     onscreen = True
 
+    def setUp(self):
+        self.restore = macos_ui.notification_center
+        macos_ui.notification_center = set
+
+    def tearDown(self):
+        macos_ui.notification_center = self.restore
+
     def ui(self, calls):
         ui = macos_ui.MacUI()
 
@@ -295,7 +302,19 @@ class MacTreeTest(unittest.TestCase):
         )
 
     def test_window_records_its_page_frame(self):
-        self.assertEqual(self.ui([]).windows({7})[0]["page"], [0, 60, 1280, 815])
+        self.assertEqual(self.ui([]).windows({7})[0]["page"], [0, 35, 1280, 815])
+
+    def test_paint_counts_only_the_page_area_of_the_window_capture(self):
+        calls = []
+        ui = self.ui(calls)
+        window = ui.windows({7})[0]
+        original = macos_ui.subprocess.run
+        macos_ui.subprocess.run = lambda *args, **kwargs: None
+        try:
+            ui.screenshot(window, "/tmp/window.png")
+        finally:
+            macos_ui.subprocess.run = original
+        self.assertIn(("colors", "/tmp/window.png", 1280, 0, 35, 1280, 815), calls)
 
     def test_off_screen_window_is_not_visible_and_not_captured(self):
         self.onscreen = False
@@ -320,6 +339,16 @@ class MacTreeTest(unittest.TestCase):
                 ("press", 7, "0.0.0.3"),
             ],
         )
+
+    def test_startup_error_is_searched_in_the_notification_center(self):
+        original = macos_ui.notification_center
+        macos_ui.notification_center = lambda: {99}
+        calls = []
+        try:
+            self.ui(calls).startup_error(set(), smoke.STARTUP_ERROR_TITLE)
+        finally:
+            macos_ui.notification_center = original
+        self.assertIn(("dump", macos_ui.DUMP_LIMIT, 99), calls)
 
     def test_startup_error_is_found_by_its_message_text(self):
         self.dump = {

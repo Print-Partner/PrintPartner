@@ -19,12 +19,26 @@ import subprocess
 import sys
 import tempfile
 
-RUNTIME_ENTRIES = ("web", "bin", "release.json")
+RUNTIME = "desktop-runtime/"
 
 
-def inventory(root):
+def runtime_entries(stage):
+    """The stage paths bundle-config.json maps into desktop-runtime, by top-level name."""
+    resources = json.loads((stage / "bundle-config.json").read_text())["bundle"]["resources"]
+    names = []
+    for source, destination in resources.items():
+        name = destination.removeprefix(RUNTIME)
+        if destination == name or "/" in name or Path(source) != stage / name:
+            raise SystemExit(f"unexpected Linux resource mapping {source} -> {destination}")
+        names.append(name)
+    if not names:
+        raise SystemExit("bundle-config.json maps no runtime resources")
+    return sorted(names)
+
+
+def inventory(root, names):
     entries = {}
-    for name in RUNTIME_ENTRIES:
+    for name in names:
         top = root / name
         if not os.path.lexists(top):
             continue
@@ -34,10 +48,10 @@ def inventory(root):
             if path.is_symlink():
                 entries[relative] = ("link", os.readlink(path))
             elif path.is_dir():
-                entries[relative] = ("dir", None)
+                entries[relative] = ("dir", path.stat().st_mode & 0o7777)
             elif path.is_file():
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                entries[relative] = ("file", digest, os.access(path, os.X_OK))
+                entries[relative] = ("file", digest, path.stat().st_mode & 0o7777)
             else:
                 entries[relative] = ("other", None)
     return entries
@@ -75,23 +89,28 @@ def runtime_of(root):
 
 def assemble(stage, deb):
     links = json.loads((stage / "bundle-manifest.json").read_text())["dependencies"]["links"]
-    expected = inventory(stage)
+    names = runtime_entries(stage)
+    expected = inventory(stage, names)
     with tempfile.TemporaryDirectory(prefix=".deb-assembly-", dir=deb.parent) as temporary:
         work = Path(temporary) / "package"
         subprocess.run(["dpkg-deb", "-R", str(deb), str(work)], check=True)
         runtime = runtime_of(work)
-        added = dropped_links(expected, inventory(runtime), links)
+        added = dropped_links(expected, inventory(runtime, names), links)
         for name in added:
-            (runtime / name).parent.mkdir(parents=True, exist_ok=True)
+            for parent in reversed(Path(name).parents[:-1]):
+                directory = runtime / parent
+                if not directory.exists():
+                    directory.mkdir()
+                    directory.chmod(expected[parent.as_posix()][1])
             (runtime / name).symlink_to(links[name])
-        if inventory(runtime) != expected:
+        if inventory(runtime, names) != expected:
             raise SystemExit("the assembled runtime differs from the stage")
         rebuilt = Path(temporary) / deb.name
         subprocess.run(["dpkg-deb", "--root-owner-group", "--build", str(work), str(rebuilt)],
                        check=True, stdout=subprocess.DEVNULL)
         check = Path(temporary) / "check"
         subprocess.run(["dpkg-deb", "-x", str(rebuilt), str(check)], check=True)
-        if inventory(runtime_of(check)) != expected:
+        if inventory(runtime_of(check), names) != expected:
             raise SystemExit("the rebuilt .deb runtime differs from the stage")
         shutil.move(rebuilt, deb)
     return {"deb": str(deb), "sha256": hashlib.sha256(deb.read_bytes()).hexdigest(),

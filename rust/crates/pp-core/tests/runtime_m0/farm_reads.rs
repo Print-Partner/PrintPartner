@@ -120,7 +120,7 @@ async fn observed_printers(origin: &str, cookie: &str) -> Value {
                         && p["state"]["execution"] != "unknown"
                 })
             };
-            if observed("p-moon") && observed("p-dead") {
+            if ["p-moon", "p-dead", "p-prusa"].into_iter().all(observed) {
                 return body;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

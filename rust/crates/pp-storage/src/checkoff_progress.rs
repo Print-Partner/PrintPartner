@@ -34,12 +34,19 @@ pub(crate) mod links;
 mod lookup;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
+pub mod print_file;
+#[cfg(feature = "desktop_rebuild")]
 mod unattributed;
 mod verify;
 pub mod wire;
 
 #[cfg(feature = "desktop_rebuild")]
 pub use assign::{AssignedLink, Assignment};
+/// `ProgressClient::apply`'s error when the writer admitted the command but its
+/// reply was lost: the write may have committed.
+pub const REPLY_LOST: &str = "Checkoff reply lost after admission; reread progress before retrying";
+#[cfg(feature = "desktop_rebuild")]
+pub use print_file::{FileRequest, FileRoute};
 
 const MAX_SAFE: i64 = 9_007_199_254_740_991;
 const MAX_IMPORT: i64 = 10_000;
@@ -217,6 +224,10 @@ pub enum Request {
     /// already read by the route.
     #[cfg(feature = "desktop_rebuild")]
     AssignFile(Box<Assignment>),
+    /// `POST /printer-checkoff/file-assignments` or its `/preview`: the raw
+    /// body parsed and its printer resolved, before the route reads the file.
+    #[cfg(feature = "desktop_rebuild")]
+    FileRequest { body: Value, route: FileRoute },
     /// `POST /printer-checkoff/{id}/manual-complete`.
     #[cfg(feature = "desktop_rebuild")]
     ManualComplete { id: String },
@@ -274,6 +285,10 @@ pub enum Body {
         link: Value,
         attribution: Box<Value>,
     },
+    /// A parsed print-file request, which the route answers itself.
+    #[cfg(feature = "desktop_rebuild")]
+    #[serde(skip_serializing)]
+    FileRequest(Box<FileRequest>),
     /// A dismissed unattributed print.
     Dismissed {
         ok: bool,
@@ -402,7 +417,7 @@ enum Op {
     #[cfg(feature = "desktop_rebuild")]
     ClaimUnattributed(unattributed::Claim),
     #[cfg(feature = "desktop_rebuild")]
-    AssignFile(Box<Assignment>),
+    File(print_file::Op),
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed {
         id: String,
@@ -503,9 +518,7 @@ impl ProgressClient {
         });
         self.shared.changed.notify_all();
         drop(queue);
-        receiver.recv().map_err(|_| {
-            anyhow!("Checkoff reply lost after admission; reread progress before retrying")
-        })?
+        receiver.recv().map_err(|_| anyhow!(REPLY_LOST))?
     }
 }
 
@@ -595,7 +608,11 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
             return Ok(Op::CheckoffLink { id });
         }
         #[cfg(feature = "desktop_rebuild")]
-        Request::AssignFile(assignment) => return Ok(Op::AssignFile(assignment)),
+        Request::AssignFile(assignment) => return Ok(Op::File(print_file::Op::Assign(assignment))),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::FileRequest { body, route } => {
+            return Ok(Op::File(print_file::Op::Request { body, route }));
+        }
         #[cfg(feature = "desktop_rebuild")]
         Request::ManualComplete { id } => {
             return Ok(Op::Manual(manual::Op::CompleteLink { link_id: id }));
@@ -753,7 +770,7 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         #[cfg(feature = "desktop_rebuild")]
         Op::CheckoffLink { id } => return lookup::link(tx, tenant, &id),
         #[cfg(feature = "desktop_rebuild")]
-        Op::AssignFile(assignment) => return assign::assign(tx, tenant, *assignment, repos),
+        Op::File(op) => return print_file::run(tx, tenant, op, repos),
         Op::Import(import) => return import_current(tx, tenant, import, repos),
         Op::Unit {
             target: Target::Token { expected, token },

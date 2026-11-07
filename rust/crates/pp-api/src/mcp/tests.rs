@@ -49,16 +49,7 @@ impl McpServer {
             .0;
         let (listener, origin) = mcp_rpc::listen().await;
         let config = McpHttpConfig::from_startup(&origin, tenant, flag).unwrap();
-        let auth = owner
-            .rebuild_auth_with_policy(policy(), Default::default())
-            .unwrap();
-        let workflow = owner
-            .build_workflow(
-                policy(),
-                Arc::new(pp_storage::read_model::build_workflow::PendingInputs),
-            )
-            .unwrap();
-        let router = mcp_router(config, auth, workflow, owner.checkoff_progress().unwrap());
+        let (router, _) = test_router(&owner, config, policy());
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,

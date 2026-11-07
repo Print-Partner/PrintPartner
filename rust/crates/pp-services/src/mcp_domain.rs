@@ -207,13 +207,13 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    fn ok(text: String) -> Self {
+    pub fn ok(text: String) -> Self {
         Self {
             text,
             is_error: false,
         }
     }
-    fn error(value: Value) -> Self {
+    pub fn error(value: Value) -> Self {
         Self {
             text: value.to_string(),
             is_error: true,
@@ -259,7 +259,13 @@ impl<P: DomainPort> McpSession<P> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn set_pending(&self, action: ProposedAction) {
+    /// A copy of the pending action `id`, left pending.
+    pub fn pending(&self, id: &str) -> Option<ProposedAction> {
+        self.lock().iter().find(|a| a.id == id).cloned()
+    }
+
+    /// Stores `action` as pending, replacing one with the same id.
+    pub fn set_pending(&self, action: ProposedAction) {
         let mut pending = self.lock();
         match pending.iter_mut().find(|a| a.id == action.id) {
             Some(slot) => *slot = action,
@@ -267,7 +273,8 @@ impl<P: DomainPort> McpSession<P> {
         }
     }
 
-    fn take_pending(&self, id: &str) -> Option<ProposedAction> {
+    /// Removes the pending action `id`, so a concurrent confirm cannot take it too.
+    pub fn take_pending(&self, id: &str) -> Option<ProposedAction> {
         let mut pending = self.lock();
         let index = pending.iter().position(|a| a.id == id)?;
         Some(pending.remove(index))

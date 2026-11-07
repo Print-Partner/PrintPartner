@@ -59,6 +59,16 @@ impl Served {
             owner
                 .build_workflow(mcp_rpc::policy(), Arc::new(PendingInputs))
                 .unwrap(),
+            owner
+                .working_drafts_with_observations(
+                    mcp_rpc::policy(),
+                    Arc::new(owner.source_reads().unwrap()),
+                    Default::default(),
+                )
+                .unwrap(),
+            owner
+                .build_planning(mcp_rpc::policy(), owner.source_reads().unwrap())
+                .unwrap(),
             progress,
         ));
         let bearer = match bearer {

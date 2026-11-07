@@ -5,6 +5,7 @@
 //   dump LIMIT PID...           the AX tree of each process's windows, at most LIMIT nodes
 //   press PID PATH              AXPress the element at PATH (window index, then child indices)
 //   type PID PATH TEXT          focus the element at PATH and type TEXT as key events
+//   tray PID ITEM               open the app's menu bar extra and press the menu item ITEM
 //   cgwindows PID...            on-screen window numbers and bounds for screencapture -l
 //   colors PNG                  the number of distinct pixel colors in PNG
 import AppKit
@@ -87,6 +88,15 @@ func node(_ element: AXUIElement, _ depth: Int) -> [String: Any] {
     return result
 }
 
+func find(_ element: AXUIElement, role: String, title: String, depth: Int = 0) -> AXUIElement? {
+    if text(element, kAXRoleAttribute) == role && text(element, kAXTitleAttribute) == title { return element }
+    guard depth < 8 else { return nil }
+    for child in elements(element, kAXChildrenAttribute) {
+        if let found = find(child, role: role, title: title, depth: depth + 1) { return found }
+    }
+    return nil
+}
+
 func resolve(_ pid: pid_t, _ path: String) -> AXUIElement {
     let indices = path.split(separator: ".").compactMap { Int($0) }
     guard let first = indices.first else { fail("empty path") }
@@ -138,6 +148,26 @@ case "type":
         }
     }
     emit(["focused": focused == .success, "typed": args[4].utf16.count])
+case "tray":
+    guard args.count == 4, let pid = pid_t(args[2]) else { fail("tray PID ITEM") }
+    guard let value = copy(application(pid), "AXExtrasMenuBar"),
+          CFGetTypeID(value) == AXUIElementGetTypeID(),
+          let extra = elements(value as! AXUIElement, kAXChildrenAttribute).first else {
+        emit(["pressed": false, "reason": "no menu bar extra"])
+        exit(0)
+    }
+    let opened = AXUIElementPerformAction(extra, kAXPressAction as CFString)
+    var item: AXUIElement?
+    for _ in 0..<20 where item == nil {
+        usleep(250_000)
+        item = find(extra, role: kAXMenuItemRole, title: args[3])
+    }
+    guard let menuItem = item else {
+        emit(["pressed": false, "opened": opened == .success, "reason": "no menu item \(args[3])"])
+        exit(0)
+    }
+    let status = AXUIElementPerformAction(menuItem, kAXPressAction as CFString)
+    emit(["pressed": status == .success, "opened": opened == .success])
 case "cgwindows":
     let pids = Set(args.dropFirst(2).compactMap { Int($0) })
     let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []

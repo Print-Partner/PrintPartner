@@ -48,6 +48,7 @@ PAINTED_COLORS = 64
 SETUP_FIELDS = ("Display name", "Email", "Password")
 SETUP_BUTTON = "Create administrator"
 CONTINUE_BUTTON = "Continue to Print Partner"
+TRAY_QUIT = "Quit Print Partner"
 
 
 class SmokeFailure(Exception):
@@ -149,12 +150,16 @@ def directory_state(data):
     return state
 
 
-def stop(ui, app, owned, timeout):
-    app.send_signal(signal.SIGTERM)
+def stop(ui, app, owned, timeout, quit=None):
+    """Quit the app (SIGTERM unless quit is given) and wait for it and its children."""
+    if quit is None:
+        app.send_signal(signal.SIGTERM)
+    else:
+        quit()
     try:
         code = app.wait(timeout)
     except subprocess.TimeoutExpired as error:
-        raise SmokeFailure(f"the app did not exit within {timeout}s of SIGTERM") from error
+        raise SmokeFailure(f"the app did not exit within {timeout}s of the quit") from error
     deadline = time.monotonic() + 10
     while alive(ui, owned) and time.monotonic() < deadline:
         time.sleep(0.2)
@@ -263,11 +268,20 @@ def expect_usable(launch, receipt, fixture, database):
     )
     launch.pids()
     receipt["ownedProcesses"] = len(launch.owned)
-    code, survivors = stop(launch.ui, launch.app, launch.owned, 60)
+    quit = None
+    if launch.args.quit == "tray":
+
+        def quit():
+            receipt["trayQuit"] = report = launch.ui.tray_quit(launch.app.pid, TRAY_QUIT)
+            if not report.get("pressed"):
+                raise SmokeFailure(f"could not choose {TRAY_QUIT!r} from the tray: {report}")
+
+    receipt["quit"] = launch.args.quit
+    code, survivors = stop(launch.ui, launch.app, launch.owned, 60, quit)
     receipt.update(exitCode=code, survivors=survivors)
     receipt["shutdownReceipt"] = shutdown = last_json_line(launch.stdout)
     if code != 0:
-        raise SmokeFailure(f"the app exited with {code} after SIGTERM")
+        raise SmokeFailure(f"the app exited with {code} after the {launch.args.quit} quit")
     if not shutdown or shutdown.get("errors") or shutdown.get("storage_released") is not True:
         raise SmokeFailure(f"incomplete shutdown receipt: {shutdown}")
     if survivors:
@@ -369,6 +383,12 @@ def main(argv):
     )
     parser.add_argument(
         "--expect-text", help="text to find instead of the fixture's first Build name"
+    )
+    parser.add_argument(
+        "--quit",
+        choices=("signal", "tray"),
+        default="signal",
+        help="quit with SIGTERM, or with the tray menu's Quit item (macOS)",
     )
     parser.add_argument("--timeout", type=int, default=180)
     return run(parser.parse_args(argv))

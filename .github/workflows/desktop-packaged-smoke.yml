@@ -194,6 +194,7 @@ jobs:
             features: ''
             scenarios: |
               migrate
+              migrate-tray-quit --quit tray
           - mode: desktop_rebuild
             features: desktop_rebuild
             scenarios: |

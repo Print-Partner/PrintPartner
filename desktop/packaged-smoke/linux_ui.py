@@ -231,6 +231,10 @@ class LinuxUI:
                 return True
         return False
 
+    def tray_quit(self, pid, item):
+        """The AppIndicator menu is exported over D-Bus, not AT-SPI; not driven here."""
+        return {"pressed": False, "reason": "tray quit is macOS only"}
+
     def snapshot(self, pids, path):
         """The AT-SPI tree is not dumped; the screenshot is the failure evidence."""
 

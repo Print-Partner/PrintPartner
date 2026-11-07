@@ -196,6 +196,10 @@ class MacUI:
                 return bool((self.call("press", pid, path) or {}).get("pressed"))
         return False
 
+    def tray_quit(self, pid, item):
+        """Choose item from the app's menu bar extra; return the probe's report."""
+        return self.call("tray", pid, item) or {"pressed": False}
+
     def screenshot(self, window, path):
         target = ["-l", str(window["id"])] if window and window.get("id") else []
         subprocess.run(["screencapture", "-x", "-o", *target, str(path)], check=False)

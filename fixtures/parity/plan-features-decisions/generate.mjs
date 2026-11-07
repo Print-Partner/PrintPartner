@@ -115,6 +115,9 @@ const REQUESTS = [
   rawPatch("patch_constructor_v1", "/api/v1" + features(3), "{\"constructor\":{\"prototype\":{}}}"),
   rawPatch("patch_not_json_v2", "/api/v2" + features(3), "{"),
   rawPatch("patch_empty_json_flat", features(3), ""),
+  rawPatch("patch_text_plain_flat", features(3), '{"farm":true}', { contentType: "text/plain" }),
+  rawPatch("patch_text_plain_charset_v2", "/api/v2" + features(3), '{"farm":false}', { contentType: "text/plain; charset=utf-8" }),
+  rawPatch("patch_text_plain_missing_v1", "/api/v1" + features(99), "{}", { contentType: "text/plain" }),
   // A corrupt tenant layer refuses every Plan once its input is valid.
   get("user_invalid_read_flat", features(1), { sql: USER_INVALID }),
   patch("user_invalid_patch_v1", "/api/v1" + features(3), { farm: true }),
@@ -177,6 +180,9 @@ const REQUESTS = [
   rawPost("decision_not_json_v1", "/api/v1" + decisions(12), "{"),
   rawPost("decision_empty_json_v2", "/api/v2" + decisions(12), ""),
   rawPost("decision_prototype_missing_flat", decisions(99), "{\"__proto__\":{}}"),
+  rawPost("decision_text_plain_flat", decisions(12), '{"kind":"choice","label":"typed"}', { contentType: "text/plain" }),
+  rawPost("decision_text_plain_empty_v1", "/api/v1" + decisions(12), "", { contentType: "text/plain; charset=utf-8" }),
+  rawPost("decision_text_plain_missing_v2", "/api/v2" + decisions(99), '{"kind":"bogus"}', { contentType: "text/plain" }),
   get("decision_list_v1", "/api/v1" + decisions(12)),
   // Node serves the append with the flag off too; Rust then mounts nothing.
   post("flag_off_decision_flat", decisions(12), { summary: "flag off" }, { rebuild: false }),
@@ -245,7 +251,7 @@ if (process.argv.includes("--probe")) {
       const response = await app.inject({
         method: request.method,
         url: request.path,
-        ...(request.payload === undefined ? {} : { payload: request.payload, headers: { "content-type": "application/json" } }),
+        ...(request.payload === undefined ? {} : { payload: request.payload, headers: { "content-type": request.contentType ?? "application/json" } }),
       });
       const after = graph();
       const changed = tables.filter((table) => before.get(table) !== after.get(table));
@@ -254,6 +260,7 @@ if (process.argv.includes("--probe")) {
         method: request.method,
         path: request.path,
         ...(request.payload === undefined ? {} : request.verbatim ? { rawBody: request.payload } : { body: JSON.parse(request.payload) }),
+        ...(request.contentType ? { contentType: request.contentType } : {}),
         ...(request.sql ? { sql: request.sql } : {}),
         ...(request.rebuild === false ? { rebuild: false } : {}),
         node: { status: response.statusCode, body: stamp(response.body === "" ? null : response.json()), setCookie: [] },

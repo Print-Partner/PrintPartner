@@ -60,9 +60,10 @@ pub(super) async fn read(
     answer(app, received, Method::GET, request).await
 }
 
-/// Fastify refuses an empty or poisoned JSON body before the route runs; the
-/// route then needs both a valid id and a valid patch before it looks up the
-/// Plan.
+/// Fastify refuses an empty or poisoned JSON body before the route runs, and
+/// hands a `text/plain` body over as a string, which is never a valid patch;
+/// the route then needs both a valid id and a valid patch before it looks up
+/// the Plan.
 pub(super) async fn patch(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -71,8 +72,13 @@ pub(super) async fn patch(
     if received.json && (received.bytes.is_empty() || json_body_refused(&received.bytes)) {
         return unreadable();
     }
+    let patch = if received.text {
+        None
+    } else {
+        FeaturePatch::from_json(&received.bytes)
+    };
     let request = plan_id(&id)
-        .zip(FeaturePatch::from_json(&received.bytes))
+        .zip(patch)
         .map(|(plan, patch)| PlanFeatureRequest {
             plan,
             patch: Some(patch),

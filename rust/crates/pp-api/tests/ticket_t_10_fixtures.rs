@@ -1116,6 +1116,9 @@ mod ticket_t_10_fixtures {
         /// byte for byte (`2.0`, `1e0`).
         #[serde(rename = "rawBody")]
         raw_body: Option<String>,
+        /// The `Content-Type` of `rawBody` when it is not `application/json`.
+        #[serde(default, rename = "contentType")]
+        content_type: Option<String>,
         node: Exchange,
         changed: Vec<String>,
         /// External effects Node's stubs recorded instead of running.
@@ -1154,9 +1157,8 @@ mod ticket_t_10_fixtures {
             request = request.json(body);
         }
         if let Some(raw) = &case.raw_body {
-            request = request
-                .header("Content-Type", "application/json")
-                .body(raw.clone());
+            let media = case.content_type.as_deref().unwrap_or("application/json");
+            request = request.header("Content-Type", media).body(raw.clone());
         }
         let before = StateGraph::capture(sandbox.path()).unwrap();
         let actual = Exchange::observe(request.send().await.unwrap())
@@ -1730,7 +1732,7 @@ mod ticket_t_10_fixtures {
         let fixture = seeded_fixture(
             include_str!("../../../../fixtures/parity/plan-features-decisions/node.json"),
             "plan-features-decisions",
-            108,
+            114,
         );
         let sandbox = Sandbox::new("t10-plan-features").unwrap();
         let owner = open_seeded(&sandbox, &fixture);
@@ -1813,10 +1815,10 @@ mod ticket_t_10_fixtures {
         owner.shutdown().unwrap();
         let report = ledger.finish().unwrap();
         print_report("plan-features-decisions", &report);
-        assert_eq!(report.matched, 96);
+        assert_eq!(report.matched, 102);
         assert_eq!(report.corrected.len(), FASTIFY_REFUSED.len());
         assert_eq!(off, 4);
-        assert_eq!(checked, 32);
+        assert_eq!(checked, 34);
     }
 
     /// Rust refuses what Fastify's parser refuses, without its code.

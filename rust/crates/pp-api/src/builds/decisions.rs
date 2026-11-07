@@ -12,7 +12,9 @@ use axum::{
 use pp_storage::build_graph::{BuildCommand, DecisionOutcome, variants::json_body_refused};
 
 /// Fastify refuses an empty or poisoned JSON body before the route runs; the
-/// route reads the id with `Number()` before anything in the body.
+/// route reads the id with `Number()` before anything in the body. A
+/// `text/plain` body reaches Node as a string, whose fields are all missing, so
+/// it appends the defaults, as `{}` does.
 pub(super) async fn append(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -26,7 +28,11 @@ pub(super) async fn append(
     };
     let command = BuildCommand::AppendDecision {
         build,
-        body: received.bytes.to_vec(),
+        body: if received.text {
+            b"{}".to_vec()
+        } else {
+            received.bytes.to_vec()
+        },
     };
     run(
         app,

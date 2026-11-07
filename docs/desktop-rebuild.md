@@ -3453,16 +3453,22 @@ and `rationale` to better-sqlite3 unchecked, with only `null` falling back to
 The answer is the inserted row as Node's `mapPlanDecision` returns it. The
 append writes only `plan_decisions`: no publication row or blocker.
 
-`fixtures/parity/plan-features-decisions/node.json` is Node's answer for 108
+Both routes follow Fastify's `text/plain` parser, which hands the route the
+body as a string. A `text/plain` feature patch is therefore 400 `Invalid plan
+feature input` whatever it says, and a `text/plain` decision has no fields, so
+it appends the defaults, as `{}` does. Any other content type is read as JSON,
+as on the other Rust Build routes.
+
+`fixtures/parity/plan-features-decisions/node.json` is Node's answer for 114
 requests on one database, run with `PP_DESKTOP_REBUILD=1` except four with it
 unset. `plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables`
 in `ticket_t_10_fixtures` replays them through `build_router` merged with
-`planning_router`, as `pp-core` composes them. 96 match Node's status, body
+`planning_router`, as `pp-core` composes them. 102 match Node's status, body
 and changed tables. Eight bodies Fastify's parser refuses are declared
 corrections (400 `Request is invalid` without Fastify's codes). The four
 flag-off cases reach a router built with the flag off, which mounts nothing:
 404 and nothing written, where Node answers its own 404 `Plan not found` for
-features and still appends the decision. After each of the 32 writes, the
+features and still appends the decision. After each of the 34 writes, the
 Plan's stored layer text or the decision rows it added equal Node's byte for
 byte. Regenerate the golden with
 `node fixtures/parity/plan-features-decisions/generate.mjs`.

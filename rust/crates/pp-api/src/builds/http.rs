@@ -463,6 +463,8 @@ pub(super) struct Received {
     pub(super) path: String,
     pub(super) contract: SummaryContract,
     pub(super) json: bool,
+    /// Fastify reads a `text/plain` body as a string, never as JSON.
+    pub(super) text: bool,
     pub(super) bytes: axum::body::Bytes,
 }
 
@@ -478,12 +480,14 @@ pub(super) async fn receive(
     };
     let path = request.uri().path().to_owned();
     let contract = SummaryContract::of(&request);
-    let json = request
+    let media = request
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
-        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+        .map(str::trim);
+    let json = media.is_some_and(|media| media.eq_ignore_ascii_case("application/json"));
+    let text = media.is_some_and(|media| media.eq_ignore_ascii_case("text/plain"));
     let Ok(bytes) = to_bytes(request.into_body(), app.body_limit()).await else {
         return Err(Box::new(failure(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -495,6 +499,7 @@ pub(super) async fn receive(
         path,
         contract,
         json,
+        text,
         bytes,
     })
 }

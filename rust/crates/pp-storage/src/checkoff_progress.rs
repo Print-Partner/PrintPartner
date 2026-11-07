@@ -40,6 +40,9 @@ pub mod wire;
 
 #[cfg(feature = "desktop_rebuild")]
 pub use assign::{AssignedLink, Assignment};
+/// `ProgressClient::apply`'s error when the writer admitted the command but its
+/// reply was lost: the write may have committed.
+pub const REPLY_LOST: &str = "Checkoff reply lost after admission; reread progress before retrying";
 #[cfg(feature = "desktop_rebuild")]
 pub use print_file::{FileRequest, FileRoute};
 
@@ -498,9 +501,7 @@ impl ProgressClient {
         });
         self.shared.changed.notify_all();
         drop(queue);
-        receiver.recv().map_err(|_| {
-            anyhow!("Checkoff reply lost after admission; reread progress before retrying")
-        })?
+        receiver.recv().map_err(|_| anyhow!(REPLY_LOST))?
     }
 }
 

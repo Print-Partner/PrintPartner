@@ -2954,11 +2954,13 @@ its 1 MiB JSON limit.
   redeemed file is not re-observed for drift, and a successful assignment
   spends the token. Node redeems and records in one synchronous step; here the
   assignment reserves the token inside the storage call, so a concurrent
-  assignment of the same token is refused, a refused one puts it back, an
-  admitted write spends it even if the request is dropped, an error whose
-  outcome is unknown after admission (a lost writer reply) spends it too, so
-  the operator reopens the preview instead of recording the file twice, and a reserved
-  token keeps its place in the 128-token limit, and the writer transaction checks
+  assignment of the same token is refused, and an admitted write spends it
+  even if the request is dropped. An outcome that is unknown after admission (a
+  lost writer reply or `CommitUnknown`) spends it too, so the operator reopens
+  the preview instead of recording the file twice. Any other answer, a refusal
+  or a credential failure such as an expired session, wrote nothing and puts the
+  token back. A reserved token keeps its place in the 128-token limit, and the
+  writer transaction checks
   the printer's host fingerprint again, so a settings change after the route's
   read refuses with the same 409.
 - An `upload_token` answers Node's unknown-upload 409 `That upload is no longer

@@ -29,8 +29,9 @@ use axum::{
     response::Response,
     routing::post,
 };
+use pp_storage::auth::AuthFailure;
 use pp_storage::checkoff_progress::{
-    AssignedLink, Assignment, Body, FileRequest, FileRoute, ProgressClient, Request,
+    AssignedLink, Assignment, Body, FileRequest, FileRoute, ProgressClient, REPLY_LOST, Request,
     print_file::{Inspected, Reservation, SNAPSHOT_EXPIRED, SnapshotStore},
 };
 use serde_json::{Value, json};
@@ -132,16 +133,23 @@ async fn storage(
 ) -> Result<pp_storage::checkoff_progress::Response, Box<Response>> {
     let client = app.client.clone();
     // The reservation lives in the blocking call, which finishes an admitted
-    // write even when the request is dropped. Only a definite refusal puts the
-    // snapshot back: a committed assignment spends it, and so does an error,
-    // since the write may have committed after admission (a lost reply).
+    // write even when the request is dropped. A committed assignment spends the
+    // snapshot, and so does an outcome that is unknown after admission (a lost
+    // writer reply or an unknown commit), since the write may have landed. Every
+    // other answer, refusals and credential failures included, wrote nothing
+    // and puts it back.
     match app
         .gate
         .read(presented, move |credential, cancelled, wait| {
             let result = client.apply(credential, request, &cancelled, wait);
-            if !matches!(&result, Ok(response) if response.status != 200)
-                && let Some(held) = reservation
-            {
+            let spend = match &result {
+                Ok(response) => response.status == 200,
+                Err(error) => {
+                    matches!(error.downcast_ref(), Some(AuthFailure::CommitUnknown))
+                        || error.to_string() == REPLY_LOST
+                }
+            };
+            if spend && let Some(held) = reservation {
                 held.spend();
             }
             result

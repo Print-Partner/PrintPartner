@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 
 const SERIAL: &str = "FIXTURE01";
 const CODE: &str = "synthetic-code";
+const PIN: &str = "/api/v1/integrations/bambu-1/tls-pin";
+const RESET: &str = "/api/v1/integrations/bambu-1/tls-pin/reset";
+const TEST: &str = "/api/v1/integrations/bambu-1/test";
 const CHANGED: &str = "Printer certificate changed. If you replaced or reset the printer, reset its certificate in Settings.";
 
 #[tokio::test]
@@ -35,10 +38,9 @@ fn prefix(fingerprint: &[u8; 32]) -> Value {
     json!(hex::encode(&fingerprint[..6]))
 }
 
-#[tokio::test]
-#[ignore = "runs in an isolated subprocess with explicit environment"]
-async fn ticket_t_23_rust_only_runtime_pins_in_child() {
-    let data = proof_data();
+/// A broker for one synthetic printer, seeded as integration `bambu-1` with
+/// the Bambu feature on.
+async fn seeded_printer(data: &std::path::Path) -> (Broker, Identity) {
     let report = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../fixtures/drivers/bambu/pushall-idle.json"
@@ -49,7 +51,7 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
         .await
         .unwrap();
     seed_settings(
-        &data,
+        data,
         &[
             (
                 "integrations",
@@ -61,14 +63,37 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
             ("feature_toggles", json!({"bambu": true})),
         ],
     );
+    (broker, printer)
+}
+
+fn connects(log: &[String]) -> usize {
+    log.iter()
+        .filter(|line| line.starts_with("CONNECT"))
+        .count()
+}
+
+/// Every PUBLISH the printer saw was pushall, and every CONNECT carried the
+/// right access code.
+fn only_status_traffic(log: &[String]) {
+    for line in log {
+        assert!(
+            !line.starts_with("PUBLISH ")
+                || line.ends_with(r#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#),
+            "the printer saw {line}"
+        );
+        assert!(!line.contains("wrong access code"), "{line}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn ticket_t_23_rust_only_runtime_pins_in_child() {
+    let data = proof_data();
+    let (broker, printer) = seeded_printer(&data).await;
     let settings = settings_rows(&data);
     let (runtime, origin, desktop) = start_rust_only(&data).await;
 
-    for (method, path) in [
-        ("GET", "/api/v1/integrations/bambu-1/tls-pin"),
-        ("POST", "/api/v1/integrations/bambu-1/tls-pin/reset"),
-        ("POST", "/api/v1/integrations/bambu-1/test"),
-    ] {
+    for (method, path) in [("GET", PIN), ("POST", RESET), ("POST", TEST)] {
         let (code, body) = call(&origin, &desktop, method, path).await;
         assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}: {body}");
     }
@@ -78,30 +103,9 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
     );
 
     let cookie = signed_in(&origin, &desktop, 1).await;
-    let pin = || {
-        call(
-            &origin,
-            &cookie,
-            "GET",
-            "/api/v1/integrations/bambu-1/tls-pin",
-        )
-    };
-    let test = || {
-        call(
-            &origin,
-            &cookie,
-            "POST",
-            "/api/v1/integrations/bambu-1/test",
-        )
-    };
-    let reset = || {
-        call(
-            &origin,
-            &cookie,
-            "POST",
-            "/api/v1/integrations/bambu-1/tls-pin/reset",
-        )
-    };
+    let pin = || call(&origin, &cookie, "GET", PIN);
+    let test = || call(&origin, &cookie, "POST", TEST);
+    let reset = || call(&origin, &cookie, "POST", RESET);
     assert_eq!(pin().await, (StatusCode::OK, json!({"pinned": false})));
 
     let connected = (
@@ -128,11 +132,6 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
         (StatusCode::OK, json!({"ok": false, "message": CHANGED}))
     );
     assert_eq!(pin().await.1["sha256_prefix"], prefix(&printer.fingerprint));
-    let connects = |log: &[String]| {
-        log.iter()
-            .filter(|line| line.starts_with("CONNECT"))
-            .count()
-    };
     assert_eq!(
         connects(&broker.log()),
         1,
@@ -155,13 +154,6 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
     shut_down(runtime).await;
     let log = broker.log();
     assert_eq!(connects(&log), 2, "{log:?}");
-    for line in &log {
-        assert!(
-            !line.starts_with("PUBLISH ")
-                || line.ends_with(r#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#),
-            "the printer saw {line}"
-        );
-        assert!(!line.contains("wrong access code"), "{line}");
-    }
+    only_status_traffic(&log);
     assert_eq!(settings_rows(&data), settings, "pinning changed settings");
 }

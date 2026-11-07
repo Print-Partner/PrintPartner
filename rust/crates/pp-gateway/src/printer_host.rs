@@ -458,4 +458,56 @@ mod tests {
         let error = axum::body::to_bytes(body, usize::MAX).await.unwrap_err();
         assert!(error.to_string().contains("deadline"), "{error}");
     }
+
+    #[tokio::test]
+    async fn ticket_t_23_a_pin_counts_only_for_its_host_and_port() {
+        use pp_testkit::bambu::{Broker, Identity, Script};
+        let report = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../fixtures/drivers/bambu/pushall-idle.json"
+        ))
+        .unwrap();
+        let printer = Identity::generate().unwrap();
+        let broker = Broker::start(
+            printer.clone(),
+            Script::reporting("synthetic-code", "FIXTURE01", &report),
+        )
+        .await
+        .unwrap();
+        let port = broker.addr.port();
+        let config = serde_json::json!({
+            "host": "127.0.0.1", "port": port, "serial": "FIXTURE01", "access_code": "synthetic-code",
+        });
+        let reads = HostReads::new().unwrap();
+        let pin = |host: &str, port: u16| BambuPin {
+            host: host.into(),
+            port,
+            sha256: printer.fingerprint,
+        };
+        for moved in [
+            pin("127.0.0.2", port),
+            pin("127.0.0.1", port.wrapping_add(1)),
+        ] {
+            let test = reads.bambu_test(&config, Some(&moved)).await;
+            assert_eq!(
+                (test.result, test.pin.is_none()),
+                (
+                    serde_json::json!({"ok": false, "message": BAMBU_ADDRESS_CHANGED}),
+                    true
+                )
+            );
+        }
+        assert!(broker.log().is_empty(), "{:?}", broker.log());
+
+        let test = reads
+            .bambu_test(&config, Some(&pin("127.0.0.1", port)))
+            .await;
+        assert_eq!(
+            test.result["ok"],
+            serde_json::json!(true),
+            "{}",
+            test.result
+        );
+        assert!(test.pin.is_none(), "a matching pin is never taken again");
+    }
 }

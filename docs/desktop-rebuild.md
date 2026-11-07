@@ -3385,8 +3385,9 @@ and `rationale` to better-sqlite3 unchecked, with only `null` falling back to
   400 `SQLite3 can only bind numbers, strings, bigints, buffers, and null`. A
   second object is 400 `You cannot specify named parameters in two different
   objects`. Any count other than eleven parameters is 400 `Too few parameter
-  values were provided` or `Too many parameter values were provided`. A
-  NOT NULL failure is 400 with SQLite's message.
+  values were provided` or `Too many parameter values were provided`;
+  a twelfth bindable value stops binding there, before any later field is
+  checked. A NOT NULL failure is 400 with SQLite's message.
 
 The answer is the inserted row as Node's `mapPlanDecision` returns it. The
 append writes only `plan_decisions`: no publication row or blocker.

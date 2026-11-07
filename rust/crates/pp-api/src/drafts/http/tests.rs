@@ -441,6 +441,7 @@ struct ReadServer {
     client: Client,
     owner: pp_storage::WriterOwner,
     task: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::oneshot::Sender<()>,
     /// Last field: removed only after `owner` has dropped, even on panic.
     directory: crate::scratch::Scratch,
 }
@@ -502,11 +503,15 @@ impl ReadServer {
             Some(hold) => draft_router_with_hold(config, client, auth, hold),
             None => draft_router(config, client, auth),
         };
+        let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
                 router.into_make_service_with_connect_info::<SocketAddr>(),
             )
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
             .await
             .unwrap();
         });
@@ -515,6 +520,7 @@ impl ReadServer {
             client: Client::builder().no_proxy().build().unwrap(),
             owner,
             task,
+            stop,
             directory,
         }
     }
@@ -540,22 +546,34 @@ impl ReadServer {
             .unwrap()
     }
     async fn close(self) {
-        self.task.abort();
-        let _ = self.task.await;
-        self.owner.shutdown().unwrap();
+        drop(self.stopped().await);
     }
     /// Shuts the writer down and serves the same database again.
     async fn restart(self) -> Self {
+        let directory = self.stopped().await;
+        Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
+    }
+    /// Drops the client's pooled connections, stops the server once every
+    /// connection task has ended, and shuts the writer down. Windows cannot
+    /// remove a file a connection task's storage handle still holds open, so
+    /// aborting only the accept loop leaked the directory there.
+    async fn stopped(self) -> crate::scratch::Scratch {
         let Self {
-            task,
+            client,
             owner,
+            task,
+            stop,
             directory,
             ..
         } = self;
-        task.abort();
-        let _ = task.await;
+        drop(client);
+        let _ = stop.send(());
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("draft server connections close")
+            .unwrap();
         owner.shutdown().unwrap();
-        Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
+        directory
     }
 }
 

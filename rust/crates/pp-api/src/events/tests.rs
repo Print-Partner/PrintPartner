@@ -27,9 +27,15 @@ impl Fixture {
             "INSERT INTO users(id,display_name,is_admin,created_at) VALUES('default','Events',1,'0'); INSERT INTO sessions VALUES('{session}','default','2099-01-01T00:00:00.000Z','email')"
         ))
         .unwrap();
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
+        // Accepted sockets inherit this fixed send buffer. An explicit size
+        // turns off Windows send-buffer autotuning, so a client that stops
+        // reading stalls the server's writes there as it does on Unix.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.set_send_buffer_size(4096).unwrap();
+        socket
+            .bind((std::net::Ipv4Addr::LOCALHOST, 0).into())
             .unwrap();
+        let listener = socket.listen(1024).unwrap();
         let address = listener.local_addr().unwrap();
         let origin = format!("http://{address}");
         let router = events_router(

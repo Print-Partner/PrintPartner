@@ -1342,6 +1342,25 @@ mod ticket_t_10_fixtures {
             .0
     }
 
+    /// Node's generators write their scratch data directory as `{data}`, with
+    /// `/` separators, so a Windows path is written the same way.
+    fn with_data_placeholder(value: &mut Value, data: &str) {
+        match value {
+            Value::String(text) if text.contains(data) => {
+                *text = text
+                    .replace(data, "{data}")
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+            }
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|item| with_data_placeholder(item, data)),
+            Value::Object(fields) => fields
+                .values_mut()
+                .for_each(|item| with_data_placeholder(item, data)),
+            _ => {}
+        }
+    }
+
     /// Replays every case in order with `cookie`, comparing each response and
     /// the tables it changed. A corrected case is a Rust refusal, so it must
     /// change nothing, whatever Node wrote.
@@ -1360,10 +1379,7 @@ mod ticket_t_10_fixtures {
         let data = sandbox.path().to_str().unwrap();
         for case in cases {
             let (mut actual, changed) = send_case(served, cookie, sandbox, case, &case.path).await;
-            // Node's generators write their scratch data directory as `{data}`.
-            if let Ok(text) = serde_json::to_string(&actual.body) {
-                actual.body = serde_json::from_str(&text.replace(data, "{data}")).unwrap();
-            }
+            with_data_placeholder(&mut actual.body, data);
             ledger
                 .compare(&case.id, &case.node, &actual)
                 .unwrap_or_else(|error| panic!("{error}"));

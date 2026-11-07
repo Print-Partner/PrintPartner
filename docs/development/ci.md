@@ -484,6 +484,7 @@ These rules came out of the pp-storage Windows port (GRE-1154). New tests follow
 - Build SQLite `file:` URIs with `pp_storage::sqlite_uri::immutable_uri`. SQLite on Windows cannot open a URI that holds a verbatim `\\?\` prefix.
 - Hand Node a path from `pp_testkit::node_path::node_path`, and an `--import` or `import()` target as a `file:` URL (`pp_testkit::node_path::file_url`, or `pathToFileURL` in scripts). Node cannot resolve verbatim paths, and its ESM loader refuses a bare `C:\` path.
 - Close every connection and file under a directory before removing it. Windows refuses to delete an open file.
+- Store, return or compare a path in its display spelling, `pp_os::display_path`, which turns the verbatim `\\?\C:\…` and `\\?\UNC\…` that `canonicalize` returns into `C:\…` and `\\server\share\…` and leaves every other path unchanged. pp-storage writes a Source's `local_path` and reports Source roots that way, and compares a stored path with the repos root that way, as Node does. It still opens files through the canonical path.
 - Compare paths in the spelling the product reports. `std::env::temp_dir()` on a runner can hold 8.3 short names (`RUNNER~1`), while `canonicalize` returns the long verbatim form.
 
 `rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.

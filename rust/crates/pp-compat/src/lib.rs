@@ -544,7 +544,7 @@ impl Process {
             .canonicalize()
             .context("Measured desktop preload unavailable")?;
         let mut root_argument = std::ffi::OsString::from("--pp-desktop-package-root=");
-        root_argument.push(platform::node_path(&package_root));
+        root_argument.push(pp_os::display_path(&package_root));
         let generation = hex::encode(rand::random::<[u8; 16]>());
         let key = rand::random::<[u8; 32]>();
         let endpoint = Arc::new(Endpoint {
@@ -568,7 +568,7 @@ impl Process {
             .arg("--no-global-search-paths")
             .arg("--import")
             .arg(platform::import_specifier(&preload).context("Desktop preload unavailable")?)
-            .arg(platform::node_path(&spec.bundle.entry))
+            .arg(pp_os::display_path(&spec.bundle.entry))
             .arg(root_argument)
             .env_remove("NODE_OPTIONS")
             .env_remove("NODE_PATH")

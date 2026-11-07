@@ -602,33 +602,10 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-/// `path` without the verbatim `\\?\` prefix that `canonicalize` adds. Node
-/// keys modules by their ordinary path, so a verbatim package root or entry
-/// would put every module outside the desktop package boundary.
-pub(crate) fn node_path(path: &Path) -> PathBuf {
-    let mut components = path.components();
-    let Some(std::path::Component::Prefix(prefix)) = components.next() else {
-        return path.to_path_buf();
-    };
-    let mut plain = match prefix.kind() {
-        std::path::Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
-        std::path::Prefix::VerbatimUNC(server, share) => {
-            let mut root = std::ffi::OsString::from(r"\\");
-            root.push(server);
-            root.push(r"\");
-            root.push(share);
-            PathBuf::from(root)
-        }
-        _ => return path.to_path_buf(),
-    };
-    plain.extend(components);
-    plain
-}
-
 /// `--import` takes a URL on Windows: Node reads `C:\…` as a URL with the
 /// scheme `c:` and refuses it.
 pub(crate) fn import_specifier(path: &Path) -> std::io::Result<std::ffi::OsString> {
-    url::Url::from_file_path(node_path(path))
+    url::Url::from_file_path(pp_os::display_path(path))
         .map(|url| url.as_str().into())
         .map_err(|()| {
             std::io::Error::new(
@@ -935,15 +912,6 @@ mod tests {
 
     #[test]
     fn node_gets_plain_paths_and_a_file_url_preload() {
-        assert_eq!(
-            node_path(Path::new(r"\\?\C:\pp\web\desktop.js")),
-            Path::new(r"C:\pp\web\desktop.js")
-        );
-        assert_eq!(
-            node_path(Path::new(r"\\?\UNC\host\share\web")),
-            Path::new(r"\\host\share\web")
-        );
-        assert_eq!(node_path(Path::new(r"C:\pp\web")), Path::new(r"C:\pp\web"));
         assert_eq!(
             import_specifier(Path::new(r"\\?\C:\pp\a b\desktop-resolution.js")).unwrap(),
             "file:///C:/pp/a%20b/desktop-resolution.js"

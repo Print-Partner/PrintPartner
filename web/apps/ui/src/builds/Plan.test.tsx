@@ -455,6 +455,26 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(writes(fetchMock).map((w) => w.body.decisions[0].value)).toEqual([true, false]);
   });
 
+  it("shows the saved Included value after a refused toggle, even while a later save runs", async () => {
+    const fetchMock = core({
+      write: (path) => {
+        if (path === "/api/v2/plans/2/drafts/save") return problem(409, "draft_changed");
+        if (path === "/api/v2/plans/2/drafts/header") return new Promise<Response>(() => {});
+        return undefined;
+      },
+    });
+    renderAt(fetchMock);
+    const box = await screen.findByRole<HTMLInputElement>("checkbox", { name: "Include gear.stl" });
+    fireEvent.click(box);
+    await screen.findByText(/Not saved/);
+    await waitFor(() => expect(box.checked).toBe(false));
+    fireEvent.change(field("Name"), { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(field("Name"));
+    await waitFor(() => expect(writes(fetchMock).some((w) => w.method === "PUT")).toBe(true));
+    await screen.findByText(/Saving to the draft/);
+    expect(box.checked).toBe(false);
+  });
+
   it("refuses a blank name without sending", async () => {
     const fetchMock = core();
     renderAt(fetchMock);

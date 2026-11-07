@@ -2,6 +2,7 @@ import type { AcceptDraftReceipt, DraftAcceptPreview } from "@print-partner/rust
 import {
   useIsMutating,
   useMutation,
+  useMutationState,
   useQuery,
   useQueryClient,
   type QueryClient,
@@ -120,7 +121,7 @@ function useDraftWrites(id: number) {
       ),
     onSettled: settle,
   });
-  return { header, parts };
+  return { header, parts, mutationKey };
 }
 
 type Writes = ReturnType<typeof useDraftWrites>;
@@ -241,13 +242,19 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
 }
 
 /**
- * One Part row: whether it is included and its quantity override. While draft writes run,
- * the box shows the last value clicked, and the next click toggles from that.
+ * One Part row: whether it is included and its quantity override. While an Included save
+ * is queued or running, the box shows its value, and the next click toggles from that.
  */
-function PartRow({ part, writes, busy }: { part: PartView; writes: Writes; busy: boolean }) {
+function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
   const offline = useConnection() === "offline";
-  const [clicked, setClicked] = useState<boolean | null>(null);
-  const included = busy && clicked !== null ? clicked : part.included;
+  const target = JSON.stringify(includeChoice(part, true).target);
+  const queued = useMutationState({
+    filters: { mutationKey: writes.mutationKey, status: "pending" },
+    select: (mutation) => (mutation.state.variables as { choice?: PlanChoice } | undefined)?.choice,
+  }).findLast(
+    (choice) => choice?.kind === "set_included" && JSON.stringify(choice.target) === target,
+  );
+  const included = queued?.kind === "set_included" ? queued.value : part.included;
   const [quantity, setQuantity] = useState(part.quantity_override?.toString() ?? "");
   const [invalid, setInvalid] = useState(false);
   const errorId = useId();
@@ -273,7 +280,6 @@ function PartRow({ part, writes, busy }: { part: PartView; writes: Writes; busy:
           aria-disabled={offline || undefined}
           onChange={() => {
             if (offline) return;
-            setClicked(!included);
             save(includeChoice(part, !included));
           }}
         />
@@ -302,7 +308,7 @@ function PartRow({ part, writes, busy }: { part: PartView; writes: Writes; busy:
   );
 }
 
-function PartsTable({ parts, writes, busy }: { parts: PartView[]; writes: Writes; busy: boolean }) {
+function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
   const headingId = useId();
   if (parts.length === 0) return <p>This draft has no Parts.</p>;
   return (
@@ -323,7 +329,6 @@ function PartsTable({ parts, writes, busy }: { parts: PartView[]; writes: Writes
               key={`${part.draft_part_id}-${part.quantity_override ?? ""}`}
               part={part}
               writes={writes}
-              busy={busy}
             />
           ))}
         </tbody>
@@ -613,7 +618,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
       </div>
       <SaveStatus writes={writes} />
       <HeaderForm key={id} data={data} writes={writes} busy={busy} />
-      {draft && <PartsTable parts={draft.workspace.parts} writes={writes} busy={busy} />}
+      {draft && <PartsTable parts={draft.workspace.parts} writes={writes} />}
       {gate && draft && !busy && (
         <AcceptGate
           id={id}

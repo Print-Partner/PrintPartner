@@ -112,8 +112,9 @@ these routes through the generated client:
   rereads. A blank name is refused in the form and never sent.
 - Each Part's Included box and quantity override save as one
   `autosaveDraft` decision. Writes run one at a time, and each names the draft
-  the previous one left. While writes run, the Included box shows the last
-  value clicked, and the next click toggles from that.
+  the previous one left. While an Included save is queued or running, the
+  box shows its value and the next click toggles from that; a refused save
+  shows the saved value again.
 - Review and accept opens the gate. It reads `previewDraftAccept`, shows the
   snapshot note, the header's old and new values, Part changes, printed
   Required units affected, cleared Plates, stock impact and duplicate orders,

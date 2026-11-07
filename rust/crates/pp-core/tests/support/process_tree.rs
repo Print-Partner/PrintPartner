@@ -38,7 +38,7 @@ fn table() -> Vec<(u32, u32, String)> {
 }
 
 /// `(pid, ppid, command name)` from `ps`, without the `ps` process itself.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn table() -> Vec<(u32, u32, String)> {
     let child = std::process::Command::new("ps")
         .args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "comm="])
@@ -57,4 +57,39 @@ fn table() -> Vec<(u32, u32, String)> {
             (pid != own).then(|| (pid, ppid, parts.collect::<Vec<_>>().join(" ")))
         })
         .collect()
+}
+
+/// `(pid, ppid, executable name)` from a ToolHelp process snapshot.
+#[cfg(windows)]
+fn table() -> Vec<(u32, u32, String)> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
+    };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    assert_ne!(snapshot, INVALID_HANDLE_VALUE, "process snapshot failed");
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut table = Vec::new();
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while more {
+        let name = entry
+            .szExeFile
+            .split(|unit| *unit == 0)
+            .next()
+            .unwrap_or_default();
+        table.push((
+            entry.th32ProcessID,
+            entry.th32ParentProcessID,
+            String::from_utf16_lossy(name),
+        ));
+        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    table
 }

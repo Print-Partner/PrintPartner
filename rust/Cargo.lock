@@ -3355,6 +3355,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "windows-sys 0.61.2",
 ]
 
@@ -3384,6 +3385,7 @@ dependencies = [
  "pp-compat",
  "pp-gateway",
  "pp-net",
+ "pp-os",
  "pp-perf",
  "pp-source",
  "pp-storage",
@@ -3396,11 +3398,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "tempfile",
  "tokio",
  "tokio-util",
  "tower",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3465,6 +3469,7 @@ dependencies = [
  "pp-compat",
  "pp-drivers",
  "pp-net",
+ "pp-os",
  "pp-testkit",
  "rand 0.9.5",
  "serde",

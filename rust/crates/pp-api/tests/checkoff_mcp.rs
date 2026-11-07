@@ -24,7 +24,6 @@ use std::{
 };
 
 #[path = "support/checkoff_http.rs"]
-#[allow(dead_code)]
 mod checkoff_http;
 #[path = "../../pp-storage/tests/common/js_json.rs"]
 mod js_json;

@@ -345,6 +345,10 @@ async fn verify_batch_mcp_undo_conflicts_and_lookups_write_nothing() {
             "Checkoff link not found",
         ),
         (
+            json!({ "link_id": "link-verify\u{85}", "decisions": confirmed(3, 0) }),
+            "Checkoff link not found",
+        ),
+        (
             json!({ "link_id": "link-host-failed", "decisions": confirmed(3, 0) }),
             "Checkoff link is not awaiting verification",
         ),

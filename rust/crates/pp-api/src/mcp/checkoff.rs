@@ -71,7 +71,7 @@ impl CheckoffDomain {
         };
         let link_id = match args.get("link_id") {
             Some(Value::String(id)) => {
-                id.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+                id.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}')
             }
             _ => "",
         };

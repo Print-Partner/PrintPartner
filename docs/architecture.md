@@ -522,3 +522,42 @@ No compile-time, runtime or memory improvement has been measured.
 
 | Proposal/source | Disposition and reason |
 | --- | --- |
+| Candidate 2, incremental family slices and early Windows proof | Keep; independently reviewable work without a crate-move prerequisite |
+| Candidate 1, explicit scope dispositions and named invariant proofs | Graft; retain data/protocol/export compatibility, not old-screen shape. Reconcile existing issues before any tracker action |
+| Candidate 3, explicit user send authority | Graft with private capability constructors; a public actor tag is insufficient |
+| Candidate 3, legacy name mapping | Graft here, not implementation detail in the glossary: `build_profiles`/legacy `profile_id` refer to Plan identity, `projects` to Sources, `print_jobs` to printer history, `durable_jobs` to app Jobs, `tenant_id=default` remains a format detail |
+| Candidate 3, capability filesystem and reviewed ownership history | Evaluate `cap-std`/`cap-fs-ext` for narrow `pp-os` with real Windows race tests; preserve reviewed resource sets at retirement |
+| Candidate 1, crate Interface READMEs and boundary orchestration | Keep short interface docs; reuse `just ci`/existing checker before adding an xtask wrapper |
+| Candidate 1 family split; candidate 3 six-crate engine; candidate 2 broad crate moves and facade deletion | Reject wholesale reorganization; current crates retain transaction locality. Permit only narrow filesystem sharing under ADR 0015; deeper private family modules address operation ownership |
+| Candidate 1 generic public SQL closures and manual generated DTO rewrite | Reject; leaks transaction policy and replaces working generation without product gain |
+| Candidate 3 prerequisite schemars 1.x upgrade | Reject as prerequisite; prove one contract family before a generator/dialect migration |
+| Unified replacement for `/ws/printers` | Reject; preserve Chad-approved GRE-1014 path |
+| Tonight with Rewind order authority and Free burst controls | Keep accepted Today/History/Accept/burst UX; manual fallback is mandatory, and claimed step savings still need fixture validation |
+| Rebuild task engine or omit old decisions/planning phase | Reject; port workflow/build-planning projections and give assistant decisions a History home |
+| Drop Docker slicing or bundle it into the image | Reject; optional external HTTP container is the chosen model |
+| Research, automatic ts-rs versus OpenAPI choice | Defer choice to one wire comparison; retain working schema/Zod route meanwhile |
+| Research, fixed performance/image budgets and replay windows | Not adopted as facts or gates; measure and approve first |
+
+## Remaining owner decisions
+
+- Release signing identity/provider, publisher name, key custodians and recovery.
+  Evaluate Microsoft Artifact Signing and SignPath eligibility rather than
+  assuming EV signing removes SmartScreen warnings.
+- Acceptance/rollback window length, backup retention/free-space requirements,
+  supported input schemas, timed abort/recovery budgets, and explicit production
+  go/no-go. A window never promises lossless rollback.
+- Flag retirement conditions/date and responsible issue; `desktop_rebuild` stays
+  default-off until separately approved removal.
+- Final UI/client package names and router; contract exporter after one-family
+  comparison; REST version policy, replay/idempotency retention and undo conflicts.
+- LAN TLS/trust UX, device/session lifetimes, supported MCP revisions and whether
+  current-spec OAuth or documented limited compatibility ships first.
+- Platform minima, signing/update channels and release cadence; Linux package
+  set/GPU matrix; reference performance hardware and measured budgets.
+
+The glossary remains [CONTEXT.md](../CONTEXT.md); no term changes are needed.
+Keep this existing URL canonical, as the planning research recommends when an
+existing explanation can remain in place. It avoids a second competing target
+page and preserves root guidance links. [Storage](storage.md),
+[Docker](docker.md), [Desktop](desktop.md), [Network sharing](network-sharing.md),
+and [Release](release.md) retain their operational/current-state roles.

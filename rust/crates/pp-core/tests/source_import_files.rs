@@ -276,7 +276,10 @@ fn source_import_rejects_symlink_and_case_collision() {
     let evil = fixture.root.join("evil-target");
     std::fs::create_dir_all(&evil).unwrap();
     std::fs::write(evil.join("planted"), b"untouched").unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&evil, imports.join(&staged.operation.job_id)).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&evil, imports.join(&staged.operation.job_id)).unwrap();
     let before_rows = fixture.rows();
     let before_files = data_files(&fixture.root.join("data"));
     let frozen = open_frozen(&fixture, &staged.id);

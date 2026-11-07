@@ -1672,8 +1672,225 @@ pub(crate) fn save(tx: &Transaction<'_>, job: &mut JobRecord, event: &str) -> Re
         ],
     )?;
     #[cfg(feature = "desktop_rebuild")]
+    if job.kind == JobKind::PrinterUpload {
+        crate::send_queue::settle(tx, job)?;
+    }
+    #[cfg(feature = "desktop_rebuild")]
     subscriptions::record(job);
     Ok(())
+}
+/// Fails the printer upload `job_id` when it is queued or its outcome is
+/// unknown, so it never runs and no longer reserves its printer, and returns
+/// whether it did. The send queue calls this when the user removes the item
+/// the upload was dispatched for (`subject` names the user), and at open for
+/// an upload that never started. An unknown outcome is closed as
+/// [`close_unresolved_upload`] records it. Any other job, or an id with no
+/// Rust job (a send Node started), is left alone.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn release_printer_upload(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    subject: &str,
+    job_id: &str,
+    reason: &str,
+    event: &str,
+) -> Result<bool> {
+    let stored: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM durable_jobs WHERE id=?1 AND tenant=?2 AND kind=?3 AND state IN ('queued','reconciliation_required'))",
+        params![job_id, tenant, JobKind::PrinterUpload.name()],
+        |row| row.get(0),
+    )?;
+    if !stored {
+        return Ok(false);
+    }
+    let job = owned(tx, job_id, tenant)?;
+    close_unresolved_upload(tx, job, subject, UploadAnswer::Removed, reason, event)?;
+    Ok(true)
+}
+/// The state of the tenant's printer upload `job_id`, or `None` when no Rust
+/// job has that id (a send Node started).
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn printer_upload_state(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    job_id: &str,
+) -> Result<Option<PersistentState>> {
+    let stored: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM durable_jobs WHERE id=?1 AND tenant=?2 AND kind=?3)",
+        params![job_id, tenant, JobKind::PrinterUpload.name()],
+        |row| row.get(0),
+    )?;
+    if !stored {
+        return Ok(None);
+    }
+    Ok(Some(owned(tx, job_id, tenant)?.state))
+}
+/// Records the user's answer for a printer upload awaiting reconciliation:
+/// it printed (succeeded) or it did not (failed). Nothing is resent.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn reconcile_printer_upload(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    subject: &str,
+    job_id: &str,
+    printed: bool,
+) -> Result<()> {
+    let job = owned(tx, job_id, tenant)?;
+    ensure!(
+        job.kind == JobKind::PrinterUpload && job.state == PersistentState::ReconciliationRequired,
+        "Printer upload is not awaiting reconciliation"
+    );
+    let (answer, recovery) = if printed {
+        (
+            UploadAnswer::Printed,
+            "You reconciled this send: it printed",
+        )
+    } else {
+        (
+            UploadAnswer::NotPrinted,
+            "You reconciled this send: it did not print",
+        )
+    };
+    close_unresolved_upload(
+        tx,
+        job,
+        subject,
+        answer,
+        recovery,
+        &format!("reconciled:{}", answer.decision()),
+    )
+}
+/// How the user closed an unresolved printer upload.
+#[cfg(feature = "desktop_rebuild")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UploadAnswer {
+    Printed,
+    NotPrinted,
+    Removed,
+}
+#[cfg(feature = "desktop_rebuild")]
+impl UploadAnswer {
+    /// The decision stored in the reconciliation history.
+    fn decision(self) -> &'static str {
+        match self {
+            Self::Printed => "UserPrinted",
+            Self::NotPrinted => "UserDidNotPrint",
+            Self::Removed => "UserRemoved",
+        }
+    }
+}
+/// Ends a queued or unresolved printer upload as succeeded (`printed`) or
+/// failed, so it stops reserving its printer. For an unresolved one the
+/// decision goes into the reconciliation history against the last effect. A
+/// receipt kept from an attempt whose authority was refused is confirmed when
+/// it printed; otherwise it is moved into that history record, since a
+/// finished job cannot hold an unconfirmed receipt.
+#[cfg(feature = "desktop_rebuild")]
+fn close_unresolved_upload(
+    tx: &Transaction<'_>,
+    mut job: JobRecord,
+    subject: &str,
+    answer: UploadAnswer,
+    recovery: &str,
+    event: &str,
+) -> Result<()> {
+    let printed = answer == UploadAnswer::Printed;
+    if job.state == PersistentState::ReconciliationRequired {
+        let mut observed = None;
+        for effect in &mut job.effects {
+            if effect.confirmed || effect.no_effect || effect.receipt.is_none() {
+                continue;
+            }
+            if printed {
+                effect.confirmed = true;
+                observed.clone_from(&effect.receipt);
+            } else {
+                observed = effect.receipt.take();
+            }
+        }
+        let effect = job
+            .effects
+            .last()
+            .ok_or_else(|| anyhow!("Reconciliation effect required"))?;
+        tx.execute(
+            "INSERT INTO durable_job_reconciliations(job_id,version,subject,generation,effect_hash,basis_hash,target,decision,receipt,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                job.job_id,
+                job.state_version + 1,
+                subject,
+                job.generation,
+                effect.intent.content_hash,
+                effect.intent.basis_hash,
+                effect.intent.target,
+                answer.decision(),
+                serde_json::to_string(&observed)?,
+                now()
+            ],
+        )?;
+    }
+    // A success needs the printer's receipt, as the generic reconciliation
+    // requires. "It printed" with none is the user's word alone: the job
+    // fails with that stated, and only the queue item shows it printed.
+    let proven = printed
+        .then(|| proven_primary_printer_receipt(&job).cloned())
+        .flatten();
+    let uploaded = job.effects.iter().any(|effect| {
+        effect.intent.operation == EffectOperation::PrinterUpload && effect.confirmed
+    });
+    job.recovery = Some(match (printed && proven.is_none(), uploaded) {
+        (true, true) => PRINTED_WITHOUT_START_RECEIPT.into(),
+        (true, false) => PRINTED_WITHOUT_RECEIPT.into(),
+        (false, _) => recovery.into(),
+    });
+    job.state = if proven.is_some() {
+        PersistentState::Succeeded
+    } else {
+        PersistentState::Failed
+    };
+    if proven.is_some() {
+        job.result = proven;
+    }
+    save(tx, &mut job, event)
+}
+#[cfg(feature = "desktop_rebuild")]
+const PRINTED_WITHOUT_RECEIPT: &str = "You reconciled this send: it printed. The printer never confirmed the upload, so this job keeps no result.";
+#[cfg(feature = "desktop_rebuild")]
+const PRINTED_WITHOUT_START_RECEIPT: &str = "You reconciled this send: it printed. The printer confirmed the upload but never confirmed the start, so this job keeps no result.";
+/// True when a queued, running or unresolved job holds `printer_id`.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn printer_reserved(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    printer_id: &str,
+) -> Result<bool> {
+    let resource = format!("printer:{printer_id}");
+    Ok(reserved_resources(tx, tenant, true)?
+        .iter()
+        .any(|reserved| resources_overlap(&resource, reserved)))
+}
+/// Collects the job changes another family's transaction makes, so they
+/// publish like a job command's once that transaction commits.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn begin_job_collection() {
+    subscriptions::begin_collection();
+}
+/// Publishes the collected changes when the transaction committed. A commit
+/// with an unknown outcome stops every stream, as a job command's does.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn end_job_collection(
+    subscriptions: &JobSubscriptions,
+    committed: bool,
+    error: Option<&anyhow::Error>,
+) {
+    if committed {
+        subscriptions::mark_committed();
+        subscriptions.publish(subscriptions::finish_collection());
+        return;
+    }
+    subscriptions::finish_collection();
+    if error.is_some_and(|error| matches!(error.downcast_ref(), Some(JobFailure::CommitUnknown))) {
+        subscriptions.stop();
+    }
 }
 fn quarantine(tx: &Transaction<'_>, id: &str) -> Result<()> {
     // Preserve the original document and resource; only the attempt index changes.
@@ -1719,7 +1936,9 @@ fn recovery_decision(job: &JobRecord) -> (PersistentState, Option<&'static str>)
     }
 }
 
-fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord) -> Result<()> {
+/// `restart` is true at startup and false for a lease that expired while
+/// this process kept running.
+fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord, restart: bool) -> Result<()> {
     let (state, detail) = recovery_decision(&job);
     job.state = state;
     #[cfg(feature = "desktop_rebuild")]
@@ -1741,7 +1960,14 @@ fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord) -> Result<()> {
     if let Some(detail) = detail {
         job.recovery = Some(detail.into());
     }
-    save(tx, &mut job, "attempt_recovered")
+    save(tx, &mut job, "attempt_recovered")?;
+    #[cfg(feature = "desktop_rebuild")]
+    if restart && job.kind == JobKind::PrinterUpload {
+        crate::send_queue::interrupted(tx, &job)?;
+    }
+    #[cfg(not(feature = "desktop_rebuild"))]
+    let _ = restart;
+    Ok(())
 }
 
 fn recover_in(tx: &Transaction<'_>, all: bool) -> Result<()> {
@@ -1763,7 +1989,7 @@ fn recover_in(tx: &Transaction<'_>, all: bool) -> Result<()> {
         if !all && !lease_until.is_some_and(|until| until <= now()) {
             continue;
         }
-        if let Err(error) = recover_attempt(tx, job) {
+        if let Err(error) = recover_attempt(tx, job, all) {
             if !matches!(
                 error.downcast_ref::<JobFailure>(),
                 Some(JobFailure::JobDocTooLarge { .. })
@@ -2127,13 +2353,14 @@ pub(crate) fn execute(
         .map_err(|_| anyhow!(JobFailure::CommitUnknown))?;
     #[cfg(feature = "desktop_rebuild")]
     {
-        if tx.commit().is_err() {
-            subscriptions::finish_collection();
-            subscriptions.stop();
-            return Err(anyhow!(JobFailure::CommitUnknown));
+        let error = tx
+            .commit()
+            .is_err()
+            .then(|| anyhow!(JobFailure::CommitUnknown));
+        end_job_collection(subscriptions, error.is_none(), error.as_ref());
+        if let Some(error) = error {
+            return Err(error);
         }
-        subscriptions::mark_committed();
-        subscriptions.publish(subscriptions::finish_collection());
     }
     match decision {
         TransactionDecision::Outcome(outcome) => Ok(outcome),

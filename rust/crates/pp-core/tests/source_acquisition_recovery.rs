@@ -261,13 +261,20 @@ fn source_acquisition_conflict_preserves_capture() {
     let input = fixture
         .capture_dir(&conflicted)
         .join("frozen/input/triangle.stl");
-    let mut permissions = std::fs::metadata(&input).unwrap().permissions();
     // Owner read and write only. Writing a mode avoids clippy's permissions_set_readonly_false lint.
     #[cfg(unix)]
-    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o600);
-    #[cfg(not(unix))]
-    permissions.set_readonly(false);
-    std::fs::set_permissions(&input, permissions).unwrap();
+    std::fs::set_permissions(&input, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    // Clear the read-only attribute directly, for the same lint.
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_NORMAL, SetFileAttributesW};
+        let wide: Vec<u16> = input.as_os_str().encode_wide().chain([0]).collect();
+        assert_ne!(
+            unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_NORMAL) },
+            0
+        );
+    }
     std::fs::write(&input, b"solid tampered").unwrap();
     let capture = tree(&fixture.capture_dir(&conflicted));
     let tampered_row = fixture.journal()[0].clone();

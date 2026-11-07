@@ -7,7 +7,7 @@ Node left behind, and when the items move. It is compiled only with the
 default-off `desktop_rebuild` feature, and only the Rust-only launcher
 (`PP_DESKTOP_REBUILD=1` or `true`) opens the writer that moves them. The send
 routes and the upload worker are GRE-365 itself; no Rust code sends to a
-printer yet.
+printer yet; the queue's storage writes are below.
 
 ## Schema 44
 
@@ -85,6 +85,81 @@ schema 44, so no Node process writes the setting afterwards.
    never sent again automatically, and only the user may send it again.
 
 A second open finds no setting and no `sending` item, and changes nothing.
+
+An item dispatched by Rust (below) also has a Rust `printer-upload` job.
+Job recovery runs first: an upload whose effect was admitted needs
+reconciliation, and its item becomes `error` with the interrupted text. Then
+every remaining `sending` item becomes `error`, and its upload job, which job
+recovery queued again because nothing reached the printer yet, is failed. That
+item says `Interrupted by process restart before the upload began. Nothing was
+sent to the printer. Send now sends it.`, and the upload never starts on its
+own.
+
+## User actions (GRE-365)
+
+`pp_storage::send_queue::writes` holds the queue's writes. Each request is one
+writer transaction, authenticated like a job enqueue, and only an accepted
+write commits.
+
+| Request | Effect |
+| --- | --- |
+| `Dispatch` (Send now, and each item Send ready picks) | A `queued` or `error` item becomes `sending` and gets a new durable `printer-upload` job, with its file, printer, start choice, Build and Checkoff units, in the same transaction. Refused with 409 `Item is not dispatchable` for another state, 409 `Item changed concurrently` while another item is `sending` to the printer, and 409 `Another send to this printer is still unresolved` while any other job holds the printer. |
+| `Reconcile` | The user's answer for an item whose last send has an unknown outcome; see below. Otherwise 409 `This item has no send with an unknown printer outcome`. |
+| `Remove` | A `queued` or `error` item becomes `cancelled`; otherwise 409 `Item not cancellable`. |
+| `Missing` | A `queued` or `error` item whose staged file is gone becomes `error` with Node's `Artifact file missing on disk`. |
+| `Get`, `Ready` | The item, or up to 8 `queued` items in stored order (optionally for one printer), as Node's dispatch and drain read them. |
+
+An unknown id is 404 `Queue item not found`. A tenant whose queue stayed in
+the legacy setting gets 409 for every request; that queue is only read.
+
+The job settles its item in the transaction that saves the job: a finished or
+uploaded-only job makes it `done`; a failed job makes it `error` with the
+job's reason (`Upload failed` when it has none); a cancelled one `Send
+cancelled`; and a job whose printer outcome is unknown makes it `error` with
+the unknown-outcome text. That includes an attempt whose lease expired while
+the process kept running: only startup recovery uses the interrupted text.
+
+## Unknown outcomes
+
+A send's outcome is unknown when its Rust upload awaits reconciliation, or,
+for a send Node started, when Node's restart marked it interrupted. Such a job
+keeps its printer reserved, so nothing else is sent to that printer, and
+nothing is resent automatically:
+
+- `Dispatch` and `Missing` on the item are refused with 409 and problem code
+  `send_outcome_unknown`.
+- `Reconcile` names the send it answers for with `job_id`, the item's
+  `upload_job_id`. An answer for any other send, or none, is refused with
+  409 and problem code `send_changed`, so a late answer from a stale view
+  never closes a newer send. With `printed: true` it makes the item `done`. The job succeeds,
+  with the printer's receipt as its result, only when a kept receipt proves
+  the send (the upload, and the start when the item starts the print), as
+  the generic job reconciliation requires. Without that proof the job fails,
+  and its reason says the user reported it printed and which receipt the
+  printer never gave: the upload's, or only the start's. With
+  `printed: false` it marks the job failed and leaves the item `error` with `You reconciled this send: the printer did not print it. Send
+  now sends it again.` The answer is stored in
+  `durable_job_reconciliations` as `UserPrinted` or `UserDidNotPrint`
+  against the last effect, and the printer is free. Neither answer sends; a
+  new send needs a new Send now.
+- `Remove` never sends, so it marks the unresolved job failed with `Removed
+  from the send queue after the printer outcome was unknown` and frees the
+  printer.
+
+A send Node started has no Rust job, so until it is reconciled or removed
+its item reserves the printer: dispatching another item to that printer is
+refused with `Another send to this printer is still unresolved`. Its answer
+only changes the item.
+
+If a queue-owned upload leaves reconciliation through the generic job
+reconciliation instead, the job's new state still settles its `error` item:
+a confirmed success makes it `done`, so it is never sent twice.
+
+A receipt kept from an attempt whose authority was refused counts as
+confirmed when the user says it printed. Otherwise the receipt is moved into
+the reconciliation record, which keeps it as evidence.
+
+The upload worker and the HTTP routes come in the next change.
 
 ## Tests
 

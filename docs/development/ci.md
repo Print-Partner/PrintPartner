@@ -584,8 +584,8 @@ is new.
 
 The composite action `.github/actions/linux-gui-deps` caches the `.deb` files that
 `apt-get install` downloads for the Linux GTK and WebKit packages (`rust-cross-os` build and
-rebuild, `desktop-e2e`, `desktop-webkit`), so a slow Ubuntu mirror cannot stall a job
-(GRE-1229). The cache steps run only on GitHub-hosted runners; self-hosted runners skip
+rebuild, `desktop-e2e`, `desktop-webkit`), so a slow Ubuntu mirror cannot stall the package download
+(GRE-1229); `apt-get update` still contacts the mirror on every run. The cache steps run only on GitHub-hosted runners; self-hosted runners skip
 them and install from the mirror as before. The key is the runner OS and architecture, the
 runner image version, the ISO week and a hash of the package list. The week limits how long a
 cache goes stale: Ubuntu security updates change what `apt-get update` resolves, a restored

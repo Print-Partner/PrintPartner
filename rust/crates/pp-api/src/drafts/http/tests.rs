@@ -545,8 +545,30 @@ impl ReadServer {
             )
             .unwrap()
     }
+    /// Stops the server and removes its scratch directory. Windows refuses to
+    /// delete a file another handle still has open, so a refused removal is
+    /// retried for up to five seconds and then fails the test with the error.
     async fn close(self) {
-        drop(self.stopped().await);
+        let directory = self.stopped().await;
+        let started = std::time::Instant::now();
+        loop {
+            match std::fs::remove_dir_all(&*directory) {
+                Ok(()) => break,
+                Err(error) if started.elapsed() < Duration::from_secs(5) => {
+                    eprintln!(
+                        "removing {} after {:?}: {error}",
+                        directory.display(),
+                        started.elapsed()
+                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(error) => panic!(
+                    "draft server scratch {} stayed for {:?}: {error}",
+                    directory.display(),
+                    started.elapsed()
+                ),
+            }
+        }
     }
     /// Shuts the writer down and serves the same database again.
     async fn restart(self) -> Self {

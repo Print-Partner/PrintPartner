@@ -192,7 +192,7 @@ impl SendWorker {
             }
         };
         let content_hash = hex::encode(Sha256::digest(&file));
-        let filament_estimate_g = pp_storage::slicer_grams::estimate(&file);
+        let estimate = pp_storage::slicer_grams::estimate(&file);
         let intent = intent(&job.job_id, &printer_id, &filename, start, &content_hash);
         if let Some(refused) = self.begin(&mut lease, intent).await? {
             return Ok(refused);
@@ -238,7 +238,8 @@ impl SendWorker {
                             message: Some(result.message.clone()),
                             checkoff_link_id: None,
                             checkoff_units: 0,
-                            filament_estimate_g,
+                            filament_estimate_g: estimate.map(|e| e.grams),
+                            filament_grams_per_mm: estimate.and_then(|e| e.grams_per_mm),
                         })),
                     },
                 )

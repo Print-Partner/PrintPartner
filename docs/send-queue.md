@@ -217,7 +217,8 @@ to the mutation drain bound. For each job it:
    printer, host and remote path, creates the Build's Checkoff link, and
    deletes the staged directory, as Node does. When the file states the
    slicer's filament estimate (see below), the job result carries it as
-   `filament_estimate_g` and the same transaction records it for the link in
+   `filament_estimate_g` (and `filament_grams_per_mm` when the file states a
+   length too), and the same transaction records both for the link in
    `print_link_grams` with basis `estimated`, covering the link's Checkoff units. A definite refusal, including
    a start the printer refused after the upload, denies the effect, so the
    job fails, the item is `error` with the reason, and the printer is free.
@@ -240,6 +241,12 @@ already read for the upload, before the upload, and contacts nothing:
   BambuStudio), else `; filament used [g] = `` with one value per extruder summed;
 - binary G-code (`.bgcode`): the same keys in the uncompressed print metadata
   block, else the printer metadata block, before the first G-code block.
+
+The length comes from `; total filament length [mm] : `` (OrcaSlicer), else
+`; filament used [mm] = `` summed. Grams over length is the send's grams per
+millimetre, which the status watcher multiplies by the length the printer
+measures at finish. A file with grams but no positive length records the
+estimate with no factor, so the estimate stays after the print.
 
 A file with no such value, a compressed metadata block, a value that is not a
 positive number, or Cura's metres-only comment gives no estimate, and the link

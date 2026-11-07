@@ -1908,13 +1908,13 @@ fn link_printer_upload(
         if let Some(grams) = result.filament_estimate_g
             && result.checkoff_units > 0
         {
-            crate::print_grams::record(
+            crate::print_grams::record_estimate(
                 tx,
                 &job.tenant,
                 &id,
                 grams,
                 result.checkoff_units,
-                crate::print_grams::Basis::Estimated,
+                result.filament_grams_per_mm,
             )?;
         }
         result.checkoff_link_id = Some(id);

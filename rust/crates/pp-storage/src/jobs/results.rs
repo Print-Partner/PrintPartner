@@ -189,4 +189,8 @@ pub struct PrinterUploadResult {
     /// The slicer's gram estimate read from the sent file, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filament_estimate_g: Option<f64>,
+    /// The slicer's grams per millimetre of filament, when the file states a
+    /// length too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filament_grams_per_mm: Option<f64>,
 }

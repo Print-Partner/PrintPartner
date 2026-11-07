@@ -120,7 +120,8 @@ these routes through the generated client:
   Required units affected, cleared Plates, stock impact and duplicate orders,
   and sends the preview's `revision` without `draft_id` as the `acceptDraft`
   body with a new `Idempotency-Key`. A refusal shows its reason and previews
-  again, and Accept stays off until that preview arrives; the next Accept
+  again, and Accept stays off, with the old changes hidden, until that preview
+  arrives; if it fails, Accept stays off until Check again succeeds. The next Accept
   uses a new key. Accept stays off, with the reason,
   while the preview lists running work in `blocked_by` or checkoff links and
   queued sends in `production`: the tab sends `remap_checkoff_links: false`,

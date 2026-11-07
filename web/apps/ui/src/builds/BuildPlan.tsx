@@ -128,13 +128,15 @@ type Writes = ReturnType<typeof useDraftWrites>;
 
 /** What the last write did, read out politely. */
 function SaveStatus({ writes }: { writes: Writes }) {
-  const failed = writes.header.error ?? writes.parts.error;
+  // Writes run one at a time, so the last submitted is the last settled.
+  const last = writes.header.submittedAt >= writes.parts.submittedAt ? writes.header : writes.parts;
+  const failed = last.error;
   const text =
     writes.header.isPending || writes.parts.isPending
       ? "Saving to the draft"
       : failed
         ? `Not saved: ${refusalText(failed, "save")}`
-        : writes.header.isSuccess || writes.parts.isSuccess
+        : last.isSuccess
           ? "Saved to the draft. The Build changes only when you accept."
           : "";
   return (
@@ -509,14 +511,15 @@ function AcceptGate({
       }
     },
   });
+  // A failed re-preview keeps the old data; that preview is no longer what Accept checks.
+  const data = preview.isError ? undefined : preview.data;
   const blocked =
-    acceptBlocked(preview.data, offline) ??
+    acceptBlocked(data, offline) ??
     (accept.isPending
       ? "Accepting."
       : preview.isFetching
         ? "Checking what Accept would change."
         : null);
-  const data = preview.data;
   return (
     <Dialog title="Accept this draft" onClose={onClose} className="pp-gate">
       {preview.isPending && <p role="status">Checking what Accept would change.</p>}

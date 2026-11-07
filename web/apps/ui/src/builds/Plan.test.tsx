@@ -478,6 +478,32 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(box.checked).toBe(false);
   });
 
+  it("reports the write that settled last, not an older refusal", async () => {
+    const receipt = {
+      profile_id: 2,
+      draft_id: 9,
+      reconciliation_id: 1,
+      snapshot_digest: DIGEST,
+      saved_at: "2026-11-07T00:00:00.000Z",
+    };
+    const fetchMock = core({
+      write: (path) => {
+        if (path === "/api/v2/plans/2/drafts/header") return problem(409, "header_changed");
+        if (path === "/api/v2/plans/2/drafts/save")
+          return json({ receipt, workspace: workspace() });
+        return undefined;
+      },
+    });
+    renderAt(fetchMock);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    await screen.findByText(/Not saved/);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include gear.stl" }));
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    expect(screen.queryByText(/Not saved/)).toBeNull();
+  });
+
   it("refuses a blank name without sending", async () => {
     const fetchMock = core();
     renderAt(fetchMock);
@@ -664,6 +690,27 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
     expect(writes(fetchMock).filter((w) => w.path.endsWith("/apply"))).toHaveLength(1);
     act(() => release());
     await waitFor(() => expect(accept.getAttribute("aria-disabled")).toBeNull());
+  });
+
+  it("keeps Accept off and hides the old changes when the preview after a refusal fails", async () => {
+    let previews = 0;
+    const fetchMock = core({
+      preview: () => (++previews === 1 ? json(preview(1)) : problem(409, "base_changed")),
+      write: (path) =>
+        path === "/api/v2/plans/2/drafts/9/apply" ? problem(409, "draft_changed") : undefined,
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/saves a snapshot/);
+    fireEvent.click(within(gate).getByRole("button", { name: "Accept" }));
+    await within(gate).findByRole("button", { name: "Check again" });
+    expect(previews).toBe(2);
+    expect(within(gate).queryByText(/saves a snapshot/)).toBeNull();
+    const accept = within(gate).getByRole("button", { name: "Accept" });
+    expect(accept.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(accept);
+    expect(writes(fetchMock).filter((w) => w.path.endsWith("/apply"))).toHaveLength(1);
   });
 
   it("refuses a stale Accept, previews again and sends the next Accept with a new key", async () => {

@@ -168,6 +168,8 @@ class CiPathFilterTests(unittest.TestCase):
                 ("rust/Cargo.lock", "lock\n", "windows=true\n"),
                 ("web/scripts/atomic-package-build.mjs", "x\n", "windows=true\n"),
                 ("rust/scripts/build-desktop-manifest.py", "x\n", "windows=true\n"),
+                ("rust/scripts/desktop_workspaces.py", "x\n", "windows=true\n"),
+                ("rust/scripts/fetch-historical-schema-commits.sh", "x\n", "windows=true\n"),
                 (".github/workflows/web-ci.yml", "name: x\n", "windows=true\n"),
                 ("scripts/ci-path-filter.py", "x\n", "windows=true\n"),
             ]

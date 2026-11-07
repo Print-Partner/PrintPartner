@@ -42,7 +42,8 @@ WINDOWS_LABELS = {"ci:full", "ci:windows"}
 WINDOWS_MARKERS = (b"windows", b"std::os::unix", b"cfg(unix)", b"target_family", b"target_os", b"libc::")
 WINDOWS_PATHS = ("rust/crates/pp-os/", ".github/workflows/", ".github/actions/")
 WINDOWS_FILES = {"rust/Cargo.lock", "web/scripts/atomic-package-build.mjs",
-                 "rust/scripts/build-desktop-manifest.py", "rust-toolchain.toml", ".github/actionlint.yaml",
+                 "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
+                 "rust/scripts/fetch-historical-schema-commits.sh", "rust-toolchain.toml", ".github/actionlint.yaml",
                  "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}
 
 

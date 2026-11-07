@@ -85,7 +85,8 @@ fn status_only(broker: &Broker) {
                 "TLS",
                 "CONNECT bblp access code",
                 "SUBSCRIBE device/FIXTURE01/report",
-                PUSHALL
+                PUSHALL,
+                "PINGREQ"
             ]
             .contains(&line.as_str()),
             "the printer saw {line}"
@@ -167,9 +168,12 @@ async fn ticket_t_25_bambu_watcher_never_pins_and_never_trusts_a_changed_certifi
 }
 
 #[tokio::test]
-async fn ticket_t_25_bambu_reconnect_resumes_without_a_second_pushall() {
+async fn ticket_t_25_bambu_reconnect_awaits_a_fresh_report_without_a_second_pushall() {
     let (broker, identity) = printer(vec![Reply::Close]).await;
-    let mut watchers = watchers();
+    let guard = HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(2), 1 << 20).unwrap();
+    // A slower cadence keeps the reconnect well after the offline report.
+    let mut watchers =
+        Watchers::with_guard(guard, Duration::from_millis(300)).without_node_fallback();
     let observations = watchers.observations();
     let mut changes = observations.transitions();
     watchers
@@ -177,20 +181,32 @@ async fn ticket_t_25_bambu_reconnect_resumes_without_a_second_pushall() {
         .await
         .unwrap();
 
-    // Printing, offline when the printer closes the session, then printing
-    // again from the held report once the watcher reconnects.
+    // Printing, offline when the printer closes the session, then awaiting a
+    // fresh report once the watcher reconnects: the held one may be stale.
     let mut states = Vec::new();
-    until("the reconnected session reports the held status", || {
+    let mut heard = None;
+    until("the reconnected session awaits a fresh report", || {
         while let Ok(change) = changes.try_recv() {
+            if change.status.state == PrinterHostState::Offline {
+                heard = observations.last_heard("x1c");
+            }
             states.push(change.status.state);
         }
         states.ends_with(&[
             PrinterHostState::Printing,
             PrinterHostState::Offline,
-            PrinterHostState::Printing,
+            PrinterHostState::Unknown,
         ])
     })
     .await;
+    let awaiting = observations.latest("x1c").unwrap();
+    assert_eq!(awaiting.message.as_deref(), Some("Awaiting status"));
+    assert!(heard.is_some());
+    assert_eq!(
+        observations.last_heard("x1c"),
+        heard,
+        "awaiting a report is not hearing from the printer"
+    );
     assert_eq!(count(&broker, "CONNECT bblp access code"), 2);
     assert_eq!(
         count(&broker, PUSHALL),
@@ -239,6 +255,34 @@ async fn ticket_t_25_bambu_suspend_ends_the_session_and_resume_starts_one() {
     })
     .await;
     assert_eq!(count(&broker, "TCP"), 2);
+    watchers.stop().await;
+    status_only(&broker);
+}
+
+#[tokio::test]
+async fn ticket_t_25_bambu_session_outlives_its_keep_alive_on_pings() {
+    let (broker, identity) = printer(Vec::new()).await;
+    let mut watchers = watchers();
+    let observations = watchers.observations();
+    let mut changes = observations.transitions();
+    watchers
+        .replace(vec![bambu("x1c", &broker, Ok(identity.fingerprint), true)])
+        .await
+        .unwrap();
+    until("the printer reports", || {
+        observations.last_heard("x1c").is_some()
+    })
+    .await;
+
+    // Past the 30 s keep alive, the 15 s PINGREQs keep one session open.
+    tokio::time::sleep(Duration::from_secs(35)).await;
+    let mut states = Vec::new();
+    while let Ok(change) = changes.try_recv() {
+        states.push(change.status.state);
+    }
+    assert!(!states.contains(&PrinterHostState::Offline), "{states:?}");
+    assert_eq!(count(&broker, "TCP"), 1);
+    assert_eq!(count(&broker, "PINGREQ"), 2);
     watchers.stop().await;
     status_only(&broker);
 }

@@ -494,9 +494,11 @@ fn watch_bambu(
         let mut failures = 0u32;
         loop {
             let mut answered = false;
-            let watch = driver.watch(pin, &mut session, |status| {
+            let watch = driver.watch(pin, &mut session, |status, heard| {
                 answered = true;
-                lock(&shared.heard).insert(shared.id.clone(), SystemTime::now());
+                if heard {
+                    lock(&shared.heard).insert(shared.id.clone(), SystemTime::now());
+                }
                 publish(
                     &shared.status,
                     &shared.port,

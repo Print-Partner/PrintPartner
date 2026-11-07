@@ -68,9 +68,9 @@ the two.
 | Moonraker, PrusaLink or Bambu `printing`, `paused` | `printing`, `paused` | `null` |
 | Moonraker, PrusaLink or Bambu `idle` or `complete` | `idle` | `null` |
 | Moonraker, PrusaLink or Bambu `error` | `failed` | `null` |
-| Moonraker or PrusaLink `unknown` | `unknown` | `null` |
+| Moonraker or PrusaLink `unknown`, or a Bambu `gcode_state` outside the mapped set | `unknown` | `null` |
 
-`last_heard_at` is the time of the last successful status poll, kept while the
+`last_heard_at` is the time of the last successful status poll or Bambu report, kept while the
 printer is unreachable and `null` when no watcher has heard from it.
 `progress_percent` is a whole percent while printing or paused, else `null`.
 

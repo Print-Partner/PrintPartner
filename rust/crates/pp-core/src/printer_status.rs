@@ -357,6 +357,7 @@ mod tests {
             bambu: vec![
                 row("pinned", config.clone(), Some(("192.168.1.20", 8883))),
                 row("moved", config.clone(), Some(("192.168.1.20", 1883))),
+                row("readdressed", config.clone(), Some(("192.168.1.21", 8883))),
                 row("new", config.clone(), None),
                 row(
                     "bad",
@@ -380,6 +381,7 @@ mod tests {
             pins,
             [
                 ("192.168.1.20", None, Ok([7; 32])),
+                ("192.168.1.20", None, Err(BAMBU_ADDRESS_CHANGED.to_owned())),
                 ("192.168.1.20", None, Err(BAMBU_ADDRESS_CHANGED.to_owned())),
                 ("192.168.1.20", None, Err(BAMBU_NOT_PINNED.to_owned())),
                 (

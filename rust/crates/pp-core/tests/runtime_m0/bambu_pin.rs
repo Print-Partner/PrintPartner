@@ -176,12 +176,25 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
 
     assert_eq!(reset().await, (StatusCode::OK, json!({"reset": true})));
     assert_eq!(pin().await, (StatusCode::OK, json!({"pinned": false})));
+    // The reset retires the session that still holds the old certificate.
+    watched(
+        &origin,
+        &cookie,
+        "Certificate not pinned yet. Run Test connection in Settings.",
+    )
+    .await;
+    let repinned = broker.log().len();
     assert_eq!(test().await, connected);
     assert_eq!(
         pin().await.1["sha256_prefix"],
         prefix(&replaced.fingerprint)
     );
     watched(&origin, &cookie, "Idle").await;
+    assert_eq!(
+        connects(&broker.log()[repinned..]),
+        2,
+        "the Test connection, then the watcher restarted on the new pin"
+    );
     let (code, problem) = call(&origin, &cookie, "GET", "/api/v1/integrations/gone/tls-pin").await;
     assert_eq!(
         (code, &problem["detail"]),
@@ -190,7 +203,7 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
 
     shut_down(runtime).await;
     let log = broker.log();
-    assert!(connects(&log) >= 2, "{log:?}");
+    assert_eq!(connects(&log), 4, "Test and watcher on each pin: {log:?}");
     only_status_traffic(&log);
     assert_eq!(settings_rows(&data), settings, "pinning changed settings");
 }

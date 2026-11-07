@@ -544,11 +544,14 @@ impl Driver {
     /// `session` sent one less than [`PUSHALL_SPACING`] ago, and calls
     /// `report` with the merged status after every report, until the
     /// connection fails. The answer is the offline status that ended it.
+    /// A reconnect inside the spacing drops the held report, reports
+    /// `Awaiting status` with `false` (nothing was heard from the printer),
+    /// and sends pushall in the session once the spacing allows.
     pub async fn watch(
         &self,
         pin: Fingerprint,
         session: &mut Session,
-        mut report: impl FnMut(Status),
+        mut report: impl FnMut(Status, bool),
     ) -> Status {
         let verifier = Arc::new(Verifier {
             trust: Trust::Pinned(pin),
@@ -567,31 +570,36 @@ impl Driver {
         &self,
         verifier: &Arc<Verifier>,
         session: &mut Session,
-        report: &mut impl FnMut(Status),
+        report: &mut impl FnMut(Status, bool),
     ) -> Result<std::convert::Infallible, Failure> {
         let topic = format!("device/{}/report", self.config.serial);
         let mut stream = self.open(verifier).await?;
         let early = tokio::time::timeout(self.status_timeout, subscribe(&mut stream, &topic))
             .await
             .map_err(|_| Failure::Offline(TIMED_OUT.into()))??;
-        if let Some(print) = early {
-            report(status_from_print(&print));
-            session.print = Some(print);
-        }
-        if session
+        let deferred = session
             .pushed
-            .is_none_or(|pushed| pushed.elapsed() >= PUSHALL_SPACING)
-        {
+            .filter(|pushed| pushed.elapsed() < PUSHALL_SPACING)
+            .map(|pushed| pushed + PUSHALL_SPACING);
+        if let Some(print) = early {
+            report(status_from_print(&print), true);
+            session.print = Some(print);
+        } else if deferred.is_some() {
+            // Reconnected within the spacing: changes made while the session
+            // was down never arrive as changes, so the held report is stale.
+            session.print = None;
+            let mut awaiting = Status::unknown("Awaiting status");
+            awaiting.ip_address = Some(self.config.host.clone());
+            report(awaiting, false);
+        }
+        if deferred.is_none() {
             stream
                 .write_all(&mqtt::pushall(&self.config.serial))
                 .await?;
             stream.flush().await?;
             session.pushed = Some(tokio::time::Instant::now());
-        } else if let Some(print) = &session.print {
-            // Reconnected within the spacing: the printer is reachable again,
-            // and its later changes merge into the report already held.
-            report(status_from_print(print));
         }
+        let pushed_late = std::sync::atomic::AtomicBool::new(false);
         let (mut reader, mut writer) = tokio::io::split(stream);
         let idle = Duration::from_secs(KEEP_ALIVE_SECONDS.into());
         let reading = async {
@@ -606,23 +614,35 @@ impl Driver {
                     && from == topic
                     && let Some(status) = session.merge(&payload)
                 {
-                    report(status);
+                    report(status, true);
                 }
             }
         };
-        let pinging = async {
+        let writing = async {
             let mut tick =
                 tokio::time::interval_at(tokio::time::Instant::now() + idle / 2, idle / 2);
+            let mut due = deferred;
             loop {
-                tick.tick().await;
-                writer.write_all(&mqtt::pingreq()).await?;
+                let packet = tokio::select! {
+                    _ = tick.tick() => mqtt::pingreq(),
+                    () = tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now)), if due.is_some() => {
+                        due = None;
+                        pushed_late.store(true, std::sync::atomic::Ordering::Relaxed);
+                        mqtt::pushall(&self.config.serial)
+                    }
+                };
+                writer.write_all(&packet).await?;
                 writer.flush().await?;
             }
         };
-        tokio::select! {
+        let ended = tokio::select! {
             ended = reading => ended,
-            ended = pinging => ended,
+            ended = writing => ended,
+        };
+        if pushed_late.into_inner() {
+            session.pushed = deferred;
         }
+        ended
     }
 }
 

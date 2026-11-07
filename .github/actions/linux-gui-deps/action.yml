@@ -1,0 +1,61 @@
+name: Install Linux GUI dependencies
+description: >-
+  apt-installs the given packages. On GitHub-hosted runners the downloaded .deb files are
+  restored from the Actions cache and, on pushes to the default branch only, saved back, so
+  a slow Ubuntu mirror cannot stall a job (GRE-1229). Pull request runs only restore.
+
+inputs:
+  packages:
+    description: Space-separated apt package names, installed with --no-install-recommends.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Select the package cache key
+      id: key
+      if: runner.environment == 'github-hosted'
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        digest=$(printf '%s' "$PACKAGES" | sha256sum | cut -c1-16)
+        echo "key=apt-debs-${RUNNER_OS}-${RUNNER_ARCH}-${ImageVersion:-unknown}-$digest" >> "$GITHUB_OUTPUT"
+        echo "dir=$HOME/.cache/pp-apt-debs" >> "$GITHUB_OUTPUT"
+    - name: Restore the downloaded packages
+      id: restore
+      if: runner.environment == 'github-hosted'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.dir }}
+        key: ${{ steps.key.outputs.key }}
+    - name: Install the packages
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        CACHE_DIR: ${{ steps.key.outputs.dir }}
+      run: |
+        set -euo pipefail
+        start=$(date +%s)
+        sudo apt-get update
+        if [ -z "$CACHE_DIR" ]; then
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends $PACKAGES
+        else
+          mkdir -p "$CACHE_DIR/partial"
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends \
+            -o Dir::Cache::archives="$CACHE_DIR" -o APT::Keep-Downloaded-Packages=true $PACKAGES
+          # apt runs as root; the cache action runs as this user and must read and pack the files.
+          sudo chown -R "$(id -u):$(id -g)" "$CACHE_DIR"
+          rm -f "$CACHE_DIR/lock"
+          rm -rf "$CACHE_DIR/partial"
+        fi
+        echo "apt install took $(( $(date +%s) - start )) s (cache hit: ${{ steps.restore.outputs.cache-hit || 'n/a' }})"
+    - name: Save the downloaded packages
+      if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.dir }}
+        key: ${{ steps.key.outputs.key }}

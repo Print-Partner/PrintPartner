@@ -103,7 +103,7 @@ function useToday(): string {
 }
 
 /**
- * Past its due date with units still to print. A finished or archived Build is not overdue, as
+ * Past its due date and not fully printed. A finished or archived Build is not overdue, as
  * the task feed ranks only unarchived Builds.
  */
 function isOverdue(build: ProfileSummary, on: string): boolean {

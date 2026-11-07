@@ -890,7 +890,17 @@ describe("UI6-05 keyboard, focus, disabled reasons and states", () => {
     const review = screen.getByRole("button", { name: "Review and accept" });
     expect(review.getAttribute("aria-disabled")).toBe("true");
     expect(screen.getAllByText(OFFLINE_REASON).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("checkbox", { name: "Include gear.stl" }));
+    const describedBy = (element: HTMLElement) =>
+      (element.getAttribute("aria-describedby") ?? "")
+        .split(" ")
+        .map((id) => document.getElementById(id)?.textContent)
+        .join(" ");
+    const include = screen.getByRole("checkbox", { name: "Include gear.stl" });
+    expect(describedBy(include)).toBe(OFFLINE_REASON);
+    expect(describedBy(screen.getByRole("textbox", { name: /Quantity of gear\.stl/ }))).toBe(
+      OFFLINE_REASON,
+    );
+    fireEvent.click(include);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method && init.method !== "GET")).toBe(
       false,
     );

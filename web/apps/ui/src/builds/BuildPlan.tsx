@@ -247,7 +247,7 @@ function HeaderForm({ data, writes, busy }: { data: PlanData; writes: Writes; bu
  * One Part row: whether it is included and its quantity override. While an Included save
  * is queued or running, the box shows its value, and the next click toggles from that.
  */
-function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
+function PartRow({ part, writes, reasonId }: { part: PartView; writes: Writes; reasonId: string }) {
   const offline = useConnection() === "offline";
   const target = JSON.stringify(includeChoice(part, true).target);
   const pending = useMutationState({
@@ -293,6 +293,7 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
           checked={included}
           aria-label={`Include ${part.filename}`}
           aria-disabled={offline || undefined}
+          aria-describedby={offline ? reasonId : undefined}
           onChange={() => {
             if (offline) return;
             save(includeChoice(part, !included));
@@ -308,7 +309,9 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
           readOnly={offline}
           aria-label={`Quantity of ${part.filename}, blank for ${part.quantity_inferred} from the Source`}
           aria-invalid={invalid || undefined}
-          aria-describedby={invalid ? errorId : undefined}
+          aria-describedby={
+            [invalid && errorId, offline && reasonId].filter(Boolean).join(" ") || undefined
+          }
           onChange={(event) => {
             setQuantity(event.target.value);
             setEdited(true);
@@ -328,10 +331,17 @@ function PartRow({ part, writes }: { part: PartView; writes: Writes }) {
 
 function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
   const headingId = useId();
+  const reasonId = useId();
+  const offline = useConnection() === "offline";
   if (parts.length === 0) return <p>This draft has no Parts.</p>;
   return (
     <section aria-labelledby={headingId}>
       <h2 id={headingId}>Parts</h2>
+      {offline && (
+        <p id={reasonId} className="pp-mutation-reason">
+          {OFFLINE_REASON}
+        </p>
+      )}
       <table className="pp-plan-parts">
         <thead>
           <tr>
@@ -343,7 +353,7 @@ function PartsTable({ parts, writes }: { parts: PartView[]; writes: Writes }) {
         </thead>
         <tbody>
           {parts.map((part) => (
-            <PartRow key={part.draft_part_id} part={part} writes={writes} />
+            <PartRow key={part.draft_part_id} part={part} writes={writes} reasonId={reasonId} />
           ))}
         </tbody>
       </table>

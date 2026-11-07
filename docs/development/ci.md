@@ -15,7 +15,7 @@ On ready PRs, the jobs are selected as follows:
 
 The selection is made at job level by `scripts/ci-path-filter.py`, not with workflow `paths:`, so a skipped job still reports `skipped` and the required `rust (linux)` and `rust (windows)` checks never stay pending. A PR that changes only docs, other workflows or other non-Rust files skips both: PR #1548, which changed one workflow and `ci.md`, reported `rust (linux)` and `rust (windows)` as skipped, and a PR that touches a path above, such as this filter, runs them. Markdown is not a Rust input and does not select them, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed with `include_str!`, and anything under `fixtures/`, where parity READMEs sit inside hashed fixture trees. A UI-only change under `web/apps/web/` still selects them on purpose: the Rust jobs run `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` on that UI, then test the desktop bundle against the measured manifest. Skipping those PRs would drop that check from the required set. Web CI covers the UI's own lint, tests and build.
 
-Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a push to `main` never cancels another `main` run (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
+Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
@@ -510,7 +510,7 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
   - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `macos` label, is not a draft, and changes desktop inputs. The selector includes the Rust inputs above, the native workflow, its cleanup tests and the Rust verification helper directory. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
   - Pushes to `main` or `master`, merge groups, nightly and manual runs select every job, including the Intel bundle.
 
-  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels an older `main` run; pushes to `main`, merge groups, nightly and manual runs each have their own group, and a rerun keeps its run's group: a rerun of a push, merge group, schedule or manual run shares that run's group without cancelling anything, and a rerun of a pull request run stays in the PR group.
+  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups, nightly and manual runs each have their own group, and a rerun keeps its run's group: a rerun of a push, merge group, schedule or manual run shares that run's group without cancelling anything, and a rerun of a pull request run stays in the PR group.
   The source fixture registers the named `cleanup_source_fixture` function with `trap cleanup_source_fixture EXIT` after a successful attach. It captures `$?` immediately and exits with that status on every cleanup path. Cleanup targets only this step's owned mount. It tries normal detach of the mount three times, with `sleep 2` between failures. If all three fail, it records holders and then forces detach of the whole-disk device that `hdiutil attach` printed first, again up to three times with `sleep 2` between failures. A forced unmount can succeed while ejecting the backing device returns `Resource busy`. The mount path is then an ordinary directory, so the forced retries target the device. The explicit sleeps total at most eight seconds. The `hdiutil` calls and holder diagnostics add time, so eight seconds is not a wall-clock cleanup bound.
 
   After normal detach retries fail, `lsof +f -- "$fixture_mount"` records open files on the source fixture's owned APFS filesystem before forced detach. A diagnostic failure, or failure of all three forced attempts, warns without changing the test exit status. Run `python3 scripts/test_native_image_cleanup.py -v` for executable cleanup fixtures. The same suite runs in `macos-storage-gate`, including a macOS-only disposable APFS image held open by a child process. Linux skips that native proof.
@@ -609,25 +609,36 @@ Pull requests restore only. Each install logs
 
 Only pull request runs cancel superseded runs. Every CI workflow groups a pull
 request by workflow and ref (or PR number) with `cancel-in-progress: true`, so a
-new push replaces the older run. Every other event, pushes to `main` included,
-gets a group of its own (`github.run_id`) with cancelling off, so the validation
-of one merge is never killed by the next. This changed on 2026-11-06 (GRE-1228):
-a sample of 60 `main` push runs had 25 cancelled, 23 succeeded and 12 in progress,
-because a newer merge cancelled each older run and left that merge with no result.
+new push replaces the older run. A run that is already running on `main` is never
+cancelled (GRE-1228): on 2026-11-06 a sample of 60 `main` push runs had 25
+cancelled, 23 succeeded and 12 in progress, because a newer merge cancelled each
+older run and left that merge with no result.
 
-The run count stays bounded because `main` only receives merges of reviewed pull
-requests, one `push` event each, and a workflow starts at most one run per event.
-The path filters still skip jobs that a merge cannot affect. Tag pushes, merge groups,
-the schedule and manual runs each have their own group too. A rerun (attempt 2 and
-later, which `main-red` starts for failed `main` runs) keeps its run's event and
-`run_id`, so a `main` rerun shares the original run's group; it never cancels
-anything and, because the original has finished, does not wait.
+Giving every `main` push its own group removed the cancelling but left the load
+unbounded: on 2026-11-07 four `rust-cross-os` runs ran at once, each with a
+one-hour macOS job, and pull request jobs queued behind them for hours
+(GRE-1248). Pushes to `main` now share one group per workflow (`main` in the
+group name, `cancel-in-progress: false`). GitHub runs one and keeps one pending
+run; a newer push replaces the older **pending** run, which never started. So the
+load is one running plus one pending run per workflow, and the newest run tests
+every merge that was replaced, but a replaced merge gets no run of its own.
+
+Two kinds of check still run once per push, because each compares a push with the
+commit it replaced: the duplication check and the ast-grep ratchet in
+`desktop-fleet-rust.yml`. The clippy-limits ratchet inside `rust-cross-os` also
+compares a push with `github.event.before`; it is bounded like the rest, and the
+merge-group run of the same commit and the PR runs compare against current `main`.
+Tag pushes, other branches, merge groups, the schedule and manual runs keep their
+own `run_id` group, so a merge-group run is never replaced. A rerun (attempt 2 and
+later, which `main-red` starts for failed `main` runs) also keeps its `run_id` group, so it
+never replaces the pending run and, because the original has finished, does not wait.
 
 | Event | Group | `cancel-in-progress` |
 | --- | --- | --- |
 | `pull_request` | workflow and ref (or PR number) | `true` |
-| `push` to `main` | `run_id` | `false` |
-| `push` of a tag, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
+| first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
+| `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
+| `push` of a tag or another branch, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
 | rerun of a non-PR run | the original run's `run_id` | `false` |
 | rerun of a `pull_request` run | same as the PR group | `true` |
 

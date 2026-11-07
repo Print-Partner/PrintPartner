@@ -134,10 +134,12 @@ these routes through the generated client:
   so the preview, and the revision Accept sends, include the edit made just
   before the click. Start a draft does nothing while a save is running,
   because that save already starts the draft.
-- Under `PP_DESKTOP_REBUILD`, MCP's `propose_apply_plan_draft` accepts
-  through the same Rust preview and Accept, so it copies the draft header too
-  (GRE-1236, below). Without the flag, MCP runs through Node, which ignores
-  the draft header.
+- The Rust MCP router's `propose_apply_plan_draft` (under
+  `PP_DESKTOP_REBUILD`) accepts through the same Rust preview and Accept, so
+  it copies the draft header too (GRE-1236, below). The desktop gateway still
+  answers `/mcp` and `/api/v1/mcp` with 403 before any product route, with
+  or without the flag (`pp-gateway/src/lib.rs`), so a desktop client does not
+  reach it yet. Node's own MCP ignores the draft header.
 - Offline, every field is read-only and every button is `aria-disabled` with
   the reason. With the Orders module off, the order number, customer and due
   date fields are hidden and the tab says why.

@@ -57,18 +57,25 @@ fn inventory_key(path: &Path, root: &Path) -> Result<String> {
         .join("/"))
 }
 
-/// A junction must resolve to the package its module path names: the
-/// `package.json` `name` at its target equals the path after the last
-/// `node_modules/`, `@scope/name` included. A target without a readable
-/// `package.json` fails.
+/// A junction under a `node_modules` segment is a module link: npm creates
+/// workspace links such as `node_modules/@print-partner/contracts` as
+/// junctions on Windows. It must resolve to the package its module path names:
+/// the `package.json` `name` at its target equals the path after the last
+/// `node_modules` segment, `@scope/name` included, and a target without a
+/// readable `package.json` fails. Other junctions name no module, such as the
+/// `apps/server/dist/current` release junction that
+/// `web/scripts/atomic-package-build.mjs` creates; they are only walked, with
+/// their canonical target inside the root.
 fn verify_junction_package(junction: &Path, key: &str) -> Result<()> {
     #[derive(Deserialize)]
     struct Package {
         name: String,
     }
-    let module = key
-        .rsplit_once("node_modules/")
-        .map_or(key, |(_, module)| module);
+    let parts: Vec<&str> = key.split('/').collect();
+    let Some(segment) = parts.iter().rposition(|part| *part == "node_modules") else {
+        return Ok(());
+    };
+    let module = parts[segment + 1..].join("/");
     let package: Package = std::fs::read(junction.join("package.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -527,9 +534,17 @@ mod tests {
             }
             junction(&package, &scope.join(name));
         }
+        let release = web.join("apps/server/dist");
+        std::fs::create_dir_all(release.join("v1")).unwrap();
+        std::fs::write(release.join("v1/server.js"), b"export {};\n").unwrap();
+        files.insert(
+            "web/apps/server/dist/v1/server.js".into(),
+            measure(&release.join("v1/server.js")).unwrap(),
+        );
+        junction(&release.join("v1"), &release.join("current"));
         let inventory = DependencyInventory {
             web_path: "web".into(),
-            roots: vec!["web/node_modules".into()],
+            roots: vec!["web/apps/server/dist".into(), "web/node_modules".into()],
             files,
             links: Default::default(),
             unshipped_links: Default::default(),

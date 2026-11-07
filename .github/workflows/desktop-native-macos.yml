@@ -17,8 +17,8 @@ on:
 permissions:
   contents: read
 
-# Superseded PR runs and superseded main pushes cancel. Reruns, merge groups,
-# nightly and manual runs each get their own group (GRE-1042).
+# Superseded PR runs cancel. Pushes to main, reruns, merge groups, nightly and
+# manual runs each get their own group and never cancel (GRE-1042, GRE-1228).
 concurrency:
   group: native-macos-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

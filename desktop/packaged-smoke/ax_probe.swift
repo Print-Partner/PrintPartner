@@ -5,7 +5,7 @@
 //   dump LIMIT PID...           the AX tree of each process's windows, at most LIMIT nodes
 //   press PID PATH              AXPress the element at PATH (window index, then child indices)
 //   type PID PATH TEXT          focus the element at PATH and type TEXT as key events
-//   tray PID ITEM               open the app's menu bar extra and press the menu item ITEM
+//   tray PID ITEM               click the app's menu bar extra and press the menu item ITEM
 //   cgwindows PID...            on-screen window numbers and bounds for screencapture -l
 //   colors PNG [WIDTH X Y W H]  the number of distinct opaque pixel colors in PNG, or only in the
 //                               rectangle X Y W H (points) of a window capture WIDTH points wide
@@ -160,18 +160,30 @@ case "tray":
     }
     AXUIElementSetMessagingTimeout(extra, 3)
     var report: [String: Any] = [:]
+    // tray-icon attaches the menu only in its own mouseDown handler, so an
+    // AXPress on the status button opens nothing: click it for real.
+    guard let origin = geometry(extra, kAXPositionAttribute, .cgPoint)?.origin,
+          let size = geometry(extra, kAXSizeAttribute, .cgSize)?.size else {
+        emit(["pressed": false, "reason": "no menu bar extra frame"])
+        exit(0)
+    }
+    let center = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+    let source = CGEventSource(stateID: .hidSystemState)
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: center, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+        usleep(50_000)
+    }
+    report["clicked"] = [Double(center.x), Double(center.y)]
     var item: AXUIElement?
-    for action in [kAXPressAction, "AXShowMenu"] where item == nil {
-        report[action] = Int(AXUIElementPerformAction(extra, action as CFString).rawValue)
-        for _ in 0..<12 where item == nil {
-            usleep(250_000)
-            // The app's own menu bar also has a Quit item; only the extra's
-            // menu, or a menu outside the menu bar, is the tray's.
-            item = find(extra, role: kAXMenuItemRole, title: args[3])
-            for child in elements(app, kAXChildrenAttribute)
-            where item == nil && text(child, kAXRoleAttribute) != kAXMenuBarRole {
-                item = find(child, role: kAXMenuItemRole, title: args[3])
-            }
+    for _ in 0..<20 where item == nil {
+        usleep(250_000)
+        // The app's own menu bar also has a Quit item; only the extra's
+        // menu, or a menu outside the menu bar, is the tray's.
+        item = find(extra, role: kAXMenuItemRole, title: args[3])
+        for child in elements(app, kAXChildrenAttribute)
+        where item == nil && text(child, kAXRoleAttribute) != kAXMenuBarRole {
+            item = find(child, role: kAXMenuItemRole, title: args[3])
         }
     }
     guard let menuItem = item else {

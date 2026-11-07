@@ -17,7 +17,8 @@ const NOT_FOUND: &str = "Selected Working Plan not found";
 
 impl ProductMcp {
     /// Reads the draft's Accept preview with the caller's key and, when Accept
-    /// would run, proposes its revision. A refusal proposes nothing.
+    /// would run, proposes its revision. A refusal, running work or production
+    /// Accept would have to remap proposes nothing.
     pub(super) async fn propose_accept(
         &self,
         arguments: &Value,
@@ -67,6 +68,16 @@ impl ProductMcp {
                 );
             }
         };
+        // Accept refuses running work, and production while this tool never
+        // asks for the checkoff remap, so neither is proposed.
+        if let AcceptPreview::Changed { changes, .. } = preview.as_ref()
+            && (!changes.blocked_by.is_empty() || changes.production.is_some())
+        {
+            return ToolResult::error(json!({
+                "error": "Working Plan cannot be accepted",
+                "preview": preview,
+            }));
+        }
         let (AcceptPreview::NoChange { revision, .. } | AcceptPreview::Changed { revision, .. }) =
             preview.as_ref();
         let mut revision = json!(revision);

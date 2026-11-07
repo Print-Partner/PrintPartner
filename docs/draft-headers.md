@@ -152,7 +152,9 @@ the same preview and Accept (GRE-1236). `propose_apply_plan_draft`
 and writes nothing. When Accept would run, it proposes an action whose
 `params.revision` is the preview's `revision` without `draft_id`, and its
 result carries the `preview`. When Accept would refuse, it proposes nothing
-and returns the refusal as `preview_result`. `confirm_apply` of that action
+and returns the refusal as `preview_result`. It also proposes nothing, and
+returns the `preview`, while the preview lists running work in `blocked_by`
+or checkoff links and queued sends in `production`. `confirm_apply` of that action
 sends exactly that revision to Accept with the action id as the idempotency
 key and `remap_checkoff_links: false`, so a header saved after the proposal is
 refused with `draft_changed`. A refusal keeps the action pending, as Node

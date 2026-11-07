@@ -259,3 +259,28 @@ async fn gre_1236_mcp_proposes_nothing_when_accept_would_refuse() {
     drop(mcp);
     server.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gre_1236_mcp_proposes_nothing_while_production_would_refuse_accept() {
+    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    changed_draft(&server).await;
+    let mcp = Mcp::start(&server).await;
+    let before = plan_rows(&server);
+    let (failed, refused) = mcp
+        .call(
+            "propose_apply_plan_draft",
+            json!({"plan_id": 1, "draft_id": 2}),
+        )
+        .await;
+    assert!(failed, "{refused}");
+    assert_eq!(refused["error"], "Working Plan cannot be accepted");
+    assert_eq!(
+        refused["preview"]["changes"]["production"]["checkoff_link_count"],
+        1
+    );
+    let (_, pending) = mcp.call("list_pending_actions", json!({})).await;
+    assert_eq!(pending, json!({"actions": []}));
+    assert_eq!(plan_rows(&server), before);
+    drop(mcp);
+    server.close().await;
+}

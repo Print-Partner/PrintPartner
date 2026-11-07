@@ -94,7 +94,10 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
     fi
     sleep 5
   done
-  "$engine" rm -f "$name" >/dev/null 2>&1 || true
+  if ! "$engine" rm -f "$name" >/dev/null 2>&1 && [ -n "$("$engine" ps -aq --filter "name=^$name\$" 2>/dev/null)" ]; then
+    echo "pp-iso slot $slot: could not remove $name; stopping the slot so systemd restarts it and the exit trap retries" >&2
+    exit 1
+  fi
   kill "$logs_pid" 2>/dev/null || true
   wait "$logs_pid" 2>/dev/null || true
   name=

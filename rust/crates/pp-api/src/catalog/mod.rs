@@ -1,5 +1,5 @@
 mod http;
-mod wire;
+pub(crate) mod wire;
 
 pub use http::{CatalogHttpConfig, admit_catalog_routes};
 #[cfg(test)]

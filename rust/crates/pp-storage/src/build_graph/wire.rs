@@ -107,6 +107,8 @@ pub fn profile_summary(value: DomainSummary) -> ProfileSummary {
         },
         archived_at: value.archived_at,
         last_used_at: value.last_used_at,
+        customer: value.customer,
+        due_date: value.due_date,
     }
 }
 
@@ -171,6 +173,8 @@ mod tests {
         let summary = profile_summary(DomainSummary {
             id: 7,
             name: "Broken".into(),
+            customer: None,
+            due_date: None,
             order_number: None,
             special_request: None,
             part_count: 0,

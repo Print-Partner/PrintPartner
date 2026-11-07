@@ -37,7 +37,8 @@ capacity without sharing state.
   unprivileged uid on the host. `runner` has passwordless `sudo` because workflow
   steps call `sudo apt-get`, so any step can be root inside the container. That root is
   confined by the user namespace and by the rules above; it is not restricted to `apt`.
-- Capabilities are dropped to the set `apt` and `sudo` need. Each job has CPU, memory
+- All capabilities are dropped except `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `KILL`,
+  `SETUID`, `SETGID`, `SETFCAP` and `SYS_CHROOT`, which `apt`, `sudo` and job steps use. Each job has CPU, memory
   and process limits and a maximum run time.
 - The registration credential is a token with repository Administration (self-hosted
   runners) permission. It lives in `/etc/pp-iso/token` (root:root, 0600), is given to the
@@ -73,9 +74,11 @@ jobs must not receive deploy secrets. pp-local must not run PR-editable jobs.
 Use the Linux hosts that run pp-local today. Each host needs systemd, rootless podman
 (`sudo apt-get install -y podman uidmap slirp4netns`) and `curl` and `jq`.
 
-1. Create a token. In GitHub, create a fine-grained personal access token (or a GitHub App
-   installation token) for `poitee/PrintPartner` only, with the repository permission
-   **Administration: read and write** and nothing else. Do not paste it anywhere except the
+1. Create a token. In GitHub, create a fine-grained personal access token
+   for `poitee/PrintPartner` only, with the repository permission
+   **Administration: read and write** and nothing else. Use a personal access token,
+   not a GitHub App installation token: installation tokens expire after an hour and nothing in
+   the kit refreshes the token file. Note the token's expiry date and rotate it before then. Do not paste it anywhere except the
    hidden prompt below.
 2. Give pp-iso a bounded disk. `install.sh` refuses unless `/var/lib/pp-iso` is a separate
    filesystem on a block device or on a fully allocated loop image (not a bind mount or a
@@ -85,7 +88,8 @@ Use the Linux hosts that run pp-local today. Each host needs systemd, rootless p
    really has free (check `df -h /var`): `sudo mkdir -p /var/lib/pp-iso && sudo fallocate -l 200G /var/pp-iso.img && sudo mkfs.ext4 -q /var/pp-iso.img`,
    then add `/var/pp-iso.img /var/lib/pp-iso ext4 loop,nofail 0 2` to `/etc/fstab` and run
    `sudo mount /var/lib/pp-iso`. Container layers, job workspaces and the image live there.
-3. On the host, check out this repository and `cd scripts/pp-iso`.
+3. On the host, check out this repository anywhere and `cd scripts/pp-iso`. `install.sh` copies
+   the image files to `/usr/local/lib/pp-iso/image`, so `pp-iso` can build from there.
 4. `sudo ./install.sh`. First run creates `/etc/pp-iso/runner.env` and stops.
 5. Edit `/etc/pp-iso/runner.env`: set `PP_ISO_SLOTS` and the pp-local reserve (see sizing).
 6. `sudo ./install.sh --set-token` and type the token at the hidden prompt.
@@ -94,14 +98,18 @@ Use the Linux hosts that run pp-local today. Each host needs systemd, rootless p
    starts a test container with those limits from a system service as `pp-iso`, and only then
    starts the slots. If the test container fails, nothing starts.
 8. In GitHub, Settings, Actions, Runners: each slot shows as an idle `pp-iso` runner only
-   while it waits; it disappears after its job.
+   while it waits; a runner that took a job disappears after it. A slot stopped while idle
+   can leave an offline registration; remove it there if it lingers.
 9. Run the **pp-iso proof** workflow from the Actions tab. It must pass.
 
-To change the settings or update the kit, edit `runner.env` and run `sudo ./install.sh --restart`.
+To change the settings or update the kit (including a new runner version), edit `runner.env`
+if needed and run `sudo ./install.sh --restart`; it points `PP_ISO_IMAGE` at the image it just
+built.
 Without `--restart` it refuses while slots run, because a running slot keeps its old limits;
 with it, a job in flight is cancelled and can be re-run.
 
-To stop a host: `sudo systemctl disable --now 'pp-iso-runner@*'`. To rotate the token
+To stop a host: `sudo systemctl stop 'pp-iso-runner@*'`, and to keep the slots off after a
+reboot `sudo systemctl disable pp-iso-runner@1.service` for each slot number. To rotate the token
 run `sudo ./install.sh --set-token` and `sudo systemctl restart 'pp-iso-runner@*'`.
 
 ## Pool size

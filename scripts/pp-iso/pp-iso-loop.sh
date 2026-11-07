@@ -80,7 +80,7 @@ while [ "$max_jobs" -eq 0 ] || [ "$jobs_done" -lt "$max_jobs" ]; do
     done; } &
   logs_pid=$!
   # Wait for the container to exit. The run time limit counts from the moment the runner starts a
-  # job (Runner.Worker appears), so a slot that waited a long time for work does not cut a job short.
+  # job (the runner logs Running job), so a slot that waited a long time for work does not cut a job short.
   job_start=0
   ps_errors=0
   while :; do

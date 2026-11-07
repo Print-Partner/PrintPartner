@@ -27,7 +27,8 @@ jobs:
           echo "container=$container" >> "$GITHUB_OUTPUT"
           echo "container: $container"
           id -un; id -u
-          test ! -S /var/run/docker.sock && echo "no docker socket"
+          if [ -S /var/run/docker.sock ]; then echo "docker socket present" >&2; exit 1; fi
+          echo "no docker socket"
           mkdir -p "$HOME/.cargo/registry" /home/runner/pp-iso-marker
           echo first > "$HOME/.cargo/registry/marker"
           echo first > /home/runner/pp-iso-marker/marker

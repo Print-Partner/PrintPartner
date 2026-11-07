@@ -1,6 +1,6 @@
 # Bambu LAN driver (GRE-362)
 
-`pp_drivers::bambu` reads a Bambu Lab printer's status over its LAN MQTT broker, as Node's `integrations/adapters/bambu.ts` does. It is status-only: it never uploads a file or controls a print. No route or watcher calls it yet. GRE-1245 adds certificate pinning on Settings → Test connection and the reset route, and GRE-1176 adds the status watcher, all behind `desktop_rebuild` and `PP_DESKTOP_REBUILD`.
+`pp_drivers::bambu` reads a Bambu Lab printer's status over its LAN MQTT broker, as Node's `integrations/adapters/bambu.ts` does. It is status-only: it never uploads a file or controls a print. The Rust-only runtime's Test connection uses it to pin a printer's certificate ([Pinning in Settings](#pinning-in-settings)). GRE-1176 adds the status watcher. Both run only behind `desktop_rebuild` and `PP_DESKTOP_REBUILD`.
 
 ## One status read
 
@@ -28,10 +28,21 @@ Node turns TLS verification off for private addresses. Rust never does. Every re
 
 Both still verify the TLS 1.2 or 1.3 handshake signature against the certificate's public key, so the peer must hold its private key. The driver reads that key from the certificate itself instead of through webpki, which accepts only X.509 v3, because Node's adapter notes that Bambu printers present self-signed v1 certificates. `Read::certificate` reports the fingerprint the printer presented, so the caller can store it after a first-use read or show it after a mismatch.
 
+## Pinning in Settings
+
+The Rust-only runtime stores one pin per Bambu integration in `printer_tls_pins` (schema step 47, `pp_storage::tls_pins`): the host and port it was taken for, the certificate's SHA-256 and `pinned_at`. Node has no such table and never reads it.
+
+- `POST /api/v1/integrations/{id}/test` (Settings → Test connection) is the only writer. It first applies Node's tenant admission: the `bambu` feature choice off or unset answers 403 `FEATURE_DISABLED`, a corrupt choice 500 `FEATURE_TOGGLES_INVALID`, both before any network. With no pin it reads with `Trust::FirstUse` and stores the presented certificate's hash only after a status report arrived, so a peer that never speaks Bambu MQTT is not pinned. The insert never replaces a row; if two tests race, the stored pin wins and the other answers the certificate-changed failure. With a pin it reads with `Trust::Pinned`, so a changed certificate fails before MQTT CONNECT and nothing is stored.
+- A pin counts only for the host and port it was taken for. After the user edits either, Test connection answers `Printer address changed since its certificate was pinned. Reset its certificate in Settings.` without connecting. Nothing re-pins silently.
+- `GET /api/v1/integrations/{id}/tls-pin` answers `{"pinned": false}` or `{"pinned": true, "sha256_prefix": "<12 hex>", "pinned_at": "<RFC 3339>"}`, never the whole hash. `POST /api/v1/integrations/{id}/tls-pin/reset` deletes the row and answers `{"reset": true}` (`false` when there was none). Both answer 404 `Integration not found` for an unknown id, sit behind the same authentication and loopback admission as the other integration routes, and are limited to 60 and 5 requests a minute.
+- Settings → Printers shows a Bambu row's pin (`Certificate pinned · ab12cd34ef56 · <date>` or `Not pinned. Test connection to pin.`) and a **Reset certificate** button with a confirmation that the printer must be the same device. The row renders only when health advertises the desktop rebuild.
+
+Bambu is a `Host::Status` target in `pp-core`: capabilities read all false and the files and camera routes answer unsupported. No Rust route uploads to a Bambu printer.
+
 ## Status mapping
 
 `status_from_print` ports Node's `statusFromBambuPrint` and `mapBambuGcodeState`, including JavaScript's `Number()` for string fields. `fixtures/drivers/bambu/driver/prints.json` holds the four recorded fixtures and edge cases. `bambu.driver-oracle.test.ts` runs them through Node and checks `node-oracle-status.json` (`UPDATE_BAMBU_ORACLE=1` rewrites it); `ticket_t_23_bambu.rs` checks the Rust mapping against the same file.
 
 ## Tests
 
-`pp_testkit::bambu::Broker` is a loopback MQTT broker over TLS. Each test generates its certificate with rcgen, so the repository holds no key material. The broker logs each connection's steps (TCP, TLS or TLS refused, CONNECT with whether the access code matched, SUBSCRIBE, PUBLISH, DISCONNECT) and can switch to a new certificate to act as a replaced printer. The tests in `rust/crates/pp-drivers/tests/ticket_t_23_bambu.rs` cover the exchange, checked DNS to a pinned connection, a changed certificate refused before CONNECT, v1 and v3 certificates over TLS 1.2 and 1.3, a matching pin served without its private key, a report before SUBACK, hosts the guard refuses, and broker failures. No test talks to a real printer.
+`pp_testkit::bambu::Broker` is a loopback MQTT broker over TLS. Each test generates its certificate with rcgen, so the repository holds no key material. The broker logs each connection's steps (TCP, TLS or TLS refused, CONNECT with whether the access code matched, SUBSCRIBE, PUBLISH, DISCONNECT) and can switch to a new certificate to act as a replaced printer. The tests in `rust/crates/pp-drivers/tests/ticket_t_23_bambu.rs` cover the exchange, checked DNS to a pinned connection, a changed certificate refused before CONNECT, v1 and v3 certificates over TLS 1.2 and 1.3, a matching pin served without its private key, a report before SUBACK, hosts the guard refuses, and broker failures. `rust/crates/pp-core/tests/runtime_m0/bambu_pin.rs` runs the Rust-only launcher against the broker: the three routes refuse an unauthenticated request before the printer sees anything, Test connection pins, a replaced certificate fails without a second CONNECT, and a reset lets the next Test connection pin the new certificate. No test talks to a real printer.

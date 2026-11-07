@@ -193,6 +193,25 @@ pub fn printer_link(
     })
 }
 
+/// The stored `config` object of the integration with `id` (the first
+/// object with that id, as [`integration`] finds it), for a driver that reads
+/// fields beyond the common ones. `None` when no row has that id.
+pub fn integration_config(
+    client: &SettingsClient,
+    wait: Duration,
+    id: &str,
+) -> Result<Option<Value>> {
+    let items = setting(client, wait, INTEGRATIONS_KEY)?;
+    Ok(items
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.is_object() && item["id"].as_str() == Some(id))
+        })
+        .map(|item| item["config"].clone()))
+}
+
 fn setting(client: &SettingsClient, wait: Duration, key: &str) -> Result<Value> {
     Ok(match client.reader(wait)?.snapshot(TENANT, key)? {
         SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap_or(Value::Null),

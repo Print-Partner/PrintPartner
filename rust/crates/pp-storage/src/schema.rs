@@ -9,7 +9,7 @@ use std::{
 };
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 46;
+pub(crate) const CURRENT_VERSION: u64 = 47;
 /// The newest step that writes its own `pre-schema{N}.db` copy. Every step
 /// from 38 does.
 ///
@@ -20,7 +20,7 @@ pub(crate) const CURRENT_VERSION: u64 = 46;
 /// whose run left `pre-schema38.db` to `pre-schema41.db` and no marker, so an
 /// open from 41 without a marker skips retention.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const LAST_COPIED_STEP: u64 = 46;
+pub(crate) const LAST_COPIED_STEP: u64 = 47;
 #[cfg(feature = "desktop_rebuild")]
 const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP);
 /// The last step a release without the run marker installs. Its interrupted
@@ -567,6 +567,8 @@ fn install_steps(
         };
     let install_print_grams: fn(&Connection) -> Result<()> =
         |connection| Ok(connection.execute_batch(include_str!("print_grams/schema.sql"))?);
+    let install_tls_pins: fn(&Connection) -> Result<()> =
+        |connection| Ok(connection.execute_batch(include_str!("tls_pins/schema.sql"))?);
     for (step, install) in crate::uploads::SCHEMA_STEPS.into_iter().chain([
         (40, install_scan),
         (41, install_sync),
@@ -575,6 +577,7 @@ fn install_steps(
         (crate::send_queue::SCHEMA_STEP, install_send_queue),
         (SNAPSHOT_HEADER_STEP, install_snapshot_headers),
         (crate::print_grams::SCHEMA_STEP, install_print_grams),
+        (crate::tls_pins::SCHEMA_STEP, install_tls_pins),
     ]) {
         if version < step {
             let target = (populated && step <= LAST_COPIED_STEP)
@@ -605,7 +608,7 @@ fn install_steps(
 /// Rust-only side tables: each step's objects must match its reference SQL
 /// from that step on and be absent before it.
 #[cfg(feature = "desktop_rebuild")]
-const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 5] = [
+const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 6] = [
     (
         crate::domain_events::SCHEMA_STEP,
         "name LIKE 'domain_event%'",
@@ -640,6 +643,13 @@ const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 5] = [
         include_str!("print_grams/schema.sql"),
         "Unexpected print grams schema",
         "Print grams schema mismatch",
+    ),
+    (
+        crate::tls_pins::SCHEMA_STEP,
+        "tbl_name = 'printer_tls_pins'",
+        include_str!("tls_pins/schema.sql"),
+        "Unexpected TLS pin schema",
+        "TLS pin schema mismatch",
     ),
 ];
 

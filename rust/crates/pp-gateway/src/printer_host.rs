@@ -10,6 +10,8 @@ use anyhow::Result;
 use axum::body::{Body, Bytes};
 use http_body::Frame;
 use pp_drivers::{
+    bambu,
+    moonraker::PrinterHostState,
     moonraker_driver::{self, StorageEntry},
     prusalink,
 };
@@ -140,6 +142,27 @@ fn opened(reply: StreamReply) -> Opened {
     }
 }
 
+/// A Bambu certificate pin: the printer address it was taken at and the
+/// SHA-256 of the certificate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BambuPin {
+    pub host: String,
+    pub port: u16,
+    pub sha256: [u8; 32],
+}
+
+/// A Bambu connection test's `{ok, message}`, and the pin to store when the
+/// test ran without one and reached the printer's status.
+#[derive(Debug)]
+pub struct BambuTest {
+    pub result: Value,
+    pub pin: Option<BambuPin>,
+}
+
+pub use bambu::CERTIFICATE_CHANGED as BAMBU_CERTIFICATE_CHANGED;
+pub const BAMBU_ADDRESS_CHANGED: &str =
+    "Printer address changed since its certificate was pinned. Reset its certificate in Settings.";
+
 #[derive(Clone)]
 pub struct HostReads {
     guard: HttpGuard,
@@ -186,6 +209,48 @@ impl HostReads {
             Driver::PrusaLink(driver) => driver.test_connection().await,
         };
         serde_json::to_value(result).unwrap_or(Value::Null)
+    }
+
+    /// Node's Bambu `testConnection` over pinned TLS (`pp_drivers::bambu`):
+    /// with `pin`, only that certificate at that address; without one, the
+    /// certificate the printer presents, which the result then carries for
+    /// the caller to store. Only the user's Test connection calls this.
+    pub async fn bambu_test(&self, config: &Value, pin: Option<&BambuPin>) -> BambuTest {
+        let failed = |message: &str| BambuTest {
+            result: serde_json::json!({ "ok": false, "message": message }),
+            pin: None,
+        };
+        let config = match bambu::Config::from_stored(config) {
+            Ok(config) => config,
+            Err(message) => return failed(&message),
+        };
+        let trust = match pin {
+            None => bambu::Trust::FirstUse,
+            Some(pin) if pin.host == config.host && pin.port == config.port => {
+                bambu::Trust::Pinned(pin.sha256)
+            }
+            Some(_) => return failed(BAMBU_ADDRESS_CHANGED),
+        };
+        let (host, port) = (config.host.clone(), config.port);
+        let read = bambu::Driver::new(self.guard.clone(), config)
+            .status(trust)
+            .await;
+        let status = read.status;
+        if status.state == PrinterHostState::Offline {
+            return failed(status.message.as_deref().unwrap_or("Bambu MQTT offline"));
+        }
+        let state = serde_json::to_value(&status.state).unwrap_or(Value::Null);
+        let shown = status
+            .message
+            .clone()
+            .unwrap_or_else(|| state.as_str().unwrap_or_default().to_owned());
+        BambuTest {
+            result: serde_json::json!({ "ok": true, "message": format!("Connected (LAN MQTT · {shown})") }),
+            pin: match (trust, read.certificate) {
+                (bambu::Trust::FirstUse, Some(sha256)) => Some(BambuPin { host, port, sha256 }),
+                _ => None,
+            },
+        }
     }
 
     /// One directory as Node's `StorageListing`.

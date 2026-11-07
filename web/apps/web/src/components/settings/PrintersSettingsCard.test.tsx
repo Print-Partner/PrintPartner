@@ -22,6 +22,8 @@ const api = vi.hoisted(() => ({
   fetchPrinters: vi.fn(),
   fetchProfiles: vi.fn(),
   fetchSlicerProfileOptions: vi.fn(),
+  fetchTlsPin: vi.fn(),
+  resetTlsPin: vi.fn(),
   savePrinterFleet: vi.fn(),
   savePrinterPlanBinding: vi.fn(),
   testIntegration: vi.fn(),
@@ -39,6 +41,8 @@ vi.mock("../../api/endpoints/integrations", () => ({
   deleteIntegration: api.deleteIntegration,
   fetchIntegrationStatus: api.fetchIntegrationStatus,
   fetchIntegrations: api.fetchIntegrations,
+  fetchTlsPin: api.fetchTlsPin,
+  resetTlsPin: api.resetTlsPin,
   testIntegration: api.testIntegration,
   updateIntegration: api.updateIntegration,
 }));
@@ -417,6 +421,61 @@ describe("PrintersSettingsCard", () => {
       });
     });
     expect(await screen.findByText("Main Shop Voron")).toBeTruthy();
+  });
+
+  it.each([false, true])("shows the Bambu certificate pin only in the desktop rebuild: %s", async (rebuild) => {
+    if (rebuild) healthState.health = { ok: true, capabilities: ["tenant_feature_toggles"] };
+    api.fetchPrinters.mockResolvedValue([
+      {
+        id: "printer-x1c",
+        name: "X1C",
+        model: "x1c",
+        bed_width_mm: 256,
+        bed_depth_mm: 256,
+        bed_height_mm: 256,
+        margin_mm: 4,
+        max_filament_slots: 1,
+        loaded_filaments: [{ slot: 1, filament_color_id: null, label: "" }],
+        integration_id: "host-x1c",
+        device_id: "default",
+        preset_id: null,
+      } satisfies PrinterMachine,
+    ]);
+    api.fetchIntegrations.mockResolvedValue([
+      {
+        id: "host-x1c",
+        type: "bambu",
+        name: "X1C",
+        config: { host: "192.168.1.60", serial: "FIXTURE01" },
+        created_at: "2026-11-07T00:00:00.000Z",
+        updated_at: "2026-11-07T00:00:00.000Z",
+      },
+    ]);
+    let pinned = true;
+    api.fetchTlsPin.mockImplementation(async () =>
+      pinned
+        ? { pinned: true, sha256_prefix: "ab12cd34ef56", pinned_at: "2026-11-07T12:00:00Z" }
+        : { pinned: false },
+    );
+    api.resetTlsPin.mockImplementation(async () => {
+      pinned = false;
+    });
+
+    renderWithQueryClient(<PrintersSettingsCard engineReady />);
+    await screen.findByRole("button", { name: "Test connection" });
+
+    if (!rebuild) {
+      expect(screen.queryByRole("button", { name: "Reset certificate" })).toBeNull();
+      expect(api.fetchTlsPin).not.toHaveBeenCalled();
+      return;
+    }
+    expect(await screen.findByText(/^Certificate pinned · ab12cd34ef56 · /)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reset certificate" }));
+    expect(api.resetTlsPin).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Reset certificate" }));
+    await waitFor(() => expect(api.resetTlsPin).toHaveBeenCalledWith("host-x1c"));
+    expect(await screen.findByText("Not pinned. Test connection to pin.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reset certificate" })).toBeNull();
   });
 
   it("hides printer connection controls on the hosted planning host", async () => {

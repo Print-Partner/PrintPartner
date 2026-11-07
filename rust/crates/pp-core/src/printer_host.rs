@@ -6,18 +6,18 @@
 //! resend is PrusaLink's single Digest resend after a 401 (see
 //! `pp_gateway::printer_host`).
 use pp_api::printer_host::{Answer, Capabilities, HostAnswer, HostStream, PrinterHostPort};
-use pp_gateway::printer_host::{HostReads, HostTarget, Opened};
+use pp_gateway::printer_host::{BambuPin, HostReads, HostTarget, Opened};
 use pp_storage::{
-    SettingsClient,
+    SettingsClient, features,
     printer_hosts::{self, PrinterLink, StoredIntegration},
+    tls_pins::{self, Pin},
 };
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{sync::atomic::AtomicBool, time::Duration};
 
 const READER_WAIT: Duration = Duration::from_millis(500);
 /// Types Node has an adapter for that this runtime cannot read yet.
-const UNPORTED: [&str; 5] = [
-    "bambu",
+const UNPORTED: [&str; 4] = [
     "spoolman",
     "slicer_sidecar",
     "ai_assistant",
@@ -37,6 +37,9 @@ impl StoredPrinterHosts {
 
 enum Host {
     Read(HostTarget),
+    /// Bambu: a status-only target. It is never `Read`, so file, camera and
+    /// upload paths refuse it (GRE-362).
+    Status,
     Unported,
 }
 
@@ -52,6 +55,7 @@ fn host(integration: StoredIntegration) -> Option<Host> {
             password: integration.password,
             storage: integration.storage,
         })),
+        "bambu" => Some(Host::Status),
         kind if UNPORTED.contains(&kind) => Some(Host::Unported),
         _ => None,
     }
@@ -82,7 +86,7 @@ async fn readable<T>(
 ) -> Result<HostTarget, HostAnswer<T>> {
     match linked(settings, printer).await? {
         Host::Read(target) => Ok(target),
-        Host::Unported => Err(HostAnswer::Unsupported),
+        Host::Status | Host::Unported => Err(HostAnswer::Unsupported),
     }
 }
 
@@ -153,7 +157,8 @@ impl PrinterHostPort for StoredPrinterHosts {
                     cameras: true,
                     status: matches!(target, HostTarget::Moonraker { .. }),
                 }),
-                Ok(Host::Unported) => HostAnswer::Unsupported,
+                // Bambu status arrives with its watcher (GRE-1176).
+                Ok(Host::Status | Host::Unported) => HostAnswer::Unsupported,
                 Err(answer) => answer,
             }
         })
@@ -189,8 +194,10 @@ impl PrinterHostPort for StoredPrinterHosts {
                 Ok(Err(_)) | Err(_) => return HostAnswer::Busy,
             };
             let kind = stored.kind.clone();
+            let id = stored.id.clone();
             match host(stored) {
                 Some(Host::Read(target)) => HostAnswer::Ok(reads.test(&target).await),
+                Some(Host::Status) => bambu_test(&settings, &reads, id).await,
                 Some(Host::Unported) => HostAnswer::Unsupported,
                 None => HostAnswer::Ok(json!({
                     "ok": false,
@@ -198,6 +205,112 @@ impl PrinterHostPort for StoredPrinterHosts {
                 })),
             }
         })
+    }
+
+    fn tls_pin(&self, integration: String) -> Answer<Value> {
+        let settings = self.settings.clone();
+        Box::pin(async move {
+            let read = tokio::task::spawn_blocking(move || {
+                let Some(_) = printer_hosts::integration(&settings, READER_WAIT, &integration)?
+                else {
+                    return anyhow::Ok(None);
+                };
+                Ok(Some(tls_pins::read(&settings, READER_WAIT, &integration)?))
+            })
+            .await;
+            match read {
+                Ok(Ok(Some(pin))) => HostAnswer::Ok(match pin {
+                    Some(pin) => json!({
+                        "pinned": true,
+                        "sha256_prefix": hex::encode(&pin.sha256[..6]),
+                        "pinned_at": pin.pinned_at,
+                    }),
+                    None => json!({ "pinned": false }),
+                }),
+                Ok(Ok(None)) => HostAnswer::NotFound,
+                Ok(Err(_)) | Err(_) => HostAnswer::Busy,
+            }
+        })
+    }
+
+    fn reset_tls_pin(&self, integration: String) -> Answer<Value> {
+        let settings = self.settings.clone();
+        Box::pin(async move {
+            let reset = tokio::task::spawn_blocking(move || {
+                let Some(_) = printer_hosts::integration(&settings, READER_WAIT, &integration)?
+                else {
+                    return anyhow::Ok(None);
+                };
+                let reply =
+                    settings.reset_tls_pin(&integration, &AtomicBool::new(false), WRITE_WAIT)?;
+                Ok(Some(reply.recv_timeout(WRITE_WAIT)??))
+            })
+            .await;
+            match reset {
+                Ok(Ok(Some(reset))) => HostAnswer::Ok(json!({ "reset": reset })),
+                Ok(Ok(None)) => HostAnswer::NotFound,
+                Ok(Err(_)) | Err(_) => HostAnswer::Busy,
+            }
+        })
+    }
+}
+
+/// How long a pin write may wait for the writer.
+const WRITE_WAIT: Duration = Duration::from_secs(5);
+
+/// The user's Bambu Test connection (GRE-1245). Node's tenant-wide Bambu
+/// admission first. With no pin stored, the test trusts the certificate the
+/// printer presents and, once it has read the printer's status, stores that
+/// certificate's pin; only this route ever writes one. A pin taken at another
+/// address, or a different certificate, fails without trusting anything.
+async fn bambu_test(settings: &SettingsClient, reads: &HostReads, id: String) -> HostAnswer<Value> {
+    let client = settings.clone();
+    let lookup = id.clone();
+    let stored = tokio::task::spawn_blocking(move || {
+        let enabled = features::bambu_enabled(&client, READER_WAIT)?;
+        let config = printer_hosts::integration_config(&client, READER_WAIT, &lookup)?;
+        let pin = tls_pins::read(&client, READER_WAIT, &lookup)?;
+        anyhow::Ok((enabled, config, pin))
+    })
+    .await;
+    let (config, pin) = match stored {
+        Ok(Ok((Some(true), Some(config), pin))) => (config, pin),
+        Ok(Ok((Some(false), ..))) => return HostAnswer::FeatureDisabled("bambu"),
+        Ok(Ok((None, ..))) => return HostAnswer::FeatureInvalid,
+        Ok(Ok((_, None, _))) => return HostAnswer::NotFound,
+        Ok(Err(_)) | Err(_) => return HostAnswer::Busy,
+    };
+    let pin = pin.map(|pin| BambuPin {
+        host: pin.host,
+        port: pin.port,
+        sha256: pin.sha256,
+    });
+    let test = reads.bambu_test(&config, pin.as_ref()).await;
+    let Some(taken) = test.pin else {
+        return HostAnswer::Ok(test.result);
+    };
+    let client = settings.clone();
+    let sha256 = taken.sha256;
+    let stored = tokio::task::spawn_blocking(move || {
+        let pin = Pin {
+            host: taken.host,
+            port: taken.port,
+            sha256: taken.sha256,
+            pinned_at: String::new(),
+        };
+        let reply = client.pin_tls(&id, pin, &AtomicBool::new(false), WRITE_WAIT)?;
+        reply.recv_timeout(WRITE_WAIT)??;
+        tls_pins::read(&client, READER_WAIT, &id)
+    })
+    .await;
+    match stored {
+        // Another Test connection may have pinned first; only its pin counts.
+        Ok(Ok(Some(stored))) if stored.sha256 == sha256 => HostAnswer::Ok(test.result),
+        Ok(Ok(_)) => HostAnswer::Ok(json!({
+            "ok": false,
+            "message": pp_gateway::printer_host::BAMBU_CERTIFICATE_CHANGED,
+        })),
+        Ok(Err(_)) | Err(_) => HostAnswer::Busy,
     }
 }
 
@@ -230,8 +343,8 @@ mod tests {
             host(stored("prusalink")),
             Some(Host::Read(HostTarget::PrusaLink { .. }))
         ));
+        assert!(matches!(host(stored("bambu")), Some(Host::Status)));
         for kind in [
-            "bambu",
             "spoolman",
             "slicer_sidecar",
             "ai_assistant",

@@ -163,6 +163,8 @@ async fn ticket_t_21_ticket_t_22_rust_only_runtime_host_reads_in_child() {
         ("GET", "/api/v1/printers/p-moon/files"),
         ("GET", "/api/v1/printers/p-moon/cameras"),
         ("POST", "/api/v1/integrations/moon-1/test"),
+        ("GET", "/api/v1/integrations/bambu-1/tls-pin"),
+        ("POST", "/api/v1/integrations/bambu-1/tls-pin/reset"),
         ("GET", "/printers/p-moon/capabilities"),
         ("GET", "/printers/p-moon/files"),
         ("GET", "/printers/p-moon/cameras"),
@@ -374,7 +376,14 @@ async fn cameras_and_test(origin: &str, cookie: &str, oracle: &Value, prusa_orac
             .starts_with("Connected ("),
         "{probe}"
     );
-    assert_eq!(test("bambu-1").await.0, StatusCode::NOT_IMPLEMENTED);
+    // Bambu is off by default, so its connection test is refused before any
+    // network, as Node's tenant feature admission does.
+    let (code, refused) = test("bambu-1").await;
+    assert_eq!(
+        (code, &refused["code"]),
+        (StatusCode::FORBIDDEN, &json!("FEATURE_DISABLED")),
+        "{refused}"
+    );
     assert_eq!(
         test("odd-1").await,
         (

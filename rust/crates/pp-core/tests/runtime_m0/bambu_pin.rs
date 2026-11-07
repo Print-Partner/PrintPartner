@@ -1,0 +1,167 @@
+//! GRE-1245: the Rust-only launcher's Bambu Test connection pins the
+//! printer's certificate, and only a deliberate reset replaces the pin. Every
+//! read goes to the loopback TLS broker in `pp_testkit::bambu`; nothing here
+//! talks to a real printer.
+use super::farm_reads::settings_rows;
+use super::ticket_t_4_watcher_proof::{
+    proof_data, run_in_child, seed_settings, shut_down, signed_in, start_rust_only,
+};
+use super::{request, temporary};
+use axum::http::StatusCode;
+use pp_testkit::bambu::{Broker, Identity, Script};
+use serde_json::{Value, json};
+
+const SERIAL: &str = "FIXTURE01";
+const CODE: &str = "synthetic-code";
+const CHANGED: &str = "Printer certificate changed. If you replaced or reset the printer, reset its certificate in Settings.";
+
+#[tokio::test]
+async fn ticket_t_23_rust_only_runtime_pins_on_test_connection() {
+    let data = temporary("bambu-pin");
+    run_in_child(
+        "bambu_pin::ticket_t_23_rust_only_runtime_pins_in_child",
+        &data,
+    )
+    .await;
+    let _ = std::fs::remove_dir_all(data);
+}
+
+async fn call(origin: &str, cookie: &str, method: &str, path: &str) -> (StatusCode, Value) {
+    let (code, _, body) = request(origin, path, method, Some(cookie), None, None, None).await;
+    (code, serde_json::from_slice(&body).unwrap_or_default())
+}
+
+fn prefix(fingerprint: &[u8; 32]) -> Value {
+    json!(hex::encode(&fingerprint[..6]))
+}
+
+#[tokio::test]
+#[ignore = "runs in an isolated subprocess with explicit environment"]
+async fn ticket_t_23_rust_only_runtime_pins_in_child() {
+    let data = proof_data();
+    let report = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../fixtures/drivers/bambu/pushall-idle.json"
+    ))
+    .unwrap();
+    let printer = Identity::generate().unwrap();
+    let broker = Broker::start(printer.clone(), Script::reporting(CODE, SERIAL, &report))
+        .await
+        .unwrap();
+    seed_settings(
+        &data,
+        &[
+            (
+                "integrations",
+                json!([{"id": "bambu-1", "type": "bambu", "config": {
+                    "host": "127.0.0.1", "port": broker.addr.port(),
+                    "serial": SERIAL, "access_code": CODE,
+                }}]),
+            ),
+            ("feature_toggles", json!({"bambu": true})),
+        ],
+    );
+    let settings = settings_rows(&data);
+    let (runtime, origin, desktop) = start_rust_only(&data).await;
+
+    for (method, path) in [
+        ("GET", "/api/v1/integrations/bambu-1/tls-pin"),
+        ("POST", "/api/v1/integrations/bambu-1/tls-pin/reset"),
+        ("POST", "/api/v1/integrations/bambu-1/test"),
+    ] {
+        let (code, body) = call(&origin, &desktop, method, path).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}: {body}");
+    }
+    assert!(
+        broker.log().is_empty(),
+        "an unauthenticated request reached the printer"
+    );
+
+    let cookie = signed_in(&origin, &desktop, 1).await;
+    let pin = || {
+        call(
+            &origin,
+            &cookie,
+            "GET",
+            "/api/v1/integrations/bambu-1/tls-pin",
+        )
+    };
+    let test = || {
+        call(
+            &origin,
+            &cookie,
+            "POST",
+            "/api/v1/integrations/bambu-1/test",
+        )
+    };
+    let reset = || {
+        call(
+            &origin,
+            &cookie,
+            "POST",
+            "/api/v1/integrations/bambu-1/tls-pin/reset",
+        )
+    };
+    assert_eq!(pin().await, (StatusCode::OK, json!({"pinned": false})));
+
+    let connected = (
+        StatusCode::OK,
+        json!({"ok": true, "message": "Connected (LAN MQTT · Idle)"}),
+    );
+    assert_eq!(test().await, connected);
+    let (code, pinned) = pin().await;
+    assert_eq!(
+        (code, &pinned["pinned"], &pinned["sha256_prefix"]),
+        (StatusCode::OK, &json!(true), &prefix(&printer.fingerprint))
+    );
+    assert!(
+        pinned["pinned_at"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z')),
+        "{pinned}"
+    );
+
+    let replaced = Identity::generate().unwrap();
+    broker.present(replaced.clone());
+    assert_eq!(
+        test().await,
+        (StatusCode::OK, json!({"ok": false, "message": CHANGED}))
+    );
+    assert_eq!(pin().await.1["sha256_prefix"], prefix(&printer.fingerprint));
+    let connects = |log: &[String]| {
+        log.iter()
+            .filter(|line| line.starts_with("CONNECT"))
+            .count()
+    };
+    assert_eq!(
+        connects(&broker.log()),
+        1,
+        "the changed certificate never got the access code"
+    );
+
+    assert_eq!(reset().await, (StatusCode::OK, json!({"reset": true})));
+    assert_eq!(pin().await, (StatusCode::OK, json!({"pinned": false})));
+    assert_eq!(test().await, connected);
+    assert_eq!(
+        pin().await.1["sha256_prefix"],
+        prefix(&replaced.fingerprint)
+    );
+    let (code, problem) = call(&origin, &cookie, "GET", "/api/v1/integrations/gone/tls-pin").await;
+    assert_eq!(
+        (code, &problem["detail"]),
+        (StatusCode::NOT_FOUND, &json!("Integration not found"))
+    );
+
+    shut_down(runtime).await;
+    let log = broker.log();
+    assert_eq!(connects(&log), 2, "{log:?}");
+    for line in &log {
+        assert!(
+            !line.starts_with("PUBLISH ")
+                || line.ends_with(r#"{"pushing":{"sequence_id":"0","command":"pushall"}}"#),
+            "the printer saw {line}"
+        );
+        assert!(!line.contains("wrong access code"), "{line}");
+    }
+    assert_eq!(settings_rows(&data), settings, "pinning changed settings");
+}

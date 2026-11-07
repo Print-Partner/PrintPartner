@@ -51,6 +51,20 @@ export async function testIntegration(id: string): Promise<IntegrationTestResult
   });
 }
 
+export type TlsPin =
+  | { pinned: false }
+  | { pinned: true; sha256_prefix: string; pinned_at: string };
+
+export async function fetchTlsPin(id: string): Promise<TlsPin> {
+  return engineFetch<TlsPin>(v1Path(`/integrations/${encodeURIComponent(id)}/tls-pin`));
+}
+
+export async function resetTlsPin(id: string): Promise<void> {
+  await engineFetch(v1Path(`/integrations/${encodeURIComponent(id)}/tls-pin/reset`), {
+    method: "POST",
+  });
+}
+
 export async function fetchIntegrationStatus(id: string): Promise<PrinterHostStatus> {
   return engineFetch<PrinterHostStatus>(v1Path(`/integrations/${encodeURIComponent(id)}/status`));
 }

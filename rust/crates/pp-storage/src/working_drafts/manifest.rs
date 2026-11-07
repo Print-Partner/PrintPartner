@@ -297,10 +297,10 @@ impl DimensionOption {
         }
     }
     /// Node's `String(option) === value`.
-    pub(crate) fn matches(&self, value: &str) -> bool {
+    pub(crate) fn matches(&self, value: &JsText) -> bool {
         match self {
-            Self::Text(text) => text.units().iter().copied().eq(value.encode_utf16()),
-            Self::Number(n) => number_text(*n) == value,
+            Self::Text(text) => text == value,
+            Self::Number(n) => JsText::scalar(&number_text(*n)) == *value,
         }
     }
 }

@@ -9,6 +9,7 @@
 
 use super::{BuildCommand, BuildGraphClient, BuildOutcome, build_exists, credential_tenant};
 use crate::manifest_text::JsText;
+use crate::source_scan::node_json::{js_members, js_string};
 use crate::working_drafts::observation::{
     CheckoutManifestUse, DimensionOption, Dimensions, DocumentRead, OwnedCheckoutReadRequest,
     PreparationBudget, ReadFailure, parse_variant_dimensions,
@@ -17,7 +18,7 @@ use crate::{catalog, read_model};
 use anyhow::{Result, anyhow, bail};
 use pp_domain::PositiveId;
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Map, Value, json};
+use serde_json::value::RawValue;
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -40,7 +41,7 @@ pub enum VariantCommand {
 pub struct Commit {
     build: i64,
     source: i64,
-    selection: Vec<(String, String)>,
+    selection: Vec<(JsText, JsText)>,
 }
 
 #[derive(Debug)]
@@ -182,11 +183,12 @@ impl BuildGraphClient {
             Err(failure) => return observation_failed(failure),
         };
         for (dimension, value) in &selection {
-            let key = JsText::scalar(dimension);
-            let Some((_, options)) = dimensions.iter().find(|(name, _)| *name == key) else {
+            let Some((_, options)) = dimensions.iter().find(|(name, _)| name == dimension) else {
+                let dimension = String::from_utf16_lossy(dimension.units());
                 return refused(format!("Unknown variant dimension: {dimension}"));
             };
             if !options.iter().any(|option| option.matches(value)) {
+                let dimension = String::from_utf16_lossy(dimension.units());
                 return refused(format!(
                     "Unsupported option for variant dimension: {dimension}"
                 ));
@@ -263,109 +265,59 @@ fn write_dimensions(dimensions: &Dimensions, output: &mut Vec<u8>) {
     output.push(b'}');
 }
 
-/// Object keys in JavaScript property order: array indexes ascending, then
-/// the rest in insertion order.
-fn js_order<T>(entries: &mut [(String, T)]) {
-    entries.sort_by_key(|(key, _)| {
-        JsText::scalar(key)
-            .array_index()
-            .map_or(u64::MAX, u64::from)
-    });
-}
-
 /// `JSON.stringify(JSON.parse(raw))`, or `{}` for no setting, an empty one or
-/// text that is not JSON, as Node's `getPlanVariantSelection` reads it.
+/// text that is not JSON, as Node's `getPlanVariantSelection` reads it. Lone
+/// surrogate escapes survive, as in JavaScript.
 fn stored_selection(raw: Option<&str>) -> String {
-    let Some(value) = raw
-        .filter(|raw| !raw.is_empty())
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-    else {
-        return "{}".into();
-    };
-    let mut output = String::new();
-    js_stringify(&value, &mut output);
-    output
+    raw.filter(|raw| !raw.is_empty())
+        .and_then(crate::source_scan::node_json::reserialize)
+        .unwrap_or_else(|| "{}".into())
 }
 
-fn js_stringify(value: &Value, output: &mut String) {
-    match value {
-        Value::Number(number) => match number.as_f64().filter(|n| n.is_finite()) {
-            Some(n) => output.push_str(ryu_js::Buffer::new().format(n)),
-            None => output.push_str("null"),
-        },
-        Value::Array(items) => {
-            output.push('[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                js_stringify(item, output);
-            }
-            output.push(']');
-        }
-        Value::Object(fields) => {
-            let mut fields: Vec<(String, &Value)> = fields
-                .iter()
-                .map(|(key, value)| (key.clone(), value))
-                .collect();
-            js_order(&mut fields);
-            output.push('{');
-            for (index, (key, value)) in fields.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                output.push_str(&Value::String(key.clone()).to_string());
-                output.push(':');
-                js_stringify(value, output);
-            }
-            output.push('}');
-        }
-        other => output.push_str(&other.to_string()),
-    }
-}
-
-type Request = (Vec<(String, String)>, Option<i64>);
+type Request = (Vec<(JsText, JsText)>, Option<i64>);
 
 /// Node's `variantSelectionBody` Zod schema over `request.body ?? {}`: a
 /// `selection` record of strings (default `{}`) and an optional positive
-/// safe-integer `source_id`.
+/// safe-integer `source_id`. Keys and values stay UTF-16, lone surrogates
+/// included, in JavaScript property order.
 fn parse_request(bytes: &[u8]) -> std::result::Result<Request, VariantOutcome> {
-    const MAX_SAFE: u64 = 9_007_199_254_740_991;
     let invalid = || VariantOutcome::Refused(INVALID.into());
     if bytes.is_empty() {
         return Ok((Vec::new(), None));
     }
-    let fields = match serde_json::from_slice::<Value>(bytes) {
-        Err(_) => return Err(VariantOutcome::Unreadable),
-        Ok(Value::Null) => return Ok((Vec::new(), None)),
-        Ok(Value::Object(fields)) => fields,
-        Ok(_) => return Err(invalid()),
+    let Some(body) = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Box<RawValue>>(text).ok())
+    else {
+        return Err(VariantOutcome::Unreadable);
     };
-    let mut selection = match fields.get("selection") {
-        None => Vec::new(),
-        Some(Value::Object(entries)) => entries
+    if body.get() == "null" {
+        return Ok((Vec::new(), None));
+    }
+    let fields = js_members(body.get()).ok_or_else(invalid)?;
+    let field = |name: &str| {
+        let name = JsText::scalar(name);
+        fields
             .iter()
-            .map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.get())
+    };
+    let selection = match field("selection") {
+        None => Vec::new(),
+        Some(entries) => js_members(entries)
+            .ok_or_else(invalid)?
+            .into_iter()
+            .map(|(key, value)| Some((key, js_string(value.get())?)))
             .collect::<Option<Vec<_>>>()
             .ok_or_else(invalid)?,
-        Some(_) => return Err(invalid()),
     };
-    js_order(&mut selection);
-    let source = match fields.get("source_id") {
+    let source = match field("source_id") {
         None => None,
-        Some(value) => {
-            let id = match value.as_u64() {
-                Some(id) => Some(id),
-                None => value
-                    .as_f64()
-                    .filter(|id| id.fract() == 0.0 && *id >= 0.0 && *id <= MAX_SAFE as f64)
-                    .map(|id| id as u64),
-            };
-            let id = id
-                .filter(|id| (1..=MAX_SAFE).contains(id))
-                .ok_or_else(invalid)?;
-            Some(id as i64)
-        }
+        Some(value) => Some(
+            serde_json::from_str::<PositiveId>(value)
+                .map_err(|_| invalid())?
+                .get() as i64,
+        ),
     };
     Ok((selection, source))
 }
@@ -393,33 +345,74 @@ pub(super) fn commit(
     if !exists {
         return refused("Source not found");
     }
-    let selection: Map<String, Value> = commit
-        .selection
-        .iter()
-        .map(|(key, value)| (key.clone(), Value::String(value.clone())))
-        .collect();
+    let mut selection = vec![b'{'];
+    for (index, (key, value)) in commit.selection.iter().enumerate() {
+        if index > 0 {
+            selection.push(b',');
+        }
+        key.write_json(&mut selection);
+        selection.push(b':');
+        value.write_json(&mut selection);
+    }
+    selection.push(b'}');
+    let selection = String::from_utf8(selection)?;
     tx.execute(
         "INSERT INTO app_settings(tenant_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(tenant_id,key) DO UPDATE SET value=excluded.value",
         params![
             tenant,
             format!("plan_variant_selection_{}", commit.build),
-            Value::Object(selection.clone()).to_string()
+            selection
         ],
     )?;
     let rules = commit
         .selection
         .iter()
         .filter(|(_, value)| !value.is_empty())
-        .map(|(_, value)| format!("{value}/"))
+        .map(|(_, value)| format!("{}/", String::from_utf16_lossy(value.units())))
         .collect();
     let rules = catalog::save_import_rules(tx, tenant, commit.source, rules)?;
-    let body = json!({
-        "profile_id": commit.build,
-        "source_id": commit.source,
-        "rules": rules,
-        "selection": selection,
-    });
+    let body = format!(
+        "{{\"profile_id\":{},\"source_id\":{},\"rules\":{},\"selection\":{selection}}}",
+        commit.build,
+        commit.source,
+        serde_json::to_string(&rules)?
+    );
     Ok(BuildOutcome::Variants(VariantOutcome::Body(
-        serde_json::to_vec(&body)?,
+        body.into_bytes(),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lone_surrogates_survive_the_request_and_match_their_option() {
+        let body = br#"{"source_id":2.0,"selection":{"b":"\udc00x","10":"\ud800","b":"\ud800"}}"#;
+        let Ok((selection, source)) = parse_request(body) else {
+            panic!("selection refused");
+        };
+        assert_eq!(source, Some(2));
+        let units: Vec<_> = selection
+            .iter()
+            .map(|(key, value)| (key.units().to_vec(), value.units().to_vec()))
+            .collect();
+        assert_eq!(
+            units,
+            [(vec![0x31, 0x30], vec![0xd800]), (vec![0x62], vec![0xd800])]
+        );
+        let option = DimensionOption::Text(JsText::from_units(vec![0xd800]));
+        assert!(option.matches(&selection[0].1));
+        assert!(!option.matches(&JsText::scalar("\u{fffd}")));
+    }
+
+    #[test]
+    fn stored_selection_keeps_lone_surrogate_escapes() {
+        assert_eq!(
+            stored_selection(Some(r#"{"b":"\uD800","2":1.0}"#)),
+            r#"{"2":1,"b":"\ud800"}"#
+        );
+        assert_eq!(stored_selection(Some("not json")), "{}");
+        assert_eq!(stored_selection(Some("")), "{}");
+    }
 }

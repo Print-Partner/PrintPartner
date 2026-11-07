@@ -212,7 +212,10 @@ fn transact(
     };
     let (tenant, subject, authority) =
         auth::authority::admit(&tx, credential, command.policy, &command.storage)?;
-    let writes = !matches!(command.request, Request::Get { .. } | Request::Ready { .. });
+    let writes = !matches!(
+        command.request,
+        Request::Get { .. } | Request::Check { .. } | Request::Ready { .. }
+    );
     let reply = if legacy(&tx, &tenant)? {
         LEGACY
     } else {

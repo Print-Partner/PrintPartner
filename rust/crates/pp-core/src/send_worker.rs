@@ -165,8 +165,8 @@ impl SendWorker {
         }
     }
 
-    /// Runs a claimed upload. Shutdown that begins before the effect is
-    /// admitted fails it with [`STOPPING`] without contacting the printer.
+    /// Runs a claimed upload. Shutdown that begins before the upload starts
+    /// fails it with [`STOPPING`] without contacting the printer.
     async fn run(&self, claimed: ClaimedAttempt, cancelled: &AtomicBool) -> Result<Sent> {
         let ClaimedAttempt { job, mut lease, .. } = claimed;
         let Payload::PrinterUpload {
@@ -196,10 +196,7 @@ impl SendWorker {
         };
         let content_hash = hex::encode(Sha256::digest(&file));
         let intent = intent(&job.job_id, &printer_id, &filename, start, &content_hash);
-        if cancelled.load(Ordering::Acquire) {
-            return Ok(self.give_up(&mut lease, STOPPING).await);
-        }
-        if let Some(refused) = self.begin(&mut lease, intent).await? {
+        if let Some(refused) = self.begin(&mut lease, intent, cancelled).await? {
             return Ok(refused);
         }
         let result = self.sends.upload(&target, file, &filename, start).await;
@@ -270,13 +267,27 @@ impl SendWorker {
 
     /// Admits the send's effect, or returns how the attempt ended instead. A
     /// refusal, such as Farm turned off since the dispatch, fails the job:
-    /// nothing was sent.
-    async fn begin(&self, lease: &mut AttemptLease, intent: EffectIntent) -> Result<Option<Sent>> {
+    /// nothing was sent. Shutdown seen before or right after admission fails
+    /// it with [`STOPPING`], denying an admitted effect.
+    async fn begin(
+        &self,
+        lease: &mut AttemptLease,
+        intent: EffectIntent,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Sent>> {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(Some(self.give_up(lease, STOPPING).await));
+        }
         let Err(error) = self
             .advance(lease, WorkerOperation::BeginEffect(intent))
             .await
         else {
-            return Ok(None);
+            if !cancelled.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+            self.advance(lease, WorkerOperation::DenyEffect(STOPPING.into()))
+                .await?;
+            return Ok(Some(Sent::Failed(STOPPING.into())));
         };
         let reason = match error.downcast_ref() {
             Some(failure @ JobFailure::FeatureDisabled { .. }) => failure.to_string(),

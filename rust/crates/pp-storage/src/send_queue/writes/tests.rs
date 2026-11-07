@@ -906,6 +906,9 @@ fn ticket_t_26_writes_keep_nodes_fifty_item_terminal_history() {
             .collect();
         items.extend(done.iter().map(|id| (id.as_str(), "p-b", "done", None)));
         queue.seed(&items);
+        let seeded = stored(&queue);
+        queue.apply(Request::Check { id: "q0".into() });
+        assert_eq!(stored(&queue), seeded, "a Check never trims");
         assert!(matches!(
             queue.apply(Request::Remove { id: "q0".into() }),
             Reply::Item(_)

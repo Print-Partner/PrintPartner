@@ -8,8 +8,6 @@ use windows_sys::Win32::{
 pub(crate) use std::os::windows::fs::symlink_dir;
 pub(crate) use std::os::windows::fs::symlink_file;
 
-pub(crate) type RawSocket = std::os::windows::io::RawSocket;
-
 /// The exit code [`kill_self`] ends the process with.
 const KILLED: u32 = 0xDEAD;
 
@@ -40,22 +38,18 @@ pub(crate) fn assert_special_entry(path: &Path) {
 /// Every ACE that grants access names this user, SYSTEM or Administrators,
 /// and one names this user, as the profile folder's ACL gives. PowerShell
 /// prints each SID in full, because SDDL abbreviates some accounts, such as
-/// `LA` for the built-in Administrator that hosted runners use.
+/// `LA` for the built-in Administrator that hosted runners use. The path
+/// reaches PowerShell as data in `PP_CORE_ACL_PATH`, never as source.
 pub(crate) fn assert_private_file(path: &Path) {
-    let mut script = std::ffi::OsString::from(
-        "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; \
-         (Get-Acl -LiteralPath '",
-    );
-    script.push(path.as_os_str());
-    script.push(
-        "').GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | \
+    let script = "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; \
+         (Get-Acl -LiteralPath $env:PP_CORE_ACL_PATH).GetAccessRules(\
+         $true, $true, [Security.Principal.SecurityIdentifier]) | \
          ForEach-Object { '{0} {1} {2}' -f $_.AccessControlType, \
          $_.PropagationFlags.HasFlag([Security.AccessControl.PropagationFlags]::InheritOnly), \
-         $_.IdentityReference.Value }",
-    );
+         $_.IdentityReference.Value }";
     let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command"])
-        .arg(&script)
+        .args(["-NoProfile", "-Command", script])
+        .env("PP_CORE_ACL_PATH", path)
         .output()
         .unwrap();
     assert!(
@@ -123,13 +117,13 @@ pub(crate) fn killed(status: &ExitStatus) -> bool {
     *status == ExitStatus::from_raw(KILLED)
 }
 
-pub(crate) fn raw_socket(listener: &std::net::TcpListener) -> RawSocket {
+pub(crate) fn raw_socket(listener: &std::net::TcpListener) -> std::os::windows::io::RawSocket {
     std::os::windows::io::AsRawSocket::as_raw_socket(listener)
 }
 
 /// The type and local address of the socket `raw` names, or `None` when
 /// `raw` is not an open socket.
-pub(crate) fn socket_name(raw: RawSocket) -> Option<(i32, Vec<u8>)> {
+pub(crate) fn socket_name(raw: std::os::windows::io::RawSocket) -> Option<(i32, Vec<u8>)> {
     let socket = raw as SOCKET;
     let mut kind: i32 = 0;
     let mut kind_len = std::mem::size_of_val(&kind) as i32;

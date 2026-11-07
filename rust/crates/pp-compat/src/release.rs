@@ -57,16 +57,19 @@ fn inventory_key(path: &Path, root: &Path) -> Result<String> {
         .join("/"))
 }
 
-/// A junction under a `node_modules` segment, in any letter case since
-/// Windows paths are case-insensitive, is a module link: npm creates
-/// workspace links such as `node_modules/@print-partner/contracts` as
-/// junctions on Windows. It must resolve to the package its module path names:
-/// the `package.json` `name` at its target equals the path after the last
-/// `node_modules` segment, `@scope/name` included, and a target without a
-/// readable `package.json` fails. Other junctions name no module, such as the
-/// `apps/server/dist/current` release junction that
-/// `web/scripts/atomic-package-build.mjs` creates; they are only walked, with
-/// their canonical target inside the root.
+/// A junction whose path after the last `node_modules` segment (in any letter
+/// case, since Windows paths are case-insensitive) is exactly `name` or
+/// `@scope/name` is a module root: npm creates workspace links such as
+/// `node_modules/@print-partner/contracts` as junctions on Windows. It must
+/// resolve to the package its path names: the `package.json` `name` at its
+/// target equals that suffix, and a target without a readable `package.json`
+/// fails. A junction at a `node_modules` segment itself, or at a bare
+/// `@scope`, names no module and fails. Other junctions are only walked, with
+/// their canonical target inside the root: build-output junctions such as
+/// `apps/server/dist/current` and `packages/contracts/dist/current`, which
+/// `web/scripts/atomic-package-build.mjs` creates, whether they sit outside
+/// `node_modules` or deeper inside a package, where Node resolves only
+/// subpaths and never a package name.
 ///
 /// `key` is the logical path from the inventory root, the path Node resolves
 /// through, not the canonical target. A walk root that is itself a junction is
@@ -86,11 +89,15 @@ fn verify_junction_package(junction: &Path, key: &str) -> Result<()> {
     else {
         return Ok(());
     };
-    let module = parts[segment + 1..].join("/");
-    ensure!(
-        !module.is_empty(),
-        "Dependency junction {key} names no module"
-    );
+    let module = match &parts[segment + 1..] {
+        [] => None,
+        [scope] if scope.starts_with('@') => None,
+        module @ [_] => Some(module),
+        module @ [scope, _] if scope.starts_with('@') => Some(module),
+        _ => return Ok(()),
+    }
+    .with_context(|| format!("Dependency junction {key} names no module"))?
+    .join("/");
     let package: Package = std::fs::read(junction.join("package.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -558,6 +565,14 @@ mod tests {
             }
             junction(&package, &scope.join(name));
         }
+        let build = web.join("packages/contracts/dist");
+        std::fs::create_dir_all(build.join("v1")).unwrap();
+        std::fs::write(build.join("v1/index.js"), b"export {};\n").unwrap();
+        files.insert(
+            "web/packages/contracts/dist/v1/index.js".into(),
+            measure(&build.join("v1/index.js")).unwrap(),
+        );
+        junction(&build.join("v1"), &build.join("current"));
         let release = web.join("apps/server/dist");
         std::fs::create_dir_all(release.join("v1")).unwrap();
         std::fs::write(release.join("v1/server.js"), b"export {};\n").unwrap();

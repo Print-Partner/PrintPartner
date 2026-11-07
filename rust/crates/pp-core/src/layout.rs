@@ -172,11 +172,7 @@ mod tests {
 
     /// `path` made absolute on this host: Windows needs a drive.
     fn abs(path: &str) -> PathBuf {
-        if cfg!(windows) {
-            PathBuf::from(format!("C:{path}"))
-        } else {
-            PathBuf::from(path)
-        }
+        crate::tests::abs(path).into()
     }
 
     #[test]

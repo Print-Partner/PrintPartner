@@ -1,5 +1,5 @@
 use super::*;
-use crate::tests::platform;
+use crate::tests::{abs, platform};
 use std::path::PathBuf;
 
 struct Fixture(PathBuf);
@@ -16,15 +16,6 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.0).unwrap();
-    }
-}
-
-/// `path` made absolute on this host: Windows needs a drive.
-fn abs(path: &str) -> String {
-    if cfg!(windows) {
-        format!("C:{path}")
-    } else {
-        path.to_owned()
     }
 }
 

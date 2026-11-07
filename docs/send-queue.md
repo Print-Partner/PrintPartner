@@ -171,7 +171,7 @@ multipart upload) is not ported yet.
 | --- | --- |
 | `POST /printer-send-queue/{id}/dispatch` (Send now) | 200 `{item, job_id}`. Body `{"force": true}` skips the idle check. |
 | `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`. Optional `printer_id` must be a non-empty string. |
-| `POST /printer-send-queue/{id}/reconcile` | 200 `{item}`. Body `{"printed": true}` or `{"printed": false}`; anything else is 400. |
+| `POST /printer-send-queue/{id}/reconcile` | 200 `{item}`. Body `{"printed": true|false, "job_id": "<upload_job_id>"}`; `job_id` may be omitted or null only when the item has no `upload_job_id`. A `job_id` for another send is 409 `send_changed`; a missing or non-boolean `printed`, or a non-string `job_id`, is 400. |
 | `DELETE /printer-send-queue/{id}` (Remove) | 200 `{item}`, and the item's staged directory is deleted. |
 
 Send now checks storage first, so an unknown outcome is always 409

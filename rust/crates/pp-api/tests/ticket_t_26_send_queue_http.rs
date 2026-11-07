@@ -342,7 +342,7 @@ async fn ticket_t_26_an_unknown_outcome_is_refused_until_the_user_reconciles() {
         )
     );
 
-    for bad in ["", r#"{"printed":"no"}"#] {
+    for bad in ["", r#"{"printed":"no"}"#, r#"{"printed":false,"job_id":7}"#] {
         let (status, _) = queue
             .send("POST", "/api/v2/printer-send-queue/lost/reconcile", bad)
             .await;
@@ -356,6 +356,16 @@ async fn ticket_t_26_an_unknown_outcome_is_refused_until_the_user_reconciles() {
         )
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
+    // An answer about another send of the item is stale.
+    let (status, body) = queue
+        .send(
+            "POST",
+            "/api/v2/printer-send-queue/lost/reconcile",
+            r#"{"printed":true,"job_id":"job-other"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "send_changed", "{body}");
     let (status, body) = queue
         .send(
             "POST",

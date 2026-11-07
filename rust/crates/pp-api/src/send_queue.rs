@@ -8,7 +8,8 @@
 //!   `queued` items, optionally for one `printer_id`, at most one per printer.
 //!   An item whose printer is busy or reserved stays queued.
 //! - `POST /api/v2/printer-send-queue/{id}/reconcile`: the user's answer for a
-//!   send with an unknown outcome, `{"printed": true|false}`.
+//!   send with an unknown outcome, `{"printed": true|false, "job_id": ...}`, where
+//!   `job_id` is the item's `upload_job_id` the user answered about.
 //! - `DELETE /api/v2/printer-send-queue/{id}` (Remove).
 //!
 //! A dispatch only claims the item and enqueues its durable printer-upload
@@ -248,10 +249,19 @@ async fn reconcile(
     let Some(printed) = body.get("printed").and_then(Value::as_bool) else {
         return failure(StatusCode::BAD_REQUEST, "printed must be true or false");
     };
+    let job_id = match body.get("job_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(job_id)) => Some(job_id.clone()),
+        Some(_) => return failure(StatusCode::BAD_REQUEST, "job_id must be a string or null"),
+    };
     let id = id.trim().to_owned();
     present(
         writes(&app, presented, move |writes, _| {
-            writes.apply(Request::Reconcile { id, printed })
+            writes.apply(Request::Reconcile {
+                id,
+                job_id,
+                printed,
+            })
         })
         .await,
     )

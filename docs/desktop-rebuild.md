@@ -3440,9 +3440,10 @@ keeps both. `GET /plans/{id}/decisions` stays in the planning router
 
 A features request checks in Node's order:
 
-0. A PATCH body Fastify's parser refuses (empty, not JSON, or a `__proto__` or
+0. The credential is checked first, as Node's `onRequest` hook does. Then a
+   PATCH body Fastify's parser refuses (empty, not JSON, or a `__proto__` or
    `constructor.prototype` key under `application/json`) is 400 `Request is
-   invalid`.
+   invalid`. A decision append refuses those bodies at the same point.
 1. The id must match `/^[1-9]\d*$/` and be a safe integer, and a PATCH body
    must be an object whose keys are all features (`farm`, `orders`, `bambu`,
    `spoolman`) and whose values are all booleans or `null`. Otherwise the
@@ -3514,7 +3515,9 @@ flag-off cases reach a router built with the flag off, which mounts nothing:
 404 and nothing written, where Node answers its own 404 `Plan not found` for
 features and still appends the decision. After each of the 34 writes, the
 Plan's stored layer text or the decision rows it added equal Node's byte for
-byte. Regenerate the golden with
+byte, and every 200 body also has Node's key order (error bodies come from the
+shared problem builder, which writes `code` before `detail`). A malformed body
+sent with an unknown session is 401 and writes nothing. Regenerate the golden with
 `node fixtures/parity/plan-features-decisions/generate.mjs`.
 
 ```sh

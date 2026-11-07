@@ -1827,6 +1827,14 @@ mod ticket_t_10_fixtures {
                 assert_eq!(changed, Vec::<String>::new(), "{}: refusal wrote", case.id);
                 continue;
             }
+            if actual.status == 200 {
+                assert_eq!(
+                    serde_json::to_string(&actual.body).unwrap(),
+                    serde_json::to_string(&case.node.body).unwrap(),
+                    "{}: key order",
+                    case.id
+                );
+            }
             assert_eq!(changed, case.changed, "{}: changed tables", case.id);
             let Some(stored) = &case.stored else {
                 continue;
@@ -1834,6 +1842,28 @@ mod ticket_t_10_fixtures {
             let actual = stored_after(&database, case, since);
             assert_eq!(actual, *stored, "{}: stored text", case.id);
             checked += 1;
+        }
+        for (method, path) in [
+            ("PATCH", "/plans/3/features"),
+            ("POST", "/api/v2/plans/12/decisions"),
+        ] {
+            let before = StateGraph::capture(sandbox.path()).unwrap();
+            let response = served
+                .client
+                .request(
+                    Method::from_bytes(method.as_bytes()).unwrap(),
+                    format!("{}{path}", served.origin),
+                )
+                .header("Origin", &served.origin)
+                .header("Cookie", "pp_session=unknown")
+                .header("Content-Type", "application/json")
+                .body("{")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 401, "{method} {path}");
+            let after = StateGraph::capture(sandbox.path()).unwrap();
+            assert!(before.changed(&after).is_empty(), "{method} {path} wrote");
         }
         served.stop().await.unwrap();
         unmounted.stop().await.unwrap();

@@ -60,7 +60,8 @@ pub(super) async fn read(
     answer(app, received, Method::GET, request).await
 }
 
-/// Fastify refuses an empty or poisoned JSON body before the route runs, and
+/// Fastify refuses an empty or poisoned JSON body before the route runs (after
+/// Node's `onRequest` hook has checked the credential), and
 /// hands a `text/plain` body over as a string, which is never a valid patch;
 /// the route then needs both a valid id and a valid patch before it looks up
 /// the Plan.
@@ -70,7 +71,7 @@ pub(super) async fn patch(
     received: Received,
 ) -> Response {
     if received.json && (received.bytes.is_empty() || json_body_refused(&received.bytes)) {
-        return unreadable();
+        return refuse_after_auth(app, received.presented, unreadable()).await;
     }
     let patch = if received.text {
         None

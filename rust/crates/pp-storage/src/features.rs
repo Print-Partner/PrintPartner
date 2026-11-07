@@ -260,7 +260,9 @@ pub(crate) fn resolve_for_tenant(
 /// Node's `GET` and `PATCH /plans/{id}/features` in one transaction: the
 /// Plan must be the tenant's, then both layers must parse. A patch writes the
 /// Plan layer's text even when it is unchanged or empty, as Node's
-/// compare-and-set does, and never deletes the row.
+/// compare-and-set does, and never deletes the row. `overrides` keeps Node's
+/// key order: the choices the layer held, in registry order, then the ones the
+/// patch added.
 pub(crate) fn plan_features(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -274,10 +276,27 @@ pub(crate) fn plan_features(
     else {
         return Ok(PlanFeatureOutcome::InvalidStorage);
     };
+    let kept: Vec<Feature> = Feature::ALL
+        .into_iter()
+        .filter(|feature| plan.toggles.get(*feature).is_some())
+        .collect();
     if let Some(patch) = &request.patch {
         plan.apply(patch);
         write(tx, tenant, &key, &plan.raw.text())?;
     }
+    let overrides: Map<String, Value> = kept
+        .iter()
+        .copied()
+        .chain(
+            Feature::ALL
+                .into_iter()
+                .filter(|feature| !kept.contains(feature)),
+        )
+        .filter_map(|feature| {
+            let enabled = plan.toggles.get(feature)?;
+            Some((feature.key().into(), Value::Bool(enabled)))
+        })
+        .collect();
     let effective: Map<String, Value> = resolve(&user.toggles, Some(&plan.toggles))
         .iter()
         .map(|resolved| {
@@ -294,7 +313,7 @@ pub(crate) fn plan_features(
         .collect();
     Ok(PlanFeatureOutcome::View(json!({
         "profile_id": request.plan.get(),
-        "overrides": plan.toggles,
+        "overrides": overrides,
         "effective": effective,
     })))
 }

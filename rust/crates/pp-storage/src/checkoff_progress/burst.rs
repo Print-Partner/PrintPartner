@@ -582,6 +582,42 @@ pub(super) enum Blocked {
     Changed(String),
 }
 
+impl Blocked {
+    /// The text the undo routes refuse with.
+    pub(super) fn detail(&self) -> &str {
+        match self {
+            Self::NotFound => "Checkoff burst not found",
+            Self::Undone => "This Checkoff burst was already undone",
+            Self::Archived => "Archived Plan Progress cannot be changed",
+            Self::Changed(reason) => reason,
+        }
+    }
+
+    /// The undo routes' refusal.
+    pub(super) fn refusal(self) -> Outcome {
+        match self {
+            Self::NotFound => refuse(404, self.detail()),
+            Self::Archived => Ok(Err(Refusal::Archived)),
+            _ => refuse(409, self.detail()),
+        }
+    }
+}
+
+/// The receipt `names` picks, unless there is none or it was undone.
+pub(super) fn kept(
+    receipts: &[Value],
+    names: impl Fn(&Value) -> bool,
+) -> std::result::Result<&Value, Blocked> {
+    let receipt = receipts
+        .iter()
+        .find(|r| names(r))
+        .ok_or(Blocked::NotFound)?;
+    if receipt.get("undone_at").is_some() {
+        return Err(Blocked::Undone);
+    }
+    Ok(receipt)
+}
+
 /// The undo checks, without writing: `None` when undo would succeed.
 pub(super) fn undo_blocked(
     tx: &Transaction<'_>,
@@ -590,13 +626,10 @@ pub(super) fn undo_blocked(
     token: &str,
     repos: &Path,
 ) -> Result<Option<Blocked>> {
-    let Some(receipt) = receipts.iter().find(|r| r["undo_token"] == token) else {
-        return Ok(Some(Blocked::NotFound));
+    let undo = match kept(receipts, |r| r["undo_token"] == token) {
+        Ok(receipt) => &receipt["undo"],
+        Err(blocked) => return Ok(Some(blocked)),
     };
-    if receipt.get("undone_at").is_some() {
-        return Ok(Some(Blocked::Undone));
-    }
-    let undo = &receipt["undo"];
     for basis in undo["bases"].as_array().into_iter().flatten() {
         let profile = basis["profile_id"].as_i64().unwrap_or_default();
         if let AcceptedRead::Ready { snapshot } = read(tx, tenant, profile, repos)?
@@ -614,12 +647,8 @@ pub(super) fn undo_blocked(
 
 pub(super) fn undo_batch(tx: &Transaction<'_>, tenant: &str, token: &str, repos: &Path) -> Outcome {
     let mut receipts = load_receipts(tx, tenant)?;
-    match undo_blocked(tx, tenant, &receipts, token, repos)? {
-        None => {}
-        Some(Blocked::NotFound) => return refuse(404, "Checkoff burst not found"),
-        Some(Blocked::Undone) => return refuse(409, "This Checkoff burst was already undone"),
-        Some(Blocked::Archived) => return Ok(Err(Refusal::Archived)),
-        Some(Blocked::Changed(reason)) => return refuse(409, &reason),
+    if let Some(blocked) = undo_blocked(tx, tenant, &receipts, token, repos)? {
+        return blocked.refusal();
     }
     let Some(position) = receipts.iter().position(|r| r["undo_token"] == token) else {
         return refuse(404, "Checkoff burst not found");

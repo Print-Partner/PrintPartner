@@ -7,6 +7,7 @@
 //! - `plan_revisions` (accepted revisions, `accepted_at`)
 //! - `plan_snapshots` (`created_at`)
 //! - `print_jobs` with their `print_job_parts` counts (checkoff bursts, `at`)
+//! - the Build's manual Checkoff burst receipts (checkoff bursts, `at`)
 //! - the send queue's items for the Build (sends, `created_at`), from
 //!   `crate::send_queue`
 //! - `plan_decisions` (`created_at`), the rows `GET /plans/:id/decisions` serves
@@ -14,9 +15,13 @@
 //! Entries sort by (time, type, id), newest first. The cursor names the last
 //! entry of a page, so entries recorded later sort ahead of it and never shift
 //! the pages after it. Every sort field is immutable once a row exists.
+//!
+//! A burst's `undo` is what its undo would answer now
+//! (`crate::checkoff_progress::history_undo`), checked only for the page's
+//! entries, in the same transaction.
 
 use super::Credential;
-use crate::{Envelope, Shared, WriterOwner, auth};
+use crate::{Envelope, Shared, WriterOwner, auth, checkoff_progress::history_undo::Receipts};
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use pp_domain::PositiveId;
@@ -24,6 +29,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -92,32 +98,67 @@ pub enum Actor {
     Assistant,
 }
 
-/// Why an entry cannot be undone from History.
+/// Why an entry cannot be undone from History now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum UndoReason {
-    /// The burst was recorded before Checkoff issued undo tokens.
+    /// Storage keeps no undo for the burst: a single verify, a row from Node,
+    /// or a printer burst whose receipt is older than the newest 100 kept.
     NoUndoToken,
+    /// The burst was already undone.
+    AlreadyUndone,
+    /// The Accepted Plan, something the burst wrote, or something that
+    /// depends on it changed since the burst.
+    StateChanged,
+    /// A Build the burst touched is archived.
+    Archived,
     /// A printer command cannot be taken back.
     PrinterCommand,
 }
+
+/// `POST /plans/{id}/history/{entry_id}/undo`'s refusal for a burst with no
+/// undo recorded.
+pub(crate) const NO_UNDO: &str = "No undo is recorded for this Checkoff burst";
+/// Its refusal for a send.
+pub(crate) const PRINTER_COMMAND: &str = "A printer command cannot be undone";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct Undo {
     pub undoable: bool,
+    /// Omitted when `undoable`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<UndoReason>,
+    /// The text `POST /plans/{id}/history/{entry_id}/undo` would refuse
+    /// with. Omitted when `undoable`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl Undo {
-    fn refused(reason: UndoReason) -> Self {
+    pub(crate) fn allowed() -> Self {
+        Self {
+            undoable: true,
+            reason: None,
+            detail: None,
+        }
+    }
+
+    pub(crate) fn refused(reason: UndoReason, detail: &str) -> Self {
         Self {
             undoable: false,
             reason: Some(reason),
+            detail: Some(detail.to_owned()),
         }
     }
+}
+
+/// The undo token of the burst an entry names. Never serialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Receipt {
+    Printer(String),
+    Manual(String),
 }
 
 /// The record an entry opens: `kind` is the entry type, `id` its row id.
@@ -145,6 +186,23 @@ pub struct Entry {
     pub undo: Option<Undo>,
     #[serde(skip)]
     sort: SortKey,
+    #[serde(skip)]
+    pub(crate) receipt: Option<Receipt>,
+}
+
+/// `POST /plans/{id}/history/{entry_id}/undo` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct Undone {
+    pub undone_at: String,
+    /// The entry as History lists it now: a manual burst stays, marked
+    /// already undone. `null` when the undo removed it, as a printer burst's
+    /// undo deletes the job it is listed from.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<Entry>")
+    )]
+    pub entry: Option<Entry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -213,6 +271,7 @@ pub struct Request {
 #[derive(Clone)]
 pub struct HistoryClient {
     shared: Arc<Shared>,
+    repos: PathBuf,
     policy: auth::AuthPolicy,
 }
 
@@ -220,6 +279,7 @@ pub(crate) struct Command {
     credential: Credential,
     policy: auth::AuthPolicy,
     request: Request,
+    repos: PathBuf,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -229,6 +289,7 @@ impl WriterOwner {
         ensure!(self.lease.is_some(), "Storage owner is closed");
         Ok(HistoryClient {
             shared: self.client.shared.clone(),
+            repos: self.repos_dir()?,
             policy,
         })
     }
@@ -252,6 +313,7 @@ impl HistoryClient {
                 credential,
                 policy: self.policy,
                 request,
+                repos: self.repos.clone(),
                 cancelled,
             },
             reply,
@@ -272,21 +334,42 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<O
         tx.commit()?;
         return Ok(Outcome::MissingBuild);
     };
-    let mut entries = Vec::new();
-    for source in [revisions, snapshots, bursts, sends, decisions] {
-        ensure!(
-            !cancelled.load(Ordering::Acquire),
-            "Cancelled before admission"
-        );
-        entries.extend(source(&tx, &tenant, build)?);
-    }
-    tx.commit()?;
-    Ok(Outcome::Page(page(
+    let receipts = Receipts::load(&tx, &tenant)?;
+    let entries = entries(&tx, &tenant, build, &receipts, cancelled)?;
+    let mut page = page(
         build,
         entries,
         command.request.cursor.as_ref(),
         command.request.limit,
-    )))
+    );
+    for entry in &mut page.entries {
+        if let Some(receipt) = &entry.receipt {
+            entry.undo = Some(receipts.undo(&tx, &tenant, build, receipt, &command.repos)?);
+        }
+    }
+    tx.commit()?;
+    Ok(Outcome::Page(page))
+}
+
+/// Every entry of the Build's history, unsorted. Bursts with a kept receipt
+/// carry it, and their `undo` is not checked yet.
+pub(crate) fn entries(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: i64,
+    receipts: &Receipts,
+    cancelled: &AtomicBool,
+) -> Result<Vec<Entry>> {
+    let mut entries = manual_bursts(build, receipts);
+    for source in [revisions, snapshots, sends, decisions] {
+        ensure!(
+            !cancelled.load(Ordering::Acquire),
+            "Cancelled before admission"
+        );
+        entries.extend(source(tx, tenant, build)?);
+    }
+    entries.extend(bursts(tx, tenant, build, receipts)?);
+    Ok(entries)
 }
 
 fn page(plan_id: i64, mut entries: Vec<Entry>, cursor: Option<&Cursor>, limit: u16) -> Page {
@@ -335,6 +418,7 @@ fn entry(
         summary,
         link: Link { kind, id },
         undo,
+        receipt: None,
     }
 }
 
@@ -419,13 +503,25 @@ fn snapshots(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry
     )
 }
 
+fn units(one: bool) -> &'static str {
+    if one { "unit" } else { "units" }
+}
+
 /// One `print_jobs` row is one recorded Checkoff burst: the units one
 /// outcome call recorded for one printer link. Outcomes with no job (Node's
 /// legacy blob migration, or a deleted job) group by time and link into a
 /// burst named `outcomes-{first outcome id}`. Outcomes are counted in one
 /// pass over the Build's rows, which `idx_print_job_parts_profile` serves.
-fn bursts(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
-    collect(
+/// A job a kept verify-batch receipt wrote carries that receipt; any other
+/// has no undo.
+fn bursts(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: i64,
+    receipts: &Receipts,
+) -> Result<Vec<Entry>> {
+    let jobs = receipts.printer_jobs(tx, tenant, build)?;
+    let mut entries = collect(
         tx,
         "WITH counts AS MATERIALIZED (\
            SELECT job_id,MIN(id) AS first,at,MIN(filename) AS filename,\
@@ -444,10 +540,7 @@ fn bursts(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> 
             let filename: Option<String> = row.get(2)?;
             let confirmed: i64 = row.get(3)?;
             let rejected: i64 = row.get(4)?;
-            let mut summary = format!(
-                "Checked off {confirmed} {}",
-                if confirmed == 1 { "unit" } else { "units" }
-            );
+            let mut summary = format!("Checked off {confirmed} {}", units(confirmed == 1));
             if rejected > 0 {
                 summary.push_str(&format!(", rejected {rejected}"));
             }
@@ -460,10 +553,55 @@ fn bursts(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> 
                 row.get(1)?,
                 Actor::User,
                 summary,
-                Some(Undo::refused(UndoReason::NoUndoToken)),
+                Some(Undo::refused(UndoReason::NoUndoToken, NO_UNDO)),
             ))
         },
-    )
+    )?;
+    for entry in &mut entries {
+        entry.receipt = jobs.get(&entry.link.id).cloned().map(Receipt::Printer);
+    }
+    Ok(entries)
+}
+
+/// One kept manual Checkoff burst receipt of the Build is one burst, undone
+/// or not. Its summary counts the units it changed.
+fn manual_bursts(build: i64, receipts: &Receipts) -> Vec<Entry> {
+    receipts
+        .manual(build)
+        .filter_map(|(id, receipt)| {
+            let response = &receipt["response"];
+            let mut changes = [
+                ("Checked off", "printed_added"),
+                ("unchecked", "printed_removed"),
+                ("assembled", "assembled_added"),
+                ("unassembled", "assembled_removed"),
+            ]
+            .into_iter()
+            .filter_map(|(verb, key)| Some((verb, response[key].as_u64().filter(|n| *n > 0)?)));
+            let mut summary = match changes.next() {
+                Some((verb, count)) => format!(
+                    "{}{} {count} {}",
+                    verb[..1].to_uppercase(),
+                    &verb[1..],
+                    units(count == 1)
+                ),
+                None => "Checked off 0 units".to_owned(),
+            };
+            for (verb, count) in changes {
+                summary.push_str(&format!(", {verb} {count}"));
+            }
+            let mut entry = entry(
+                EntryType::CheckoffBurst,
+                id,
+                receipt["at"].as_str()?.to_owned(),
+                Actor::User,
+                summary,
+                None,
+            );
+            entry.receipt = Some(Receipt::Manual(receipt["undo_token"].as_str()?.to_owned()));
+            Some(entry)
+        })
+        .collect()
 }
 
 /// Every queue item the Build owns, in any state: an item enters History when
@@ -534,7 +672,7 @@ fn sends(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
             at.to_owned(),
             Actor::User,
             summary,
-            Some(Undo::refused(UndoReason::PrinterCommand)),
+            Some(Undo::refused(UndoReason::PrinterCommand, PRINTER_COMMAND)),
         ));
         ensure!(entries.len() <= MAX_SOURCE_ROWS, Failure::TooLarge);
     }

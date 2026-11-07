@@ -225,13 +225,13 @@ fn build_history_lists_every_source_newest_first() {
         vec![
             json!({"id":"send:send-c","type":"send","at":"2026-10-06T08:00:00.000Z","actor":"user",
                 "summary":"Queued plate_2.gcode for mk4","link":{"kind":"send","id":"send-c"},
-                "undo":{"undoable":false,"reason":"printer_command"}}),
+                "undo":{"undoable":false,"reason":"printer_command","detail":"A printer command cannot be undone"}}),
             json!({"id":"checkoff_burst:job-a","type":"checkoff_burst","at":"2026-10-05T20:00:00.000Z","actor":"user",
                 "summary":"Checked off 2 units, rejected 1 from plate_1.gcode","link":{"kind":"checkoff_burst","id":"job-a"},
-                "undo":{"undoable":false,"reason":"no_undo_token"}}),
+                "undo":{"undoable":false,"reason":"no_undo_token","detail":"No undo is recorded for this Checkoff burst"}}),
             json!({"id":"send:send-a","type":"send","at":"2026-10-05T19:00:00.000Z","actor":"user",
                 "summary":"Sent plate_1.gcode to MK4","link":{"kind":"send","id":"send-a"},
-                "undo":{"undoable":false,"reason":"printer_command"}}),
+                "undo":{"undoable":false,"reason":"printer_command","detail":"A printer command cannot be undone"}}),
             json!({"id":"snapshot:3","type":"snapshot","at":"2026-10-04T08:00:00.000Z","actor":"assistant",
                 "summary":"Assistant copy","link":{"kind":"snapshot","id":"3"}}),
             json!({"id":"decision:2","type":"decision","at":"2026-10-03T09:00:00.000Z","actor":"user",
@@ -246,7 +246,7 @@ fn build_history_lists_every_source_newest_first() {
                 "summary":"Before PETG","link":{"kind":"snapshot","id":"1"}}),
             json!({"id":"checkoff_burst:outcomes-p4","type":"checkoff_burst","at":"2026-09-30T10:00:00.000Z","actor":"user",
                 "summary":"Checked off 1 unit, rejected 1","link":{"kind":"checkoff_burst","id":"outcomes-p4"},
-                "undo":{"undoable":false,"reason":"no_undo_token"}}),
+                "undo":{"undoable":false,"reason":"no_undo_token","detail":"No undo is recorded for this Checkoff burst"}}),
         ]
     );
 }

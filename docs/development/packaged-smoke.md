@@ -33,7 +33,7 @@ The app runs without network sharing, with loopback ports only, and sends nothin
 
 ## When it runs
 
-Every push to `main`, nightly at 06:41 UTC, and on manual dispatch. On a ready pull request a small `changes` job runs, and the smoke jobs run when the PR changes `desktop/packaged-smoke/`, the workflow, `rust/scripts/desktop-deb.sh`, `rust/scripts/desktop-bundle.sh` or `rust/scripts/assemble-linux-deb.py`, or has the `ci:packaged-smoke` label; otherwise they skip. Draft pull requests skip everything.
+Linux: every push to `main`, nightly at 06:41 UTC, and on manual dispatch. macOS: nightly and on manual dispatch, not on pushes to `main`, because hosted macOS runners are scarce. On a ready pull request a small `changes` job runs, and the smoke jobs run when the PR changes `desktop/packaged-smoke/`, the workflow, `rust/scripts/desktop-deb.sh`, `rust/scripts/desktop-bundle.sh` or `rust/scripts/assemble-linux-deb.py`, or has the `ci:packaged-smoke` label; otherwise they skip. Draft pull requests skip everything.
 
 ## Run it locally
 

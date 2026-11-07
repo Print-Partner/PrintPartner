@@ -145,7 +145,7 @@ case "cgwindows":
     for info in list {
         guard let owner = info[kCGWindowOwnerPID as String] as? Int, pids.contains(owner),
               let bounds = info[kCGWindowBounds as String] as? NSDictionary,
-              let rect = CGRect(dictionaryRepresentation: bounds) else { continue }
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
         found.append([
             "id": info[kCGWindowNumber as String] as? Int ?? 0, "pid": owner,
             "layer": info[kCGWindowLayer as String] as? Int ?? 0,

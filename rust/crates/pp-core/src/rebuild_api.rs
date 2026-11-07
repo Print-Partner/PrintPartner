@@ -224,6 +224,7 @@ pub fn read_router(
             guard.accepted_plates(policy)?,
         )
     };
+    let config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     // Draft HTTP uses `draft_router` (GRE-820) from the same owner when composed
     // separately; MCP's Plan Accept uses this bundle's draft client (GRE-1236).
     let builds = build_router(
@@ -241,35 +242,19 @@ pub fn read_router(
     );
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     let accepted = accepted_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+        config
+            .clone()
             .with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
         accepted_client,
     );
-    let history = history_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        history_client,
+    let history = history_router(config.clone(), history_client);
+    let planning = planning_router(config.clone(), planning_client.clone());
+    let workflow = workflow_router(config.clone(), workflow_client.clone());
+    let events = events_router(config.clone(), events_client, StreamLimits::default());
+    let checkoff = checkoff_router(config.clone(), checkoff_client.clone()).merge(
+        file_assignments_router(config.clone(), checkoff_client.clone(), Arc::default()),
     );
-    let planning = planning_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        planning_client.clone(),
-    );
-    let workflow = workflow_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        workflow_client.clone(),
-    );
-    let events = events_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        events_client,
-        StreamLimits::default(),
-    );
-    let checkoff_config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
-    let checkoff = checkoff_router(checkoff_config.clone(), checkoff_client.clone()).merge(
-        file_assignments_router(checkoff_config, checkoff_client.clone(), Arc::default()),
-    );
-    let plates = plates_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        plates_client,
-    );
+    let plates = plates_router(config.clone(), plates_client);
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),

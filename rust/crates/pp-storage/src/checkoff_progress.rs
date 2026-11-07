@@ -601,11 +601,7 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::CheckoffLink { id } => {
-            let id = links::js_trim(&id).to_owned();
-            if id.is_empty() {
-                return Err(Response::failure(400, "link_id is required", None));
-            }
-            return Ok(Op::CheckoffLink { id });
+            return lookup::link_id(&id).map(|id| Op::CheckoffLink { id });
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::AssignFile(assignment) => return Ok(Op::File(print_file::Op::Assign(assignment))),

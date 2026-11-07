@@ -10,6 +10,15 @@ use super::{
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 
+/// The link id as the propose step reads it: JS-trimmed and nonempty.
+pub(super) fn link_id(raw: &str) -> std::result::Result<String, Response> {
+    let id = links::js_trim(raw);
+    if id.is_empty() {
+        return Err(Response::failure(400, "link_id is required", None));
+    }
+    Ok(id.to_owned())
+}
+
 /// `applied` or `undone` with the stored receipt, `expired` when the receipt
 /// was trimmed (the burst ran and its key cannot run again), `unknown` when the
 /// key is in neither list but the retired list is full, so an older key may

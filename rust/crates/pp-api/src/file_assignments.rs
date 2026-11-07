@@ -132,18 +132,19 @@ async fn storage(
 ) -> Result<pp_storage::checkoff_progress::Response, Box<Response>> {
     let client = app.client.clone();
     // The reservation lives in the blocking call, which finishes an admitted
-    // write even when the request is dropped, so a committed assignment
-    // always spends its snapshot and a failed one always puts it back.
+    // write even when the request is dropped. Only a definite refusal puts the
+    // snapshot back: a committed assignment spends it, and so does an error,
+    // since the write may have committed after admission (a lost reply).
     match app
         .gate
         .read(presented, move |credential, cancelled, wait| {
-            let response = client.apply(credential, request, &cancelled, wait)?;
-            if response.status == 200
+            let result = client.apply(credential, request, &cancelled, wait);
+            if !matches!(&result, Ok(response) if response.status != 200)
                 && let Some(held) = reservation
             {
                 held.spend();
             }
-            Ok(response)
+            result
         })
         .await
     {

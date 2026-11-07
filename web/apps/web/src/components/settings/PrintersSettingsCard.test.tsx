@@ -132,6 +132,36 @@ beforeEach(() => {
   api.fetchIntegrationStatus.mockResolvedValue({ state: "idle" });
 });
 
+/** One X1C printer linked to a Bambu host, as the certificate-pin tests need. */
+function mockBambuX1c() {
+  api.fetchPrinters.mockResolvedValue([
+    {
+      id: "printer-x1c",
+      name: "X1C",
+      model: "x1c",
+      bed_width_mm: 256,
+      bed_depth_mm: 256,
+      bed_height_mm: 256,
+      margin_mm: 4,
+      max_filament_slots: 1,
+      loaded_filaments: [{ slot: 1, filament_color_id: null, label: "" }],
+      integration_id: "host-x1c",
+      device_id: "default",
+      preset_id: null,
+    } satisfies PrinterMachine,
+  ]);
+  api.fetchIntegrations.mockResolvedValue([
+    {
+      id: "host-x1c",
+      type: "bambu",
+      name: "X1C",
+      config: { host: "192.168.1.60", serial: "FIXTURE01" },
+      created_at: "2026-11-07T00:00:00.000Z",
+      updated_at: "2026-11-07T00:00:00.000Z",
+    },
+  ]);
+}
+
 describe("PrintersSettingsCard", () => {
   it.each([false, true])("creates a manual printer before optionally configuring communication: %s", async (connect) => {
     let fleet: PrinterMachine[] = [];
@@ -425,32 +455,7 @@ describe("PrintersSettingsCard", () => {
 
   it.each([false, true])("shows the Bambu certificate pin only in the desktop rebuild: %s", async (rebuild) => {
     if (rebuild) healthState.health = { ok: true, capabilities: ["tenant_feature_toggles"] };
-    api.fetchPrinters.mockResolvedValue([
-      {
-        id: "printer-x1c",
-        name: "X1C",
-        model: "x1c",
-        bed_width_mm: 256,
-        bed_depth_mm: 256,
-        bed_height_mm: 256,
-        margin_mm: 4,
-        max_filament_slots: 1,
-        loaded_filaments: [{ slot: 1, filament_color_id: null, label: "" }],
-        integration_id: "host-x1c",
-        device_id: "default",
-        preset_id: null,
-      } satisfies PrinterMachine,
-    ]);
-    api.fetchIntegrations.mockResolvedValue([
-      {
-        id: "host-x1c",
-        type: "bambu",
-        name: "X1C",
-        config: { host: "192.168.1.60", serial: "FIXTURE01" },
-        created_at: "2026-11-07T00:00:00.000Z",
-        updated_at: "2026-11-07T00:00:00.000Z",
-      },
-    ]);
+    mockBambuX1c();
     let pinned = true;
     api.fetchTlsPin.mockImplementation(async () =>
       pinned
@@ -480,32 +485,7 @@ describe("PrintersSettingsCard", () => {
 
   it("hides the Bambu certificate pin where the runtime serves no pin route", async () => {
     healthState.health = { ok: true, capabilities: ["tenant_feature_toggles"] };
-    api.fetchPrinters.mockResolvedValue([
-      {
-        id: "printer-x1c",
-        name: "X1C",
-        model: "x1c",
-        bed_width_mm: 256,
-        bed_depth_mm: 256,
-        bed_height_mm: 256,
-        margin_mm: 4,
-        max_filament_slots: 1,
-        loaded_filaments: [{ slot: 1, filament_color_id: null, label: "" }],
-        integration_id: "host-x1c",
-        device_id: "default",
-        preset_id: null,
-      } satisfies PrinterMachine,
-    ]);
-    api.fetchIntegrations.mockResolvedValue([
-      {
-        id: "host-x1c",
-        type: "bambu",
-        name: "X1C",
-        config: { host: "192.168.1.60", serial: "FIXTURE01" },
-        created_at: "2026-11-07T00:00:00.000Z",
-        updated_at: "2026-11-07T00:00:00.000Z",
-      },
-    ]);
+    mockBambuX1c();
     api.fetchTlsPin.mockResolvedValue(null);
 
     renderWithQueryClient(<PrintersSettingsCard engineReady />);

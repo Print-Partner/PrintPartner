@@ -381,7 +381,9 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         concurrency = rerun["jobs"]["rerun"]["concurrency"]
         self.assertEqual(concurrency["cancel-in-progress"], "true")
         self.assertIn("github.event.issue.number || github.event.workflow_run.head_sha", concurrency["group"])
-        self.assertNotIn("conclusion", rerun["jobs"]["rerun"]["if"])
+        condition = rerun["jobs"]["rerun"]["if"]
+        self.assertIn("github.event.workflow_run.conclusion != 'skipped'", condition)
+        self.assertNotIn("'cancelled'", condition)
         self.assertIn("pulls/$pr", rerun["jobs"]["rerun"]["steps"][0]["run"])
 
     def test_claude_jobs_are_limited_to_owner_prs_with_minimal_permissions(self):

@@ -77,6 +77,34 @@ struct App {
     client: DomainEventsClient,
     limits: StreamLimits,
     streams: Arc<Semaphore>,
+    /// The newest stream's queue and overflow flag, for the tests.
+    #[cfg(test)]
+    probe: Arc<std::sync::Mutex<Option<StreamProbe>>>,
+}
+
+/// What a test reads about one stream without holding it open.
+#[cfg(test)]
+struct StreamProbe {
+    queue: mpsc::WeakSender<Bytes>,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl App {
+    /// The router state when `PP_DESKTOP_REBUILD` was exactly `1` or `true`.
+    fn open(
+        config: AcceptedHttpConfig,
+        client: DomainEventsClient,
+        limits: StreamLimits,
+    ) -> Option<Self> {
+        Some(Self {
+            gate: Gate::open(config)?,
+            client,
+            limits,
+            streams: Arc::new(Semaphore::new(limits.streams)),
+            #[cfg(test)]
+            probe: Arc::default(),
+        })
+    }
 }
 
 /// Mounts `GET /api/v1/events` when `PP_DESKTOP_REBUILD` was exactly `1` or
@@ -86,16 +114,13 @@ pub fn events_router(
     client: DomainEventsClient,
     limits: StreamLimits,
 ) -> Router {
-    let Some(gate) = Gate::open(config) else {
-        return Router::new();
-    };
-    gate.guard(Router::new().route("/api/v1/events", get(events)))
-        .with_state(App {
-            gate,
-            client,
-            limits,
-            streams: Arc::new(Semaphore::new(limits.streams)),
-        })
+    App::open(config, client, limits).map_or_else(Router::new, router)
+}
+
+fn router(app: App) -> Router {
+    app.gate
+        .guard(Router::new().route("/api/v1/events", get(events)))
+        .with_state(app)
 }
 
 /// The resume cursor: `Last-Event-ID` wins over `cursor`. A malformed or
@@ -152,6 +177,11 @@ async fn events(
     };
     let (sender, receiver) = mpsc::channel(app.limits.queued_frames);
     let overflowed = Arc::new(AtomicBool::new(false));
+    #[cfg(test)]
+    app.probe.lock().unwrap().replace(StreamProbe {
+        queue: sender.downgrade(),
+        overflowed: overflowed.clone(),
+    });
     let stream = Stream {
         app: app.clone(),
         presented,

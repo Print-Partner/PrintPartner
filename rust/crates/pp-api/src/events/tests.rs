@@ -14,6 +14,16 @@ struct Fixture {
     origin: String,
     http: reqwest::Client,
     task: tokio::task::JoinHandle<()>,
+    app: App,
+}
+
+/// The newest stream as the server sees it.
+#[derive(Debug, PartialEq)]
+struct StreamState {
+    /// Free frames in its queue; `None` once its producer stopped.
+    queue_capacity: Option<usize>,
+    overflowed: bool,
+    free_slots: usize,
 }
 
 impl Fixture {
@@ -38,11 +48,13 @@ impl Fixture {
         let listener = socket.listen(1024).unwrap();
         let address = listener.local_addr().unwrap();
         let origin = format!("http://{address}");
-        let router = events_router(
+        let app = App::open(
             AcceptedHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             owner.domain_events().unwrap(),
             limits,
-        );
+        )
+        .unwrap();
+        let router = router(app.clone());
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -58,6 +70,21 @@ impl Fixture {
             origin,
             http: reqwest::Client::builder().no_proxy().build().unwrap(),
             task,
+            app,
+        }
+    }
+
+    fn stream_state(&self) -> StreamState {
+        let probe = self.app.probe.lock().unwrap();
+        StreamState {
+            queue_capacity: probe
+                .as_ref()
+                .and_then(|probe| probe.queue.upgrade())
+                .map(|queue| queue.capacity()),
+            overflowed: probe
+                .as_ref()
+                .is_some_and(|probe| probe.overflowed.load(Ordering::Acquire)),
+            free_slots: self.app.streams.available_permits(),
         }
     }
 
@@ -325,7 +352,7 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
     let fixture = Fixture::start(StreamLimits {
         streams: 1,
         queued_frames: 2,
-        slow_client_deadline: Duration::from_millis(500),
+        slow_client_deadline: Duration::from_millis(200),
         heartbeat: Duration::from_secs(60),
     })
     .await;
@@ -344,36 +371,75 @@ async fn domain_events_slow_consumer_is_disconnected_without_stalling_writers() 
     let mut head = [0u8; 12];
     slow.read_exact(&mut head).await.unwrap();
     assert_eq!(&head, b"HTTP/1.1 200");
+    let started = Instant::now();
     fixture.record(1..4000, 2000);
+    let mut state = fixture.stream_state();
+    while state.queue_capacity != Some(0) && !state.overflowed {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the slow stream never filled its queue: {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        state = fixture.stream_state();
+    }
+    let stalled_at = started.elapsed();
+    let cookie = format!("pp_session={SECRET}");
+    let held = fixture.connect(&[("Cookie", &cookie)], "").await.status();
+    assert_eq!(
+        held,
+        503,
+        "a stalled connection keeps its slot: stalled at {stalled_at:?} with {state:?}, now {:?}",
+        fixture.stream_state()
+    );
     let mut slowest = Duration::ZERO;
-    let stalled = Instant::now() + Duration::from_millis(1500);
-    while Instant::now() < stalled {
+    let mut overflowed_at = None;
+    while overflowed_at.is_none() || started.elapsed() < Duration::from_secs(1) {
         slowest = slowest.max(fixture.poke());
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        if overflowed_at.is_none() && fixture.stream_state().overflowed {
+            overflowed_at = Some(started.elapsed());
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the slow stream never overflowed: {:?}",
+            fixture.stream_state()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
         slowest < Duration::from_secs(1),
         "writers waited {slowest:?}"
     );
-    let cookie = format!("pp_session={SECRET}");
-    let held = fixture.connect(&[("Cookie", &cookie)], "").await;
-    assert_eq!(held.status(), 503, "a stalled connection keeps its slot");
     let mut delivered = Vec::new();
     let drained =
         tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut delivered)).await;
-    assert!(drained.is_ok(), "the server kept the slow connection open");
+    assert!(
+        drained.is_ok(),
+        "the server kept the slow connection open after its overflow at {overflowed_at:?}: the client read {} bytes, {:?}",
+        delivered.len(),
+        fixture.stream_state()
+    );
     let events = String::from_utf8_lossy(&delivered)
         .matches("event: domain_event")
         .count();
-    assert!(events < 3999, "the slow client got every event");
+    assert!(
+        events < 3999,
+        "the slow client got every event in {} bytes",
+        delivered.len()
+    );
     let deadline = Instant::now() + Duration::from_secs(2);
-    while fixture.connect(&[("Cookie", &cookie)], "").await.status() != 200 {
+    while fixture.stream_state().free_slots != 1 {
         assert!(
             Instant::now() < deadline,
-            "the closed connection kept its slot"
+            "the closed connection kept its slot: {:?}",
+            fixture.stream_state()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert_eq!(
+        fixture.connect(&[("Cookie", &cookie)], "").await.status(),
+        200,
+        "a released slot admits a new stream"
+    );
 }
 
 #[tokio::test]

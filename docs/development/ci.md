@@ -9,7 +9,7 @@ merge groups, schedules and manual runs keep their existing behavior.
 
 On ready PRs, the jobs are selected as follows:
 
-- `rust (linux)` and `rust (windows)` run when a `changes` job finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, the workflow itself, or the CI filter scripts and their tests. Other changes skip both jobs while keeping their check reports present.
+- `rust (linux)` and `rust (windows)` run when a `changes` job finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip both jobs while keeping their check reports present.
 - `rust (macos)` uses the same path selection. It runs only when relevant inputs change and the PR has the exact `macos` label and is not a draft. Adding or removing the label, marking the PR ready for review and converting it to a draft each start a new run.
 - When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (Windows excludes every reverse dependent of pp-core, for example) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
 
@@ -581,6 +581,18 @@ entries. This covers `Swatinem/rust-cache` (`save-if`), the Tauri CLI archive
 Web CI (`cache-to` is empty off `main`). `actions/setup-node` and
 `actions/setup-python` have no save switch; they save only when the lockfile key
 is new.
+
+The composite action `.github/actions/linux-gui-deps` caches the `.deb` files that
+`apt-get install` downloads for the Linux GTK and WebKit packages (`rust-cross-os` build and
+rebuild, `desktop-e2e`, `desktop-webkit`), so a slow Ubuntu mirror cannot stall a job
+(GRE-1229). The cache steps run only on GitHub-hosted runners; self-hosted runners skip
+them and install from the mirror as before. The key is the runner OS and architecture, the
+runner image version, the ISO week and a hash of the package list. The week limits how long a
+cache goes stale: Ubuntu security updates change what `apt-get update` resolves, a restored
+cache then still downloads the newer packages, and the first `main` push of a new week saves a
+fresh set. Only pushes to `main` (not pull requests, merge groups or other refs) save the cache,
+and only when the exact key missed; pull requests restore only. Each install logs
+`apt install took N s (cache hit: ...)`. `chain-tip-gate` keeps its inline install.
 
 ### Superseded runs
 

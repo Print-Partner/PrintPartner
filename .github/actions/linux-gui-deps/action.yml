@@ -21,7 +21,8 @@ runs:
       run: |
         set -euo pipefail
         digest=$(printf '%s' "$PACKAGES" | sha256sum | cut -c1-16)
-        echo "key=apt-debs-${RUNNER_OS}-${RUNNER_ARCH}-${ImageVersion:-unknown}-$digest" >> "$GITHUB_OUTPUT"
+        week=$(date -u +%G-W%V)
+        echo "key=apt-debs-${RUNNER_OS}-${RUNNER_ARCH}-${ImageVersion:-unknown}-$week-$digest" >> "$GITHUB_OUTPUT"
         echo "dir=$HOME/.cache/pp-apt-debs" >> "$GITHUB_OUTPUT"
     - name: Restore the downloaded packages
       id: restore

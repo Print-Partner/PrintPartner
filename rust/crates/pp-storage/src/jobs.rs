@@ -1820,10 +1820,13 @@ fn close_unresolved_upload(
     let proven = printed
         .then(|| proven_primary_printer_receipt(&job).cloned())
         .flatten();
-    job.recovery = Some(if printed && proven.is_none() {
-        PRINTED_WITHOUT_RECEIPT.into()
-    } else {
-        recovery.into()
+    let uploaded = job.effects.iter().any(|effect| {
+        effect.intent.operation == EffectOperation::PrinterUpload && effect.confirmed
+    });
+    job.recovery = Some(match (printed && proven.is_none(), uploaded) {
+        (true, true) => PRINTED_WITHOUT_START_RECEIPT.into(),
+        (true, false) => PRINTED_WITHOUT_RECEIPT.into(),
+        (false, _) => recovery.into(),
     });
     job.state = if proven.is_some() {
         PersistentState::Succeeded
@@ -1887,6 +1890,8 @@ fn link_printer_upload(
 }
 #[cfg(feature = "desktop_rebuild")]
 const PRINTED_WITHOUT_RECEIPT: &str = "You reconciled this send: it printed. The printer never confirmed the upload, so this job keeps no result.";
+#[cfg(feature = "desktop_rebuild")]
+const PRINTED_WITHOUT_START_RECEIPT: &str = "You reconciled this send: it printed. The printer confirmed the upload but never confirmed the start, so this job keeps no result.";
 /// True when a queued, running or unresolved job holds `printer_id`.
 #[cfg(feature = "desktop_rebuild")]
 pub(crate) fn printer_reserved(

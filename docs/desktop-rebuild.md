@@ -3178,6 +3178,81 @@ router. Regenerate the golden with
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
 ```
 
+### Variant dimensions and selection in Rust (GRE-1221)
+
+GRE-421's sixth part (GRE-1221). `pp_api::builds::build_router` serves Node's
+`GET /plans/{id}/variant-dimensions` (with `HEAD`) and
+`POST /plans/{id}/variant-selection` at `/`, `/api/v1` and `/api/v2`, as
+`BuildCommand::Variants` in `pp_storage::build_graph::variants`. With
+`desktop_rebuild` and `PP_DESKTOP_REBUILD=1` or `true`, Rust alone writes
+`plan_variant_selection_<id>` and the base Source's import rules for a
+selection. The import-rules write is `catalog::save_import_rules`, the same
+code `PUT /sources/{id}/import-rules` runs, so both routes store the same
+normalized rules and mark the same Plans modified.
+
+The read takes the Build, its base Source (the lowest `layer_order` base
+layer), that Source's `local_path` and the stored selection in one read
+transaction. It then reads `print-partner.manifest.yaml` through the
+production `SourceReads` adapter, outside any transaction, as the manifest
+builder does. Dimensions are empty when the Build has no base Source, the
+Source has no checkout, the manifest is missing or unreadable, or the manifest
+does not load (Node's `loadManifestYaml` throws, for example on an empty
+`selections` list, or a mapping with its own `toString` key where Node calls
+`String()` on it). Otherwise each entry of `variant_dimensions` whose value is
+a list keeps its strings and numbers in JavaScript property order; a list
+`variant_dimensions` reads as index keys, a `__proto__` entry is dropped (Node's
+assignment calls the prototype setter), and a non-finite number is `null` in
+JSON. The stored selection is returned as `JSON.stringify(JSON.parse(text))`,
+or `{}` when it is missing, empty or not JSON.
+
+A selection checks in Node's order:
+
+0. Under `Content-Type: application/json`, an empty body, a body that is not
+   JSON, or one Fastify's parser refuses as prototype poisoning (a `__proto__`
+   key, or a `constructor` key whose object has a `prototype` key) is 400
+   `Request is invalid` before the id is read, as Fastify answers before Node's
+   route runs. Like the other Rust routes, a body under another content type is
+   read as JSON rather than refused with Fastify's 415.
+1. The id is `Number(id)` as a positive integer (so `0x3`, `3e0` and `" 3 "`
+   name Plan 3, through `plates::build_id`), else 404 `Profile not found`,
+   before the body is read. The dimensions read does the same.
+2. The body is `{ selection?: Record<string, string>, source_id?: positive safe
+   integer }` (no body or `null` is `{}`), else 400 `Invalid variant
+   selection`.
+3. Without a base Source, 400 `No base source on plan`; a `source_id` other
+   than the base Source, 400 `Source must match the plan's base source`.
+4. Each selected dimension, in JavaScript property order, must be a dimension
+   (400 `Unknown variant dimension: <name>`) and its value must equal
+   `String(option)` for one option (400 `Unsupported option for variant
+   dimension: <name>`). `String()` is JavaScript's, so `2.0` is `"2"` and
+   `.nan` is `"NaN"`.
+
+One immediate writer transaction then rechecks the Build and its base Source,
+stores the selection as `JSON.stringify` writes it, and saves each non-empty
+value plus `/` as an import rule. The stored selection and the response keep a
+lone UTF-16 surrogate, but an import rule carries U+FFFD in its place, so
+`imported_paths` stays readable by Rust's `serde_json` readers of that column;
+Node stores the escape. The refusal detail for an unknown dimension does the
+same. A read failure other than a missing or
+unreadable file, such as an exhausted `PreparationLimits` budget (each
+copied dimension name and text option, aliases included, is charged to it), is 503
+`source_observation_failed`, as for the manifest builder; Node has no limits.
+
+`fixtures/parity/variants-http/node.json` is Node's answer for 78 requests on
+one database. `variants_flat_v1_v2_match_node_responses_and_changed_tables`
+in `ticket_t_10_fixtures` replays every case through `build_router` over the
+production `SourceReads`: 74 match Node's status, body and changed tables, and
+four bodies Fastify's parser refuses (poisoned, not JSON, or empty under
+`application/json`, including on a missing or non-numeric Plan) are declared
+corrections (400 `Request is invalid` without Fastify's parser codes);
+and after each of the 18 saves the stored selection text and the Source's
+`imported_paths` equal Node's byte for byte. Regenerate the golden with
+`node fixtures/parity/variants-http/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(variants_flat)'
+```
+
 ### D21 accepted read JSON bodies, GRE-616 PR 1
 
 With `desktop_rebuild`, `AcceptedRead`, `Snapshot` and `Batch` each have an

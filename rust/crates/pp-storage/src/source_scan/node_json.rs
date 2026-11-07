@@ -1,6 +1,7 @@
 //! Node's `updateSource` metadata merge: `JSON.parse`, spread, `JSON.stringify`.
 //! Strings stay WTF-8 so lone surrogate escapes survive as they do in JavaScript.
 
+use crate::manifest_text::JsText;
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::value::RawValue;
 use std::collections::{HashMap, hash_map::Entry};
@@ -92,6 +93,30 @@ fn object(members: &[(JsString, String)]) -> String {
     format!("{{{}}}", members.join(","))
 }
 
+/// A JSON object's members in JavaScript property order with UTF-16 keys, or
+/// `None` when `text` is not an object.
+pub(crate) fn js_members(text: &str) -> Option<Vec<(JsText, Box<RawValue>)>> {
+    let JsObject(members) = serde_json::from_str(text).ok()?;
+    Some(
+        members
+            .into_iter()
+            .map(|(key, value)| (key.utf16(), value))
+            .collect(),
+    )
+}
+
+/// A JSON string as UTF-16 with its lone surrogates, or `None` when `text` is
+/// not a string.
+pub(crate) fn js_string(text: &str) -> Option<JsText> {
+    Some(serde_json::from_str::<JsString>(text).ok()?.utf16())
+}
+
+/// `JSON.stringify(JSON.parse(raw))` for stored text, or `None` when it is not
+/// JSON or nests past 128 levels.
+pub(crate) fn reserialize(raw: &str) -> Option<String> {
+    stringify(&serde_json::from_str::<Box<RawValue>>(raw).ok()?, 0)
+}
+
 /// `JSON.stringify(JSON.parse(raw))`, or `None` past 128 levels of nesting.
 fn stringify(raw: &RawValue, depth: usize) -> Option<String> {
     if depth >= 128 {
@@ -140,6 +165,20 @@ impl JsString {
         }
         json.push('"');
         json
+    }
+
+    fn utf16(&self) -> JsText {
+        let mut units = Vec::new();
+        let mut surrogate = Vec::new();
+        for chunk in self.0.utf8_chunks() {
+            units.extend(chunk.valid().encode_utf16());
+            surrogate.extend_from_slice(chunk.invalid());
+            if let [_, high, low] = surrogate[..] {
+                units.push(0xd000 | (u16::from(high & 0x3f) << 6) | u16::from(low & 0x3f));
+                surrogate.clear();
+            }
+        }
+        JsText::from_units(units)
     }
 
     fn array_index(&self) -> Option<u32> {

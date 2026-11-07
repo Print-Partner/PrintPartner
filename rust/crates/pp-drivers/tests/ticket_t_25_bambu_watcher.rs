@@ -136,16 +136,17 @@ async fn ticket_t_25_bambu_watcher_merges_changes_into_the_full_report() {
 
 #[tokio::test]
 async fn ticket_t_25_bambu_watcher_never_pins_and_never_trusts_a_changed_certificate() {
-    let (broker, identity) = printer(Vec::new()).await;
+    let (broker, _) = printer(Vec::new()).await;
+    let (quiet, identity) = printer(Vec::new()).await;
     let other = Identity::generate().unwrap();
     let mut watchers = watchers();
     let observations = watchers.observations();
     let unpinned = "Certificate not pinned yet. Run Test connection in Settings.";
     watchers
         .replace(vec![
-            bambu("unpinned", &broker, Err(unpinned.into()), true),
+            bambu("unpinned", &quiet, Err(unpinned.into()), true),
             bambu("changed", &broker, Ok(other.fingerprint), true),
-            bambu("off", &broker, Ok(identity.fingerprint), false),
+            bambu("off", &quiet, Ok(identity.fingerprint), false),
         ])
         .await
         .unwrap();
@@ -159,11 +160,16 @@ async fn ticket_t_25_bambu_watcher_never_pins_and_never_trusts_a_changed_certifi
     .await;
     watchers.stop().await;
 
+    assert!(
+        quiet.log().is_empty(),
+        "the unpinned and disabled hosts never connected: {:?}",
+        quiet.log()
+    );
     let log = broker.log();
     assert!(
         log.iter()
             .all(|line| line == "TCP" || line == "TLS refused"),
-        "only the changed host connected, and its TLS handshake failed before CONNECT: {log:?}"
+        "the changed certificate's TLS handshake failed before CONNECT: {log:?}"
     );
 }
 

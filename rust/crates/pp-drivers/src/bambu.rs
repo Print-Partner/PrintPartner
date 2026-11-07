@@ -544,9 +544,10 @@ impl Driver {
     /// `session` sent one less than [`PUSHALL_SPACING`] ago, and calls
     /// `report` with the merged status after every report, until the
     /// connection fails. The answer is the offline status that ended it.
-    /// A reconnect inside the spacing drops the held report, reports
-    /// `Awaiting status` with `false` (nothing was heard from the printer),
-    /// and sends pushall in the session once the spacing allows.
+    /// Each session drops the report an earlier one held and, until the
+    /// printer sends a full report, reports `Awaiting status` with `false`
+    /// (nothing was heard from the printer). A session inside the spacing
+    /// sends pushall once the spacing allows.
     pub async fn watch(
         &self,
         pin: Fingerprint,
@@ -581,16 +582,16 @@ impl Driver {
             .pushed
             .filter(|pushed| pushed.elapsed() < PUSHALL_SPACING)
             .map(|pushed| pushed + PUSHALL_SPACING);
-        if let Some(print) = early {
-            report(status_from_print(&print), true);
-            session.print = Some(print);
-        } else if deferred.is_some() {
-            // Reconnected within the spacing: changes made while the session
-            // was down never arrive as changes, so the held report is stale.
-            session.print = None;
-            let mut awaiting = Status::unknown("Awaiting status");
-            awaiting.ip_address = Some(self.config.host.clone());
-            report(awaiting, false);
+        let located = |mut status: Status| {
+            status.ip_address = Some(self.config.host.clone());
+            status
+        };
+        // Changes made while no session was open never arrive as changes, so
+        // a report held from an earlier session is stale.
+        session.print = early;
+        match &session.print {
+            Some(print) => report(located(status_from_print(print)), true),
+            None => report(located(Status::unknown("Awaiting status")), false),
         }
         if deferred.is_none() {
             stream
@@ -614,7 +615,7 @@ impl Driver {
                     && from == topic
                     && let Some(status) = session.merge(&payload)
                 {
-                    report(status, true);
+                    report(located(status), true);
                 }
             }
         };

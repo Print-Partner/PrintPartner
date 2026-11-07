@@ -495,8 +495,8 @@ fn watch_bambu(
         loop {
             let mut answered = false;
             let watch = driver.watch(pin, &mut session, |status, heard| {
-                answered = true;
                 if heard {
+                    answered = true;
                     lock(&shared.heard).insert(shared.id.clone(), SystemTime::now());
                 }
                 publish(

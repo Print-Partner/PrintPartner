@@ -5,13 +5,6 @@ use tokio::process::ChildStdin;
 
 pub const SIGTERM_GRACE: Duration = Duration::from_secs(10);
 const GROUP_REAP: Duration = Duration::from_secs(2);
-/// How long a Windows job may take to empty on its own after its leader
-/// exited, before the reap terminates what is left and reports a forced exit.
-/// The job holds Node's conhost.exe, which exits a moment after Node; 500 ms
-/// covers that on loaded CI hosts, and a member that is really left behind is
-/// still terminated and reported as forced.
-#[cfg(windows)]
-const GROUP_SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 pub enum GroupExit {
@@ -52,16 +45,14 @@ pub fn reap_process_group(pid: u32) -> bool {
     crate::platform::kill_group(pid)
 }
 
-/// [`reap_process_group`], after letting a Windows job empty on its own for up
-/// to `GROUP_SETTLE` when its leader exited by itself, so a member that is
-/// already exiting does not turn a clean exit into a forced one.
+/// [`reap_process_group`], after letting the group empty on its own when its
+/// leader exited by itself, so a member that is already exiting does not turn
+/// a clean exit into a forced one. Only Windows waits; see `settle_group` in
+/// the platform modules.
 pub async fn reap_settled_group(pid: u32, leader_exited: bool) -> bool {
-    #[cfg(windows)]
     if leader_exited {
-        crate::platform::settle_group(pid, GROUP_SETTLE).await;
+        crate::platform::settle_group(pid).await;
     }
-    #[cfg(not(windows))]
-    let _ = leader_exited;
     reap_process_group(pid)
 }
 

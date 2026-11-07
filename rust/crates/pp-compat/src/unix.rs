@@ -56,6 +56,10 @@ pub(crate) fn request_group_stop(pid: u32) -> bool {
     true
 }
 
+/// Nothing to wait for: a leader's exit leaves no helper process in its group
+/// the way Windows leaves conhost.exe in the job, so the reap follows at once.
+pub(crate) async fn settle_group(_pid: u32) {}
+
 /// SIGKILL the group. True when the group existed.
 pub(crate) fn kill_group(pid: u32) -> bool {
     pid > 0 && unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == 0

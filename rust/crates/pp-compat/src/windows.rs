@@ -79,6 +79,13 @@ pub(crate) const INHERITED_ENV: &[&str] = &[
     "TZ",
 ];
 
+/// How long a job may take to empty on its own after its leader exited, before
+/// the reap terminates what is left and reports a forced exit. The job holds
+/// Node's conhost.exe, which exits a moment after Node; 500 ms covers that on
+/// loaded CI hosts, and a member that is really left behind is still terminated
+/// and reported as forced.
+const GROUP_SETTLE: Duration = Duration::from_millis(500);
+
 /// Exit code of every process the core terminates through its job.
 pub(crate) const JOB_KILL_EXIT_CODE: u32 = 0x5050_4b4c;
 
@@ -132,7 +139,8 @@ impl Job {
         })
     }
 
-    /// Block until the job has no active process, or until `bound` passes.
+    /// Block until the job has no active process, or until [`GROUP_SETTLE`]
+    /// passes.
     ///
     /// The completion port exists only for this wait. Associated at creation,
     /// it would queue a `NEW_PROCESS` and an `EXIT_PROCESS` packet for every
@@ -145,8 +153,8 @@ impl Job {
     /// posts `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`, which ends the wait. Other
     /// messages are skipped. Job messages are not guaranteed to arrive, so a
     /// lost one only costs the bound.
-    fn wait_empty(&self, bound: Duration) {
-        let deadline = std::time::Instant::now() + bound;
+    fn wait_empty(&self) {
+        let deadline = std::time::Instant::now() + GROUP_SETTLE;
         let port =
             unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
         if port.is_null() {
@@ -617,17 +625,17 @@ pub(crate) fn request_group_stop(_pid: u32) -> bool {
     false
 }
 
-/// Wait up to `bound` for the child's job to empty on its own after its leader
+/// Wait up to [`GROUP_SETTLE`] for the child's job to empty on its own after its leader
 /// exited. Node runs with `CREATE_NO_WINDOW`, so the job also holds the
 /// conhost.exe that serves Node's hidden console, and conhost exits only a
 /// moment after Node. Without this wait, the reap that follows a clean exit
 /// can find conhost still active, terminate the job, and report the exit as
 /// forced.
-pub(crate) async fn settle_group(pid: u32, bound: Duration) {
+pub(crate) async fn settle_group(pid: u32) {
     let Some(job) = job_of(pid) else {
         return;
     };
-    let _ = tokio::task::spawn_blocking(move || job.wait_empty(bound)).await;
+    let _ = tokio::task::spawn_blocking(move || job.wait_empty()).await;
 }
 
 /// Terminate every process in the child's job. True when one was running.

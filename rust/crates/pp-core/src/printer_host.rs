@@ -74,7 +74,7 @@ fn status_watched(
         hosts
             .prusalink
             .iter()
-            .any(|row| row.id == integration.id && !row.base_url.is_empty())
+            .any(|row| row.id == integration.id && !row.base_url.trim().is_empty())
     })
 }
 

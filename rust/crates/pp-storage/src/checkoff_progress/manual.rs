@@ -72,7 +72,7 @@ impl ManualBurst {
         {
             return Err(bad(&format!("Unknown field {extra}")));
         }
-        let key = super::lookup::key(
+        let key = super::burst::idempotency_key(
             object
                 .get("idempotency_key")
                 .and_then(Value::as_str)

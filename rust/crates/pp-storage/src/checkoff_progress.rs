@@ -566,7 +566,7 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
         #[cfg(feature = "desktop_rebuild")]
         Request::BurstStatus { key } => {
-            return lookup::key(&key).map(|key| Op::BurstStatus { key });
+            return burst::idempotency_key(&key).map(|key| Op::BurstStatus { key });
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::CheckoffLink { id } => {

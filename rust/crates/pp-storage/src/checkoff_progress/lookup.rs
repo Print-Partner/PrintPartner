@@ -10,21 +10,6 @@ use super::{
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 
-/// The idempotency key as every Checkoff burst route reads it: JS-trimmed, 1 to
-/// 200 characters. A missing or non-string key reads as empty. The burst and
-/// manual-complete parsers and the status lookup all use this one check.
-pub(super) fn key(raw: &str) -> std::result::Result<String, Response> {
-    let key = links::js_trim(raw);
-    if key.is_empty() || key.chars().count() > 200 {
-        return Err(Response::failure(
-            400,
-            "idempotency_key must be 1 to 200 characters",
-            None,
-        ));
-    }
-    Ok(key.to_owned())
-}
-
 /// `applied` or `undone` with the stored receipt, `expired` when the receipt
 /// was trimmed (the burst ran and its key cannot run again), `unknown` when the
 /// key is in neither list but the retired list is full, so an older key may

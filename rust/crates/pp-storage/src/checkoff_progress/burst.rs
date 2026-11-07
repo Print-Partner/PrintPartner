@@ -58,12 +58,27 @@ pub(super) fn canonical(value: &Value) -> Value {
     }
 }
 
+/// The idempotency key as every Checkoff burst route reads it: JS-trimmed, 1 to
+/// 200 characters. A missing or non-string key reads as empty. The burst and
+/// manual-complete parsers and the status lookup all use this one check.
+pub(super) fn idempotency_key(raw: &str) -> std::result::Result<String, Response> {
+    let key = links::js_trim(raw);
+    if key.is_empty() || key.chars().count() > 200 {
+        return Err(Response::failure(
+            400,
+            "idempotency_key must be 1 to 200 characters",
+            None,
+        ));
+    }
+    Ok(key.to_owned())
+}
+
 impl Burst {
     /// Checks the burst's shape. Each bed is checked against its link inside
     /// the transaction, as `POST /printer-checkoff/verify` checks it.
     pub(super) fn parse(body: &Value) -> std::result::Result<Self, Response> {
         let bad = |detail: &str| Response::failure(400, detail, None);
-        let key = super::lookup::key(field(body, "idempotency_key").as_str().unwrap_or_default())?;
+        let key = idempotency_key(field(body, "idempotency_key").as_str().unwrap_or_default())?;
         let beds = field(body, "beds")
             .as_array()
             .filter(|beds| (1..=MAX_BEDS).contains(&beds.len()))

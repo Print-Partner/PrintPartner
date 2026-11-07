@@ -81,6 +81,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           RUN_ID: ${{ github.run_id }}
           PP_RUST_RUNNER: ${{ vars.PP_RUST_RUNNER }}
           PP_PR_RUNNER: ${{ vars.PP_PR_RUNNER }}

@@ -82,6 +82,8 @@ def choose(env, fetch, now):
         if mode == "blacksmith":
             return BLACKSMITH["linux"], "pull request with PP_PR_RUNNER=blacksmith"
         if mode == "pp-iso":
+            if env.get("HEAD_REPOSITORY") != env.get("REPOSITORY"):
+                return BLACKSMITH["linux"], "fork pull request; pp-iso is for same-repository pull requests"
             return ISOLATED, "pull request with PP_PR_RUNNER=pp-iso"
         return HOSTED, "pull request with PP_PR_RUNNER=hosted"
     if event not in LOCAL_EVENTS:

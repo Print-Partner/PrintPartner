@@ -120,9 +120,17 @@ class RustRunnerTests(unittest.TestCase):
                             ("pp-iso", runner.ISOLATED)):
             with self.subTest(mode=mode):
                 api = Api(runners=[pp_runner()])
-                env = {"EVENT_NAME": "pull_request", "PP_PR_RUNNER": mode, "PP_RUST_RUNNER": "local"}
+                env = {"EVENT_NAME": "pull_request", "PP_PR_RUNNER": mode, "PP_RUST_RUNNER": "local",
+                       "HEAD_REPOSITORY": REPO}
                 self.assertEqual(self.choose(api, RUNNER_TOKEN="admin", **env)[0], linux)
                 self.assertEqual(api.calls, [])
+
+    def test_fork_pull_requests_never_reach_pp_iso(self):
+        blacksmith = runner.BLACKSMITH["linux"]
+        for head in ("someone/PrintPartner", ""):
+            with self.subTest(head=head):
+                env = {"EVENT_NAME": "pull_request", "PP_PR_RUNNER": "pp-iso", "HEAD_REPOSITORY": head}
+                self.assertEqual(self.choose(**env)[0], blacksmith)
 
     def test_pp_pr_runner_does_not_move_other_events(self):
         for event in ("push", "merge_group", "workflow_dispatch"):
@@ -149,7 +157,7 @@ class RustRunnerTests(unittest.TestCase):
             with self.subTest(event=event, mode=mode), tempfile.TemporaryDirectory() as directory:
                 output, summary = Path(directory, "output"), Path(directory, "summary")
                 env = {"PATH": os.environ["PATH"], "EVENT_NAME": event, "PP_PR_RUNNER": mode,
-                       "REPOSITORY": REPO, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+                       "REPOSITORY": REPO, "HEAD_REPOSITORY": REPO, "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
                 subprocess.run(["python3", "-B", str(SCRIPT)], env=env, check=True, capture_output=True)
                 values = dict(line.partition("=")[::2] for line in output.read_text().splitlines())
                 self.assertEqual(json.loads(values["windows_runs_on"]), windows)

@@ -1,7 +1,7 @@
 //! Measured filament at the end of a print (GRE-1165, part c).
 //!
 //! An observer on the status watchers' ordered transitions. When a Moonraker
-//! host goes to `complete` straight from `printing` or `paused` (an outage in
+//! or PrusaLink host goes to `complete` straight from `printing` or `paused` (an outage in
 //! between does not count as a new state), it asks the printer once for the
 //! finished print's file name and filament length. The length counts only
 //! when that same read still reports the print finished and names the same

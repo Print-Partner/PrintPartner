@@ -3850,7 +3850,7 @@ The send queue's upload worker calls `record_estimate` when an upload with
 Checkoff units succeeds (GRE-1238, see [send-queue.md](send-queue.md)).
 
 The measured value (GRE-1165, part c) comes from `pp_core::measured_grams`, an
-observer on the Moonraker status watchers' ordered transitions. When a host
+observer on the Moonraker and PrusaLink status watchers' ordered transitions. When a host
 goes to `complete` straight from `printing` or `paused` (an `offline` or
 `unknown` reading in between does not break the run), it asks the host once
 for the finished print's file name and filament length in one read

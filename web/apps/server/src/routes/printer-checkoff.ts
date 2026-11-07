@@ -171,8 +171,11 @@ function claimMatchingUnattributedPrints(repo: AppRepository, link: PrinterCheck
 /**
  * The link state a host-confirmed finish produces: printing is done and an
  * operator still has to verify it. Spread a fresh `completed_at` over it.
+ * Exported for fixtures/parity/printer-file-assignment/generate.mjs.
+ *
+ * @public
  */
-const HOST_COMPLETED_PATCH = {
+export const HOST_COMPLETED_PATCH = {
   state: "awaiting_verify",
   host_outcome: "success",
   saw_active: true,
@@ -184,9 +187,12 @@ type MaterializeProblem = { status: number; title: string; detail: string };
 /**
  * One wording for every way materializing a printer link can fail, so the
  * assignment route and the unattributed-claim route cannot drift apart. Returns
- * null for the outcomes that produced a link.
+ * null for the outcomes that produced a link. Also used by
+ * fixtures/parity/printer-file-assignment/generate.mjs.
+ *
+ * @public
  */
-function materializeProblem(
+export function materializeProblem(
   materialized: MaterializeAcceptedPrinterLinkResult,
 ): MaterializeProblem | null {
   switch (materialized.kind) {

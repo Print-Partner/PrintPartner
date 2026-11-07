@@ -199,8 +199,7 @@ impl std::ops::Deref for MeasuredBundle {
     }
 }
 
-// GRE-1194 ports the supervisor tests that use this to Windows.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 impl MeasuredBundle {
     /// Test fixtures whose spawns are meant to fail. The first spawn trusts this value without
     /// measuring it; later spawns still measure it.

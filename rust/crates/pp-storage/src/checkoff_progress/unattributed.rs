@@ -11,15 +11,12 @@
 //! printer's plan binding, with its domain event, in one transaction.
 
 use super::{
-    Body, Outcome, Refusal, Response,
+    Body, Outcome, Response,
+    attribution::{self, Attribution},
     links::{self, field},
-    read,
 };
-use crate::read_model::{AcceptedRead, Part, Snapshot};
 use anyhow::{Result, anyhow, ensure};
-use pp_domain::gcode_objects::{
-    group_objects_by_part, interpret_sliced_object_name, match_object_name,
-};
+use pp_domain::gcode_objects::group_objects_by_part;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path};
@@ -154,16 +151,6 @@ fn save(tx: &Transaction<'_>, tenant: &str, prints: Vec<Value>) -> Result<()> {
     put(tx, tenant, PRINTS, &Value::Array(prune(prints)))
 }
 
-/// `normalizePrinterFilename`: the trimmed basename in lower case.
-fn normalized(name: &Value) -> String {
-    let name = links::js_trim(name.as_str().unwrap_or_default()).replace('\\', "/");
-    name.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .to_lowercase()
-}
-
 fn resolved(tx: &Transaction<'_>, tenant: &str, print_id: &str, payload: Value) -> Result<()> {
     crate::domain_events::append(
         tx,
@@ -239,21 +226,15 @@ pub(super) fn claim(tx: &Transaction<'_>, tenant: &str, claim: Claim, repos: &Pa
     if truthy(&print["dismissed"]) {
         return refuse(409, "Print changed or was already claimed");
     }
-    let snapshot = match read(tx, tenant, claim.profile_id, repos)? {
-        AcceptedRead::Ready { snapshot } => *snapshot,
-        AcceptedRead::Empty { .. } => return refuse(409, "Accepted Plan has no Required units"),
-        AcceptedRead::CompatibilityDirty => {
-            return refuse(409, "Accepted Plan requires compatibility repair");
-        }
-        AcceptedRead::Missing | AcceptedRead::Uninitialized => {
-            return refuse(409, "Accepted Plan operational state is not initialized");
-        }
-        AcceptedRead::IntegrityFailure { .. } => return Ok(Err(Refusal::Internal)),
+    let snapshot = match attribution::accepted(tx, tenant, claim.profile_id, repos)? {
+        Ok(snapshot) => snapshot,
+        Err(refusal) => return Ok(refusal),
     };
-    let attribution = attribute(
+    let attribution = attribution::resolve(
         &snapshot,
         &object_names,
-        &links::js_string(&print["filename"]),
+        Some(&links::js_string(&print["filename"])),
+        false,
     );
     if attribution.units.is_empty() {
         return refuse(
@@ -286,20 +267,15 @@ fn record(
     attribution: Attribution,
 ) -> Outcome {
     let now = links::now();
-    let filename = normalized(&print["filename"]);
+    let filename = links::normalized_filename(print["filename"].as_str().unwrap_or_default());
     let mut all = links::load(tx, tenant, &now)?;
     if all.iter().any(|link| {
         matches!(link["state"].as_str(), Some("watching" | "awaiting_verify"))
             && link["integration_id"] == print["integration_id"]
-            && normalized(&link["filename"]) == filename
+            && links::normalized_filename(link["filename"].as_str().unwrap_or_default()) == filename
     }) {
         return refuse(409, "That print file is already assigned");
     }
-    let units: Vec<Value> = attribution
-        .units
-        .iter()
-        .map(|(part, unit)| json!({ "part_id": part, "unit_index": unit }))
-        .collect();
     let raw = json!({
         "id": links::uuid(),
         "profile_id": claim.profile_id,
@@ -308,8 +284,8 @@ fn record(
         "host_name": print["host_name"],
         "filename": print["filename"],
         "plan_revision_id": revision_id,
-        "units": units,
-        "unlabeled_names": attribution.unmatched,
+        "units": attribution.units,
+        "unlabeled_names": attribution.unmatched_object_names,
         "state": "awaiting_verify",
         "host_outcome": "success",
         "saw_active": true,
@@ -327,7 +303,7 @@ fn record(
         !truthy(&p["claimed_at"])
             && !truthy(&p["dismissed"])
             && p["integration_id"] == print["integration_id"]
-            && normalized(&p["filename"]) == filename
+            && links::normalized_filename(p["filename"].as_str().unwrap_or_default()) == filename
     }) {
         open["claimed_at"] = Value::from(now.clone());
         open["claimed_profile_id"] = Value::from(claim.profile_id);
@@ -383,114 +359,4 @@ fn plan_bindings(raw: Option<String>) -> Result<Vec<Value>> {
         );
     }
     Ok(items)
-}
-
-/// What a claim's object names attribute to.
-struct Attribution {
-    units: Vec<(i64, i64)>,
-    unmatched: Vec<String>,
-}
-
-fn part_path(part: &Part) -> &str {
-    if part.relative_path.is_empty() {
-        &part.filename
-    } else {
-        &part.relative_path
-    }
-}
-
-/// `interpretSlicedObjectName(raw).unwrappedName` with a trailing `_stl` read
-/// as `.stl`, in lower case: how a Required-unit object name is compared.
-fn parsed_object_name(raw: &str) -> String {
-    let name = interpret_sliced_object_name(raw).unwrapped_name;
-    let cut = name.len().saturating_sub(4);
-    match name.get(cut..) {
-        Some(tail) if name.len() >= 4 && tail.eq_ignore_ascii_case("_stl") => {
-            format!("{}.stl", &name[..cut])
-        }
-        _ => name,
-    }
-    .to_lowercase()
-}
-
-/// `resolveAcceptedPrinterAttribution` for a claim. An object name that is a
-/// Required unit's name binds that unit. Any other name that matches exactly one
-/// Part by file name takes that Part's lowest free incomplete unit. With nothing
-/// bound and no Required-unit name seen, the print's file name may bind one unit.
-fn attribute(snapshot: &Snapshot, names: &[String], fallback: &str) -> Attribution {
-    let parts: Vec<&Part> = snapshot
-        .parts
-        .iter()
-        .filter(|p| p.included && p.units.iter().any(|u| u.required))
-        .collect();
-    let paths: Vec<&str> = parts.iter().map(|p| part_path(p)).collect();
-    let one_part = |raw: &str| -> Option<&Part> {
-        let wanted: HashSet<String> = match_object_name(raw, &paths)
-            .into_iter()
-            .map(|p| p.to_lowercase())
-            .collect();
-        let mut matching = parts
-            .iter()
-            .filter(|p| wanted.contains(&part_path(p).to_lowercase()));
-        let first = matching.next()?;
-        matching.next().is_none().then_some(*first)
-    };
-    let free = |part: &Part, used: &HashSet<(i64, i64)>| {
-        part.units
-            .iter()
-            .find(|u| {
-                u.required
-                    && !u.completed
-                    && !used.contains(&(part.projection_part_id, u.unit_index))
-            })
-            .map(|u| (part.projection_part_id, u.unit_index))
-    };
-
-    let mut used = HashSet::new();
-    let mut bound: Vec<Option<(i64, i64)>> = vec![None; names.len()];
-    let mut settled = vec![false; names.len()];
-    for (i, raw) in names.iter().enumerate() {
-        let parsed = parsed_object_name(raw);
-        let canonical = parts.iter().find_map(|p| {
-            p.units
-                .iter()
-                .find(|u| u.required && u.object_name.to_lowercase() == parsed)
-                .map(|u| (p.projection_part_id, u))
-        });
-        let Some((part, unit)) = canonical else {
-            continue;
-        };
-        settled[i] = true;
-        if !unit.completed && used.insert((part, unit.unit_index)) {
-            bound[i] = Some((part, unit.unit_index));
-        }
-    }
-    let recognized = settled.iter().any(|s| *s);
-    for (i, raw) in names.iter().enumerate() {
-        if settled[i] {
-            continue;
-        }
-        if let Some(key) = one_part(raw).and_then(|part| free(part, &used)) {
-            used.insert(key);
-            bound[i] = Some(key);
-        }
-    }
-
-    let mut units: Vec<(i64, i64)> = bound.iter().flatten().copied().collect();
-    if units.is_empty()
-        && !recognized
-        && !links::js_trim(fallback).is_empty()
-        && let Some(key) = one_part(fallback).and_then(|part| free(part, &HashSet::new()))
-    {
-        units.push(key);
-    }
-    Attribution {
-        units,
-        unmatched: names
-            .iter()
-            .zip(&bound)
-            .filter(|(_, b)| b.is_none())
-            .map(|(n, _)| n.clone())
-            .collect(),
-    }
 }

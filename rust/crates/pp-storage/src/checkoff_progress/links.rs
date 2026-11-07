@@ -51,6 +51,17 @@ pub(super) fn is_reason(value: &Value) -> bool {
     value.as_str().is_some_and(|s| REASONS.contains(&s))
 }
 
+/// `normalizePrinterFilename`: the trimmed basename in lower case.
+pub(super) fn normalized_filename(name: &str) -> String {
+    js_trim(name)
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_lowercase()
+}
+
 /// `String.prototype.trim`: JS whitespace and line terminators, which are
 /// Unicode White_Space without U+0085, plus U+FEFF.
 pub(super) fn js_trim(s: &str) -> &str {

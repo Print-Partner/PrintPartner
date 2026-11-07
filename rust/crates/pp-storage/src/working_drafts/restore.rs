@@ -6,10 +6,15 @@
 //!
 //! Only a snapshot that records the Accepted revision it captured can be
 //! restored; Accept saves one before every publication. The draft's Parts and
-//! pinned inputs are that revision's. Each restored Part's predecessor is the
-//! current Accepted Part holding its Required units, so the automatic
-//! selection keeps those tokens; a Part the current Plan no longer has is new.
-//! A restore that would leave a printed unit without its Part is refused.
+//! pinned inputs are that revision's, and its header is the one the snapshot
+//! saved. Each restored Part's predecessor is the current Accepted Part
+//! holding its Required units; a Part the current Plan no longer has is new.
+//! A restore whose Part quantities could not hold the current printed units
+//! is refused. That is the only printed-unit check: when a restored Part's
+//! artifact, Source or role differs from its predecessor's, the selection
+//! reports `unsafe_predecessor`, and a `replace` decision at that gate mints
+//! fresh tokens and retires the printed ones, as Accept's `printed_affected`
+//! preview lists.
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
 use super::save::{Refusal, accepted_base, copy_credential, observed_draft, tenant_actor};
@@ -59,7 +64,18 @@ pub enum RestoreRefusal {
     SnapshotNotFound,
     /// The snapshot records no Accepted revision of this Build.
     NotRestorable,
-    /// Printed Required units the restored Plan would drop.
+    /// The current Accepted revision has no Required-unit set, so no
+    /// predecessor can be found.
+    RequiredUnitSetUnavailable,
+    /// The snapshot's header fails a header save's field rule; the field and
+    /// the rule.
+    HeaderInvalid {
+        field: &'static str,
+        detail: &'static str,
+    },
+    /// Printed Required units of a current Part that the restored quantities
+    /// cannot hold. Passing this check does not keep printed tokens: a
+    /// `replace` decision on an `unsafe_predecessor` Part still retires them.
     PrintedUnitsAffected {
         tokens: Vec<String>,
     },
@@ -189,6 +205,10 @@ fn transact(
         Ok(parts) => parts,
         Err(reason) => return Ok(Err(reason)),
     };
+    let header = match header::snapshot(tx, tenant, snapshot)? {
+        Ok(header) => header,
+        Err((field, detail)) => return Ok(Err(RestoreRefusal::HeaderInvalid { field, detail })),
+    };
     budget.check()?;
     abandon_open(tx, tenant, profile)?;
     let digest = model::planning(&base, &inputs, &parts)?;
@@ -205,7 +225,7 @@ fn transact(
         profile,
         &key,
         restored,
-        Origin::Snapshot(snapshot),
+        Origin::Snapshot(header.as_ref()),
     )?;
     Ok(Ok(id))
 }
@@ -335,8 +355,9 @@ fn restored_inputs(
 }
 
 /// Revision `revision`'s Parts as draft Parts. Each Part's predecessor is
-/// the base Part holding its Required-unit tokens, or none. Refuses when a
-/// base Part with printed units would lose them.
+/// the base Part holding its Required-unit tokens, or none. Refuses when the
+/// base has no Required-unit set, or when a base Part's printed units
+/// outnumber the quantity of the Part restored over it.
 fn restored_parts(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -344,10 +365,11 @@ fn restored_parts(
     revision: i64,
     base: &Value,
 ) -> Result<std::result::Result<Vec<DraftPart>, RestoreRefusal>> {
-    let current =
+    let Some((_, current)) =
         required_units::storage::base(tx, tenant, profile, base["baseRevisionId"].as_i64())?
-            .map(|(_, parts)| parts)
-            .unwrap_or_default();
+    else {
+        return Ok(Err(RestoreRefusal::RequiredUnitSetUnavailable));
+    };
     let holder: HashMap<&str, i64> = current
         .iter()
         .flat_map(|part| part.units.iter().map(|unit| (unit.token.as_str(), part.id)))

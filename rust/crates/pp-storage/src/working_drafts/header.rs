@@ -16,6 +16,7 @@
 use super::save::{Refusal, accepted_base, observed_draft, prepare_new, tenant_actor};
 use super::*;
 pub use pp_contracts::draft_header::{DraftHeader, SaveDraftHeaderRequest};
+use rusqlite::OptionalExtension as _;
 
 /// A stored Build header: trimmed and checked, as a draft holds it and as
 /// the Build reads.
@@ -277,17 +278,48 @@ pub(crate) fn carry(tx: &Transaction<'_>, tenant: &str, from: i64, to: i64) -> R
     Ok(())
 }
 
-/// Writes the Build header Plan snapshot `snapshot` saved, if it saved one,
-/// as draft `to`'s first header version.
-pub(crate) fn restore(tx: &Transaction<'_>, tenant: &str, snapshot: i64, to: i64) -> Result<()> {
-    tx.execute(
-        "INSERT INTO plan_draft_headers (draft_id,tenant_id,name,order_number,customer,due_date,header_version,updated_at) SELECT ?3,tenant_id,name,order_number,customer,due_date,1,?4 FROM plan_snapshot_headers WHERE tenant_id=?1 AND snapshot_id=?2",
-        params![tenant, snapshot, to, auth::catalog_timestamp()],
-    )?;
-    Ok(())
+/// The Build header Plan snapshot `snapshot` saved, if it saved one, checked
+/// as a header save checks it, or the first field that fails. The snapshot
+/// copies the Build's header, where Node stores an unset order number,
+/// customer or due date as empty text, so empty text reads as none.
+pub(crate) fn snapshot(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    snapshot: i64,
+) -> Result<std::result::Result<Option<BuildHeader>, (&'static str, &'static str)>> {
+    let saved = tx
+        .query_row(
+            "SELECT name,order_number,customer,due_date FROM plan_snapshot_headers WHERE tenant_id=?1 AND snapshot_id=?2",
+            params![tenant, snapshot],
+            |row| {
+                Ok(DraftHeader {
+                    name: row.get(0)?,
+                    order_number: row.get(1)?,
+                    customer: row.get(2)?,
+                    due_date: row.get(3)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(mut saved) = saved else {
+        return Ok(Ok(None));
+    };
+    for field in [
+        &mut saved.order_number,
+        &mut saved.customer,
+        &mut saved.due_date,
+    ] {
+        if field
+            .as_deref()
+            .is_some_and(|value| trim_js(value).is_empty())
+        {
+            *field = None;
+        }
+    }
+    Ok(normalized(&saved).map(Some))
 }
 
-fn write(
+pub(super) fn write(
     tx: &Transaction<'_>,
     tenant: &str,
     draft: i64,

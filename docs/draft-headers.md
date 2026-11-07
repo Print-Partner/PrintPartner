@@ -106,7 +106,7 @@ must choose.
 | Save (publishing) | the observed draft | `save_carries_the_source_draft_header` (`working_draft_save.rs`) |
 | Autosave | none: it writes into the open draft in place, or creates a draft when none is open | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` checks the row survives |
 | Header save | writes its own row | `gre_1197_header_save_creates_a_draft_when_none_is_open` |
-| Restore as draft ([GRE-1094](build-history.md#restore-a-snapshot-as-a-draft)) | the snapshot's `plan_snapshot_headers` row, as header version 1, through `insert_snapshot` with `Origin::Snapshot` | `restore_as_draft_creates_a_draft_that_accept_publishes_without_rewinding_evidence` (pp-api) |
+| Restore as draft ([GRE-1094](build-history.md#restore-a-snapshot-as-a-draft)) | the snapshot's `plan_snapshot_headers` row, checked as a header save checks it (empty optional text reads as none), as header version 1, through `insert_snapshot` with `Origin::Snapshot` | `restore_as_draft_creates_a_draft_that_accept_publishes_without_rewinding_evidence` (pp-api) |
 
 Passing `Origin::New` in recompute or Save, or dropping the carry for
 `Rebased`, makes the matching test fail; this was checked by hand for this change.

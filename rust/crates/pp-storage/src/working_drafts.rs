@@ -1842,7 +1842,7 @@ enum Origin<'a> {
     New,
     Draft(i64),
     Rebased(&'a rebase::Source<'a>),
-    Snapshot(i64),
+    Snapshot(Option<&'a header::BuildHeader>),
 }
 
 /// The rows a new draft holds: its Accepted base, inputs and Parts, and their
@@ -1889,8 +1889,8 @@ fn insert_snapshot(
     if let Some(from) = header_from {
         header::carry(tx, tenant, from, id)?;
     }
-    if let Origin::Snapshot(snapshot) = origin {
-        header::restore(tx, tenant, snapshot, id)?;
+    if let Origin::Snapshot(Some(saved)) = origin {
+        header::write(tx, tenant, id, saved, 1)?;
     }
     for input in prepared.inputs {
         let mut values = vec![tenant.to_owned().into(), id.into()];

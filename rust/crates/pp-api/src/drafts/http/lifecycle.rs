@@ -2,7 +2,7 @@
 use super::*;
 use pp_storage::{
     plan_publication::{ApplyRequest, PublicationCommand},
-    required_units::{DraftIdentity, Workspace},
+    required_units::{DomainCode, DraftIdentity, Workspace},
     working_drafts::{
         RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome, RecomputeOutcome,
         RecomputeRequest, RecomputeWorkspaceOutcome,
@@ -445,11 +445,7 @@ pub(super) async fn save_header(
     match run_write(&app, work).await {
         Ok(HeaderOutcome::Saved(saved)) => json_response(StatusCode::OK, saved),
         Ok(HeaderOutcome::Refused { reason }) => match reason {
-            HeaderRefusal::Invalid { field, detail } => refusal(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_header",
-                [("field", json!(field)), ("reason", json!(detail))],
-            ),
+            HeaderRefusal::Invalid { field, detail } => invalid_header(field, detail),
             HeaderRefusal::HeaderChanged { current } => refusal(
                 StatusCode::CONFLICT,
                 "header_changed",
@@ -495,6 +491,12 @@ pub(super) async fn restore(
                 "snapshot_not_found",
             ),
             RestoreRefusal::NotRestorable => conflict("snapshot_not_restorable", None),
+            RestoreRefusal::RequiredUnitSetUnavailable => {
+                present_edit(WorkspaceOutcome::DomainError {
+                    code: DomainCode::RequiredUnitSetUnavailable,
+                })
+            }
+            RestoreRefusal::HeaderInvalid { field, detail } => invalid_header(field, detail),
             RestoreRefusal::PrintedUnitsAffected { tokens } => refusal(
                 StatusCode::CONFLICT,
                 "printed_units_affected",
@@ -503,6 +505,14 @@ pub(super) async fn restore(
         },
         Err(error) => write_failure(error, "snapshot restore", target.0, None),
     }
+}
+
+fn invalid_header(field: &str, detail: &str) -> Response {
+    refusal(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_header",
+        [("field", json!(field)), ("reason", json!(detail))],
+    )
 }
 
 /// The Plan and snapshot of `/plans/{id}/snapshots/{snapshot_id}/restore`,

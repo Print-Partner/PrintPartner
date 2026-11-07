@@ -1,10 +1,12 @@
 //! Restore a Plan snapshot as a draft (GRE-1094): the restored draft, the
 //! Accept that publishes it, and the refusals.
 use super::*;
+use rusqlite::params;
 use std::collections::BTreeMap;
 
 /// A completed and assembled bracket unit, a completed gear unit, one Checkoff
-/// burst and one finished send, all of Build 1.
+/// burst, one finished send that checked off the bracket unit and one verified
+/// Checkoff link on the gear unit, all of Build 1.
 const EVIDENCE_SETUP: &str = "
 UPDATE print_progress SET completed=1, assembled=1 WHERE part_id=1 AND unit_index=0;
 UPDATE print_progress SET completed=1 WHERE part_id=3 AND unit_index=1;
@@ -13,7 +15,9 @@ INSERT INTO print_jobs(id,tenant_id,profile_id,filename,at,printer_id,status)
 INSERT INTO print_job_parts(id,tenant_id,job_id,at,profile_id,part_id,unit_index,result,filename,match_key)
   VALUES('jp-1','default','job-1','2026-08-21T20:00:00.000Z',1,1,0,'confirmed','bracket.3mf','bracket.stl');
 INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.send_queue',
-  '[{\"id\":\"send-1\",\"state\":\"done\",\"filename\":\"bracket.3mf\",\"artifact_path\":\"exports/bracket.3mf\",\"printer_id\":\"sim-1\",\"profile_id\":1,\"created_at\":\"2026-08-21T19:00:00.000Z\"}]');
+  '[{\"id\":\"send-1\",\"state\":\"done\",\"filename\":\"bracket.3mf\",\"artifact_path\":\"exports/bracket.3mf\",\"printer_id\":\"sim-1\",\"profile_id\":1,\"checkoff_units\":[{\"part_id\":1,\"unit_index\":0}],\"created_at\":\"2026-08-21T19:00:00.000Z\"}]');
+INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.checkoff_links',
+  '[{\"id\":\"link-1\",\"state\":\"verified\",\"profile_id\":1,\"filename\":\"gear.3mf\",\"units\":[{\"part_id\":3,\"unit_index\":1}]}]');
 ";
 
 /// A Plate layout on Accepted revision 2 holding the first bracket unit.
@@ -112,6 +116,76 @@ fn evidence(server: &ReadServer) -> Vec<(String, Vec<String>)> {
     dump
 }
 
+/// Each Checkoff coordinate in the send queue (table or setting) and the
+/// Checkoff links, by owner, resolved to the Required-unit token at that
+/// Part row and unit index in Build 1's revision history. Accept projects
+/// each revision onto new Part rows, so a coordinate names one revision's
+/// unit.
+fn coordinate_tokens(server: &ReadServer) -> Vec<(String, Option<String>)> {
+    let connection = server.sql();
+    let mut owned: Vec<(String, Value)> = connection
+        .prepare(
+            "SELECT id,checkoff_units FROM printer_send_queue WHERE checkoff_units IS NOT NULL",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                format!("{}/checkoff_units", row.get::<_, String>(0)?),
+                serde_json::from_str(&row.get::<_, String>(1)?).unwrap(),
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let settings: Vec<String> = connection
+        .prepare("SELECT value FROM app_settings WHERE key IN ('printer.send_queue','printer.checkoff_links')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    for setting in settings {
+        let items: Vec<Value> = serde_json::from_str(&setting).unwrap();
+        for item in items {
+            for field in ["checkoff_units", "units", "resolved_units"] {
+                if item[field].is_array() {
+                    owned.push((
+                        format!("{}/{field}", item["id"].as_str().unwrap()),
+                        item[field].clone(),
+                    ));
+                }
+            }
+        }
+    }
+    let mut resolved: Vec<_> = owned
+        .into_iter()
+        .flat_map(|(owner, units)| {
+            units
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|unit| {
+                    let tokens: Vec<String> = connection
+                        .prepare("SELECT DISTINCT m.required_unit_token FROM plan_revisions v JOIN plan_revision_parts r ON r.revision_id=v.id JOIN plan_revision_required_units m ON m.revision_part_id=r.id WHERE v.profile_id=1 AND r.projection_part_id=?1 AND m.unit_index=?2")
+                        .unwrap()
+                        .query_map(
+                            params![unit["part_id"].as_i64(), unit["unit_index"].as_i64()],
+                            |row| row.get(0),
+                        )
+                        .unwrap()
+                        .collect::<rusqlite::Result<_>>()
+                        .unwrap();
+                    assert!(tokens.len() <= 1, "{unit}: {tokens:?}");
+                    let token = tokens.into_iter().next();
+                    (owner.clone(), token)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    resolved.sort();
+    resolved
+}
+
 /// The Accepted Plan's Required units by token: Object name, creation time,
 /// completed and assembled.
 fn units(server: &ReadServer) -> BTreeMap<String, (String, String, i64, i64)> {
@@ -185,6 +259,44 @@ async fn accept_bracket_quantity(server: &ReadServer, quantity: u32) -> Value {
     receipt
 }
 
+/// Restarts the server. The restored draft and its header survive, and a retry
+/// of key `r-1` still answers the same draft and writes nothing, while the
+/// key with another payload is refused. Answers the reread workspace.
+async fn restart_and_replay(
+    server: ReadServer,
+    body: &Value,
+    workspace: &Value,
+) -> (ReadServer, Value) {
+    let server = server.restart().await;
+    let written = logical_database(&server.sql());
+    let replay = json_reply(restore(&server, 1, 1, Some("r-1")).json(body), 200).await;
+    assert_eq!(replay["draft"], workspace["draft"]);
+    assert_eq!(
+        json_reply(
+            restore(&server, 1, 1, Some("r-1")).json(&restore_body(json!(1), 1, Value::Null)),
+            409
+        )
+        .await,
+        json!({"code": "idempotency_conflict"})
+    );
+    assert_eq!(logical_database(&server.sql()), written);
+    let listed = json_reply(server.request(Method::GET, "/plans/1/drafts"), 200).await;
+    let open: Vec<_> = listed["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|draft| draft["state"] == "open")
+        .map(|draft| draft["draft_id"].clone())
+        .collect();
+    assert_eq!(open, vec![json!(3)]);
+    let reread = json_reply(server.request(Method::GET, "/plans/1/drafts/3"), 200).await;
+    assert_eq!(reread["draft"], workspace["draft"]);
+    let header_read =
+        json_reply(server.request(Method::GET, "/plans/1/drafts/3/header"), 200).await;
+    assert_eq!(header_read["draft"]["header"]["name"], "Fixture Build");
+    (server, reread)
+}
+
 #[tokio::test]
 async fn restore_as_draft_creates_a_draft_that_accept_publishes_without_rewinding_evidence() {
     let server = ReadServer::start_limited(8 * 1024 * 1024, EVIDENCE_SETUP).await;
@@ -204,6 +316,26 @@ async fn restore_as_draft_creates_a_draft_that_accept_publishes_without_rewindin
     let (accepted, printed, units_before) =
         (accepted_state(&server), evidence(&server), units(&server));
     assert_eq!(units_before.len(), 5);
+    // The finished send's and the verified link's Checkoff coordinates name
+    // the completed bracket and gear units.
+    let checked_off = coordinate_tokens(&server);
+    let tokens = |part: &str, completed: i64| -> Vec<String> {
+        units_before
+            .iter()
+            .filter(|(_, (name, _, done, _))| name.starts_with(part) && *done == completed)
+            .map(|(token, _)| token.clone())
+            .collect()
+    };
+    assert_eq!(
+        checked_off,
+        vec![
+            ("link-1/units".to_owned(), tokens("gear", 1).pop()),
+            (
+                "send-1/checkoff_units".to_owned(),
+                tokens("bracket", 1).pop()
+            ),
+        ]
+    );
     let body = restore_body(json!(2), 2, Value::Null);
 
     // RST-01: the restore creates a draft and the Accepted Plan stays put.
@@ -217,6 +349,7 @@ async fn restore_as_draft_creates_a_draft_that_accept_publishes_without_rewindin
     assert_eq!(workspace["reconciliation"]["kind"], "ready", "{workspace}");
     assert_eq!(accepted_state(&server), accepted);
     assert_eq!(evidence(&server), printed);
+    assert_eq!(coordinate_tokens(&server), checked_off);
     // RST-03: each restored Part's predecessor is the revision 2 Part holding
     // its tokens.
     let restored = triples::<String, i64, i64>(
@@ -241,49 +374,27 @@ async fn restore_as_draft_creates_a_draft_that_accept_publishes_without_rewindin
         .unwrap();
     assert_eq!(header, ("Fixture Build".to_owned(), 1));
 
-    // A retry answers the same draft and writes nothing; the key with another
-    // payload is refused.
-    let written = logical_database(&server.sql());
-    let replay = json_reply(restore(&server, 1, 1, Some("r-1")).json(&body), 200).await;
-    assert_eq!(replay["draft"], workspace["draft"]);
-    assert_eq!(
-        json_reply(
-            restore(&server, 1, 1, Some("r-1")).json(&restore_body(json!(1), 1, Value::Null)),
-            409
-        )
-        .await,
-        json!({"code": "idempotency_conflict"})
-    );
-    assert_eq!(logical_database(&server.sql()), written);
-
-    // The draft and its header survive a restart.
-    let server = server.restart().await;
-    let listed = json_reply(server.request(Method::GET, "/plans/1/drafts"), 200).await;
-    let open: Vec<_> = listed["drafts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|draft| draft["state"] == "open")
-        .map(|draft| draft["draft_id"].clone())
-        .collect();
-    assert_eq!(open, vec![json!(3)]);
-    let reread = json_reply(server.request(Method::GET, "/plans/1/drafts/3"), 200).await;
-    assert_eq!(reread["draft"], workspace["draft"]);
-    let header_read =
-        json_reply(server.request(Method::GET, "/plans/1/drafts/3/header"), 200).await;
-    assert_eq!(header_read["draft"]["header"]["name"], "Fixture Build");
+    let (server, reread) = restart_and_replay(server, &body, &workspace).await;
     assert_eq!(accepted_state(&server), accepted);
+    assert_eq!(coordinate_tokens(&server), checked_off);
 
     // Accept publishes revision 1's Parts as revision 3.
     let receipt = accept_workspace(&server, &reread, "accept-3", json!(1)).await;
     assert_eq!(receipt["revision_id"], 3);
     assert_eq!(revision_parts(&server, 3), revision_parts(&server, 1));
-    // RST-02: Checkoff, sends and Plate history are unchanged, and every
-    // surviving unit keeps its token, name and progress.
+    // RST-02: Checkoff, sends and Plate history are unchanged, their Checkoff
+    // coordinates name the same Required units, and every surviving unit
+    // keeps its token, name and progress.
     assert_eq!(evidence(&server), printed);
+    assert_eq!(coordinate_tokens(&server), checked_off);
     let after = units(&server);
     for (token, unit) in &units_before {
         assert_eq!(after.get(token), Some(unit), "{token}");
+    }
+    // The units the send and the link checked off are still in the Plan and
+    // still completed.
+    for (owner, token) in &checked_off {
+        assert_eq!(after[token.as_ref().unwrap()].2, 1, "{owner}");
     }
     // RST-03: the regrown bracket unit is new; no token is reused.
     let added: Vec<_> = after
@@ -485,6 +596,73 @@ async fn restore_as_draft_refuses_to_drop_printed_units() {
         )
         .await,
         json!({"code": "printed_units_affected", "tokens": bracket})
+    );
+    assert_eq!(logical_database(&server.sql()), before);
+    server.close().await;
+}
+
+/// A snapshot header copied from a Node Build stores an unset field as empty
+/// text, which reads as none. A field a header save would refuse refuses the
+/// restore before any write.
+#[tokio::test]
+async fn restore_as_draft_checks_the_snapshot_header_as_a_header_save_does() {
+    let (server, body) = snapshot_server().await;
+    let header = |name: &str, due_date: &str| {
+        server
+            .sql()
+            .execute(
+                "INSERT OR REPLACE INTO plan_snapshot_headers(snapshot_id,tenant_id,name,order_number,customer,due_date,captured_at) VALUES(1,'default',?1,'','  ',?2,'2026-08-21T00:00:00.000Z')",
+                params![name, due_date],
+            )
+            .unwrap();
+    };
+    for (name, due_date, field, reason) in [
+        (" ", "", "name", "text_length"),
+        ("Fixture Build", "2026-02-30", "due_date", "calendar_date"),
+    ] {
+        header(name, due_date);
+        let before = logical_database(&server.sql());
+        assert_eq!(
+            json_reply(restore(&server, 1, 1, Some(field)).json(&body), 422).await,
+            json!({"code": "invalid_header", "field": field, "reason": reason})
+        );
+        assert_eq!(logical_database(&server.sql()), before);
+    }
+    header(" Fixture Build ", "");
+    let workspace = json_reply(restore(&server, 1, 1, Some("blank")).json(&body), 200).await;
+    let draft = workspace["draft"]["draft_id"].clone();
+    let saved = json_reply(
+        server.request(Method::GET, &format!("/plans/1/drafts/{draft}/header")),
+        200,
+    )
+    .await;
+    assert_eq!(
+        saved["draft"]["header"],
+        json!({"name": "Fixture Build", "order_number": null, "customer": null, "due_date": null})
+    );
+    server.close().await;
+}
+
+/// A current Accepted revision older than Required units has no set, so the
+/// restore answers the selection's refusal and the open draft stays open.
+#[tokio::test]
+async fn restore_as_draft_refuses_without_a_required_unit_set() {
+    let (server, body) = snapshot_server().await;
+    server
+        .sql()
+        .execute_batch(
+            "DROP TRIGGER trg_required_units_immutable_delete;
+             DROP TRIGGER trg_plan_revision_required_units_immutable_delete;
+             DROP TRIGGER trg_plan_revision_required_unit_sets_immutable_delete;
+             DELETE FROM plan_revision_required_unit_sets WHERE revision_id=1;
+             DELETE FROM plan_revision_required_units WHERE revision_id=1;
+             DELETE FROM required_units WHERE created_in_revision_id=1;",
+        )
+        .unwrap();
+    let before = logical_database(&server.sql());
+    assert_eq!(
+        json_reply(restore(&server, 1, 1, Some("no-set")).json(&body), 422).await,
+        json!({"code": "required_unit_set_unavailable"})
     );
     assert_eq!(logical_database(&server.sql()), before);
     server.close().await;

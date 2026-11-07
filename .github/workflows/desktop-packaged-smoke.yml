@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       smoke: ${{ steps.select.outputs.smoke }}
+      smoke_runs_on: ${{ steps.runner.outputs.smoke_runs_on }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,12 +52,19 @@ jobs:
           fi
           echo "smoke=$smoke" >> "$GITHUB_OUTPUT"
           echo "Packaged smoke: $smoke (label: $HAS_LABEL)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Select the packaged smoke runner
+        id: runner
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          PP_PR_RUNNER: ${{ vars.PP_PR_RUNNER }}
+        run: python3 scripts/ci-rust-runner.py
 
   linux:
     name: packaged smoke (linux, ${{ matrix.mode }})
     needs: changes
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.smoke == 'true'))
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ fromJSON(needs.changes.outputs.smoke_runs_on || '"blacksmith-4vcpu-ubuntu-2404"') }}
     timeout-minutes: 90
     strategy:
       fail-fast: false

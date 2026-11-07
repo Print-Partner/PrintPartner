@@ -1,8 +1,9 @@
 # Cargo cache trust for same-repository PRs
 
 The Linux Rust jobs in Rust cross-OS run on pp-local again for pushes to `main`,
-merge groups and manual runs (GRE-1042). Pull requests stay on GitHub-hosted
-runners, so PR code does not run on the hosts that share the containers'
+merge groups and manual runs (GRE-1042). Pull requests run on GitHub-hosted
+runners, or on Blacksmith or [pp-iso](pp-iso.md) runners when `PP_PR_RUNNER` selects
+them (never pp-local), so PR code does not run on the hosts that share the containers'
 host-mounted Cargo registry and sccache. This assessment, written for the earlier
 local-runner configuration that ran PRs locally, describes the risk that keeping
 PRs hosted avoids.
@@ -30,9 +31,10 @@ lockfile updates for `/rust`. Those updates can introduce new dependency code.
 
 [Embedded-driver smoke](../../.github/workflows/desktop-e2e.yml) and
 [WebKit smoke](../../.github/workflows/desktop-webkit.yml) use the same Linux
-routing predicate. All three workflows skip `Swatinem/rust-cache` when
-`runner.environment == 'self-hosted'` and `runner.os == 'Linux'`. Hosted runners
-and the shared Rust steps on macOS and Windows retain that action.
+routing predicate. Embedded-driver smoke and WebKit smoke skip `Swatinem/rust-cache` when
+`runner.environment == 'self-hosted'` and `runner.os == 'Linux'`; Rust cross-OS skips it
+only when the runner kind is pp-local (`PP_RUNNER_KIND`). Hosted, Blacksmith and pp-iso
+runners and the shared Rust steps on macOS and Windows retain that action.
 
 [Desktop runtime and source-artifact jobs](../../.github/workflows/desktop-runtime.yml)
 also run Cargo on local Linux. More generally, any local job can modify a cache

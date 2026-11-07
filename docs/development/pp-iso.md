@@ -5,21 +5,22 @@ can change. Every job gets a fresh container that is deleted when the job ends.
 The runner label is `pp-iso`. It is separate from `pp-local`, which keeps its
 shared Cargo registry and sccache for trusted `main`, merge-group and manual runs.
 
-Status: the kit and proof workflow exist; the workflow switch (`PP_PR_RUNNER`) is a
-follow-up PR (GRE-1253). Nothing runs on pp-iso until a host is installed and a
-workflow targets the label.
+Status: the kit, the proof workflow and the `PP_PR_RUNNER` switch exist
+([ci.md](ci.md#pull-request-runner-switch)). Nothing runs on pp-iso until a host is
+installed and `PP_PR_RUNNER=pp-iso` is set; the switch covers the Linux Rust jobs only.
 
 ## Why
 
 [Cargo cache trust](cargo-cache-trust.md) explains why pp-local must not run
 PR-editable jobs: its registry and sccache are shared across jobs, so one job can
-poison what a later job builds. PRs therefore run on GitHub-hosted `ubuntu-latest`,
-which is slower and limited by hosted concurrency. pp-iso gives PRs self-hosted
+poison what a later job builds. PRs therefore run on Blacksmith runners (or GitHub-hosted
+`ubuntu-latest` with `PP_PR_RUNNER=hosted`), which cost money per minute and share one
+plan's concurrency. pp-iso gives PRs self-hosted
 capacity without sharing state.
 
 | | pp-local | pp-iso |
 | --- | --- | --- |
-| Runs | `main`, merge groups, manual | gates and Linux PR jobs (after GRE-1253) |
+| Runs | `main`, merge groups, manual | Linux Rust PR jobs when `PP_PR_RUNNER=pp-iso` |
 | Runner | JIT, one job per container | JIT, one job per container |
 | Cargo registry, sccache | shared, host-mounted | none; `actions/cache` only |
 | Volumes from the host | yes | none |

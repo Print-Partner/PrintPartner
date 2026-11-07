@@ -1,7 +1,7 @@
 name: Install Linux GUI dependencies
 description: >-
   apt-installs the given packages. On GitHub-hosted runners the downloaded .deb files are
-  restored from the Actions cache and, on pushes to the default branch only, saved back, so
+  restored from the Actions cache and, on non-pull-request runs of the default branch only, saved back, so
   a slow Ubuntu mirror cannot stall the package download (GRE-1229); apt-get update still runs. Pull request runs only restore.
 
 inputs:

@@ -3337,7 +3337,9 @@ failure is 500 `Accepted Plan data is inconsistent`.
 `PP_DESKTOP_REBUILD=1`, for 58 requests in 14 phases on copies of
 `accepted-plate-node.db`. `build_header_patch_and_archive_match_node` replays
 it through `build_router`: 51 cases match Node's status, body and changed
-tables. Seven are declared corrections that write nothing: the two
+tables, after the replay removes GRE-1100's `customer` and `due_date` from
+each Rust summary (Node's summary has neither, and the replay requires both to
+be present and null). Seven are declared corrections that write nothing: the two
 duplicate-name renames (409 above), a blank name beside an archive (400, where
 Node answered 500), a PATCH or archive body that is not JSON under
 `Content-Type: application/json` and an empty archive body under that type

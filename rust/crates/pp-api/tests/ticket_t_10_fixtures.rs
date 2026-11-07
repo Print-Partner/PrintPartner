@@ -1,7 +1,11 @@
 #![cfg(feature = "desktop_rebuild")]
 //! T-10-fixtures: copied Node auth fixtures replayed through the isolated
 //! parity runner in `pp_api::fixtures`, comparing responses and state graphs.
+#[path = "support/header_fields.rs"]
+mod header_fields;
+
 mod ticket_t_10_fixtures {
+    use super::header_fields::strip_header_fields;
     use pp_api::{
         auth::{AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer, auth_router},
         fixtures::{
@@ -1215,25 +1219,6 @@ mod ticket_t_10_fixtures {
             reason: "Rust refuses a missing base project before it inserts the Plan",
             rust,
         }]
-    }
-
-    /// GRE-1100 adds the header's `customer` and `due_date` to Rust's Plan
-    /// summary, from `build_profile_details`. Node's summary has no such keys
-    /// and Node isn't grown, so each Rust summary must carry both as null (no
-    /// case writes a header) and they're removed before the Node comparison.
-    /// Returns how many summaries carried them.
-    fn strip_header_fields(value: &mut serde_json::Value) -> usize {
-        match value {
-            serde_json::Value::Object(map) if map.contains_key("part_count") => {
-                for key in ["customer", "due_date"] {
-                    assert_eq!(map.remove(key), Some(serde_json::Value::Null), "{key}");
-                }
-                map.values_mut().map(strip_header_fields).sum::<usize>() + 1
-            }
-            serde_json::Value::Object(map) => map.values_mut().map(strip_header_fields).sum(),
-            serde_json::Value::Array(items) => items.iter_mut().map(strip_header_fields).sum(),
-            _ => 0,
-        }
     }
 
     #[tokio::test]

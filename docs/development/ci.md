@@ -237,7 +237,7 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 |------------|--------|----------|-------|
 | `rust (linux)` | Aggregate over `rust (linux) build` plus rebuild partitions when selected | The whole workspace | All |
 | `rust (macos)` | `macos-26` | The whole workspace | All except [macOS exclusions](#macos-exclusions) |
-| `rust (windows)` | `blacksmith-4vcpu-windows-2025` on pull requests (`windows-latest` with `PP_PR_RUNNER=hosted` and on every other event) | The workspace without [Windows exclusions](#windows-exclusions) | All in those packages |
+| `rust (windows)` | `windows-latest` | The workspace without [Windows exclusions](#windows-exclusions) | All in those packages |
 
 `rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or `ubuntu-latest` for non-PR events; on pull requests only the build and the aggregate run (the rebuild partitions do not), on `blacksmith-4vcpu-ubuntu-2404` (default), `ubuntu-latest` (`hosted`) or pp-iso ([the switch](#pull-request-runner-switch)); see [Linux Rust runner](#linux-rust-runner).
 
@@ -527,22 +527,25 @@ Required Rust and lint jobs fail if their input-selection job fails, so a broken
 ## Ephemeral PR runners
 
 Pull request jobs run on GitHub-hosted runners, which cost nothing for this public repository,
-and on pp-iso for the Linux Rust jobs when `PP_PR_RUNNER=pp-iso`; pp-local runs only pushes to `main`, merge groups and manual runs, never a pull request. Three jobs run on Blacksmith
+and on pp-iso for the Linux Rust jobs when `PP_PR_RUNNER=pp-iso`; pp-local runs only pushes to `main`, merge groups and manual runs, never a pull request. Two jobs run on Blacksmith
 by default because their speed pays for the per-minute price: `rust (linux) build` and its
-aggregate, `rust (windows)` and the Linux packaged smoke job. Nothing else runs on
-Blacksmith: lint, actionlint, zizmor, evidence, duplication, Web CI, sidecar, docs, macOS, release,
+aggregate, and the Linux packaged smoke job. Nothing else runs on
+Blacksmith: lint, actionlint, zizmor, evidence, duplication, Web CI, sidecar, docs, `rust (windows)`, macOS, release,
 Pages, schedules, merge groups and `main` pushes stay on GitHub-hosted runners (or pp-local), and the
 workflows use no Blacksmith Docker layer cache, sticky disk or cross-PR cache. Each hosted or Blacksmith job
-gets a fresh VM. The workflows that a push to a pull request re-triggers cancel a superseded run (`cancel-in-progress` on
-`pull_request`), so a new push stops the jobs still paying for the old head (`droid.yml`, which only answers mentions, and `linear-pr-sync.yml`, which must not be cancelled, run on free runners and have no cancelling group); `main` pushes keep
+gets a fresh VM. Every CI workflow groups a pull request by workflow and ref (or PR number) with
+`cancel-in-progress: true`, so a new push stops the jobs still paying for the old head, except `droid.yml`, which only
+answers mentions and has no group, and `linear-pr-sync.yml`, which must not be cancelled; `main` pushes keep
 the one-running, one-pending rule instead.
 
-Two jobs were tried on Blacksmith and moved back: `release-signing-check.yml`, because
+Three jobs were tried on Blacksmith and are not kept there. `release-signing-check.yml` failed because
 `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'` printed the whole manifest instead of
-the digest and `cosign verify` got a malformed reference, and the `rust-verify` job of
-`desktop-runtime.yml`, because its LAN guard rejects new connections to `192.168.0.0/16` and counted
+the digest and `cosign verify` got a malformed reference. The `rust-verify` job of
+`desktop-runtime.yml` failed because its LAN guard rejects new connections to `192.168.0.0/16` and counted
 2630 blocked packets on Blacksmith (the runner's own services appear to use that range) before the artifact
-upload failed with `ECONNREFUSED`.
+upload failed with `ECONNREFUSED`. `rust (windows)` ran on `blacksmith-4vcpu-windows-2025` and failed two tests that pass on
+`windows-latest` (a Node loopback `ECONNRESET` in `node_auth_admission_snapshot_is_current` and a timestamp-window assertion at
+`import_worker_policy.rs:269`, run 42437330789), so it stays on GitHub's free Windows runner until GRE-1271 resolves them.
 
 ### Linux Rust runner
 
@@ -595,17 +598,17 @@ run PR-editable code.
 
 ### Pull request runner switch
 
-The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It is read only on `pull_request` events, so `main` pushes, merge groups, manual runs and the nightly schedule keep the routing above and `PP_RUST_RUNNER`. Unset, empty or any other value means `blacksmith`. Set it under Settings, Secrets and variables, Actions, Variables; the next run, or a label change on the PR, uses the new value, and `hosted` puts all three paid jobs back on GitHub's free runners at once. `main` pushes, merge groups, manual runs and the nightly schedule never use Blacksmith.
+The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It is read only on `pull_request` events, so `main` pushes, merge groups, manual runs and the nightly schedule keep the routing above and `PP_RUST_RUNNER`. Unset, empty or any other value means `blacksmith`. Set it under Settings, Secrets and variables, Actions, Variables; the next run, or a label change on the PR, uses the new value, and `hosted` puts both paid jobs back on GitHub's free runners at once. `rust (windows)` always runs on `windows-latest`. `main` pushes, merge groups, manual runs and the nightly schedule never use Blacksmith.
 
-| `PP_PR_RUNNER` | `rust (linux)` build and aggregate (pull requests) | `rust (windows)` | `packaged smoke (linux, …)` |
-| --- | --- | --- | --- |
-| `blacksmith` (default) | `blacksmith-4vcpu-ubuntu-2404` | `blacksmith-4vcpu-windows-2025` | `blacksmith-4vcpu-ubuntu-2404` |
-| `hosted` | `ubuntu-latest` | `windows-latest` | `ubuntu-24.04` |
-| `pp-iso` | `[self-hosted, linux, x64, pp-iso]` ([pp-iso](pp-iso.md)) | `blacksmith-4vcpu-windows-2025` | `blacksmith-4vcpu-ubuntu-2404` |
+| `PP_PR_RUNNER` | `rust (linux)` build and aggregate (pull requests) | `packaged smoke (linux, …)` |
+| --- | --- | --- |
+| `blacksmith` (default) | `blacksmith-4vcpu-ubuntu-2404` | `blacksmith-4vcpu-ubuntu-2404` |
+| `hosted` | `ubuntu-latest` | `ubuntu-24.04` |
+| `pp-iso` | `[self-hosted, linux, x64, pp-iso]` ([pp-iso](pp-iso.md)) | `blacksmith-4vcpu-ubuntu-2404` |
 
-- Every job keeps its name, so the required checks do not change, and a PR that skips a job still reports it. `scripts/ci-rust-runner.py` makes the choice in the `changes` job of `rust-cross-os.yml` and `desktop-packaged-smoke.yml` and has tests for every value and event. A PR runs its own copy of that script, so the script and its test are in CODEOWNERS: a change to the routing requests Chad's review, like a workflow change. Under `pp-iso`, the script sends a pull request from a fork to Blacksmith, but a pull request runs its own copy of the workflow and script, so what actually keeps fork code off the self-hosted pool is the pp-iso runner group's fork-run settings, not the script. Windows and the packaged smoke job use Blacksmith only on `pull_request` events when the variable is not `hosted`; every other event uses `windows-latest` and `ubuntu-24.04`. The selector jobs, lint, review gates and Web CI always use GitHub's free runners.
-- Sizing: the hosted 4 vCPU medians over the last PR runs are `rust (linux) build` 36.6 min (8 runs), `rust (windows)` 58.7 min (5 runs) and packaged smoke 7.6 min (4 runs), against job timeouts of 90 minutes each. Every paid job gets 4 vCPU, the smallest size that keeps the slowest job, Windows, well under its timeout: Blacksmith claims about twice the speed of a hosted runner of the same size, and one measured run on 8 vCPU finished `rust (windows)` in 16.8 min (run 42418741942 on #1600, head c841cfe). Per-minute cost is assumed to scale with vCPU, so the larger size buys speed at about the same cost per run; it is not needed to meet a timeout. 2 vCPU would run slower than the hosted 4 vCPU job that already takes 58.7 min, so it is not used.
-- Cost: Blacksmith's pricing page lists $0.004 per minute for Ubuntu x64 and $0.008 for Windows x64 at 2 vCPU, and 3,000 free minutes per month; this document assumes the price scales linearly with vCPU, which the page does not state, so 4 vCPU is $0.008 per minute on Ubuntu and $0.016 on Windows. If Blacksmith were no faster than hosted 4 vCPU, one PR run would cost at most $0.29 for `rust (linux) build` (36.6 min), $0.94 for `rust (windows)` (58.7 min) and $0.12 for the smoke workflow (its `default` and `desktop_rebuild` matrix jobs run in parallel and are billed separately, about 7.6 min each at the hosted median), about $1.35 in all, plus a few seconds of the `rust (linux)` aggregate, which Blacksmith may bill as a minute, against $0 on GitHub's runners. Measured on one 8 vCPU run at $0.032 per Windows minute, `rust (windows)` cost about $0.54. The one-day measurement after merge replaces these bounds with actual minutes per job and wall time per PR.
+- Every job keeps its name, so the required checks do not change, and a PR that skips a job still reports it. `scripts/ci-rust-runner.py` makes the choice in the `changes` job of `rust-cross-os.yml` and `desktop-packaged-smoke.yml` and has tests for every value and event. A PR runs its own copy of that script, so the script and its test are in CODEOWNERS: a change to the routing requests Chad's review, like a workflow change. Under `pp-iso`, the script sends a pull request from a fork to Blacksmith, but a pull request runs its own copy of the workflow and script, so what actually keeps fork code off the self-hosted pool is the pp-iso runner group's fork-run settings, not the script. The packaged smoke job uses Blacksmith only on `pull_request` events when the variable is not `hosted`; every other event uses `ubuntu-24.04`. The selector jobs, lint, review gates and Web CI always use GitHub's free runners.
+- Sizing: the hosted 4 vCPU medians over the last PR runs are `rust (linux) build` 36.6 min (8 runs) and packaged smoke 7.6 min (4 runs), against job timeouts of 90 minutes each. Both paid jobs get 4 vCPU, the smallest size that keeps the slower job, the Linux build, well under its timeout: Blacksmith claims about twice the speed of a hosted runner of the same size, and one measured 4 vCPU run (head bcc519d on #1600) took 20.6 min for `rust (linux) build` and 4.5 and 5.5 min for the two smoke jobs. 2 vCPU would run slower than the hosted 4 vCPU job that already takes 36.6 min, so it is not used.
+- Cost: Blacksmith's pricing page lists $0.004 per minute for Ubuntu x64 at 2 vCPU and 3,000 free minutes per month; this document assumes the price scales linearly with vCPU, which the page does not state, so 4 vCPU is $0.008 per minute. The measured run above cost about $0.16 for `rust (linux) build` and $0.08 for the smoke workflow (its `default` and `desktop_rebuild` matrix jobs run in parallel and are billed separately), plus a few seconds of the `rust (linux)` aggregate, which Blacksmith may bill as a minute: about $0.24 per PR run, against $0 on GitHub's runners. If Blacksmith were no faster than the hosted medians, the bound is about $0.29 and $0.12. The one-day measurement after merge replaces these figures with actual minutes per job and wall time per PR.
 - Jobs get the same permissions and secrets as on hosted runners; the switch adds none. The existing cache steps are unchanged: `Swatinem/rust-cache` saves only on `main`, and the apt package cache of `linux-gui-deps` runs only on GitHub-hosted runners, so Blacksmith jobs run a plain `apt-get install` and the "Free disk" step is skipped. Only the packaged smoke job on Blacksmith uses `actions/setup-node` with `cache: npm`, which saves on any ref, so a PR run writes an npm cache entry under its own ref. Blacksmith's "Branch Protected Caches" setting scopes each cache entry to its branch; it must stay on, because turning it off shares entries across branches and a PR-written npm entry could be restored by another PR. This repository does not verify the setting; Chad checked it is on in the Blacksmith dashboard on 2026-11-07.
 - The setup, Rust toolchain, sccache and `Swatinem/rust-cache` steps adapt to the runner kind (`PP_RUNNER_KIND`), not to `runner.environment`; the disk-space steps and `linux-gui-deps` still check `runner.environment`. pp-local runs the self-hosted setup, Rust toolchain and sccache steps; pp-iso runs the self-hosted setup and Rust toolchain steps and then `Swatinem/rust-cache` from `actions/cache`, with no shared registry or sccache; Blacksmith and hosted runners use their images and `Swatinem/rust-cache`.
 - pp-iso covers only the Linux Rust jobs: it has no GUI session or system package control for the packaged smoke, and no Windows runner. If no pp-iso runner is online, the jobs queue until one is, so set `hosted` first when a host is down.
@@ -614,12 +617,12 @@ The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It i
 
 Blacksmith bills by the minute and GitHub's runners are free here, so check the spend after any change to the paid jobs and every week while the switch is new.
 
-- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-windows-2025` and `blacksmith-4vcpu-ubuntu-2404` totals with the 3,000 free minutes per month.
+- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-ubuntu-2404` total with the 3,000 free minutes per month.
 - Per run, from GitHub: this prints each Blacksmith job of a run with its size and minutes (replace RUN_ID):
 
   `gh api repos/Print-Partner/PrintPartner/actions/runs/RUN_ID/jobs --jq '.jobs[]|select(.completed_at != null and .conclusion != "skipped" and any(.labels[]; startswith("blacksmith-")))|[.name,.labels[0],(((.completed_at|fromdate)-(.started_at|fromdate))/60|.*10|round/10)]|@tsv'`
 
-  Multiply minutes by the per-minute price above. A job that appears with a `blacksmith-` label outside `rust (linux)`, `rust (windows)` and `packaged smoke` is a regression: move it back to a GitHub-hosted runner.
+  Multiply minutes by the per-minute price above. A job that appears with a `blacksmith-` label outside `rust (linux)` and `packaged smoke` is a regression: move it back to a GitHub-hosted runner.
 - Cancelled runs still bill the minutes they ran. A burst of pushes to one PR costs at most the minutes between pushes, because a new push cancels the old run.
 
 ### Actions cache

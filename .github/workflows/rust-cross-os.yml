@@ -58,7 +58,6 @@ jobs:
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
       linux_kind: ${{ steps.runner.outputs.linux_kind }}
-      windows_runs_on: ${{ steps.runner.outputs.windows_runs_on }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -502,7 +501,7 @@ jobs:
     needs: changes
     # Explicit jobs keep each required check present when selection skips it.
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
-    runs-on: ${{ fromJSON(needs.changes.outputs.windows_runs_on || '"windows-latest"') }}
+    runs-on: windows-latest
     env:
       RUST_OS: windows
       # Unix-only crates; remove each exclusion when its port ticket is fixed.

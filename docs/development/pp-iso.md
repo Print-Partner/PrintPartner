@@ -14,9 +14,9 @@ installed; then only the manual `pp-iso-proof.yml` run, plus the Linux Rust PR j
 [Cargo cache trust](cargo-cache-trust.md) explains why pp-local must not run
 PR-editable jobs: its registry and sccache are shared across jobs, so one job can
 poison what a later job builds.
-PRs therefore run on Blacksmith runners for the heavy jobs (or on GitHub-hosted
-`ubuntu-latest`, `windows-latest` and `ubuntu-24.04` with `PP_PR_RUNNER=hosted`). Blacksmith costs money per minute and shares one
-plan's concurrency, which is why only the three heavy jobs use it. pp-iso gives PRs self-hosted
+PRs therefore run on Blacksmith runners for `rust (linux)` and the Linux packaged smoke job (or on GitHub-hosted
+`ubuntu-latest` and `ubuntu-24.04` with `PP_PR_RUNNER=hosted`). Blacksmith costs money per minute and shares one
+plan's concurrency, which is why only those two jobs use it. pp-iso gives PRs self-hosted
 capacity without sharing state.
 With `PP_PR_RUNNER=pp-iso`, only pull requests whose head repository is this repository run on pp-iso; the script sends fork pull requests to Blacksmith, as `cargo-cache-trust.md` requires for PR-editable code. A pull request runs its own copy of the script and workflow, so the runner group's fork-run settings must also keep fork code off pp-iso.
 

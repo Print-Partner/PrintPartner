@@ -134,13 +134,13 @@ enum Inspection {
 impl Inspection {
     /// The inspected file, `None` when it is unread, or the answer that
     /// refuses the request.
-    fn settle(self) -> Result<Option<Inspected>, Response> {
+    fn settle(self) -> Result<Option<Inspected>, Box<Response>> {
         match self {
             Self::Inspected(inspected) => Ok(Some(inspected)),
             Self::Unreadable => Ok(None),
-            Self::Refused(detail) => Err(conflict(detail)),
-            Self::Busy => Err(busy()),
-            Self::Failed => Err(crate::accepted::internal()),
+            Self::Refused(detail) => Err(Box::new(conflict(detail))),
+            Self::Busy => Err(Box::new(busy())),
+            Self::Failed => Err(Box::new(crate::accepted::internal())),
         }
     }
 }
@@ -371,7 +371,7 @@ async fn preview(
         _ => return crate::accepted::internal(),
     };
     match inspect(&app, &parsed).await.settle() {
-        Err(response) => return response,
+        Err(response) => return *response,
         Ok(None) => {
             answer.insert("inspected".into(), json!(false));
         }
@@ -421,7 +421,7 @@ async fn assign(
     // what was made, so only a file PrintPartner might still print must be
     // print-ready.
     let inspected = match inspection.settle() {
-        Err(response) => return response,
+        Err(response) => return *response,
         Ok(None) => None,
         Ok(Some(inspected)) => {
             if !input.completed && !inspected.classification.is_print_ready() {

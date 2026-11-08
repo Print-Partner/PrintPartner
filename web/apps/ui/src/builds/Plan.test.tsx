@@ -1131,6 +1131,7 @@ describe("GRE-1276 the Accept gate matches printed units first", () => {
     const button = within(gate).getByRole("button", { name: "Accept" });
     expect(button.getAttribute("aria-disabled")).toBe("true");
     expect(within(gate).getByText("Match the printed units first.")).toBeTruthy();
+    expect(within(gate).queryByRole("button", { name: "Match printed units" })).toBeNull();
     fireEvent.click(button);
     expect(writes(fetchMock).some((sent) => sent.path.endsWith("/apply"))).toBe(false);
     act(() => held.splice(0).forEach((resolve) => resolve(json(matched()))));

@@ -228,7 +228,8 @@ export function ReconcileStep({
           {refusalText(reconcile.error, "match")}
         </p>
       )}
-      {(!automatic || autoSent || reconcile.isError) && (
+      {/* The automatic match offers its button only once its own send has settled. */}
+      {(!automatic || reconcile.isError || (autoSent && !reconcile.isPending && !checking)) && (
         <div className="pp-dialog-actions">
           <button
             type="button"

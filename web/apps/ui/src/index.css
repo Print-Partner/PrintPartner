@@ -739,3 +739,36 @@ body {
 .pp-gate-header :is(th, td) {
   overflow-wrap: anywhere;
 }
+
+.pp-reconcile-choice {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.pp-reconcile-choice legend {
+  padding: 0 4px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.pp-reconcile-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.pp-reconcile-choice input[type="radio"] {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  accent-color: var(--interaction-accent);
+}
+
+.pp-reconcile-done {
+  margin: 0 0 8px;
+  font-weight: var(--font-weight-semibold);
+}

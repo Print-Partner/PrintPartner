@@ -5,6 +5,7 @@ import type {
   DraftHeaderView,
   DraftIdentity,
   DraftWorkspace,
+  ReconcileDraftRequest,
   SaveDraftHeaderRequest,
   SavePlanChoicesRequest,
 } from "@print-partner/rust-client";
@@ -14,6 +15,11 @@ export type BuildHeader = BuildHeaderView["build"];
 type PlanDraftBasis = SaveDraftHeaderRequest["expected_base"];
 export type PlanDraftIdentity = NonNullable<SaveDraftHeaderRequest["expected_draft"]>;
 export type PlanChoice = SavePlanChoicesRequest["decisions"][number];
+export type UnitDecision = ReconcileDraftRequest["decisions"][number];
+export type UnitConflict = Extract<
+  DraftWorkspace["reconciliation"],
+  { kind: "unresolved" }
+>["conflicts"][number];
 
 /** What the Plan tab reads: the Build's header, the Accepted base, and the open draft. */
 export interface PlanData {
@@ -103,6 +109,83 @@ export function acceptBody(preview: DraftAcceptPreview): AcceptDraftRequest {
   };
 }
 
+/**
+ * The Required-unit conflicts the user must decide. A draft with no selected reconciliation
+ * reports `unresolved` with no conflicts, and so does an empty list: both settle with the
+ * core's automatic selection.
+ */
+export const unitConflicts = (workspace: DraftWorkspace): UnitConflict[] =>
+  workspace.reconciliation.kind === "unresolved" ? workspace.reconciliation.conflicts : [];
+
+/** A draft Part's name by its ID, for a conflict's target. */
+export function draftPartName(workspace: DraftWorkspace, id: number): string {
+  return workspace.parts.find((p) => p.draft_part_id === id)?.filename ?? `Part ${id}`;
+}
+
+/** An accepted Part's name by its revision Part ID, from what the workspace shows of the base. */
+export function acceptedPartName(workspace: DraftWorkspace, id: number): string {
+  const { changed, removed } = workspace.diff;
+  return (
+    removed.find((p) => p.revision_part_id === id)?.filename ??
+    changed.find((c) => c.before.revision_part_id === id)?.before.filename ??
+    workspace.parts.find((p) => p.base_revision_part_id === id)?.filename ??
+    `accepted Part ${id}`
+  );
+}
+
+/** What the user can pick for one conflict, each as the decision it sends. */
+export function conflictOptions(
+  workspace: DraftWorkspace,
+  conflict: UnitConflict,
+): { label: string; decision: UnitDecision }[] {
+  const target = conflict.target_draft_part_id;
+  const replace = {
+    label: "Start with new units. Units already printed for it do not count.",
+    decision: { kind: "replace" as const, target_draft_part_id: target },
+  };
+  switch (conflict.kind) {
+    case "ambiguous_exact_match":
+      return [
+        ...conflict.candidate_revision_part_ids.map((id) => ({
+          label: `Keep the printed units of the accepted ${acceptedPartName(workspace, id)} (Part ${id}).`,
+          decision: {
+            kind: "select_exact_predecessor" as const,
+            target_draft_part_id: target,
+            predecessor_revision_part_id: id,
+          },
+        })),
+        replace,
+      ];
+    case "unsafe_predecessor":
+      return [
+        {
+          label: `Keep the units already printed for the accepted ${acceptedPartName(workspace, conflict.predecessor_revision_part_id)}.`,
+          decision: {
+            kind: "accept_prior_completion",
+            target_draft_part_id: target,
+            predecessor_revision_part_id: conflict.predecessor_revision_part_id,
+          },
+        },
+        replace,
+      ];
+    case "predecessor_claimed":
+      return [];
+  }
+}
+
+/** One conflict as a question in plain words. */
+export function conflictQuestion(workspace: DraftWorkspace, conflict: UnitConflict): string {
+  const target = draftPartName(workspace, conflict.target_draft_part_id);
+  switch (conflict.kind) {
+    case "ambiguous_exact_match":
+      return `${target} matches more than one Part in the accepted Plan. Which printed units does it keep?`;
+    case "unsafe_predecessor":
+      return `${target} changed since it was accepted, so the units printed for it may no longer fit. Keep them?`;
+    case "predecessor_claimed":
+      return `${target} and another Part both use the printed units of the accepted ${acceptedPartName(workspace, conflict.predecessor_revision_part_id)}. Only one can keep them. Change the Parts so only one matches, then check again.`;
+  }
+}
+
 const FIELD_NAMES: Record<string, string> = {
   name: "Name",
   order_number: "Order number",
@@ -137,6 +220,8 @@ const REFUSALS: Record<string, string> = {
   idempotency_conflict: "A different change was already sent with this request. Try again.",
   outcome_unknown: "The core could not answer for certain. Check again.",
   already_applied: "This draft was already accepted.",
+  reconciliation_required:
+    "Accept needs the printed units matched to this draft first. Match them, then check again.",
 };
 
 /** Accept keeps its key after an unknown outcome, so pressing it again replays the first answer. */
@@ -157,17 +242,29 @@ const SAVE_REFUSALS: Record<string, string> = {
     "The core could not confirm this save. Check the field, and make the change again if it is missing.",
 };
 
+/** A match of printed units keeps its key after an unknown outcome, as Accept does. */
+const MATCH_REFUSALS: Record<string, string> = {
+  ...REFUSALS,
+  draft_changed: "The draft changed somewhere else. The latest draft is shown; match again.",
+  outcome_unknown:
+    "The core could not confirm the match. Send it again to check; it will not match twice.",
+};
+
 /**
  * A refusal in words: the code's sentence for an Accept or a draft save, else the core's
  * detail, else the error.
  */
 export function refusalText(
   error: Error,
-  write: "preview" | "accept" | "save" = "preview",
+  write: "preview" | "accept" | "save" | "match" = "preview",
 ): string {
   if (error instanceof CoreError) {
-    const texts =
-      write === "save" ? SAVE_REFUSALS : write === "accept" ? ACCEPT_REFUSALS : REFUSALS;
+    const texts = {
+      preview: REFUSALS,
+      accept: ACCEPT_REFUSALS,
+      save: SAVE_REFUSALS,
+      match: MATCH_REFUSALS,
+    }[write];
     return (error.code && texts[error.code]) || error.detail || error.message;
   }
   return error.message;

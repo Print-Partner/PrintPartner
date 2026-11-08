@@ -1052,6 +1052,268 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
   });
 });
 
+describe("GRE-1276 the Accept gate matches printed units first", () => {
+  const RECONCILE = "/api/v2/plans/2/drafts/9/reconciliation";
+  const MATCHED = "d".repeat(64);
+  const unmatched = (): DraftWorkspace => ({
+    ...workspace(),
+    reconciliation: { kind: "unresolved", conflicts: [] },
+  });
+  const matched = (): DraftWorkspace => ({
+    ...workspace({ ...DRAFT, snapshot_digest: MATCHED }),
+    reconciliation: { kind: "ready", reused_units: 4, new_units: 2, surplus_units: 1 },
+  });
+  const needsMatch = () =>
+    json(
+      {
+        type: "urn:print-partner:problem:conflict",
+        title: "Conflict",
+        status: 409,
+        code: "reconciliation_required",
+        reason: "missing",
+      },
+      409,
+    );
+  const reconciles = (fetchMock: ReturnType<typeof core>) =>
+    writes(fetchMock).filter((sent) => sent.path === RECONCILE);
+  const accept = async (gate: HTMLElement) => {
+    const button = within(gate).getByRole("button", { name: "Accept" });
+    await waitFor(() => expect(button.getAttribute("aria-disabled")).toBeNull());
+    fireEvent.click(button);
+    await screen.findByText(/Accepted\. The Plan is now version/);
+  };
+
+  it("settles the automatic match, resending a lost send with its key, then accepts", async () => {
+    let settled = false;
+    let sends = 0;
+    const fetchMock = core({
+      draft: () => (settled ? matched() : unmatched()),
+      preview: () => (settled ? json(preview(1)) : needsMatch()),
+      write: (path) => {
+        if (path === "/api/v2/plans/2/drafts/9/apply") return json(RECEIPT);
+        if (path !== RECONCILE) return undefined;
+        sends += 1;
+        if (sends === 1) return Promise.reject(new TypeError("Failed to fetch"));
+        settled = true;
+        return json(matched());
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    const done = await within(gate).findByText(
+      "Printed units matched: 4 units kept, 2 new units, 1 unit no longer needed.",
+    );
+    await waitFor(() => expect(document.activeElement).toBe(done));
+    const [first, resend] = reconciles(fetchMock);
+    expect(first!.method).toBe("PUT");
+    expect(first!.key).toBeTruthy();
+    expect(first!.body).toEqual({ decisions: [], expected_snapshot_digest: DIGEST });
+    expect(resend).toEqual(first);
+    expect(within(gate).queryByText(/Another Build/)).toBeNull();
+    await accept(gate);
+    expect(reconciles(fetchMock)).toHaveLength(2);
+  });
+
+  it("keeps Accept off and shows the step while the match is saving", async () => {
+    const held: ((value: Response) => void)[] = [];
+    const fetchMock = core({
+      draft: unmatched,
+      preview: needsMatch,
+      write: (path) =>
+        path === RECONCILE ? new Promise<Response>((resolve) => held.push(resolve)) : undefined,
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByRole("heading", { name: "Match printed units" });
+    await within(gate).findByText("Matching printed units to this draft.");
+    const button = within(gate).getByRole("button", { name: "Accept" });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect(within(gate).getByText("Match the printed units first.")).toBeTruthy();
+    fireEvent.click(button);
+    expect(writes(fetchMock).some((sent) => sent.path.endsWith("/apply"))).toBe(false);
+    act(() => held.splice(0).forEach((resolve) => resolve(json(matched()))));
+  });
+
+  it("changes nothing for a draft that needs no match", async () => {
+    const fetchMock = core({
+      write: (path) => (path.endsWith("/apply") ? json(RECEIPT) : undefined),
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/saves a snapshot/);
+    expect(within(gate).queryByRole("heading", { name: "Match printed units" })).toBeNull();
+    expect(within(gate).queryByText(/Printed units matched/)).toBeNull();
+    await accept(gate);
+    expect(reconciles(fetchMock)).toHaveLength(0);
+  });
+
+  it("asks the user's decisions in plain words and sends them", async () => {
+    let settled = false;
+    const conflicted = (): DraftWorkspace => ({
+      ...workspace(),
+      parts: [part(11, "bracket.stl", true, null), part(12, "gear.stl", true, 4)],
+      diff: {
+        base_is_current: true,
+        added: [],
+        changed: [],
+        removed: [
+          {
+            revision_part_id: 20,
+            filename: "bracket-old.stl",
+            relative_path: "stl/bracket-old.stl",
+            source_layer: "base:Kit",
+          },
+        ],
+      },
+      reconciliation: {
+        kind: "unresolved",
+        conflicts: [
+          {
+            kind: "ambiguous_exact_match",
+            target_draft_part_id: 11,
+            candidate_revision_part_ids: [11, 20],
+          },
+          {
+            kind: "unsafe_predecessor",
+            target_draft_part_id: 12,
+            predecessor_revision_part_id: 12,
+          },
+        ],
+      },
+    });
+    const fetchMock = core({
+      draft: () => (settled ? matched() : conflicted()),
+      preview: () => (settled ? json(preview(1)) : needsMatch()),
+      write: (path) => {
+        if (path === "/api/v2/plans/2/drafts/9/apply") return json(RECEIPT);
+        if (path !== RECONCILE) return undefined;
+        settled = true;
+        return json(matched());
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    const ambiguous = await within(gate).findByRole("group", {
+      name: "bracket.stl matches more than one Part in the accepted Plan. Which printed units does it keep?",
+    });
+    const unsafe = within(gate).getByRole("group", {
+      name: /^gear\.stl changed since it was accepted/,
+    });
+    expect(reconciles(fetchMock)).toHaveLength(0);
+    const save = within(gate).getByRole("button", { name: "Save these choices" });
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(within(gate).getByText("Choose for 2 more Parts first.")).toBeTruthy();
+    fireEvent.click(
+      within(ambiguous).getByRole("radio", {
+        name: "Keep the printed units of the accepted bracket-old.stl (Part 20).",
+      }),
+    );
+    fireEvent.click(
+      within(unsafe).getByRole("radio", {
+        name: "Keep the units already printed for the accepted gear.stl.",
+      }),
+    );
+    fireEvent.click(save);
+    await within(gate).findByText(/^Printed units matched/);
+    expect(reconciles(fetchMock).map((sent) => sent.body)).toEqual([
+      {
+        expected_snapshot_digest: DIGEST,
+        decisions: [
+          {
+            kind: "select_exact_predecessor",
+            target_draft_part_id: 11,
+            predecessor_revision_part_id: 20,
+          },
+          {
+            kind: "accept_prior_completion",
+            target_draft_part_id: 12,
+            predecessor_revision_part_id: 12,
+          },
+        ],
+      },
+    ]);
+    await accept(gate);
+  });
+
+  it("asks to match again when the preview still needs it after a match, without a loop", async () => {
+    let sends = 0;
+    const fetchMock = core({
+      // The workspace says the draft is matched, so the tab thinks it is settled.
+      draft: matched,
+      preview: () => (sends >= 2 ? json(preview(1)) : needsMatch()),
+      write: (path) => {
+        if (path === "/api/v2/plans/2/drafts/9/apply") return json(RECEIPT);
+        if (path !== RECONCILE) return undefined;
+        sends += 1;
+        return json(matched());
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(
+      "The core still asks for the printed units to be matched. Match them again.",
+    );
+    expect(sends).toBe(1);
+    expect(within(gate).getByRole("button", { name: "Accept" }).getAttribute("aria-disabled")).toBe(
+      "true",
+    );
+    fireEvent.click(within(gate).getByRole("button", { name: "Match printed units" }));
+    await within(gate).findByText(/^Printed units matched/);
+    const [first, second] = reconciles(fetchMock);
+    expect(second!.key).not.toBe(first!.key);
+    expect(second!.body.expected_snapshot_digest).toBe(MATCHED);
+    await accept(gate);
+    expect(sends).toBe(2);
+  });
+
+  it("previews again and shows the match step when Accept answers reconciliation_required", async () => {
+    let previews = 0;
+    let settled = false;
+    const fetchMock = core({
+      draft: () => (settled ? matched() : workspace()),
+      preview: () => {
+        previews += 1;
+        return previews === 1 || settled ? json(preview(1)) : needsMatch();
+      },
+      write: (path) => {
+        if (path === RECONCILE) {
+          settled = true;
+          return json(matched());
+        }
+        if (path !== "/api/v2/plans/2/drafts/9/apply") return undefined;
+        return settled
+          ? json(RECEIPT)
+          : json(
+              {
+                type: "urn:print-partner:problem:domain",
+                title: "Unprocessable",
+                status: 422,
+                code: "reconciliation_required",
+                reason: "unresolved",
+              },
+              422,
+            );
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/saves a snapshot/);
+    fireEvent.click(within(gate).getByRole("button", { name: "Accept" }));
+    await within(gate).findByText(/Accept needs the printed units matched/);
+    await within(gate).findByText(/^Printed units matched/);
+    await accept(gate);
+    const applies = writes(fetchMock).filter((sent) => sent.path.endsWith("/apply"));
+    expect(applies).toHaveLength(2);
+    expect(applies[1]!.key).not.toBe(applies[0]!.key);
+  });
+});
+
 describe("UI6-05 keyboard, focus, disabled reasons and states", () => {
   it("opens the gate with focus inside and returns focus on Escape", async () => {
     renderAt(core());

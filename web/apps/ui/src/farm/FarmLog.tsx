@@ -146,7 +146,8 @@ export function FarmLog() {
       }
     },
     retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
-    // An undo changes Checkoff progress and History too.
+    // An undo refreshes the Farm log and every Build's History. Checkoff
+    // progress reloads when that screen is opened again.
     onSettled: () => {
       inFlight.current = false;
       return Promise.all([

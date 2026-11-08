@@ -294,7 +294,8 @@ impl SnapshotReviewObserver {
             Ok(value) => value,
             Err(_) => return Ok(None),
         };
-        let relative = match candidate.strip_prefix(&self.repos_root) {
+        let shown = pp_os::display_path(candidate);
+        let relative = match shown.strip_prefix(pp_os::display_path(&self.repos_root)) {
             Ok(value) if value.components().next().is_some() => value,
             _ => return Ok(None),
         };

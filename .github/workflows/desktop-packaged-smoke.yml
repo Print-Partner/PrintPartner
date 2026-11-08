@@ -1,8 +1,8 @@
 name: Desktop packaged smoke
 
-# Builds the Linux .deb, installs it into a disposable root and launches the
-# installed app on a schema 31 database: a native window titled Print Partner,
-# the fixture's Build in the accessibility tree, a clean SIGTERM shutdown and
+# Builds the Linux .deb and the macOS app, installs each into a disposable
+# location and launches the installed app on a schema 31 database: a native window titled Print Partner,
+# the fixture's Build in the accessibility tree, a clean shutdown and
 # unchanged Plan and Plate rows after migration. Not a required check.
 # docs/development/packaged-smoke.md explains each step.
 
@@ -47,7 +47,7 @@ jobs:
           set -euo pipefail
           smoke=$HAS_LABEL
           changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
-          if grep -qE '^(desktop/packaged-smoke/|\.github/workflows/desktop-packaged-smoke\.yml$|rust/scripts/(desktop-deb\.sh|assemble-linux-deb\.py)$)' <<<"$changed"; then
+          if grep -qE '^(desktop/packaged-smoke/|\.github/workflows/desktop-packaged-smoke\.yml$|rust/scripts/(desktop-deb\.sh|desktop-bundle\.sh|assemble-linux-deb\.py)$)' <<<"$changed"; then
             smoke=true
           fi
           echo "smoke=$smoke" >> "$GITHUB_OUTPUT"
@@ -182,6 +182,137 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packaged-smoke-linux-${{ matrix.mode }}
+          path: ${{ runner.temp }}/packaged-smoke/
+          if-no-files-found: warn
+          retention-days: 14
+
+  macos:
+    name: packaged smoke (macos, ${{ matrix.mode }})
+    needs: changes
+    # macOS runners are scarce: no run on main pushes; nightly, dispatch and
+    # selected PRs only.
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.smoke == 'true'))
+    runs-on: macos-26
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: default
+            features: ''
+            scenarios: |
+              migrate
+              migrate-tray-quit --quit tray
+          - mode: desktop_rebuild
+            features: desktop_rebuild
+            scenarios: |
+              refuse-unmarked --rebuild --expect-refusal
+              migrate-rust-owned --rebuild --rust-owned
+    env:
+      VITE_PRINT_PARTNER_DESKTOP: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      npm_config_build_from_source: 'true'
+      SMOKE_REPEAT: '5'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Fails in a minute, before the build, when the runner cannot read
+      # another app's accessibility tree.
+      - name: Build the accessibility probe and check its access
+        run: |
+          set -euo pipefail
+          echo "EVIDENCE=$RUNNER_TEMP/packaged-smoke" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/packaged-smoke"
+          { sw_vers; uname -m; xcodebuild -version; } | tee "$RUNNER_TEMP/packaged-smoke/runner.txt"
+          swiftc -O desktop/packaged-smoke/ax_probe.swift -o "$RUNNER_TEMP/pp-ax"
+          echo "PP_AX_PROBE=$RUNNER_TEMP/pp-ax" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pp-ax" trusted | tee "$RUNNER_TEMP/packaged-smoke/ax-trusted.json"
+          grep -q '"trusted":true' "$RUNNER_TEMP/packaged-smoke/ax-trusted.json"
+      - name: Test the harness helpers
+        run: cd desktop/packaged-smoke && python3 -B -m unittest -v test_packaged_smoke
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.23.3'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/packaged-smoke/package-lock.json
+      - name: Verify Node runtime
+        run: test "$(node --version)" = "v22.23.3"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rust -> target
+          key: packaged-smoke-macos-${{ matrix.mode }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Generate the schema 31 fixture
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          (cd web && node --conditions=development --import tsx \
+            scripts/storage-fixtures/prepare.mts "$RUNNER_TEMP/prepared")
+          python3 desktop/packaged-smoke/legacy_fixture.py \
+            --prepared "$RUNNER_TEMP/prepared" --output "$RUNNER_TEMP/fixture"
+          cp "$RUNNER_TEMP/fixture/fixture.json" "$EVIDENCE/fixture.json"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.21.0'
+      - name: Verify Node runtime
+        run: test "$(node --version)" = "v24.21.0"
+      - name: Build and stage the desktop assets
+        run: |
+          set -euo pipefail
+          npm_config_nodedir="$(node -p 'require("path").dirname(require("path").dirname(process.execPath))')"
+          export npm_config_nodedir
+          npm --prefix web ci
+          npm --prefix web run build
+          python3 rust/scripts/stage-desktop.py --web web --node "$(command -v node)" \
+            --output "$RUNNER_TEMP/desktop-stage" --commit "$GITHUB_SHA"
+      - name: Build Print Partner.app with rust/scripts/desktop-bundle.sh
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: |
+          set -euo pipefail
+          npm --prefix desktop/packaged-smoke ci
+          tauri="$GITHUB_WORKSPACE/desktop/packaged-smoke/node_modules/.bin/tauri"
+          "$tauri" --version | tee "$EVIDENCE/tauri-version.txt"
+          grep -Fx 'tauri-cli 2.12.1' "$EVIDENCE/tauri-version.txt"
+          PP_DESKTOP_STAGE="$RUNNER_TEMP/desktop-stage" PP_TAURI="$tauri" \
+            bash rust/scripts/desktop-bundle.sh ${FEATURES:+--features "$FEATURES"} \
+            | tee "$EVIDENCE/desktop-bundle.log"
+          git diff --exit-code -- rust/Cargo.lock web/package-lock.json
+      - name: Install the app into a disposable Applications folder
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/Applications"
+          ditto "rust/target/release/bundle/macos/Print Partner.app" \
+            "$RUNNER_TEMP/Applications/Print Partner.app"
+          python3 rust/scripts/check-macos-bundle.py \
+            --app "$RUNNER_TEMP/Applications/Print Partner.app" \
+            --manifest "$RUNNER_TEMP/desktop-stage/bundle-manifest.json" --arch arm64 \
+            --receipt "$EVIDENCE/bundle-verifier.json" | tee "$EVIDENCE/bundle-verifier.log"
+      - name: Launch the installed app on the schema 31 database
+        env:
+          SCENARIOS: ${{ matrix.scenarios }}
+        run: |
+          set -euo pipefail
+          for run in $(seq 1 "$SMOKE_REPEAT"); do
+            while read -r name flags; do
+              [ -n "$name" ] || continue
+              echo "Packaged smoke $name, launch $run/$SMOKE_REPEAT"
+              # shellcheck disable=SC2086 # flags is a list of smoke.py switches
+              python3 desktop/packaged-smoke/smoke.py \
+                --app "$RUNNER_TEMP/Applications/Print Partner.app/Contents/MacOS/pp-desktop" \
+                --fixture "$RUNNER_TEMP/fixture" \
+                --output "$EVIDENCE/$name-$run" $flags < /dev/null
+            done <<< "$SCENARIOS"
+          done
+      - name: Upload the receipts and screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packaged-smoke-macos-${{ matrix.mode }}
           path: ${{ runner.temp }}/packaged-smoke/
           if-no-files-found: warn
           retention-days: 14

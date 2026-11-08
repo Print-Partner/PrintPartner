@@ -298,6 +298,7 @@ It runs the steps below in the order that `just ci --list` prints, and continues
 |------|--------------|-----------|
 | `local-ci-self-test` | `scripts/test_local_ci.py` | None. This test fails when a copied command no longer matches its workflow step. |
 | `selector-tests` | The path-filter and macOS-alert unit tests | `rust-cross-os.yml` `changes` |
+| `perf-baseline-tests` | The unit tests of the Node-versus-Rust baseline harness in `scripts/perf-baseline` | None yet. A local-only line; see [Performance](performance.md). |
 | `actionlint` | `actionlint -color` | `actionlint` (required) |
 | `zizmor` | `zizmor --min-severity informational --config .github/zizmor.yml .` | `zizmor` (required) |
 | `ast-grep` | `ast-grep test`, `test_ast_grep.py` and `check-ast-grep.py` against `origin/main` | `ast-grep ratchet` |

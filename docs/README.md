@@ -121,6 +121,7 @@ will autosave into a draft and require an explicit Accept.
 
 - [Definition of done](development/definition-of-done.md)
 - [Continuous integration](development/ci.md)
+- [Performance baseline](development/performance.md): the Node-versus-Rust harness and its first numbers
 - [Agent instructions](../AGENTS.md)
 - [Security](../SECURITY.md)
 - [Release history](../CHANGELOG.md)

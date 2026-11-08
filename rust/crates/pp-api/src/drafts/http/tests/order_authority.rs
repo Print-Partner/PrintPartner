@@ -242,6 +242,27 @@ async fn order_authority_two_concurrent_accepts_of_one_order_publish_exactly_one
             .unwrap();
         // Build 1 starts with revision 1; Build 3 with none.
         assert_eq!(revisions, if loser == 1 { 1 } else { 0 }, "round {round}");
+        let count = |sql: &str| -> i64 {
+            server
+                .sql()
+                .query_row(sql, [loser], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            count("SELECT count(*) FROM plan_apply_requests WHERE profile_id=?1"),
+            0,
+            "round {round}"
+        );
+        assert_eq!(
+            count("SELECT count(*) FROM plan_snapshots WHERE profile_id=?1 AND source='pre_apply'"),
+            0,
+            "round {round}"
+        );
+        assert_eq!(
+            count("SELECT count(*) FROM plan_drafts WHERE profile_id=?1 AND state='open'"),
+            1,
+            "round {round}: the loser's draft stays open"
+        );
         server.close().await;
     }
 }

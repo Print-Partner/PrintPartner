@@ -71,8 +71,8 @@ fn undo(owner: &WriterOwner, entry: &str) -> Value {
     apply(
         owner,
         Request::UndoHistoryEntry {
-            profile_id: 1,
-            entry_id: entry.into(),
+            profile: 1,
+            id: entry.into(),
         },
     )
 }

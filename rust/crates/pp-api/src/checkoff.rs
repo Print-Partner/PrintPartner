@@ -281,8 +281,8 @@ async fn undo_history_entry(
         app,
         presented,
         Request::UndoHistoryEntry {
-            profile_id,
-            entry_id,
+            profile: profile_id,
+            id: entry_id,
         },
     )
     .await

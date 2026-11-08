@@ -1,11 +1,12 @@
 # Cargo cache trust for same-repository PRs
 
 The Linux Rust jobs in Rust cross-OS run on pp-local again for pushes to `main`,
-merge groups and manual runs (GRE-1042). Pull requests stay on GitHub-hosted
-runners, so PR code does not run on the hosts that share the containers'
+merge groups and manual runs (GRE-1042). Pull requests run on Blacksmith runners by
+default, or on GitHub-hosted or [pp-iso](pp-iso.md) runners when `PP_PR_RUNNER` selects
+them (never pp-local), so PR code does not run on the hosts that share the containers'
 host-mounted Cargo registry and sccache. This assessment, written for the earlier
 local-runner configuration that ran PRs locally, describes the risk that keeping
-PRs hosted avoids.
+PRs off pp-local avoids.
 
 Same-repository PR jobs share a Linux Cargo cache trust domain. A fresh runner
 does not make dependencies private when its host mounts persistent writable
@@ -18,9 +19,10 @@ merged. It changes no runner, cache, workflow, permissions, or application behav
 
 ## What the repository establishes
 
-[Rust cross-OS](../../.github/workflows/rust-cross-os.yml) selects local Linux
-only when the event is `pull_request` and the head repository equals
-`github.repository`. Fork PRs and non-PR events retain the hosted fallback.
+[Rust cross-OS](../../.github/workflows/rust-cross-os.yml) selects pp-local only on
+`push` to `main`, `merge_group` and `workflow_dispatch`, never on a `pull_request`. A pull request
+uses Blacksmith, hosted or, when the head repository equals `github.repository`, pp-iso, as
+`PP_PR_RUNNER` says; the nightly schedule uses `ubuntu-latest`.
 There is no actor exception, so a same-repository Dependabot PR satisfies the
 same routing predicate as a human-authored PR. The label selects a runner pool,
 not a cache namespace.
@@ -29,19 +31,17 @@ not a cache namespace.
 lockfile updates for `/rust`. Those updates can introduce new dependency code.
 
 [Embedded-driver smoke](../../.github/workflows/desktop-e2e.yml) and
-[WebKit smoke](../../.github/workflows/desktop-webkit.yml) use the same Linux
-routing predicate. All three workflows skip `Swatinem/rust-cache` when
-`runner.environment == 'self-hosted'` and `runner.os == 'Linux'`. Hosted runners
-and the shared Rust steps on macOS and Windows retain that action.
+[WebKit smoke](../../.github/workflows/desktop-webkit.yml) run on
+`ubuntu-24.04`, hardcoded in their `runs-on` lines. Embedded-driver smoke and WebKit smoke run `Swatinem/rust-cache` on every runner; Rust cross-OS skips it
+only when the runner kind is pp-local (`PP_RUNNER_KIND`). Hosted, Blacksmith and pp-iso
+runners and the shared Rust steps on macOS and Windows retain that action.
 
 [Desktop runtime and source-artifact jobs](../../.github/workflows/desktop-runtime.yml)
-also run Cargo on local Linux. More generally, any local job can modify a cache
+run Cargo on hosted `ubuntu-24.04`. More generally, any local job can modify a cache
 if the host exposes that cache writable, even if its normal steps do not use Cargo.
 
-[The existing CI documentation](ci.md#ephemeral-pr-runners) records one-job
-ephemeral runners, a host-managed Linux Cargo cache volume, and target
-directories private to each workspace. It also records the reason for the
-local Linux action skip. The action's post-job cleanup can delete registry
+[The existing CI documentation](ci.md#ephemeral-pr-runners) records the runner
+routing and the reason pp-local must not run PR-editable jobs. The action's post-job cleanup can delete registry
 sources while another container compiles them. Preserve this skip under either
 alternative below. Changing an Actions cache key does not isolate a host mount.
 
@@ -77,9 +77,9 @@ A private target directory does not isolate a shared dependency source directory
 Ephemeral runner teardown removes private state but leaves a persistent host
 cache available to later jobs.
 
-The current routing keeps main pushes, releases, and other non-PR jobs hosted.
-There is no repository-configured host-volume path from local PR jobs to those
-hosted jobs. This limits the demonstrated boundary to local PR consumers. It
+The current routing sends pull requests to Blacksmith, hosted or pp-iso runners and
+keeps pp-local for main pushes, merge groups and manual runs. There is no
+repository-configured host-volume path from PR jobs to pp-local. It
 does not certify separate infrastructure, image-building, or cache promotion
 processes that are absent from this repository.
 
@@ -150,13 +150,13 @@ and do not invoke Cargo, inspect credentials, mount storage, or mutate a cache.
 ```sh
 git rev-parse HEAD
 git show 963c97526f990f1bb7c8ea5f1193c690da4d6ecc:docs/development/ci.md | sed -n '136,175p'
-rg -n 'runs-on:|permissions:|contents:|persist-credentials:|Swatinem/rust-cache|runner.environment.*self-hosted.*runner.os' .github/workflows/rust-cross-os.yml .github/workflows/desktop-e2e.yml .github/workflows/desktop-webkit.yml
+rg -n 'runs-on:|permissions:|contents:|persist-credentials:|Swatinem/rust-cache|PP_RUNNER_KIND' .github/workflows/rust-cross-os.yml .github/workflows/desktop-e2e.yml .github/workflows/desktop-webkit.yml
 rg -n 'CARGO_HOME|CARGO_TARGET_DIR|sccache|volume|mount' scripts/setup-ci-linux.sh .github/workflows
 git ls-files '*runner*' '*compose*' '*cargo*'
 ```
 
-The three workflows each show the Linux action skip. Their Linux `runs-on`
-expressions require both PR event and matching repository. The pinned CI text
+Rust cross-os skips the Linux cache action only on pp-local (`PP_RUNNER_KIND`), and the
+other two workflows hardcode `ubuntu-24.04`. The pinned CI text
 records the host-managed volume and private target directories. The remaining
 searches help locate configuration for owner review. Absence of a match does
 not prove live mount isolation. On a later revision, re-read any changed jobs
@@ -173,7 +173,7 @@ Acceptance evidence for that separate change needs two synthetic PR jobs. A
 marker written through job A's writable dependency path must be absent from
 job B's dependency inputs. A cache miss must succeed in B's private storage.
 If a seed is used, writes through every job-accessible alias must fail. Cleanup
-of A must leave B's in-progress sources intact. Also confirm that non-PR hosted
-routing remains in place and that no PR output is promoted into a trusted
+of A must leave B's in-progress sources intact. Also confirm that pull requests never
+route to pp-local and that no PR output is promoted into a trusted
 cache. Those checks require approved infrastructure work and are not performed
 by this document-only slice.

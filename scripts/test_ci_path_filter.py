@@ -165,6 +165,7 @@ class CiPathFilterTests(unittest.TestCase):
                 ("rust/crates/pp-core/src/unix_only.rs", "#[cfg(unix)]\nfn a() {}\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/grouped.rs", "use std::{fs, os::unix::fs::PermissionsExt};\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/any.rs", "#[cfg(any(unix, test))]\nfn a() {}\n", "windows=true\n"),
+                ("rust/crates/pp-core/src/stream.rs", "use tokio::net::UnixStream;\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/bang.rs", "fn a() { if cfg!(unix) {} }\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/attr.rs", "#[cfg_attr(unix, derive(Debug))]\nstruct A;\n", "windows=true\n"),
                 ("rust/crates/pp-core/src/fam.rs", "#[cfg(target_family = \"unix\")]\nfn a() {}\n", "windows=true\n"),

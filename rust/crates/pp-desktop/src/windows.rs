@@ -184,10 +184,19 @@ fn open_client(name: &str) -> std::io::Result<File> {
 const BUSY_WAIT_MS: u32 = 500;
 
 /// Send `line` to the focus pipe of `data` and return the reply, or None when
-/// the pipe is not private to this user and so not a desktop's.
+/// the pipe is not a desktop's. A missing pipe is an error; a pipe this user
+/// cannot open, or whose security cannot be read or admits anyone else, is
+/// someone else's and is never written to.
 pub(crate) fn exchange(data: &Path, line: &str) -> Result<Option<String>> {
-    let pipe = open_client(&pipe_name(Identity::of(data)?))?;
-    if !CurrentUser::query()?.owns_privately(&pipe, SE_FILE_OBJECT)? {
+    let pipe = match open_client(&pipe_name(Identity::of(data)?)) {
+        Ok(pipe) => pipe,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(error.into()),
+        Err(_) => return Ok(None),
+    };
+    if !CurrentUser::query()?
+        .owns_privately(&pipe, SE_FILE_OBJECT)
+        .unwrap_or(false)
+    {
         return Ok(None);
     }
     let line = line.to_owned();

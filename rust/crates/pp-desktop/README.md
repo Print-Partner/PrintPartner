@@ -48,6 +48,7 @@ Tauri commands: `main.rs` calls `invoke_handler` only with `desktop_rebuild`, re
 - Stop signals: Ctrl+C everywhere, SIGTERM on Linux and macOS, Ctrl+Break and a console close on Windows. Each starts the same core shutdown.
 - Env: with `desktop_rebuild`, `PP_DESKTOP_REBUILD` (through `pp_core::DesktopRebuild::from_env`) and, when it is on, `PP_PORTABLE_DIR`, `APPDATA`, `LOCALAPPDATA` and `XDG_*_HOME` (through `pp_core::layout::LayoutEnvironment`). With `desktop-e2e`, `PP_DESKTOP_E2E_MARKER`.
 - Build: `pp-compat`'s build script embeds `PP_DESKTOP_RELEASE_MANIFEST`, defaulting to `rust/bundle-manifest.json`. The build fails when neither exists.
+- Windows MSVC builds link the Visual C++ runtime dynamically: `build.rs` turns off tauri-build's static runtime, whose stub `msvcrt.lib` on the link search path broke every workspace doctest link. A Windows installer must ship the VC++ redistributable or build the whole binary with `+crt-static`.
 
 Features (both default off):
 

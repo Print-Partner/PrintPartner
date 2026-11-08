@@ -2986,13 +2986,15 @@ cd web && node --conditions=development --import tsx ../fixtures/parity/printer-
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
 ```
 
-### Print-file assignment routes (GRE-1220)
+### Print-file assignment routes (GRE-1220, GRE-1255)
 
-`pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`
-and `POST /printer-checkoff/file-assignments/preview` at the root and under
+`pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`,
+`POST /printer-checkoff/file-assignments/preview` and
+`POST /printer-checkoff/file-assignments/upload` at the root and under
 `/api/v1`, where Node registers them, behind `desktop_rebuild` and
-`PP_DESKTOP_REBUILD`. Each mount has Node's 20-per-minute window per route and
-its 1 MiB JSON limit.
+`PP_DESKTOP_REBUILD`. Each mount has Node's windows per route: 20 a minute
+for the preview and assignment with their 1 MiB JSON limit, and 10 a minute
+for the upload.
 
 - Storage parses the body in Node's `parsePrintFileRequest` order and resolves
   the printer as `resolveAssignmentPrinter` does: a fleet printer by id, its
@@ -3019,9 +3021,47 @@ its 1 MiB JSON limit.
   writer transaction checks
   the printer's host fingerprint again, so a settings change after the route's
   read refuses with the same 409.
-- An `upload_token` answers Node's unknown-upload 409 `That upload is no longer
-  available; upload the print file again`, because this runtime serves no
-  upload route yet. A `remote_path` without a snapshot on a Moonraker or
+- The upload route authenticates the caller first, as Node's `onRequest`
+  hooks do, so a bad credential is 401 before the rate window counts it or
+  the body is read. It takes `multipart/form-data` (else 415 `Send the print
+  file as multipart/form-data`) under Node's busboy limits: one file part of
+  up to 64 MB (413 `That print file is larger than the 64 MB PrintPartner
+  will take as an upload`, 400 `Upload one print file at a time` for a
+  second), and four fields cut at 64 KiB (a fifth is 400 `That upload could
+  not be read`). A part is a file when it has a file name or an
+  `application/octet-stream` type, as busboy decides, and a part named after
+  an `Object.prototype` member is 400 `That upload could not be read`, as
+  `@fastify/multipart` refuses it: when the form ends, so a later files,
+  fields or size limit answers first, and without that part's own size limit.
+  Node has no cap on the whole body; here it
+  is 65 MiB, and a body past it that is still inside the file part is the
+  413 (the unreadable 400 when that part is named after an
+  `Object.prototype` member), anywhere else the unreadable 400. Answers still differ from Node for
+  requests the web client never sends: an empty multipart body (the
+  unreadable 400 here, `profile_id is required` in Node), a field part typed
+  `application/json` (read as text here, JSON-parsed in Node), a file name
+  sent only as `filename*=` (multer does not decode it), and a malformed or
+  oversized JSON body (415 here, Fastify's 400 or 413). It then checks
+  `profile_id`, the `file` part, its file name (what follows the last `/` or `\`,
+  unless that is `.` or `..`, trimmed) and extension in Node's order,
+  reads the Build's Accepted Plan (a missing Build is a 500,
+  as for the preview), classifies the bytes off the async workers (409 with
+  Node's rejection detail), and holds the classification for 15 minutes under
+  a new `upload_token`. The answer is the preview's body with that token.
+  `print_file::UploadStore` is Node's `pendingUploads`: it keeps only the
+  classification and identity (`size_bytes`, `sha256`), since the bytes
+  classify the same way every time, but counts their size toward Node's
+  128 MB cap, so a third full upload is 503 `PrintPartner is holding as many
+  uploaded print files as it will; record one of them, then try again`.
+- An `upload_token` is redeemed only for the Build it was uploaded for. An
+  unknown, expired or foreign one answers Node's 409 `That upload is no longer
+  available; upload the print file again`. The assignment reserves it as it
+  reserves a snapshot: a successful or unknown outcome spends it, and a
+  refusal releases it, so the operator does not upload the file again after
+  a stale plan revision. Node reads the upload without reserving it; here a
+  concurrent second assignment of the same token is refused, while a preview
+  still reads it.
+- A `remote_path` without a snapshot on a Moonraker or
   PrusaLink host answers 501 instead of recording the print unread, because
   this runtime does not read a printer's file itself yet. A printer tracked by
   hand, or a host type Node has no file reader for, records the print unread

@@ -29,6 +29,12 @@ Every entry has:
 - `type`, `at` (the stored timestamp, unchanged), `actor` and `summary`.
 - `link`: `{"kind": type, "id": row id as a string}`, the record the entry opens.
 - `undo`: on checkoff bursts and sends only.
+- `restorable`: on snapshots only. `true` when the snapshot's `payload_json`
+  records an `accepted_plan_revision_id` that names a revision of this Build,
+  the check [restore as draft](#restore-a-snapshot-as-a-draft) makes before
+  it answers `snapshot_not_restorable`. Node's user and assistant snapshots
+  record none, so they read `false`. Restore can still refuse a restorable
+  snapshot for the Build's current state, such as `inputs_changed`.
 
 No checkoff burst can be undone from History yet. History does not read burst
 undo tokens, so every burst reports `no_undo_token`, including a printer burst
@@ -79,12 +85,30 @@ Each source is capped at 10,000 rows. A Build past the cap answers `500`
 ## Client and UI
 
 The generated client names the route `readBuildHistory` (`BuildHistoryPage`).
-`undo` and its `reason` stay omittable members, as above, so the contract
-test lists them as members a body may omit. The replacement UI's History tab
-(`/builds/{id}/history`, GRE-1101) reads the first page, loads older pages
-with `cursor` on Show older entries, and shows each `undo` reason in words.
-It offers no Undo yet: listing manual and printer bursts with their undo state
-is GRE-1259.
+`undo`, its `reason` and `restorable` stay omittable members, as above, so the
+contract test lists them as members a body may omit. The replacement UI's
+History tab (`/builds/{id}/history`, GRE-1101) reads the first page, loads
+older pages with `cursor` on Show older entries, and shows each `undo` reason
+in words. It offers no Undo yet: listing manual and printer bursts with their
+undo state is GRE-1259.
+
+On a snapshot whose `restorable` is `true`, the History tab offers Restore as
+draft, as a button and as `R` anywhere in the snapshot's row (GRE-1260). Other
+snapshots say Not restorable. The tab:
+
+1. Reads the Build header and the open draft, if any, at that moment, and
+   sends `restoreSnapshotAsDraft` with `mode: "draft"`, that `expected_base`
+   and `expected_draft`, and a new `Idempotency-Key`.
+2. Sends one restore at a time. A send whose answer is lost is resent with the
+   same key and body; when every send is lost, the key stays while the
+   History tab is open, so Restore again replays the first restore instead of
+   making a second draft. A refusal drops the key and reloads History. A
+   replay whose draft is no longer open says so and opens nothing.
+3. On `200`, opens the Plan tab with the Accept gate on the restored draft.
+   The gate names the snapshot and says printed units and printer commands
+   stay as they are. Nothing is published until Accept.
+4. Says each refusal in the table below in words and moves focus to it. A
+   `404` for the Build shows Not found.
 
 ## Responses
 

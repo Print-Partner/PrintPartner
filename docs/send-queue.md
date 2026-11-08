@@ -108,7 +108,7 @@ write commits.
 | `Reconcile` | The user's answer for an item whose last send has an unknown outcome; see below. Otherwise 409 `This item has no send with an unknown printer outcome`. |
 | `Remove` | A `queued` or `error` item becomes `cancelled`; otherwise 409 `Item not cancellable`. |
 | `Missing` | A `queued` or `error` item whose staged file is gone becomes `error` with Node's `Artifact file missing on disk`. |
-| `Get`, `Ready` | The item, or up to 8 `queued` items in stored order (optionally for one printer), as Node's dispatch and drain read them. |
+| `Get`, `Ready` | The item, or up to 8 `queued` items in stored order (optionally for one printer), as Node's dispatch and drain read them. `Ready` answers the first item's Farm refusal instead, so the drain refuses as a whole. |
 
 An unknown id is 404 `Queue item not found`. A tenant whose queue stayed in
 the legacy setting gets 409 for every request; that queue is only read.
@@ -176,7 +176,7 @@ multipart upload) is not ported yet.
 | Route | Answer |
 | --- | --- |
 | `POST /printer-send-queue/{id}/dispatch` (Send now) | 200 `{item, job_id}`. Body `{"force": true}` skips the idle check. |
-| `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`. Optional `printer_id` must be a non-empty string. |
+| `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`, or one 403 `FEATURE_DISABLED` / 500 `FEATURE_TOGGLES_INVALID` when Farm refuses a ready item. Optional `printer_id` must be a non-empty string. |
 | `POST /printer-send-queue/{id}/reconcile` | 200 `{item}`. Body `{"printed": true|false, "job_id": "<upload_job_id>"}`; `job_id` may be omitted or null only when the item has no `upload_job_id`. A `job_id` for another send is 409 `send_changed`; a missing or non-boolean `printed`, or a non-string `job_id`, is 400. |
 | `DELETE /printer-send-queue/{id}` (Remove) | 200 `{item}`, and the item's staged directory is deleted. |
 
@@ -184,8 +184,11 @@ Send now checks storage first, so an unknown outcome is always 409
 `send_outcome_unknown`. Storage also requires the Farm feature for the item's
 Plan, or for the user when the Plan is gone, as Node's
 `storedQueueAdmissionProblem` does: 403 `FEATURE_DISABLED` when it is off and
-500 `FEATURE_TOGGLES_INVALID` when the stored toggles cannot be read. Then it
-checks the printer without contacting it:
+500 `FEATURE_TOGGLES_INVALID` when the stored toggles cannot be read. Send
+ready checks Farm once over the items it would send, before it sends any, and
+answers that one problem for the whole request instead of a 200 with per-item
+errors, as Node's drain route does. Then Send now checks the printer without
+contacting it:
 
 - the file name must end in `.gcode`, `.bgcode` or `.gco` (400);
 - the staged file must be under `exports` in a `printer-uploads` directory

@@ -222,19 +222,7 @@ fn transact(
         match command.request {
             Request::Get { id } => item(&tx, &tenant, &id)?.map_or(NOT_FOUND, Reply::Item),
             Request::Check { id } => check(&tx, &tenant, &id)?,
-            Request::Ready { printer_id } => Reply::Items(
-                rows(&tx, &tenant)?
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|item| {
-                        item["state"] == "queued"
-                            && printer_id
-                                .as_deref()
-                                .is_none_or(|printer| item["printer_id"] == printer)
-                    })
-                    .take(DRAIN_ITEM_CAP)
-                    .collect(),
-            ),
+            Request::Ready { printer_id } => ready(&tx, &tenant, printer_id.as_deref())?,
             Request::Dispatch { id, host_name } => {
                 dispatch(&tx, &tenant, &subject, authority, &id, &host_name)?
             }
@@ -432,6 +420,29 @@ fn dispatch(
         item,
         job_id: job.job_id,
     })
+}
+
+/// Up to [`DRAIN_ITEM_CAP`] `queued` items, or the first item's Farm refusal
+/// for the whole drain, as Node's drain route checks
+/// `storedQueueAdmissionProblem` once before it sends anything.
+fn ready(tx: &Transaction<'_>, tenant: &str, printer_id: Option<&str>) -> Result<Reply> {
+    let items: Vec<Value> = rows(tx, tenant)?
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| {
+            item["state"] == "queued"
+                && printer_id.is_none_or(|printer| item["printer_id"] == printer)
+        })
+        .take(DRAIN_ITEM_CAP)
+        .collect();
+    for item in &items {
+        if let Some(id) = item["id"].as_str()
+            && let Some(refusal) = farm_refusal(tx, tenant, id)?
+        {
+            return Ok(refusal);
+        }
+    }
+    Ok(Reply::Items(items))
 }
 
 /// Node's `storedQueueAdmissionProblem`: a send needs the Farm feature on

@@ -440,11 +440,8 @@ async fn ticket_t_26_a_send_needs_the_farm_feature() {
     let (status, body) = queue
         .send("POST", "/api/v2/printer-send-queue/drain", "")
         .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body["results"][0]["error"], "Feature farm is disabled.",
-        "{body}"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN, "one problem for the whole drain");
+    assert_eq!(body["code"], "FEATURE_DISABLED", "{body}");
     sql.execute(
         "UPDATE app_settings SET value='not json' WHERE tenant_id='default' AND key='feature_toggles'",
         [],
@@ -452,6 +449,11 @@ async fn ticket_t_26_a_send_needs_the_farm_feature() {
     .unwrap();
     let (status, body) = queue
         .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
+        .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["code"], "FEATURE_TOGGLES_INVALID", "{body}");
+    let (status, body) = queue
+        .send("POST", "/api/v2/printer-send-queue/drain", "")
         .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["code"], "FEATURE_TOGGLES_INVALID", "{body}");

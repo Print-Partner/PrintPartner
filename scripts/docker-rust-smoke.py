@@ -130,7 +130,7 @@ def stop(name):
         raise SystemExit(f"unexpected processes before stop: {commands}")
     log(f"processes before stop: {commands}")
     started = time.monotonic()
-    docker("stop", "--time", "30", name)
+    docker("stop", "--time", "10", name)
     elapsed = time.monotonic() - started
     state = json.loads(docker("inspect", name).stdout)[0]["State"]
     if state["ExitCode"] != 0 or state["OOMKilled"]:
@@ -166,6 +166,11 @@ def main():
         log("first start: /health 200, account registered, /api/v1/plans 200")
         listing = docker("exec", names[0], "ls", "/data").stdout.split()
         log(f"/data holds: {' '.join(sorted(listing))}")
+        second = docker("exec", names[0], "/usr/local/bin/pp-server-start", check=False)
+        if second.returncode == 0 or "Status file belongs to a running server" not in second.stderr:
+            raise SystemExit(f"a second pp-server was not refused: {second.returncode} {second.stderr.strip()}")
+        docker("exec", names[0], "pp-server", "healthcheck", "readiness", "--status-file", STATUS)
+        log("a second pp-server in the container is refused and the live status file stays")
         wait_health(names[0])
         stop(names[0])
 

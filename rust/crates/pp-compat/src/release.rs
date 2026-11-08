@@ -249,10 +249,16 @@ fn verify_rust_only_with(
                 .map(|name| (name.to_owned(), digest.clone()))
         })
         .collect();
-    if !manifests.is_empty() {
-        let directory = bundle
-            .community_manifests_dir()
-            .context("Missing backend root")?;
+    let directory = bundle
+        .community_manifests_dir()
+        .context("Missing backend root")?;
+    if manifests.is_empty() {
+        // Rust reads this directory when it exists, so an unmeasured one must be empty.
+        ensure!(
+            !directory.try_exists()? || std::fs::read_dir(&directory)?.next().is_none(),
+            "Release file inventory mismatch"
+        );
+    } else {
         verify_files(&directory, &manifests, true, stop)?;
     }
     Ok(())
@@ -523,6 +529,18 @@ mod tests {
         std::fs::remove_dir_all(&manifests).unwrap();
         let error = verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
         assert_eq!(error.to_string(), "Release root missing");
+
+        // A release with no community manifests accepts no directory or an
+        // empty one, and refuses unmeasured files there.
+        let mut bare = release;
+        bare.backend
+            .retain(|key, _| !key.starts_with(COMMUNITY_MANIFESTS));
+        verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap();
+        std::fs::create_dir_all(&manifests).unwrap();
+        verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap();
+        std::fs::write(manifests.join("planted.yaml"), b"entries: []\n").unwrap();
+        let error = verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Release file inventory mismatch");
         std::fs::remove_dir_all(root).unwrap();
     }
 

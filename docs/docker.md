@@ -45,7 +45,8 @@ It does not measure the Node executable, the Node backend, the workspace package
 docker volume create pp-data
 docker run -d --name print-partner \
   --network host \
-  --read-only --tmpfs /tmp:size=64m,mode=1777 \
+  --restart unless-stopped \
+  --read-only --tmpfs /tmp:size=1g,mode=1777 \
   --cap-drop ALL --security-opt no-new-privileges \
   -v pp-data:/data \
   pp-server:test
@@ -53,7 +54,7 @@ docker logs print-partner    # first line: the origin, http://127.0.0.1:<port>
 ```
 
 - **User.** The image runs as UID 1000, GID 1000 (`ppuser`) from the first instruction. It never starts as root and has no `gosu` or entrypoint `chown`.
-- **Writes.** Installation data goes to `/data` only. `pp-server` also writes its storage runtime directory and its status file to `/tmp`. Mount `/tmp` as a bounded tmpfs, as shown. With that tmpfs mounted, the root filesystem can be read-only (`--read-only`).
+- **Writes.** Installation data goes to `/data` only. `pp-server` also writes its storage runtime directory and its status file to `/tmp`. Each start's storage preflight copies the database and its WAL into `/tmp` twice, one after the other, and deletes each copy. Backup validation also extracts there. Mount `/tmp` as a bounded tmpfs at least twice the size of `print-partner.db` plus its WAL, with 64 MB to spare. The example's 1 GB fits a database up to about 450 MB. A tmpfs uses memory only for what it holds. With that tmpfs mounted, the root filesystem can be read-only (`--read-only`).
 - **Capabilities.** `pp-server` needs no Linux capabilities. Drop all of them with `--cap-drop ALL`, and use `--security-opt no-new-privileges`. The image has no setuid helper that needs either.
 - **Process tree.** `tini` is PID 1 and forwards signals. `pp-server` is its only child. In Rust-only mode `pp-server` starts no child process.
 - **Port.** `pp-server` binds `127.0.0.1` on a free port and saves it in `/data/desktop.toml`. Later starts reuse that port while it is free.
@@ -101,7 +102,11 @@ The image's `HEALTHCHECK` runs `readiness` every 30 s, with a 5 s timeout, a 120
 
 ## Stop
 
-`docker stop` sends SIGTERM. `pp-server` sets the status file to `stopping`, drains the gateway, shuts the storage writer down, prints its shutdown receipt as the last log line, and exits 0. Mutations get up to 5 seconds to drain. The default 10-second Docker stop timeout is enough.
+`docker stop` sends SIGTERM. `pp-server` sets the status file to `stopping`, drains the gateway, shuts the storage writer down, prints its shutdown receipt as the last log line, and exits 0. Mutations get up to 5 seconds to drain. The smoke test stops with the default 10-second timeout.
+
+`pp-server` registers its signal handlers after startup finishes. A SIGTERM during startup (lease, preflight, migrations) ends the process at once with exit 143 and no drain; SQLite transactions keep the database consistent, and the next start recovers.
+
+Logging out (`POST /auth/logout`) also stops `pp-server`, as it stops the desktop runtime. The container then exits 0. `--restart unless-stopped` starts it again.
 
 ## What the Rust-only image cannot do yet
 

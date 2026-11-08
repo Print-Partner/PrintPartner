@@ -10,6 +10,7 @@
 FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS web
 # A build without PP_COMMIT records the all-zero commit: an unversioned local build.
 ARG PP_COMMIT=0000000000000000000000000000000000000000
+RUN echo "$PP_COMMIT" | grep -Eqx '[0-9a-f]{40}' || { echo "PP_COMMIT must be a full lowercase commit" >&2; exit 1; }
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -63,8 +64,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=rust /out/pp-server /usr/local/bin/pp-server
 COPY --from=web /out/web /app/web
 COPY --chmod=0644 LICENSE LICENSE-SUMMARY.md ATTRIBUTION.md THIRD_PARTY_NOTICES.md /usr/share/doc/print-partner/
-# The start command. --commit must equal the commit embedded at build time.
-RUN printf '#!/bin/sh\nexec /usr/local/bin/pp-server --data /data --web /app/web --commit %s --status-file /tmp/pp-server.status.json "$@"\n' \
+# The start command. --commit must equal the commit embedded at build time; it
+# is checked again here because it is written into a shell script.
+RUN echo "$PP_COMMIT" | grep -Eqx '[0-9a-f]{40}' && \
+    printf '#!/bin/sh\nexec /usr/local/bin/pp-server --data /data --web /app/web --commit %s --status-file /tmp/pp-server.status.json "$@"\n' \
       "$PP_COMMIT" > /usr/local/bin/pp-server-start && \
     chmod 0755 /usr/local/bin/pp-server-start
 

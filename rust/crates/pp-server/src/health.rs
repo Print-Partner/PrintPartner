@@ -53,12 +53,19 @@ impl State {
 }
 
 /// The server side: writes the status file atomically and removes it on drop.
+/// A file another live process recorded is never overwritten or removed.
 pub(crate) struct StatusFile {
     path: PathBuf,
 }
 
 impl StatusFile {
     pub(crate) fn create(path: PathBuf) -> Result<Self> {
+        if let Ok(recorded) = read_status(&path) {
+            ensure!(
+                recorded.pid == std::process::id() || !process_alive(recorded.pid),
+                "Status file belongs to a running server"
+            );
+        }
         let file = Self { path };
         file.publish(State::Starting, None)?;
         Ok(file)
@@ -76,14 +83,29 @@ impl StatusFile {
         let mut temporary = name.to_owned();
         temporary.push(format!(".{}.tmp", std::process::id()));
         let temporary = self.path.with_file_name(temporary);
-        std::fs::write(&temporary, body.to_string()).context("Status file write failed")?;
+        // A leftover or planted entry, including a symlink, is removed, and the
+        // new file is created exclusively, so the write never follows a link.
+        let _ = std::fs::remove_file(&temporary);
+        let mut options = std::fs::File::options();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o644);
+        let written = options
+            .open(&temporary)
+            .and_then(|mut handle| handle.write_all(body.to_string().as_bytes()));
+        if let Err(error) = written {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error).context("Status file write failed");
+        }
         std::fs::rename(&temporary, &self.path).context("Status file write failed")
     }
 }
 
 impl Drop for StatusFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if read_status(&self.path).is_ok_and(|recorded| recorded.pid == std::process::id()) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -407,6 +429,40 @@ mod tests {
                 .to_string(),
             "Status file missing"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_servers_status_file_is_left_alone() {
+        let root = scratch();
+        let path = root.join("status.json");
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let foreign = serde_json::json!({"pid": other.id(), "state": "ready", "origin": "http://127.0.0.1:1"});
+        record(&path, foreign.clone());
+        let error = StatusFile::create(path.clone()).err().unwrap().to_string();
+        assert_eq!(error, "Status file belongs to a running server");
+        let kept: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(kept, foreign);
+        other.kill().unwrap();
+        other.wait().unwrap();
+        // A dead process's file is replaced, and a planted temporary symlink
+        // is removed rather than followed.
+        let target = root.join("target.txt");
+        std::fs::write(&target, "keep").unwrap();
+        let temporary = root.join(format!("status.json.{}.tmp", std::process::id()));
+        std::os::unix::fs::symlink(&target, &temporary).unwrap();
+        let status = StatusFile::create(path.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        assert!(!temporary.exists());
+        // Another process's file is not removed on drop.
+        record(&path, foreign);
+        drop(status);
+        assert!(path.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

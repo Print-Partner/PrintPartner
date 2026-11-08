@@ -29,7 +29,7 @@ use crate::read_model::farm::setting_list;
 use anyhow::Result;
 pub use pp_domain::print_file::Classification;
 pub use pp_domain::print_file::MAX_CLASSIFIABLE_BYTES;
-use pp_domain::print_file::{Rejection, classify};
+use pp_domain::print_file::{Classified, Rejection, classify};
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -829,12 +829,7 @@ impl Capture {
     pub fn finish(mut self) -> std::result::Result<(), &'static str> {
         let classified =
             classify(&self.bytes).map_err(|_: Rejection| "Printer file could not be inspected")?;
-        let mut identity = match std::mem::take(&mut self.identity) {
-            Value::Object(identity) => identity,
-            _ => serde_json::Map::new(),
-        };
-        identity.insert("size_bytes".into(), json!(classified.size_bytes));
-        identity.insert("sha256".into(), json!(classified.sha256));
+        let identity = identify(std::mem::take(&mut self.identity), &classified);
         let saved = Saved {
             scope: self.scope.clone(),
             source: std::mem::take(&mut self.source),
@@ -942,16 +937,22 @@ pub fn inspect(bytes: &[u8], provider: Value) -> std::result::Result<Inspected, 
         return Err(TOO_LARGE_TO_INSPECT);
     }
     let classified = classify(bytes).map_err(|reason| reason.message())?;
+    Ok(Inspected {
+        identity: Value::Object(identify(provider, &classified)),
+        classification: classified.classification,
+    })
+}
+
+/// The provider's identity keys, then `size_bytes` and `sha256` from the
+/// bytes, in Node's order.
+fn identify(provider: Value, classified: &Classified) -> serde_json::Map<String, Value> {
     let mut identity = match provider {
         Value::Object(identity) => identity,
         _ => serde_json::Map::new(),
     };
     identity.insert("size_bytes".into(), json!(classified.size_bytes));
     identity.insert("sha256".into(), json!(classified.sha256));
-    Ok(Inspected {
-        classification: classified.classification,
-        identity: Value::Object(identity),
-    })
+    identity
 }
 
 /// Node's answer for a printer file past `MAX_CLASSIFIABLE_BYTES`.

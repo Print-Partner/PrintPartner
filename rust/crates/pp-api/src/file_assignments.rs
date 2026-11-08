@@ -131,6 +131,20 @@ enum Inspection {
     Failed,
 }
 
+impl Inspection {
+    /// The inspected file, `None` when it is unread, or the answer that
+    /// refuses the request.
+    fn settle(self) -> Result<Option<Inspected>, Response> {
+        match self {
+            Self::Inspected(inspected) => Ok(Some(inspected)),
+            Self::Unreadable => Ok(None),
+            Self::Refused(detail) => Err(conflict(detail)),
+            Self::Busy => Err(busy()),
+            Self::Failed => Err(crate::accepted::internal()),
+        }
+    }
+}
+
 /// The bytes of a host reply, or `Ok(None)` past `cap` as Node's
 /// `readBoundedResponseChunks` refuses them: a declared length past `cap`
 /// is refused before any byte is read.
@@ -356,14 +370,12 @@ async fn preview(
         Some(Value::Object(suggestion)) => suggestion,
         _ => return crate::accepted::internal(),
     };
-    match inspect(&app, &parsed).await {
-        Inspection::Refused(detail) => return conflict(detail),
-        Inspection::Busy => return busy(),
-        Inspection::Failed => return crate::accepted::internal(),
-        Inspection::Unreadable => {
+    match inspect(&app, &parsed).await.settle() {
+        Err(response) => return response,
+        Ok(None) => {
             answer.insert("inspected".into(), json!(false));
         }
-        Inspection::Inspected(inspected) => read(&mut answer, &inspected),
+        Ok(Some(inspected)) => read(&mut answer, &inspected),
     }
     ok_json(&answer)
 }
@@ -408,12 +420,10 @@ async fn assign(
     // The bytes decide. A file recorded as already printed is evidence of
     // what was made, so only a file PrintPartner might still print must be
     // print-ready.
-    let inspected = match inspection {
-        Inspection::Refused(detail) => return conflict(detail),
-        Inspection::Busy => return busy(),
-        Inspection::Failed => return crate::accepted::internal(),
-        Inspection::Unreadable => None,
-        Inspection::Inspected(inspected) => {
+    let inspected = match inspection.settle() {
+        Err(response) => return response,
+        Ok(None) => None,
+        Ok(Some(inspected)) => {
             if !input.completed && !inspected.classification.is_print_ready() {
                 return conflict(inspected.classification.next_action());
             }

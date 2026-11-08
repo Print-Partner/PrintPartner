@@ -27,7 +27,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.workflow_run.head_sha }}
       cancel-in-progress: true
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       actions: write

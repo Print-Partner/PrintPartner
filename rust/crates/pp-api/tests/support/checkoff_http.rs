@@ -9,15 +9,19 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 #[path = "loopback.rs"]
-mod loopback;
+pub mod loopback;
 const NODE: &str = include_str!("../../../../../fixtures/parity/printer-checkoff-verify/node.json");
 const DATABASE: &[u8] =
     include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db");
 
-pub struct Fixture(PathBuf);
+const SESSION: &str = "pp_session=required-unit-fixture-secret";
+
+pub struct Fixture(pub PathBuf);
 
 impl Fixture {
     pub fn new() -> Self {
+        // Some #[path] copies only use the fixture; keep the router helpers live without #[allow].
+        let _ = (Self::open, post, send);
         let path = tempfile::tempdir().unwrap().keep();
         std::fs::create_dir_all(path.join("repos/1/revisions/fixture")).unwrap();
         std::fs::write(path.join("print-partner.db"), DATABASE).unwrap();
@@ -45,8 +49,10 @@ impl Fixture {
         flag: &str,
         router: impl FnOnce(AcceptedHttpConfig, &WriterOwner) -> Router,
     ) -> (WriterOwner, Router) {
-        // Some #[path] copies only call open_with(); keep open live without #[allow].
+        // Some #[path] copies only call open_with() or post(); keep the other
+        // helpers live without #[allow].
         let _: fn(&Self, &str) -> (WriterOwner, Router) = Self::open;
+        let _ = post_as;
         let owner = WriterOwner::open(&self.0, Limits::default()).unwrap().0;
         let config = AcceptedHttpConfig::from_startup(ORIGIN, "default", Some(flag)).unwrap();
         let router = router(config, &owner);
@@ -71,6 +77,24 @@ pub async fn send(
     body: &str,
     cookie: bool,
 ) -> (StatusCode, Value) {
-    let cookie = cookie.then_some("pp_session=required-unit-fixture-secret");
-    loopback::send(router, method, path, body, cookie).await
+    let cookie = cookie.then_some(SESSION);
+    loopback::send(router, method, path, Some(body), cookie).await
+}
+
+/// A signed-in POST of `body` as `content_type`.
+pub async fn post_as(
+    router: &Router,
+    path: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Value) {
+    loopback::send_as(
+        router,
+        "POST",
+        path,
+        Some(content_type),
+        body,
+        Some(SESSION),
+    )
+    .await
 }

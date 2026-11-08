@@ -310,15 +310,14 @@ fn fake_node(dir: &Path) -> FakeNode {
 }
 
 fn fake_node_with_hold(dir: &Path, hold: bool) -> FakeNode {
-    let socket = dir.join("node.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let (endpoint, mut child) = Endpoint::fake(dir).unwrap();
     let forwards = Arc::new(Mutex::new(Vec::new()));
     let seen = forwards.clone();
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let (notify_entered, notify_release) = (entered.clone(), release.clone());
     tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
+        while let Ok(stream) = child.accept().await {
             let seen = seen.clone();
             let (entered, release) = (notify_entered.clone(), notify_release.clone());
             tokio::spawn(async move {
@@ -346,7 +345,7 @@ fn fake_node_with_hold(dir: &Path, hold: bool) -> FakeNode {
             });
         }
     });
-    let (compat, publication) = CompatHandle::replaceable(Some(Endpoint::bound_to(&socket)));
+    let (compat, publication) = CompatHandle::replaceable(Some(endpoint));
     FakeNode {
         compat,
         forwards,
@@ -1226,7 +1225,6 @@ fn ticket_t_3_drain_cutover_receipts_serialize_exactly() {
 
 #[test]
 fn ticket_t_3_drain_cutover_evidence_log_appends_exact_lines() {
-    use std::os::unix::fs::PermissionsExt;
     let index = fixture_index();
     let dir = Scratch::new("pp-t3-cutover-evidence-");
     let owners = OperationOwners::node_only();
@@ -1262,11 +1260,15 @@ fn ticket_t_3_drain_cutover_evidence_log_appends_exact_lines() {
                 "fixtures": 3, "directory_synced": true}),
         ]
     );
-    let mode = fs::metadata(dir.join(EVIDENCE_FILE))
-        .unwrap()
-        .permissions()
-        .mode();
-    assert_eq!(mode & 0o777, 0o600);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(dir.join(EVIDENCE_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 }
 
 #[tokio::test]
@@ -1319,7 +1321,10 @@ async fn ticket_t_3_drain_cutover_gateway_drain_waits_for_inflight_forward() {
 
 #[test]
 fn ticket_t_3_drain_cutover_record_and_evidence_fail_closed() {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file as symlink;
     let index = fixture_index();
     let blocked = Scratch::new("pp-t3-cutover-failed-rename-");
     fs::create_dir(blocked.join(CUTOVER_FILE)).unwrap();

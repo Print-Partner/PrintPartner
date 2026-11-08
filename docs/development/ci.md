@@ -11,7 +11,7 @@ On ready PRs, the jobs are selected as follows:
 
 - `rust (linux)` and `rust (windows)` run when a `changes` job finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip both jobs while keeping their check reports present.
 - `rust (macos)` uses the same path selection. It runs only when relevant inputs change and the PR has the exact `macos` label and is not a draft. Adding or removing the label, marking the PR ready for review and converting it to a draft each start a new run.
-- When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (for example, a change only to a crate the Windows job excludes, such as `pp-server`) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
+- When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (for example, a change only to a crate that a job's `CARGO_SCOPE` leaves out) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
 
 The selection is made at job level by `scripts/ci-path-filter.py`, not with workflow `paths:`, so a skipped job still reports `skipped` and the required `rust (linux)` and `rust (windows)` checks never stay pending. A PR that changes only docs, other workflows or other non-Rust files skips both: PR #1548, which changed one workflow and `ci.md`, reported `rust (linux)` and `rust (windows)` as skipped, and a PR that touches a path above, such as this filter, runs them. Markdown is not a Rust input and does not select them, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed with `include_str!`, and anything under `fixtures/`, where parity READMEs sit inside hashed fixture trees. A UI-only change under `web/apps/web/` still selects them on purpose: the Rust jobs run `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` on that UI, then test the desktop bundle against the measured manifest. Skipping those PRs would drop that check from the required set. Web CI covers the UI's own lint, tests and build.
 
@@ -237,9 +237,9 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 |------------|--------|----------|-------|
 | `rust (linux)` | Aggregate over `rust (linux) build` plus rebuild partitions when selected | The whole workspace | All |
 | `rust (macos)` | `macos-26` | The whole workspace | All except [macOS exclusions](#macos-exclusions) |
-| `rust (windows)` | `windows-latest` | The workspace without [Windows exclusions](#windows-exclusions) | All in those packages |
+| `rust (windows)` | `windows-latest` | The whole workspace | All |
 
-`rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or on `ubuntu-latest`; see [Linux Rust runner](#linux-rust-runner).
+`rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or `ubuntu-latest` for non-PR events; on pull requests only the build and the aggregate run (the rebuild partitions do not), on `blacksmith-4vcpu-ubuntu-2404` (default), `ubuntu-latest` (`hosted`) or pp-iso ([the switch](#pull-request-runner-switch)); see [Linux Rust runner](#linux-rust-runner).
 
 Build caching and linking differ by OS:
 
@@ -263,7 +263,7 @@ Each job runs these steps in order:
 
 Linux and Windows PRs run steps 6, 8 and 10; macOS PRs skip them.
 
-On `push` to `main`, `merge_group`, and `workflow_dispatch`, Linux replaces the in-job step 8 with a nextest archive built once (`--zstd-level 11`), then three `rust (linux) rebuild m/3` jobs that run `cargo nextest run --archive-file … --workspace-remap "$GITHUB_WORKSPACE/rust" --partition slice:m/3` on three `ubuntu-latest` runners. The build job also uploads a zstd-compressed pack of the measured desktop trees (`rust/bundle-manifest.json` and the web `dist` outputs). Artifact uploads set `compression-level: 0` so GitHub does not re-gzip already-compressed archives. Atomic package builds publish `dist/current` as a symlink to `dist/releases/<id>`; the dependency inventory records that link and the files under the release path. The pack step therefore archives each package's full `dist/` tree **without** `tar -h`, asserts the `current` symlink and a release-path file (for example `desktop-resolution.js`) are in the archive, and each partition restores those trees so the symlink topology still matches. Packing only `dist/current` with `-h` flattens the link and fails dependency inventory checks. Each partition runs `npm ci` only — it must not rebuild web assets or regenerate the manifest, because the archived binaries embed those digests at compile time. The required check `rust (linux)` is an aggregate that needs the Linux build and those partitions: on push / merge_group / workflow_dispatch it requires rebuild `success`; on PRs and schedule rebuild may be `skipped`. The schedule keeps the monolithic in-job step 8.
+On `push` to `main`, `merge_group`, and `workflow_dispatch`, Linux replaces the in-job step 8 with a nextest archive built once (`--zstd-level 11`), then three `rust (linux) rebuild m/3` jobs that run `cargo nextest run --archive-file … --workspace-remap "$GITHUB_WORKSPACE/rust" --partition slice:m/3` on the build job's runner (pp-local unless `PP_RUST_RUNNER=hosted` or the fleet fallback applies, then `ubuntu-latest`). The build job also uploads a zstd-compressed pack of the measured desktop trees (`rust/bundle-manifest.json` and the web `dist` outputs). Artifact uploads set `compression-level: 0` so GitHub does not re-gzip already-compressed archives. Atomic package builds publish `dist/current` as a symlink to `dist/releases/<id>`; the dependency inventory records that link and the files under the release path. The pack step therefore archives each package's full `dist/` tree **without** `tar -h`, asserts the `current` symlink and a release-path file (for example `desktop-resolution.js`) are in the archive, and each partition restores those trees so the symlink topology still matches. Packing only `dist/current` with `-h` flattens the link and fails dependency inventory checks. Each partition runs `npm ci` only — it must not rebuild web assets or regenerate the manifest, because the archived binaries embed those digests at compile time. The required check `rust (linux)` is an aggregate that needs the Linux build and those partitions: on push / merge_group / workflow_dispatch it requires rebuild `success`; on PRs and schedule rebuild may be `skipped`. The schedule keeps the monolithic in-job step 8.
 
 The macOS volume exists because the default macOS `TMPDIR` breaks three kinds of test. Its paths are too long for Unix socket names, it is under the `/var` symbolic link that no-follow opens refuse, and it treats `Straße.stl` and `STRASSE.stl` as one name.
 
@@ -395,13 +395,13 @@ cargo test --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast -
 cargo test --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --doc --features desktop_rebuild
 ```
 
-On macOS, set `TMPDIR` to a short directory on a case-sensitive volume before you run the tests. The workflow step `Mount a short case-sensitive TMPDIR` has the commands. Also set `PP_TEST_NODE` to the Node executable, as CI does. Without it the runtime tests fall back to `/usr/bin/node`, which macOS does not have. To skip the same tests as CI, add `-E` with the `NEXTEST_FILTER` value of the macOS job. On Windows, replace `--workspace` with the Windows job's `CARGO_SCOPE` value. On Linux, the Tauri shell also needs the GTK and WebKit packages that the workflow installs with `apt-get`.
+On macOS, set `TMPDIR` to a short directory on a case-sensitive volume before you run the tests. The workflow step `Mount a short case-sensitive TMPDIR` has the commands. Also set `PP_TEST_NODE` to the Node executable, as CI does. Without it the runtime tests fall back to `/usr/bin/node`, which macOS does not have. To skip the same tests as CI, add `-E` with the `NEXTEST_FILTER` value of the macOS job. On Windows, the same `--workspace` commands apply. On Linux, the Tauri shell also needs the GTK and WebKit packages that the workflow installs with `apt-get`.
 
 Clippy and fmt do not read the manifest contents. For a lint-only run, `echo '{}' > rust/bundle-manifest.json` is enough. The tests need the real manifest.
 
 ## Packaged-app smoke
 
-`desktop-packaged-smoke.yml` builds the Linux `.deb`, installs it into a disposable root and launches the installed app on a schema 31 database, in the default build and in the `desktop_rebuild` build. It checks the native window, the persisted Build in the accessibility tree, a clean shutdown and the migrated rows. It is not a required check, and `just ci` does not run it. [Packaged-app smoke](packaged-smoke.md) explains each step and how to run it locally.
+`desktop-packaged-smoke.yml` builds the Linux `.deb` and the macOS app, installs each into a disposable location and launches the installed app on a schema 31 database, in the default build and in the `desktop_rebuild` build. It checks the native window, the persisted Build in the accessibility tree, a clean shutdown and the migrated rows. It is not a required check, and `just ci` does not run it. [Packaged-app smoke](packaged-smoke.md) explains each step and how to run it locally.
 
 ## Read a failure
 
@@ -419,7 +419,7 @@ These failures are common:
 
 `rust/.config/nextest.toml` sets both rules below in the `default` profile, which CI and `just ci` use.
 
-Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
+Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `slice0_mount` binaries, `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
 
 A test that fails at random goes on the flaky list, the override with `retries = 1`. The rules:
 
@@ -467,16 +467,9 @@ Shared code calls `platform::lock_file(...)` and never names an OS. Every platfo
 
 Do not scatter `#[cfg(...)]` on statements or `if cfg!(...)` checks through shared functions. Tests are the exception: a test, or one block in a test that checks an OS-only fact, may carry its own `#[cfg]`.
 
-## Windows exclusions
+## Windows coverage
 
-The Windows job excludes these crates with `--exclude` items in `CARGO_SCOPE`, so it does not lint or test their own targets. The table below names each port ticket.
-
-| Crate | Port ticket | Why it is excluded |
-|-------|-------------|--------------------|
-| `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | Their own code and tests are not ported yet: `pp-server` and pp-api's `auth-http-fixture` use Unix signals, and their tests use Unix sockets, Unix symlinks, `libc` and mode bits. `pp-gateway`'s library already compiles on Windows as a `pp-core` dependency, and so does `pp-api`'s with `desktop_rebuild` on; only their own tests, binaries and clippy are skipped. |
-| `pp-desktop` | GRE-656 | It is the Tauri shell, and its own code and tests are not ported yet. GRE-656 ends with the Windows job building the whole workspace. |
-
-`pp-os`, `pp-storage`, `pp-source`, `pp-compat` and `pp-core` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests run on Windows with Node fixtures (GRE-1194). A clean leader exit waits up to 500 ms for the job to empty before the reap (see the pp-compat README). The HealthFixture tests stay Unix-only under GRE-1203. So do the paused-time tests whose pipe stdio or Unix health listener blocks Tokio's auto-advance. The other paused-time tests run on Windows. The junction-gated respawn test stays Unix-only under GRE-1204. `pp-core` reads and publishes its state files through `pp-os` handles (GRE-1188) and runs its runtime tests against the real Node child on Windows. On Windows its tests use `TerminateProcess` for SIGKILL, `NtSuspendProcess` and `NtResumeProcess` for SIGSTOP and SIGCONT, a junction where Unix uses a FIFO, an `icacls` deny where Unix uses mode 000, and a ToolHelp process snapshot where Unix reads `/proc` or `ps`. A runtime test whose restart fails prints the redacted recent logs. Each test that stays Unix-only names its Windows counterpart in a comment. The Windows job builds and tests `pp-os`, including
+`rust (windows)` lints and tests the whole workspace (`CARGO_SCOPE: --workspace`) with `desktop_rebuild` off and on. See [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests run on Windows with Node fixtures (GRE-1194). A clean leader exit waits up to 500 ms for the job to empty before the reap (see the pp-compat README). The HealthFixture tests stay Unix-only under GRE-1203. So do the paused-time tests whose pipe stdio or Unix health listener blocks Tokio's auto-advance. The other paused-time tests run on Windows. The junction-gated respawn test stays Unix-only under GRE-1204. `pp-core` reads and publishes its state files through `pp-os` handles (GRE-1188) and runs its runtime tests against the real Node child on Windows. On Windows its tests use `TerminateProcess` for SIGKILL, `NtSuspendProcess` and `NtResumeProcess` for SIGSTOP and SIGCONT, a junction where Unix uses a FIFO, an `icacls` deny where Unix uses mode 000, and a ToolHelp process snapshot where Unix reads `/proc` or `ps`. A runtime test whose restart fails prints the redacted recent logs. Each test that stays Unix-only names its Windows counterpart in a comment. `pp-gateway`'s tests reach a stand-in Node child through `pp_compat::Endpoint::fake`, which is a Unix socket on Unix and the core-owned named pipe on Windows; on Windows they plant symbolic links with `symlink_file`, the receipt test plants no socket or FIFO because Windows directories cannot hold them, and the 0600 mode checks stay Unix-only. `pp-server` stops on Ctrl+C, Ctrl+Break, a console close, logoff or system shutdown on Windows, where Unix uses SIGINT and SIGTERM (GRE-655); `tests/stop_signal.rs` sends Ctrl+Break on Windows and SIGTERM on Unix. `pp-api`'s `auth_admission_parity` serves its router through a harness loop that reads and discards unread request bytes for up to two seconds before it closes a connection, so a Windows client still receives the early 413 for an over-limit body instead of a reset. The shipping gateway closes without that linger; GRE-1264 tracks the product fix. `pp-desktop` builds the Tauri shell on Windows (GRE-656): dialogs come from rfd, links and folders open through `rundll32 url.dll,FileProtocolHandler`, Ctrl+C, Ctrl+Break and a console close stop it, and single-instance focus uses a private named pipe (see the pp-desktop README). The Windows job builds and tests `pp-os`, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
 tests for symbolic links, junctions, directory locks, write-through renames,
@@ -491,9 +484,9 @@ These rules came out of the pp-storage Windows port (GRE-1154). New tests follow
 - Build SQLite `file:` URIs with `pp_storage::sqlite_uri::immutable_uri`. SQLite on Windows cannot open a URI that holds a verbatim `\\?\` prefix.
 - Hand Node a path from `pp_testkit::node_path::node_path`, and an `--import` or `import()` target as a `file:` URL (`pp_testkit::node_path::file_url`, or `pathToFileURL` in scripts). Node cannot resolve verbatim paths, and its ESM loader refuses a bare `C:\` path.
 - Close every connection and file under a directory before removing it. Windows refuses to delete an open file.
+- Store, return or compare a path in its display spelling, `pp_os::display_path`, which turns the verbatim `\\?\C:\…` and `\\?\UNC\…` that `canonicalize` returns into `C:\…` and `\\server\share\…` and leaves every other path unchanged. pp-storage writes a Source's `local_path` and reports Source roots (accepted-plan snapshot roots and draft-preparation roots) that way, and pp-storage and pp-core's review observations compare a stored path with the repos root that way, as Node does. It still opens files through the canonical path.
+- Join a relative path that holds `/` onto a canonical root through its components (`relative.components().collect::<PathBuf>()`). A verbatim `\\?\` path reads `/` as part of a name, not as a separator.
 - Compare paths in the spelling the product reports. `std::env::temp_dir()` on a runner can hold 8.3 short names (`RUNNER~1`), while `canonicalize` returns the long verbatim form.
-
-`rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.
 
 ## macOS test filter
 
@@ -526,22 +519,38 @@ Required Rust and lint jobs fail if their input-selection job fails, so a broken
 
 ## Ephemeral PR runners
 
-Jobs run on GitHub-hosted runners (`ubuntu-latest`, `ubuntu-24.04`, `macos-26`,
-`macos-26-intel`, `macos-latest` or `windows-latest`), except the Linux Rust jobs
-below. Each hosted job gets a fresh VM.
+Pull request jobs run on GitHub-hosted runners, which cost nothing for this public repository,
+and on pp-iso for the Linux Rust jobs when `PP_PR_RUNNER=pp-iso`; pp-local runs only pushes to `main`, merge groups and manual runs, never a pull request. Two workflows' jobs run on Blacksmith
+by default because their speed pays for the per-minute price: `rust (linux) build` and its
+aggregate, and the Linux packaged smoke job (a two-job matrix, `default` and `desktop_rebuild`). Nothing else runs on
+Blacksmith: lint, actionlint, zizmor, evidence, duplication, Web CI, sidecar, docs, `rust (windows)`, macOS, release,
+Pages, schedules, merge groups and `main` pushes stay on GitHub-hosted runners (or pp-local), and the
+workflows use no Blacksmith Docker layer cache, sticky disk or cross-PR cache. Each hosted or Blacksmith job
+gets a fresh VM. The workflows that a push to a pull request re-triggers cancel a superseded run (`cancel-in-progress` on
+`pull_request`), so a new push stops the jobs still paying for the old head (`droid.yml`, which only answers mentions, and `linear-pr-sync.yml`, which must not be cancelled, run on free runners and have no cancelling group); `main` pushes keep
+the one-running, one-pending rule instead.
+
+Three jobs were tried on Blacksmith and are not kept there. `release-signing-check.yml` failed because
+`docker buildx imagetools inspect --format '{{.Manifest.Digest}}'` printed the whole manifest instead of
+the digest and `cosign verify` got a malformed reference. The `rust-verify` job of
+`desktop-runtime.yml` failed because its LAN guard rejects new connections to `192.168.0.0/16` and counted
+2630 blocked packets on Blacksmith (the runner's own services appear to use that range) before the artifact
+upload failed with `ECONNREFUSED`. `rust (windows)` ran on `blacksmith-4vcpu-windows-2025` and failed two tests that pass on
+`windows-latest` (a Node loopback `ECONNRESET` in `node_auth_admission_snapshot_is_current` and a timestamp-window assertion at
+`import_worker_policy.rs:269`, run 42437330789), so it stays on GitHub's free Windows runner until GRE-1271 resolves them.
 
 ### Linux Rust runner
 
 `rust (linux) build`, `rust (linux) rebuild m/3` and the `rust (linux)` aggregate
 run on `[self-hosted, linux, x64, pp-local]` for pushes to `main`, merge groups and
-manual runs. Every pull request runs them on GitHub-hosted `ubuntu-latest`. pp-local
+manual runs. A pull request runs the build and the aggregate (there are no rebuild partitions on pull requests) on `blacksmith-4vcpu-ubuntu-2404` unless `PP_PR_RUNNER` says otherwise ([the switch](#pull-request-runner-switch) below). pp-local
 is six ephemeral JIT slots, two on each of three VMs, and each job runs in a fresh
 `pp-slot-N` container. Job names do not change with the runner, so the required
 checks stay the same.
 
-PRs stay hosted because pp-local ran the PR suite more slowly than hosted. On PR
+PRs stay off pp-local because it ran the PR suite more slowly than hosted. On PR
 #1349, `rust (linux) build` took 60m02s on pp-local with a 99.57 % sccache hit rate,
-and 87m42s with a cold cache, against 33m40s hosted. Compiling was as fast as hosted;
+and 87m42s with a cold cache, against 33m40s on a hosted runner. Compiling was as fast as hosted;
 the nextest steps were 2.0-2.6x slower. On `main`, pp-local still moves the Linux
 jobs off the hosted pool that PRs wait for. The 3 rebuild jobs start within seconds
 there, instead of after the 13-17 minute hosted waits seen on main pushes.
@@ -549,7 +558,7 @@ there, instead of after the 13-17 minute hosted waits seen on main pushes.
 The `changes` job picks the runner with `scripts/ci-rust-runner.py` and passes it
 on as a job output. It picks `ubuntu-latest` when:
 
-- the event is a pull request (same-repository or fork) or the nightly schedule;
+- the event is the nightly schedule (pull requests use the [runner switch](#pull-request-runner-switch));
 - the `PP_RUST_RUNNER` repository variable is `hosted` (unset or `local` means pp-local;
   any other value means hosted);
 - the optional `PP_RUNNER_READ_TOKEN` secret can list runners and no online pp-local
@@ -579,6 +588,35 @@ another container is compiling. `scripts/setup-ci-linux.sh` and
 [pp-iso](pp-iso.md) is the separate pool of isolated, one-job runners for jobs that
 run PR-editable code.
 
+### Pull request runner switch
+
+The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It is read only on `pull_request` events, so `main` pushes, merge groups, manual runs and the nightly schedule keep the routing above and `PP_RUST_RUNNER`. Unset, empty or any other value means `blacksmith`. Set it under Settings, Secrets and variables, Actions, Variables; the next run, or a label change on the PR, uses the new value, and `hosted` puts both paid jobs back on GitHub's free runners at once. `rust (windows)` always runs on `windows-latest`. `main` pushes, merge groups, manual runs and the nightly schedule never use Blacksmith.
+
+| `PP_PR_RUNNER` | `rust (linux)` build and aggregate (pull requests) | `packaged smoke (linux, …)` |
+| --- | --- | --- |
+| `blacksmith` (default) | `blacksmith-4vcpu-ubuntu-2404` | `blacksmith-4vcpu-ubuntu-2404` |
+| `hosted` | `ubuntu-latest` | `ubuntu-24.04` |
+| `pp-iso` | `[self-hosted, linux, x64, pp-iso]` ([pp-iso](pp-iso.md)) | `blacksmith-4vcpu-ubuntu-2404` |
+
+- Every job keeps its name, so the required checks do not change, and a PR that skips a job still reports it. `scripts/ci-rust-runner.py` makes the choice in the `changes` job of `rust-cross-os.yml` and `desktop-packaged-smoke.yml` and has tests for every value and event. A PR runs its own copy of that script, so the script and its test are in CODEOWNERS: a change to the routing requests Chad's review, like a workflow change. Under `pp-iso`, the script sends a pull request from a fork to Blacksmith, but a pull request runs its own copy of the workflow and script, so what actually keeps fork code off the self-hosted pool is the pp-iso runner group's fork-run settings, not the script. The packaged smoke job uses Blacksmith only on `pull_request` events when the variable is not `hosted`; every other event uses `ubuntu-24.04`. The selector jobs, lint, review gates and Web CI always use GitHub's free runners.
+- Sizing: the hosted 4 vCPU medians over the last PR runs are `rust (linux) build` 36.6 min (8 runs) and packaged smoke 7.6 min (4 runs), against job timeouts of 90 minutes each. Both paid jobs get 4 vCPU, the smallest size that keeps the slower job, the Linux build, well under its timeout: Blacksmith claims about twice the speed of a hosted runner of the same size, and one measured 4 vCPU run (head bcc519d on #1600) took 20.6 min for `rust (linux) build` and 4.5 and 5.5 min for the two smoke jobs. 2 vCPU is not used because it has no measurement behind it.
+- Cost: Blacksmith's pricing page lists $0.004 per minute for Ubuntu x64 at 2 vCPU and 3,000 free minutes per month; this document assumes the price scales linearly with vCPU, which the page does not state, so 4 vCPU is $0.008 per minute. The measured run above cost about $0.16 for `rust (linux) build` and $0.08 for the smoke workflow (its `default` and `desktop_rebuild` matrix jobs run in parallel and are billed separately), plus a few seconds of the `rust (linux)` aggregate, which Blacksmith may bill as a minute: about $0.24 per PR run, against $0 on GitHub's runners. If Blacksmith were no faster than the hosted medians, the bound is about $0.29 and $0.12. The one-day measurement after merge replaces these figures with actual minutes per job and wall time per PR.
+- Jobs get the same permissions and secrets as on hosted runners; the switch adds none. The existing cache steps are unchanged: `Swatinem/rust-cache` saves only on `main`, and the apt package cache of `linux-gui-deps` runs only on GitHub-hosted runners, so Blacksmith jobs run a plain `apt-get install` and the "Free disk" step is skipped. Only the packaged smoke job on Blacksmith uses `actions/setup-node` with `cache: npm`, which saves on any ref, so a PR run writes an npm cache entry under its own ref. Blacksmith's "Branch Protected Caches" setting scopes each cache entry to its branch; it must stay on, because turning it off shares entries across branches and a PR-written npm entry could be restored by another PR. This repository does not verify the setting; Chad checked it is on in the Blacksmith dashboard on 2026-11-07.
+- The setup, Rust toolchain, sccache and `Swatinem/rust-cache` steps adapt to the runner kind (`PP_RUNNER_KIND`), not to `runner.environment`; the disk-space steps and `linux-gui-deps` still check `runner.environment`. pp-local runs the self-hosted setup, Rust toolchain and sccache steps; pp-iso runs the self-hosted setup and Rust toolchain steps and then `Swatinem/rust-cache` from `actions/cache`, with no shared registry or sccache; Blacksmith and hosted runners use their images and `Swatinem/rust-cache`.
+- pp-iso covers only the Linux Rust jobs: it has no GUI session or system package control for the packaged smoke, and no Windows runner. If no pp-iso runner is online, the jobs queue until one is, so set `hosted` first when a host is down.
+
+### Reading Blacksmith usage
+
+Blacksmith bills by the minute and GitHub's runners are free here, so check the spend after any change to the paid jobs and every week while the switch is new.
+
+- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-ubuntu-2404` total with the 3,000 free minutes per month after converting: the allowance is counted in 2 vCPU x64 minutes, so each 4 vCPU minute uses two of them (the Linux build and smoke jobs of the measured PR run total about 31 job-minutes and use about 61).
+- Per run, from GitHub: this prints each Blacksmith job of a run with its size and minutes (replace RUN_ID):
+
+  `gh api repos/Print-Partner/PrintPartner/actions/runs/RUN_ID/jobs --jq '.jobs[]|select(.completed_at != null and .conclusion != "skipped" and any(.labels[]; startswith("blacksmith-")))|[.name,.labels[0],(((.completed_at|fromdate)-(.started_at|fromdate))/60|.*10|round/10)]|@tsv'`
+
+  Multiply minutes by the per-minute price above. A job that appears with a `blacksmith-` label outside `rust (linux)` and `packaged smoke` is a regression: move it back to a GitHub-hosted runner.
+- Cancelled runs still bill the minutes they ran. A new push cancels the superseded run, but cancelling is not instant and the last run bills in full, so a burst of pushes still costs the minutes each run reached before it was cancelled, across the parallel paid jobs.
+
 ### Actions cache
 
 The repository's Actions cache is limited to 10 GB, so older entries are evicted
@@ -607,9 +645,10 @@ Pull requests restore only. Each install logs
 
 ### Superseded runs
 
-Only pull request runs cancel superseded runs. Every CI workflow groups a pull
-request by workflow and ref (or PR number) with `cancel-in-progress: true`, so a
-new push replaces the older run. A run that is already running on `main` is never
+Only pull request runs cancel superseded runs. Every CI workflow
+groups a pull request by workflow and ref (or PR number) with
+`cancel-in-progress: true`, so a new push replaces the older run, except `droid.yml`, which only
+answers mentions and has no group, and `linear-pr-sync.yml`, which must not be cancelled. A run that is already running on `main` is never
 cancelled (GRE-1228): on 2026-11-06 a sample of 60 `main` push runs had 25
 cancelled, 23 succeeded and 12 in progress, because a newer merge cancelled each
 older run and left that merge with no result.
@@ -635,7 +674,7 @@ never replaces the pending run and, because the original has finished, does not 
 
 | Event | Group | `cancel-in-progress` |
 | --- | --- | --- |
-| `pull_request` | workflow and ref (or PR number) | `true` |
+| `pull_request` (except `droid.yml` and `linear-pr-sync.yml`) | workflow and ref (or PR number) | `true` |
 | first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
 | `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
 | `push` of a tag or another branch, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |

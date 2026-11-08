@@ -134,24 +134,27 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 
 | Need | Contract | Status |
 | --- | --- | --- |
-| Builds list, detail, layers | `GET /api/v1/plans`, `/plans/{id}`, `/layers`, `/kit-manifest` | Exists |
+| Builds list, detail, layers | `GET /api/v1/plans`, `/plans/{id}`, `/layers`, `/kit-manifest` | Exists. Under `desktop_rebuild` each summary also carries the header's `customer` and `due_date` from `build_profile_details` (GRE-1100). With the Orders module on, the Builds list sorts by due date (earliest first, none last), filters to overdue (unarchived, due before today and not fully printed; today is rechecked each minute) or no due date, and marks each unarchived Build whose non-blank order number another unarchived Build shares, as the Accept preview counts duplicates, without merging them |
 | Drafts | `GET/PATCH /api/v2/plans/{id}/drafts*` (drafts are mounted under `/api/v2`, not `/api/v1`) | Exists |
 | Checkoff read | `GET /plans/{id}/checkoff`, `/parts/{id}/assembled` | Exists |
 | Checkoff tab units and manual bursts | `GET /api/v2/plans/{id}/checkoff/units`, `POST /plans/{id}/checkoff/bursts` and `/bursts/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1191); see [Manual Checkoff bursts](../desktop-rebuild.md#manual-checkoff-bursts-gre-1191) |
 | Plates workspace, initialize, arrange, edits and restore | `GET /plans/{id}/plates`, `POST /plans/{id}/plates/initialize`, `/arrange`, `/restore`, and the unit routes under `/plans/{id}/plates/{plateId}/units/{token}` (also at `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-419); see [Accepted Plate routes in Rust](../desktop-rebuild.md#accepted-plate-routes-in-rust-gre-419) |
 | Production setup | `GET` and `PATCH /plans/{id}/production-setup` (root only, as in Node) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1209); see [Production setup in Rust](../desktop-rebuild.md#production-setup-in-rust-gre-1209) |
+| Build header edit and archive | `PATCH /plans/{id}`, `POST /plans/{id}/archive` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1231); see [Build header edit and archive in Rust](../desktop-rebuild.md#build-header-edit-and-archive-in-rust-gre-1231) |
 | Variant dimensions and selection | `GET /plans/{id}/variant-dimensions`, `POST /plans/{id}/variant-selection` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1221); see [Variant dimensions and selection in Rust](../desktop-rebuild.md#variant-dimensions-and-selection-in-rust-gre-1221) |
 | Sources | `GET /sources`, `/sources/activity`, naming, import rules | Exists |
 | Jobs and progress | `GET /api/v1/jobs`, `/ws/jobs/{id}` | Exists |
 | Build workflow projection | `GET /plans/:id/workflow` | Exists (GRE-1123) |
 | Build planning phase | `GET /plans/:id/build-planning` | Exists in Rust behind `desktop_rebuild` (GRE-1119) |
-| Assistant decisions | `GET /plans/:id/decisions` | Exists in Rust behind `desktop_rebuild` (GRE-1119); History lists them too |
+| Assistant decisions | `GET /plans/:id/decisions`, `POST /plans/{id}/decisions` (also at `/api/v1` and `/api/v2`) | Exists in Rust behind `desktop_rebuild` (read GRE-1119, append GRE-1243); History lists them too |
+| Plan feature overrides | `GET` and `PATCH /plans/{id}/features` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1243); see [Plan features and decision append in Rust](../desktop-rebuild.md#plan-features-and-decision-append-in-rust-gre-1243) |
 | Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker and PrusaLink observed; Bambu reads as Manual until it has a Rust status watcher (GRE-362). See [Farm reads](../farm-reads.md) |
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Send queue | `GET /api/v2/printer-send-queue` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |
 | Spoolman shortfalls | `GET /plans/:id/filament-shortfalls` (Rust-only) | Exists; grams needed reads the per-send grams table (schema 46) and stays `unknown` (`grams_not_recorded`) until the GRE-1165 writers record grams per send (slicer estimate at send, measured at finish); basis is `measured`, `estimated` or `unknown` with a reason. The workflow projection consumes it next |
-| Accept | `POST /plans/:id/drafts/:draftId/apply` | Port |
+| Accept | `POST /api/v2/plans/{id}/drafts/{draft_id}/apply` with an `Idempotency-Key` | Exists in Rust behind `desktop_rebuild`; the generated client's `acceptDraft` (GRE-1120). The Plan tab sends the previewed `revision`, so a stale Accept is `draft_changed` |
+| Plan tab edits | `PUT /api/v2/plans/{id}/drafts/header`, `POST /api/v2/plans/{id}/drafts/save`, and `GET /api/v2/plans/{id}/drafts/header` for the Build header and Accepted base before any draft | Exists in Rust behind `desktop_rebuild` (GRE-1197, GRE-1120); see [Draft header fields](../draft-headers.md) |
 | Verify one result | `POST /printer-checkoff/verify`, `/reconcile`, `/dismiss` | Port |
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |
 | Ranked task feed | `GET /api/v1/tasks` | Exists (GRE-1123), a view over the workflow projection |
@@ -159,7 +162,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md) |
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
 | Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
-| Accept preview with checks | `POST /plans/:id/drafts/:draftId/preview` | New |
+| Accept preview with checks | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | Exists in Rust behind `desktop_rebuild` (GRE-1207 added the header changes) |
 | Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant |
 | Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |

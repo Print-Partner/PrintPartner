@@ -50,20 +50,27 @@ export async function readCore<N extends ReadRoute>(
 /**
  * One write through the generated Rust client: the body is checked against the
  * route's request schema before it is sent, and the answer against its response
- * schema. A failed send throws; the caller decides whether to resend.
+ * schema. A route that declares an `Idempotency-Key` header is never sent
+ * without one. A failed send throws; the caller decides whether to resend.
  */
 export async function writeCore<N extends WriteRoute>(
   name: N,
   params: RouteParams<N>,
   body: RouteRequest<N>,
+  idempotencyKey?: string,
 ): Promise<RouteResponse<N>> {
   const route = routes[name];
   const path = routePath(name, params);
   const request = route.request?.safeParse(body);
-  if (!request?.success) throw new RequestContractError(path);
+  const keyed = (route.headers as readonly string[]).includes("Idempotency-Key");
+  if (!request?.success || (keyed && !idempotencyKey)) throw new RequestContractError(path);
   const response = await fetchCore(path, {
     method: route.method,
-    headers: { accept: "application/json", "content-type": "application/json" },
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      ...(keyed && idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+    },
     body: JSON.stringify(request.data),
   });
   const parsed = route.response.safeParse(await response.json().catch(() => undefined));

@@ -1206,16 +1206,14 @@ mod tests {
         assert_eq!(watchers.route("prusa"), Route::Node);
     }
 
-    /// Every request sent was a status query. A poll cancelled after its
-    /// connection opened but before it wrote anything (replace, remove or
-    /// stop) leaves an empty line in the log: nothing was sent on it.
+    /// Every request sent was a status query.
     fn sent_only_status_queries(printer: &RecordedPrinter) {
         let lines = printer.request_lines();
-        let sent: Vec<_> = lines.iter().filter(|line| !line.is_empty()).collect();
-        assert!(!sent.is_empty());
+        assert!(!lines.is_empty());
         assert!(
-            sent.iter()
-                .all(|line| **line == format!("GET {QUERY} HTTP/1.1")),
+            lines
+                .iter()
+                .all(|line| *line == format!("GET {QUERY} HTTP/1.1")),
             "{lines:?}"
         );
     }

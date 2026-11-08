@@ -10,9 +10,9 @@ name: Rust cross-OS
 # desktop_rebuild nextest once and runs --partition slice:m/3 across three
 # runners. Schedule keeps the in-job monolithic desktop_rebuild nextest.
 # The Linux jobs run on the pp-local fleet for main pushes, merge groups and
-# manual runs, and on ubuntu-latest for every pull request, the schedule,
-# PP_RUST_RUNNER=hosted or an unavailable fleet (scripts/ci-rust-runner.py;
-# docs/development/ci.md).
+# manual runs, and on ubuntu-latest for the schedule, PP_RUST_RUNNER=hosted or an
+# unavailable fleet. Pull requests follow PP_PR_RUNNER: blacksmith (default), hosted or
+# pp-iso (scripts/ci-rust-runner.py; docs/development/ci.md).
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
@@ -47,7 +47,7 @@ env:
 jobs:
   changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -57,6 +57,7 @@ jobs:
       relevant: ${{ steps.select.outputs.relevant }}
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       linux_runs_on: ${{ steps.runner.outputs.linux_runs_on }}
+      linux_kind: ${{ steps.runner.outputs.linux_kind }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,8 +80,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           RUN_ID: ${{ github.run_id }}
           PP_RUST_RUNNER: ${{ vars.PP_RUST_RUNNER }}
+          PP_PR_RUNNER: ${{ vars.PP_PR_RUNNER }}
           # Optional: a read-only token that can list self-hosted runners.
           RUNNER_TOKEN: ${{ secrets.PP_RUNNER_READ_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -97,8 +100,10 @@ jobs:
     outputs:
       # The rebuild partitions and the aggregate reuse this runner choice.
       runs_on: ${{ needs.changes.outputs.linux_runs_on }}
+      kind: ${{ needs.changes.outputs.linux_kind }}
     env:
       RUST_OS: linux
+      PP_RUNNER_KIND: ${{ needs.changes.outputs.linux_kind }}
       CARGO_SCOPE: --workspace
       # PRs: rdeps of changed crates (see scripts/ci-affected-nextest-filter.py).
       # Non-PR events always emit all() from the changes job.
@@ -127,17 +132,17 @@ jobs:
           persist-credentials: false
       # pp-local containers bring sccache (SCCACHE_DIR, size) and a host-mounted
       # CARGO_HOME registry; hosted images bring the rest of these prerequisites.
-      - name: Set up pp-local prerequisites
-        if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+      - name: Set up self-hosted Linux prerequisites
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
         run: bash "$GITHUB_WORKSPACE/scripts/setup-ci-linux.sh"
-      - name: Set up Rust on pp-local
-        if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+      - name: Set up Rust on self-hosted Linux
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: '1.99.0'
           components: rustfmt, clippy
       - name: Use the pp-local sccache
-        if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+        if: env.PP_RUNNER_KIND == 'pp-local'
         run: bash "$GITHUB_WORKSPACE/scripts/ci-pp-local-sccache.sh"
       - name: Fetch pinned historical schema commits
         run: rust/scripts/fetch-historical-schema-commits.sh
@@ -150,7 +155,7 @@ jobs:
       # pp-local skips it: sccache covers it there, and the action's post-job
       # cleanup can delete registry sources another container is compiling.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        if: runner.environment != 'self-hosted'
+        if: env.PP_RUNNER_KIND != 'pp-local'
         with:
           workspaces: rust -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -330,7 +335,7 @@ jobs:
         if: ${{ !cancelled() && steps.assets.outcome == 'success' && (env.RUST_OS != 'macos' || github.event_name != 'pull_request') }}
         run: cargo test --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --doc --features desktop_rebuild
       - name: sccache stats
-        if: always() && runner.environment == 'self-hosted' && runner.os == 'Linux'
+        if: always() && env.PP_RUNNER_KIND == 'pp-local'
         continue-on-error: true
         run: '"${RUSTC_WRAPPER:-sccache}" --show-stats'
 
@@ -350,6 +355,7 @@ jobs:
         partition: [1, 2, 3]
     env:
       RUST_OS: linux
+      PP_RUNNER_KIND: ${{ needs.rust-linux-build.outputs.kind }}
       NEXTEST_FILTER: all()
     # Compressed archive download plus a full slice must stay under this budget.
     timeout-minutes: 75
@@ -357,11 +363,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up pp-local prerequisites
-        if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+      - name: Set up self-hosted Linux prerequisites
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
         run: bash "$GITHUB_WORKSPACE/scripts/setup-ci-linux.sh"
-      - name: Set up Rust on pp-local
-        if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+      - name: Set up Rust on self-hosted Linux
+        if: runner.os == 'Linux' && (env.PP_RUNNER_KIND == 'pp-local' || env.PP_RUNNER_KIND == 'pp-iso')
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: '1.99.0'
@@ -436,7 +442,7 @@ jobs:
         run: cargo nextest run --archive-file nextest-archive-desktop-rebuild.tar.zst --workspace-remap "$GITHUB_WORKSPACE/rust" --partition slice:${{ matrix.partition }}/3 --no-fail-fast -E "$NEXTEST_FILTER"
       # Partitions only run archived binaries, so this mostly shows the sccache is reachable.
       - name: sccache stats
-        if: always() && runner.environment == 'self-hosted' && runner.os == 'Linux'
+        if: always() && env.PP_RUNNER_KIND == 'pp-local'
         continue-on-error: true
         run: '"${RUSTC_WRAPPER:-sccache}" --show-stats'
 
@@ -482,7 +488,7 @@ jobs:
     concurrency:
       group: rust-macos-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
     env:
       RUST_OS: macos
       CARGO_SCOPE: --workspace
@@ -495,14 +501,10 @@ jobs:
     needs: changes
     # Explicit jobs keep each required check present when selection skips it.
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false'))
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-latest
     env:
       RUST_OS: windows
-      # Unix-only crates; remove each exclusion when its port ticket is fixed.
-      CARGO_SCOPE: >-
-        --workspace
-        --exclude pp-api --exclude pp-gateway --exclude pp-server
-        --exclude pp-desktop
+      CARGO_SCOPE: --workspace
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}
     timeout-minutes: 90
     steps: *rust-steps
@@ -510,7 +512,7 @@ jobs:
   alert-macos-main:
     needs: [rust-linux, rust-macos, rust-windows]
     if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (failure() && github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read

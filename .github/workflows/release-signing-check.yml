@@ -19,7 +19,7 @@ jobs:
   unsigned-rejected:
     name: release key rejects unsigned artifacts
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     services:
       registry:

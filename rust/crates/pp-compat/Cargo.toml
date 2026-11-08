@@ -26,9 +26,9 @@ libc.workspace = true
 tokio-util.workspace = true
 regex.workspace = true
 tracing.workspace = true
+pp-os = { path = "../pp-os" }
 
 [target.'cfg(windows)'.dependencies]
-pp-os = { path = "../pp-os" }
 url = "=2.5.8"
 windows-sys = { version = "=0.61.2", features = [
     "Wdk_Foundation",

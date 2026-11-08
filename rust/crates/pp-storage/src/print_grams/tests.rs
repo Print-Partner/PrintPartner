@@ -35,6 +35,9 @@ fn gre_1165_a_measured_length_replaces_the_estimate_and_estimates_never_replace_
     assert_eq!(measured, Measurement::Recorded);
     let recorded = (36.0, 3, "measured".to_owned(), Some(0.003), Some(12_000.0));
     assert_eq!(row(&tx, "link"), Some(recorded.clone()));
+    let again = record_measured(&tx, "default", "link", 9_000.0).unwrap();
+    assert_eq!(again, Measurement::AlreadyMeasured);
+    assert_eq!(row(&tx, "link"), Some(recorded.clone()));
     assert!(!estimate("link", 12.0, Some(0.002)));
     assert_eq!(row(&tx, "link"), Some(recorded));
     assert_eq!(
@@ -53,6 +56,9 @@ fn gre_1165_a_length_without_a_factor_keeps_the_estimate() {
     let kept = (9.5, 2, "estimated".to_owned(), None, Some(3_100.0));
     assert_eq!(row(&tx, "link"), Some(kept.clone()));
     assert!(!record_estimate(&tx, "default", "link", 1.0, 2, None).unwrap());
+    assert_eq!(row(&tx, "link"), Some(kept.clone()));
+    let again = record_measured(&tx, "default", "link", 50.0).unwrap();
+    assert_eq!(again, Measurement::AlreadyMeasured);
     assert_eq!(row(&tx, "link"), Some(kept));
     let missing = record_measured(&tx, "default", "none", 3_100.0).unwrap();
     assert_eq!(missing, Measurement::NoEstimate);

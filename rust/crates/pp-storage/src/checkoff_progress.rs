@@ -663,6 +663,43 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
     Ok(Op::Unit { target, change })
 }
 
+/// The newest watching link of host `integration_id`, created at or before
+/// `created_by`, whose filename or remote path names `filename`, matched
+/// like Node's `printerFilenamesMatch`: the trimmed base name,
+/// case-insensitively.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn watching_link(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    integration_id: &str,
+    filename: &str,
+    created_by: &str,
+) -> Result<Option<String>> {
+    let base = |name: &str| {
+        let name = name.trim().replace('\\', "/");
+        name.rsplit('/').next().unwrap_or_default().to_lowercase()
+    };
+    let wanted = base(filename);
+    if wanted.is_empty() {
+        return Ok(None);
+    }
+    let links = links::load(tx, tenant, &links::now())?;
+    Ok(links
+        .iter()
+        .rev()
+        .find(|link| {
+            link["state"] == "watching"
+                && link["integration_id"] == integration_id
+                && link["created_at"]
+                    .as_str()
+                    .is_some_and(|at| at <= created_by)
+                && [&link["filename"], &link["remote_path"]]
+                    .into_iter()
+                    .any(|name| name.as_str().is_some_and(|name| base(name) == wanted))
+        })
+        .and_then(|link| link["id"].as_str().map(str::to_owned)))
+}
+
 /// Node's `createPrinterCheckoffLink` for a successful printer upload: a
 /// watching link for the Build named in `raw`, appended to the tenant's links.
 /// `None` when Node creates none: no file name, integration or printer.

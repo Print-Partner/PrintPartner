@@ -185,6 +185,17 @@ impl HostReads {
         }
     }
 
+    /// The file name and filament length in millimetres of the print the
+    /// printer reports as finished: Moonraker's `print_stats` (`complete`,
+    /// `filament_used`), PrusaLink's job (`FINISHED`, `consumed_material`).
+    /// One read; `None` when the printer reports no finished print.
+    pub async fn finished_filament(&self, target: &HostTarget) -> Option<(String, f64)> {
+        match self.driver(target) {
+            Driver::Moonraker(driver) => driver.finished_filament().await,
+            Driver::PrusaLink(driver) => driver.finished_filament().await,
+        }
+    }
+
     /// Node's `IntegrationTestResult`: `{ok, message}`, never an error.
     pub async fn test(&self, target: &HostTarget) -> Value {
         let result = match self.driver(target) {

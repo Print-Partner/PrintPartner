@@ -2,7 +2,8 @@
 //! the watchers; these adapters feed them the hosts in storage's `integrations` setting and
 //! expose their cached statuses to the authenticated `pp-api` status route and
 //! farm reads. No adapter writes: monitoring never changes Checkoff or
-//! dispatches a send.
+//! dispatches a send. The one observer that writes, `measured_grams`,
+//! records only the filament a finished print measured.
 use crate::{printer_host::StoredPrinterHosts, send_worker::QueueTargets};
 use anyhow::{Context, Result};
 use axum::Router;
@@ -253,6 +254,7 @@ pub struct StatusRoutes {
     reads: HostReads,
     send_config: AcceptedHttpConfig,
     send_queue: SendQueueClient,
+    grams: pp_storage::print_grams::PrintGramsClient,
     exports: std::path::PathBuf,
     wake: Arc<tokio::sync::Notify>,
 }
@@ -272,6 +274,7 @@ impl StatusRoutes {
             reads: HostReads::new()?,
             send_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
             send_queue: owner.send_queue(policy)?,
+            grams: owner.print_grams(tenant),
             exports: owner
                 .lease()
                 .context("Storage lease unavailable")?
@@ -285,6 +288,10 @@ impl StatusRoutes {
         let stream = PrinterStream::new(HEARTBEAT);
         let producer = stream.clone();
         let settings = self.settings;
+        let (measuring, reads, grams) = (settings.clone(), self.reads.clone(), self.grams);
+        status.spawn_observer(move |observations, cancelled| {
+            crate::measured_grams::observe(measuring, reads, grams, observations, cancelled)
+        });
         let hosts = StoredPrinterHosts::new(settings.clone(), self.reads);
         let targets = QueueTargets {
             settings: settings.clone(),

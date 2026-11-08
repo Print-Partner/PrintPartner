@@ -407,6 +407,116 @@ async fn ticket_t_26_farm_turned_off_after_send_now_fails_the_send_without_conta
     assert!(printer.request_lines().is_empty());
 }
 
+const PRINT_STATS: &str = "/printer/objects/query?print_stats";
+
+fn estimate() -> Value {
+    json!([12.5, 1, "estimated", 0.0025, null])
+}
+
+impl Farm {
+    /// A farm whose item `q1` was uploaded to `printer` with a 12.5 g estimate.
+    async fn sent(printer: &RoutedPrinter) -> Self {
+        let farm = Self::open(printer.url(), &[("q1", false, true)]);
+        farm.send("q1");
+        assert_eq!(farm.worker().run_next().await.unwrap(), Some(Sent::Done));
+        assert_eq!(farm.grams(), estimate());
+        farm
+    }
+
+    async fn finish(&self, filename: &str) -> Option<pp_storage::print_grams::Measurement> {
+        self.finish_at(filename, std::time::SystemTime::now()).await
+    }
+
+    async fn finish_at(
+        &self,
+        filename: &str,
+        at: std::time::SystemTime,
+    ) -> Option<pp_storage::print_grams::Measurement> {
+        crate::measured_grams::record(
+            &self.owner.client(),
+            &pp_gateway::printer_host::HostReads::new().unwrap(),
+            &self.owner.print_grams("default"),
+            "moon",
+            filename,
+            at,
+        )
+        .await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
+    use pp_storage::print_grams::Measurement;
+    let stats = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"a.gcode","filament_used":4000.0}}}}"#;
+    let printer = RoutedPrinter::start(vec![
+        (UPLOAD.into(), 201, b"{}".to_vec()),
+        (PRINT_STATS.into(), 200, stats.to_vec()),
+    ])
+    .unwrap();
+    let farm = Farm::sent(&printer).await;
+    assert_eq!(farm.finish("other.gcode").await, None, "no link prints it");
+    assert_eq!(farm.grams(), estimate());
+    let before_send = std::time::SystemTime::UNIX_EPOCH;
+    assert_eq!(
+        farm.finish_at("a.gcode", before_send).await,
+        None,
+        "a link made after the finish is a newer send"
+    );
+    assert_eq!(farm.grams(), estimate());
+    assert_eq!(
+        farm.finish("  gcodes\\A.GCODE ").await,
+        Some(Measurement::Recorded),
+        "matched like Node: trimmed base name, any case"
+    );
+    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
+    assert_eq!(
+        farm.finish("a.gcode").await,
+        Some(Measurement::AlreadyMeasured),
+        "a reprint of the same file name never replaces the measurement"
+    );
+    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
+    let reads = printer
+        .request_lines()
+        .iter()
+        .filter(|line| line.contains(PRINT_STATS))
+        .count();
+    assert_eq!(reads, 4, "one read per finish, never retried");
+    let link = &farm.links()[0];
+    assert_eq!(link["state"], "watching", "Checkoff is untouched");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gre_1165_no_finished_length_for_the_file_keeps_the_estimate() {
+    let stats = |state: &str, filename: &str, used: f64| {
+        format!(
+            r#"{{"result":{{"status":{{"print_stats":{{"state":"{state}","filename":"{filename}","filament_used":{used}}}}}}}}}"#
+        )
+    };
+    for (status, body, case) in [
+        (500, String::from("{}"), "read failed"),
+        (
+            200,
+            stats("printing", "b.gcode", 50.0),
+            "the next print started",
+        ),
+        (
+            200,
+            stats("complete", "b.gcode", 50.0),
+            "another file finished",
+        ),
+        (200, stats("complete", "a.gcode", 0.0), "no length"),
+    ] {
+        let printer = RoutedPrinter::start(vec![
+            (UPLOAD.into(), 201, b"{}".to_vec()),
+            (PRINT_STATS.into(), status, body.into_bytes()),
+        ])
+        .unwrap();
+        let farm = Farm::sent(&printer).await;
+        assert_eq!(farm.finish("a.gcode").await, None, "{case}");
+        assert_eq!(farm.grams(), estimate(), "{case}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn ticket_t_26_a_claim_that_meets_shutdown_never_contacts_the_printer() {
     let printer = printer(&[(UPLOAD, 201)]);

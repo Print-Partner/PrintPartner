@@ -179,6 +179,11 @@ enum Envelope {
         reply: mpsc::Sender<Result<send_queue::writes::Reply>>,
     },
     #[cfg(feature = "desktop_rebuild")]
+    PrintGrams {
+        command: print_grams::Command,
+        reply: mpsc::Sender<Result<Option<print_grams::Measurement>>>,
+    },
+    #[cfg(feature = "desktop_rebuild")]
     Farm {
         command: read_model::farm::Command,
         reply: mpsc::Sender<Result<read_model::farm::Farm>>,
@@ -844,6 +849,11 @@ impl WriterOwner {
                             admission,
                             &worker.job_subscriptions,
                         ));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::PrintGrams { command, reply } => {
+                        let _ =
+                            reply.send(print_grams::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::History { command, reply } => {

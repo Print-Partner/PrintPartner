@@ -120,6 +120,7 @@ fn scenario() -> (
             let recorded = PartGrams {
                 grams_per_unit: 10.5,
                 basis: Basis::Measured,
+                unconverted: false,
                 link_ids,
             };
             (part, recorded)
@@ -249,6 +250,7 @@ fn unknown_need_says_whether_any_grams_were_recorded() {
     let part_10 = |basis| PartGrams {
         grams_per_unit: 3.0,
         basis,
+        unconverted: false,
         link_ids: vec!["link".into()],
     };
     let measured = GramsNeeded::Measured {
@@ -261,6 +263,7 @@ fn unknown_need_says_whether_any_grams_were_recorded() {
     let estimated = GramsNeeded::Estimated {
         grams: 3,
         job_count: 1,
+        reason: None,
     };
     let recorded = HashMap::from([(10, part_10(Basis::Estimated))]);
     assert_eq!(need(recorded), [unprinted, estimated]);
@@ -281,6 +284,7 @@ fn an_estimated_part_makes_its_filament_estimated() {
     let estimated = GramsNeeded::Estimated {
         grams: 6,
         job_count: 1,
+        reason: Some(EstimateKept::MeasuredLengthNotConvertible),
     };
     let parts = [
         (part(1, measured), vec!["shared"]),
@@ -289,6 +293,7 @@ fn an_estimated_part_makes_its_filament_estimated() {
     let both = GramsNeeded::Estimated {
         grams: 10,
         job_count: 2,
+        reason: Some(EstimateKept::MeasuredLengthNotConvertible),
     };
     assert_eq!(group_need(&parts), both);
 }
@@ -320,6 +325,9 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
     // send, which still costs a tenth of the send's grams.
     store.send("default", "est", 7, estimated(12.0, 4), &[4]);
     store.send("default", "partial", 8, measured(100.0, 10), &[5]);
+    // Part 6's printer measured a length its file gave no factor for.
+    store.send("default", "unconverted", 9, estimated(8.0, 2), &[6]);
+    store.run("UPDATE print_link_grams SET measured_mm=1500 WHERE link_id='unconverted'");
     for n in 1..=7 {
         let grams = f64::from(10 * n);
         store.send(
@@ -358,6 +366,7 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
     let part = |grams_per_unit, basis, links: &[&str]| PartGrams {
         grams_per_unit,
         basis,
+        unconverted: false,
         link_ids: ids(links),
     };
     assert_eq!(grams[&2], part(27.625, Basis::Measured, &["new", "old"]));
@@ -367,7 +376,12 @@ fn inputs_read_module_state_integrations_and_measured_grams() {
     assert_eq!(grams[&3], part(50.0, Basis::Measured, &recent));
     assert_eq!(grams[&4], part(3.0, Basis::Estimated, &["est"]));
     assert_eq!(grams[&5], part(10.0, Basis::Measured, &["partial"]));
-    assert_eq!(grams.len(), 5);
+    let unconverted = PartGrams {
+        unconverted: true,
+        ..part(4.0, Basis::Estimated, &["unconverted"])
+    };
+    assert_eq!(grams[&6], unconverted);
+    assert_eq!(grams.len(), 6);
 
     let off = r#"UPDATE app_settings SET value='{"spoolman":false}' WHERE key='feature_toggles'"#;
     store.run(off);

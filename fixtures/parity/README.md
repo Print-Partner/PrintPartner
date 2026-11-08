@@ -6,7 +6,7 @@ Golden data captured from the TypeScript app, used as the reference for the Rust
 
 `pp_api::fixtures`, behind the default-off `desktop_rebuild` feature, replays copied fixtures against Rust routers on disposable data directories with no OAuth provider and no mailer. `Ledger` requires each Rust response to equal Node's status, complete JSON body and literal `Set-Cookie` headers, unless the case has a declared `Correction`. A correction names its kind (security, WebSocket, or durable-store) and reason, and holds the literal Rust response. It fails if Rust now matches Node, if it is never used, or if it is declared twice. `StateGraph` records every row of every SQLite table and the SHA-256 of every other file, so a test can compare state changes as well as responses.
 
-`rust/crates/pp-api/tests/ticket_t_10_fixtures.rs` runs `auth-login` (11 exact, 3 security corrections, no state change on any refusal) and `auth-session` (4 exact, 3 clearing-cookie corrections, Node's session row count, and only the `sessions` table changing when that count moves). It also runs `jobs-http`, `jobs-ws`, `plans-http`, `drafts-http`, `layers-http`, `manifest-http`, `manifest-checkouts-http`, `variants-http`, `catalog-http` and `accepted-http` (see below). Run it with `cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_10_fixtures)'`.
+`rust/crates/pp-api/tests/ticket_t_10_fixtures.rs` runs `auth-login` (11 exact, 3 security corrections, no state change on any refusal) and `auth-session` (4 exact, 3 clearing-cookie corrections, Node's session row count, and only the `sessions` table changing when that count moves). It also runs `jobs-http`, `jobs-ws`, `plans-http`, `drafts-http`, `layers-http`, `manifest-http`, `manifest-checkouts-http`, `variants-http`, `plan-features-decisions`, `catalog-http` and `accepted-http` (see below). Run it with `cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -E 'test(ticket_t_10_fixtures)'`.
 
 ## jobs-http/node.json (GRE-451)
 
@@ -131,6 +131,18 @@ It sends 78 requests in order on the flat, `/api/v1` and `/api/v2` mounts: dimen
 
 ```sh
 node fixtures/parity/variants-http/generate.mjs --check
+```
+
+## plan-features-decisions/node.json (GRE-1243)
+
+`generate.mjs` copies the required-units `unchanged.db` (Plan 1 in tenant `default`, Plan 2 in tenant `foreign`) and runs its `seed`, which adds Plans 3-12, a tenant layer with an unknown key, a Plan layer whose unknown keys hold nested values, index keys and number text Node keeps as written (`1.50`, `1E+2`, `-0`, a 20-digit integer), a layer with a duplicate key, one with a lone surrogate key, and layers Node refuses (not JSON, an array, `null` and number choices, empty text).
+
+It sends 114 requests in order on the flat, `/api/v1` and `/api/v2` mounts: feature reads for every layer shape and for ids the `/^[1-9]\d*$/` rule refuses (`0`, `01`, `0x1`, `1.0`, `+1`, an unsafe integer), multi-key patches in body order Node ignores, `null` clears down to `{}`, patches that keep raw number text, every body the patch schema refuses, bodies Fastify's parser refuses, `text/plain` bodies Fastify reads as a string, and a corrupt and then a missing tenant layer; then decision appends for each kind, defaults, `null` fields, non-object `params` and `result`, numbers, booleans, arrays and objects in the text fields (including a spread that shifts columns, and spreads past the last parameter before a field better-sqlite3 cannot bind), lone surrogates, duplicate keys, invalid kinds, non-object bodies, `text/plain` bodies, no body, missing, foreign and `Number()` ids, and the list read after them. A case with `sql` runs that SQL on the database before its request; a case with `rebuild: false` runs with `PP_DESKTOP_REBUILD` unset. Each case records the complete response and the tables it changed, with a decision's `created_at` as `"<now>"`; each write also records the Plan's stored layer text or the decision rows it added.
+
+`ticket_t_10_fixtures` replays every case through `build_router` merged with `planning_router`: 102 exact matches, eight declared corrections (the parser refusals), and four flag-off cases sent to a router built with the flag off, which mounts nothing and writes nothing. The stored text after all 34 writes equals Node's.
+
+```sh
+node fixtures/parity/plan-features-decisions/generate.mjs --check
 ```
 
 ## catalog-http/node.json (GRE-451)

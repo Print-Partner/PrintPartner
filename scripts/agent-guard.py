@@ -27,8 +27,8 @@ import subprocess
 import sys
 from urllib.parse import unquote_plus, urlsplit
 
-MERGE = ("Only the coordinator worktree merges, with `gh pr merge <number> --squash --match-head-commit <sha>`; "
-         "other merges need the maintainer. Report readiness instead.")
+MERGE = ("Merge only with a standalone `gh pr merge <number> --squash --match-head-commit <40-character sha>` "
+         "from a checkout, after the merge gate passes; other merges need the maintainer. Report readiness instead.")
 FORCE = "Never force-push. Add a commit instead."
 MAIN = "Push a branch and open a PR; main only changes by merge."
 RELEASE = "Releases and tags need separate authorization."
@@ -1001,11 +1001,12 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     return API_WRITE
 
 
-def coordinator_merge(args, cwd):
-    """Whether args is the one merge the coordinator may run.
+def gated_merge(args, cwd):
+    """Whether args is the one merge form the guard allows.
 
-    The form is gh pr merge [<number>] --squash --match-head-commit <full sha>, with no other
-    option, run from the coordinator worktree (see coordinator_worktree).
+    The form is gh pr merge <number> --squash --match-head-commit <full sha>, with no other option,
+    run from a Git checkout. Lanes and the coordinator use the same form. The guard cannot tell a
+    sensitive PR from a normal one, so the merge gate in definition-of-done.md decides who runs it.
     """
     if args[:3] != ["gh", "pr", "merge"] or cwd is None:
         return False
@@ -1022,7 +1023,17 @@ def coordinator_merge(args, cwd):
             number = arg
         else:
             return False
-    return bool(squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
+    return bool(number and squash and sha and FULL_SHA.match(sha)) and git_checkout(cwd)
+
+
+def git_checkout(cwd):
+    """Whether cwd lies inside a Git work tree, so gh resolves the PR against that checkout's remote."""
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
+                             text=True, timeout=5, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(top)
 
 
 def coordinator_worktree(cwd):
@@ -1107,7 +1118,7 @@ def check_command(command, cwd, outer=None):
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
-        if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
+        if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and gated_merge(parsed[0][0], cwd):
             return None
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]

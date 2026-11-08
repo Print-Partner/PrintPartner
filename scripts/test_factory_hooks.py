@@ -825,48 +825,65 @@ class CoordinatorMergeTests(unittest.TestCase):
         return (hook(GUARD, droid_command(command, cwd), coordinator),
                 hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator))
 
-    def test_lane_worktree_merges_are_refused(self):
-        # OLD_MERGE_GATE is exactly what a lane following the retired merge_gate would run.
-        for command in (MERGE_FORM, OLD_MERGE_GATE, "gh pr merge 12 --squash"):
-            for coordinator in (None, self.coordinator, "relative/path"):
-                for result in self.results(command, self.lane, coordinator):
-                    with self.subTest(command=command, coordinator=coordinator):
-                        self.assertEqual(result.returncode, 2, result.stderr)
-                        self.assertIn("Only the coordinator worktree merges", result.stderr)
+    def test_lane_and_coordinator_run_the_gated_merge(self):
+        # Lanes merge their own normal PRs with the same form the coordinator uses (GRE-1280).
+        forms = (MERGE_FORM, f"gh pr merge --squash --match-head-commit={SHA} 12",
+                 f"gh pr merge --match-head-commit {SHA} --squash 12")
+        for command in forms:
+            for cwd in (self.lane, self.coordinator, str(Path(self.coordinator, "sub"))):
+                for coordinator in (None, self.coordinator, "relative/path"):
+                    for result in self.results(command, cwd, coordinator):
+                        with self.subTest(command=command, cwd=cwd, coordinator=coordinator):
+                            self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_coordinator_merge_is_allowed_only_in_its_worktree(self):
-        for command in (MERGE_FORM, f"gh pr merge --squash --match-head-commit={SHA} 12",
-                        f"gh pr merge --match-head-commit {SHA} --squash"):
-            for cwd in (self.coordinator, str(Path(self.coordinator, "sub"))):
+    def test_other_merge_forms_are_refused_everywhere(self):
+        # OLD_MERGE_GATE is what the retired lane-rules.yaml merge_gate told lanes to run.
+        refused = (OLD_MERGE_GATE, f"{MERGE_FORM} --admin", f"{MERGE_FORM} --auto", f"{MERGE_FORM} --delete-branch",
+                   f"{MERGE_FORM} -d", f"{MERGE_FORM} --disable-auto", f"{MERGE_FORM} -R o/r",
+                   f"{MERGE_FORM} --repo=o/r", f"{MERGE_FORM} --squash", f"{MERGE_FORM} --body x",
+                   f"{MERGE_FORM} --match-head-commit {SHA}", f"gh pr merge 12 --merge --match-head-commit {SHA}",
+                   f"gh pr merge 12 --rebase --match-head-commit {SHA}", "gh pr merge 12 --squash",
+                   f"gh pr merge --squash --match-head-commit {SHA}",
+                   f"gh pr merge 12 --squash --match-head-commit {SHA[:12]}",
+                   f"gh pr merge 12 --squash --match-head-commit {SHA.upper()}",
+                   f"gh pr merge 12 --squash --match-head-commit {SHA}0",
+                   "gh pr merge 12 --squash --match-head-commit",
+                   f"gh pr merge 12 13 --squash --match-head-commit {SHA}",
+                   f"gh pr merge 012 --squash --match-head-commit {SHA}",
+                   f"gh pr merge https://github.com/o/r/pull/12 --squash --match-head-commit {SHA}",
+                   f"gh pr merge topic --squash --match-head-commit {SHA}",
+                   "gh pr merge 12 --squash --match-head-commit $SHA",
+                   "gh pr merge 12 --squash --match-head-commit \"$(git rev-parse HEAD)\"",
+                   f"GH_REPO=o/r {MERGE_FORM}", f"env {MERGE_FORM}", f"command {MERGE_FORM}",
+                   f"/usr/bin/gh pr merge 12 --squash --match-head-commit {SHA}",
+                   f"cd {self.lane} && {MERGE_FORM}", f"{MERGE_FORM}; echo done", f"true && {MERGE_FORM}",
+                   f"({MERGE_FORM})", f"echo $({MERGE_FORM})", f"{MERGE_FORM} &", f"{MERGE_FORM} | cat",
+                   f"bash -c '{MERGE_FORM}'", f"sh -c '{MERGE_FORM}'",
+                   f"gh -R o/r pr merge 12 --squash --match-head-commit {SHA}",
+                   f"gh pr -R o/r merge 12 --squash --match-head-commit {SHA}",
+                   "gh api -X PUT repos/o/r/pulls/12/merge")
+        for command in refused:
+            for cwd in (self.lane, self.coordinator):
                 for result in self.results(command, cwd, self.coordinator):
                     with self.subTest(command=command, cwd=cwd):
-                        self.assertEqual(result.returncode, 0, result.stderr)
-        for result in self.results(MERGE_FORM, self.coordinator, None):
-            self.assertEqual(result.returncode, 2, result.stderr)
-        for command in (OLD_MERGE_GATE, f"{MERGE_FORM} --admin", f"{MERGE_FORM} --auto", f"{MERGE_FORM} --delete-branch",
-                        f"gh pr merge 12 --merge --match-head-commit {SHA}", "gh pr merge 12 --squash",
-                        f"gh pr merge 12 --squash --match-head-commit {SHA[:12]}",
-                        f"gh pr merge 12 --squash --match-head-commit {SHA.upper()}",
-                        f"gh pr merge 12 13 --squash --match-head-commit {SHA}",
-                        "gh pr merge 12 --squash --match-head-commit $SHA", f"GH_REPO=o/r {MERGE_FORM}",
-                        f"env {MERGE_FORM}", f"cd {self.lane} && {MERGE_FORM}", f"{MERGE_FORM}; echo done",
-                        f"({MERGE_FORM})", f"echo $({MERGE_FORM})", f"{MERGE_FORM} &",
-                        f"gh -R o/r pr merge 12 --squash --match-head-commit {SHA}",
-                        "gh api -X PUT repos/o/r/pulls/12/merge"):
-            for result in self.results(command, self.coordinator, self.coordinator):
-                with self.subTest(command=command):
-                    self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_merge_outside_a_git_checkout_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for result in self.results(MERGE_FORM, folder, None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Merge only with a standalone", result.stderr)
 
     def test_coordinator_root_inside_lane_worktrees_is_refused(self):
         guard = load(CLI, "agent_guard_lanes")
-        args = MERGE_FORM.split()
         with patch.dict(os.environ, {"PP_COORDINATOR_WORKTREE": self.coordinator}):
-            self.assertTrue(guard.coordinator_merge(args, self.coordinator))
+            self.assertTrue(guard.coordinator_worktree(self.coordinator))
             with patch.object(guard, "LANE_WORKTREES", str(Path(self.coordinator).parent)):
-                self.assertFalse(guard.coordinator_merge(args, self.coordinator))
-                self.assertIn("Only the coordinator", guard.check_command(MERGE_FORM, self.coordinator))
+                self.assertFalse(guard.coordinator_worktree(self.coordinator))
+                self.assertIn("Only the coordinator", guard.check_command(f"gh pr comment 12 -b '{MARKER}'",
+                                                                          self.coordinator))
             with patch.object(guard, "LANE_WORKTREES", self.coordinator):
-                self.assertFalse(guard.coordinator_merge(args, self.coordinator))
+                self.assertFalse(guard.coordinator_worktree(self.coordinator))
 
 
 MARKER = f"<!-- pp-review-gate head={SHA} reviewer=gpt-5.6-sol findings=0 -->"
@@ -1009,10 +1026,10 @@ class MarkerAnywhereTests(unittest.TestCase):
 class ShellWrapperTests(unittest.TestCase):
     def test_shell_c_scripts_are_classified_like_top_level_commands(self):
         for shell in ("bash", "sh", "zsh", "dash", "/bin/bash", "env bash", "nohup sh"):
-            for command, reason in ((f"{shell} -c 'gh pr merge 12 --squash'", "Only the coordinator worktree merges"),
+            for command, reason in ((f"{shell} -c 'gh pr merge 12 --squash'", "Merge only with a standalone"),
                                     (f"{shell} -ec 'git push --force origin HEAD:topic'", "Never force-push"),
                                     (f"{shell} -lc \"gh variable set X -b y\"", "owner-maintained"),
-                                    (f"{shell} -c 'bash -c \"gh pr merge 12\"'", "Only the coordinator worktree merges")):
+                                    (f"{shell} -c 'bash -c \"gh pr merge 12\"'", "Merge only with a standalone")):
                 with self.subTest(command=command):
                     result = hook(CLAUDE, claude_call("Bash", "/", command=command))
                     self.assertEqual(result.returncode, 2, result.stderr)
@@ -1022,7 +1039,7 @@ class ShellWrapperTests(unittest.TestCase):
                 self.assertEqual(hook(CLAUDE, claude_call("Bash", "/", command=command)).returncode, 0)
 
     def test_shell_options_before_c_are_parsed_or_refused(self):
-        merge = "Only the coordinator worktree merges"
+        merge = "Merge only with a standalone"
         for command, reason in (("bash --rcfile x -c 'gh pr merge 12'", merge),
                                 ("bash --init-file x -c 'gh pr merge 12'", merge),
                                 ("bash -o posix -c 'gh pr merge 12'", merge), ("bash +o posix -c 'gh pr merge 12'", merge),
@@ -1063,12 +1080,12 @@ class ShellWrapperTests(unittest.TestCase):
             self.assertEqual(hook(CLAUDE, claude_call("Bash", repo, command="bash -c 'git push origin HEAD:topic'"))
                              .returncode, 0)
 
-    def test_wrapped_coordinator_merge_is_refused(self):
+    def test_wrapped_gated_merge_is_refused(self):
         with tempfile.TemporaryDirectory() as folder:
             coordinator = git_repo(Path(folder, "coordinator"))
             result = hook(CLAUDE, claude_call("Bash", coordinator, command=f"bash -c '{MERGE_FORM}'"), coordinator)
             self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertIn("Only the coordinator worktree merges", result.stderr)
+            self.assertIn("Merge only with a standalone", result.stderr)
 
     def test_coordinator_may_use_unknown_shell_options(self):
         with tempfile.TemporaryDirectory() as folder:

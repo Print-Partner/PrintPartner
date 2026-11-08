@@ -35,12 +35,12 @@ impl StoredPrinterHosts {
     }
 }
 
-enum Host {
+pub(crate) enum Host {
     Read(HostTarget),
     Unported,
 }
 
-fn host(integration: StoredIntegration) -> Option<Host> {
+pub(crate) fn host(integration: StoredIntegration) -> Option<Host> {
     match integration.kind.as_str() {
         "moonraker" => Some(Host::Read(HostTarget::Moonraker {
             base_url: integration.base_url,

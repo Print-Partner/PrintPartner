@@ -147,14 +147,25 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                     job = jobs[job_id]
                     self.assertEqual(job.get("name", job_id), context)
                     self.assertEqual(job["needs"], "changes")
+                    selected = "needs.changes.outputs.relevant != 'false'"
+                    if job_id == "rust-windows":
+                        selected = "needs.changes.outputs.windows != 'false'"
                     self.assertEqual(job["if"], "(github.event_name != 'pull_request' || "
                                      "!github.event.pull_request.draft) && (!cancelled() && "
-                                     "(needs.changes.result != 'success' || "
-                                     "needs.changes.outputs.relevant != 'false'))")
+                                     f"(needs.changes.result != 'success' || {selected}))")
                     checkout = next(step for step in job["steps"]
                                     if step.get("uses", "").startswith("actions/checkout@"))
                     self.assertNotIn("ref", checkout.get("with", {}))
                 if filename == "rust-cross-os.yml":
+                    windows = next(step for step in jobs["changes"]["steps"]
+                                   if step.get("id") == "windows")
+                    self.assertEqual(windows["run"], "python3 scripts/ci-path-filter.py windows")
+                    self.assertEqual(windows["env"], {
+                        **select["env"],
+                        "PR_LABELS": "${{ toJSON(github.event.pull_request.labels.*.name) }}",
+                    })
+                    self.assertEqual(jobs["changes"]["outputs"]["windows"],
+                                     "${{ steps.windows.outputs.windows }}")
                     self.assertIn("python3 scripts/ci-affected-nextest-filter.py",
                                   select["run"].splitlines())
                     self.assertEqual(jobs["changes"]["outputs"]["nextest_filter"],
@@ -222,6 +233,9 @@ class MergeGroupWorkflowTests(unittest.TestCase):
         self.assertIn("(needs.changes.result != 'success' || "
                       "needs.changes.outputs.relevant != 'false')",
                       workflow["jobs"]["rust-macos"]["if"])
+        for label in ["macos", "ci:full"]:
+            self.assertIn(f"contains(github.event.pull_request.labels.*.name, '{label}')",
+                          workflow["jobs"]["rust-macos"]["if"])
 
     def test_merge_group_runs_filters_even_for_docs_only_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -290,10 +304,13 @@ class PullRequestEditTests(unittest.TestCase):
 
 
 class MainPushConcurrencyTests(unittest.TestCase):
-    """A push to main must never cancel an earlier main run (GRE-1228)."""
+    """Main pushes never cancel a running run (GRE-1228) and queue at most one pending run per workflow."""
+
+    EACH_PUSH = {"duplication.yml", "desktop-fleet-rust.yml"}
+    MAIN_GROUP = "github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_attempt == '1' && 'main'"
 
     def test_only_pull_requests_cancel_and_other_events_get_their_own_group(self):
-        checked = 0
+        checked = bounded = 0
         for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
             workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
             events = workflow.get("on", {})
@@ -308,9 +325,14 @@ class MainPushConcurrencyTests(unittest.TestCase):
             with self.subTest(workflow=path.name):
                 self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
                 self.assertIn("github.run_id", concurrency["group"])
-                self.assertNotIn("'push'", concurrency["group"])
-                self.assertNotIn("run_attempt", concurrency["group"] + cancel)
+                if path.name in self.EACH_PUSH:
+                    self.assertNotIn("'main'", concurrency["group"], f"{path.name} compares each push with the one before")
+                    self.assertNotIn("run_attempt", concurrency["group"] + cancel)
+                    continue
+                bounded += 1
+                self.assertIn(self.MAIN_GROUP, concurrency["group"])
         self.assertGreaterEqual(checked, 13)
+        self.assertGreaterEqual(bounded, 11)
 
 
 if __name__ == "__main__":

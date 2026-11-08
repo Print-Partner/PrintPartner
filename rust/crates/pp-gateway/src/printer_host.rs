@@ -4,11 +4,17 @@
 //! and camera view (GRE-1174), through one shared `HttpGuard`.
 //! Moonraker reads send each GET once. PrusaLink reads with a password add a
 //! Digest probe before each GET and resend a GET once after a 401 with a
-//! fresh challenge, as Node's adapter does. Nothing here uploads, starts a
-//! print or touches storage.
+//! fresh challenge, as Node's adapter does. These reads never upload, start a
+//! print or touch storage.
+//!
+//! [`HostSends`] is the one upload path: the send queue's worker (GRE-365)
+//! calls it once per admitted printer effect, after the user dispatched the
+//! item. Each request is sent once and an uncertain result is reported, never
+//! resent.
 use anyhow::Result;
 use axum::body::{Body, Bytes};
 use http_body::Frame;
+pub use pp_drivers::moonraker_driver::UploadResult;
 use pp_drivers::{
     moonraker_driver::{self, StorageEntry},
     prusalink,
@@ -245,6 +251,45 @@ impl HostReads {
             Driver::PrusaLink(driver) => driver.cameras().await?,
         };
         Ok(serde_json::to_value(cameras)?)
+    }
+}
+
+/// Sends a sliced print file to a printer host. Only the send queue's
+/// printer-upload worker uses it.
+#[derive(Clone)]
+pub struct HostSends {
+    reads: HostReads,
+}
+
+impl HostSends {
+    pub fn new() -> Result<Self> {
+        Ok(Self::with_guard(HttpGuard::new(
+            Arc::new(SystemResolver),
+            READ_DEADLINE,
+            MAX_BODY,
+        )?))
+    }
+
+    pub fn with_guard(guard: HttpGuard) -> Self {
+        Self {
+            reads: HostReads::with_guard(guard),
+        }
+    }
+
+    /// Upload `file` as `filename`, then start it when `start` is true and
+    /// the upload succeeded. Each request is sent once.
+    pub async fn upload(
+        &self,
+        target: &HostTarget,
+        file: Vec<u8>,
+        filename: &str,
+        start: bool,
+    ) -> UploadResult {
+        let source = moonraker_driver::UploadSource::Bytes(file);
+        match self.reads.driver(target) {
+            Driver::Moonraker(driver) => driver.upload_file(source, filename, start).await,
+            Driver::PrusaLink(driver) => driver.upload_file(source, filename, start).await,
+        }
     }
 }
 

@@ -138,6 +138,10 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   execution and bed-clear facts, last-heard time and distinct not-set-up,
   manual and unreachable reasons. They write nothing. See
   [Farm reads](farm-reads.md).
+- Send queue actions (GRE-365): Send now, Send ready, Reconcile and Remove
+  under `/api/v2/printer-send-queue`, and the printer-upload worker, which is
+  the only Rust code that uploads to a printer. Every upload follows a user's
+  dispatch; nothing is retried. See [Send queue](send-queue.md).
 - Match suggestions (GRE-1091):
   `GET /api/v2/printer-checkoff/unattributed/suggestions` proposes a Build and
   Plate for each unmatched print with confidence `exact`, `likely` or `none`
@@ -306,7 +310,7 @@ The rebuild ships as small PRs to `main`, each under about 1.5k lines and checka
 Each slice is done when:
 
 - the existing suites pass with the feature off and on, and the default build is unchanged;
-- a reviewer engine other than the author's scores it above 8 on the exact head, with all checks green.
+- it passes the [merge gate](development/definition-of-done.md#merge-gate) on the exact head, with all checks green: `review-gate` for a normal slice, plus the coordinator's scorer run when the gate passed only through the coordinator record, and two scorer seats at 9 or more for a sensitive one.
 
 Slices land in this order. Linear tracks each one under GRE-595. A slice is one Linear item and may ship as several PRs (D16 ships as four, D14 as five). Some modules already exist on main from earlier PRs (for example #129 to #131); a slice ports only the delta from the reference branch.
 
@@ -2739,6 +2743,8 @@ is refused (see Writer admission above), so no Node verify, monitor or claim
 writes `printer.checkoff_links`, progress or outcomes beside a burst. A burst
 does not run Node's unattributed-print claim or Spoolman deduction after verify;
 those are GRE-1169 and GRE-411 (deduction intent).
+MCP `propose_verify_printer_checkoff` applies through the same burst
+(GRE-1170, below).
 
 A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
 "additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
@@ -2780,6 +2786,48 @@ without that hash or its unit list (written before they existed) refuses with
 every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
+#### Reconcile by operation id (GRE-1170)
+
+`GET /printer-checkoff/verify-batch?idempotency_key=...` (also at `/api/v2`,
+same admission) answers what a key settled to without resending the body. The
+key is read like the burst's key (JS-trimmed, 1 to 200 characters), and it must
+appear exactly once, otherwise the answer is 400. The read writes no Checkoff
+state; as on every route, an API key's `last_used_at` may be recorded.
+
+| State | Body | Meaning |
+| --- | --- | --- |
+| `applied` | `{idempotency_key, state, applied_at, undone_at: null, receipt}` | The burst committed; `receipt` is the stored response |
+| `undone` | the same with `undone_at` | The burst committed and was undone |
+| `expired` | `applied_at`, `undone_at` and `receipt` are null | The burst committed, its receipt was trimmed, and the key cannot run again |
+| `unknown` | `applied_at`, `undone_at` and `receipt` are null | The key is in neither list, but the retired list is full (5,000 keys), so a key older than the newest 5,100 bursts may have been dropped. The lookup cannot tell whether it ran, and replay would treat it as new |
+| 404 `burst_not_found` | problem body | The key is in neither list and no key was ever dropped, so no burst used it and nothing was applied. Resending the same request with the same key is safe |
+
+#### MCP `propose_verify_printer_checkoff` (GRE-1170)
+
+The Rust MCP (`/mcp`, `/api/v1/mcp`, API key always required) ports Node's
+`propose_verify_printer_checkoff` with the same name and schema
+(`{link_id, decisions}`). The propose step reads the link in a writer
+transaction that changes no Checkoff state and refuses as Node does: `link_id
+and decisions are required`, `Checkoff link not found`, or `Checkoff link is
+not awaiting verification`. Nothing is written until `confirm_apply`.
+`confirm_apply` runs the proposal as a one-bed burst with the idempotency key
+`mcp:<action_id>`, so it shares this burst's receipt, replay, undo and farm log.
+It answers `{ok: true, result: <burst receipt>}`, which carries `undo_token`.
+Node answered with the single-verify body. A refused burst answers
+`{ok: false, status, detail}`, writes nothing and stays pending for a retry or
+dismiss.
+
+The action id is the operation id. `confirm_apply` for an action this session
+no longer holds (applied already, or proposed before a restart or in another
+session) looks up `mcp:<action_id>`. If that burst exists, the call answers
+`{ok, reconciled: true, action_id, detail, result, undone_at}` instead of
+Node's unknown-action error: `ok` is true while the burst stands, and false
+once it was undone or its receipt expired. Otherwise, including an `unknown`
+lookup, the call answers Node's unknown-action error. If the lookup cannot run
+(the writer is busy or past its deadline, or authentication fails), the call
+answers `{"error": "Checkoff is unavailable"}` and the action is not reported
+as unknown.
+
 The replacement UI's Today screen confirms one bed, or units picked on several
 beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a
 lost send with the same key; see `web/apps/ui/README.md` (Today).
@@ -2791,7 +2839,7 @@ unit decisions and imported-extra `additional_decisions`, and leaves out beds wi
 nothing to decide (a plate still `watching`), which the route would refuse.
 
 ```sh
-cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild,pp-api/desktop_rebuild -E 'test(verify_batch)'
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 
@@ -2942,13 +2990,15 @@ cd web && node --conditions=development --import tsx ../fixtures/parity/printer-
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
 ```
 
-### Print-file assignment routes (GRE-1220)
+### Print-file assignment routes (GRE-1220, GRE-1255, GRE-1256)
 
-`pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`
-and `POST /printer-checkoff/file-assignments/preview` at the root and under
+`pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`,
+`POST /printer-checkoff/file-assignments/preview` and
+`POST /printer-checkoff/file-assignments/upload` at the root and under
 `/api/v1`, where Node registers them, behind `desktop_rebuild` and
-`PP_DESKTOP_REBUILD`. Each mount has Node's 20-per-minute window per route and
-its 1 MiB JSON limit.
+`PP_DESKTOP_REBUILD`. Each mount has Node's windows per route: 20 a minute
+for the preview and assignment with their 1 MiB JSON limit, and 10 a minute
+for the upload.
 
 - Storage parses the body in Node's `parsePrintFileRequest` order and resolves
   the printer as `resolveAssignmentPrinter` does: a fleet printer by id, its
@@ -2975,13 +3025,82 @@ its 1 MiB JSON limit.
   writer transaction checks
   the printer's host fingerprint again, so a settings change after the route's
   read refuses with the same 409.
-- An `upload_token` answers Node's unknown-upload 409 `That upload is no longer
-  available; upload the print file again`, because this runtime serves no
-  upload route yet. A `remote_path` without a snapshot on a Moonraker or
-  PrusaLink host answers 501 instead of recording the print unread, because
-  this runtime does not read a printer's file itself yet. A printer tracked by
-  hand, or a host type Node has no file reader for, records the print unread
-  as Node does, and an unread 3MF is refused with Node's 409.
+- The upload route authenticates the caller first, as Node's `onRequest`
+  hooks do, so a bad credential is 401 before the rate window counts it or
+  the body is read. It takes `multipart/form-data` (else 415 `Send the print
+  file as multipart/form-data`) under Node's busboy limits: one file part of
+  up to 64 MB (413 `That print file is larger than the 64 MB PrintPartner
+  will take as an upload`, 400 `Upload one print file at a time` for a
+  second), and four fields cut at 64 KiB (a fifth is 400 `That upload could
+  not be read`). A part is a file when it has a file name or an
+  `application/octet-stream` type, as busboy decides, and a part named after
+  an `Object.prototype` member is 400 `That upload could not be read`, as
+  `@fastify/multipart` refuses it: when the form ends, so a later files,
+  fields or size limit answers first, and without that part's own size limit.
+  Node has no cap on the whole body; here it
+  is 65 MiB, and a body past it that is still inside the file part is the
+  413 (the unreadable 400 when that part is named after an
+  `Object.prototype` member), anywhere else the unreadable 400. Answers still differ from Node for
+  requests the web client never sends: an empty multipart body (the
+  unreadable 400 here, `profile_id is required` in Node), a field part typed
+  `application/json` (read as text here, JSON-parsed in Node), a file name
+  sent only as `filename*=` (multer does not decode it), and a malformed or
+  oversized JSON body (415 here, Fastify's 400 or 413). It then checks
+  `profile_id`, the `file` part, its file name (what follows the last `/` or `\`,
+  unless that is `.` or `..`, trimmed) and extension in Node's order,
+  reads the Build's Accepted Plan (a missing Build is a 500,
+  as for the preview), classifies the bytes off the async workers (409 with
+  Node's rejection detail), and holds the classification for 15 minutes under
+  a new `upload_token`. The answer is the preview's body with that token.
+  `print_file::UploadStore` is Node's `pendingUploads`: it keeps only the
+  classification and identity (`size_bytes`, `sha256`), since the bytes
+  classify the same way every time, but counts their size toward Node's
+  128 MB cap, so a third full upload is 503 `PrintPartner is holding as many
+  uploaded print files as it will; record one of them, then try again`.
+- An `upload_token` is redeemed only for the Build it was uploaded for. An
+  unknown, expired or foreign one answers Node's 409 `That upload is no longer
+  available; upload the print file again`. The assignment reserves it as it
+  reserves a snapshot: a successful or unknown outcome spends it, and a
+  refusal releases it, so the operator does not upload the file again after
+  a stale plan revision. Node reads the upload without reserving it; here a
+  concurrent second assignment of the same token is refused, while a preview
+  still reads it.
+- A `remote_path` without a snapshot on a Moonraker or PrusaLink host is read
+  off the printer as Node's `inspectRemoteFile` reads it (GRE-1256), through
+  the same `PrinterHostPort` the printer-host reads use: the directory listing
+  gives the provider identity (`size_bytes`, `modified_at`,
+  `provider_revision`) when the host lists the file, and the bytes the host
+  serves, up to 256 MiB, are classified off the async workers and add
+  `size_bytes` and `sha256`. The host serves only a file its directory
+  listing shows (the printer-host file read's guard against paths outside
+  the storage tree), so unlike Node, where a failed listing still lets the
+  bytes decide, a listing that fails or omits the file leaves it unread. A
+  path that is not a safe storage path, a host that will not serve the file,
+  or a failed read, including one cut off by the host's download deadline,
+  leaves the file unread too. A reply whose declared `Content-Length` is past
+  256 MiB is refused before any byte is read, as Node's
+  `readBoundedResponseChunks` refuses it, and a body that grows past 256 MiB
+  is refused at the frame that crosses it: both are 409
+  `That print file is too large to inspect`. Bytes that are not a print file
+  are 409 with Node's rejection detail, and a classifier that fails inside
+  PrintPartner is 500. The route matches the listing entry and reads the file
+  by its safe storage path, so `/gcodes/a.gcode` finds the entry for
+  `gcodes/a.gcode` and a path with `..` is unread; the observe step and the
+  stored link keep the raw `remote_path`, as Node does. A printer whose settings cannot
+  be read in time is 503 `Printer settings are unavailable`. A printer tracked
+  by hand, or a host type Node has no file reader for, records the print
+  unread as Node does, and an unread 3MF is refused with Node's 409.
+- After such a read passes the print-ready check, the assignment route
+  re-observes the file before recording it, as Node's
+  `observePrinterCheckoffRemoteFile` does, in its own writer transaction
+  (`FileRoute::Observe`) that commits whatever the assignment then does.
+  Every watching or awaiting-verify link on that integration and path gets
+  `remote_drift` set to Node's `detectPrinterFileDrift` reason (`content`,
+  `revision`, `size`, then `modified`, each only when both identities carry
+  it) or cleared when the file matches again; a changed link moves to the end
+  of the list as `updatePrinterCheckoffLink` moves it. A snapshot or an
+  upload has no path to drift against, so nothing is observed for them. The
+  drift Node's status poll records for every link is not ported here.
 - The assignment itself is `Request::AssignFile` (previous section).
 
 `checkoff_progress::print_file::SnapshotStore` is Node's
@@ -2996,6 +3115,7 @@ to both routers and replaces its 501.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test file_assignments_http
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --lib drift_takes_the_strongest
 ```
 
 ### Accepted Plate workspace read (GRE-1189)
@@ -3246,6 +3366,69 @@ router. Regenerate the golden with
 cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-api/desktop_rebuild -p pp-storage -p pp-api -E 'test(ticket_t_61_build_lifecycle) | binary(plates_http)'
 ```
 
+### Build header edit and archive in Rust (GRE-1231)
+
+GRE-421's second part. `pp_api::builds::build_router` serves Node's
+`PATCH /plans/{id}` and `POST /plans/{id}/archive` at `/`, `/api/v1` and
+`/api/v2`, both as `BuildCommand::Update` in `pp_storage::build_graph::header`
+(an archive is an update with only `archive` set). With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone writes a Build's name, special
+request, `archived_at` and `last_used_at` through these routes. Draft headers
+and Accept's header copy stay where GRE-1207 put them.
+
+A PATCH checks in Node's order:
+
+1. `archived: false` is 400 `Cannot unarchive; duplicate the archived template
+   instead`, before the Build is looked up.
+2. The id is `Number(id)` as a positive integer (through `plates::build_id`),
+   and the Build must be the tenant's, else 404 `Profile not found`.
+3. On `/api/v1`, a Build whose accepted progress is unavailable gets the legacy
+   refusal before anything is written.
+4. A `special_request` key needs the `orders` feature: 403 `FEATURE_DISABLED`,
+   or 500 `FEATURE_TOGGLES_INVALID` when the stored toggles do not read.
+5. A string `name` is trimmed. Blank is 400 `Profile name is required`. A name
+   another Build has is the Build rename rule Accept uses:
+   409 `{"code":"duplicate_build_name","name":...}` (Node answered 400
+   `Profile already exists`). The web client's `engineFetch` shows that 409 as
+   `Profile already exists: <name>`, the message Node gave. A `name` that is not a string is ignored.
+6. `special_request` is `String(value)` trimmed, and blank or `null` clears it.
+   When `String()` throws (an object with its own `toString` member, or an
+   array holding one), any rename stays saved and the answer is Node's: 500
+   `Internal Server Error` beside an archive, else 400 `Cannot convert object
+   to primitive value`.
+7. `archived: true` archives as below, then `touch_last_used: true` sets
+   `last_used_at`.
+
+As in Node, each step writes as it goes: a rename saved before an archive
+refusal stays saved. The answer is the Build summary on the mount's contract.
+
+An archive keeps an archived Build as it is. Otherwise every Part of the
+accepted Plan needs one progress row per unit (Node's `assertCompleteProgress`,
+through `checkoff_progress::complete_rows`; a missing row is 500 `Accepted Plan
+data is inconsistent`), and the Plan must have units and none remaining (else 400 `Archive only when print remaining is
+0`). Compatibility-dirty or uninitialized progress is 409, and an integrity
+failure is 500 `Accepted Plan data is inconsistent`.
+
+`fixtures/parity/build-header/node.json` is Node's answer, with
+`PP_DESKTOP_REBUILD=1`, for 58 requests in 14 phases on copies of
+`accepted-plate-node.db`. `build_header_patch_and_archive_match_node` replays
+it through `build_router`: 51 cases match Node's status, body and changed
+tables, after the replay removes GRE-1100's `customer` and `due_date` from
+each Rust summary (Node's summary has neither, and the replay requires both to
+be present and null). Seven are declared corrections that write nothing: the two
+duplicate-name renames (409 above), a blank name beside an archive (400, where
+Node answered 500), a PATCH or archive body that is not JSON under
+`Content-Type: application/json` and an empty archive body under that type
+(400 `Request is invalid` without Fastify's parser codes), and a `null` PATCH
+body (400 `Request is invalid`, where Node answered 500). An archive otherwise
+ignores its body. Like the other Rust routes, it does not reproduce Fastify's
+415 for a body under a content type Fastify has no parser for, so that request
+archives. The web client always sends `{}` as JSON.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api --test build_header_http
+```
+
 ### Variant dimensions and selection in Rust (GRE-1221)
 
 GRE-421's sixth part (GRE-1221). `pp_api::builds::build_router` serves Node's
@@ -3319,6 +3502,104 @@ and after each of the 18 saves the stored selection text and the Source's
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(variants_flat)'
+```
+
+### Plan features and decision append in Rust (GRE-1243)
+
+GRE-421's seventh part (GRE-1243). `pp_api::builds::build_router` serves Node's
+`GET` and `PATCH /plans/{id}/features` and `POST /plans/{id}/decisions` at `/`,
+`/api/v1` and `/api/v2`, as `BuildCommand::PlanFeatures` and
+`BuildCommand::AppendDecision`. With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone reads and writes
+`feature_toggles:plan:<id>` through these routes and alone appends
+`plan_decisions` rows. With the flag off the router mounts nothing and Node
+keeps both. `GET /plans/{id}/decisions` stays in the planning router
+(GRE-1119), and `/settings/features`, the tenant layer, stays Node's.
+
+A features request checks in Node's order:
+
+0. The credential is checked first, as Node's `onRequest` hook does. Then a
+   PATCH body Fastify's parser refuses (empty, not JSON, or a `__proto__` or
+   `constructor.prototype` key under `application/json`) is 400 `Request is
+   invalid`. A decision append refuses those bodies at the same point.
+1. The id must match `/^[1-9]\d*$/` and be a safe integer, and a PATCH body
+   must be an object whose keys are all features (`farm`, `orders`, `bambu`,
+   `spoolman`) and whose values are all booleans or `null`. Otherwise the
+   answer is 400 `Invalid plan feature input` once the credential checks. So
+   `0x1`, `01` and `1.0` are 400 here, unlike the `Number()` ids of the other
+   Build routes.
+2. The Plan must be the tenant's, else 404 `Plan not found`.
+3. The tenant layer `feature_toggles` and the Plan layer must both be JSON
+   objects whose feature keys hold booleans, else 500
+   `FEATURE_TOGGLES_INVALID`.
+
+A patch applies in registry order (`farm`, `orders`, `bambu`, `spoolman`):
+`null` removes the key, a boolean replaces it in place or appends it. Layers
+are read as Node's `parseFeatureLayer` reads them
+(`pp_storage::source_scan::node_json::RawObject`): unknown keys, JavaScript
+property order and each number's source text (`1.50`, `1E+2`, `-0`,
+`12345678901234567890`) survive, and strings are re-escaped as
+`JSON.stringify` writes them. One immediate writer transaction checks the
+Plan, reads both layers and writes the Plan layer's text even when it is
+unchanged or empty, so an emptied layer is `{}` and the row is never deleted.
+The read and the write share that transaction, so Node's 409 compare-and-set
+conflict cannot occur. `FeatureClient`'s Plan-scope `set` writes the same
+way; its tenant-scope `set` keeps sorted keys and deletes an empty row, as
+before, because Node owns that operation. The answer is Node's
+`{profile_id, overrides, effective}`, where `effective` gives each feature's
+`enabled` and its `source` (`plan`, `user` or `default`).
+
+A decision append reads the id with `Number()`, so `0xc` and `12.0` name Plan
+12. A missing, foreign or non-numeric Plan is 404 `Profile not found` before
+the body is read. `kind` defaults to `user_note` when it is absent or `null`
+and must be `applied_action`, `dismissed_action`, `user_note` or `choice`,
+else 400 `Invalid kind`. `actor` is `assistant` only for exactly that string,
+else `user`. `params` (default `{}`) and `result` (default `null`) are stored
+as `JSON.stringify` writes them. Node hands `action_type`, `label`, `summary`
+and `rationale` to better-sqlite3 unchecked, with only `null` falling back to
+`""` or `null`, and Rust binds them the same way:
+
+- A number is bound as a double that the TEXT column stores as text: `5` is
+  `"5.0"`, `1e21` is `"1.0e+21"` and `-0` is `"0.0"`. A lone surrogate becomes
+  U+FFFD.
+- An array is spread into the parameter list, so `["x"]` stores `"x"`, and
+  `[]` beside `["a","b"]` shifts the later values into the neighbouring
+  columns as Node does. An object is a named-parameter bag that binds nothing.
+- A boolean, or an array element that is not a string, number or `null`, is
+  400 `SQLite3 can only bind numbers, strings, bigints, buffers, and null`. A
+  second object is 400 `You cannot specify named parameters in two different
+  objects`. Any count other than eleven parameters is 400 `Too few parameter
+  values were provided` or `Too many parameter values were provided`;
+  a twelfth bindable value stops binding there, before any later field is
+  checked. A NOT NULL failure is 400 with SQLite's message.
+
+The answer is the inserted row as Node's `mapPlanDecision` returns it. The
+append writes only `plan_decisions`: no publication row or blocker.
+
+Both routes follow Fastify's `text/plain` parser, which hands the route the
+body as a string. A `text/plain` feature patch is therefore 400 `Invalid plan
+feature input` whatever it says, and a `text/plain` decision has no fields, so
+it appends the defaults, as `{}` does. Any other content type is read as JSON,
+as on the other Rust Build routes.
+
+`fixtures/parity/plan-features-decisions/node.json` is Node's answer for 114
+requests on one database, run with `PP_DESKTOP_REBUILD=1` except four with it
+unset. `plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables`
+in `ticket_t_10_fixtures` replays them through `build_router` merged with
+`planning_router`, as `pp-core` composes them. 102 match Node's status, body
+and changed tables. Eight bodies Fastify's parser refuses are declared
+corrections (400 `Request is invalid` without Fastify's codes). The four
+flag-off cases reach a router built with the flag off, which mounts nothing:
+404 and nothing written, where Node answers its own 404 `Plan not found` for
+features and still appends the decision. After each of the 34 writes, the
+Plan's stored layer text or the decision rows it added equal Node's byte for
+byte, and every 200 body also has Node's key order (error bodies come from the
+shared problem builder, which writes `code` before `detail`). A malformed body
+sent with an unknown session is 401 and writes nothing. Regenerate the golden with
+`node fixtures/parity/plan-features-decisions/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(plan_features_decisions) | test(plan_feature_ids)'
 ```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
@@ -3468,6 +3749,7 @@ With both gates on, `draft_router` serves these paths at the root and
 | PUT | `/plans/{id}/drafts/{draft_id}/reconciliation` | `ReconciliationClient::reconcile` with typed `ReconciliationRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
 | POST | `/plans/{id}/drafts/save` | draft-only autosave, `WorkingDraftClient::autosave` (GRE-418) |
+| GET | `/plans/{id}/drafts/header` | Build header and Accepted base before any draft (GRE-1120) |
 | GET | `/plans/{id}/drafts/{draft_id}/header` | draft header beside the Build's header (GRE-1197) |
 | PUT | `/plans/{id}/drafts/header` | draft header save, `WorkingDraftClient::save_header` (GRE-1197) |
 

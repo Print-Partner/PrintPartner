@@ -121,7 +121,8 @@ export function FarmLog() {
   const table = useRef<HTMLTableElement>(null);
   const { undo, start, message } = useBurstUndo(
     (entry: Entry) => writeCore("undoFarmLogEntry", { id: entry.id }),
-    // An undo changes Checkoff progress and History too.
+    // An undo refreshes the Farm log and every Build's History. Checkoff progress
+    // reloads when that screen is opened again.
     () =>
       Promise.all([
         client.invalidateQueries({ queryKey: farmLogQuery.queryKey }),

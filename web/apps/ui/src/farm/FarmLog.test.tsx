@@ -205,6 +205,42 @@ describe("UI8-04 farm log with undo where allowed", () => {
     expect(document.activeElement?.textContent).toBe("Undid the burst on Voron 2.4");
   });
 
+  it("sends no second undo while the log reloads after the first", async () => {
+    let posts = 0;
+    let reloaded: (response: Response) => void = () => {};
+    const fetchMock = core((path, init) => {
+      if (path === "/api/v2/farm-log/checkoff_burst%3A3/undo" && init?.method === "POST") {
+        posts += 1;
+        return json(UNDONE);
+      }
+      if (path !== "/api/v2/farm-log") return json({ title: "Not Found", status: 404 }, 404);
+      if (posts === 0) return json(PAGE);
+      return new Promise<Response>((resolve) => {
+        reloaded = resolve;
+      });
+    });
+    renderAt("/farm/log", fetchMock);
+    await screen.findByText("Verified 1 bed on Voron 2.4");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    // The undo answered and the reload started but has not answered, so the old row and
+    // its Undo are still on screen.
+    await vi.waitFor(() =>
+      expect(requested(fetchMock).filter((p) => p === "/api/v2/farm-log")).toHaveLength(2),
+    );
+    fireEvent.click(
+      within(row("Verified 1 bed on Voron 2.4")).getByRole("button", { name: "Undo" }),
+    );
+    reloaded(
+      json({
+        ...PAGE,
+        entries: [UNDONE, { ...BURST, undo: refused("already_undone") }, ...PAGE.entries.slice(1)],
+      }),
+    );
+    await screen.findByText("Undid the burst on Voron 2.4", { selector: "p" });
+    expect(posts).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("counts an undo whose answer was lost as done when the resend finds it already undone", async () => {
     let sends = 0;
     const fetchMock = farmLog((land) => {

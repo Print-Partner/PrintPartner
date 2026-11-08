@@ -14,7 +14,7 @@ const ALREADY_UNDONE = "This Checkoff burst was already undone";
  * Undo of a checkoff burst, one at a time: a second click before the first answer would
  * send it again. A lost send is retried, and "already undone" after a lost send means the
  * undo landed, so it counts as done (`null`); so does any refusal `landed` says only a
- * landed undo gets. `reload` runs once the undo settles, and focus moves to the outcome,
+ * landed undo gets. `reload` runs once the undo settles and the next undo waits for it; focus moves to the outcome,
  * because the Undo button goes away with the undo.
  */
 export function useBurstUndo<E extends { id: string }, R>(
@@ -41,9 +41,14 @@ export function useBurstUndo<E extends { id: string }, R>(
       }
     },
     retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
-    onSettled: () => {
-      inFlight.current = false;
-      return reload();
+    // The next undo waits for the reload, because until then the table still offers Undo
+    // on the entry just undone.
+    onSettled: async () => {
+      try {
+        await reload();
+      } finally {
+        inFlight.current = false;
+      }
     },
   });
   useEffect(() => {

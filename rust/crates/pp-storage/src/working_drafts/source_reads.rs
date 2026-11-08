@@ -96,7 +96,10 @@ impl SourceReads {
         }
         let workspace = node_resolve(&self.repos).join(source.to_string());
         let configured = fs::canonicalize(&self.repos).ok()?.join(source.to_string());
-        if !candidate.starts_with(&workspace) && !candidate.starts_with(&configured) {
+        let shown = pp_os::display_path(&candidate);
+        if !shown.starts_with(pp_os::display_path(&workspace))
+            && !shown.starts_with(pp_os::display_path(&configured))
+        {
             return None;
         }
         let meta = fs::symlink_metadata(&workspace).ok()?;
@@ -129,9 +132,11 @@ impl SourceReads {
             });
         }
         if !lexical
-            || !(path.starts_with(&workspace)
-                || fs::canonicalize(&self.repos)
-                    .is_ok_and(|repos| path.starts_with(repos.join(source.to_string()))))
+            || !(pp_os::display_path(path).starts_with(pp_os::display_path(&workspace))
+                || fs::canonicalize(&self.repos).is_ok_and(|repos| {
+                    pp_os::display_path(path)
+                        .starts_with(pp_os::display_path(&repos.join(source.to_string())))
+                }))
         {
             return Ok(Located::Refused);
         }
@@ -211,7 +216,8 @@ impl DraftReads for SourceReads {
         b.check()?;
         let (logical, root) = if request.purpose() == StlPurpose::Revision {
             let root = self.revision(request.source_id(), request.stored_path(), b)?;
-            (Some(root.to_string_lossy().into_owned()), Some(root))
+            let logical = pp_os::display_path(&root).to_string_lossy().into_owned();
+            (Some(logical), Some(root))
         } else {
             match request.stored_path().filter(|path| !path.is_empty()) {
                 None => (None, None),

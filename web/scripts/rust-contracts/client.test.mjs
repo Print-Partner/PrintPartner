@@ -112,6 +112,8 @@ const optionalMembers = {
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
   BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason", "entries.*.undo.detail", "entries.*.undo.scope"]),
   BuildHistoryUndo: new Set(["entry.undo", "entry.undo.reason", "entry.undo.detail", "entry.undo.scope"]),
+  // Accept's serde defaults: no remap, and no header version for a draft without a header row.
+  AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
 };
 
 for (const fixture of document.fixtures) {

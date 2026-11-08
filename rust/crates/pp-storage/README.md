@@ -18,7 +18,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - HTTP, MCP, and event adapters: `pp-api`. Listeners and session admission: `pp-gateway`.
 - Running workers, startup order, and shutdown: `pp-core`.
 - Immutable Source revision bytes and extraction: `pp-source`.
-- Platform file mechanics: `pp-os` supplies no-follow opens and file status, private directory creation, advisory locks (`try_lock`, `unlock`), and durable rename and sync. Storage decides the paths and policy.
+- Platform file mechanics: `pp-os` supplies no-follow opens and file status, private directory creation, advisory locks (`try_lock`, `unlock`), and durable rename and sync. Storage decides the paths and policy. A path that storage writes to a row, returns, or compares with a stored path is in `pp_os::display_path` spelling, so Windows stores `C:\…` as Node does and never the verbatim `\\?\C:\…` of the canonical data directory; files still open through the canonical path.
 - Sync policy and slicer operations: `pp-services`.
 - Printer and provider protocols: `pp-drivers`. Storage records queue and effect state; it never sends to a printer.
 - Archive restore and activation. The crate writes and validates archives (`archive::validate`) but does not restore them yet.
@@ -54,7 +54,7 @@ Modules behind `#[cfg(feature = "desktop_rebuild")]`:
 | `build_graph` | `build_graph_with_policy`, `build_graph_with_observations` (`BuildGraphClient`); `wire`, `manifest_options`. |
 | `plan_publication` | `publication_with_policy` (`PublicationClient`): the acceptance transaction. |
 | `required_units` | `required_units_with_policy` (`ReconciliationClient`). |
-| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). `Request::FileRequest` and `Request::AssignFile` back the print-file assignment routes, and `print_file::SnapshotStore` holds files/content snapshots ([Print-file assignment routes](../../../docs/desktop-rebuild.md#print-file-assignment-routes-gre-1220)). |
+| `checkoff_progress` | `checkoff_progress`, `checkoff_progress_with_policy` (`ProgressClient`). With `desktop_rebuild`, `Request::FarmLog` and `Request::UndoFarmLogEntry` serve the farm log (`farm_log`, [Farm log](../../../docs/farm-log.md)). `Request::FileRequest` and `Request::AssignFile` back the print-file assignment routes, `print_file::SnapshotStore` holds files/content snapshots, and `print_file::UploadStore` holds uploaded print files ([Print-file assignment routes](../../../docs/desktop-rebuild.md#print-file-assignment-routes-gre-1220-gre-1255-gre-1256)). |
 | `domain_events` | `domain_events`, `domain_events_with_policy` (`DomainEventsClient`): the transactional domain event log, cursor reads and live wake-ups ([Domain events](../../../docs/domain-events.md)). |
 | `features` | `features_with_policy` (`FeatureClient`), `View`, `Scope`. |
 | `send_queue` | The `printer_send_queue` table (schema 44). `WriterOwner::open` moves a clean legacy `printer.send_queue` setting into it and marks `sending` items interrupted; readers read the table, or the setting while it exists ([Send queue storage](../../../docs/send-queue.md)). `INTERRUPTED_ERROR`. |

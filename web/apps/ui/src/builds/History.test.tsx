@@ -159,6 +159,16 @@ describe("UI8-01 History lists the Build's records from one read", () => {
     expect(requested(fetchMock).filter((p) => p === "/api/v2/plans/2/history")).toHaveLength(1);
   });
 
+  it("shows Not found for a missing Build and does not retry it", async () => {
+    const fetchMock = core(() =>
+      json({ title: "Not Found", status: 404, detail: "Profile not found" }, 404),
+    );
+    renderAt("/builds/999/history", fetchMock);
+    expect(await screen.findByRole("heading", { name: "Not found" })).toBeTruthy();
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    expect(requested(fetchMock).filter((p) => p === "/api/v2/plans/999/history")).toHaveLength(1);
+  });
+
   it("says when nothing has happened yet", async () => {
     renderAt(
       "/builds/2/history",

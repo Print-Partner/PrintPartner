@@ -9,7 +9,11 @@ import { routes } from "../routes";
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const summary = (id: number, name: string, extra: Partial<ProfileSummary> = {}): ProfileSummary => ({
+const summary = (
+  id: number,
+  name: string,
+  extra: Partial<ProfileSummary> = {},
+): ProfileSummary => ({
   id,
   name,
   order_number: null,
@@ -20,6 +24,8 @@ const summary = (id: number, name: string, extra: Partial<ProfileSummary> = {}):
   freshness: { status: "current", accepted_input_set_id: 1, accepted_at: "2026-10-02T00:05:00Z" },
   archived_at: null,
   last_used_at: "2026-10-03T12:00:00Z",
+  customer: null,
+  due_date: null,
   ...extra,
 });
 
@@ -80,10 +86,21 @@ const TASKS = {
       due_date: null,
       attention: true,
       rank_reason: "Prints await verification",
-      next_action: action(2, "verify_prints", "Verify prints", "2 prints are waiting for verification"),
+      next_action: action(
+        2,
+        "verify_prints",
+        "Verify prints",
+        "2 prints are waiting for verification",
+      ),
     },
   ],
-  unavailable: [{ plan_id: 9, build_name: "Synthetic Build 08", reason: "Accepted Plan failed its integrity check" }],
+  unavailable: [
+    {
+      plan_id: 9,
+      build_name: "Synthetic Build 08",
+      reason: "Accepted Plan failed its integrity check",
+    },
+  ],
 };
 
 const stage = (id: string, taskCount?: number) => ({
@@ -101,7 +118,13 @@ const stage = (id: string, taskCount?: number) => ({
 const workflow = (id: number) => ({
   build: { id, name: "Synthetic Build 01" },
   sources: { kind: "ready", attached_count: 2 },
-  accepted_plan: { kind: "ready", plan_version: 1, revision_id: 1, total_units: 40, remaining_units: 28 },
+  accepted_plan: {
+    kind: "ready",
+    plan_version: 1,
+    revision_id: 1,
+    total_units: 40,
+    remaining_units: 28,
+  },
   working_plan: { kind: "none" },
   stock: { kind: "not_ready" },
   stages: [stage("sources"), stage("plan", 1), stage("production"), stage("checkoff", 2)],
@@ -134,13 +157,29 @@ const plans: Handler = (path) => {
   if (flow) return json(workflow(Number(flow[1])));
   const match = /^\/api\/v2\/plans\/(\d+)(\/layers)?$/.exec(path);
   const build = BUILDS.find((b) => b.id === Number(match?.[1]));
-  if (!build) return json({ type: "urn:print-partner:problem:not-found", title: "Not Found", status: 404 }, 404);
+  if (!build)
+    return json(
+      { type: "urn:print-partner:problem:not-found", title: "Not Found", status: 404 },
+      404,
+    );
   if (!match?.[2]) return json(build);
   return json({
     profile_id: build.id,
     layers: [
-      { id: 12, layer_order: 1, layer_type: "addon", project_id: 7, project_name: "Synthetic Source 02" },
-      { id: 11, layer_order: 0, layer_type: "base", project_id: 4, project_name: "Synthetic Source 05" },
+      {
+        id: 12,
+        layer_order: 1,
+        layer_type: "addon",
+        project_id: 7,
+        project_name: "Synthetic Source 02",
+      },
+      {
+        id: 11,
+        layer_order: 0,
+        layer_type: "base",
+        project_id: 4,
+        project_name: "Synthetic Source 05",
+      },
     ],
   });
 };
@@ -167,6 +206,89 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
+  const DATED = [
+    summary(1, "Undated", { order_number: "SO-7" }),
+    summary(2, "Due later", { due_date: "2026-11-20" }),
+    summary(3, "Late", { order_number: "SO-7", due_date: "2026-11-10" }),
+    summary(4, "Late but printed", {
+      due_date: "2026-11-01",
+      accepted_progress: { kind: "ready", total_units: 4, remaining_units: 0 },
+    }),
+    summary(5, "Late but archived", {
+      order_number: "SO-7",
+      due_date: "2026-11-02",
+      archived_at: "2026-11-03T00:00:00Z",
+    }),
+    summary(6, "Blank order", { order_number: " " }),
+    summary(7, "Also blank", { order_number: "" }),
+  ];
+  const dated: Handler = (path) =>
+    path === "/api/v2/plans"
+      ? json({ profiles: DATED })
+      : path === "/api/v2/tasks"
+        ? json({ tasks: [], unavailable: [] })
+        : plans(path);
+  const names = () =>
+    within(table())
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => row.querySelector("th a")!.textContent);
+
+  it("sorts by due date, earliest first and none last, and filters overdue and undated Builds", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2026, 10, 15, 12) });
+    renderAt("/builds", core(dated));
+    await screen.findByRole("link", { name: "Late" });
+    expect(names()).toEqual([
+      "Late but printed",
+      "Late but archived",
+      "Late",
+      "Due later",
+      "Undated",
+      "Blank order",
+      "Also blank",
+    ]);
+    const show = screen.getByRole("radiogroup", { name: "Show Builds" });
+    fireEvent.click(within(show).getByRole("radio", { name: "Overdue (1)" }));
+    expect(names()).toEqual(["Late"]);
+    expect(within(table()).getByText("Overdue")).toBeTruthy();
+    fireEvent.click(within(show).getByRole("radio", { name: "No due date (3)" }));
+    expect(names()).toEqual(["Undated", "Blank order", "Also blank"]);
+    fireEvent.click(within(show).getByRole("radio", { name: "All (7)" }));
+    expect(names()).toHaveLength(7);
+  });
+
+  it("moves Overdue past midnight while the list stays open", async () => {
+    vi.useFakeTimers({
+      toFake: ["Date", "setInterval", "clearInterval"],
+      now: new Date(2026, 10, 20, 23, 59),
+    });
+    renderAt("/builds", core(dated));
+    await screen.findByRole("link", { name: "Late" });
+    const show = screen.getByRole("radiogroup", { name: "Show Builds" });
+    expect(within(show).getByRole("radio", { name: "Overdue (1)" })).toBeTruthy();
+    act(() => vi.advanceTimersByTime(2 * 60_000));
+    expect(within(show).getByRole("radio", { name: "Overdue (2)" })).toBeTruthy();
+  });
+
+  it("lists Builds that share an order number each on its own row, marked, not merged", async () => {
+    renderAt("/builds", core(dated));
+    await screen.findByRole("link", { name: "Late" });
+    const row = (name: string) => screen.getByRole("link", { name }).closest("tr")!;
+    expect(within(row("Undated")).getByText("Duplicate order")).toBeTruthy();
+    expect(within(row("Undated")).getByText("Also on Late")).toBeTruthy();
+    expect(within(row("Late")).getByText("Also on Undated")).toBeTruthy();
+    expect(within(row("Due later")).queryByText("Duplicate order")).toBeNull();
+    expect(within(row("Late")).queryByText(/Late but archived/)).toBeNull();
+    expect(within(row("Late but archived")).queryByText("Duplicate order")).toBeNull();
+    expect(within(row("Blank order")).queryByText("Duplicate order")).toBeNull();
+    expect(within(row("Also blank")).queryByText("Duplicate order")).toBeNull();
+    // A filter that hides one of the pair still says the order is shared.
+    fireEvent.click(screen.getByRole("radio", { name: /No due date/ }));
+    expect(within(row("Undated")).getByText("Also on Late")).toBeTruthy();
+  });
+});
+
 describe("UI2-01 Builds list", () => {
   it("shows name, order, progress and next action from the Rust API, in the list's order", async () => {
     const fetchMock = core(plans);
@@ -176,18 +298,21 @@ describe("UI2-01 Builds list", () => {
     await screen.findByText("Attach Sources");
     const rows = within(table()).getAllByRole("row");
     expect(rows.map((r) => [...r.querySelectorAll("th, td")].map((c) => c.textContent))).toEqual([
-      ["Build", "Order", "Progress", "Next action"],
-      ["Synthetic Build 01", "SO-1001", "12 of 40 units printed", "Verify printsNeeds you"],
-      ["Synthetic Build 04", "None", "No accepted units", "Attach Sources"],
+      ["Build", "Order", "Due", "Progress", "Next action"],
+      ["Synthetic Build 01", "SO-1001", "None", "12 of 40 units printed", "Verify printsNeeds you"],
+      ["Synthetic Build 04", "None", "None", "No accepted units", "Attach Sources"],
       [
         "Synthetic Build 08Archived",
+        "None",
         "None",
         "Progress unavailable: not computed yet",
         "Not availableAccepted Plan failed its integrity check",
       ],
     ]);
     expect(requested(fetchMock)).toContain("/api/v2/tasks");
-    expect(screen.getByRole("link", { name: "Synthetic Build 01" }).getAttribute("href")).toBe("/builds/2");
+    expect(screen.getByRole("link", { name: "Synthetic Build 01" }).getAttribute("href")).toBe(
+      "/builds/2",
+    );
     expect(requested(fetchMock)).toContain("/api/v2/plans");
     expect(
       requested(fetchMock).every(
@@ -197,7 +322,10 @@ describe("UI2-01 Builds list", () => {
   });
 
   it("says a Build missing from the feed has nothing open", async () => {
-    renderAt("/builds", core((p) => (p === "/api/v2/tasks" ? json({ ...TASKS, unavailable: [] }) : plans(p))));
+    renderAt(
+      "/builds",
+      core((p) => (p === "/api/v2/tasks" ? json({ ...TASKS, unavailable: [] }) : plans(p))),
+    );
     await screen.findByText("Attach Sources");
     const row = screen.getByRole("link", { name: "Synthetic Build 08" }).closest("tr")!;
     expect(row.lastElementChild?.textContent).toBe("Nothing open");
@@ -205,7 +333,10 @@ describe("UI2-01 Builds list", () => {
 
   it("keeps the Builds readable when next actions fail, and retries them", async () => {
     let tasksUp = false;
-    renderAt("/builds", core((p) => (p === "/api/v2/tasks" && !tasksUp ? json({}, 503) : plans(p))));
+    renderAt(
+      "/builds",
+      core((p) => (p === "/api/v2/tasks" && !tasksUp ? json({}, 503) : plans(p))),
+    );
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not load next actions.");
     expect(screen.getAllByText("Not loaded")).toHaveLength(3);
@@ -243,7 +374,10 @@ describe("UI2-01 Builds list", () => {
 
   it("keeps the focused Build focused when a refresh fails", async () => {
     let fail = false;
-    const { queryClient } = renderAt("/builds", core((p) => (fail ? json({}, 500) : plans(p))));
+    const { queryClient } = renderAt(
+      "/builds",
+      core((p) => (fail ? json({}, 500) : plans(p))),
+    );
     const link = await screen.findByRole("link", { name: "Synthetic Build 04" });
     link.focus();
     fail = true;
@@ -256,14 +390,20 @@ describe("UI2-01 Builds list", () => {
 
 describe("UI2-03 Builds list states", () => {
   it("loading shows no rows and no numbers", () => {
-    renderAt("/builds", core(() => new Promise<Response>(() => {})));
+    renderAt(
+      "/builds",
+      core(() => new Promise<Response>(() => {})),
+    );
     const section = screen.getByRole("heading", { level: 1, name: "Builds" }).closest("section")!;
     expect(section.dataset.state).toBe("loading");
     expect(section.textContent).not.toMatch(/\d/);
   });
 
   it("empty says so", async () => {
-    renderAt("/builds", core(() => json({ profiles: [] })));
+    renderAt(
+      "/builds",
+      core(() => json({ profiles: [] })),
+    );
     expect(await screen.findByText("No Builds yet. Builds you create appear here.")).toBeTruthy();
   });
 
@@ -283,7 +423,10 @@ describe("UI2-03 Builds list states", () => {
 
   it("error keeps the last-known Builds with their time", async () => {
     let fail = false;
-    const { queryClient } = renderAt("/builds", core((p) => (fail ? json({}, 500) : plans(p))));
+    const { queryClient } = renderAt(
+      "/builds",
+      core((p) => (fail ? json({}, 500) : plans(p))),
+    );
     await screen.findByRole("link", { name: "Synthetic Build 01" });
     fail = true;
     await act(() => queryClient.refetchQueries({ queryKey: ["core", "builds"] }).catch(() => {}));
@@ -294,7 +437,10 @@ describe("UI2-03 Builds list states", () => {
   });
 
   it("an answer that breaks the contract is an error, not a partly drawn list", async () => {
-    renderAt("/builds", core(() => json({ profiles: [{ id: "2", name: 5 }] })));
+    renderAt(
+      "/builds",
+      core(() => json({ profiles: [{ id: "2", name: 5 }] })),
+    );
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("does not match the client contract");
     expect(screen.queryByRole("table")).toBeNull();
@@ -303,8 +449,15 @@ describe("UI2-03 Builds list states", () => {
   it("Orders module off hides order numbers and says how to show them", async () => {
     renderAt("/builds", core(plans, "off"));
     await screen.findByText("The Orders module is off.");
-    expect(screen.getByText("When it is on, this list shows each Build's order number.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Turn it on in Settings" }).getAttribute("href")).toBe("/settings");
+    expect(
+      screen.getByText(
+        "When it is on, this list shows each Build's order number and due date, sorted by due date.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: "Show Builds" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Turn it on in Settings" }).getAttribute("href")).toBe(
+      "/settings",
+    );
     expect(within(table()).queryByRole("columnheader", { name: "Order" })).toBeNull();
     expect(screen.queryByText("SO-1001")).toBeNull();
   });
@@ -312,7 +465,9 @@ describe("UI2-03 Builds list states", () => {
   it("shows order numbers once a failed Module read recovers", async () => {
     let healthUp = false;
     const fetchMock = vi.fn((path: string) =>
-      Promise.resolve(path === "/health" ? (healthUp ? json(health("on")) : json({}, 503)) : plans(path)),
+      Promise.resolve(
+        path === "/health" ? (healthUp ? json(health("on")) : json({}, 503)) : plans(path),
+      ),
     );
     vi.useFakeTimers({ shouldAdvanceTime: true });
     renderAt("/builds", fetchMock as unknown as ReturnType<typeof core>);
@@ -352,7 +507,9 @@ describe("UI2-02 Build Overview", () => {
     fireEvent.click(await screen.findByRole("link", { name: "Synthetic Build 01" }));
     expect(router.state.location.pathname).toBe("/builds/2");
     await screen.findByRole("heading", { level: 1, name: "Synthetic Build 01" });
-    const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole("link");
+    const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole(
+      "link",
+    );
     expect(tabs.map((t) => t.textContent)).toEqual([
       "Overview",
       "Sources",
@@ -368,7 +525,8 @@ describe("UI2-02 Build Overview", () => {
   it("shows progress, Plan state, order fields and layers in layer order", async () => {
     renderAt("/builds/2", core(plans));
     await screen.findByText("Order", { selector: "dt" });
-    const fact = (term: string) => screen.getByText(term, { selector: "dt" }).nextElementSibling?.textContent;
+    const fact = (term: string) =>
+      screen.getByText(term, { selector: "dt" }).nextElementSibling?.textContent;
     expect(fact("Progress")).toBe("12 of 40 units printed");
     expect(fact("Parts")).toBe("4");
     expect(fact("Plan")).toMatch(/^Current, accepted /);
@@ -385,7 +543,10 @@ describe("UI2-02 Build Overview", () => {
   });
 
   it("says when the Build's workflow could not load, with a Retry", async () => {
-    renderAt("/builds/2", core((p) => (p.endsWith("/workflow") ? json({}, 500) : plans(p))));
+    renderAt(
+      "/builds/2",
+      core((p) => (p.endsWith("/workflow") ? json({}, 500) : plans(p))),
+    );
     await screen.findByText(/Could not load: Rust core answered 500/);
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Layers" })).toBeTruthy();
@@ -399,8 +560,12 @@ describe("UI2-02 Build Overview", () => {
     );
     await screen.findByText("Open decisions", { selector: "dt" });
     fail = true;
-    await act(() => queryClient.refetchQueries({ queryKey: ["core", "workflow", 2] }).catch(() => {}));
-    const detail = (await screen.findByText(/Could not refresh: Rust core answered 500/)).closest("span")!;
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["core", "workflow", 2] }).catch(() => {}),
+    );
+    const detail = (await screen.findByText(/Could not refresh: Rust core answered 500/)).closest(
+      "span",
+    )!;
     expect(detail.querySelector("time")).toBeTruthy();
     expect(screen.getByText("Verify prints")).toBeTruthy();
     fail = false;
@@ -426,7 +591,10 @@ describe("UI2-02 Build Overview", () => {
         untracked_sources: [],
       },
     });
-    renderAt("/builds/2", core((p) => (p === "/api/v2/plans/2" ? json(stale) : plans(p))));
+    renderAt(
+      "/builds/2",
+      core((p) => (p === "/api/v2/plans/2" ? json(stale) : plans(p))),
+    );
     expect(
       await screen.findByText("Synthetic Source 05 has a newer revision than the accepted Plan"),
     ).toBeTruthy();
@@ -434,7 +602,9 @@ describe("UI2-02 Build Overview", () => {
 
   it("Orders module off hides the order fields on the Overview", async () => {
     renderAt("/builds/2", core(plans, "off"));
-    await screen.findByText("When it is on, the Overview shows this Build's order number and customer request.");
+    await screen.findByText(
+      "When it is on, the Overview shows this Build's order number and customer request.",
+    );
     expect(screen.queryByText("SO-1001")).toBeNull();
     expect(screen.queryByText("Matte black")).toBeNull();
   });
@@ -444,16 +614,22 @@ describe("UI2-02 Build Overview", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Not found" })).toBeTruthy();
   });
 
-  it.each(["/builds/0", "/builds/abc", "/builds/9007199254740993"])("%s is Not found without a request", (path) => {
-    const fetchMock = core(plans);
-    renderAt(path, fetchMock);
-    expect(screen.getByRole("heading", { level: 1, name: "Not found" })).toBeTruthy();
-    expect(requested(fetchMock).filter((p) => p.startsWith("/api"))).toEqual([]);
-  });
+  it.each(["/builds/0", "/builds/abc", "/builds/9007199254740993"])(
+    "%s is Not found without a request",
+    (path) => {
+      const fetchMock = core(plans);
+      renderAt(path, fetchMock);
+      expect(screen.getByRole("heading", { level: 1, name: "Not found" })).toBeTruthy();
+      expect(requested(fetchMock).filter((p) => p.startsWith("/api"))).toEqual([]);
+    },
+  );
 
   it("an error keeps the last-known Overview with a Retry", async () => {
     let fail = false;
-    const { queryClient } = renderAt("/builds/2", core((p) => (fail ? json({}, 503) : plans(p))));
+    const { queryClient } = renderAt(
+      "/builds/2",
+      core((p) => (fail ? json({}, 503) : plans(p))),
+    );
     await screen.findByRole("heading", { level: 2, name: "Layers" });
     fail = true;
     await act(() => queryClient.refetchQueries({ queryKey: ["core", "build", 2] }).catch(() => {}));

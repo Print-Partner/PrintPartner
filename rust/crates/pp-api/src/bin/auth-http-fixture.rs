@@ -106,8 +106,7 @@ async fn main() -> Result<()> {
         None => ResetMailer::disabled(),
     };
     let router = auth_router(config, auth, providers, mail.clone());
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let stop_signal = stop_signal()?;
     println!(
         "{}",
         serde_json::json!({"origin":format!("http://{address}"),"writer_owners":1,"mode":"standalone-auth-http"})
@@ -116,14 +115,38 @@ async fn main() -> Result<()> {
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async move {
+    .with_graceful_shutdown(stop_signal)
+    .await?;
+    mail.drain_deliveries().await;
+    owner.shutdown()?;
+    Ok(())
+}
+
+/// SIGINT or SIGTERM.
+#[cfg(unix)]
+fn stop_signal() -> std::io::Result<impl Future<Output = ()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (mut interrupt, mut terminate) = (
+        signal(SignalKind::interrupt())?,
+        signal(SignalKind::terminate())?,
+    );
+    Ok(async move {
         tokio::select! {
             _ = interrupt.recv() => {}
             _ = terminate.recv() => {}
         }
     })
-    .await?;
-    mail.drain_deliveries().await;
-    owner.shutdown()?;
-    Ok(())
+}
+
+/// Ctrl+C or Ctrl+Break.
+#[cfg(windows)]
+fn stop_signal() -> std::io::Result<impl Future<Output = ()>> {
+    use tokio::signal::windows::{ctrl_break, ctrl_c};
+    let (mut interrupt, mut brk) = (ctrl_c()?, ctrl_break()?);
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = brk.recv() => {}
+        }
+    })
 }

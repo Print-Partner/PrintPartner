@@ -2,11 +2,13 @@ import type { BuildHistoryPage } from "@print-partner/rust-client";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, type RefObject } from "react";
 import { useOutletContext } from "react-router";
+import { CoreError } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
 import { useConnection } from "../frame/connection";
 import { UndoOutcome, useBurstUndo } from "../screen/BurstUndo";
 import { OlderEntries, pagedScreenState } from "../screen/OlderEntries";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
+import { NotFound } from "../screen/screens";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
 import { dateText } from "./format";
 
@@ -42,6 +44,9 @@ const historyQuery = (id: number) => ({
     readCore("readBuildHistory", { id }, signal, pageParam ? { cursor: pageParam } : undefined),
   initialPageParam: null as string | null,
   getNextPageParam: (page: BuildHistoryPage) => page.next_cursor,
+  // A missing Build answers 404 for good, so it is not retried.
+  retry: (failures: number, error: Error) =>
+    !(error instanceof CoreError && error.status === 404) && failures < 3,
 });
 
 function UndoCell({ entry, onUndo }: { entry: Entry; onUndo: (entry: Entry) => void }) {
@@ -132,6 +137,9 @@ export function BuildHistory() {
       error.detail === "History entry not found",
   );
   const state = pagedScreenState(query, connection, (data) => data.pages[0]?.entries.length === 0);
+  if (query.error instanceof CoreError && query.error.status === 404 && !query.data) {
+    return <NotFound />;
+  }
   const what = undo.variables && TYPE_WORDS[undo.variables.type].toLowerCase();
   return (
     <ScreenTemplate

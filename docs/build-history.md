@@ -117,7 +117,8 @@ the string `entry_id`). `undo`, its `reason` and its `detail` are omittable
 members, as above, so the contract test lists them as members a body may omit.
 The replacement UI's History tab (`/builds/{id}/history`, GRE-1101) reads the
 first page, loads older pages with `cursor` on Show older entries, and shows
-each `undo` reason in words, with the core's detail for `state_changed`.
+each `undo` reason in words, with the core's detail for `state_changed`. A
+missing Build (`404`) shows Not found and is not retried.
 
 An undoable burst gets an Undo button (GRE-1259). It works as the farm log's
 does: one bodyless POST at a time (clicks while it is in flight send nothing),

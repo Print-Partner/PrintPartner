@@ -24,6 +24,8 @@ pub(crate) struct BuildSummaryFacts {
     pub freshness: FreshnessFacts,
     pub archived_at: Option<String>,
     pub last_used_at: Option<String>,
+    pub customer: Option<String>,
+    pub due_date: Option<String>,
 }
 
 #[cfg(feature = "desktop_rebuild")]
@@ -605,6 +607,7 @@ fn summary_facts(
     part_count: i64,
     accepted: &AcceptedRead,
     freshness: FreshnessFacts,
+    details: (Option<String>, Option<String>),
 ) -> Result<BuildSummaryFacts> {
     Ok(BuildSummaryFacts {
         id,
@@ -621,6 +624,8 @@ fn summary_facts(
         freshness,
         archived_at: profile.os("archived_at")?,
         last_used_at: profile.os("last_used_at")?,
+        customer: details.0,
+        due_date: details.1,
     })
 }
 
@@ -658,7 +663,14 @@ pub(super) fn capture_build_summary(
         |row| row.get(0),
     )?;
     let unavailable = matches!(freshness, FreshnessFacts::Unavailable { .. });
-    let mut facts = summary_facts(id, &profile, part_count, accepted, freshness)?;
+    // The header Accept stores: customer and due date.
+    let details = rusqlite::OptionalExtension::optional(tx.query_row(
+        "SELECT customer,due_date FROM build_profile_details WHERE tenant_id=?1 AND profile_id=?2",
+        rusqlite::params![tenant, id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ))?
+    .unwrap_or_default();
+    let mut facts = summary_facts(id, &profile, part_count, accepted, freshness, details)?;
     if unavailable {
         facts.accepted_progress = AcceptedProgressFacts::Integrity;
     }

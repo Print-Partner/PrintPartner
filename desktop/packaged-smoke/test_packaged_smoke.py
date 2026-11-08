@@ -8,6 +8,7 @@ import unittest
 
 import install_deb
 import legacy_fixture
+import macos_ui
 import smoke
 
 
@@ -178,6 +179,192 @@ class InstallTreeTest(unittest.TestCase):
     def test_extra_file_fails(self):
         tree = self.packaged(**{"web/b.js": ("file", "3", False)})
         self.assertEqual(install_deb.differences(self.stage, tree)["extra"], ["web/b.js"])
+
+
+class MacTreeTest(unittest.TestCase):
+    """The macOS UI's tree logic on a dump shaped like ax_probe.swift output."""
+
+    dump = {
+        "apps": [
+            {
+                "pid": 7,
+                "windows": [
+                    {
+                        "r": "AXWindow",
+                        "t": "Print Partner",
+                        "w": 1280,
+                        "h": 850,
+                        "x": 0,
+                        "y": 25,
+                        "c": [
+                            {
+                                "r": "AXGroup",
+                                "c": [
+                                    {
+                                        "r": "AXWebArea",
+                                        "x": 0,
+                                        "y": 60,
+                                        "w": 1280,
+                                        "h": 815,
+                                        "c": [
+                                            {"r": "AXTextField", "l": "Display name"},
+                                            {"r": "AXTextField", "t": "Email"},
+                                            {
+                                                "r": "AXTextField",
+                                                "s": "AXSecureTextField",
+                                                "d": "Password",
+                                            },
+                                            {
+                                                "r": "AXButton",
+                                                "c": [
+                                                    {
+                                                        "r": "AXStaticText",
+                                                        "v": "Create administrator",
+                                                    }
+                                                ],
+                                            },
+                                            {
+                                                "r": "AXCell",
+                                                "c": [
+                                                    {
+                                                        "r": "AXLink",
+                                                        "c": [
+                                                            {
+                                                                "r": "AXStaticText",
+                                                                "v": "Parity Build",
+                                                            }
+                                                        ],
+                                                    }
+                                                ],
+                                            },
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    onscreen = True
+
+    def setUp(self):
+        self.restore = macos_ui.notification_center
+        macos_ui.notification_center = set
+
+    def tearDown(self):
+        macos_ui.notification_center = self.restore
+
+    def ui(self, calls):
+        ui = macos_ui.MacUI()
+
+        def call(*args):
+            calls.append(args)
+            if args[0] == "dump":
+                return self.dump
+            if args[0] == "cgwindows":
+                return [
+                    {
+                        "id": 41,
+                        "pid": 7,
+                        "layer": 0,
+                        "onscreen": self.onscreen,
+                        "x": 0,
+                        "y": 25,
+                        "w": 1280,
+                        "h": 850,
+                    }
+                ]
+            return {"pressed": True}
+
+        ui.call = call
+        return ui
+
+    def test_walk_paths_follow_window_and_child_indices(self):
+        paths = {path: node.get("r") for _, path, node, _ in macos_ui.walk(self.dump)}
+        self.assertEqual(paths["0"], "AXWindow")
+        self.assertEqual(paths["0.0.0.4.0"], "AXLink")
+
+    def test_finds_the_build_as_page_content(self):
+        found = self.ui([]).find_content({7}, "Parity Build")
+        self.assertIn(found["role"], macos_ui.CONTENT_ROLES)
+        self.assertIn("AXWebArea", found["path"])
+
+    def test_window_title_alone_is_not_page_content(self):
+        self.assertIsNone(self.ui([]).find_content({7}, "Print Partner"))
+
+    def test_window_carries_its_screencapture_number(self):
+        window = self.ui([]).windows({7})[0]
+        self.assertEqual(
+            (window["title"], window["id"], window["visible"]), ("Print Partner", 41, True)
+        )
+
+    def test_window_records_its_page_frame(self):
+        self.assertEqual(self.ui([]).windows({7})[0]["page"], [0, 35, 1280, 815])
+
+    def test_paint_counts_only_the_page_area_of_the_window_capture(self):
+        calls = []
+        ui = self.ui(calls)
+        window = ui.windows({7})[0]
+        original = macos_ui.subprocess.run
+        macos_ui.subprocess.run = lambda *args, **kwargs: None
+        try:
+            ui.screenshot(window, "/tmp/window.png")
+        finally:
+            macos_ui.subprocess.run = original
+        self.assertIn(("colors", "/tmp/window.png", 1280, 0, 35, 1280, 815), calls)
+
+    def test_off_screen_window_is_not_visible_and_not_captured(self):
+        self.onscreen = False
+        ui = self.ui([])
+        window = ui.windows({7})[0]
+        self.assertEqual((window["visible"], window["id"]), (False, None))
+        self.assertEqual(ui.screenshot(window, "/nonexistent.png"), 0)
+
+    def test_setup_form_types_each_field_then_presses_the_button(self):
+        calls = []
+        ui = self.ui(calls)
+        form = ui.setup_form({7}, smoke.SETUP_FIELDS, smoke.SETUP_BUTTON)
+        self.assertIsNotNone(form)
+        ui.complete_setup(None, form, {name: "x" for name in smoke.SETUP_FIELDS})
+        actions = [call[:3] for call in calls if call[0] in ("type", "press")]
+        self.assertEqual(
+            actions,
+            [
+                ("type", 7, "0.0.0.0"),
+                ("type", 7, "0.0.0.1"),
+                ("type", 7, "0.0.0.2"),
+                ("press", 7, "0.0.0.3"),
+            ],
+        )
+
+    def test_startup_error_is_searched_in_the_notification_center(self):
+        original = macos_ui.notification_center
+        macos_ui.notification_center = lambda: {99}
+        calls = []
+        try:
+            self.ui(calls).startup_error(set(), smoke.STARTUP_ERROR_TITLE)
+        finally:
+            macos_ui.notification_center = original
+        self.assertIn(("dump", macos_ui.DUMP_LIMIT, 99), calls)
+
+    def test_startup_error_is_found_by_its_message_text(self):
+        self.dump = {
+            "apps": [
+                {
+                    "pid": 7,
+                    "windows": [
+                        {
+                            "r": "AXWindow",
+                            "c": [{"r": "AXStaticText", "v": smoke.STARTUP_ERROR_TITLE}],
+                        }
+                    ],
+                }
+            ]
+        }
+        self.assertIsNotNone(self.ui([]).startup_error({7}, smoke.STARTUP_ERROR_TITLE))
 
 
 if __name__ == "__main__":

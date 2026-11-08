@@ -527,9 +527,9 @@ Required Rust and lint jobs fail if their input-selection job fails, so a broken
 ## Ephemeral PR runners
 
 Pull request jobs run on GitHub-hosted runners, which cost nothing for this public repository,
-and on pp-iso for the Linux Rust jobs when `PP_PR_RUNNER=pp-iso`; pp-local runs only pushes to `main`, merge groups and manual runs, never a pull request. Two jobs run on Blacksmith
+and on pp-iso for the Linux Rust jobs when `PP_PR_RUNNER=pp-iso`; pp-local runs only pushes to `main`, merge groups and manual runs, never a pull request. Two workflows' jobs run on Blacksmith
 by default because their speed pays for the per-minute price: `rust (linux) build` and its
-aggregate, and the Linux packaged smoke job. Nothing else runs on
+aggregate, and the Linux packaged smoke job (a two-job matrix, `default` and `desktop_rebuild`). Nothing else runs on
 Blacksmith: lint, actionlint, zizmor, evidence, duplication, Web CI, sidecar, docs, `rust (windows)`, macOS, release,
 Pages, schedules, merge groups and `main` pushes stay on GitHub-hosted runners (or pp-local), and the
 workflows use no Blacksmith Docker layer cache, sticky disk or cross-PR cache. Each hosted or Blacksmith job
@@ -616,13 +616,13 @@ The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It i
 
 Blacksmith bills by the minute and GitHub's runners are free here, so check the spend after any change to the paid jobs and every week while the switch is new.
 
-- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-ubuntu-2404` total with the 3,000 free minutes per month.
+- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-ubuntu-2404` total with the 3,000 free minutes per month after converting: the allowance is counted in 2 vCPU x64 minutes, so each 4 vCPU minute uses two of them (the measured PR run of about 31 job-minutes uses about 61).
 - Per run, from GitHub: this prints each Blacksmith job of a run with its size and minutes (replace RUN_ID):
 
   `gh api repos/Print-Partner/PrintPartner/actions/runs/RUN_ID/jobs --jq '.jobs[]|select(.completed_at != null and .conclusion != "skipped" and any(.labels[]; startswith("blacksmith-")))|[.name,.labels[0],(((.completed_at|fromdate)-(.started_at|fromdate))/60|.*10|round/10)]|@tsv'`
 
   Multiply minutes by the per-minute price above. A job that appears with a `blacksmith-` label outside `rust (linux)` and `packaged smoke` is a regression: move it back to a GitHub-hosted runner.
-- Cancelled runs still bill the minutes they ran. A burst of pushes to one PR costs at most the minutes between pushes, because a new push cancels the old run.
+- Cancelled runs still bill the minutes they ran. A new push cancels the superseded run, but cancelling is not instant and the last run bills in full, so a burst of pushes still costs the minutes each run reached before it was cancelled, across the parallel paid jobs.
 
 ### Actions cache
 

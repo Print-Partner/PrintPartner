@@ -327,7 +327,7 @@ fn write_new(
         at.actor,
         at.profile,
         key,
-        &prepared,
+        prepared.rows(),
         Origin::New,
     )?;
     Ok(Ok((id, Vec::new())))

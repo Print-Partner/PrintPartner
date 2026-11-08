@@ -163,7 +163,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
 | Build history | `GET /plans/:id/history` | Exists in Rust behind `desktop_rebuild` (GRE-1092); the generated client names it `readBuildHistory`. The replacement History tab lists it newest first with Show older entries (GRE-1101). It lists manual and printer checkoff bursts with their live undo state and undoes one with `POST /plans/:id/history/:entry_id/undo` (`undoBuildHistoryEntry`); sends show as not undoable with the reason (GRE-1259, UI8-03 done). Keep UI ticket GRE-1023 unchanged. See [Build history](../build-history.md) |
 | Accept preview with checks | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | Exists in Rust behind `desktop_rebuild` (GRE-1207 added the header changes) |
-| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant (GRE-1094); `R` on a History snapshot is GRE-1260 |
+| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | Exists in Rust behind `desktop_rebuild` (GRE-1094), for snapshots Accept saved; see [Build history](../build-history.md#restore-a-snapshot-as-a-draft). `R` on a History snapshot is GRE-1260 |
 | Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |
 

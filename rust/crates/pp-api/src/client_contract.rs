@@ -146,6 +146,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
     ClientRoute {
         headers: &["Idempotency-Key"],
         ..route(
+            "restoreSnapshotAsDraft",
+            "POST",
+            "/api/v2/plans/{id}/snapshots/{snapshot_id}/restore",
+            Some("RestoreSnapshotRequest"),
+            "DraftWorkspace",
+        )
+    },
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
             "autosaveDraft",
             "POST",
             "/api/v2/plans/{id}/drafts/save",
@@ -402,6 +412,7 @@ mod codegen {
                 BuildHeader, BuildHeaderView, DraftHeaderReceipt, DraftHeaderSaved,
                 DraftHeaderState, HeaderView, SaveDraftHeaderRequest,
             },
+            restore::RestoreSnapshotRequest,
         },
     };
     use pp_storage::{
@@ -441,6 +452,10 @@ mod codegen {
             schemars::schema_for!(SaveDraftHeaderRequest),
         )?;
         schema("DraftHeaderSaved", schemars::schema_for!(DraftHeaderSaved))?;
+        schema(
+            "RestoreSnapshotRequest",
+            schemars::schema_for!(RestoreSnapshotRequest),
+        )?;
         schema(
             "SavePlanChoicesRequest",
             schemars::schema_for!(SavePlanChoicesRequest),
@@ -1884,6 +1899,33 @@ mod codegen {
         ] {
             cases.push(request::<AbandonRequest>(
                 "AbandonDraftRequest",
+                name,
+                value,
+            ));
+        }
+        let base = json!({"revision_id": 1, "plan_version": 1});
+        let open = json!({"draft_id": MAX_SAFE, "state": "open", "lifecycle_version": 0,
+            "snapshot_digest": digest, "base": base});
+        for (name, value) in [
+            (
+                "no-open-draft",
+                json!({"mode": "draft", "expected_base": base, "expected_draft": null}),
+            ),
+            (
+                "open-draft",
+                json!({"mode": "draft", "expected_base": base, "expected_draft": open}),
+            ),
+            (
+                "other-mode",
+                json!({"mode": "direct", "expected_base": base, "expected_draft": null}),
+            ),
+            (
+                "missing-draft",
+                json!({"mode": "draft", "expected_base": base}),
+            ),
+        ] {
+            cases.push(request::<RestoreSnapshotRequest>(
+                "RestoreSnapshotRequest",
                 name,
                 value,
             ));

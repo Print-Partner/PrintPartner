@@ -319,7 +319,7 @@ async fn gre_1236_mcp_proposes_nothing_when_accept_would_refuse() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gre_1236_mcp_proposes_nothing_while_production_would_refuse_accept() {
-    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &preview_setup()).await;
     changed_draft(&server).await;
     brief(&server, 2, json!([]), json!({}));
     let mcp = Mcp::start(&server).await;

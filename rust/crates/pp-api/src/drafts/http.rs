@@ -241,7 +241,7 @@ enum ReadError {
 }
 
 /// Mounts list/workspace reads, Accept previews, part edits, Required-unit
-/// reconciliation, abandon, recompute, rebase and Accept when the startup gate is on. Storage accepts the presented credential before a handler runs.
+/// reconciliation, abandon, recompute, rebase, Accept and snapshot restore when the startup gate is on. Storage accepts the presented credential before a handler runs.
 /// API-key reads also resolve the key so `lastUsedAt` commits as Node does.
 /// A disabled gate mounts nothing.
 pub fn draft_router(
@@ -312,6 +312,10 @@ fn mount(
         .route(
             "/plans/{id}/drafts/{draft_id}/apply",
             post(lifecycle::apply),
+        )
+        .route(
+            "/plans/{id}/snapshots/{snapshot_id}/restore",
+            post(lifecycle::restore),
         )
         .route_layer(middleware::from_fn_with_state(app, authorize));
     admit_draft_routes(config, routes)
@@ -642,14 +646,20 @@ fn idempotency_key(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// The writes Node refuses without an `Idempotency-Key`: reconciliation,
-/// recompute, rebase and Accept, and the Rust-only draft autosave and draft
-/// header save.
+/// recompute, rebase and Accept, and the Rust-only draft autosave, draft
+/// header save and snapshot restore.
 fn keyed_write(method: &Method, path: &str) -> bool {
     match *method {
         Method::PUT => path.ends_with("/reconciliation") || path.ends_with("/drafts/header"),
-        Method::POST => ["/recompute", "/rebase", "/apply", "/drafts/save"]
-            .iter()
-            .any(|action| path.ends_with(action)),
+        Method::POST => [
+            "/recompute",
+            "/rebase",
+            "/apply",
+            "/drafts/save",
+            "/restore",
+        ]
+        .iter()
+        .any(|action| path.ends_with(action)),
         _ => false,
     }
 }

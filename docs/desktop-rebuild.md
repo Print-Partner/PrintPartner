@@ -3072,9 +3072,17 @@ for the upload.
   the storage tree), so unlike Node, where a failed listing still lets the
   bytes decide, a listing that fails or omits the file leaves it unread. A
   path that is not a safe storage path, a host that will not serve the file,
-  or a failed read leaves the file unread too; bytes past 256 MiB are 409
-  `That print file is too large to inspect`, and bytes that are not a print
-  file are 409 with Node's rejection detail. A printer whose settings cannot
+  or a failed read, including one cut off by the host's download deadline,
+  leaves the file unread too. A reply whose declared `Content-Length` is past
+  256 MiB is refused before any byte is read, as Node's
+  `readBoundedResponseChunks` refuses it, and a body that grows past 256 MiB
+  is refused at the frame that crosses it: both are 409
+  `That print file is too large to inspect`. Bytes that are not a print file
+  are 409 with Node's rejection detail, and a classifier that fails inside
+  PrintPartner is 500. The route matches the listing entry and reads the file
+  by its safe storage path, so `/gcodes/a.gcode` finds the entry for
+  `gcodes/a.gcode` and a path with `..` is unread; the observe step and the
+  stored link keep the raw `remote_path`, as Node does. A printer whose settings cannot
   be read in time is 503 `Printer settings are unavailable`. A printer tracked
   by hand, or a host type Node has no file reader for, records the print
   unread as Node does, and an unread 3MF is refused with Node's 409.

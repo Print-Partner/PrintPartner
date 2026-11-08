@@ -14,8 +14,8 @@ use pp_storage::{
     SettingsClient,
     auth::Secret,
     checkoff_progress::print_file::{
-        CAPTURE_UNAVAILABLE, MAX_UPLOAD_BYTES, Scope, SnapshotStore, UploadRefusal, UploadStore,
-        file_source,
+        CAPTURE_UNAVAILABLE, MAX_CLASSIFIABLE_BYTES, MAX_UPLOAD_BYTES, Scope, SnapshotStore,
+        UploadRefusal, UploadStore, file_source,
     },
     checkoff_progress::{AssignedLink, Assignment, Request, attribution::Unit},
     read_model::Credential,
@@ -82,11 +82,16 @@ fn fixture() -> Fixture {
 /// A printer host serving the files in its map, by storage path, with a
 /// fixed modification time; it lists them as Node's `StorageListing` does.
 /// While `broken` is set its listing fails, and so does every read, as a
-/// stored host's read fails when its listing does.
+/// stored host's read fails when its listing does (the gate lives in
+/// `pp_gateway::printer_host::HostReads::open_file`; this mock mirrors it).
+/// While `busy` is set every answer is `Busy`. A `declared` length replaces
+/// the real one on every read.
 #[derive(Default)]
 struct Host {
     files: Mutex<HashMap<String, Vec<u8>>>,
     broken: AtomicBool,
+    busy: AtomicBool,
+    declared: Mutex<Option<u64>>,
 }
 
 const MODIFIED: &str = "2026-11-01T00:00:00.000Z";
@@ -106,6 +111,9 @@ impl PrinterHostPort for Host {
     }
 
     fn files(&self, _: String, path: String) -> Answer<Value> {
+        if self.busy.load(Ordering::Relaxed) {
+            return Box::pin(async { HostAnswer::Busy });
+        }
         if self.broken.load(Ordering::Relaxed) {
             return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
         }
@@ -129,11 +137,12 @@ impl PrinterHostPort for Host {
             return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
         }
         let bytes = self.files.lock().unwrap().get(&path).cloned();
+        let declared = *self.declared.lock().unwrap();
         Box::pin(async move {
             HostAnswer::Ok(bytes.map(|bytes| HostStream {
                 status: 200,
                 content_type: None,
-                content_length: Some(bytes.len() as u64),
+                content_length: Some(declared.unwrap_or(bytes.len() as u64)),
                 body: Body::from(bytes),
             }))
         })
@@ -1097,9 +1106,23 @@ async fn a_printer_file_is_read_classified_and_recorded_with_its_identity() {
     assert_eq!(
         (status, &unlisted["inspected"]),
         (StatusCode::OK, &json!(false)),
-        "a host whose listing fails serves nothing"
+        "the route reads a failed host read as unread"
     );
     host.broken.store(false, Ordering::Relaxed);
+    host.busy.store(true, Ordering::Relaxed);
+    let (status, _) = post(&router, PREVIEW, &request(remote.clone()), true).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "busy settings");
+    host.busy.store(false, Ordering::Relaxed);
+    *host.declared.lock().unwrap() = Some(MAX_CLASSIFIABLE_BYTES as u64 + 1);
+    assert_eq!(
+        detail(&router, PREVIEW, &request(remote.clone())).await,
+        (
+            StatusCode::CONFLICT,
+            json!("That print file is too large to inspect")
+        ),
+        "a declared length past the limit is refused before the body is read"
+    );
+    *host.declared.lock().unwrap() = None;
     let bad = json!({ "remote_path": "gcodes/bad.gcode", "filename": "bad.gcode" });
     assert_eq!(
         detail(&router, ASSIGN, &assignment(bad)).await,

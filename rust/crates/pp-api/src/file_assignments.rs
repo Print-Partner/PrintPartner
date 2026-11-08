@@ -127,12 +127,22 @@ enum Inspection {
     Unreadable,
     /// The printer's settings could not be read in time.
     Busy,
+    /// Classifying the bytes failed inside PrintPartner.
+    Failed,
 }
 
-/// The bytes of a host reply, or `Ok(None)` past `MAX_CLASSIFIABLE_BYTES` as
-/// Node's `readBoundedBody` refuses them.
-async fn bounded(mut body: axum::body::Body) -> Result<Option<Vec<u8>>, ()> {
+/// The bytes of a host reply, or `Ok(None)` past `cap` as Node's
+/// `readBoundedResponseChunks` refuses them: a declared length past `cap`
+/// is refused before any byte is read.
+async fn bounded(
+    mut body: axum::body::Body,
+    declared: Option<u64>,
+    cap: usize,
+) -> Result<Option<Vec<u8>>, ()> {
     use http_body::Body as _;
+    if declared.is_some_and(|length| length > cap as u64) {
+        return Ok(None);
+    }
     let mut bytes = Vec::new();
     while let Some(frame) =
         std::future::poll_fn(|context| std::pin::Pin::new(&mut body).poll_frame(context)).await
@@ -140,7 +150,7 @@ async fn bounded(mut body: axum::body::Body) -> Result<Option<Vec<u8>>, ()> {
         let Ok(data) = frame.map_err(|_| ())?.into_data() else {
             continue;
         };
-        if bytes.len() + data.len() > print_file::MAX_CLASSIFIABLE_BYTES {
+        if bytes.len() + data.len() > cap {
             return Ok(None);
         }
         bytes.extend_from_slice(&data);
@@ -185,7 +195,8 @@ async fn remote(app: &App, printer: &str, raw: &str) -> Inspection {
         HostAnswer::Busy => return Inspection::Busy,
         _ => return Inspection::Unreadable,
     };
-    let bytes = match bounded(stream.body).await {
+    let cap = print_file::MAX_CLASSIFIABLE_BYTES;
+    let bytes = match bounded(stream.body, stream.content_length, cap).await {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return Inspection::Refused(TOO_LARGE_TO_INSPECT),
         Err(()) => return Inspection::Unreadable,
@@ -193,7 +204,7 @@ async fn remote(app: &App, printer: &str, raw: &str) -> Inspection {
     match tokio::task::spawn_blocking(move || print_file::inspect(&bytes, provider)).await {
         Ok(Ok(inspected)) => Inspection::Inspected(inspected),
         Ok(Err(detail)) => Inspection::Refused(detail),
-        Err(_) => Inspection::Unreadable,
+        Err(_) => Inspection::Failed,
     }
 }
 
@@ -348,6 +359,7 @@ async fn preview(
     match inspect(&app, &parsed).await {
         Inspection::Refused(detail) => return conflict(detail),
         Inspection::Busy => return busy(),
+        Inspection::Failed => return crate::accepted::internal(),
         Inspection::Unreadable => {
             answer.insert("inspected".into(), json!(false));
         }
@@ -399,6 +411,7 @@ async fn assign(
     let inspected = match inspection {
         Inspection::Refused(detail) => return conflict(detail),
         Inspection::Busy => return busy(),
+        Inspection::Failed => return crate::accepted::internal(),
         Inspection::Unreadable => None,
         Inspection::Inspected(inspected) => {
             if !input.completed && !inspected.classification.is_print_ready() {
@@ -638,4 +651,68 @@ async fn upload(
     read(&mut answer, &inspected);
     answer.insert("upload_token".into(), json!(token));
     ok_json(&answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded;
+    use axum::body::{Body, Bytes};
+    use http_body::Frame;
+    use std::collections::VecDeque;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// A host reply that arrives in frames of `sizes` bytes, then fails
+    /// when `fail` is set.
+    struct Frames(VecDeque<Result<Bytes, std::io::Error>>);
+
+    impl http_body::Body for Frames {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+            Poll::Ready(self.0.pop_front().map(|chunk| chunk.map(Frame::data)))
+        }
+    }
+
+    fn frames(sizes: &[usize], fail: bool) -> Body {
+        let mut chunks: VecDeque<_> = sizes
+            .iter()
+            .map(|&size| Ok(Bytes::from(vec![b'G'; size])))
+            .collect();
+        if fail {
+            chunks.push_back(Err(std::io::Error::other("reset")));
+        }
+        Body::new(Frames(chunks))
+    }
+
+    async fn read(sizes: &[usize], declared: Option<u64>) -> Result<Option<usize>, ()> {
+        Ok(bounded(frames(sizes, false), declared, 8)
+            .await?
+            .map(|bytes| bytes.len()))
+    }
+
+    #[tokio::test]
+    async fn the_cap_is_inclusive_and_checked_per_frame_and_against_the_declared_length() {
+        assert_eq!(read(&[3, 4], None).await, Ok(Some(7)));
+        assert_eq!(read(&[4, 4], Some(8)).await, Ok(Some(8)), "exactly the cap");
+        assert_eq!(
+            read(&[4, 4, 1], None).await,
+            Ok(None),
+            "one byte past the cap"
+        );
+        assert_eq!(
+            read(&[1], Some(9)).await,
+            Ok(None),
+            "a declared length past the cap"
+        );
+        assert_eq!(
+            bounded(frames(&[2], true), None, 8).await,
+            Err(()),
+            "a body that fails partway"
+        );
+    }
 }

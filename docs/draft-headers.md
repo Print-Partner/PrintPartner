@@ -128,8 +128,9 @@ these routes through the generated client:
   queued sends in `production`: the tab sends `remap_checkoff_links: false`,
   so Accept would refuse with `production_active`.
 - A lost answer or a 5xx, such as 503 `outcome_unknown`, is not a refusal.
-  Header, Part and Accept writes resend it with the same `Idempotency-Key`,
-  and the core answers a repeat with the first receipt. If the outcome is
+  Header, Part and Accept writes resend it with the same `Idempotency-Key`
+  and the body of the first attempt, even if the Plan was read again in
+  between, and the core answers a repeat with the first receipt. If the outcome is
   still unknown, the gate keeps its key and preview, so the next Accept
   replays the same request instead of starting a new one.
 - Once the draft writes settle, the saved header replaces every field not

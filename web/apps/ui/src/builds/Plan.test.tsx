@@ -199,6 +199,7 @@ function renderAt(fetchImpl: ReturnType<typeof core>) {
     mutations: { ...queryClient.getDefaultOptions().mutations, retryDelay: 0 },
   });
   render(<App router={router} queryClient={queryClient} />);
+  return queryClient;
 }
 
 const writes = (fetchMock: ReturnType<typeof core>) =>
@@ -958,6 +959,86 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
       await within(gate).findByText("The core could not answer for certain. Check again."),
     ).toBeTruthy();
     expect(within(gate).queryByText(/Accept went through/)).toBeNull();
+  });
+
+  it("resends a lost Part write with its first body after the Plan refetches", async () => {
+    const held: (() => void)[] = [];
+    let saves = 0;
+    const fetchMock = core({
+      write: (path) => {
+        if (path !== "/api/v2/plans/2/drafts/save") return undefined;
+        saves += 1;
+        if (saves === 1) {
+          return new Promise<Response>((_, reject) => {
+            held.push(() => reject(new TypeError("Failed to fetch")));
+          });
+        }
+        return json({
+          receipt: {
+            profile_id: 2,
+            draft_id: 9,
+            reconciliation_id: 1,
+            snapshot_digest: DIGEST,
+            saved_at: "2026-11-07T00:00:00.000Z",
+          },
+          workspace: workspace(),
+        });
+      },
+    });
+    const client = renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Include gear.stl" }));
+    await waitFor(() => expect(held).toHaveLength(1));
+    act(() => {
+      client.setQueryData<{ draft: { workspace: DraftWorkspace } }>(
+        ["core", "plan", 2],
+        (data) =>
+          data && {
+            ...data,
+            draft: { ...data.draft, workspace: workspace({ ...DRAFT, lifecycle_version: 3 }) },
+          },
+      );
+      held.splice(0).forEach((reject) => reject());
+    });
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    const [first, resend] = writes(fetchMock);
+    expect(resend!.key).toBe(first!.key);
+    expect(resend!.body).toEqual(first!.body);
+  });
+
+  it("resends a lost header write with its first body after the Plan refetches", async () => {
+    const held: (() => void)[] = [];
+    let saves = 0;
+    const fetchMock = core({
+      write: (path) => {
+        if (path !== "/api/v2/plans/2/drafts/header") return undefined;
+        saves += 1;
+        if (saves === 1) {
+          return new Promise<Response>((_, reject) => {
+            held.push(() => reject(new TypeError("Failed to fetch")));
+          });
+        }
+        return problem(503, "outcome_unknown");
+      },
+    });
+    const client = renderAt(fetchMock);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    await waitFor(() => expect(held).toHaveLength(1));
+    act(() => {
+      client.setQueryData<{ draft: { header: DraftHeaderView } }>(
+        ["core", "plan", 2],
+        (data) => data && { ...data, draft: { ...data.draft, header: draftHeader(2) } },
+      );
+      held.splice(0).forEach((reject) => reject());
+    });
+    await screen.findByText(/^Save not confirmed/);
+    const [first, ...resends] = writes(fetchMock);
+    expect(resends.length).toBeGreaterThan(0);
+    for (const resend of resends) {
+      expect(resend.key).toBe(first!.key);
+      expect(resend.body).toEqual(first!.body);
+    }
   });
 
   it("shows a refused preview in words", async () => {

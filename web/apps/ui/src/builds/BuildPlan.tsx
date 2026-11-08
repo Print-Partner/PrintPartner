@@ -7,7 +7,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useOutletContext } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
@@ -71,47 +71,52 @@ const planQuery = (id: number) => ({
 function useDraftWrites(id: number) {
   const client = useQueryClient();
   const latest = () => client.getQueryData<PlanData>(planKey(id));
-  const settle = () => client.invalidateQueries({ queryKey: planKey(id) });
+  // A resend must repeat its first body: the core replays a key only for the same request.
+  const bodies = useRef(new Map<string, unknown>());
+  const once = <T,>(key: string, build: () => T): T => {
+    if (!bodies.current.has(key)) bodies.current.set(key, build());
+    return bodies.current.get(key) as T;
+  };
+  const settle = (key: string) => {
+    bodies.current.delete(key);
+    return client.invalidateQueries({ queryKey: planKey(id) });
+  };
   const scope = { id: `plan-draft-${id}` };
   const mutationKey = draftWriteKey(id);
   const header = useMutation({
     scope,
     mutationKey,
     mutationFn: ({ fields, key }: { fields: HeaderFields; key: string }) => {
-      const data = latest();
-      if (!data) throw new Error("The Plan has not loaded yet");
-      return writeCore(
-        "saveDraftHeader",
-        { id },
-        {
+      const body = once(key, () => {
+        const data = latest();
+        if (!data) throw new Error("The Plan has not loaded yet");
+        return {
           expected_base: data.draft?.workspace.draft.base ?? data.base,
           expected_draft: data.draft ? identityOf(data.draft.workspace.draft) : null,
           expected_header_version: data.draft?.header?.header_version ?? null,
           header: headerOf(fields),
-        },
-        key,
-      );
+        };
+      });
+      return writeCore("saveDraftHeader", { id }, body, key);
     },
     retry: (failures: number, error: Error) => failures < 2 && resendable(error),
-    onSettled: settle,
+    onSettled: (_data, _error, { key }) => settle(key),
   });
   const parts = useMutation({
     scope,
     mutationKey,
     mutationFn: ({ choice, key }: { choice: PlanChoice; key: string }) => {
-      const draft = latest()?.draft;
-      if (!draft) throw new Error("No draft is open");
-      return writeCore(
-        "autosaveDraft",
-        { id },
-        {
+      const body = once(key, () => {
+        const draft = latest()?.draft;
+        if (!draft) throw new Error("No draft is open");
+        return {
           decisions: [choice],
           expected_base: draft.workspace.draft.base,
           expected_draft: identityOf(draft.workspace.draft),
           remap_checkoff_links: false,
-        },
-        key,
-      );
+        };
+      });
+      return writeCore("autosaveDraft", { id }, body, key);
     },
     retry: (failures: number, error: Error) => failures < 2 && resendable(error),
     // The next write in the queue names the draft this one left.
@@ -119,7 +124,7 @@ function useDraftWrites(id: number) {
       client.setQueryData<PlanData>(planKey(id), (data) =>
         data?.draft ? { ...data, draft: { ...data.draft, workspace } } : data,
       ),
-    onSettled: settle,
+    onSettled: (_data, _error, { key }) => settle(key),
   });
   return { header, parts, mutationKey };
 }

@@ -1,5 +1,10 @@
-import type { BuildHistoryPage, Health } from "@print-partner/rust-client";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import type {
+  BuildHistoryPage,
+  DraftAcceptPreview,
+  DraftWorkspace,
+  Health,
+} from "@print-partner/rust-client";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
@@ -191,5 +196,311 @@ describe("UI8-03 History says which entries cannot be undone and why", () => {
     );
     expect(row("Accepted revision 2").lastElementChild!.textContent).toBe("");
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+});
+
+// Restore as draft: Build 2 at accepted revision 4, with one restorable snapshot and one the
+// old app saved.
+const DIGEST = "a".repeat(64);
+const BASE = { revision_id: 4, plan_version: 3 };
+const BUILD = { name: "Bracket kit", order_number: null, customer: null, due_date: null };
+const OPEN = {
+  draft_id: 9,
+  state: "open",
+  lifecycle_version: 2,
+  snapshot_digest: DIGEST,
+  base: BASE,
+};
+const RESTORED = { ...OPEN, draft_id: 12, lifecycle_version: 1 };
+const RESTORE_PATH = "/api/v2/plans/2/snapshots/7/restore";
+
+const SNAPSHOTS: BuildHistoryPage = {
+  plan_id: 2,
+  entries: [
+    entry("snapshot", "7", 30, "Snapshot before apply", { restorable: true }),
+    entry("snapshot", "3", 20, "Before PETG", { restorable: false }),
+    entry("revision", "4", 10, "Accepted revision 4"),
+  ],
+  next_cursor: null,
+};
+
+const restoredWorkspace = (draft: typeof OPEN): DraftWorkspace => ({
+  profile_id: 2,
+  draft,
+  parts: [
+    {
+      draft_part_id: 31,
+      base_revision_part_id: 11,
+      part_key: "bracket.stl",
+      filename: "bracket.stl",
+      relative_path: "stl/bracket.stl",
+      source_layer: "base:Kit",
+      role: "primary",
+      quantity_inferred: 2,
+      quantity_override: null,
+      quantity_effective: 2,
+      included: true,
+    },
+  ],
+  diff: { base_is_current: true, added: [], removed: [], changed: [] },
+  reconciliation: { kind: "ready", reused_units: 2, new_units: 0, surplus_units: 0 },
+});
+
+const restoredPreview: DraftAcceptPreview = {
+  kind: "changed",
+  revision: {
+    draft_id: 12,
+    expected_snapshot_digest: DIGEST,
+    expected_lifecycle_version: 1,
+    expected_base: BASE,
+    expected_header_version: null,
+  },
+  snapshot: {
+    saved_before_accept: true,
+    detail: "Print Partner saves a snapshot of the accepted Plan before it accepts this draft.",
+  },
+  changes: {
+    fields: [
+      {
+        draft_part_id: 31,
+        filename: "bracket.stl",
+        field: "quantity_override",
+        old: { kind: "integer", value: 4 },
+        new: null,
+      },
+    ],
+    header: [],
+    inputs: [],
+    parts_added: [],
+    parts_removed: [],
+    required_units: { added: [], removed: [], printed_affected: [] },
+    plates: { cleared: [] },
+    stock: { kind: "off" },
+    duplicate_orders: [],
+    production: null,
+    blocked_by: [],
+  },
+};
+
+type Restore = (init: RequestInit) => Response | Promise<Response>;
+
+/**
+ * A fake core for restore: History, the Plan reads, and `restore` for the restore POST.
+ * The Plan shows the restored draft once a restore has answered 200.
+ */
+function restoreCore(restore: Restore, { open = false } = {}) {
+  let restored = false;
+  return core((path, init) => {
+    if (path === RESTORE_PATH) {
+      return Promise.resolve(restore(init!)).then((response) => {
+        if (response.ok) restored = true;
+        return response;
+      });
+    }
+    if (path === "/api/v2/plans/2/history") return json(SNAPSHOTS);
+    if (path === "/api/v2/plans/2/drafts/header") return json({ build: BUILD, base: BASE });
+    if (path === "/api/v2/plans/2/drafts") {
+      const drafts = restored ? [RESTORED] : open ? [OPEN] : [];
+      return json({ profile_id: 2, drafts });
+    }
+    if (path === "/api/v2/plans/2/drafts/9") return json(restoredWorkspace(OPEN));
+    if (path === "/api/v2/plans/2/drafts/9/header") {
+      return json({ draft_id: 9, build: BUILD, draft: null });
+    }
+    if (path === "/api/v2/plans/2/drafts/12") return json(restoredWorkspace(RESTORED));
+    if (path === "/api/v2/plans/2/drafts/12/header") {
+      return json({ draft_id: 12, build: BUILD, draft: null });
+    }
+    if (path === "/api/v2/plans/2/drafts/12/accept-preview") return json(restoredPreview);
+    return json({ title: "Not Found", status: 404 }, 404);
+  });
+}
+
+const restored = () => json(restoredWorkspace(RESTORED));
+const refused = (status: number, code: string) =>
+  json({ type: "about:blank", title: "Conflict", status, code }, status);
+
+const writes = (fetchMock: ReturnType<typeof core>) =>
+  fetchMock.mock.calls
+    .filter(([, init]) => init?.method && init.method !== "GET")
+    .map(([path, init]) => ({
+      path,
+      key: new Headers(init!.headers).get("idempotency-key"),
+      body: JSON.parse(String(init!.body)),
+    }));
+
+describe("UI8-02 R on a snapshot opens Restore as draft into the Accept gate", () => {
+  it("R on a restorable snapshot restores it as a draft and opens Accept on that draft", async () => {
+    const fetchMock = restoreCore(restored);
+    const { router } = renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    expect(router.state.location.pathname).toBe("/builds/2/plan");
+    expect(gate.textContent).toContain(
+      "This draft restores Snapshot before apply. Accepting publishes that Plan. Printed units and printer commands stay as they are.",
+    );
+    await within(gate).findByText("bracket.stl: Quantity 4 to none");
+    expect(gate.contains(document.activeElement)).toBe(true);
+    // The restore is the only write: nothing is accepted, and no printer is asked.
+    const sent = writes(fetchMock);
+    expect(sent).toEqual([
+      {
+        path: RESTORE_PATH,
+        key: expect.any(String),
+        body: { mode: "draft", expected_base: BASE, expected_draft: null },
+      },
+    ]);
+    expect(requested(fetchMock)).toContain("/api/v2/plans/2/drafts/12/accept-preview");
+  });
+
+  it("Restore as draft names the open draft it replaces", async () => {
+    const fetchMock = restoreCore(restored, { open: true });
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.click(
+      within(row("Snapshot before apply")).getByRole("button", { name: "Restore as draft" }),
+    );
+    await screen.findByRole("dialog", { name: "Accept this draft" });
+    expect(writes(fetchMock)[0]!.body).toEqual({
+      mode: "draft",
+      expected_base: BASE,
+      expected_draft: OPEN,
+    });
+  });
+
+  it("offers restore only on snapshots the core can restore", async () => {
+    const fetchMock = restoreCore(restored);
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Before PETG");
+    expect(row("Before PETG").lastElementChild!.textContent).toBe(
+      "Not restorableIt holds no accepted Plan of this Build",
+    );
+    expect(within(row("Accepted revision 4")).queryByRole("button")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Restore as draft" })).toHaveLength(1);
+    fireEvent.keyDown(row("Before PETG"), { key: "r" });
+    fireEvent.keyDown(row("Accepted revision 4"), { key: "R" });
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r", ctrlKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(writes(fetchMock)).toEqual([]);
+  });
+
+  it.each([
+    [
+      409,
+      "snapshot_not_restorable",
+      "This snapshot holds no accepted Plan of this Build, so it cannot be restored.",
+    ],
+    [409, "inputs_changed", "The Build's Sources changed since this snapshot was saved"],
+    [409, "printed_units_affected", "Restore never rewinds printed units."],
+    [409, "base_changed", "The accepted Plan changed while restoring."],
+    [409, "draft_changed", "The open draft changed while restoring."],
+    [409, "accepted_baseline_required", "This Build has no accepted Plan yet"],
+    [422, "required_unit_set_unavailable", "The accepted Plan has no Required units yet"],
+    [422, "invalid_header", "saved in this snapshot is no longer valid"],
+    [422, "build_archived", "This Build is archived, so its Plan cannot change."],
+    [404, "snapshot_not_found", "This snapshot no longer exists."],
+  ])("says a %i %s refusal in words and moves focus to it", async (status, code, words) => {
+    const fetchMock = restoreCore(() => refused(status, code));
+    const { router } = renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not restore Snapshot before apply.");
+    expect(alert.textContent).toContain(words);
+    await waitFor(() => expect(document.activeElement?.contains(alert)).toBe(true));
+    expect(router.state.location.pathname).toBe("/builds/2/history");
+    expect(writes(fetchMock)).toHaveLength(1);
+  });
+
+  it("sends a refused restore again with a new key", async () => {
+    const answers = [refused(409, "base_changed"), restored()];
+    const fetchMock = restoreCore(() => answers.shift()!);
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    await screen.findByRole("alert");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    await screen.findByRole("dialog", { name: "Accept this draft" });
+    const [first, second] = writes(fetchMock);
+    expect(second!.key).not.toBe(first!.key);
+  });
+
+  it("sends one restore however often R is pressed while it is in flight", async () => {
+    let answer!: (response: Response) => void;
+    const fetchMock = restoreCore(() => new Promise<Response>((resolve) => (answer = resolve)));
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    await waitFor(() => expect(writes(fetchMock)).toHaveLength(1));
+    expect((await screen.findByText("Restoring Snapshot before apply.")).getAttribute("role")).toBe(
+      "status",
+    );
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    fireEvent.click(screen.getByRole("button", { name: "Restore as draft" }));
+    answer(restored());
+    await screen.findByRole("dialog", { name: "Accept this draft" });
+    expect(writes(fetchMock)).toHaveLength(1);
+  });
+
+  it("resends a restore whose answer was lost with the same key and body", async () => {
+    let sends = 0;
+    const fetchMock = restoreCore(() => {
+      sends += 1;
+      if (sends === 1) throw new TypeError("Failed to fetch");
+      return restored();
+    });
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    await screen.findByRole("dialog", { name: "Accept this draft" });
+    const [first, second] = writes(fetchMock);
+    expect(second).toEqual(first);
+  });
+
+  it("keeps the key after every send is lost, so Restore again replays it", async () => {
+    let lost = true;
+    const fetchMock = restoreCore(() => {
+      if (lost) throw new TypeError("Failed to fetch");
+      return restored();
+    });
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "The restore of Snapshot before apply may not have reached the core.",
+    );
+    expect(alert.textContent).not.toContain("Could not restore");
+    lost = false;
+    fireEvent.click(screen.getByRole("button", { name: "Restore as draft" }));
+    await screen.findByRole("dialog", { name: "Accept this draft" });
+    const sent = writes(fetchMock);
+    expect(sent.length).toBeGreaterThan(2);
+    expect(new Set(sent.map((w) => w.key)).size).toBe(1);
+    expect(new Set(sent.map((w) => JSON.stringify(w.body))).size).toBe(1);
+  });
+
+  it("shows Not found when the Build is gone", async () => {
+    const fetchMock = restoreCore(() => refused(404, "profile_not_found"));
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    expect(await screen.findByRole("heading", { name: "Not found" })).toBeTruthy();
+  });
+
+  it("opens no gate on a later visit to the Plan tab", async () => {
+    const fetchMock = restoreCore(restored);
+    const { router } = renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    fireEvent.click(within(gate).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(router.state.location.state).toBeNull();
+    await router.navigate("/builds/2/history");
+    await router.navigate("/builds/2/plan");
+    await screen.findByText(/A draft is open/);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

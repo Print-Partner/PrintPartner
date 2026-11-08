@@ -16,6 +16,7 @@
 //! the pages after it. Every sort field is immutable once a row exists.
 
 use super::Credential;
+use crate::working_drafts::restore::snapshot_revision;
 use crate::{Envelope, Shared, WriterOwner, auth};
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -24,6 +25,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -143,6 +145,10 @@ pub struct Entry {
     /// Present on checkoff bursts and sends.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undo: Option<Undo>,
+    /// Present on snapshots: whether the snapshot records an Accepted
+    /// revision of this Build, so restore as draft can take it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restorable: Option<bool>,
     #[serde(skip)]
     sort: SortKey,
 }
@@ -335,6 +341,7 @@ fn entry(
         summary,
         link: Link { kind, id },
         undo,
+        restorable: None,
     }
 }
 
@@ -389,9 +396,13 @@ fn revisions(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry
 }
 
 fn snapshots(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry>> {
+    let revisions = tx
+        .prepare("SELECT id FROM plan_revisions WHERE tenant_id=?1 AND profile_id=?2")?
+        .query_map(params![tenant, build], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
     collect(
         tx,
-        "SELECT id,name,source,created_at FROM plan_snapshots WHERE tenant_id=?1 AND profile_id=?2",
+        "SELECT id,name,source,created_at,payload_json FROM plan_snapshots WHERE tenant_id=?1 AND profile_id=?2",
         tenant,
         build,
         |row| {
@@ -403,18 +414,23 @@ fn snapshots(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<Entry
                 (_, "") => "Snapshot".to_owned(),
                 (_, name) => name.to_owned(),
             };
-            Ok(entry(
-                EntryType::Snapshot,
-                row.get::<_, i64>(0)?.to_string(),
-                row.get(3)?,
-                if source == "assistant" {
-                    Actor::Assistant
-                } else {
-                    Actor::User
-                },
-                summary,
-                None,
-            ))
+            let payload: String = row.get(4)?;
+            let restorable = snapshot_revision(&payload).is_some_and(|r| revisions.contains(&r));
+            Ok(Entry {
+                restorable: Some(restorable),
+                ..entry(
+                    EntryType::Snapshot,
+                    row.get::<_, i64>(0)?.to_string(),
+                    row.get(3)?,
+                    if source == "assistant" {
+                        Actor::Assistant
+                    } else {
+                        Actor::User
+                    },
+                    summary,
+                    None,
+                )
+            })
         },
     )
 }

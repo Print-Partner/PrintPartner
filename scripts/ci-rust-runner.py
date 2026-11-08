@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Pick the runner for the Linux Rust jobs: the pp-local fleet or ubuntu-latest.
+"""Pick the runners for the Rust and packaged-smoke jobs.
 
-Main pushes, merge groups and manual runs use pp-local unless the PP_RUST_RUNNER
-repository variable says hosted or the fleet looks unavailable. Every pull request
-and the nightly schedule stay on GitHub-hosted runners (Chad, Oct 30: "Keep PR
-builds on GitHub's runners"). GITHUB_TOKEN cannot list runners,
+Main pushes, merge groups and manual runs use pp-local for the Linux Rust jobs unless
+the PP_RUST_RUNNER repository variable says hosted or the fleet looks unavailable.
+The nightly schedule stays hosted. Pull requests follow the PP_PR_RUNNER variable:
+blacksmith (the default when unset or unknown), hosted (GitHub's runners), or pp-iso.
+blacksmith runs rust (linux) and the packaged smoke job on Blacksmith runners; hosted
+puts both back on GitHub's; pp-iso runs rust (linux) on the isolated pool while the smoke
+job stays on Blacksmith. rust (windows) always runs on windows-latest, and the smoke job
+stays on GitHub's runners on every other event, because Blacksmith minutes cost money. Required check names do not depend on the runner. GITHUB_TOKEN cannot list runners,
 so the idle-runner check needs the optional PP_RUNNER_READ_TOKEN secret. Without
 it, a pp-local Rust job queued for STALE_MINUTES or more marks the fleet as
 unavailable. See docs/development/ci.md.
@@ -19,7 +23,12 @@ import urllib.error
 import urllib.request
 
 LOCAL = ["self-hosted", "linux", "x64", "pp-local"]
+ISOLATED = ["self-hosted", "linux", "x64", "pp-iso"]
 HOSTED = "ubuntu-latest"
+# 4 vCPU: hosted 4 vCPU medians stay well under the job timeouts (docs/development/ci.md).
+# pp-iso covers pull requests only for the Linux Rust jobs; Blacksmith runs rust (linux) and the
+# packaged smoke job on pull requests only, and every other event stays on GitHub's free runners.
+BLACKSMITH = {"linux": "blacksmith-4vcpu-ubuntu-2404", "smoke": "blacksmith-4vcpu-ubuntu-2404"}
 LOCAL_EVENTS = {"push", "merge_group", "workflow_dispatch"}
 STALE_MINUTES = 15
 # Only these jobs run on pp-local; their names keep the required check names.
@@ -52,9 +61,30 @@ def stale_jobs(jobs, now, minutes=STALE_MINUTES):
     return stale
 
 
+def pr_mode(env):
+    mode = env.get("PP_PR_RUNNER", "").strip().lower()
+    return mode if mode in {"hosted", "blacksmith", "pp-iso"} else "blacksmith"
+
+
+def runner_kind(runs_on):
+    """The kind of runner the job steps adapt to: pp-local, pp-iso, blacksmith or hosted."""
+    if isinstance(runs_on, list):
+        return "pp-local" if "pp-local" in runs_on else "pp-iso"
+    return "blacksmith" if runs_on.startswith("blacksmith-") else "hosted"
+
+
 def choose(env, fetch, now):
     """Return (runs_on, reason). `fetch(path, token)` returns parsed JSON or raises."""
     event = env.get("EVENT_NAME", "")
+    if event == "pull_request":
+        mode = pr_mode(env)
+        if mode == "blacksmith":
+            return BLACKSMITH["linux"], "pull request with PP_PR_RUNNER=blacksmith"
+        if mode == "pp-iso":
+            if env.get("HEAD_REPOSITORY") != env.get("REPOSITORY"):
+                return BLACKSMITH["linux"], "fork pull request; pp-iso is for same-repository pull requests"
+            return ISOLATED, "pull request with PP_PR_RUNNER=pp-iso"
+        return HOSTED, "pull request with PP_PR_RUNNER=hosted"
     if event not in LOCAL_EVENTS:
         return HOSTED, f"{event or 'unknown'} events stay hosted"
     mode = env.get("PP_RUST_RUNNER", "").strip().lower() or "local"
@@ -116,10 +146,13 @@ def github_fetch(path, token):
 def main():
     runs_on, reason = choose(os.environ, github_fetch, datetime.now(timezone.utc))
     value = json.dumps(runs_on, separators=(",", ":"))
-    message = f"Linux Rust runner: {value} ({reason})\n"
+    paid = os.environ.get("EVENT_NAME") == "pull_request" and pr_mode(os.environ) != "hosted"
+    smoke = json.dumps(BLACKSMITH["smoke"] if paid else "ubuntu-24.04")
+    message = f"Linux Rust runner: {value} ({reason}); packaged smoke {smoke}\n"
     print(message, end="")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-        output.write(f"linux_runs_on={value}\n")
+        output.write(f"linux_runs_on={value}\nlinux_kind={runner_kind(runs_on)}\n"
+                     f"smoke_runs_on={smoke}\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(message)
 

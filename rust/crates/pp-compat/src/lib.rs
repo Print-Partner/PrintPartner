@@ -15,8 +15,7 @@ use unix as platform;
 mod windows;
 #[cfg(windows)]
 use windows as platform;
-#[cfg(windows)]
-mod windows_security;
+
 /// The supervised child process.
 pub use platform::Child;
 use platform::ParentDeathGuard;

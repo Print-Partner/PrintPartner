@@ -7,7 +7,21 @@ use pp_desktop::autostart::{Change, LABEL, LaunchAgent, MINIMIZED_ARG};
 use std::fs;
 use std::path::Path;
 
-const EXECUTABLE: &str = "/Applications/Print Partner & Co.app/Contents/MacOS/pp-desktop";
+/// An absolute path on the host: a drive is prefixed on Windows.
+#[cfg(unix)]
+macro_rules! abs {
+    ($path:literal) => {
+        $path
+    };
+}
+#[cfg(windows)]
+macro_rules! abs {
+    ($path:literal) => {
+        concat!("C:", $path)
+    };
+}
+
+const EXECUTABLE: &str = abs!("/Applications/Print Partner & Co.app/Contents/MacOS/pp-desktop");
 
 fn agents(home: &Path) -> std::path::PathBuf {
     home.join("Library/LaunchAgents")
@@ -55,7 +69,7 @@ fn ticket_t_31_enable_is_idempotent_and_uses_an_argument_array() {
     assert_eq!(
         strings,
         [
-            "/Applications/Print Partner &amp; Co.app/Contents/MacOS/pp-desktop",
+            abs!("/Applications/Print Partner &amp; Co.app/Contents/MacOS/pp-desktop"),
             MINIMIZED_ARG,
         ]
     );
@@ -73,7 +87,7 @@ fn ticket_t_31_enable_is_idempotent_and_uses_an_argument_array() {
 #[test]
 fn ticket_t_31_enable_rewrites_a_stale_agent_for_a_moved_app() {
     let home = tempfile::tempdir().unwrap();
-    let old = LaunchAgent::new(home.path(), Path::new("/Volumes/Old/pp-desktop")).unwrap();
+    let old = LaunchAgent::new(home.path(), Path::new(abs!("/Volumes/Old/pp-desktop"))).unwrap();
     assert_eq!(old.enable().unwrap(), Change::Created);
     let current = LaunchAgent::new(home.path(), Path::new(EXECUTABLE)).unwrap();
     assert!(!current.is_enabled());
@@ -120,15 +134,18 @@ fn ticket_t_31_disable_keeps_a_file_that_is_not_ours() {
     assert!(agent.path().exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn ticket_t_31_refuses_a_symlinked_agent_path() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_file;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file;
     let home = tempfile::tempdir().unwrap();
     let agent = LaunchAgent::new(home.path(), Path::new(EXECUTABLE)).unwrap();
     fs::create_dir_all(agents(home.path())).unwrap();
     let target = home.path().join("elsewhere.plist");
     fs::write(&target, agent.plist()).unwrap();
-    std::os::unix::fs::symlink(&target, agent.path()).unwrap();
+    symlink_file(&target, agent.path()).unwrap();
     assert!(agent.enable().is_err());
     assert!(agent.disable().is_err());
     assert!(target.exists());
@@ -137,7 +154,7 @@ fn ticket_t_31_refuses_a_symlinked_agent_path() {
 #[test]
 fn ticket_t_31_requires_absolute_paths() {
     assert!(LaunchAgent::new(Path::new("relative-home"), Path::new(EXECUTABLE)).is_err());
-    assert!(LaunchAgent::new(Path::new("/Users/me"), Path::new("pp-desktop")).is_err());
+    assert!(LaunchAgent::new(Path::new(abs!("/Users/me")), Path::new("pp-desktop")).is_err());
 }
 
 fn args(list: &[&str]) -> Vec<String> {
@@ -148,7 +165,7 @@ fn args(list: &[&str]) -> Vec<String> {
 fn ticket_t_31_release_launch_accepts_minimized_and_starts_hidden() {
     use pp_desktop::LaunchArgs;
     // The exact arguments the LaunchAgent passes after the binary.
-    let agent = LaunchAgent::new(Path::new("/Users/me"), Path::new(EXECUTABLE)).unwrap();
+    let agent = LaunchAgent::new(Path::new(abs!("/Users/me")), Path::new(EXECUTABLE)).unwrap();
     assert!(
         agent
             .plist()
@@ -215,7 +232,7 @@ fn ticket_t_31_open_at_login_toggle_turns_the_agent_on_and_off() {
     // An agent left by a moved app counts as off; toggling rewrites it for this app.
     let moved = LaunchAgent::new(
         home.path(),
-        Path::new("/Applications/Old.app/Contents/MacOS/pp-desktop"),
+        Path::new(abs!("/Applications/Old.app/Contents/MacOS/pp-desktop")),
     )
     .unwrap();
     moved.enable().unwrap();

@@ -29,16 +29,7 @@ pub fn bootstrap_url(origin: &AllowedOrigin, url: &str) -> Result<Url> {
 /// The platform command that opens `url` in the default browser, passed as
 /// one argument with no shell.
 pub fn opener(url: &Url) -> std::process::Command {
-    #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("/usr/bin/open");
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("rundll32");
-        command.arg("url.dll,FileProtocolHandler");
-        command
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut command = std::process::Command::new("xdg-open");
+    let mut command = crate::platform::opener();
     command.arg(url.as_str());
     command
 }

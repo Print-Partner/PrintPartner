@@ -4,13 +4,16 @@
 Each step copies its command lines from the workflow step named in `ci`;
 scripts/test_local_ci.py fails when a copied line no longer matches the workflow.
 A step whose tool, pinned version or host is missing is reported as SKIP with the
-reason, never dropped silently. Usage: just ci [--list] [--only id,...]
-[--skip id,...], or python3 scripts/local-ci.py with the same flags. See
+reason, never dropped silently. Usage: just ci [--fast] [--list] [--only id,...]
+[--skip id,...], or python3 scripts/local-ci.py with the same flags. --fast leaves
+out the full nextest and doctest passes and runs nextest with desktop_rebuild on
+for the crates this branch changes, using CI's affected-crate filter. See
 docs/development/ci.md.
 """
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -206,6 +209,68 @@ STEPS = [
 ]
 
 
+# --fast leaves these out and runs FAST_NEXTEST in place of nextest-on.
+FAST_LEAVES_OUT = ("nextest-off", "nextest-on", "doc-off", "doc-on")
+FAST_NEXTEST = "nextest-affected"
+FILTER_SCRIPT = ROOT / "scripts/ci-affected-nextest-filter.py"
+# The agent fleet installs sccache here; PATH wins when both exist.
+FLEET_SCCACHE = Path("/opt/agent-fleet/bin/sccache")
+
+
+def fast_steps():
+    """STEPS for --fast: nextest-on becomes FAST_NEXTEST, the other full passes go."""
+    steps = []
+    for step in STEPS:
+        if step.id == "nextest-on":
+            # Same command line; main() sets NEXTEST_FILTER to the affected filter.
+            steps.append(replace(step, id=FAST_NEXTEST,
+                                 title="nextest, desktop_rebuild on, crates this branch affects"))
+        elif step.id not in FAST_LEAVES_OUT:
+            steps.append(step)
+    return steps
+
+
+def git_output(env, *args):
+    """Return git's stdout, or None when git fails or is missing."""
+    try:
+        result = subprocess.run(["git", *args], cwd=ROOT, env=env, capture_output=True)
+    except OSError:
+        return None
+    return result.stdout.decode("utf-8", errors="surrogateescape") if result.returncode == 0 else None
+
+
+def load_filter_module():
+    spec = importlib.util.spec_from_file_location("ci_affected_nextest_filter", FILTER_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def affected_nextest_filter(env, git=git_output):
+    """Return CI's nextest filterset for this branch against origin/main, or all().
+
+    The changed paths are the diff from `git merge-base origin/main HEAD` to the
+    working tree, plus untracked files, so uncommitted edits count. The filter
+    script's own rules decide, so shared inputs still force all(), as in CI.
+    """
+    base = (git(env, "merge-base", "origin/main", "HEAD") or "").strip()
+    if not base:
+        print("affected nextest filter: no merge-base with origin/main, using all()", flush=True)
+        return "all()"
+    changed = git(env, "diff", "--name-only", "--no-renames", "-z", base)
+    untracked = git(env, "ls-files", "--others", "--exclude-standard", "-z")
+    if changed is None or untracked is None:
+        print("affected nextest filter: git diff failed, using all()", flush=True)
+        return "all()"
+    paths = [path for path in (changed + untracked).split("\0") if path]
+    module = load_filter_module()
+    crates = ROOT / "rust/crates"
+    expression = module.filter_expression("pull_request", paths, module.workspace_packages(crates),
+                                          module.source_readers(crates))
+    print(f"affected nextest filter against {base[:12]}: {expression}", flush=True)
+    return expression
+
+
 def unmet(step, env):
     """Return why the step cannot run with this environment, or ''."""
     if step.host_only:
@@ -249,6 +314,20 @@ def base_env(env):
         env["GITHUB_SHA"] = sha.stdout.strip()
     target = Path(env.get("CARGO_TARGET_DIR") or ROOT / "rust/target")
     env.setdefault("RUNNER_TEMP", str(target / "local-ci"))
+    return use_sccache(env)
+
+
+def use_sccache(env):
+    """Wrap rustc in sccache when it is installed and the caller set no wrapper."""
+    if env.get("RUSTC_WRAPPER"):
+        return env
+    sccache = shutil.which("sccache", path=env.get("PATH", ""))
+    if not sccache and FLEET_SCCACHE.is_file() and os.access(FLEET_SCCACHE, os.X_OK):
+        sccache = str(FLEET_SCCACHE)
+    if sccache:
+        # sccache cannot cache incremental builds.
+        env["RUSTC_WRAPPER"] = sccache
+        env["CARGO_INCREMENTAL"] = "0"
     return env
 
 
@@ -256,8 +335,11 @@ def ids(value):
     return [item for item in value.split(",") if item] if value else []
 
 
-def main(argv=None, env=None, run=run_bash):
+def main(argv=None, env=None, run=run_bash, affected=affected_nextest_filter):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--fast", action="store_true",
+                        help="leave out the full nextest and doctest passes; run nextest with "
+                             "desktop_rebuild on for the crates this branch affects")
     parser.add_argument("--list", action="store_true", help="print the steps and exit")
     parser.add_argument("--only", help="comma-separated step ids to run")
     parser.add_argument("--skip", help="comma-separated step ids to leave out")
@@ -265,19 +347,24 @@ def main(argv=None, env=None, run=run_bash):
                         help="exit nonzero if any selected step cannot run")
     args = parser.parse_args(argv)
 
-    known = {step.id for step in STEPS}
+    steps = fast_steps() if args.fast else STEPS
+    known = {step.id for step in steps}
     for step_id in ids(args.only) + ids(args.skip):
         if step_id not in known:
-            print(f"unknown step: {step_id} (see --list)", file=sys.stderr)
+            mode = " --fast" if args.fast else ""
+            print(f"unknown step: {step_id} (see --list{mode})", file=sys.stderr)
             return 2
     if args.list:
-        for step in STEPS:
+        for step in steps:
             print(f"{step.id:20} {step.title}")
         return 0
 
     only, skip = set(ids(args.only)), set(ids(args.skip))
-    plan = [step for step in STEPS if (not only or step.id in only) and step.id not in skip]
+    plan = [step for step in steps if (not only or step.id in only) and step.id not in skip]
     env = base_env(env)
+    if env.get("RUSTC_WRAPPER"):
+        print(f"RUSTC_WRAPPER={env['RUSTC_WRAPPER']} CARGO_INCREMENTAL={env.get('CARGO_INCREMENTAL', '')}",
+              flush=True)
     Path(env["RUNNER_TEMP"]).mkdir(parents=True, exist_ok=True)
     results = []
     for step in plan:
@@ -286,6 +373,9 @@ def main(argv=None, env=None, run=run_bash):
             print(f"\n== SKIP {step.id}: {reason}", flush=True)
             results.append(("SKIP", step, reason))
             continue
+        if step.id == FAST_NEXTEST:
+            # The cargo steps' own NEXTEST_FILTER=all() would override the caller's.
+            step = replace(step, env={**step.env, "NEXTEST_FILTER": affected(env)})
         print(f"\n== RUN {step.id}: {step.title}", flush=True)
         started = time.monotonic()
         code = run(step.id, "\n".join(step.setup + step.commands), ROOT / step.cwd, step_env(step, env))

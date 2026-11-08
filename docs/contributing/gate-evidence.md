@@ -71,6 +71,12 @@ failure and ends with one `PASS`, `FAIL` or `SKIP` line per step. Fix every
 `FAIL` before you push. A `SKIP` line names the missing tool or pinned version;
 list each skipped step under Evidence.
 
+Normal PRs run `just ci --fast` instead, which leaves out the full nextest and
+doctest passes and runs nextest with `desktop_rebuild` on for the crates the
+branch affects. Sensitive PRs, as the
+[merge gate](../development/definition-of-done.md#merge-gate) defines them, run
+the full `just ci`. Name the command you ran under Evidence.
+
 Without `just`, run `python3 scripts/local-ci.py` from the repository root with
 the same arguments.
 `just ci --list` prints the step ids, and `--only` or `--skip` takes a

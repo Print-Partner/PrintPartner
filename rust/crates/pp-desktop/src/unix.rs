@@ -52,7 +52,9 @@ impl FocusListener {
         Ok(Self { path, task })
     }
 
-    /// Dropping closes the socket at once, so there is nothing to wait for.
+    /// Nothing to wait for: drop unlinks the socket path at once, so no new
+    /// client reaches this listener, and the listener closes when the abort
+    /// lands. The next owner replaces a leftover socket.
     pub(crate) async fn stop(self) {}
 }
 

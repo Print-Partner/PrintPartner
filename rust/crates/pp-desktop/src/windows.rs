@@ -307,9 +307,25 @@ mod tests {
         let (_, focus) = counter();
         let server = FocusServer::start(data.path(), focus).unwrap();
         let name = pipe_name(Identity::of(data.path()).unwrap());
-        let silent = tokio::task::spawn_blocking(move || open_client(&name).unwrap())
-            .await
-            .unwrap();
+        // The second client can only open the pipe once the listener has
+        // created the next instance, which it does in the same step that
+        // hands the first connection to an answering task. So both clients
+        // being connected means stop() must close an unanswered connection.
+        let silent = tokio::task::spawn_blocking(move || {
+            let first = open_client(&name).unwrap();
+            let deadline = std::time::Instant::now() + TIMEOUT;
+            loop {
+                match open_client(&name) {
+                    Ok(second) => return (first, second),
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("listener never accepted the first client: {error}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
         server.stop().await;
         let (_, focus) = counter();
         assert!(

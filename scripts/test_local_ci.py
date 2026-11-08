@@ -362,11 +362,13 @@ class LocalCiTests(unittest.TestCase):
         self.assertEqual(ci("--only", "fmt"), 0)
         self.assertEqual(ci.envs["fmt"]["RUSTC_WRAPPER"], str(fleet / "sccache"))
         self.assertEqual(ci.envs["fmt"]["CARGO_INCREMENTAL"], "0")
-        ci = LocalCi(self)
-        ci.env["RUSTC_WRAPPER"] = "/usr/bin/other-wrapper"
-        self.assertEqual(ci("--only", "fmt"), 0)
-        self.assertEqual(ci.envs["fmt"]["RUSTC_WRAPPER"], "/usr/bin/other-wrapper")
-        self.assertNotIn("CARGO_INCREMENTAL", ci.envs["fmt"])
+        for wrapper in ("/usr/bin/other-wrapper", ""):
+            with self.subTest(wrapper=wrapper):
+                ci = LocalCi(self)
+                ci.env["RUSTC_WRAPPER"] = wrapper
+                self.assertEqual(ci("--only", "fmt"), 0)
+                self.assertEqual(ci.envs["fmt"]["RUSTC_WRAPPER"], wrapper)
+                self.assertNotIn("CARGO_INCREMENTAL", ci.envs["fmt"])
 
 
 class AffectedFilterTests(unittest.TestCase):
@@ -417,6 +419,16 @@ class AffectedFilterTests(unittest.TestCase):
                 expression, _, output = self.filter_for(outputs)
                 self.assertEqual(expression, "all()")
                 self.assertIn("using all()", output)
+
+    def test_a_broken_filter_script_falls_back_to_all(self):
+        def broken():
+            raise SyntaxError("broken filter")
+
+        self.enterContext(unittest.mock.patch.object(local_ci, "load_filter_module", broken))
+        expression, _, output = self.filter_for({
+            "merge-base": self.BASE, "diff": "rust/crates/pp-domain/src/lib.rs\0", "ls-files": ""})
+        self.assertEqual(expression, "all()")
+        self.assertIn("using all()", output)
 
     def test_real_git_returns_a_filter_for_this_checkout(self):
         out = io.StringIO()

@@ -263,10 +263,14 @@ def affected_nextest_filter(env, git=git_output):
         print("affected nextest filter: git diff failed, using all()", flush=True)
         return "all()"
     paths = [path for path in (changed + untracked).split("\0") if path]
-    module = load_filter_module()
-    crates = ROOT / "rust/crates"
-    expression = module.filter_expression("pull_request", paths, module.workspace_packages(crates),
-                                          module.source_readers(crates))
+    try:
+        module = load_filter_module()
+        crates = ROOT / "rust/crates"
+        expression = module.filter_expression("pull_request", paths, module.workspace_packages(crates),
+                                              module.source_readers(crates))
+    except Exception as error:  # noqa: BLE001 - any filter error means run everything
+        print(f"affected nextest filter: {FILTER_SCRIPT.name} failed ({error!r}), using all()", flush=True)
+        return "all()"
     print(f"affected nextest filter against {base[:12]}: {expression}", flush=True)
     return expression
 
@@ -318,8 +322,11 @@ def base_env(env):
 
 
 def use_sccache(env):
-    """Wrap rustc in sccache when it is installed and the caller set no wrapper."""
-    if env.get("RUSTC_WRAPPER"):
+    """Wrap rustc in sccache when it is installed and the caller set no wrapper.
+
+    An empty RUSTC_WRAPPER counts as set: it is how a caller turns a wrapper off.
+    """
+    if "RUSTC_WRAPPER" in env:
         return env
     sccache = shutil.which("sccache", path=env.get("PATH", ""))
     if not sccache and FLEET_SCCACHE.is_file() and os.access(FLEET_SCCACHE, os.X_OK):

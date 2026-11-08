@@ -10,17 +10,19 @@ use std::fmt;
 /// The text Node stores after a scan failure: the parsed object, or `{raw}` when the stored
 /// text is not a JSON object, plus `sync_error` and `sync_required`.
 pub(super) fn failure_metadata(raw: Option<&str>, detail: &str) -> String {
-    let mut members = raw.and_then(|raw| members(raw, 0)).unwrap_or_else(|| {
-        raw.filter(|raw| !raw.is_empty())
-            .map(|raw| {
-                (
-                    JsString(b"raw".to_vec()),
-                    serde_json::Value::from(raw).to_string(),
-                )
-            })
-            .into_iter()
-            .collect()
-    });
+    let mut members = raw
+        .and_then(|raw| members(raw, 0, Numbers::Js))
+        .unwrap_or_else(|| {
+            raw.filter(|raw| !raw.is_empty())
+                .map(|raw| {
+                    (
+                        JsString(b"raw".to_vec()),
+                        serde_json::Value::from(raw).to_string(),
+                    )
+                })
+                .into_iter()
+                .collect()
+        });
     for (key, value) in &mut members {
         if key.0 == b"category"
             && let Ok(category) = serde_json::from_str::<JsString>(value)
@@ -58,12 +60,12 @@ pub(crate) fn property(text: &str, key: &str) -> Property {
         return Property::Unparsable;
     };
     // Walk the whole document so every string and nesting level is checked.
-    if stringify(&raw, 0).is_none() {
+    if stringify(&raw, 0, Numbers::Js).is_none() {
         return Property::Unparsable;
     }
     match raw.get().as_bytes().first() {
         Some(b'n') => Property::Null,
-        Some(b'{') => members(raw.get(), 0)
+        Some(b'{') => members(raw.get(), 0, Numbers::Js)
             .and_then(|members| {
                 members
                     .into_iter()
@@ -76,13 +78,58 @@ pub(crate) fn property(text: &str, key: &str) -> Property {
     }
 }
 
-fn members(text: &str, depth: usize) -> Option<Vec<(JsString, String)>> {
+/// How `JSON.stringify` writes a parsed number: as JavaScript formats the
+/// double, or as its source text when `JSON.parse` kept it with `JSON.rawJSON`.
+#[derive(Clone, Copy)]
+enum Numbers {
+    Js,
+    Source,
+}
+
+fn members(text: &str, depth: usize, numbers: Numbers) -> Option<Vec<(JsString, String)>> {
     serde_json::from_str::<JsObject>(text)
         .ok()?
         .0
         .into_iter()
-        .map(|(key, value)| Some((key, stringify(&value, depth + 1)?)))
+        .map(|(key, value)| Some((key, stringify(&value, depth + 1, numbers)?)))
         .collect()
+}
+
+/// A stored JSON object as Node's `parseFeatureLayer` reads it: `JSON.parse`
+/// keeping every number's source text (`JSON.rawJSON`), members in JavaScript
+/// property order, each value as `JSON.stringify` then writes it.
+#[derive(Default)]
+pub(crate) struct RawObject(Vec<(JsString, String)>);
+
+impl RawObject {
+    /// `None` when `text` is not a JSON object or nests past 128 levels.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        members(text, 0, Numbers::Source).map(Self)
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(name, _)| name.0 == key.as_bytes())
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Replaces `key`'s value in place, or adds it last as JavaScript assignment does.
+    pub(crate) fn set(&mut self, key: &str, value: &str) {
+        match self.0.iter_mut().find(|(name, _)| name.0 == key.as_bytes()) {
+            Some(member) => value.clone_into(&mut member.1),
+            None => self.0.push((JsString(key.into()), value.into())),
+        }
+    }
+
+    pub(crate) fn remove(&mut self, key: &str) {
+        self.0.retain(|(name, _)| name.0 != key.as_bytes());
+    }
+
+    /// `JSON.stringify` of the object.
+    pub(crate) fn text(&self) -> String {
+        object(&self.0)
+    }
 }
 
 fn object(members: &[(JsString, String)]) -> String {
@@ -114,26 +161,31 @@ pub(crate) fn js_string(text: &str) -> Option<JsText> {
 /// `JSON.stringify(JSON.parse(raw))` for stored text, or `None` when it is not
 /// JSON or nests past 128 levels.
 pub(crate) fn reserialize(raw: &str) -> Option<String> {
-    stringify(&serde_json::from_str::<Box<RawValue>>(raw).ok()?, 0)
+    stringify(
+        &serde_json::from_str::<Box<RawValue>>(raw).ok()?,
+        0,
+        Numbers::Js,
+    )
 }
 
 /// `JSON.stringify(JSON.parse(raw))`, or `None` past 128 levels of nesting.
-fn stringify(raw: &RawValue, depth: usize) -> Option<String> {
+fn stringify(raw: &RawValue, depth: usize, numbers: Numbers) -> Option<String> {
     if depth >= 128 {
         return None;
     }
     let text = raw.get();
     Some(match text.as_bytes().first()? {
-        b'{' => object(&members(text, depth)?),
+        b'{' => object(&members(text, depth, numbers)?),
         b'[' => {
             let items = serde_json::from_str::<Vec<Box<RawValue>>>(text)
                 .ok()?
                 .iter()
-                .map(|value| stringify(value, depth + 1))
+                .map(|value| stringify(value, depth + 1, numbers))
                 .collect::<Option<Vec<_>>>()?;
             format!("[{}]", items.join(","))
         }
         b'"' => serde_json::from_str::<JsString>(text).ok()?.stringify(),
+        b'-' | b'0'..=b'9' if matches!(numbers, Numbers::Source) => text.to_owned(),
         b'-' | b'0'..=b'9' => {
             let number = text.parse::<f64>().ok()?;
             if number.is_finite() {

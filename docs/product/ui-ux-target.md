@@ -153,7 +153,8 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Send queue | `GET /api/v2/printer-send-queue` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |
 | Spoolman shortfalls | `GET /plans/:id/filament-shortfalls` (Rust-only) | Exists; grams needed reads the per-send grams table (schema 46) and stays `unknown` (`grams_not_recorded`) until the GRE-1165 writers record grams per send (slicer estimate at send, measured at finish); basis is `measured`, `estimated` or `unknown` with a reason. The workflow projection consumes it next |
-| Accept | `POST /plans/:id/drafts/:draftId/apply` | Port |
+| Accept | `POST /api/v2/plans/{id}/drafts/{draft_id}/apply` with an `Idempotency-Key` | Exists in Rust behind `desktop_rebuild`; the generated client's `acceptDraft` (GRE-1120). The Plan tab sends the previewed `revision`, so a stale Accept is `draft_changed` |
+| Plan tab edits | `PUT /api/v2/plans/{id}/drafts/header`, `POST /api/v2/plans/{id}/drafts/save`, and `GET /api/v2/plans/{id}/drafts/header` for the Build header and Accepted base before any draft | Exists in Rust behind `desktop_rebuild` (GRE-1197, GRE-1120); see [Draft header fields](../draft-headers.md) |
 | Verify one result | `POST /printer-checkoff/verify`, `/reconcile`, `/dismiss` | Port |
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |
 | Ranked task feed | `GET /api/v1/tasks` | Exists (GRE-1123), a view over the workflow projection |
@@ -161,7 +162,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md) |
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
 | Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
-| Accept preview with checks | `POST /plans/:id/drafts/:draftId/preview` | New |
+| Accept preview with checks | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | Exists in Rust behind `desktop_rebuild` (GRE-1207 added the header changes) |
 | Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant |
 | Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |

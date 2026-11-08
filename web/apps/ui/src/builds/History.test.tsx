@@ -266,7 +266,7 @@ describe("UI8-03 Undo of a checkoff burst works from History", () => {
     );
   });
 
-  it("undoes a burst with a bodyless POST and reloads History, the farm log and Checkoff", async () => {
+  it("undoes a burst with a bodyless POST and reloads every core read", async () => {
     const fetchMock = undoable();
     const { queryClient } = renderAt("/builds/2/history", fetchMock);
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");
@@ -279,11 +279,7 @@ describe("UI8-03 Undo of a checkoff burst works from History", () => {
     expect(post[0]).toBe(UNDO_PATH);
     expect(post[1]!.body).toBeUndefined();
     await waitFor(() => expect(undoCell("Checked off 2 units")).toBe("Not undoableAlready undone"));
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
-      ["core", "history"],
-      ["core", "farm-log"],
-      ["core", "checkoff-units"],
-    ]);
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([["core"]]);
   });
 
   it("says why a refused undo failed", async () => {

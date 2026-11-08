@@ -88,15 +88,14 @@ impl Receipts {
             return None;
         }
         let names: Vec<String> = builds.iter().map(i64::to_string).collect();
-        let names = match names.split_last()? {
-            (last, []) => format!("Build {last}"),
-            (last, rest) => format!("Builds {} and {last}", rest.join(", ")),
-        };
         let bed = if beds.len() == 1 { "bed" } else { "beds" };
-        Some(format!(
-            "Undo reverses the whole burst: {} {bed} on {names}",
-            beds.len()
-        ))
+        let whole = format!("Undo reverses the whole burst: {} {bed}", beds.len());
+        // Older receipts may name no Build on their beds; the bed count still warns.
+        Some(match names.split_last() {
+            None => whole,
+            Some((last, [])) => format!("{whole} on Build {last}"),
+            Some((last, rest)) => format!("{whole} on Builds {} and {last}", rest.join(", ")),
+        })
     }
 
     /// What the burst's undo would answer now. Writes nothing.

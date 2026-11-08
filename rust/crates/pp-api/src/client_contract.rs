@@ -734,7 +734,6 @@ mod codegen {
         )
     }
 
-    /// One entry of each type, with each undo state History reports.
     /// One entry per type, and one burst per undo state.
     fn build_history() -> BuildHistoryPage {
         let refused = |reason| {

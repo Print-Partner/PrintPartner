@@ -113,7 +113,7 @@ Each source is capped at 10,000 rows. A Build past the cap answers `500`
 
 The generated client names the routes `readBuildHistory` (`BuildHistoryPage`)
 and `undoBuildHistoryEntry` (`BuildHistoryUndo`; `routePath` percent-encodes
-the string `entry_id`). `undo`, its `reason` and its `detail` are omittable
+the string `entry_id`). `undo`, its `reason`, `detail` and `scope` are omittable
 members, as above, so the contract test lists them as members a body may omit.
 The replacement UI's History tab (`/builds/{id}/history`, GRE-1101) reads the
 first page, loads older pages with `cursor` on Show older entries, and shows
@@ -128,7 +128,8 @@ Checkoff burst was already undone` (a manual burst) or `404` `History entry
 not found` (a printer burst, whose undo removed its entry) means the first
 send landed, so the tab counts the undo as done. An undo's `scope` shows
 beside its Undo button. Focus moves to the outcome message. After an undo the
-tab reloads History, the farm log and every Build's Checkoff units.
+tab reloads every core read: History, the Build headers, Checkoff, Today and
+the farm log.
 
 ## Undo
 

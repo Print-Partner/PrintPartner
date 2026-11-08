@@ -122,17 +122,14 @@ export function BuildHistory() {
   const table = useRef<HTMLTableElement>(null);
   const { undo, start, message } = useBurstUndo(
     (entry: Entry) => writeCore("undoBuildHistoryEntry", { id, entry_id: entry.id }),
-    // An undo changes Checkoff progress, on every Build a printer burst touched, and the
-    // farm log too.
-    () =>
-      Promise.all([
-        client.invalidateQueries({ queryKey: ["core", "history"] }),
-        client.invalidateQueries({ queryKey: ["core", "farm-log"] }),
-        client.invalidateQueries({ queryKey: ["core", "checkoff-units"] }),
-      ]),
+    // An undo changes Checkoff progress on every Build a printer burst touched, so the
+    // Build headers, Checkoff, Today and the farm log reload with History.
+    () => client.invalidateQueries({ queryKey: ["core"] }),
     // A printer burst's undo deletes its entry, so a resend after a lost answer finds none.
+    // A manual burst stays listed after its undo, so its 404 proves nothing.
     (error, entry) =>
       entry.type === "checkoff_burst" &&
+      !entry.id.startsWith("checkoff_burst:manual-") &&
       error.status === 404 &&
       error.detail === "History entry not found",
   );

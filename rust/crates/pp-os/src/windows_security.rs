@@ -21,7 +21,7 @@ use windows_sys::Win32::{
     },
 };
 
-pub(crate) use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+pub use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
 
 fn check(ok: i32) -> io::Result<()> {
     if ok == 0 {
@@ -80,7 +80,7 @@ impl TokenSid {
 
 /// The user this process runs as, and the owner its new objects get. An
 /// elevated administrator's new objects are owned by `BUILTIN\Administrators`.
-pub(crate) struct CurrentUser {
+pub struct CurrentUser {
     user: TokenSid,
     owner: TokenSid,
     /// SYSTEM and Administrators: the accounts that, like root on Unix, can
@@ -98,7 +98,7 @@ fn well_known(kind: i32) -> io::Result<Vec<u64>> {
 }
 
 impl CurrentUser {
-    pub(crate) fn query() -> io::Result<Self> {
+    pub fn query() -> io::Result<Self> {
         Ok(Self {
             user: TokenSid::query(TokenUser)?,
             owner: TokenSid::query(TokenOwner)?,
@@ -119,7 +119,7 @@ impl CurrentUser {
 
     /// A protected DACL with one ACE: full access for this user. `inherit`
     /// makes the ACE apply to files and directories created inside.
-    pub(crate) fn private_descriptor(&self, inherit: bool) -> io::Result<PrivateDescriptor> {
+    pub fn private_descriptor(&self, inherit: bool) -> io::Result<PrivateDescriptor> {
         let mut text = ptr::null_mut();
         check(unsafe { ConvertSidToStringSidW(self.user(), &mut text) })?;
         let text = Local(text.cast());
@@ -145,7 +145,7 @@ impl CurrentUser {
     /// handle needs `WRITE_DAC`. The kernel call changes this object only:
     /// unlike `SetSecurityInfo`, it never rewrites the inherited ACEs of
     /// existing children, which may be hard links to files elsewhere.
-    pub(crate) fn restrict(&self, object: &impl AsRawHandle, inherit: bool) -> io::Result<()> {
+    pub fn restrict(&self, object: &impl AsRawHandle, inherit: bool) -> io::Result<()> {
         let descriptor = self.private_descriptor(inherit)?;
         check(unsafe {
             SetKernelObjectSecurity(
@@ -180,7 +180,7 @@ impl CurrentUser {
 
     /// True when this user or its default owner owns `object`. The handle
     /// needs `READ_CONTROL`.
-    pub(crate) fn owns(&self, object: &impl AsRawHandle, kind: SE_OBJECT_TYPE) -> io::Result<bool> {
+    pub fn owns(&self, object: &impl AsRawHandle, kind: SE_OBJECT_TYPE) -> io::Result<bool> {
         let (owner, _, _descriptor) = Self::security(object, kind)?;
         Ok(!owner.is_null() && self.may_own(owner))
     }
@@ -188,7 +188,7 @@ impl CurrentUser {
     /// True when [`Self::owns`] holds and every ACE that grants access names
     /// this user: no other account can open `object`. Logs and the private
     /// pipe get a DACL that grants only this user, so they must keep it.
-    pub(crate) fn owns_privately(
+    pub fn owns_privately(
         &self,
         object: &impl AsRawHandle,
         kind: SE_OBJECT_TYPE,
@@ -200,7 +200,7 @@ impl CurrentUser {
     /// also allowed. Only the desktop account pin uses it: the user's profile
     /// folder passes inherited ACEs for both to the file, and both are
     /// root-equivalent, as root can read a 0600 file on Unix.
-    pub(crate) fn owns_privately_or_root(
+    pub fn owns_privately_or_root(
         &self,
         object: &impl AsRawHandle,
         kind: SE_OBJECT_TYPE,
@@ -252,11 +252,11 @@ impl CurrentUser {
 
 /// The DACL an object had, with its protection and inheritance flags, to put
 /// back exactly after a change that turned out wrong.
-pub(crate) struct SavedDacl(Local);
+pub struct SavedDacl(Local);
 
 impl SavedDacl {
     /// The handle needs `READ_CONTROL`.
-    pub(crate) fn of(object: &impl AsRawHandle, kind: SE_OBJECT_TYPE) -> io::Result<Self> {
+    pub fn of(object: &impl AsRawHandle, kind: SE_OBJECT_TYPE) -> io::Result<Self> {
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
         win32(unsafe {
             GetSecurityInfo(
@@ -274,7 +274,7 @@ impl SavedDacl {
     }
 
     /// The handle needs `WRITE_DAC`.
-    pub(crate) fn restore(&self, object: &impl AsRawHandle) -> io::Result<()> {
+    pub fn restore(&self, object: &impl AsRawHandle) -> io::Result<()> {
         check(unsafe {
             SetKernelObjectSecurity(
                 object.as_raw_handle() as HANDLE,
@@ -286,14 +286,14 @@ impl SavedDacl {
 }
 
 /// A self-relative security descriptor from [`CurrentUser::private_descriptor`].
-pub(crate) struct PrivateDescriptor(Local);
+pub struct PrivateDescriptor(Local);
 
 // The descriptor is immutable once built and only read by the system.
 unsafe impl Send for PrivateDescriptor {}
 unsafe impl Sync for PrivateDescriptor {}
 
 impl PrivateDescriptor {
-    pub(crate) fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
+    pub fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
         self.0.0
     }
 }

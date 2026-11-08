@@ -1120,6 +1120,9 @@ mod ticket_t_10_fixtures {
         /// byte for byte (`2.0`, `1e0`).
         #[serde(rename = "rawBody")]
         raw_body: Option<String>,
+        /// The `Content-Type` of `rawBody` when it is not `application/json`.
+        #[serde(default, rename = "contentType")]
+        content_type: Option<String>,
         node: Exchange,
         changed: Vec<String>,
         /// External effects Node's stubs recorded instead of running.
@@ -1128,6 +1131,12 @@ mod ticket_t_10_fixtures {
         /// Stored text Node left after a write, where the corpus records it.
         #[serde(default)]
         stored: Option<Value>,
+        /// SQL the generator ran on the database before this request.
+        #[serde(default)]
+        sql: Option<String>,
+        /// `false` when Node ran this request with `PP_DESKTOP_REBUILD` unset.
+        #[serde(default)]
+        rebuild: Option<bool>,
     }
 
     /// Sends one recorded request to `path` with the session cookie and
@@ -1152,9 +1161,8 @@ mod ticket_t_10_fixtures {
             request = request.json(body);
         }
         if let Some(raw) = &case.raw_body {
-            request = request
-                .header("Content-Type", "application/json")
-                .body(raw.clone());
+            let media = case.content_type.as_deref().unwrap_or("application/json");
+            request = request.header("Content-Type", media).body(raw.clone());
         }
         let before = StateGraph::capture(sandbox.path()).unwrap();
         let actual = Exchange::observe(request.send().await.unwrap())
@@ -1738,6 +1746,264 @@ mod ticket_t_10_fixtures {
         "not_json_text_id_v2",
         "empty_json_body_flat",
     ];
+
+    /// Plan feature reads and patches and decision appends (GRE-1243) on one
+    /// database, through the Build router merged with the planning router that
+    /// serves `GET /plans/{id}/decisions`, as `pp-core` composes them. After
+    /// each write the Plan's stored layer text, or the decision rows it added,
+    /// must equal Node's. A case Node ran with the flag off goes to a router
+    /// built with the flag off, which mounts nothing.
+    fn last_decision(database: &std::path::Path) -> i64 {
+        rusqlite::Connection::open(database)
+            .unwrap()
+            .query_row(
+                "SELECT coalesce(max(id),0) FROM plan_decisions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Node's onRequest hook checks the session before Fastify parses the
+    /// body, so a malformed body from an unknown session is 401 and writes
+    /// nothing.
+    async fn assert_malformed_body_needs_a_session(served: &Served, sandbox: &Sandbox) {
+        for (method, path) in [
+            ("PATCH", "/plans/3/features"),
+            ("POST", "/api/v2/plans/12/decisions"),
+        ] {
+            let before = StateGraph::capture(sandbox.path()).unwrap();
+            let response = served
+                .client
+                .request(
+                    Method::from_bytes(method.as_bytes()).unwrap(),
+                    format!("{}{path}", served.origin),
+                )
+                .header("Origin", &served.origin)
+                .header("Cookie", "pp_session=unknown")
+                .header("Content-Type", "application/json")
+                .body("{")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 401, "{method} {path}");
+            let after = StateGraph::capture(sandbox.path()).unwrap();
+            assert!(before.changed(&after).is_empty(), "{method} {path} wrote");
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables() {
+        use pp_api::{
+            accepted::AcceptedHttpConfig,
+            builds::{BuildHttpConfig, build_router},
+            planning::planning_router,
+        };
+
+        let fixture = seeded_fixture(
+            include_str!("../../../../fixtures/parity/plan-features-decisions/node.json"),
+            "plan-features-decisions",
+            114,
+        );
+        let sandbox = Sandbox::new("t10-plan-features").unwrap();
+        let owner = open_seeded(&sandbox, &fixture);
+        let graph = owner.build_graph_with_policy(ACCOUNT_POLICY).unwrap();
+        let planning = owner
+            .build_planning(ACCOUNT_POLICY, owner.source_reads().unwrap())
+            .unwrap();
+        let served = Served::start(|origin| {
+            build_router(
+                BuildHttpConfig::from_startup(origin, "default", Some("1")).unwrap(),
+                graph.clone(),
+            )
+            .merge(planning_router(
+                AcceptedHttpConfig::from_startup(origin, "default", Some("1")).unwrap(),
+                planning,
+            ))
+        })
+        .await
+        .unwrap();
+        let unmounted = Served::start(|origin| {
+            build_router(
+                BuildHttpConfig::from_startup(origin, "default", None).unwrap(),
+                graph,
+            )
+        })
+        .await
+        .unwrap();
+        let mut ledger =
+            Ledger::new(FASTIFY_REFUSED.iter().map(fastify_refusal).collect()).unwrap();
+        let database = sandbox.path().join("print-partner.db");
+        let (mut off, mut checked) = (0, 0);
+        for case in &fixture.cases {
+            if let Some(sql) = &case.sql {
+                rusqlite::Connection::open(&database)
+                    .unwrap()
+                    .execute_batch(sql)
+                    .unwrap();
+            }
+            if case.rebuild == Some(false) {
+                let (actual, changed) =
+                    send_case(&unmounted, FIXTURE_COOKIE, &sandbox, case, &case.path).await;
+                assert_eq!(
+                    (actual.status, &actual.body),
+                    (404, &Value::Null),
+                    "{}",
+                    case.id
+                );
+                assert_eq!(changed, Vec::<String>::new(), "{}: flag off wrote", case.id);
+                off += 1;
+                continue;
+            }
+            let since = last_decision(&database);
+            let (mut actual, changed) =
+                send_case(&served, FIXTURE_COOKIE, &sandbox, case, &case.path).await;
+            stamp_created_at(&mut actual.body);
+            ledger
+                .compare(&case.id, &case.node, &actual)
+                .unwrap_or_else(|error| panic!("{error}"));
+            if FASTIFY_REFUSED.contains(&case.id.as_str()) {
+                assert_eq!(changed, Vec::<String>::new(), "{}: refusal wrote", case.id);
+                continue;
+            }
+            if actual.status == 200 {
+                assert_eq!(
+                    serde_json::to_string(&actual.body).unwrap(),
+                    serde_json::to_string(&case.node.body).unwrap(),
+                    "{}: key order",
+                    case.id
+                );
+            }
+            assert_eq!(changed, case.changed, "{}: changed tables", case.id);
+            let Some(stored) = &case.stored else {
+                continue;
+            };
+            let actual = stored_after(&database, case, since);
+            assert_eq!(actual, *stored, "{}: stored text", case.id);
+            checked += 1;
+        }
+        assert_malformed_body_needs_a_session(&served, &sandbox).await;
+        served.stop().await.unwrap();
+        unmounted.stop().await.unwrap();
+        owner.shutdown().unwrap();
+        let report = ledger.finish().unwrap();
+        print_report("plan-features-decisions", &report);
+        assert_eq!(report.matched, 102);
+        assert_eq!(report.corrected.len(), FASTIFY_REFUSED.len());
+        assert_eq!(off, 4);
+        assert_eq!(checked, 34);
+    }
+
+    /// Rust refuses what Fastify's parser refuses, without its code.
+    fn fastify_refusal(case: &&'static str) -> Correction {
+        Correction {
+            case,
+            kind: CorrectionKind::Security,
+            reason: "Rust refuses what Fastify's parser refuses, without its code",
+            rust: Exchange {
+                status: 400,
+                body: json!({"detail": "Request is invalid"}),
+                set_cookie: vec![],
+            },
+        }
+    }
+
+    /// The Plan's stored feature layer text after a features write, or the
+    /// decision rows with ids above `since` after an append, as the generator
+    /// records them.
+    fn stored_after(database: &std::path::Path, case: &HttpCase, since: i64) -> Value {
+        let connection = rusqlite::Connection::open(database).unwrap();
+        if case.path.ends_with("/features") {
+            let plan = case.path.rsplit('/').nth(1).unwrap();
+            let value: Option<String> = connection
+                .query_row(
+                    "SELECT value FROM app_settings WHERE tenant_id='default' AND key=?1",
+                    [format!("feature_toggles:plan:{plan}")],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            json!({ "value": value })
+        } else {
+            let columns = [
+                "id",
+                "tenant_id",
+                "profile_id",
+                "actor",
+                "kind",
+                "action_type",
+                "params_json",
+                "label",
+                "summary",
+                "rationale",
+                "result_json",
+            ];
+            let mut statement = connection
+                .prepare(&format!(
+                    "SELECT {} FROM plan_decisions WHERE id > ?1 ORDER BY id",
+                    columns.join(",")
+                ))
+                .unwrap();
+            let rows: Vec<Value> = statement
+                .query_map([since], |row| {
+                    columns
+                        .iter()
+                        .enumerate()
+                        .map(|(index, column)| {
+                            let value = match row.get::<_, rusqlite::types::Value>(index)? {
+                                rusqlite::types::Value::Integer(value) => json!(value),
+                                rusqlite::types::Value::Text(value) => json!(value),
+                                _ => Value::Null,
+                            };
+                            Ok(((*column).to_owned(), value))
+                        })
+                        .collect::<rusqlite::Result<serde_json::Map<_, _>>>()
+                        .map(Value::Object)
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            json!({ "decisions": rows })
+        }
+    }
+
+    /// The plan-features-decisions cases Fastify's JSON parser refuses before
+    /// the route runs.
+    const FASTIFY_REFUSED: [&str; 8] = [
+        "patch_prototype_flat",
+        "patch_constructor_v1",
+        "patch_not_json_v2",
+        "patch_empty_json_flat",
+        "decision_prototype_flat",
+        "decision_not_json_v1",
+        "decision_empty_json_v2",
+        "decision_prototype_missing_flat",
+    ];
+
+    /// The golden records a decision's clock reading as `"<now>"`.
+    fn stamp_created_at(value: &mut Value) {
+        match value {
+            Value::Array(items) => items.iter_mut().for_each(stamp_created_at),
+            Value::Object(fields) => {
+                for (key, entry) in fields.iter_mut() {
+                    let now = key == "created_at"
+                        && entry.as_str().is_some_and(|time| {
+                            time.len() == 24
+                                && time::OffsetDateTime::parse(
+                                    time,
+                                    &time::format_description::well_known::Rfc3339,
+                                )
+                                .is_ok()
+                        });
+                    if now {
+                        *entry = json!("<now>");
+                    } else {
+                        stamp_created_at(entry);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     #[tokio::test]
     async fn catalog_flat_v1_match_node_responses_and_changed_tables() {

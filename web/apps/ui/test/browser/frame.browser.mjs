@@ -26,6 +26,11 @@ const PLATE_KEY = `
   const unit = document.querySelector('[aria-label="fixture_gear.stl unit 1"]');
   unit.focus();
   unit.dispatchEvent(new KeyboardEvent("keydown", { key: "p", bubbles: true }));`;
+// Opens the Accept gate and waits for its preview.
+const GATE = `
+  while (![...document.querySelectorAll("button")].some((b) => b.textContent === "Review and accept")) await sleep(50);
+  [...document.querySelectorAll("button")].find((b) => b.textContent === "Review and accept").click();
+  while (!document.querySelector(".pp-gate-snapshot")) await sleep(50);`;
 const STATES = ["loading", "empty", "error", "module-off", "offline", "ready"];
 // [name, path, setup]. "?core=down" makes /health fail for that page, so the frame is offline.
 const PAGES = [
@@ -36,6 +41,8 @@ const PAGES = [
   ["build-tab", "/builds/3/history", ""],
   ["build-checkoff", "/builds/3/checkoff", ""],
   ["build-checkoff-plate", "/builds/3/checkoff", PLATE_KEY],
+  ["build-plan", "/builds/3/plan", ""],
+  ["build-plan-gate", "/builds/3/plan", GATE],
   ["printer-states", "/states/printers", ""],
   ["palette", "/today", key({ key: "k", ctrlKey: true })],
   ["shortcuts", "/today", key({ key: "?" })],

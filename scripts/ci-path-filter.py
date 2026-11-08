@@ -40,9 +40,10 @@ def relevant(path, kind):
 
 WINDOWS_LABELS = {"ci:full", "ci:windows"}
 WINDOWS_MARKERS = re.compile(rb"windows|win32|unix|os::fd|target_family|target_os|\blibc\b|named.?pipe|\\\\\.\\pipe")
-WINDOWS_PATHS = ("rust/crates/pp-os/", ".github/workflows/", ".github/actions/")
+WINDOWS_PATHS = ("rust/crates/pp-os/", "rust/crates/pp-desktop/icons/", ".github/workflows/", ".github/actions/")
 WINDOWS_FILES = {"rust/Cargo.lock", "web/package.json", "web/package-lock.json", "web/scripts/atomic-package-build.mjs",
                  "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
+                 "rust/crates/pp-desktop/tauri.conf.json",
                  "rust/scripts/fetch-historical-schema-commits.sh", "rust-toolchain.toml", ".github/actionlint.yaml",
                  "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}
 
@@ -54,16 +55,18 @@ def windows_relevant(path, base, head):
     server = path.startswith("web/apps/server/src/") and path.endswith(".ts")
     if not rust and not server:
         return False
+    # A deleted file has no head copy and an added file no base copy; each is judged on the copy
+    # that exists. Only a path that neither side can read selects Windows unseen.
+    read = False
     for sha in (head, base):
         try:
             text = subprocess.check_output(["git", "show", f"{sha}:{path}"], stderr=subprocess.DEVNULL)
         except subprocess.CalledProcessError:
-            if sha == head:
-                return True
             continue
+        read = True
         if WINDOWS_MARKERS.search(text.lower()):
             return True
-    return False
+    return not read
 
 
 def select(event, base, head, kind, labels=()):

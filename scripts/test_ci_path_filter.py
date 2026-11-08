@@ -180,6 +180,8 @@ class CiPathFilterTests(unittest.TestCase):
                 ("rust/scripts/build-desktop-manifest.py", "x\n", "windows=true\n"),
                 ("rust/scripts/desktop_workspaces.py", "x\n", "windows=true\n"),
                 ("rust/scripts/fetch-historical-schema-commits.sh", "x\n", "windows=true\n"),
+                ("rust/crates/pp-desktop/tauri.conf.json", "{}\n", "windows=true\n"),
+                ("rust/crates/pp-desktop/icons/icon.ico", "ico\n", "windows=true\n"),
                 (".github/workflows/web-ci.yml", "name: x\n", "windows=true\n"),
                 ("scripts/ci-path-filter.py", "x\n", "windows=true\n"),
             ]
@@ -198,6 +200,19 @@ class CiPathFilterTests(unittest.TestCase):
             git("checkout", "-q", "--detach", with_marker)
             moved = commit("rust/crates/pp-core/src/w.rs", "fn b() {}\n")
             self.assertEqual(windows(moved, head), "windows=true\n")
+            # A deletion is judged on the base copy: no marker skips Windows, a marker selects it.
+            for path, text, expected in [
+                ("web/apps/server/src/gone.ts", "export const a = 1;\n", "windows=false\n"),
+                ("rust/crates/pp-core/src/gone.rs", "fn a() {}\n", "windows=false\n"),
+                ("rust/crates/pp-core/src/gone_w.rs", "#[cfg(windows)]\nmod w;\n", "windows=true\n"),
+            ]:
+                git("checkout", "-q", "--detach", base)
+                added = commit(path, text)
+                git("rm", "-q", "--", path)
+                git("commit", "-qm", "delete")
+                with self.subTest(deleted=path):
+                    self.assertEqual(windows(added, git("rev-parse", "HEAD")), expected)
+            self.assertTrue(ci_filter.windows_relevant("rust/crates/pp-core/src/none.rs", base, base))
             git("checkout", "-q", "--detach", base)
             head = commit("rust/crates/pp-api/src/lib.rs", "fn a() {}\n")
             self.assertEqual(windows(base, head, ["ci:windows"]), "windows=true\n")

@@ -306,7 +306,7 @@ The rebuild ships as small PRs to `main`, each under about 1.5k lines and checka
 Each slice is done when:
 
 - the existing suites pass with the feature off and on, and the default build is unchanged;
-- it passes the [merge gate](development/definition-of-done.md#merge-gate) on the exact head, with all checks green: `review-gate` for a normal slice, and two scorer seats at 9 or more for a sensitive one.
+- it passes the [merge gate](development/definition-of-done.md#merge-gate) on the exact head, with all checks green: `review-gate` for a normal slice, plus the coordinator's scorer run when the gate passed only through the coordinator record, and two scorer seats at 9 or more for a sensitive one.
 
 Slices land in this order. Linear tracks each one under GRE-595. A slice is one Linear item and may ship as several PRs (D16 ships as four, D14 as five). Some modules already exist on main from earlier PRs (for example #129 to #131); a slice ports only the delta from the reference branch.
 

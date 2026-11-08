@@ -6,12 +6,12 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 1. **One job per PR.** Keep the diff under about 1,500 lines, or about 600 for a Mission PR. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
 2. **Unslopped.** Run the unslop pass on code, comments and docs before review. Remove filler comments, dead code and speculative abstractions.
-3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. A sensitive PR also passes the coordinator's scorer run under the [merge gate](#merge-gate).
+3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. A sensitive PR, or a head whose `review-gate` passed only through the coordinator record, also passes the coordinator's scorer run under the [merge gate](#merge-gate).
 4. **Docs in the same PR.** When the PR changes behavior, setup or an interface, update the matching page under `docs/` in the same PR.
 
 ## Review and merge policy
 
-- Review depth (re-scope, 2026-11-08). A normal PR needs a passing `review-gate`, which is one Claude review or the coordinator record, and green required checks. The second-vendor scorer applies only to sensitive PRs; see [Merge gate](#merge-gate).
+- Review depth (re-scope, 2026-11-08). A normal PR needs a passing `review-gate`, which is one Claude review or the coordinator record, and green required checks. The second-vendor scorer applies to sensitive PRs and to heads whose `review-gate` passed only through the coordinator record; see [Merge gate](#merge-gate).
 - P0 and P1 findings block the merge. Fix them in the PR.
 - A P2 that affects real user data, security, or causes a crash becomes a bug ticket in its chunk.
 - Every other P2 and all P3s go on the post-parity polish list (GRE-974) or in a PR comment. Do not create a ticket for them.
@@ -22,7 +22,7 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 Every PR starts its description with `Fixes GRE-xxx` and closes its ticket when it merges. Don't write `Refs GRE-xxx`.
 
-When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The coordinator checks that the quotes match the parent's unmet items before it merges; on a sensitive PR the scorer checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
+When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The coordinator checks that the quotes match the parent's unmet items before it merges; when the scorer runs on that head, it checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
 
 ## Ticket states
 
@@ -48,7 +48,7 @@ Scorer seats, in order. Use the first available seat whose vendor differs from t
 2. Cursor `grok-4.7`.
 3. Pi `halo/qwen38-flash`.
 
-`post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR, the gate is the coordinator's own scorer run on the exact head.
+`post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR or a marker-only head, the gate is the coordinator's own scorer run on the exact head.
 
 ## Code review
 

@@ -147,13 +147,17 @@ export function FarmLog() {
     },
     retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
     // An undo refreshes the Farm log and every Build's History. Checkoff
-    // progress reloads when that screen is opened again.
-    onSettled: () => {
-      inFlight.current = false;
-      return Promise.all([
-        client.invalidateQueries({ queryKey: farmLogQuery.queryKey }),
-        client.invalidateQueries({ queryKey: ["core", "history"] }),
-      ]);
+    // progress reloads when that screen is opened again. The next undo waits for the
+    // reload, because until then the table still offers Undo on the entry just undone.
+    onSettled: async () => {
+      try {
+        await Promise.all([
+          client.invalidateQueries({ queryKey: farmLogQuery.queryKey }),
+          client.invalidateQueries({ queryKey: ["core", "history"] }),
+        ]);
+      } finally {
+        inFlight.current = false;
+      }
     },
   });
   // The Undo button goes away with the undo, so focus moves to what happened.

@@ -22,7 +22,7 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 Every PR starts its description with `Fixes GRE-xxx` and closes its ticket when it merges. Don't write `Refs GRE-xxx`.
 
-When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The scorer checks that the quotes match the parent's unmet items. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
+When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The coordinator checks that the quotes match the parent's unmet items before it merges; on a sensitive PR the scorer checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
 
 ## Ticket states
 
@@ -48,7 +48,7 @@ Scorer seats, in order. Use the first available seat whose vendor differs from t
 2. Cursor `grok-4.7`.
 3. Pi `halo/qwen38-flash`.
 
-`post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; the gate is the coordinator's own scorer run on the exact head.
+`post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR, the gate is the coordinator's own scorer run on the exact head.
 
 ## Code review
 
@@ -69,7 +69,7 @@ The gate runs on `pull_request_target`, so GitHub runs the default branch's copy
 
 Every reviewer posts findings as review threads, and the ruleset requires every thread to be resolved, whichever path passed the gate. Fix the finding, or reply with the reason it does not apply and resolve the thread.
 
-Remaining risk: a PR can still add a `pull_request` workflow with a job named `review-gate`. The real gate detects that check and fails, but GitHub may still show the spoofed check as passing next to it, and the ruleset matches required checks by name and app. Lanes also push with the owner's account, so the protected-files rule does not stop a lane from editing a workflow. Merges therefore stay with the owner and the coordinator, who score every head under the [merge gate](#merge-gate) and read the `review-gate` run itself. The ruleset does not require code-owner review, so CODEOWNERS only requests the owner's review. A future hardening step is a dedicated GitHub App that posts `review-gate` as its own check run, with the ruleset pinned to that app's `integration_id`, so no workflow job can produce a matching check.
+Remaining risk: a PR can still add a `pull_request` workflow with a job named `review-gate`. The real gate detects that check and fails, but GitHub may still show the spoofed check as passing next to it, and the ruleset matches required checks by name and app. Lanes also push with the owner's account, so the protected-files rule does not stop a lane from editing a workflow. Merges therefore stay with the owner and the coordinator, who read the `review-gate` run and the head's other check runs before every merge, and score sensitive heads under the [merge gate](#merge-gate). The ruleset does not require code-owner review, so CODEOWNERS only requests the owner's review. A future hardening step is a dedicated GitHub App that posts `review-gate` as its own check run, with the ruleset pinned to that app's `integration_id`, so no workflow job can produce a matching check.
 
 ### Factory Droid
 
@@ -105,7 +105,7 @@ The gate counts a marker only when the comment's author is `poitee` (the workflo
 
 Outside the [coordinator worktree](agent-workflow.md#coordinator-merges), the safety guard refuses any command line that names `pp-review-gate` in any case, raw or after decoding JSON and GraphQL escapes, URL encoding, or HTML entities, wherever it appears: in a `gh` comment, a `bash -c` or `python3 -c` script, or an `echo` into a file for later posting. It classifies the `-c` scripts of `sh`, `bash`, `zsh`, and `dash` like top-level commands, and refuses `eval` or `source` of anything that runs `git` or `gh`. It also refuses a comment body it cannot read literally: a variable (`$VAR`, `${...}`), a command substitution (`$(...)` or backticks), an ANSI-C `$'...'` string, stdin, a missing file, a REST `--input` body that is not JSON, or a body file in a command line with other commands.
 
-Remaining risk: the guard cannot see a marker that a program builds at run time, for example from base64 or character codes. The gate accepts only the exact raw marker from the owner account, so such a marker passes only if it is built exactly. That is why merges stay with the owner and the coordinator, who score each head and check who posted its marker.
+Remaining risk: the guard cannot see a marker that a program builds at run time, for example from base64 or character codes. The gate accepts only the exact raw marker from the owner account, so such a marker passes only if it is built exactly. That is why merges stay with the owner and the coordinator, who check who posted the marker on each head before merging.
 
 ### Copilot
 

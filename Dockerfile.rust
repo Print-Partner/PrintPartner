@@ -1,0 +1,82 @@
+# Print Partner Rust-only image: pp-server with desktop_rebuild compiled in and
+# PP_DESKTOP_REBUILD=1, serving the measured web build. The runtime stage has no
+# Node, npm, Python, GUI or slicer. See docs/docker.md.
+#
+#   docker build -f Dockerfile.rust --build-arg PP_COMMIT="$(git rev-parse HEAD)" -t pp-server:test .
+#
+# Base images are pinned by digest. Update a tag and its digest together.
+
+# Stage 1: the web build and the measured release manifest pp-server embeds.
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS web
+# A build without PP_COMMIT records the all-zero commit: an unversioned local build.
+ARG PP_COMMIT=0000000000000000000000000000000000000000
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY web/ web/
+RUN npm --prefix web ci
+COPY rust/scripts/ rust/scripts/
+ENV VITE_PRINT_PARTNER_DESKTOP=1
+RUN npm --prefix web run build && \
+    python3 rust/scripts/build-desktop-manifest.py --web web --node "$(node -p process.execPath)" \
+      --output /out/bundle-manifest.json --commit "$PP_COMMIT" && \
+    mkdir -p /out/web/apps/web /out/web/apps/server/dist/current/data && \
+    cp web/package.json /out/web/package.json && \
+    cp -R web/apps/web/dist /out/web/apps/web/dist && \
+    cp -RL web/apps/server/dist/current/data/manifests /out/web/apps/server/dist/current/data/manifests && \
+    chmod -R u=rwX,go=rX /out/web
+
+# Stage 2: pp-server, built against that manifest.
+FROM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS rust
+WORKDIR /src
+COPY rust-toolchain.toml ./
+COPY rust/ rust/
+COPY fixtures/ fixtures/
+# Rust sources include fixtures and web schemas and data at compile time.
+COPY web/ web/
+COPY --from=web /out/bundle-manifest.json /src/bundle-manifest.json
+ENV PP_DESKTOP_RELEASE_MANIFEST=/src/bundle-manifest.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/rust/target \
+    cargo build --locked --release --manifest-path rust/Cargo.toml -p pp-server \
+      --features desktop_rebuild && \
+    install -D -m 0755 rust/target/release/pp-server /out/pp-server
+
+# Stage 3: the runtime.
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
+ARG PP_COMMIT=0000000000000000000000000000000000000000
+ARG PP_APP_VERSION=
+ARG PP_BUILD_DATE=unknown
+LABEL org.opencontainers.image.source="https://github.com/poitee/PrintPartner" \
+      org.opencontainers.image.version="${PP_APP_VERSION}" \
+      org.opencontainers.image.revision="${PP_COMMIT}" \
+      org.opencontainers.image.created="${PP_BUILD_DATE}" \
+      org.opencontainers.image.title="Print Partner (Rust-only pp-server)"
+
+# ca-certificates for outbound HTTPS; tini as PID 1 forwards SIGTERM and reaps.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid 1000 ppuser && \
+    useradd --uid 1000 --gid 1000 --home-dir /data --no-create-home --shell /usr/sbin/nologin ppuser && \
+    install -d -o 1000 -g 1000 -m 0700 /data
+
+COPY --from=rust /out/pp-server /usr/local/bin/pp-server
+COPY --from=web /out/web /app/web
+COPY --chmod=0644 LICENSE LICENSE-SUMMARY.md ATTRIBUTION.md THIRD_PARTY_NOTICES.md /usr/share/doc/print-partner/
+# The start command. --commit must equal the commit embedded at build time.
+RUN printf '#!/bin/sh\nexec /usr/local/bin/pp-server --data /data --web /app/web --commit %s --status-file /tmp/pp-server.status.json "$@"\n' \
+      "$PP_COMMIT" > /usr/local/bin/pp-server-start && \
+    chmod 0755 /usr/local/bin/pp-server-start
+
+# Rust-only mode is on in this image only. Every other build keeps it off.
+ENV PP_DESKTOP_REBUILD=1 \
+    HOME=/data \
+    TMPDIR=/tmp
+USER 1000:1000
+WORKDIR /data
+VOLUME ["/data"]
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+  CMD ["pp-server", "healthcheck", "readiness", "--status-file", "/tmp/pp-server.status.json"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/pp-server-start"]

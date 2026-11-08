@@ -8,6 +8,7 @@ pub(crate) struct Arguments {
     pub(crate) node: Option<PathBuf>,
     pub(crate) commit: Option<String>,
     pub(crate) credential_file: Option<PathBuf>,
+    pub(crate) status_file: Option<PathBuf>,
 }
 
 pub(crate) fn parse(mut args: impl Iterator<Item = String>) -> Result<Arguments> {
@@ -20,6 +21,7 @@ pub(crate) fn parse(mut args: impl Iterator<Item = String>) -> Result<Arguments>
             "--node" => parsed.node = Some(PathBuf::from(value)),
             "--commit" => parsed.commit = Some(value),
             "--test-credential-file" => parsed.credential_file = Some(PathBuf::from(value)),
+            "--status-file" => parsed.status_file = Some(PathBuf::from(value)),
             _ => bail!("Unknown argument"),
         }
     }
@@ -47,6 +49,8 @@ mod tests {
             "test-commit",
             "--test-credential-file",
             "test-receipt",
+            "--status-file",
+            "test-status",
         ])
         .expect("valid arguments");
         assert_eq!(parsed.data, Some(PathBuf::from("test-data")));
@@ -54,6 +58,7 @@ mod tests {
         assert_eq!(parsed.node, Some(PathBuf::from("test-node")));
         assert_eq!(parsed.commit.as_deref(), Some("test-commit"));
         assert_eq!(parsed.credential_file, Some(PathBuf::from("test-receipt")));
+        assert_eq!(parsed.status_file, Some(PathBuf::from("test-status")));
     }
 
     #[test]
@@ -64,6 +69,7 @@ mod tests {
         assert!(parsed.node.is_none());
         assert!(parsed.commit.is_none());
         assert!(parsed.credential_file.is_none());
+        assert!(parsed.status_file.is_none());
     }
 
     #[test]

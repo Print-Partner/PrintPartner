@@ -616,7 +616,7 @@ The repository variable `PP_PR_RUNNER` chooses where pull request jobs run. It i
 
 Blacksmith bills by the minute and GitHub's runners are free here, so check the spend after any change to the paid jobs and every week while the switch is new.
 
-- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-ubuntu-2404` total with the 3,000 free minutes per month after converting: the allowance is counted in 2 vCPU x64 minutes, so each 4 vCPU minute uses two of them (the measured PR run of about 31 job-minutes uses about 61).
+- Blacksmith dashboard: the usage view shows minutes and cost per runner type, repository and workflow. Compare the `blacksmith-4vcpu-ubuntu-2404` total with the 3,000 free minutes per month after converting: the allowance is counted in 2 vCPU x64 minutes, so each 4 vCPU minute uses two of them (the Linux build and smoke jobs of the measured PR run total about 31 job-minutes and use about 61).
 - Per run, from GitHub: this prints each Blacksmith job of a run with its size and minutes (replace RUN_ID):
 
   `gh api repos/Print-Partner/PrintPartner/actions/runs/RUN_ID/jobs --jq '.jobs[]|select(.completed_at != null and .conclusion != "skipped" and any(.labels[]; startswith("blacksmith-")))|[.name,.labels[0],(((.completed_at|fromdate)-(.started_at|fromdate))/60|.*10|round/10)]|@tsv'`

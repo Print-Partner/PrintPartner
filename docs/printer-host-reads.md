@@ -26,11 +26,12 @@ Node's per-route budgets apply, one window per route per minute: capabilities 12
 
 Every Moonraker and PrusaLink read is read-only on the printer and sends only GETs. The Bambu connection test sends MQTT CONNECT, SUBSCRIBE and one `pushall` PUBLISH, which asks the printer for a status report and changes nothing on it ([One status read](bambu-lan.md#one-status-read)). No route uploads, starts a print, deletes or changes Checkoff. A Moonraker read sends each GET once. A PrusaLink read with a password sends a bodyless `GET /api/v1/status` before each GET, to get the Digest challenge. Without a password, a files read or connection test fails before sending anything, and the cameras list sends its GET unauthenticated, with no probe. A files read also lists storage when no storage is pinned. A GET sent with a password that gets a 401 with a fresh challenge is sent once more, as Node's adapter does. Nothing else is retried.
 
+Uploads go through the send queue's worker, which calls each driver's `upload_file` through `HostSends::upload` after an explicit Send now ([Send queue](send-queue.md)).
+
 ## Not served here yet
 
 - Bambu status (GRE-1176). Bambu reads as having no capabilities, and the files and camera routes answer unsupported. Only `POST /api/v1/integrations/{id}/test` contacts a Bambu printer, to read its status once and pin its certificate ([Pinning in Settings](bambu-lan.md#pinning-in-settings)).
 - The print-file snapshot for a Build. Node's `files/content?profile_id=` saves the bytes it streams and returns an `X-PrintPartner-Snapshot` token that only the print-file assignment route redeems. That route is not served here yet (GRE-1210 builds the snapshot store; GRE-1214 wires it in), so a request with `profile_id` answers 501 `Print-file inspection for a Build is not available in this runtime yet` and never reaches the printer.
-- Uploads and the send queue (GRE-365). Uploading needs an explicit user send and durable effect records (GRE-354). No Rust route calls `upload_file`.
 
 ## Streamed downloads and camera views
 

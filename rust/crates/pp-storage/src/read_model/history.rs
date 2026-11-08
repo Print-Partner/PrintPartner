@@ -51,6 +51,7 @@ impl std::fmt::Display for Failure {
 impl std::error::Error for Failure {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EntryType {
     Decision,
@@ -84,6 +85,7 @@ impl EntryType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Actor {
     User,
@@ -92,6 +94,7 @@ pub enum Actor {
 
 /// Why an entry cannot be undone from History.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum UndoReason {
     /// The burst was recorded before Checkoff issued undo tokens.
@@ -101,6 +104,7 @@ pub enum UndoReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct Undo {
     pub undoable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,12 +122,14 @@ impl Undo {
 
 /// The record an entry opens: `kind` is the entry type, `id` its row id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct Link {
     pub kind: EntryType,
     pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct Entry {
     /// `{type}:{row id}`, unique within the Build's history.
     pub id: String,
@@ -142,9 +148,14 @@ pub struct Entry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct Page {
     pub plan_id: i64,
     pub entries: Vec<Entry>,
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "pp_contracts::RequiredNullable<String>")
+    )]
     pub next_cursor: Option<String>,
 }
 
@@ -325,6 +336,19 @@ fn entry(
         link: Link { kind, id },
         undo,
     }
+}
+
+/// [`entry`] for the generated client's contract fixtures.
+#[cfg(feature = "codegen")]
+pub fn contract_entry(
+    kind: EntryType,
+    id: &str,
+    at: &str,
+    actor: Actor,
+    summary: &str,
+    undo: Option<Undo>,
+) -> Entry {
+    entry(kind, id.into(), at.into(), actor, summary.into(), undo)
 }
 
 /// Runs `sql` with `(tenant, build)` and maps each row, refusing more than

@@ -361,7 +361,7 @@ pub(super) fn rebase(connection: &mut Connection, args: Args<'_>) -> Result<Reba
             &actor,
             profile,
             key,
-            &prepared,
+            prepared.rows(),
             Origin::Rebased(&source),
         )?;
         let rebased = load(tx, &tenant, profile, id, &mut budget)?

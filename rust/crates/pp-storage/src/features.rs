@@ -272,6 +272,21 @@ pub(crate) fn resolve_for_tenant(
     Ok(load_layers(tx, tenant, plan)?.into_view())
 }
 
+/// A send's features, as Node's `readFeatureAccess` reads them: a Plan that
+/// no longer exists has no layer, so the user's choices apply.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn resolve_for_send(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    plan: Option<PositiveId>,
+) -> Result<View> {
+    let plan = match plan {
+        Some(id) => owned(tx, tenant, id)?.then_some(id),
+        None => None,
+    };
+    resolve_for_tenant(tx, tenant, plan)
+}
+
 /// Node's `GET` and `PATCH /plans/{id}/features` in one transaction: the
 /// Plan must be the tenant's, then both layers must parse. A patch writes the
 /// Plan layer's text even when it is unchanged or empty, as Node's

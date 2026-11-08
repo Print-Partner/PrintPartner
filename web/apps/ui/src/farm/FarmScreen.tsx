@@ -224,6 +224,11 @@ export function FarmScreen() {
               Match prints the app could not match
             </Link>
           </p>
+          <p>
+            <Link to="/farm/log" className="pp-link">
+              Farm log
+            </Link>
+          </p>
         </>
       )}
       empty={{ message: "No printers yet. Printers you add in Settings appear here." }}

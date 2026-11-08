@@ -2,23 +2,31 @@
 //! GRE-1220 through the mounted Rust routes: print-file preview and
 //! assignment on a disposable copy of a real SQLite fixture, redeeming a
 //! files/content snapshot exactly once, and Node's refusals; GRE-1255's
-//! upload route and the `upload_token` it issues.
-use axum::{Router, http::StatusCode};
+//! upload route and the `upload_token` it issues; GRE-1256's read of a print
+//! file off its printer and the drift it records.
+use axum::{Router, body::Body, http::StatusCode};
 use checkoff_http::{Fixture, post, post_as};
-use pp_api::file_assignments::file_assignments_router;
+use pp_api::{
+    file_assignments::file_assignments_router,
+    printer_host::{Answer, Capabilities, HostAnswer, HostStream, PrinterHostPort},
+};
 use pp_storage::{
     SettingsClient,
     auth::Secret,
     checkoff_progress::print_file::{
-        CAPTURE_UNAVAILABLE, MAX_UPLOAD_BYTES, Scope, SnapshotStore, UploadRefusal, UploadStore,
-        file_source,
+        CAPTURE_UNAVAILABLE, MAX_CLASSIFIABLE_BYTES, MAX_UPLOAD_BYTES, Scope, SnapshotStore,
+        UploadRefusal, UploadStore, file_source,
     },
     checkoff_progress::{AssignedLink, Assignment, Request, attribution::Unit},
     read_model::Credential,
 };
 use serde_json::{Value, json};
 use std::{
-    sync::{Arc, atomic::AtomicBool},
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -71,13 +79,101 @@ fn fixture() -> Fixture {
     fixture
 }
 
+/// A printer host serving the files in its map, by storage path, with a
+/// fixed modification time; it lists them as Node's `StorageListing` does.
+/// While `broken` is set its listing fails, and so does every read, as a
+/// stored host's read fails when its listing does (the gate lives in
+/// `pp_gateway::printer_host::HostReads::open_file`; this mock mirrors it).
+/// While `busy` is set every answer is `Busy`. A `declared` length replaces
+/// the real one on every read.
+#[derive(Default)]
+struct Host {
+    files: Mutex<HashMap<String, Vec<u8>>>,
+    broken: AtomicBool,
+    busy: AtomicBool,
+    declared: Mutex<Option<u64>>,
+}
+
+const MODIFIED: &str = "2026-11-01T00:00:00.000Z";
+
+impl Host {
+    fn serve(&self, path: &str, bytes: &[u8]) {
+        self.files
+            .lock()
+            .unwrap()
+            .insert(path.into(), bytes.to_vec());
+    }
+}
+
+impl PrinterHostPort for Host {
+    fn capabilities(&self, _: String) -> Answer<Capabilities> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
+
+    fn files(&self, _: String, path: String) -> Answer<Value> {
+        if self.busy.load(Ordering::Relaxed) {
+            return Box::pin(async { HostAnswer::Busy });
+        }
+        if self.broken.load(Ordering::Relaxed) {
+            return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
+        }
+        let entries: Vec<Value> = self
+            .files
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(file, _)| file.rsplit_once('/').map_or("", |(directory, _)| directory) == path)
+            .map(|(file, bytes)| json!({ "kind": "file", "path": file, "name": file, "size_bytes": bytes.len(), "modified_at": MODIFIED }))
+            .collect();
+        Box::pin(async move { HostAnswer::Ok(json!({ "path": path, "entries": entries })) })
+    }
+
+    fn cameras(&self, _: String) -> Answer<Value> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
+
+    fn file(&self, _: String, path: String) -> Answer<Option<HostStream>> {
+        if self.broken.load(Ordering::Relaxed) {
+            return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
+        }
+        let bytes = self.files.lock().unwrap().get(&path).cloned();
+        let declared = *self.declared.lock().unwrap();
+        Box::pin(async move {
+            HostAnswer::Ok(bytes.map(|bytes| HostStream {
+                status: 200,
+                content_type: None,
+                content_length: Some(declared.unwrap_or(bytes.len() as u64)),
+                body: Body::from(bytes),
+            }))
+        })
+    }
+
+    fn camera_view(&self, _: String, _: String) -> Answer<Option<HostStream>> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
+
+    fn test(&self, _: String) -> Answer<Value> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
+}
+
 fn open(
     fixture: &Fixture,
     flag: &str,
     store: &Arc<SnapshotStore>,
 ) -> (pp_storage::WriterOwner, Router) {
+    hosted(fixture, flag, store, Arc::default())
+}
+
+fn hosted(
+    fixture: &Fixture,
+    flag: &str,
+    store: &Arc<SnapshotStore>,
+    host: Arc<Host>,
+) -> (pp_storage::WriterOwner, Router) {
     fixture.open_with(flag, |config, owner| {
-        file_assignments_router(config, owner.checkoff_progress().unwrap(), store.clone())
+        let client = owner.checkoff_progress().unwrap();
+        file_assignments_router(config, client, store.clone(), host)
     })
 }
 
@@ -309,11 +405,6 @@ fn shared_refusals() -> Vec<(Value, u16, &'static str)> {
             json!({ "upload_token": "gone" }),
             409,
             "That upload is no longer available; upload the print file again",
-        ),
-        (
-            json!({ "remote_path": PATH }),
-            501,
-            "Reading a print file off a printer is not available in this runtime yet; reopen the file from its preview",
         ),
     ]
 }
@@ -975,4 +1066,111 @@ fn held_uploads_are_bound_to_their_build_and_capped_at_two_files() {
     );
     held.spend();
     uploads.hold(1, b"G28\n").unwrap();
+}
+
+/// The stored link with `id`.
+fn link(fixture: &Fixture, id: &Value) -> Value {
+    js_json::parse(&links(fixture))
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["id"] == *id)
+        .cloned()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_printer_file_is_read_classified_and_recorded_with_its_identity() {
+    let fixture = fixture();
+    let host = Arc::new(Host::default());
+    host.serve(PATH, b"G1 X1\n");
+    host.serve("gcodes/bad.gcode", b"\x00\x01binary");
+    let (owner, router) = hosted(&fixture, "1", &Arc::default(), host.clone());
+    let remote = json!({ "remote_path": PATH });
+
+    let (status, preview) = post(&router, PREVIEW, &request(remote.clone()), true).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(
+        (&preview["inspected"], &preview["classification"]),
+        (&json!(true), &json!({ "format": "gcode" }))
+    );
+    let missing = json!({ "remote_path": "gcodes/missing.gcode" });
+    let (status, unread) = post(&router, PREVIEW, &request(missing), true).await;
+    assert_eq!(
+        (status, &unread["inspected"]),
+        (StatusCode::OK, &json!(false)),
+        "a file the host does not serve is unread"
+    );
+    host.broken.store(true, Ordering::Relaxed);
+    let (status, unlisted) = post(&router, PREVIEW, &request(remote.clone()), true).await;
+    assert_eq!(
+        (status, &unlisted["inspected"]),
+        (StatusCode::OK, &json!(false)),
+        "the route reads a failed host read as unread"
+    );
+    host.broken.store(false, Ordering::Relaxed);
+    host.busy.store(true, Ordering::Relaxed);
+    let (status, _) = post(&router, PREVIEW, &request(remote.clone()), true).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "busy settings");
+    host.busy.store(false, Ordering::Relaxed);
+    *host.declared.lock().unwrap() = Some(MAX_CLASSIFIABLE_BYTES as u64 + 1);
+    assert_eq!(
+        detail(&router, PREVIEW, &request(remote.clone())).await,
+        (
+            StatusCode::CONFLICT,
+            json!("That print file is too large to inspect")
+        ),
+        "a declared length past the limit is refused before the body is read"
+    );
+    *host.declared.lock().unwrap() = None;
+    let bad = json!({ "remote_path": "gcodes/bad.gcode", "filename": "bad.gcode" });
+    assert_eq!(
+        detail(&router, ASSIGN, &assignment(bad)).await,
+        (
+            StatusCode::CONFLICT,
+            json!("Those bytes are not G-code, binary G-code, or a 3MF package")
+        )
+    );
+
+    let (status, assigned) = post(&router, ASSIGN, &assignment(remote), true).await;
+    assert_eq!(status, StatusCode::OK, "{assigned}");
+    let identity = &link(&fixture, &assigned["link"]["id"])["remote_identity"];
+    assert_eq!(
+        (&identity["size_bytes"], &identity["modified_at"]),
+        (&json!(6), &json!(MODIFIED))
+    );
+    assert_eq!(identity["sha256"].as_str().map(str::len), Some(64));
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn reading_a_changed_printer_file_records_drift_on_the_link_that_watches_it() {
+    let fixture = fixture();
+    let host = Arc::new(Host::default());
+    host.serve(PATH, b"G1 X1\n");
+    let (owner, router) = hosted(&fixture, "1", &Arc::default(), host.clone());
+    let remote = assignment(json!({ "remote_path": PATH }));
+    let (status, assigned) = post(&router, ASSIGN, &remote, true).await;
+    assert_eq!(status, StatusCode::OK, "{assigned}");
+    let id = &assigned["link"]["id"];
+    let taken = (
+        StatusCode::CONFLICT,
+        json!("That print file is already assigned"),
+    );
+
+    host.serve(PATH, b"G1 X2\n");
+    assert_eq!(detail(&router, ASSIGN, &remote).await, taken);
+    assert_eq!(
+        link(&fixture, id)["remote_drift"]["reason"],
+        "content",
+        "the observation stands though the assignment was refused"
+    );
+
+    host.serve(PATH, b"G1 X1\n");
+    assert_eq!(detail(&router, ASSIGN, &remote).await, taken);
+    assert!(
+        link(&fixture, id).get("remote_drift").is_none(),
+        "a restored file clears the drift"
+    );
+    owner.shutdown().unwrap();
 }

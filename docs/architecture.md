@@ -85,6 +85,20 @@ routers in the gateway as a sibling router composed by `pp-core`
 That mode is for disposable data until refusal of Node-used directories lands.
 A registered router is not a delivered operation.
 
+Re-scope, approved by the owner on 2026-11-08. The plan is on the Notion
+roadmap; Linear carries it as the phase label `P2' try-it builds`. Frozen,
+kept running until cutover with no new work: `pp-compat`, gateway
+compatibility routing, the parity fixtures and the Node 22 schema oracle, and
+the operation inventory in report mode. Deferred until after cutover: the
+Windows follow-ups, Home Assistant and webhooks, profile sync, the
+reference-sharing routes, 3MF and kit-bundle exports, farm reflow, queue move,
+and Bambu beyond status-only. Pulled forward: the Rust-only Docker image,
+unsigned Mac and Linux try-it builds on copied data, and a measured
+Node-versus-Rust baseline of the four operations the owner named as slow:
+thumbnail load, a Plan change, a Checkoff session, and an STL pack or HTML
+checklist export. Exports keep the STL pack and the HTML checklist. MCP on
+Rust is scoped to the tools the usage log shows.
+
 The baseline gateway inventory has 781 compatibility routes. The operation
 manifest has eight Node-owned operations and 82 reviewed resource sets. The
 [operation inventory](development/operation-inventory.md) report tracks that

@@ -27,7 +27,8 @@ const ACTOR_WORDS: Record<Entry["actor"], string> = { user: "You", assistant: "A
 /** Why History cannot undo an entry, in the words docs/build-history.md uses. */
 const HISTORY_UNDO_REASONS: Record<UndoReason, string> = {
   printer_command: "A printer command cannot be undone",
-  no_undo_token: "History cannot undo checkoff bursts yet. Undo a recent one from the Farm log",
+  no_undo_token:
+    "History cannot undo checkoff bursts yet. Undo a printer burst from the Farm log, or your last manual burst on the Checkoff tab",
 };
 
 /**

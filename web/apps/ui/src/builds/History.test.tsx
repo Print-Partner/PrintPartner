@@ -187,7 +187,7 @@ describe("UI8-03 History says which entries cannot be undone and why", () => {
       "Not undoableA printer command cannot be undone",
     );
     expect(row("3 units checked off").lastElementChild!.textContent).toBe(
-      "Not undoableHistory cannot undo checkoff bursts yet. Undo a recent one from the Farm log",
+      "Not undoableHistory cannot undo checkoff bursts yet. Undo a printer burst from the Farm log, or your last manual burst on the Checkoff tab",
     );
     expect(row("Accepted revision 2").lastElementChild!.textContent).toBe("");
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();

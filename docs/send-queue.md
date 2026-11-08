@@ -261,7 +261,8 @@ already read for the upload, before the upload, and contacts nothing:
 The length comes from `; total filament length [mm] :` (OrcaSlicer), else
 `; filament used [mm] =` summed. Grams over length is the send's grams per
 millimetre, which the status watcher multiplies by the length the printer
-measures at finish. A file with grams but no positive length records the
+measures at finish. With several extruders this is one blended factor over
+all filaments. A file with grams but no positive length records the
 estimate with no factor, so the estimate stays after the print.
 
 A file with no such value, a compressed metadata block, a value that is not a

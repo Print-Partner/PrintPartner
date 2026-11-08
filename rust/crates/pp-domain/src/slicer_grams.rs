@@ -87,11 +87,18 @@ fn from_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Found {
     }
 }
 
-/// `1.5, 2` as 3.5. Any value that is not a number spoils the sum.
+/// `1.5, 2` as 3.5. Any value that is not a number, or is negative, spoils
+/// the sum.
 fn sum(values: &str) -> Option<f64> {
     values
         .split(',')
-        .map(|value| value.trim().parse::<f64>().ok())
+        .map(|value| {
+            value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|value| *value >= 0.0)
+        })
         .sum()
 }
 
@@ -199,6 +206,7 @@ mod tests {
             b"; filament used [g] = 0\n",
             b"; filament used [g] = -2\n",
             b"; filament used [g] = 1.5, n/a\n",
+            b"; filament used [g] = 5, -1\n",
             b"; filament used [g] = NaN\n",
             b"; filament used [g] = inf\n",
             b"",

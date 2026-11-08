@@ -200,6 +200,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "PlanDecisionList",
     ),
     route(
+        "readBuildHistory",
+        "GET",
+        "/api/v2/plans/{id}/history",
+        None,
+        "BuildHistoryPage",
+    ),
+    route(
         "listPrinters",
         "GET",
         "/api/v2/printers",
@@ -332,6 +339,9 @@ mod codegen {
         BedClearState, PrinterDisplayDescriptor, PrinterDisplayState, PrinterExecutionState,
         PrinterStateView,
     };
+    use pp_storage::read_model::history::{
+        self, Actor, EntryType, Page as BuildHistoryPage, Undo, UndoReason,
+    };
     use pp_storage::{
         build_graph::wire::{
             AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
@@ -452,6 +462,7 @@ mod codegen {
             schemars::schema_for!(BuildPlanningResponse),
         )?;
         schema("PlanDecisionList", schemars::schema_for!(PlanDecisionList))?;
+        schema("BuildHistoryPage", schemars::schema_for!(BuildHistoryPage))?;
         schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
         schema("FarmPrinterList", schemars::schema_for!(FarmPrinterList))?;
         schema(
@@ -710,6 +721,48 @@ mod codegen {
             UnmatchedPrintList { prints },
             SendQueue { items },
         )
+    }
+
+    /// One entry of each type, with each undo state History reports.
+    fn build_history() -> BuildHistoryPage {
+        let refused = |reason| {
+            Some(Undo {
+                undoable: false,
+                reason: Some(reason),
+            })
+        };
+        let entries = [
+            (EntryType::Revision, Actor::User, None),
+            (EntryType::Snapshot, Actor::Assistant, None),
+            (
+                EntryType::Send,
+                Actor::User,
+                refused(UndoReason::PrinterCommand),
+            ),
+            (
+                EntryType::CheckoffBurst,
+                Actor::User,
+                refused(UndoReason::NoUndoToken),
+            ),
+            (EntryType::Decision, Actor::Assistant, None),
+        ]
+        .into_iter()
+        .map(|(kind, actor, undo)| {
+            history::contract_entry(
+                kind,
+                "9007199254740991",
+                "2026-11-05T01:00:00.000Z",
+                actor,
+                UNICODE,
+                undo,
+            )
+        })
+        .collect();
+        BuildHistoryPage {
+            plan_id: MAX_SAFE,
+            entries,
+            next_cursor: Some("djF8".into()),
+        }
     }
 
     /// One entry per kind and undo reason, filled and null.
@@ -1649,6 +1702,16 @@ mod codegen {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);
         }
         cases.push(served("FarmLogPage", "every-undo", log)?);
+        cases.push(served("BuildHistoryPage", "every-type", build_history())?);
+        cases.push(served(
+            "BuildHistoryPage",
+            "last",
+            BuildHistoryPage {
+                plan_id: 1,
+                entries: vec![],
+                next_cursor: None,
+            },
+        )?);
         cases.push(served(
             "FarmLogPage",
             "last",

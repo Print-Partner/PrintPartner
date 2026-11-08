@@ -159,11 +159,11 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |
 | Ranked task feed | `GET /api/v1/tasks` | Exists (GRE-1123), a view over the workflow projection |
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
-| Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md) |
+| Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md). The replacement UI shows it at `/farm/log`, linked from Farm, with Undo on each entry the core reports undoable and the reason on the rest (GRE-1101) |
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
-| Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
+| Build history | `GET /plans/:id/history` | Exists in Rust behind `desktop_rebuild` (GRE-1092); the generated client names it `readBuildHistory`. The replacement History tab lists it newest first with Show older entries, and shows sends and checkoff bursts as not undoable with the reason (GRE-1101). Undo of manual and printer bursts from History is GRE-1259; keep UI ticket GRE-1023 unchanged. See [Build history](../build-history.md) |
 | Accept preview with checks | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | Exists in Rust behind `desktop_rebuild` (GRE-1207 added the header changes) |
-| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant |
+| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | New variant (GRE-1094); `R` on a History snapshot is GRE-1260 |
 | Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |
 

@@ -25,6 +25,13 @@ describe("readCore", () => {
     );
   });
 
+  it("appends an encoded query to the path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ entries: [], next_cursor: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    await readCore("listFarmLog", {}, undefined, { cursor: "a b&c" });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v2/farm-log?cursor=a+b%26c");
+  });
+
   it("refuses an ID that is not a positive safe integer before any request", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -73,5 +80,31 @@ describe("writeCore", () => {
     const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect(new Headers(init.headers).get("idempotency-key")).toBe("key-1");
     expect(init.method).toBe("PUT");
+  });
+});
+
+describe("writeCore", () => {
+  it("sends a route without a request schema with no body", async () => {
+    const entry = {
+      id: "checkoff_burst_undo:4",
+      kind: "checkoff_burst_undo",
+      at: "2026-11-05T10:45:00.000Z",
+      summary: "Undid it",
+      build_ids: [2],
+      printer_ids: ["voron"],
+      units_confirmed: null,
+      units_rejected: null,
+      undoes: "checkoff_burst:3",
+      send_state: null,
+      undo: { undoable: false, reason: "undo_entry", detail: null },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(json(entry));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(writeCore("undoFarmLogEntry", { id: "checkoff_burst:3" })).resolves.toEqual(entry);
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/v2/farm-log/checkoff_burst%3A3/undo");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+    expect(init.headers).toEqual({ accept: "application/json" });
   });
 });

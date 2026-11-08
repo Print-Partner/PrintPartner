@@ -17,6 +17,17 @@ routes beside them in `pp_api::checkoff::checkoff_router`. Admission is
 cookie or an API key. Each request runs as one writer transaction in
 `pp_storage::checkoff_progress`, so a page and an undo see the same state.
 
+The replacement UI shows the log at `/farm/log`, linked from the Farm screen
+(GRE-1101). It reads the first page and loads older pages with `cursor`. An
+entry whose `undo.undoable` is true gets an Undo button, which sends the
+bodyless `POST /api/v2/farm-log/{id}/undo` once (clicks while it is in flight
+send nothing) and reloads the log; every other entry shows its reason in words,
+and a refused undo shows the core's detail. A send whose answer is lost is
+resent; if the resend finds the burst already undone, the first send landed and
+the screen says it was undone. If every send is lost, it says the undo may not
+have reached the core and shows the reloaded log. With the Farm module off the
+screen says so and never reads the log.
+
 ## What is logged
 
 | `kind` | Source | Undo |

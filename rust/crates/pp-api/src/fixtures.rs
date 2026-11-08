@@ -29,10 +29,7 @@ impl Sandbox {
         let path = std::env::temp_dir().join(format!("pp-parity-{label}-{}", hex::encode(random)));
         // WriterOwner refuses group/world-writable data directories, so do not
         // let a permissive umask decide the mode.
-        let builder = &mut std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
-        builder
+        private_dir_builder()
             .create(&path)
             .with_context(|| format!("create {}", path.display()))?;
         Ok(Self(path))
@@ -48,6 +45,21 @@ impl Drop for Sandbox {
         // A failed removal must not replace the panic that is unwinding.
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// Creates directories with mode 0700, so a permissive umask cannot decide it.
+#[cfg(unix)]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+}
+
+/// Windows has no mode bits; the directory inherits its parent's ACL.
+#[cfg(windows)]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    std::fs::DirBuilder::new()
 }
 
 /// The public part of one HTTP response: status, complete JSON body and every

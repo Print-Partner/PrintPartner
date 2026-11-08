@@ -39,7 +39,10 @@ def relevant(path, kind):
 
 
 WINDOWS_LABELS = {"ci:full", "ci:windows"}
-WINDOWS_MARKERS = re.compile(rb"windows|win32|unix|os::fd|target_family|target_os|\blibc\b|named.?pipe|\\\\\.\\pipe")
+# Platform-gated code: Windows names, Unix-only code that needs a Windows counterpart, Linux-only
+# code whose fallback runs on Windows, and path-separator handling.
+WINDOWS_MARKERS = re.compile(rb"windows|win32|unix|linux|os::fd|target_family|target_os|\blibc\b|named.?pipe|"
+                             rb"\\\\\.\\pipe|process\.platform|/proc/|path\.sep|path\.win32|/\\\\/g")
 WINDOWS_PATHS = ("rust/crates/pp-os/", "rust/crates/pp-desktop/icons/", ".github/workflows/", ".github/actions/")
 WINDOWS_FILES = {"rust/Cargo.lock", "web/package.json", "web/package-lock.json", "web/scripts/atomic-package-build.mjs",
                  "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",

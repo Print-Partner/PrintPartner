@@ -16,14 +16,15 @@
 //! printer host changed is refused. After a successful assignment the token
 //! is spent. An `upload_token` is redeemed the same way for the Build it was
 //! uploaded for, and an unknown, expired or foreign one is refused as Node
-//! refuses it. Until this runtime reads a printer's file itself, a
-//! `remote_path` on a Moonraker or PrusaLink host without a snapshot answers
-//! 501 rather than being recorded unread.
+//! refuses it. A `remote_path` on a Moonraker or PrusaLink host without a
+//! snapshot is read off the printer through the [`PrinterHostPort`], and an
+//! assignment of it first records drift on the links that watch that path
+//! (GRE-1256).
 
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, failure, ok_json},
     loopback::PresentedCredential,
-    printer_host::{Windows, throttled},
+    printer_host::{HostAnswer, PrinterHostPort, Windows, safe_storage_path, throttled},
 };
 use axum::{
     Extension, Router,
@@ -37,8 +38,8 @@ use pp_storage::auth::AuthFailure;
 use pp_storage::checkoff_progress::{
     AssignedLink, Assignment, Body, FileRequest, FileRoute, ProgressClient, REPLY_LOST, Request,
     print_file::{
-        HeldUpload, Inspected, MAX_UPLOAD_BYTES, Reservation, SNAPSHOT_EXPIRED, SnapshotStore,
-        UPLOAD_GONE, UploadRefusal, UploadStore, upload_form,
+        self, HeldUpload, Inspected, MAX_UPLOAD_BYTES, Reservation, SNAPSHOT_EXPIRED,
+        SnapshotStore, TOO_LARGE_TO_INSPECT, UPLOAD_GONE, UploadRefusal, UploadStore, upload_form,
     },
 };
 use serde_json::{Value, json};
@@ -73,7 +74,6 @@ const PROTOTYPE: [&str; 12] = [
     "toString",
     "valueOf",
 ];
-const UNPORTED: &str = "Reading a print file off a printer is not available in this runtime yet; reopen the file from its preview";
 
 #[derive(Clone)]
 struct App {
@@ -81,6 +81,7 @@ struct App {
     client: ProgressClient,
     snapshots: Arc<SnapshotStore>,
     uploads: Arc<UploadStore>,
+    hosts: Arc<dyn PrinterHostPort>,
     windows: Arc<Windows>,
 }
 
@@ -91,6 +92,7 @@ pub fn file_assignments_router(
     config: AcceptedHttpConfig,
     client: ProgressClient,
     snapshots: Arc<SnapshotStore>,
+    hosts: Arc<dyn PrinterHostPort>,
 ) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
@@ -110,6 +112,7 @@ pub fn file_assignments_router(
                 client: client.clone(),
                 snapshots: snapshots.clone(),
                 uploads: uploads.clone(),
+                hosts: hosts.clone(),
                 windows: Arc::default(),
             })
     };
@@ -122,20 +125,113 @@ enum Inspection {
     Refused(&'static str),
     /// Nothing about the file is known, and nothing may be assumed.
     Unreadable,
-    /// Node would read the file off the printer; this runtime cannot yet.
-    Unported,
+    /// The printer's settings could not be read in time.
+    Busy,
+    /// Classifying the bytes failed inside PrintPartner.
+    Failed,
 }
 
-fn inspect(app: &App, parsed: &FileRequest) -> Inspection {
+impl Inspection {
+    /// The inspected file, `None` when it is unread, or the answer that
+    /// refuses the request.
+    fn settle(self) -> Result<Option<Inspected>, Box<Response>> {
+        match self {
+            Self::Inspected(inspected) => Ok(Some(inspected)),
+            Self::Unreadable => Ok(None),
+            Self::Refused(detail) => Err(Box::new(conflict(detail))),
+            Self::Busy => Err(Box::new(busy())),
+            Self::Failed => Err(Box::new(crate::accepted::internal())),
+        }
+    }
+}
+
+/// The bytes of a host reply, or `Ok(None)` past `cap` as Node's
+/// `readBoundedResponseChunks` refuses them: a declared length past `cap`
+/// is refused before any byte is read.
+async fn bounded(
+    mut body: axum::body::Body,
+    declared: Option<u64>,
+    cap: usize,
+) -> Result<Option<Vec<u8>>, ()> {
+    use http_body::Body as _;
+    if declared.is_some_and(|length| length > cap as u64) {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    while let Some(frame) =
+        std::future::poll_fn(|context| std::pin::Pin::new(&mut body).poll_frame(context)).await
+    {
+        let Ok(data) = frame.map_err(|_| ())?.into_data() else {
+            continue;
+        };
+        if bytes.len() + data.len() > cap {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&data);
+    }
+    Ok(Some(bytes))
+}
+
+/// Node's `inspectRemoteFile`: the provider's listing entry for the path,
+/// then the bytes the host serves, classified. Unlike Node, the host serves
+/// only a file its directory listing shows, so a listing that fails or omits
+/// the file leaves it unread.
+async fn remote(app: &App, printer: &str, raw: &str) -> Inspection {
+    let Some(path) = safe_storage_path(raw) else {
+        return Inspection::Unreadable;
+    };
+    let directory = path.rsplit_once('/').map_or("", |(directory, _)| directory);
+    let provider = match app
+        .hosts
+        .files(printer.to_owned(), directory.to_owned())
+        .await
+    {
+        HostAnswer::Ok(listing) => listing["entries"]
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry["kind"] == "file" && entry["path"] == path.as_str())
+            })
+            .map_or(Value::Null, |entry| {
+                let keys = ["size_bytes", "modified_at", "provider_revision"];
+                Value::Object(
+                    keys.iter()
+                        .filter_map(|&key| Some((key.to_owned(), entry.get(key)?.clone())))
+                        .collect(),
+                )
+            }),
+        HostAnswer::Busy => return Inspection::Busy,
+        _ => Value::Null,
+    };
+    let stream = match app.hosts.file(printer.to_owned(), path).await {
+        HostAnswer::Ok(Some(stream)) if (200..300).contains(&stream.status) => stream,
+        HostAnswer::Busy => return Inspection::Busy,
+        _ => return Inspection::Unreadable,
+    };
+    let cap = print_file::MAX_CLASSIFIABLE_BYTES;
+    let bytes = match bounded(stream.body, stream.content_length, cap).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Inspection::Refused(TOO_LARGE_TO_INSPECT),
+        Err(()) => return Inspection::Unreadable,
+    };
+    match tokio::task::spawn_blocking(move || print_file::inspect(&bytes, provider)).await {
+        Ok(Ok(inspected)) => Inspection::Inspected(inspected),
+        Ok(Err(detail)) => Inspection::Refused(detail),
+        Err(_) => Inspection::Failed,
+    }
+}
+
+async fn inspect(app: &App, parsed: &FileRequest) -> Inspection {
     if let (Some(token), Some(scope)) = (&parsed.snapshot_token, parsed.scope()) {
         return app
             .snapshots
             .read(token, &scope, parsed.printer.source.as_deref())
             .map_or(Inspection::Refused(SNAPSHOT_EXPIRED), Inspection::Inspected);
     }
-    if parsed.remote_path.is_some() {
+    if let Some(path) = &parsed.remote_path {
         return if parsed.printer.host_files {
-            Inspection::Unported
+            remote(app, &parsed.printer.printer_id, path).await
         } else {
             Inspection::Unreadable
         };
@@ -178,6 +274,13 @@ fn read(answer: &mut serde_json::Map<String, Value>, inspected: &Inspected) {
     answer.insert("classification".into(), json!(classification));
     answer.insert("print_ready".into(), json!(classification.is_print_ready()));
     answer.insert("next_action".into(), json!(classification.next_action()));
+}
+
+fn busy() -> Response {
+    failure(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Printer settings are unavailable",
+    )
 }
 
 fn conflict(detail: &str) -> Response {
@@ -267,13 +370,12 @@ async fn preview(
         Some(Value::Object(suggestion)) => suggestion,
         _ => return crate::accepted::internal(),
     };
-    match inspect(&app, &parsed) {
-        Inspection::Refused(detail) => return conflict(detail),
-        Inspection::Unported => return failure(StatusCode::NOT_IMPLEMENTED, UNPORTED),
-        Inspection::Unreadable => {
+    match inspect(&app, &parsed).await.settle() {
+        Err(response) => return *response,
+        Ok(None) => {
             answer.insert("inspected".into(), json!(false));
         }
-        Inspection::Inspected(inspected) => read(&mut answer, &inspected),
+        Ok(Some(inspected)) => read(&mut answer, &inspected),
     }
     ok_json(&answer)
 }
@@ -313,22 +415,35 @@ async fn assign(
     };
     let inspection = match held.as_ref().and_then(Held::inspected) {
         Some(held) => Inspection::Inspected(held.clone()),
-        None => inspect(&app, &parsed),
+        None => inspect(&app, &parsed).await,
     };
     // The bytes decide. A file recorded as already printed is evidence of
     // what was made, so only a file PrintPartner might still print must be
     // print-ready.
-    let inspected = match inspection {
-        Inspection::Refused(detail) => return conflict(detail),
-        Inspection::Unported => return failure(StatusCode::NOT_IMPLEMENTED, UNPORTED),
-        Inspection::Unreadable => None,
-        Inspection::Inspected(inspected) => {
+    let inspected = match inspection.settle() {
+        Err(response) => return *response,
+        Ok(None) => None,
+        Ok(Some(inspected)) => {
             if !input.completed && !inspected.classification.is_print_ready() {
                 return conflict(inspected.classification.next_action());
             }
             Some(inspected)
         }
     };
+    // Re-observing a file read off the printer is what records drift on any
+    // link that already points at that path, whatever this assignment does.
+    if let (Some(observed), Some(path), None) = (&inspected, &parsed.remote_path, &held) {
+        let body = json!({
+            "integration_id": parsed.printer.integration_id,
+            "remote_path": path,
+            "observed": observed.identity,
+        });
+        let route = FileRoute::Observe;
+        let request = Request::FileRequest { body, route };
+        if let Err(response) = storage(&app, presented.clone(), request, None).await {
+            return *response;
+        }
+    }
     if inspected.is_none() && parsed.filename.to_lowercase().ends_with(".3mf") {
         return conflict(
             "PrintPartner has to read a 3MF to tell whether it holds printer instructions; upload the file so PrintPartner can read it",
@@ -546,4 +661,68 @@ async fn upload(
     read(&mut answer, &inspected);
     answer.insert("upload_token".into(), json!(token));
     ok_json(&answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded;
+    use axum::body::{Body, Bytes};
+    use http_body::Frame;
+    use std::collections::VecDeque;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// A host reply that arrives in frames of `sizes` bytes, then fails
+    /// when `fail` is set.
+    struct Frames(VecDeque<Result<Bytes, std::io::Error>>);
+
+    impl http_body::Body for Frames {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+            Poll::Ready(self.0.pop_front().map(|chunk| chunk.map(Frame::data)))
+        }
+    }
+
+    fn frames(sizes: &[usize], fail: bool) -> Body {
+        let mut chunks: VecDeque<_> = sizes
+            .iter()
+            .map(|&size| Ok(Bytes::from(vec![b'G'; size])))
+            .collect();
+        if fail {
+            chunks.push_back(Err(std::io::Error::other("reset")));
+        }
+        Body::new(Frames(chunks))
+    }
+
+    async fn read(sizes: &[usize], declared: Option<u64>) -> Result<Option<usize>, ()> {
+        Ok(bounded(frames(sizes, false), declared, 8)
+            .await?
+            .map(|bytes| bytes.len()))
+    }
+
+    #[tokio::test]
+    async fn the_cap_is_inclusive_and_checked_per_frame_and_against_the_declared_length() {
+        assert_eq!(read(&[3, 4], None).await, Ok(Some(7)));
+        assert_eq!(read(&[4, 4], Some(8)).await, Ok(Some(8)), "exactly the cap");
+        assert_eq!(
+            read(&[4, 4, 1], None).await,
+            Ok(None),
+            "one byte past the cap"
+        );
+        assert_eq!(
+            read(&[1], Some(9)).await,
+            Ok(None),
+            "a declared length past the cap"
+        );
+        assert_eq!(
+            bounded(frames(&[2], true), None, 8).await,
+            Err(()),
+            "a body that fails partway"
+        );
+    }
 }

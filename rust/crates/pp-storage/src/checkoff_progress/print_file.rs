@@ -28,7 +28,8 @@ use super::{
 use crate::read_model::farm::setting_list;
 use anyhow::Result;
 pub use pp_domain::print_file::Classification;
-use pp_domain::print_file::{MAX_CLASSIFIABLE_BYTES, Rejection, classify};
+pub use pp_domain::print_file::MAX_CLASSIFIABLE_BYTES;
+use pp_domain::print_file::{Classified, Rejection, classify};
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -174,6 +175,10 @@ pub enum FileRoute {
     /// Only authenticates the caller, as Node's `onRequest` hooks do before
     /// the upload route reads its body. The body is ignored.
     Admit,
+    /// Node's `observePrinterCheckoffRemoteFile`: re-observe the file at
+    /// `remote_path` on `integration_id` for every active link and record or
+    /// clear its drift. The body holds those two and the `observed` identity.
+    Observe,
 }
 
 /// What the assignment route parses beyond the shared print-file request.
@@ -242,6 +247,10 @@ pub(super) fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> O
             route: FileRoute::Admit,
             ..
         } => Ok(Ok(Response::ok(Body::Suggestion(Box::new(Value::Null))))),
+        Op::Request {
+            body,
+            route: FileRoute::Observe,
+        } => observe(tx, tenant, &body),
         Op::Request { body, route } => request(tx, tenant, &body, route, repos),
     }
 }
@@ -820,12 +829,7 @@ impl Capture {
     pub fn finish(mut self) -> std::result::Result<(), &'static str> {
         let classified =
             classify(&self.bytes).map_err(|_: Rejection| "Printer file could not be inspected")?;
-        let mut identity = match std::mem::take(&mut self.identity) {
-            Value::Object(identity) => identity,
-            _ => serde_json::Map::new(),
-        };
-        identity.insert("size_bytes".into(), json!(classified.size_bytes));
-        identity.insert("sha256".into(), json!(classified.sha256));
+        let identity = identify(std::mem::take(&mut self.identity), &classified);
         let saved = Saved {
             scope: self.scope.clone(),
             source: std::mem::take(&mut self.source),
@@ -850,6 +854,109 @@ impl Drop for Capture {
         }
     }
 }
+
+/// Node's `detectPrinterFileDrift` for an observed file: the strongest
+/// evidence that `recorded` and `observed` differ, or `None`.
+fn drift_reason(recorded: Option<&Value>, observed: &Value) -> Option<&'static str> {
+    let recorded = recorded.filter(|recorded| recorded.is_object())?;
+    let text = |identity: &Value, key: &str| {
+        identity
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let differs = |key: &str| match (text(recorded, key), text(observed, key)) {
+        (Some(recorded), Some(observed)) => recorded != observed,
+        _ => false,
+    };
+    if differs("sha256") {
+        return Some("content");
+    }
+    if differs("provider_revision") {
+        return Some("revision");
+    }
+    if let (Some(recorded), Some(observed)) =
+        (recorded.get("size_bytes"), observed.get("size_bytes"))
+        && links::js_number(recorded) != links::js_number(observed)
+    {
+        return Some("size");
+    }
+    differs("modified_at").then_some("modified")
+}
+
+/// Node's `observePrinterCheckoffRemoteFile`: every watching or
+/// awaiting-verify link on the integration and path whose drift changes is
+/// patched and moved to the end, as `updatePrinterCheckoffLink` moves it.
+fn observe(tx: &Transaction<'_>, tenant: &str, body: &Value) -> Outcome {
+    let now = links::now();
+    let integration = body["integration_id"].as_str().unwrap_or_default();
+    let path = body["remote_path"].as_str().unwrap_or_default();
+    let observed = &body["observed"];
+    let (mut kept, mut patched) = (Vec::new(), Vec::new());
+    for mut link in links::load(tx, tenant, &now)? {
+        let here = matches!(
+            link.get("state").and_then(Value::as_str),
+            Some("watching" | "awaiting_verify")
+        ) && link.get("integration_id").and_then(Value::as_str) == Some(integration)
+            && link.get("remote_path").and_then(Value::as_str) == Some(path);
+        let reason = drift_reason(link.get("remote_identity"), observed);
+        let current = link
+            .get("remote_drift")
+            .and_then(|drift| drift.get("reason"))
+            .and_then(Value::as_str);
+        if !here || reason == current {
+            kept.push(link);
+            continue;
+        }
+        match reason {
+            Some(reason) => {
+                link.insert(
+                    "remote_drift".into(),
+                    json!({ "reason": reason, "detected_at": now }),
+                );
+            }
+            None => {
+                link.remove("remote_drift");
+            }
+        }
+        patched.push(link);
+    }
+    if !patched.is_empty() {
+        kept.extend(patched);
+        links::save_all(tx, tenant, kept)?;
+    }
+    Ok(Ok(Response::ok(Body::Suggestion(Box::new(Value::Null)))))
+}
+
+/// Classify print-file bytes as Node's `classifyPrintFileBytes` does, with
+/// their `size_bytes` and `sha256` added to the `provider` identity, or the
+/// 409 detail for bytes that are not a print file PrintPartner can read.
+pub fn inspect(bytes: &[u8], provider: Value) -> std::result::Result<Inspected, &'static str> {
+    if bytes.len() > MAX_CLASSIFIABLE_BYTES {
+        return Err(TOO_LARGE_TO_INSPECT);
+    }
+    let classified = classify(bytes).map_err(|reason| reason.message())?;
+    Ok(Inspected {
+        identity: Value::Object(identify(provider, &classified)),
+        classification: classified.classification,
+    })
+}
+
+/// The provider's identity keys, then `size_bytes` and `sha256` from the
+/// bytes, in Node's order.
+fn identify(provider: Value, classified: &Classified) -> serde_json::Map<String, Value> {
+    let mut identity = match provider {
+        Value::Object(identity) => identity,
+        _ => serde_json::Map::new(),
+    };
+    identity.insert("size_bytes".into(), json!(classified.size_bytes));
+    identity.insert("sha256".into(), json!(classified.sha256));
+    identity
+}
+
+/// Node's answer for a printer file past `MAX_CLASSIFIABLE_BYTES`.
+pub const TOO_LARGE_TO_INSPECT: &str = "That print file is too large to inspect";
 
 /// Node's `MAX_PRINT_FILE_UPLOAD_BYTES`: the largest print file one upload takes.
 pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
@@ -904,18 +1011,13 @@ impl UploadStore {
         profile_id: i64,
         bytes: &[u8],
     ) -> std::result::Result<(String, Inspected), UploadRefusal> {
-        let classified =
-            classify(bytes).map_err(|reason| UploadRefusal::Rejected(reason.message()))?;
+        let inspected = inspect(bytes, Value::Null).map_err(UploadRefusal::Rejected)?;
         let mut uploads = self.uploads();
         let held: usize = uploads.0.values().map(|upload| upload.size).sum();
         if held + bytes.len() > MAX_HELD_UPLOAD_BYTES {
             return Err(UploadRefusal::Full);
         }
         let token = links::uuid();
-        let inspected = Inspected {
-            classification: classified.classification,
-            identity: json!({ "size_bytes": classified.size_bytes, "sha256": classified.sha256 }),
-        };
         uploads.0.insert(
             token.clone(),
             Upload {
@@ -984,5 +1086,50 @@ impl Drop for HeldUpload {
         } else if let Some(upload) = uploads.0.get_mut(&self.token) {
             upload.reserved = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drift_reason;
+    use serde_json::json;
+
+    /// Node's `detectPrinterFileDrift` order: content, revision, size, then
+    /// modification time, each only when both sides carry it.
+    #[test]
+    fn drift_takes_the_strongest_evidence_both_sides_carry() {
+        let recorded =
+            json!({ "sha256": "a", "provider_revision": "1", "size_bytes": 1, "modified_at": "m" });
+        let cases = [
+            (
+                json!({ "sha256": "b", "provider_revision": "2" }),
+                Some("content"),
+            ),
+            (
+                json!({ "sha256": "", "provider_revision": "2", "size_bytes": 2 }),
+                Some("revision"),
+            ),
+            (
+                json!({ "size_bytes": 2.0, "modified_at": "n" }),
+                Some("size"),
+            ),
+            (
+                json!({ "size_bytes": 1.0, "modified_at": "n" }),
+                Some("modified"),
+            ),
+            (json!({ "sha256": "a", "modified_at": "" }), None),
+        ];
+        for (observed, reason) in cases {
+            assert_eq!(
+                drift_reason(Some(&recorded), &observed),
+                reason,
+                "{observed}"
+            );
+        }
+        assert_eq!(drift_reason(None, &json!({ "sha256": "b" })), None);
+        assert_eq!(
+            drift_reason(Some(&json!(null)), &json!({ "sha256": "b" })),
+            None
+        );
     }
 }

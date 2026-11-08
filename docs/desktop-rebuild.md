@@ -2990,7 +2990,7 @@ cd web && node --conditions=development --import tsx ../fixtures/parity/printer-
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --test printer_file_assignment --test unattributed_claim
 ```
 
-### Print-file assignment routes (GRE-1220, GRE-1255)
+### Print-file assignment routes (GRE-1220, GRE-1255, GRE-1256)
 
 `pp_api::file_assignments` serves `POST /printer-checkoff/file-assignments`,
 `POST /printer-checkoff/file-assignments/preview` and
@@ -3065,11 +3065,42 @@ for the upload.
   a stale plan revision. Node reads the upload without reserving it; here a
   concurrent second assignment of the same token is refused, while a preview
   still reads it.
-- A `remote_path` without a snapshot on a Moonraker or
-  PrusaLink host answers 501 instead of recording the print unread, because
-  this runtime does not read a printer's file itself yet. A printer tracked by
-  hand, or a host type Node has no file reader for, records the print unread
-  as Node does, and an unread 3MF is refused with Node's 409.
+- A `remote_path` without a snapshot on a Moonraker or PrusaLink host is read
+  off the printer as Node's `inspectRemoteFile` reads it (GRE-1256), through
+  the same `PrinterHostPort` the printer-host reads use: the directory listing
+  gives the provider identity (`size_bytes`, `modified_at`,
+  `provider_revision`) when the host lists the file, and the bytes the host
+  serves, up to 256 MiB, are classified off the async workers and add
+  `size_bytes` and `sha256`. The host serves only a file its directory
+  listing shows (the printer-host file read's guard against paths outside
+  the storage tree), so unlike Node, where a failed listing still lets the
+  bytes decide, a listing that fails or omits the file leaves it unread. A
+  path that is not a safe storage path, a host that will not serve the file,
+  or a failed read, including one cut off by the host's download deadline,
+  leaves the file unread too. A reply whose declared `Content-Length` is past
+  256 MiB is refused before any byte is read, as Node's
+  `readBoundedResponseChunks` refuses it, and a body that grows past 256 MiB
+  is refused at the frame that crosses it: both are 409
+  `That print file is too large to inspect`. Bytes that are not a print file
+  are 409 with Node's rejection detail, and a classifier that fails inside
+  PrintPartner is 500. The route matches the listing entry and reads the file
+  by its safe storage path, so `/gcodes/a.gcode` finds the entry for
+  `gcodes/a.gcode` and a path with `..` is unread; the observe step and the
+  stored link keep the raw `remote_path`, as Node does. A printer whose settings cannot
+  be read in time is 503 `Printer settings are unavailable`. A printer tracked
+  by hand, or a host type Node has no file reader for, records the print
+  unread as Node does, and an unread 3MF is refused with Node's 409.
+- After such a read passes the print-ready check, the assignment route
+  re-observes the file before recording it, as Node's
+  `observePrinterCheckoffRemoteFile` does, in its own writer transaction
+  (`FileRoute::Observe`) that commits whatever the assignment then does.
+  Every watching or awaiting-verify link on that integration and path gets
+  `remote_drift` set to Node's `detectPrinterFileDrift` reason (`content`,
+  `revision`, `size`, then `modified`, each only when both identities carry
+  it) or cleared when the file matches again; a changed link moves to the end
+  of the list as `updatePrinterCheckoffLink` moves it. A snapshot or an
+  upload has no path to drift against, so nothing is observed for them. The
+  drift Node's status poll records for every link is not ported here.
 - The assignment itself is `Request::AssignFile` (previous section).
 
 `checkoff_progress::print_file::SnapshotStore` is Node's
@@ -3084,6 +3115,7 @@ to both routers and replaces its 501.
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --test file_assignments_http
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --lib drift_takes_the_strongest
 ```
 
 ### Accepted Plate workspace read (GRE-1189)

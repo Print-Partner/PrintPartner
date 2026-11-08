@@ -3,6 +3,8 @@
 /.github/actions/ @poitee
 /.github/dependabot.yml @poitee
 /.github/zizmor.yml @poitee
+/scripts/ci-path-filter.py @poitee
+/scripts/test_ci_path_filter.py @poitee
 /rust/scripts/check-* @poitee
 /rust/deny.toml @poitee
 /rust/ast-grep-baseline.json @poitee

@@ -57,6 +57,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PP_PR_RUNNER: ${{ vars.PP_PR_RUNNER }}
         run: python3 scripts/ci-rust-runner.py
 

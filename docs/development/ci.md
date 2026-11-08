@@ -650,9 +650,10 @@ Pull requests restore only. Each install logs
 
 ### Superseded runs
 
-Only pull request runs cancel superseded runs. Every CI workflow groups a pull
-request by workflow and ref (or PR number) with `cancel-in-progress: true`, so a
-new push replaces the older run. A run that is already running on `main` is never
+Only pull request runs cancel superseded runs. Every CI workflow that a push to a
+pull request re-triggers groups it by workflow and ref (or PR number) with
+`cancel-in-progress: true`, so a new push replaces the older run. `droid.yml`, which only
+answers mentions, and `linear-pr-sync.yml`, which must not be cancelled, are the exceptions. A run that is already running on `main` is never
 cancelled (GRE-1228): on 2026-11-06 a sample of 60 `main` push runs had 25
 cancelled, 23 succeeded and 12 in progress, because a newer merge cancelled each
 older run and left that merge with no result.
@@ -678,7 +679,7 @@ never replaces the pending run and, because the original has finished, does not 
 
 | Event | Group | `cancel-in-progress` |
 | --- | --- | --- |
-| `pull_request` | workflow and ref (or PR number) | `true` |
+| `pull_request` (except `droid.yml` and `linear-pr-sync.yml`) | workflow and ref (or PR number) | `true` |
 | first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
 | `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
 | `push` of a tag or another branch, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |

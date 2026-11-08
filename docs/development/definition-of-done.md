@@ -6,11 +6,12 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 1. **One job per PR.** Keep the diff under about 1,500 lines, or about 600 for a Mission PR. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
 2. **Unslopped.** Run the unslop pass on code, comments and docs before review. Remove filler comments, dead code and speculative abstractions.
-3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. The coordinator's scorer run passes the [merge gate](#merge-gate).
+3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. A sensitive PR also passes the coordinator's scorer run under the [merge gate](#merge-gate).
 4. **Docs in the same PR.** When the PR changes behavior, setup or an interface, update the matching page under `docs/` in the same PR.
 
 ## Review and merge policy
 
+- Review depth (re-scope, 2026-11-08). A normal PR needs a passing `review-gate`, which is one Claude review or the coordinator record, and green required checks. The second-vendor scorer applies only to sensitive PRs; see [Merge gate](#merge-gate).
 - P0 and P1 findings block the merge. Fix them in the PR.
 - A P2 that affects real user data, security, or causes a crash becomes a bug ticket in its chunk.
 - Every other P2 and all P3s go on the post-parity polish list (GRE-974) or in a PR comment. Do not create a ticket for them.
@@ -35,10 +36,10 @@ The coordinator merges a PR only when all of these hold on the same head commit:
 
 1. **Exact head.** Every check, review, and score below is on the PR's current head SHA.
 2. **Required checks** are green, including `review-gate`.
-3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)`, which is advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list.
+3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)`, which is advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list. Windows work is deferred until after cutover (re-scope, 2026-11-08); once the owner removes `rust (windows)` from the required checks it joins the advisory list.
 4. **All review threads** are resolved.
-5. **Scorer.** The coordinator runs its own scorer on that head. The seat is from a different vendor than the PR's author, and the score is strictly above 8.
-6. **Sensitive PRs** that touch schema or migrations, auth, backup, Accept, or secrets need a score of 9 or more from each of two seats.
+5. **Scorer, sensitive PRs only.** For a PR that item 6 names, the coordinator runs its own scorer on that head from a seat whose vendor differs from the PR's author. Other PRs need no scorer run (re-scope, 2026-11-08).
+6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, or secret handling need a score of 9 or more from each of two seats.
 7. **Command.** `gh pr merge <number> --squash --match-head-commit <sha>`, with the full 40-character head SHA. Never `--admin` or `--auto`.
 
 Scorer seats, in order. Use the first available seat whose vendor differs from the author's:

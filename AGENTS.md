@@ -1,15 +1,16 @@
 # Working on Print Partner
 
-Print Partner plans and tracks layered STL kit builds for one user. The backend is moving from Node to one Rust core, served to a Tauri 2 desktop window and a headless Docker image. The React UI stays. Read [Architecture](docs/architecture.md) for the target, the current state, and the crate map.
+Print Partner plans and tracks layered STL kit builds for one user. The backend is moving from Node to one Rust core, served to a Tauri 2 desktop window and a headless Docker image. The old React UI in `web/apps/web` is frozen to correctness and data-safety fixes. The replacement UI in `web/apps/ui` talks only to Rust ([ADR 0008](docs/adr/0008-replace-the-old-screens.md)). Read [Architecture](docs/architecture.md) for the target, the current state, the crate map, and the 2026-11-08 re-scope.
 
 ## Repository map
 
 | Path | What it is |
 | --- | --- |
 | `rust/crates/pp-*` | Rust workspace. `pp-server` is the gateway/headless binary, `pp-desktop` the Tauri app; the rest are libraries. |
-| `web/apps/web` | Shared React UI (Vite). Desktop, Docker, and browsers all load it. |
+| `web/apps/ui` | Replacement React UI (Vite). Built only against the Rust API through `web/packages/rust-client`. New UI work goes here. |
+| `web/apps/web` | Old React UI (Vite). Frozen: correctness and data-safety fixes only. Desktop, Docker, and browsers load it until cutover. |
 | `web/apps/server` | Node compatibility server. Rust is replacing it; maintain it, don't grow it. |
-| `web/packages` | Shared TypeScript contracts and domain code. |
+| `web/packages` | Shared TypeScript contracts and domain code, and the generated Rust client `rust-client`. Run its generator; don't hand-edit it. |
 | `slicer-sidecar` | Legacy Python slicer integration. Change only to maintain it. |
 | `docs/` | Product, architecture, and development docs. Update them in the same PR as the change. |
 

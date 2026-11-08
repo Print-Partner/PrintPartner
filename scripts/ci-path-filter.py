@@ -41,7 +41,7 @@ def relevant(path, kind):
 WINDOWS_LABELS = {"ci:full", "ci:windows"}
 WINDOWS_MARKERS = re.compile(rb"windows|\bunix\b|os::fd|target_family|target_os|\blibc\b")
 WINDOWS_PATHS = ("rust/crates/pp-os/", ".github/workflows/", ".github/actions/")
-WINDOWS_FILES = {"rust/Cargo.lock", "web/scripts/atomic-package-build.mjs",
+WINDOWS_FILES = {"rust/Cargo.lock", "web/package.json", "web/package-lock.json", "web/scripts/atomic-package-build.mjs",
                  "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
                  "rust/scripts/fetch-historical-schema-commits.sh", "rust-toolchain.toml", ".github/actionlint.yaml",
                  "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}

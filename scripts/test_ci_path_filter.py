@@ -170,6 +170,8 @@ class CiPathFilterTests(unittest.TestCase):
                 ("rust/crates/pp-core/src/fam.rs", "#[cfg(target_family = \"unix\")]\nfn a() {}\n", "windows=true\n"),
                 ("rust/crates/pp-core/Cargo.toml", "[target.'cfg(windows)'.dependencies]\n", "windows=true\n"),
                 ("rust/Cargo.lock", "lock\n", "windows=true\n"),
+                ("web/package.json", "{}\n", "windows=true\n"),
+                ("web/package-lock.json", "{}\n", "windows=true\n"),
                 ("web/scripts/atomic-package-build.mjs", "x\n", "windows=true\n"),
                 ("rust/scripts/build-desktop-manifest.py", "x\n", "windows=true\n"),
                 ("rust/scripts/desktop_workspaces.py", "x\n", "windows=true\n"),

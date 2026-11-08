@@ -103,11 +103,10 @@ fn object(body: &[u8]) -> Option<Map<String, Value>> {
     }
 }
 
+const NOT_OBJECT: &str = "Request body must be a JSON object";
+
 fn not_object() -> Response {
-    failure(
-        StatusCode::BAD_REQUEST,
-        "Request body must be a JSON object",
-    )
+    failure(StatusCode::BAD_REQUEST, NOT_OBJECT)
 }
 
 /// The storage writes one request makes, on a blocking thread.
@@ -243,28 +242,32 @@ async fn reconcile(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    let Some(body) = object(&body) else {
-        return not_object();
-    };
-    let Some(printed) = body.get("printed").and_then(Value::as_bool) else {
-        return failure(StatusCode::BAD_REQUEST, "printed must be true or false");
-    };
+    match reconcile_request(&id, &body) {
+        Ok(request) => {
+            present(writes(&app, presented, move |writes, _| writes.apply(request)).await)
+        }
+        Err(detail) => failure(StatusCode::BAD_REQUEST, detail),
+    }
+}
+
+/// The user's answer as a [`Request::Reconcile`], or the 400 detail for a
+/// bad body.
+fn reconcile_request(id: &str, body: &[u8]) -> Result<Request, &'static str> {
+    let body = object(body).ok_or(NOT_OBJECT)?;
+    let printed = body
+        .get("printed")
+        .and_then(Value::as_bool)
+        .ok_or("printed must be true or false")?;
     let job_id = match body.get("job_id") {
         None | Some(Value::Null) => None,
         Some(Value::String(job_id)) => Some(job_id.clone()),
-        Some(_) => return failure(StatusCode::BAD_REQUEST, "job_id must be a string or null"),
+        Some(_) => return Err("job_id must be a string or null"),
     };
-    let id = id.trim().to_owned();
-    present(
-        writes(&app, presented, move |writes, _| {
-            writes.apply(Request::Reconcile {
-                id,
-                job_id,
-                printed,
-            })
-        })
-        .await,
-    )
+    Ok(Request::Reconcile {
+        id: id.trim().to_owned(),
+        job_id,
+        printed,
+    })
 }
 
 async fn remove(

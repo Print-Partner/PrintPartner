@@ -39,7 +39,7 @@ def relevant(path, kind):
 
 
 WINDOWS_LABELS = {"ci:full", "ci:windows"}
-WINDOWS_MARKERS = re.compile(rb"windows|unix|os::fd|target_family|target_os|\blibc\b")
+WINDOWS_MARKERS = re.compile(rb"windows|win32|unix|os::fd|target_family|target_os|\blibc\b|named.?pipe|\\\\\.\\pipe")
 WINDOWS_PATHS = ("rust/crates/pp-os/", ".github/workflows/", ".github/actions/")
 WINDOWS_FILES = {"rust/Cargo.lock", "web/package.json", "web/package-lock.json", "web/scripts/atomic-package-build.mjs",
                  "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
@@ -50,7 +50,9 @@ WINDOWS_FILES = {"rust/Cargo.lock", "web/package.json", "web/package-lock.json",
 def windows_relevant(path, base, head):
     if path in WINDOWS_FILES or path.startswith(WINDOWS_PATHS):
         return True
-    if not path.startswith("rust/") or not path.endswith((".rs", ".toml")):
+    rust = path.startswith("rust/") and path.endswith((".rs", ".toml"))
+    server = path.startswith("web/apps/server/src/") and path.endswith(".ts")
+    if not rust and not server:
         return False
     for sha in (head, base):
         try:

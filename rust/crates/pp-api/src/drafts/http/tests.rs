@@ -1680,7 +1680,7 @@ async fn present_abandon_matches_node_conflict_shapes() {
 /// A second Plan with the same order number, a printed bracket unit, an
 /// accepted Plate holding that unit, a watched checkoff link, and Spoolman
 /// on with the bracket on spool 7.
-const PREVIEW_SETUP: &str = "
+const PREVIEW_BASE: &str = "
 UPDATE build_profiles SET order_number='#1001' WHERE id=1;
 INSERT INTO build_profiles(id,tenant_id,name,order_number) VALUES(3,'default','Second Build','#1001');
 UPDATE print_progress SET completed=1 WHERE part_id=1 AND unit_index=0;
@@ -1688,15 +1688,28 @@ UPDATE parts SET spoolman_spool_id=7 WHERE id=1;
 INSERT INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"spoolman\":true}');
 INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.checkoff_links',
   '[{\"id\":\"link-1\",\"state\":\"watching\",\"profile_id\":1,\"filename\":\"bracket.3mf\",\"units\":[{\"part_id\":1,\"unit_index\":0}]}]');
+";
+/// [`PREVIEW_BASE`] and a Plate layout on Accepted revision 1.
+fn preview_setup() -> String {
+    format!("{PREVIEW_BASE}{}", plate_setup(1))
+}
+
+/// A Plate layout on Accepted revision `revision` holding the first bracket
+/// unit.
+fn plate_setup(revision: u32) -> String {
+    format!(
+        "
 INSERT INTO accepted_plate_revisions(id,tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,created_at)
-  SELECT 1,'default',1,1,1,r.snapshot_digest,s.mapping_digest,'layout',1,1,1,'2026-08-21T00:00:00.000Z'
-  FROM plan_revisions r JOIN plan_revision_required_unit_sets s ON s.revision_id=r.id WHERE r.id=1;
+  SELECT 1,'default',1,{revision},{revision},r.snapshot_digest,s.mapping_digest,'layout',1,1,1,'2026-08-21T00:00:00.000Z'
+  FROM plan_revisions r JOIN plan_revision_required_unit_sets s ON s.revision_id=r.id WHERE r.id={revision};
 INSERT INTO accepted_plates(tenant_id,revision_id,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um)
   VALUES('default',1,'plate-a',1,'sim-1','Simulator','sim',256000,256000,256000,5000);
 INSERT INTO accepted_plate_units(tenant_id,revision_id,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um)
   VALUES('default',1,'plate-a','ppu_00000000000000000000000000000001',0,0,1000,1000,1000);
 INSERT INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES('default',1,1);
-";
+"
+    )
+}
 const PREVIEW: &str = "/api/v2/plans/1/drafts/2/accept-preview";
 
 /// Every table's rows, sorted, plus the schema.
@@ -1798,7 +1811,7 @@ fn accept(
 
 #[tokio::test]
 async fn accept_preview_lists_changes_and_checks_then_accept_refuses_its_stale_revision() {
-    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &preview_setup()).await;
     let changed = changed_draft(&server).await;
     let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
     let digest = changed["draft"]["snapshot_digest"].clone();
@@ -1965,7 +1978,7 @@ async fn accept_preview_refusals_match_accept() {
 
 #[tokio::test]
 async fn accept_preview_writes_nothing() {
-    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &preview_setup()).await;
     changed_draft(&server).await;
     let database = || logical_database(&server.sql());
     let (rows, files) = (database(), managed_files(&server.directory));
@@ -2235,10 +2248,22 @@ where
     B: rusqlite::types::FromSql,
     C: rusqlite::types::FromSql,
 {
+    rows(server, sql, [], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })
+}
+
+/// Every row of `sql` with `params`, mapped by `map`.
+fn rows<T, C: FromIterator<T>>(
+    server: &ReadServer,
+    sql: &str,
+    params: impl rusqlite::Params,
+    map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> C {
     let connection = server.sql();
     let mut statement = connection.prepare(sql).unwrap();
     statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_map(params, map)
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
@@ -2984,3 +3009,5 @@ mod accept_header;
 mod header;
 #[path = "tests/mcp_accept.rs"]
 mod mcp_accept;
+#[path = "tests/restore_as_draft.rs"]
+mod restore_as_draft;

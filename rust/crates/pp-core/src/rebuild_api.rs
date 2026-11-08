@@ -687,6 +687,8 @@ mod tests {
             "ReconcileDraftRequest" => {
                 json!({"expected_snapshot_digest": "0".repeat(64), "decisions": []})
             }
+            "RestoreSnapshotRequest" => json!({"mode": "draft",
+                "expected_base": {"revision_id": null, "plan_version": 0}, "expected_draft": null}),
             "VerifyBatchRequest" => json!({"idempotency_key": "client-contract",
                 "beds": [{"link_id": "no-such-link", "decisions": [
                     {"part_id": 1, "unit_index": 0, "result": "confirmed"}]}]}),
@@ -803,7 +805,8 @@ mod tests {
             let path = route
                 .path
                 .replace("{id}", &build)
-                .replace("{draft_id}", "1");
+                .replace("{draft_id}", "1")
+                .replace("{snapshot_id}", "1");
             let body = route.request.map(sample_body);
             let anonymous = send(route.method, &path, route.headers, None, body.clone())
                 .await
@@ -823,10 +826,11 @@ mod tests {
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            // The sample bodies name no stored draft, link, burst or print, so those
-            // handlers answer their own 404 with a detail.
+            // The sample bodies name no stored draft, snapshot, link, burst or
+            // print, so those handlers answer their own 404 with a detail.
             let handler_not_found = status == 404
                 && (body["code"] == "draft_not_found"
+                    || body["code"] == "snapshot_not_found"
                     || body["code"] == "farm_log_entry_not_found"
                     || body["detail"] == "beds[0]: Checkoff link not found"
                     || body["detail"] == "Checkoff burst not found"

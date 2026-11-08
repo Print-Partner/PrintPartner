@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from unittest import mock
 import unittest
 
 SCRIPT = Path(__file__).with_name("ci-rust-runner.py").resolve()
@@ -153,9 +154,6 @@ class RustRunnerTests(unittest.TestCase):
             ("pull_request", "", smoke_bs, "blacksmith"),
             ("pull_request", "hosted", "ubuntu-24.04", "hosted"),
             ("schedule", "blacksmith", "ubuntu-24.04", "hosted"),
-            ("push", "blacksmith", "ubuntu-24.04", "pp-local"),
-            ("merge_group", "pp-iso", "ubuntu-24.04", "pp-local"),
-            ("workflow_dispatch", "blacksmith", "ubuntu-24.04", "pp-local"),
         ):
             with self.subTest(event=event, mode=mode), tempfile.TemporaryDirectory() as directory:
                 output, summary = Path(directory, "output"), Path(directory, "summary")
@@ -166,6 +164,20 @@ class RustRunnerTests(unittest.TestCase):
                 self.assertNotIn("windows_runs_on", values)
                 self.assertEqual(json.loads(values["smoke_runs_on"]), smoke)
                 self.assertEqual(values["linux_kind"], kind)
+
+    def test_main_keeps_the_smoke_job_hosted_on_local_events(self):
+        for event, mode in (("push", "blacksmith"), ("merge_group", "pp-iso"), ("workflow_dispatch", "blacksmith")):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
+                output, summary = Path(directory, "output"), Path(directory, "summary")
+                env = {"EVENT_NAME": event, "PP_PR_RUNNER": mode, "REPOSITORY": REPO,
+                       "RUNNER_TOKEN": "admin", "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+                with mock.patch.dict(os.environ, env, clear=True), \
+                        mock.patch.object(runner, "github_fetch", Api(runners=[pp_runner()])):
+                    runner.main()
+                values = dict(line.partition("=")[::2] for line in output.read_text().splitlines())
+                self.assertEqual(json.loads(values["smoke_runs_on"]), "ubuntu-24.04")
+                self.assertEqual(values["linux_kind"], "pp-local")
+                self.assertNotIn("windows_runs_on", values)
 
     def test_cli_writes_a_json_runs_on_output(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1267,17 +1267,7 @@ fn select_draft(
 ) -> Result<WorkspaceOutcome> {
     let draft_id = draft.identity.draft_id;
     if !draft.ordinary["requiredUnitReconciliation"].is_null() {
-        let read = Command {
-            credential,
-            profile,
-            request: Request::Workspace { draft_id },
-            policy,
-            cancelled: cancelled.clone(),
-        };
-        return match execute(connection, read)? {
-            Outcome::Workspace { workspace } => Ok(WorkspaceOutcome::Ready { workspace }),
-            _ => Err(anyhow!("Selected Plan draft is missing")),
-        };
+        return ready_workspace(connection, credential, policy, profile, cancelled, draft_id);
     }
     auto_select(
         connection,
@@ -1288,6 +1278,27 @@ fn select_draft(
         &draft.identity.snapshot_digest,
         cancelled,
     )
+}
+/// The draft's workspace as it stands, without selecting.
+fn ready_workspace(
+    connection: &mut Connection,
+    credential: Credential,
+    policy: auth::AuthPolicy,
+    profile: PositiveId,
+    cancelled: &Arc<AtomicBool>,
+    draft_id: PositiveId,
+) -> Result<WorkspaceOutcome> {
+    let read = Command {
+        credential,
+        profile,
+        request: Request::Workspace { draft_id },
+        policy,
+        cancelled: cancelled.clone(),
+    };
+    match execute(connection, read)? {
+        Outcome::Workspace { workspace } => Ok(WorkspaceOutcome::Ready { workspace }),
+        _ => Err(anyhow!("Selected Plan draft is missing")),
+    }
 }
 /// Node's `autoReconcile` for an unselected draft: a selection with no
 /// decisions, keyed by the snapshot digest.

@@ -570,6 +570,40 @@ async fn restore_as_draft_abandons_the_observed_open_draft() {
     server.close().await;
 }
 
+/// A failure between the draft commit and its selection, as a crash there
+/// leaves it; the draft is then abandoned. The replay answers with the closed
+/// draft and selects nothing.
+#[tokio::test]
+async fn restore_as_draft_replays_a_draft_closed_before_its_selection() {
+    let (server, body) = snapshot_server().await;
+    server
+        .sql()
+        .execute_batch(
+            "CREATE TRIGGER fail_selection BEFORE INSERT ON plan_draft_required_unit_reconciliations
+             BEGIN SELECT RAISE(ABORT, 'selection interrupted'); END;",
+        )
+        .unwrap();
+    let interrupted = restore(&server, 1, 1, Some("interrupted"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(interrupted.status().as_u16(), 500);
+    server
+        .sql()
+        .execute_batch(
+            "DROP TRIGGER fail_selection;
+             UPDATE plan_drafts SET state='abandoned', lifecycle_version=1 WHERE id=3 AND current_required_unit_reconciliation_id IS NULL;",
+        )
+        .unwrap();
+    let before = logical_database(&server.sql());
+    let replay = json_reply(restore(&server, 1, 1, Some("interrupted")).json(&body), 200).await;
+    assert_eq!(replay["draft"]["draft_id"], 3);
+    assert_eq!(replay["draft"]["state"], "abandoned");
+    assert_eq!(logical_database(&server.sql()), before);
+    server.close().await;
+}
+
 #[tokio::test]
 async fn restore_as_draft_refuses_to_drop_printed_units() {
     let server = ReadServer::start(Some("true"), "default").await;

@@ -149,6 +149,20 @@ pub(super) fn execute(
     let Outcome::Read { draft } = super::execute(connection, read)? else {
         return Err(anyhow!("Restored Plan draft is missing"));
     };
+    // A replay can find its draft consumed or abandoned before the selection
+    // ran, after a crash between the two commits. Selecting a closed draft
+    // fails, so answer with the draft as it stands.
+    if draft.identity.state != DraftState::Open {
+        return ready_workspace(
+            connection,
+            copy_credential(args.credential),
+            args.policy,
+            args.profile,
+            args.cancelled,
+            draft.identity.draft_id,
+        )
+        .map(RestoreOutcome::Restored);
+    }
     select_draft(
         connection,
         copy_credential(args.credential),

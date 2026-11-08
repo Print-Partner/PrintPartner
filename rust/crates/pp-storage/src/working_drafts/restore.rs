@@ -17,7 +17,9 @@
 //! preview lists.
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
-use super::save::{Refusal, accepted_base, copy_credential, observed_draft, tenant_actor};
+use super::save::{
+    Refusal, accepted_base, copy_credential, keyed_expectations, observed_draft, tenant_actor,
+};
 use super::*;
 pub use pp_contracts::snapshot_restore::RestoreSnapshotRequest;
 use required_units::storage::part_rows;
@@ -131,14 +133,13 @@ pub(super) fn execute(
     args: Args<'_>,
     admission: writer_admission::Deadline,
 ) -> Result<RestoreOutcome> {
-    ensure!(!args.cancelled.load(Ordering::Acquire), Failure::Cancelled);
-    let tx = writer_admission::begin_immediate(connection, admission)?;
-    let draft_id = match transact(&tx, &args)? {
+    let written = super::transact(connection, admission, args.cancelled, |tx| {
+        transact(tx, &args)
+    })?;
+    let draft_id = match written {
         Ok(id) => PositiveId::new(u64::try_from(id)?).map_err(anyhow::Error::msg)?,
         Err(reason) => return Ok(RestoreOutcome::Refused { reason }),
     };
-    ensure!(!args.cancelled.load(Ordering::Acquire), Failure::Cancelled);
-    tx.commit()?;
     let read = Command {
         credential: copy_credential(args.credential),
         profile: args.profile,
@@ -179,10 +180,10 @@ fn transact(
     c: &Args<'_>,
 ) -> Result<std::result::Result<i64, RestoreRefusal>> {
     let refused = |reason| Ok(Err(RestoreRefusal::Draft(reason)));
-    let (tenant, actor) = tenant_actor(tx, c.credential, c.policy)?;
-    let tenant = tenant.as_str();
     let profile = i64::try_from(c.profile.get())?;
     let snapshot = i64::try_from(c.snapshot.get())?;
+    let (tenant, actor) = tenant_actor(tx, c.credential, c.policy)?;
+    let tenant = tenant.as_str();
     let Some(p) = one(
         tx,
         "SELECT * FROM build_profiles WHERE tenant_id=? AND id=?",
@@ -284,37 +285,18 @@ fn observed_base(
     Ok(observed_draft(tx, tenant, profile, &base, expected, budget)?.map(|_| base))
 }
 
-/// Abandons every open draft of Build `profile`, as recompute does. Each stays
-/// rebasable.
-fn abandon_open(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<()> {
-    let open: Vec<i64> = tx
-        .prepare("SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' ORDER BY id")?
-        .query_map(params![tenant, profile], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    tx.execute(
-        "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE tenant_id=? AND profile_id=? AND state='open'",
-        params![tenant, profile],
-    )?;
-    for draft in open {
-        crate::domain_events::draft_changed(tx, tenant, profile, draft)?;
-    }
-    Ok(())
-}
-
 /// The draft key prefix for the request key, and the whole stored key: the
 /// prefix and the digest of what the restore was asked to do, so a retry
 /// finds its draft and a changed payload is told apart.
 fn draft_key(c: &Args<'_>, profile: i64, actor: &str) -> (String, String) {
-    use sha2::{Digest as _, Sha256};
-    let prefix = format!(
-        "{KEY_PREFIX}{}:",
-        hex::encode(Sha256::digest(c.key.as_bytes()))
+    let request = c.request;
+    let (key, base, draft) = keyed_expectations(
+        c.key,
+        &request.expected_base,
+        request.expected_draft.as_ref(),
     );
-    let base = &c.request.expected_base;
-    let draft = c.request.expected_draft.as_ref().map(|d| {
-        json!({"id":d.draft_id(),"snapshotDigest":d.snapshot_digest(),"lifecycleVersion":d.lifecycle_version()})
-    });
-    let payload = json!({"profileId":profile,"actorId":actor,"snapshotId":c.snapshot,"expectedBase":{"revisionId":base.revision_id(),"planVersion":base.plan_version()},"expectedDraft":draft});
+    let prefix = format!("{KEY_PREFIX}{key}:");
+    let payload = json!({"profileId":profile,"actorId":actor,"snapshotId":c.snapshot,"expectedBase":base,"expectedDraft":draft});
     let key = format!("{prefix}{}", model::digest(&payload));
     (prefix, key)
 }

@@ -13,7 +13,9 @@
 //! different payload is refused.
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
-use super::save::{Refusal, accepted_base, observed_draft, prepare_new, tenant_actor};
+use super::save::{
+    Refusal, accepted_base, keyed_expectations, observed_draft, prepare_new, tenant_actor,
+};
 use super::*;
 pub use pp_contracts::draft_header::{DraftHeader, SaveDraftHeaderRequest};
 use rusqlite::OptionalExtension as _;
@@ -453,17 +455,17 @@ fn transact(
 /// The stored receipt key, the request key's SHA-256, and the digest of
 /// everything the save was asked to do, which tells a changed payload apart.
 fn receipt_key(c: &Args<'_>, profile: i64, actor: &str, header: &BuildHeader) -> (String, String) {
-    use sha2::{Digest as _, Sha256};
-    let key = format!(
-        "{KEY_PREFIX}{}",
-        hex::encode(Sha256::digest(c.key.as_bytes()))
+    let request = &c.request;
+    let (key, base, draft) = keyed_expectations(
+        c.key,
+        &request.expected_base,
+        request.expected_draft.as_ref(),
     );
-    let base = &c.request.expected_base;
-    let draft = c.request.expected_draft.as_ref().map(|d| {
-        json!({"id":d.draft_id(),"snapshotDigest":d.snapshot_digest(),"lifecycleVersion":d.lifecycle_version()})
-    });
-    let payload = json!({"profileId":profile,"actorId":actor,"expectedBase":{"revisionId":base.revision_id(),"planVersion":base.plan_version()},"expectedDraft":draft,"expectedHeaderVersion":c.request.expected_header_version,"header":header});
-    (key, required_units::model::digest(&payload))
+    let payload = json!({"profileId":profile,"actorId":actor,"expectedBase":base,"expectedDraft":draft,"expectedHeaderVersion":request.expected_header_version,"header":header});
+    (
+        format!("{KEY_PREFIX}{key}"),
+        required_units::model::digest(&payload),
+    )
 }
 
 /// The receipt key `key` stored: its draft, payload digest and header.

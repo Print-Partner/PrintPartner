@@ -20,18 +20,6 @@ INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.checkoff
   '[{\"id\":\"link-1\",\"state\":\"verified\",\"profile_id\":1,\"filename\":\"gear.3mf\",\"units\":[{\"part_id\":3,\"unit_index\":1}]}]');
 ";
 
-/// A Plate layout on Accepted revision 2 holding the first bracket unit.
-const PLATE_SETUP: &str = "
-INSERT INTO accepted_plate_revisions(id,tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,created_at)
-  SELECT 1,'default',1,2,2,r.snapshot_digest,s.mapping_digest,'layout',1,1,1,'2026-08-22T00:00:00.000Z'
-  FROM plan_revisions r JOIN plan_revision_required_unit_sets s ON s.revision_id=r.id WHERE r.id=2;
-INSERT INTO accepted_plates(tenant_id,revision_id,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um)
-  VALUES('default',1,'plate-a',1,'sim-1','Simulator','sim',256000,256000,256000,5000);
-INSERT INTO accepted_plate_units(tenant_id,revision_id,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um)
-  VALUES('default',1,'plate-a','ppu_00000000000000000000000000000001',0,0,1000,1000,1000);
-INSERT INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES('default',1,1);
-";
-
 /// Snapshots: 1 records Accepted revision 1 of Build 1; 2 is a Node snapshot;
 /// 3 belongs to another tenant's Build; 4 to Build 3 but names Build 1's
 /// revision.
@@ -189,36 +177,26 @@ fn coordinate_tokens(server: &ReadServer) -> Vec<(String, Option<String>)> {
 /// The Accepted Plan's Required units by token: Object name, creation time,
 /// completed and assembled.
 fn units(server: &ReadServer) -> BTreeMap<String, (String, String, i64, i64)> {
-    let connection = server.sql();
-    let mut statement = connection
-        .prepare("SELECT u.token,u.object_name,u.created_at,COALESCE(p.completed,0),COALESCE(p.assembled,0) FROM build_profiles b JOIN plan_revision_required_units m ON m.revision_id=b.accepted_plan_revision_id JOIN required_units u ON u.token=m.required_unit_token JOIN plan_revision_parts r ON r.id=m.revision_part_id LEFT JOIN print_progress p ON p.part_id=r.projection_part_id AND p.unit_index=m.unit_index WHERE b.id=1")
-        .unwrap();
-    statement
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
-            ))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
+    rows(
+        server,
+        "SELECT u.token,u.object_name,u.created_at,COALESCE(p.completed,0),COALESCE(p.assembled,0) FROM build_profiles b JOIN plan_revision_required_units m ON m.revision_id=b.accepted_plan_revision_id JOIN required_units u ON u.token=m.required_unit_token JOIN plan_revision_parts r ON r.id=m.revision_part_id LEFT JOIN print_progress p ON p.part_id=r.projection_part_id AND p.unit_index=m.unit_index WHERE b.id=1",
+        [],
+        |row| {
+            let unit = (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?);
+            Ok((row.get(0)?, unit))
+        },
+    )
 }
 
 /// Part key, quantity, inclusion and artifact of each Part of revision
 /// `revision`, by key.
 fn revision_parts(server: &ReadServer, revision: i64) -> Vec<(String, i64, i64, Option<String>)> {
-    let connection = server.sql();
-    let mut statement = connection
-        .prepare("SELECT part_key,quantity_effective,included,artifact_digest FROM plan_revision_parts WHERE revision_id=?1 ORDER BY part_key")
-        .unwrap();
-    statement
-        .query_map([revision], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
+    rows(
+        server,
+        "SELECT part_key,quantity_effective,included,artifact_digest FROM plan_revision_parts WHERE revision_id=?1 ORDER BY part_key",
+        [revision],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
 }
 
 /// Accepts the workspace's draft through HTTP Accept.
@@ -303,7 +281,7 @@ async fn restore_as_draft_creates_a_draft_that_accept_publishes_without_rewindin
     // Revision 2 drops the third bracket unit; Accept saves snapshot 1 of
     // revision 1 first.
     accept_bracket_quantity(&server, 2).await;
-    server.sql().execute_batch(PLATE_SETUP).unwrap();
+    server.sql().execute_batch(&plate_setup(2)).unwrap();
     let snapshot: (i64, String) = server
         .sql()
         .query_row(

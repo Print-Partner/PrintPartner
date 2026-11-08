@@ -161,6 +161,23 @@ pub(super) struct Command {
     pub(super) observations: Observations,
     pub(super) cancelled: Arc<AtomicBool>,
 }
+/// The hex SHA-256 of an `Idempotency-Key`, and the expected base and draft
+/// as a stored request digest records them.
+pub(super) fn keyed_expectations(
+    key: &str,
+    base: &PlanDraftBasis,
+    draft: Option<&PlanDraftIdentity>,
+) -> (String, Value, Value) {
+    use sha2::{Digest as _, Sha256};
+    let draft = draft.map(|d| {
+        json!({"id":d.draft_id(),"snapshotDigest":d.snapshot_digest(),"lifecycleVersion":d.lifecycle_version()})
+    });
+    (
+        hex::encode(Sha256::digest(key.as_bytes())),
+        json!({"revisionId":base.revision_id(),"planVersion":base.plan_version()}),
+        json!(draft),
+    )
+}
 pub(super) fn copy_credential(credential: &Credential) -> Credential {
     match credential {
         Credential::Session(secret) => {

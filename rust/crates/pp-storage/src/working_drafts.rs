@@ -1279,6 +1279,22 @@ fn select_draft(
         cancelled,
     )
 }
+/// Abandons every open draft of Build `profile`, for recompute and restore,
+/// and returns their IDs in order. Each stays rebasable.
+fn abandon_open(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<Vec<i64>> {
+    let open: Vec<i64> = tx
+        .prepare("SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' ORDER BY id")?
+        .query_map(params![tenant, profile], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    tx.execute(
+        "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE tenant_id=? AND profile_id=? AND state='open'",
+        params![tenant, profile],
+    )?;
+    for &draft in &open {
+        crate::domain_events::draft_changed(tx, tenant, profile, draft)?;
+    }
+    Ok(open)
+}
 /// The draft's workspace as it stands, without selecting.
 fn ready_workspace(
     connection: &mut Connection,
@@ -1644,17 +1660,7 @@ fn recompute(
             prepared.digest =
                 model::planning(&prepared.base, &prepared.capture.inputs, &prepared.parts)?;
         }
-        let open: Vec<i64> = tx
-            .prepare("SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' ORDER BY id")?
-            .query_map(params![tenant, profile], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        tx.execute(
-            "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE tenant_id=? AND profile_id=? AND state='open'",
-            params![tenant, profile],
-        )?;
-        for &draft in &open {
-            crate::domain_events::draft_changed(tx, &tenant, profile, draft)?;
-        }
+        let open = abandon_open(tx, &tenant, profile)?;
         let id = insert_snapshot(
             tx,
             &tenant,

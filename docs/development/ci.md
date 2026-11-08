@@ -527,14 +527,14 @@ Required Rust and lint jobs fail if their input-selection job fails, so a broken
 ## Ephemeral PR runners
 
 Pull request jobs run on GitHub-hosted runners, which cost nothing for this public repository,
-and on pp-local or pp-iso for the Linux Rust jobs as described below. Three jobs run on Blacksmith
+and on pp-iso for the Linux Rust jobs when `PP_PR_RUNNER=pp-iso`; pp-local runs only pushes to `main`, merge groups and manual runs, never a pull request. Three jobs run on Blacksmith
 by default because their speed pays for the per-minute price: `rust (linux) build` and its
 aggregate, `rust (windows)` and the Linux packaged smoke job. Nothing else runs on
 Blacksmith: lint, actionlint, zizmor, evidence, duplication, Web CI, sidecar, docs, macOS, release,
 Pages, schedules, merge groups and `main` pushes stay on GitHub-hosted runners (or pp-local), and the
 workflows use no Blacksmith Docker layer cache, sticky disk or cross-PR cache. Each hosted or Blacksmith job
-gets a fresh VM. Pull request workflows cancel a superseded run (`cancel-in-progress` on
-`pull_request`), so a new push stops the jobs still paying for the old head; `main` pushes keep
+gets a fresh VM. The workflows that a push to a pull request re-triggers cancel a superseded run (`cancel-in-progress` on
+`pull_request`), so a new push stops the jobs still paying for the old head (`droid.yml`, which only answers mentions, and `linear-pr-sync.yml`, which must not be cancelled, run on free runners and have no cancelling group); `main` pushes keep
 the one-running, one-pending rule instead.
 
 Two jobs were tried on Blacksmith and moved back: `release-signing-check.yml`, because

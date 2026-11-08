@@ -12,7 +12,7 @@ import { useOutletContext } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore, writeCore } from "../core/rust";
-import { lostSend, newKey } from "../core/writes";
+import { newKey, resendable } from "../core/writes";
 import { Dialog } from "../frame/Dialog";
 import { OFFLINE_REASON, useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
@@ -92,7 +92,7 @@ function useDraftWrites(id: number) {
         key,
       );
     },
-    retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
+    retry: (failures: number, error: Error) => failures < 2 && resendable(error),
     onSettled: settle,
   });
   const parts = useMutation({
@@ -113,7 +113,7 @@ function useDraftWrites(id: number) {
         key,
       );
     },
-    retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
+    retry: (failures: number, error: Error) => failures < 2 && resendable(error),
     // The next write in the queue names the draft this one left.
     onSuccess: ({ workspace }) =>
       client.setQueryData<PlanData>(planKey(id), (data) =>
@@ -523,11 +523,12 @@ function AcceptGate({
   const accept = useMutation({
     mutationFn: (previewed: DraftAcceptPreview) =>
       writeCore("acceptDraft", { id, draft_id: draftId }, acceptBody(previewed), key),
-    retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
+    retry: (failures: number, error: Error) => failures < 2 && resendable(error),
     onSuccess: onAccepted,
     onError: (error) => {
-      // A refusal ends this key; the next Accept is a new request against a new preview.
-      if (error instanceof CoreError) {
+      // A refusal ends this key; the next Accept is a new request against a new preview. An
+      // unknown outcome keeps it, so the next Accept replays the first receipt if one exists.
+      if (!resendable(error)) {
         setKey(newKey());
         void preview.refetch();
       }

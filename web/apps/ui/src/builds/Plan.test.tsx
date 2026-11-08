@@ -850,6 +850,83 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
     expect(fresh!.key).not.toBe(stale!.key);
   });
 
+  it("resends an Accept whose outcome is unknown with the same key, without a new preview", async () => {
+    let accepts = 0;
+    let previews = 0;
+    const fetchMock = core({
+      preview: () => json(preview(++previews)),
+      write: (path) => {
+        if (path !== "/api/v2/plans/2/drafts/9/apply") return undefined;
+        accepts += 1;
+        return accepts === 1 ? problem(503, "outcome_unknown") : json(RECEIPT);
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/saves a snapshot/);
+    fireEvent.click(within(gate).getByRole("button", { name: "Accept" }));
+    await screen.findByText(/Accepted\. The Plan is now version/);
+    const [first, replay] = writes(fetchMock);
+    expect(replay!.key).toBe(first!.key);
+    expect(previews).toBe(1);
+  });
+
+  it("keeps the Accept key after unknown outcomes, so the next Accept replays it", async () => {
+    let accepts = 0;
+    let previews = 0;
+    const fetchMock = core({
+      preview: () => json(preview(++previews)),
+      write: (path) => {
+        if (path !== "/api/v2/plans/2/drafts/9/apply") return undefined;
+        accepts += 1;
+        return accepts <= 3 ? problem(503, "outcome_unknown") : json(RECEIPT);
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    await within(gate).findByText(/saves a snapshot/);
+    fireEvent.click(within(gate).getByRole("button", { name: "Accept" }));
+    await waitFor(() => expect(accepts).toBe(3));
+    await waitFor(() =>
+      expect(
+        within(gate).getByRole("button", { name: "Accept" }).getAttribute("aria-disabled"),
+      ).toBeNull(),
+    );
+    fireEvent.click(within(gate).getByRole("button", { name: "Accept" }));
+    await screen.findByText(/Accepted\. The Plan is now version/);
+    expect(new Set(writes(fetchMock).map((sent) => sent.key)).size).toBe(1);
+    expect(previews).toBe(1);
+  });
+
+  it("resends a draft save whose outcome is unknown with the same key", async () => {
+    let saves = 0;
+    const fetchMock = core({
+      write: (path) => {
+        if (path !== "/api/v2/plans/2/drafts/save") return undefined;
+        saves += 1;
+        return saves === 1
+          ? problem(503, "outcome_unknown")
+          : json({
+              receipt: {
+                profile_id: 2,
+                draft_id: 9,
+                reconciliation_id: 1,
+                snapshot_digest: DIGEST,
+                saved_at: "2026-11-07T00:00:00.000Z",
+              },
+              workspace: workspace(),
+            });
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Include gear.stl" }));
+    await screen.findByText("Saved to the draft. The Build changes only when you accept.");
+    const [first, replay] = writes(fetchMock);
+    expect(replay!.key).toBe(first!.key);
+  });
+
   it("shows a refused preview in words", async () => {
     renderAt(core({ preview: () => problem(409, "duplicate_build_name") }));
     fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));

@@ -127,6 +127,11 @@ these routes through the generated client:
   while the preview lists running work in `blocked_by` or checkoff links and
   queued sends in `production`: the tab sends `remap_checkoff_links: false`,
   so Accept would refuse with `production_active`.
+- A lost answer or a 5xx, such as 503 `outcome_unknown`, is not a refusal.
+  Header, Part and Accept writes resend it with the same `Idempotency-Key`,
+  and the core answers a repeat with the first receipt. If the outcome is
+  still unknown, the gate keeps its key and preview, so the next Accept
+  replays the same request instead of starting a new one.
 - Once the draft writes settle, the saved header replaces every field not
   typed in since the last save was sent. Typing in one field while another
   saves is kept, and a field changed back to its old value while a save runs

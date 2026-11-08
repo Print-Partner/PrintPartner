@@ -54,10 +54,13 @@ WINDOWS_FILES = {".gitattributes", "rust/Cargo.lock", "web/package.json", "web/p
 
 
 def windows_relevant(path, base, head):
-    if path in WINDOWS_FILES or path.startswith(WINDOWS_PATHS):
+    # The Windows job builds every web workspace (npm ci, npm run build) and launches the Node child.
+    if (path in WINDOWS_FILES or path.startswith(WINDOWS_PATHS)
+            or re.fullmatch(r"web/(apps|packages)/[^/]+/package\.json", path)):
         return True
     rust = path.startswith("rust/") and path.endswith((".rs", ".toml"))
-    server = path.startswith("web/apps/server/src/") and path.endswith(".ts")
+    # The server and the shared packages it imports run inside that Node child.
+    server = path.startswith(("web/apps/server/src/", "web/packages/")) and path.endswith(".ts")
     if not rust and not server:
         return False
     # A deleted file has no head copy and an added file no base copy; each is judged on the copy

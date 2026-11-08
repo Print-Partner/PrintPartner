@@ -4122,9 +4122,11 @@ factor is kept at send (Alfala, 2026-11-07):
 - `pp_storage::print_grams::record_measured` stores `measured_mm`. With a
   `grams_per_mm`, the grams become `measured_mm × grams_per_mm` and the basis
   `measured` (`Recorded`). Without one, the estimate stays (`NoFactor`). A link
-  with no estimate is left alone (`NoEstimate`). Nothing calls it
-yet: the send path writes the estimate in GRE-1238, and the status watcher
-writes the measured value in GRE-1165's last part.
+  with no estimate is left alone (`NoEstimate`).
+
+The send queue's upload worker calls `record_estimate` when an upload with
+Checkoff units succeeds (GRE-1238, see [send-queue.md](send-queue.md)); the
+status watcher calls `record_measured` in GRE-1165's last part.
 
 The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
 grams from this table instead of `print_jobs.filament_consumed_g`, which

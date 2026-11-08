@@ -62,7 +62,7 @@ export function resolveRuntimeReleaseIdentity(input: {
     image_digest: imageDigest,
     deployment_mode: input.deployMode,
     github_release_url:
-      tag === null ? null : `https://github.com/poitee/PrintPartner/releases/tag/${tag}`,
+      tag === null ? null : `https://github.com/Print-Partner/PrintPartner/releases/tag/${tag}`,
     build_date: optionalValue(input.env.PP_BUILD_DATE),
   };
 }

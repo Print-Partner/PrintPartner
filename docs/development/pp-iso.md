@@ -77,7 +77,7 @@ Use the Linux hosts that run pp-local today. Each host needs systemd, rootless p
 (`sudo apt-get install -y podman uidmap slirp4netns`) and `curl` and `jq`.
 
 1. Create a token. In GitHub, create a fine-grained personal access token
-   for `poitee/PrintPartner` only, with the repository permission
+   for `Print-Partner/PrintPartner` only, with the repository permission
    **Administration: read and write** and nothing else. Use a personal access token,
    not a GitHub App installation token: installation tokens expire after an hour and nothing in
    the kit refreshes the token file. Note the token's expiry date and rotate it before then. Do not paste it anywhere except the

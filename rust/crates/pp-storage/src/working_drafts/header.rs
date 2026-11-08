@@ -268,6 +268,36 @@ pub(crate) fn build_header(
     )?)
 }
 
+/// The Build's header beside its Accepted base: what a client reads before any
+/// draft exists, and names as the base of the draft its first save creates.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct BuildHeaderView {
+    pub build: BuildHeader,
+    pub base: crate::required_units::view::DraftBase,
+}
+
+pub(crate) fn build_view(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+) -> Result<BuildHeaderView> {
+    let base = tx.query_row(
+        "SELECT accepted_plan_revision_id,accepted_plan_version FROM build_profiles WHERE tenant_id=?1 AND id=?2",
+        params![tenant, profile],
+        |row| {
+            Ok(crate::required_units::view::DraftBase {
+                revision_id: row.get(0)?,
+                plan_version: row.get(1)?,
+            })
+        },
+    )?;
+    Ok(BuildHeaderView {
+        build: build_header(tx, tenant, profile)?,
+        base,
+    })
+}
+
 /// Copies draft `from`'s header row, if it has one, to the new draft `to`
 /// unchanged. Every path that writes a draft from an older one calls this.
 pub(crate) fn carry(tx: &Transaction<'_>, tenant: &str, from: i64, to: i64) -> Result<()> {

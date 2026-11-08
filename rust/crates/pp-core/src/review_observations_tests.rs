@@ -677,6 +677,35 @@ fn review_never_reads_an_alternate_data_stream() {
     assert!(f.observe().media_by_part_id[&9].artifact_missing);
 }
 
+/// A stored snapshot root in display spelling (`C:\…`) and the observer's
+/// verbatim canonical repos root (`\\?\C:\…`) name the same files, and the
+/// other way round.
+#[cfg(windows)]
+#[test]
+fn review_matches_display_and_verbatim_roots() {
+    let mut f = Fixture::new();
+    let repos = f.root.join("repos").canonicalize().unwrap();
+    let source = f.source().canonicalize().unwrap();
+    assert!(repos.to_str().unwrap().starts_with(r"\\?\"), "{repos:?}");
+    for (configured, stored) in [
+        (repos.clone(), pp_os::display_path(&source)),
+        (pp_os::display_path(&repos), source.clone()),
+    ] {
+        // ast-grep-ignore: no-writer-family-literal -- Test fixture stands in for Node-rendered thumbnails.
+        let thumbs = f.root.join("thumbs");
+        f.observer = SnapshotReviewObserver::new(configured, Some(thumbs)).unwrap();
+        let stored = stored.to_str().unwrap().to_owned();
+        let Provenance::Tracked { inputs, .. } = &mut f.snapshot.provenance else {
+            panic!("tracked fixture")
+        };
+        inputs[0].snapshot_root = Some(stored.clone());
+        *f.artifact_mut().0 = stored;
+        let observed = f.observe();
+        assert_eq!(observed.available_input_roots, HashSet::from([7]));
+        assert!(!observed.media_by_part_id[&9].artifact_missing);
+    }
+}
+
 #[test]
 fn review_cancelled_empty_snapshot_is_an_error() {
     let mut f = Fixture::new();

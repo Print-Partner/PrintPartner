@@ -301,7 +301,10 @@ fn mount(
         .route("/plans/{id}/drafts/{draft_id}/abandon", post(abandon))
         .route("/plans/{id}/drafts/recompute", post(lifecycle::recompute))
         .route("/plans/{id}/drafts/save", post(lifecycle::autosave))
-        .route("/plans/{id}/drafts/header", put(lifecycle::save_header))
+        .route(
+            "/plans/{id}/drafts/header",
+            get(build_header).put(lifecycle::save_header),
+        )
         .route(
             "/plans/{id}/drafts/{draft_id}/rebase",
             post(lifecycle::rebase),
@@ -338,7 +341,7 @@ async fn authorize(
         return invalid_request();
     };
     let (operation_name, draft_id) = match &operation {
-        Request::List => ("list", None),
+        Request::List | Request::BuildHeader => ("list", None),
         Request::Read { draft_id }
         | Request::Diff { draft_id }
         | Request::Workspace { draft_id }
@@ -446,6 +449,10 @@ fn read_target(path: &str) -> Option<(PositiveId, Request)> {
     }
     match parts.next() {
         None => parts.next().is_none().then_some((profile, Request::List)),
+        Some("header") => parts
+            .next()
+            .is_none()
+            .then_some((profile, Request::BuildHeader)),
         Some(draft) => {
             let draft_id = path_id(draft)?;
             let request = match parts.next() {
@@ -488,6 +495,14 @@ async fn header(Extension(read): Extension<Authorized>) -> Response {
         Outcome::Header { header } => json_response(StatusCode::OK, header),
         Outcome::ProfileNotFound => profile_missing(),
         Outcome::DraftNotFound => draft_missing(),
+        _ => internal_error(),
+    }
+}
+
+async fn build_header(Extension(read): Extension<Authorized>) -> Response {
+    match read.outcome.as_ref() {
+        Outcome::BuildHeader { header } => json_response(StatusCode::OK, header),
+        Outcome::ProfileNotFound => profile_missing(),
         _ => internal_error(),
     }
 }

@@ -3,6 +3,10 @@
 use super::*;
 use crate::scratch::Scratch;
 use http_body_util::BodyExt;
+#[cfg(unix)]
+use std::os::unix::fs::symlink as symlink_file;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file;
 
 const APP_GZIP: &[u8] = &[
     31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 75, 173, 40, 200, 47, 42, 81, 72, 73, 77, 75, 44, 205, 41,
@@ -281,7 +285,7 @@ async fn ticket_t_11_gzip_missing_and_escaped_companions() {
     }
     let outside = fixture.root.with_extension("gz");
     std::fs::write(&outside, b"outside-secret").unwrap();
-    std::os::unix::fs::symlink(&outside, fixture.root.join("assets/app.js.gz")).unwrap();
+    symlink_file(&outside, fixture.root.join("assets/app.js.gz")).unwrap();
     let response = fixture
         .encoded_response("GET", "/assets/app.js", &["gzip"])
         .await;
@@ -473,7 +477,7 @@ async fn ticket_t_11_asset_content_types_and_containment() {
     }
     let outside = fixture.root.with_extension("txt");
     std::fs::write(&outside, b"outside-secret").unwrap();
-    std::os::unix::fs::symlink(&outside, fixture.root.join("assets/outside.txt")).unwrap();
+    symlink_file(&outside, fixture.root.join("assets/outside.txt")).unwrap();
     let escaped = fixture.response("GET", "/assets/outside.txt").await;
     assert_eq!(escaped.status(), StatusCode::NOT_FOUND);
     assert_eq!(

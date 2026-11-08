@@ -30,6 +30,8 @@ mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
 pub(crate) mod links;
+#[cfg(feature = "desktop_rebuild")]
+mod lookup;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_file;
@@ -211,6 +213,13 @@ pub enum Request {
     /// `POST /printer-checkoff/unattributed/{id}/dismiss`.
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed { id: String },
+    /// `GET /printer-checkoff/verify-batch?idempotency_key=...`: what a burst
+    /// key settled to. Reads only.
+    #[cfg(feature = "desktop_rebuild")]
+    BurstStatus { key: String },
+    /// One printer Checkoff link by id, for MCP proposals. Reads only.
+    #[cfg(feature = "desktop_rebuild")]
+    CheckoffLink { id: String },
     /// `POST /printer-checkoff/file-assignments`, parsed and with its file
     /// already read by the route.
     #[cfg(feature = "desktop_rebuild")]
@@ -280,6 +289,10 @@ pub enum Body {
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip_serializing)]
     FileRequest(Box<FileRequest>),
+    /// An uploaded print file's suggestion, which the upload route answers.
+    #[cfg(feature = "desktop_rebuild")]
+    #[serde(skip_serializing)]
+    Suggestion(Box<Value>),
     /// A dismissed unattributed print.
     Dismissed {
         ok: bool,
@@ -411,6 +424,14 @@ enum Op {
     File(print_file::Op),
     #[cfg(feature = "desktop_rebuild")]
     DismissUnattributed {
+        id: String,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    BurstStatus {
+        key: String,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    CheckoffLink {
         id: String,
     },
 }
@@ -579,6 +600,14 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         #[cfg(feature = "desktop_rebuild")]
         Request::DismissUnattributed { id } => return Ok(Op::DismissUnattributed { id }),
         #[cfg(feature = "desktop_rebuild")]
+        Request::BurstStatus { key } => {
+            return burst::idempotency_key(&key).map(|key| Op::BurstStatus { key });
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Request::CheckoffLink { id } => {
+            return lookup::link_id(&id).map(|id| Op::CheckoffLink { id });
+        }
+        #[cfg(feature = "desktop_rebuild")]
         Request::AssignFile(assignment) => return Ok(Op::File(print_file::Op::Assign(assignment))),
         #[cfg(feature = "desktop_rebuild")]
         Request::FileRequest { body, route } => {
@@ -707,6 +736,18 @@ fn archived(snapshot: &Snapshot) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
+/// An import against the Accepted Plan the caller observed.
+fn import_current(tx: &Transaction<'_>, tenant: &str, import: Import, repos: &Path) -> Outcome {
+    let snapshot = match current(tx, tenant, &import.expected, repos)? {
+        Ok(snapshot) => snapshot,
+        Err(refusal) => return Ok(Err(refusal)),
+    };
+    if archived(&snapshot) {
+        return Ok(Err(Refusal::Archived));
+    }
+    import_counts(tx, tenant, &snapshot, import)
+}
+
 fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
     let (mut snapshot, token, change) = match op {
         Op::Verify { link_id, body } => {
@@ -725,17 +766,12 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         #[cfg(feature = "desktop_rebuild")]
         Op::DismissUnattributed { id } => return unattributed::dismiss(tx, tenant, &id),
         #[cfg(feature = "desktop_rebuild")]
+        Op::BurstStatus { key } => return lookup::burst_status(tx, tenant, &key),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::CheckoffLink { id } => return lookup::link(tx, tenant, &id),
+        #[cfg(feature = "desktop_rebuild")]
         Op::File(op) => return print_file::run(tx, tenant, op, repos),
-        Op::Import(import) => {
-            let snapshot = match current(tx, tenant, &import.expected, repos)? {
-                Ok(snapshot) => snapshot,
-                Err(refusal) => return Ok(Err(refusal)),
-            };
-            if archived(&snapshot) {
-                return Ok(Err(Refusal::Archived));
-            }
-            return import_counts(tx, tenant, &snapshot, import);
-        }
+        Op::Import(import) => return import_current(tx, tenant, import, repos),
         Op::Unit {
             target: Target::Token { expected, token },
             change,
@@ -882,7 +918,7 @@ fn locate_coordinate(
 }
 
 /// Mirrors `assertCompleteProgress`. Each Part must have one tenant row per unit.
-fn complete_rows(tx: &Transaction<'_>, tenant: &str, snapshot: &Snapshot) -> Result<()> {
+pub(crate) fn complete_rows(tx: &Transaction<'_>, tenant: &str, snapshot: &Snapshot) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT tenant_id,unit_index FROM print_progress WHERE part_id=?1 AND unit_index<?2 ORDER BY unit_index",
     )?;

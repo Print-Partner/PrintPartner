@@ -1062,3 +1062,29 @@ mod windows {
         try_lock(&ours).unwrap();
     }
 }
+
+/// Windows counterpart: `display_path_drops_only_the_verbatim_disk_and_unc_prefixes`.
+#[cfg(unix)]
+#[test]
+fn display_path_is_the_identity_on_unix() {
+    for path in ["/data/repos/4", "relative/repos", r"\\?\C:\pp"] {
+        assert_eq!(display_path(Path::new(path)), Path::new(path));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn display_path_drops_only_the_verbatim_disk_and_unc_prefixes() {
+    for (path, shown) in [
+        (r"\\?\C:\pp\repos\4", r"C:\pp\repos\4"),
+        (r"\\?\UNC\host\share\web", r"\\host\share\web"),
+        (r"C:\pp\web", r"C:\pp\web"),
+        (r"\\host\share\web", r"\\host\share\web"),
+        (r"\\?\GLOBALROOT\Device\pp", r"\\?\GLOBALROOT\Device\pp"),
+        (r"\\?\Volume{1}\x", r"\\?\Volume{1}\x"),
+        (r"\\.\pipe\pp", r"\\.\pipe\pp"),
+        (r"relative\repos", r"relative\repos"),
+    ] {
+        assert_eq!(display_path(Path::new(path)), Path::new(shown), "{path}");
+    }
+}

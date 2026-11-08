@@ -1191,7 +1191,7 @@ fn create_source(
     let path = state.directory.join("repos").join(id.to_string());
     tx.execute(
         "UPDATE projects SET local_path=?1 WHERE tenant_id=?2 AND id=?3",
-        params![path.to_string_lossy(), tenant, id],
+        params![pp_os::display_path(&path).to_string_lossy(), tenant, id],
     )?;
     require(tx, tenant, id)
 }

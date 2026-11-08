@@ -6,7 +6,7 @@ use pp_storage::{
     working_drafts::{
         RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome, RecomputeOutcome,
         RecomputeRequest, RecomputeWorkspaceOutcome,
-        autosave::{AutosaveCommand, AutosaveOutcome},
+        autosave::{AutosaveCommand, AutosaveOutcome, DraftAutosaved},
         header::{HeaderCommand, HeaderOutcome, HeaderRefusal},
         restore::{RestoreCommand, RestoreOutcome, RestoreRefusal, RestoreSnapshotRequest},
         save::Refusal as SaveRefusal,
@@ -325,11 +325,9 @@ impl Accept {
             AcceptOutcome::AcceptedBaselineRequired => conflict("accepted_baseline_required", None),
             AcceptOutcome::InputsChanged => conflict("inputs_changed", None),
             AcceptOutcome::IdempotencyConflict => conflict("idempotency_conflict", None),
-            AcceptOutcome::DuplicateBuildName { name } => refusal(
-                StatusCode::CONFLICT,
-                "duplicate_build_name",
-                [("name", json!(name))],
-            ),
+            AcceptOutcome::DuplicateBuildName { name } => {
+                crate::problem::duplicate_build_name(&name)
+            }
             AcceptOutcome::BuildArchived => domain_error("build_archived"),
             AcceptOutcome::TokenAllocationFailed => domain_error("token_allocation_failed"),
             AcceptOutcome::ReconciliationRequired { reason } => refusal(
@@ -415,10 +413,9 @@ pub(super) async fn autosave(
     };
     let work = move |client: &WorkingDraftClient, flag, wait| client.autosave(command, flag, wait);
     match run_write(&app, work).await {
-        Ok(AutosaveOutcome::Saved { receipt, workspace }) => json_response(
-            StatusCode::OK,
-            json!({"receipt": receipt, "workspace": workspace}),
-        ),
+        Ok(AutosaveOutcome::Saved { receipt, workspace }) => {
+            json_response(StatusCode::OK, DraftAutosaved { receipt, workspace })
+        }
         Ok(AutosaveOutcome::Refused { reason }) => present_autosave(reason),
         Err(error) => write_failure(error, "autosave", profile, None),
     }

@@ -48,6 +48,7 @@ impl AutosaveCommand {
 }
 
 /// What a committed autosave wrote. A replay returns the same receipt.
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AutosaveReceipt {
     pub profile_id: i64,
@@ -55,6 +56,15 @@ pub struct AutosaveReceipt {
     pub reconciliation_id: i64,
     pub snapshot_digest: String,
     pub saved_at: String,
+}
+
+/// The 200 body of `POST /plans/{id}/drafts/save`: the receipt and the
+/// draft's workspace after the commit.
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DraftAutosaved {
+    pub receipt: AutosaveReceipt,
+    pub workspace: Box<required_units::Workspace>,
 }
 
 #[derive(Debug)]

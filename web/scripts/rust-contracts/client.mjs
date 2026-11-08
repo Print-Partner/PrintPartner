@@ -14,7 +14,7 @@ import { URL, fileURLToPath } from "node:url";
 export const generatorVersion = "rust-client-zod/1";
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
 export const packageSource = join(repo, "web/packages/rust-client/src");
-const keywords = new Set(["$schema", "$ref", "definitions", "title", "description", "type", "properties", "required", "additionalProperties", "enum", "anyOf", "oneOf", "items", "minItems", "maxItems", "minimum", "maximum", "pattern", "format"]);
+const keywords = new Set(["$schema", "$ref", "definitions", "title", "description", "type", "properties", "required", "additionalProperties", "enum", "anyOf", "oneOf", "items", "minItems", "maxItems", "minimum", "maximum", "minLength", "maxLength", "pattern", "format", "x-unicode-scalar"]);
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 // Integer formats schemars emits for Rust primitives. 64-bit and pointer-size
 // integers are bounded to the JavaScript safe range: a larger value is refused
@@ -108,8 +108,10 @@ export function generate(document) {
       const required = new Set(schema.required ?? []);
       for (const key of required) assert(key in (schema.properties ?? {}), `Required property ${key} has no schema`);
       const fields = Object.entries(schema.properties ?? {}).map(([key, value]) => {
-        assert(!("default" in value), "Defaults are unsupported");
-        return `${quote(key)}: ${emit(value, visiting)}${required.has(key) ? "" : ".optional()"}`;
+        // A serde default only makes the key omittable; the value itself is checked as usual.
+        const { default: fallback, ...field } = value;
+        assert(fallback === undefined || !required.has(key), "Defaults are unsupported on required properties");
+        return `${quote(key)}: ${emit(field, visiting)}${required.has(key) ? "" : ".optional()"}`;
       });
       // deny_unknown_fields rejects unknown keys; other objects strip them.
       return `z.${schema.additionalProperties === false ? "strictObject" : "object"}({${fields.join(", ")}})`;
@@ -131,7 +133,16 @@ export function generate(document) {
       assert(Number.isSafeInteger(minimum) && Number.isSafeInteger(maximum), "Integer bounds must be explicit and within the JavaScript safe range");
       return `z.number().int().min(${minimum}).max(${maximum})`;
     },
-    string: (schema) => (schema.pattern ? `z.string().regex(new RegExp(${quote(schema.pattern)}))` : "z.string()"),
+    string(schema) {
+      let code = schema.pattern ? `z.string().regex(new RegExp(${quote(schema.pattern)}))` : "z.string()";
+      // WireText counts Unicode scalar values, as Rust's chars() does, so a
+      // length bound comes with x-unicode-scalar and no lone surrogate passes.
+      if (schema.minLength === undefined && schema.maxLength === undefined) return code;
+      assert(schema["x-unicode-scalar"] === true, "A string length bound needs x-unicode-scalar");
+      const min = schema.minLength ?? 0;
+      const max = schema.maxLength ?? Number.MAX_SAFE_INTEGER;
+      return `${code}.refine((value) => !/[\\uD800-\\uDFFF]/u.test(value) && [...value].length >= ${min} && [...value].length <= ${max})`;
+    },
     boolean: () => "z.boolean()",
     null: () => "z.null()",
   };

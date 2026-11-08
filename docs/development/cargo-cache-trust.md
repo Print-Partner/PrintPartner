@@ -150,7 +150,7 @@ and do not invoke Cargo, inspect credentials, mount storage, or mutate a cache.
 ```sh
 git rev-parse HEAD
 git show 963c97526f990f1bb7c8ea5f1193c690da4d6ecc:docs/development/ci.md | sed -n '136,175p'
-rg -n 'runs-on:|permissions:|contents:|persist-credentials:|Swatinem/rust-cache|runner.environment.*self-hosted.*runner.os' .github/workflows/rust-cross-os.yml .github/workflows/desktop-e2e.yml .github/workflows/desktop-webkit.yml
+rg -n 'runs-on:|permissions:|contents:|persist-credentials:|Swatinem/rust-cache|PP_RUNNER_KIND' .github/workflows/rust-cross-os.yml .github/workflows/desktop-e2e.yml .github/workflows/desktop-webkit.yml
 rg -n 'CARGO_HOME|CARGO_TARGET_DIR|sccache|volume|mount' scripts/setup-ci-linux.sh .github/workflows
 git ls-files '*runner*' '*compose*' '*cargo*'
 ```

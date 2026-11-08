@@ -567,7 +567,8 @@ function AcceptGate({
   });
   // A failed re-preview keeps the old data; that preview is no longer what Accept checks.
   const data = preview.isError ? undefined : preview.data;
-  const match = useMatchStep(id, workspace, preview);
+  // A match clears the last Accept refusal; the next Accept answers against a new preview.
+  const match = useMatchStep(id, workspace, preview, () => accept.reset());
   const blocked = gateBlocked({
     preview,
     data,

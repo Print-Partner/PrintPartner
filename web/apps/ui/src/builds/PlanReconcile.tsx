@@ -27,50 +27,52 @@ export const planKey = (id: number) => ["core", "plan", id] as const;
  */
 export function useReconcile(id: number, draftId: number) {
   const client = useQueryClient();
-  // The key and body of a send whose outcome is not known yet.
-  const unsure = useRef<{ key: string; decisions: string; digest: string } | null>(null);
+  // The key of a send whose outcome is not known yet, and the decisions it carried.
+  const unsure = useRef<{ key: string; decisions: string } | null>(null);
+  // Each key's expected snapshot, read when it first runs, so a resend repeats its body.
+  const digests = useRef(new Map<string, string>());
+  const forget = (key: string) => {
+    unsure.current = null;
+    digests.current.delete(key);
+  };
   const mutation = useMutation({
     scope: { id: `plan-draft-${id}` },
     mutationKey: ["core", "plan-reconcile", id],
-    mutationFn: ({
-      decisions,
-      key,
-      digest,
-    }: {
-      decisions: UnitDecision[];
-      key: string;
-      digest: string;
-    }) =>
-      writeCore(
+    mutationFn: ({ decisions, key }: { decisions: UnitDecision[]; key: string }) => {
+      let digest = digests.current.get(key);
+      if (!digest) {
+        digest = client.getQueryData<PlanData>(planKey(id))?.draft?.workspace.draft.snapshot_digest;
+        if (!digest) throw new Error("No draft is open");
+        digests.current.set(key, digest);
+      }
+      return writeCore(
         "reconcileDraft",
         { id, draft_id: draftId },
         { decisions, expected_snapshot_digest: digest },
         key,
-      ),
+      );
+    },
     retry: (failures: number, error: Error) => failures < 2 && resendable(error),
     // The selection changes the draft's snapshot digest; later writes must name the new one.
-    onSuccess: (workspace: DraftWorkspace) => {
-      unsure.current = null;
+    // A Plan read still in flight began before the match, so it must not land over it.
+    onSuccess: async (workspace: DraftWorkspace, { key }) => {
+      forget(key);
+      await client.cancelQueries({ queryKey: planKey(id) });
       client.setQueryData<PlanData>(planKey(id), (data) =>
         data?.draft ? { ...data, draft: { ...data.draft, workspace } } : data,
       );
     },
-    onError: (error) => {
+    onError: (error, { key }) => {
       if (resendable(error)) return;
-      unsure.current = null;
+      forget(key);
       void client.invalidateQueries({ queryKey: planKey(id) });
     },
   });
-  const send = (decisions: UnitDecision[], onSaved: () => void) => {
+  const send = (decisions: UnitDecision[], onSaved: (workspace: DraftWorkspace) => void) => {
     const text = JSON.stringify(decisions);
-    const kept = unsure.current?.decisions === text ? unsure.current : null;
-    const digest =
-      kept?.digest ??
-      client.getQueryData<PlanData>(planKey(id))?.draft?.workspace.draft.snapshot_digest;
-    if (!digest) return;
-    const key = kept?.key ?? newKey();
-    unsure.current = { key, decisions: text, digest };
-    mutation.mutate({ decisions, key, digest }, { onSuccess: onSaved });
+    const key = unsure.current?.decisions === text ? unsure.current.key : newKey();
+    unsure.current = { key, decisions: text };
+    mutation.mutate({ decisions, key }, { onSuccess: onSaved });
   };
   return { mutation, send };
 }
@@ -156,14 +158,16 @@ type Reconcile = ReturnType<typeof useReconcile>;
 export function ReconcileStep({
   workspace,
   reconcile,
-  autoSent,
+  sent,
   checking,
+  headingRef,
   onSend,
 }: {
   workspace: DraftWorkspace;
   reconcile: Reconcile["mutation"];
-  /** Whether the automatic match was already sent from this gate. */
-  autoSent: boolean;
+  /** Whether a match was already sent from this gate. */
+  sent: boolean;
+  headingRef: (node: HTMLHeadingElement | null) => void;
   /** Whether the gate is previewing again after a match. */
   checking: boolean;
   onSend: (decisions: UnitDecision[]) => void;
@@ -178,15 +182,15 @@ export function ReconcileStep({
     [...picked].filter(([t]) => conflicts.some((c) => c.target_draft_part_id === t)),
   );
   const automatic = conflicts.length === 0;
-  // A draft with nothing to decide is matched without asking, once per gate. If the core
-  // still asks after that, the user sends it again, so a core that keeps refusing is never
-  // written to in a loop.
+  // A draft with nothing to decide is matched without asking, once per gate and only before
+  // any other send, so the user's answers are never replaced. If the core still asks after
+  // that, the user sends it again, so a core that keeps refusing is never written in a loop.
   const sentOnce = useRef(false);
   useEffect(() => {
-    if (!automatic || autoSent || offline || sentOnce.current || reconcile.isPending) return;
+    if (!automatic || sent || offline || sentOnce.current || reconcile.isPending) return;
     sentOnce.current = true;
     onSend([]);
-  }, [automatic, autoSent, offline, reconcile.isPending, onSend]);
+  }, [automatic, sent, offline, reconcile.isPending, onSend]);
 
   const decidable = conflicts.filter((c) => conflictOptions(workspace, c).length > 0);
   const blocked = stepBlocked({
@@ -197,7 +201,9 @@ export function ReconcileStep({
   });
   return (
     <section aria-labelledby={headingId} className="pp-gate-section pp-reconcile">
-      <h3 id={headingId}>Match printed units</h3>
+      <h3 id={headingId} ref={headingRef} tabIndex={-1}>
+        Match printed units
+      </h3>
       <p>
         Before Accept, the units already printed for the accepted Plan are matched to this draft's
         Parts, so finished prints stay counted. Nothing on the Build changes until you accept.
@@ -205,7 +211,7 @@ export function ReconcileStep({
       {automatic ? (
         <>
           {reconcile.isPending && <p role="status">Matching printed units to this draft.</p>}
-          {autoSent && !checking && !reconcile.isPending && !reconcile.isError && (
+          {sent && !checking && !reconcile.isPending && !reconcile.isError && (
             <p>The core still asks for the printed units to be matched. Match them again.</p>
           )}
         </>
@@ -229,7 +235,7 @@ export function ReconcileStep({
         </p>
       )}
       {/* The automatic match offers its button only once its own send has settled. */}
-      {(!automatic || reconcile.isError || (autoSent && !reconcile.isPending && !checking)) && (
+      {(!automatic || reconcile.isError || (sent && !reconcile.isPending && !checking)) && (
         <div className="pp-dialog-actions">
           <button
             type="button"
@@ -245,7 +251,11 @@ export function ReconcileStep({
               )
             }
           >
-            {automatic ? "Match printed units" : "Save these choices"}
+            {automatic
+              ? "Match printed units"
+              : decidable.length === 0
+                ? "Start the match over"
+                : "Save these choices"}
           </button>
           {blocked && (
             <span id={reasonId} className="pp-mutation-reason">
@@ -273,24 +283,30 @@ export function useMatchStep(
     isFetching: boolean;
     refetch: () => Promise<unknown>;
   },
+  onMatched: () => void,
 ): { needed: boolean; step: ReactNode; done: ReactNode } {
   const reconcile = useReconcile(id, workspace.draft.draft_id);
-  const [autoSent, setAutoSent] = useState(false);
+  const [sent, setSent] = useState(false);
   const [matched, setMatched] = useState(false);
-  const focusNext = useRef(false);
-  const needed =
-    preview.error instanceof CoreError && preview.error.code === "reconciliation_required";
-  // The summary mounts once the new preview and the saved match are both shown.
-  const focusDone = (node: HTMLParagraphElement | null) => {
-    if (!node || !focusNext.current) return;
-    focusNext.current = false;
+  // Where focus goes once the answer is on screen: the summary, or the step's questions.
+  const focusNext = useRef<"done" | "step" | null>(null);
+  const focusOn = (target: "done" | "step") => (node: HTMLElement | null) => {
+    if (!node || focusNext.current !== target) return;
+    focusNext.current = null;
     node.focus();
   };
+  const needed =
+    preview.error instanceof CoreError && preview.error.code === "reconciliation_required";
   const send = (decisions: UnitDecision[]) => {
-    if (decisions.length === 0) setAutoSent(true);
-    reconcile.send(decisions, () => {
+    setSent(true);
+    reconcile.send(decisions, (saved) => {
+      if (unitConflicts(saved).length > 0) {
+        focusNext.current = "step";
+        return;
+      }
       setMatched(true);
-      focusNext.current = true;
+      focusNext.current = "done";
+      onMatched();
       void preview.refetch();
     });
   };
@@ -301,13 +317,14 @@ export function useMatchStep(
       <ReconcileStep
         workspace={workspace}
         reconcile={reconcile.mutation}
-        autoSent={autoSent}
+        sent={sent}
         checking={preview.isFetching}
+        headingRef={focusOn("step")}
         onSend={send}
       />
     ),
     done: matched && summary && (
-      <p ref={focusDone} tabIndex={-1} role="status" className="pp-reconcile-done">
+      <p ref={focusOn("done")} tabIndex={-1} role="status" className="pp-reconcile-done">
         Printed units matched: {plural(summary.reused_units, "unit")} kept,{" "}
         {plural(summary.new_units, "new unit")}, {plural(summary.surplus_units, "unit")} no longer
         needed.

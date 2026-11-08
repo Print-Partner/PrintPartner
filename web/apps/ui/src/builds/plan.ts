@@ -182,7 +182,7 @@ export function conflictQuestion(workspace: DraftWorkspace, conflict: UnitConfli
     case "unsafe_predecessor":
       return `${target} changed since it was accepted, so the units printed for it may no longer fit. Keep them?`;
     case "predecessor_claimed":
-      return `${target} and another Part both use the printed units of the accepted ${acceptedPartName(workspace, conflict.predecessor_revision_part_id)}. Only one can keep them. Change the Parts so only one matches, then check again.`;
+      return `${target} and another Part both use the printed units of the accepted ${acceptedPartName(workspace, conflict.predecessor_revision_part_id)}. Only one can keep them. Start the match over to choose again, or change the Parts.`;
   }
 }
 

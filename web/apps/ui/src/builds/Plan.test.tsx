@@ -1133,6 +1133,8 @@ describe("GRE-1276 the Accept gate matches printed units first", () => {
     expect(within(gate).getByText("Match the printed units first.")).toBeTruthy();
     expect(within(gate).queryByRole("button", { name: "Match printed units" })).toBeNull();
     fireEvent.click(button);
+    // Let any mutation the click started reach fetch before checking that none did.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
     expect(writes(fetchMock).some((sent) => sent.path.endsWith("/apply"))).toBe(false);
     act(() => held.splice(0).forEach((resolve) => resolve(json(matched()))));
   });
@@ -1238,6 +1240,72 @@ describe("GRE-1276 the Accept gate matches printed units first", () => {
       },
     ]);
     await accept(gate);
+  });
+
+  it("offers to start over when a choice claims units another Part keeps", async () => {
+    const ambiguous = (): DraftWorkspace => ({
+      ...workspace(),
+      reconciliation: {
+        kind: "unresolved",
+        conflicts: [
+          {
+            kind: "ambiguous_exact_match",
+            target_draft_part_id: 11,
+            candidate_revision_part_ids: [11, 12],
+          },
+        ],
+      },
+    });
+    const claimed = (): DraftWorkspace => ({
+      ...workspace({ ...DRAFT, snapshot_digest: MATCHED }),
+      reconciliation: {
+        kind: "unresolved",
+        conflicts: [
+          {
+            kind: "predecessor_claimed",
+            target_draft_part_id: 12,
+            predecessor_revision_part_id: 12,
+          },
+        ],
+      },
+    });
+    let sends = 0;
+    const fetchMock = core({
+      draft: () => (sends === 1 ? claimed() : ambiguous()),
+      preview: needsMatch,
+      write: (path) => {
+        if (path !== RECONCILE) return undefined;
+        sends += 1;
+        return json(sends === 1 ? claimed() : ambiguous());
+      },
+    });
+    renderAt(fetchMock);
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    const group = await within(gate).findByRole("group", { name: /^bracket\.stl matches/ });
+    fireEvent.click(within(group).getByRole("radio", { name: /accepted gear\.stl \(Part 12\)/ }));
+    fireEvent.click(within(gate).getByRole("button", { name: "Save these choices" }));
+    expect(
+      await within(gate).findByText(
+        "gear.stl and another Part both use the printed units of the accepted gear.stl. Only one can keep them. Start the match over to choose again, or change the Parts.",
+      ),
+    ).toBeTruthy();
+    const heading = within(gate).getByRole("heading", { name: "Match printed units" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    fireEvent.click(within(gate).getByRole("button", { name: "Start the match over" }));
+    await within(gate).findByRole("group", { name: /^bracket\.stl matches/ });
+    const [first, second] = reconciles(fetchMock);
+    expect(first!.body.decisions).toEqual([
+      {
+        kind: "select_exact_predecessor",
+        target_draft_part_id: 11,
+        predecessor_revision_part_id: 12,
+      },
+    ]);
+    expect(second!.body).toEqual({ decisions: [], expected_snapshot_digest: MATCHED });
+    expect(within(gate).getByRole("button", { name: "Accept" }).getAttribute("aria-disabled")).toBe(
+      "true",
+    );
   });
 
   it("asks to match again when the preview still needs it after a match, without a loop", async () => {

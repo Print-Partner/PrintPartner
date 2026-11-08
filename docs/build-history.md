@@ -100,9 +100,10 @@ snapshots say Not restorable. The tab:
    sends `restoreSnapshotAsDraft` with `mode: "draft"`, that `expected_base`
    and `expected_draft`, and a new `Idempotency-Key`.
 2. Sends one restore at a time. A send whose answer is lost is resent with the
-   same key and body; when every send is lost, the key stays, so Restore
-   again replays the first restore instead of making a second draft. A
-   refusal drops the key.
+   same key and body; when every send is lost, the key stays while the
+   History tab is open, so Restore again replays the first restore instead of
+   making a second draft. A refusal drops the key and reloads History. A
+   replay whose draft is no longer open says so and opens nothing.
 3. On `200`, opens the Plan tab with the Accept gate on the restored draft.
    The gate names the snapshot and says printed units and printer commands
    stay as they are. Nothing is published until Accept.

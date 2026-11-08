@@ -481,6 +481,37 @@ describe("UI8-02 R on a snapshot opens Restore as draft into the Accept gate", (
     expect(new Set(sent.map((w) => JSON.stringify(w.body))).size).toBe(1);
   });
 
+  it("opens nothing when a replayed restore's draft is no longer open", async () => {
+    const fetchMock = restoreCore(() =>
+      json(restoredWorkspace({ ...RESTORED, state: "consumed" })),
+    );
+    const { router } = renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    const status = await screen.findByText(
+      /was already restored, and that draft is no longer open/,
+    );
+    expect(status.getAttribute("role")).toBe("status");
+    expect(router.state.location.pathname).toBe("/builds/2/history");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("sends nothing when the Plan cannot be read first, and does not call it lost", async () => {
+    const fetchMock = restoreCore(restored);
+    const planDown = vi.fn((path: string, init?: RequestInit) =>
+      path === "/api/v2/plans/2/drafts"
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : fetchMock(path, init),
+    );
+    renderAt("/builds/2/history", planDown);
+    await screen.findByText("Snapshot before apply");
+    fireEvent.keyDown(row("Snapshot before apply"), { key: "r" });
+    const alert = await screen.findByRole("alert", undefined, { timeout: 5000 });
+    expect(alert.textContent).toContain("Could not restore Snapshot before apply.");
+    expect(alert.textContent).toContain("Could not read the Plan before restoring");
+    expect(writes(fetchMock)).toEqual([]);
+  });
+
   it("shows Not found when the Build is gone", async () => {
     const fetchMock = restoreCore(() => refused(404, "profile_not_found"));
     renderAt("/builds/2/history", fetchMock);

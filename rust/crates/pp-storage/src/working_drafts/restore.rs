@@ -303,10 +303,15 @@ fn draft_key(c: &Args<'_>, profile: i64, actor: &str) -> (String, String) {
 
 /// The Accepted revision a snapshot's `payload_json` records, if any. Build
 /// history reads it too, so History offers restore only where this route can.
+/// Only that member is decoded; the rest of the payload is skipped unparsed.
 pub(crate) fn snapshot_revision(payload: &str) -> Option<i64> {
-    serde_json::from_str::<Value>(payload)
-        .ok()
-        .and_then(|payload| payload["accepted_plan_revision_id"].as_i64())
+    #[derive(serde::Deserialize)]
+    struct Saved {
+        accepted_plan_revision_id: Option<i64>,
+    }
+    serde_json::from_str::<Saved>(payload)
+        .ok()?
+        .accepted_plan_revision_id
 }
 
 /// The Accepted revision of Build `profile` the snapshot payload records, if

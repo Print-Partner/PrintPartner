@@ -1,6 +1,6 @@
 import type { BuildHistoryPage, RestoreSnapshotRequest } from "@print-partner/rust-client";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useRef, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { useNavigate, useOutletContext } from "react-router";
 import { CoreError } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
@@ -59,6 +59,17 @@ const restoreRefusal = (error: Error) =>
   (error instanceof CoreError && error.code && RESTORE_REFUSALS[error.code]) ||
   (error instanceof CoreError && error.detail) ||
   error.message;
+
+/** The Plan could not be read before a restore, so nothing was sent. */
+class PlanReadError extends Error {
+  constructor(cause: Error) {
+    super(`Could not read the Plan before restoring: ${cause.message}`);
+    this.name = "PlanReadError";
+  }
+}
+
+/** A sent restore whose answer was lost: it may have landed. */
+const restoreLost = (error: Error) => lostSend(error) && !(error instanceof PlanReadError);
 
 /** A restore's request, kept with its key so a resend repeats both. */
 interface PendingRestore {
@@ -177,7 +188,12 @@ function useRestore(id: number) {
       let restore = pending.current.get(entry.link.id);
       if (!restore) {
         // The base and draft the restore names are read now, not from an older screen.
-        const plan = await client.fetchQuery({ ...planQuery(id), staleTime: 0 });
+        const plan = await client
+          .fetchQuery({ ...planQuery(id), staleTime: 0 })
+          .catch((error: Error) => {
+            // A missing Build still answers 404, so the tab shows Not found.
+            throw error instanceof CoreError ? error : new PlanReadError(error);
+          });
         restore = {
           key: newKey(),
           body: {
@@ -191,9 +207,15 @@ function useRestore(id: number) {
       const snapshot = { id, snapshot_id: Number(entry.link.id) };
       return writeCore("restoreSnapshotAsDraft", snapshot, restore.body, restore.key);
     },
-    retry: (failures: number, error: Error) => failures < 2 && lostSend(error),
+    retry: (failures: number, error: Error) => failures < 2 && restoreLost(error),
     onSuccess: (workspace, entry) => {
       pending.current.delete(entry.link.id);
+      // A replay answers the draft the first restore made, which may since be accepted or
+      // set aside. Then there is nothing to accept.
+      if (workspace.draft.state !== "open") {
+        setClosed(entry.summary);
+        return;
+      }
       // The Plan tab reads the restored draft fresh rather than the draft it last showed.
       client.removeQueries({ queryKey: planKey(id) });
       const state: RestoredState = {
@@ -202,19 +224,24 @@ function useRestore(id: number) {
       void navigate(`/builds/${id}/plan`, { state });
     },
     onError: (error, entry) => {
-      // A refusal ends the key; a lost answer keeps it, so Restore again replays it.
-      if (!lostSend(error)) pending.current.delete(entry.link.id);
+      // A refusal ends the key and may mean the snapshot changed, so History reloads. A lost
+      // answer keeps the key, so Restore again replays it.
+      if (restoreLost(error)) return;
+      pending.current.delete(entry.link.id);
+      void client.invalidateQueries({ queryKey: ["core", "history", id] });
     },
     onSettled: () => {
       inFlight.current = false;
     },
   });
+  const [closed, setClosed] = useState<string | null>(null);
   const start = (entry: Entry) => {
     if (inFlight.current) return;
     inFlight.current = true;
+    setClosed(null);
     mutation.mutate(entry);
   };
-  return { mutation, start };
+  return { mutation, start, closed };
 }
 
 /**
@@ -229,11 +256,11 @@ export function BuildHistory() {
   const query = useInfiniteQuery(historyQuery(id));
   const table = useRef<HTMLTableElement>(null);
   const message = useRef<HTMLDivElement>(null);
-  const { mutation: restore, start } = useRestore(id);
+  const { mutation: restore, start, closed } = useRestore(id);
   // A refused restore leaves the button in place, so focus moves to what happened.
   useEffect(() => {
-    if (restore.isError) message.current?.focus();
-  }, [restore.isError, restore.submittedAt]);
+    if (restore.isError || closed) message.current?.focus();
+  }, [restore.isError, closed, restore.submittedAt]);
   const state = pagedScreenState(query, connection, (data) => data.pages[0]?.entries.length === 0);
   const missing = (error: Error | null) =>
     error instanceof CoreError && error.status === 404 && error.code !== "snapshot_not_found";
@@ -249,8 +276,14 @@ export function BuildHistory() {
         <>
           <div ref={message} tabIndex={-1}>
             {restore.isPending && <p role="status">Restoring {restore.variables.summary}.</p>}
+            {closed && (
+              <p role="status">
+                {closed} was already restored, and that draft is no longer open. Open the Plan tab
+                to see the current draft.
+              </p>
+            )}
             {restore.isError &&
-              (lostSend(restore.error) ? (
+              (restoreLost(restore.error) ? (
                 <div role="alert" className="pp-banner" data-kind="stale">
                   <p>
                     The restore of {restore.variables?.summary} may not have reached the core.

@@ -1,8 +1,16 @@
 use anyhow::{Context, Result, bail};
 use pp_core::{CoreRuntime, CoreStatus, DesktopLaunch, VerifiedBundle};
-use std::{io::Write, os::unix::fs::OpenOptionsExt};
+use std::io::Write;
 
 mod args;
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as platform;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -42,11 +50,7 @@ async fn main() -> Result<()> {
             },
         };
         let result = (|| -> Result<()> {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(path)?;
+            let mut file = platform::create_private_file(&path)?;
             file.write_all(
                 serde_json::json!({"bootstrap_url":url, "child_pid":child_pid, "runtime_dir":runtime.runtime_dir()})
                     .to_string()
@@ -63,13 +67,11 @@ async fn main() -> Result<()> {
     }
     // Register signal streams before announcing the origin: a signal sent right after
     // the origin line is queued here instead of taking the default action.
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let stop_signal = platform::stop_signal()?;
     println!("{}", runtime.origin());
     let shutdown_requested = runtime.shutdown_requested();
     tokio::select! {
-        _ = interrupt.recv() => {}
-        _ = terminate.recv() => {}
+        _ = stop_signal => {}
         _ = shutdown_requested => {}
     }
     let receipt = runtime.shutdown().await;

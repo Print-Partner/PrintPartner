@@ -7,7 +7,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useOutletContext } from "react-router";
 import { CoreError } from "../core/client";
-import { readCore, RequestContractError, writeCore } from "../core/rust";
+import { readCore, writeCore } from "../core/rust";
+import { lostSend, newKey, reason, resendable } from "../core/writes";
 import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { NotFound } from "../screen/screens";
@@ -38,24 +39,6 @@ const checkoffUnitsQuery = (id: number) => ({
     !(error instanceof CoreError && error.status === 404) && failures < 3,
 });
 
-/**
- * A new idempotency key. `crypto.randomUUID` exists only in secure contexts, and a shared
- * core may be opened over plain HTTP on the LAN, so random bytes build the key there.
- */
-const newKey = () =>
-  typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
-        b.toString(16).padStart(2, "0"),
-      ).join("");
-
-// A send that never reached the core, or whose answer was lost, is resent with the same key;
-// the core answers a repeat with the first receipt and writes nothing. A refusal is not.
-const lostSend = (error: Error) =>
-  !(error instanceof CoreError) && !(error instanceof RequestContractError);
-const resendable = (error: Error) =>
-  !(error instanceof RequestContractError) && !(error instanceof CoreError && error.status < 500);
-const reason = (error: Error) => (error instanceof CoreError && error.detail) || error.message;
 // A lost send may have landed, so only its same-key Retry may record next, and Record stays
 // hidden while that Retry, or any send, is in flight.
 const recordGate = (record: { isPending: boolean; error: Error | null }, pending: unknown) => {

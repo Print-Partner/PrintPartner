@@ -25,7 +25,7 @@ Binary only (`src/main.rs`, `src/args.rs`); no library. Every flag takes a value
 | `--web DIR` | Required. Web workspace root. Reads `package.json` for the version (`<version>-web`), runs `apps/server/dist/current/desktop.js`, serves `apps/web/dist`. |
 | `--node PATH` | Required. Node executable for the compatibility child. |
 | `--commit SHA` | Required. Must match the commit in the embedded bundle manifest. |
-| `--test-credential-file PATH` | Test only. Creates a new `0600` file with `bootstrap_url`, `child_pid`, and `runtime_dir`. `pp_core::perf_seed` uses it. The URL is a sign-in secret. |
+| `--test-credential-file PATH` | Test only. Creates a new file, mode `0600` on Unix (on Windows it inherits its directory's ACL), with `bootstrap_url`, `child_pid`, and `runtime_dir`. `pp_core::perf_seed` uses it. The URL is a sign-in secret. |
 
 ```sh
 pp-server --data /tmp/pp-data --web ./web --node "$(command -v node)" --commit "$(git rev-parse HEAD)"
@@ -34,15 +34,17 @@ pp-server --data /tmp/pp-data --web ./web --node "$(command -v node)" --commit "
 ## Effects and flags
 
 - Starts `CoreRuntime`, which takes the storage lease, binds a loopback port, and spawns Node (see `pp-core`).
-- Registers `SIGTERM` and `SIGINT` before printing the origin. Stops on either signal or on a gateway shutdown request (`POST /auth/logout`). Exits non-zero when the receipt is incomplete.
+- Registers `SIGTERM` and `SIGINT` before printing the origin; on Windows it registers Ctrl+C, Ctrl+Break, console close, logoff and system shutdown instead. Stops on any of them or on a gateway shutdown request (`POST /auth/logout`). Exits non-zero when the receipt is incomplete.
+- On Windows, Ctrl+C and Ctrl+Break wait for the whole shutdown, as SIGTERM and SIGINT do. A console close starts the same shutdown, but Windows ends the process when its grace period runs out, about 5 seconds. Windows delivers logoff and system shutdown events only to services: it ends an interactive `pp-server` at logoff or shutdown before any event arrives, and a `pp-server` that a service wrapper starts as a child never sees logoff or shutdown either; only the wrapper does. `pp-server` has no service integration of its own today, so those handlers are not reached yet. Either way the grace period is shorter than the shutdown can take: the gateway's mutation drain alone allows 5 seconds and the Node child gets up to 10 seconds after its stop request. If Windows ends `pp-server` first, the Node child ends with it because it runs in a kill-on-close Job Object, the storage lease is released by the operating system, and the next start recovers as it does after a crash.
 - Reads no environment variables itself. `pp-core` reads `PP_DESKTOP_REBUILD`; `pp-compat` passes `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL`, and `TZ` to the Node child.
-- Cargo features: none. It does not enable `pp-core/desktop_rebuild`, so `PP_DESKTOP_REBUILD` has no effect on a `-p pp-server` build. Unix only.
+- Cargo features: none. It does not enable `pp-core/desktop_rebuild`, so `PP_DESKTOP_REBUILD` has no effect on a `-p pp-server` build.
 - The current `Dockerfile` still runs Node directly, not `pp-server`.
 
 ## Tests
 
 - Unit tests for argument parsing in `src/args.rs`.
 - `tests/cli.rs` runs the built binary with bad arguments and checks it fails without printing an origin. It borrows `pp-storage/tests/common/process.rs`.
+- `tests/stop_signal.rs` starts the built binary, sends SIGTERM on Unix or Ctrl+Break on Windows (the binary runs in its own process group so the event does not reach the test), and checks that it exits 0 with a complete shutdown receipt. Console close, logoff and system shutdown cannot be raised from a test without ending the test's own console session.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-server

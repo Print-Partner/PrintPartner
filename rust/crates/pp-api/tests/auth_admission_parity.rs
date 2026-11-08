@@ -1,4 +1,7 @@
 use anyhow::{Context, Result, ensure};
+use axum::extract::ConnectInfo;
+use hyper::body::Incoming;
+use hyper_util::rt::TokioIo;
 use pp_api::auth::{
     AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer, SmtpConfig, SmtpSecurity,
     auth_router,
@@ -13,7 +16,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
-    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc,
@@ -22,8 +24,8 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::TcpListener,
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::{TcpListener, TcpStream},
     sync::oneshot,
     task::{JoinHandle, JoinSet},
     time::{Instant, timeout, timeout_at},
@@ -789,16 +791,7 @@ impl Server {
             .timeout(Duration::from_secs(10))
             .build()?;
         let (stop_http, rx) = oneshot::channel();
-        let http = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = rx.await;
-            })
-            .await
-        });
+        let http = tokio::spawn(serve_http(listener, router, rx));
         let connections = Arc::new(AtomicU32::new(0));
         let counter = connections.clone();
         let (stop_smtp, mut rx) = oneshot::channel();
@@ -960,6 +953,50 @@ impl Server {
         }
         (snapshot, errors)
     }
+}
+/// Accepts connections until `stop` fires, then waits for the open ones.
+async fn serve_http(
+    listener: TcpListener,
+    router: axum::Router,
+    mut stop: oneshot::Receiver<()>,
+) -> std::io::Result<()> {
+    let mut connections = JoinSet::new();
+    loop {
+        tokio::select! {
+            _ = &mut stop => break,
+            accepted = listener.accept() => {
+                let (stream, peer) = accepted?;
+                let router = router.clone().layer(axum::Extension(ConnectInfo(peer)));
+                connections.spawn(serve_lingering(stream, router));
+            }
+        }
+    }
+    while connections.join_next().await.is_some() {}
+    Ok(())
+}
+/// Serves one connection, then reads and discards what the client still sends,
+/// for up to two seconds, before closing. A server that closes with unread
+/// request bytes resets the connection, and on Windows the client loses the
+/// early response to an over-limit body (RFC 9112, section 9.6). The shipping
+/// gateway's connection loop does not linger yet; GRE-1264 tracks that fix.
+async fn serve_lingering(stream: TcpStream, router: axum::Router) {
+    let service = hyper::service::service_fn(move |request: hyper::Request<Incoming>| {
+        tower::ServiceExt::oneshot(router.clone(), request.map(axum::body::Body::new))
+    });
+    let Ok(parts) = hyper::server::conn::http1::Builder::new()
+        .serve_connection(TokioIo::new(stream), service)
+        .without_shutdown()
+        .await
+    else {
+        return;
+    };
+    let mut stream = parts.io.into_inner();
+    let _ = stream.shutdown().await;
+    let _ = timeout(Duration::from_secs(2), async {
+        let mut discarded = [0; 8192];
+        while matches!(stream.read(&mut discarded).await, Ok(read) if read > 0) {}
+    })
+    .await;
 }
 struct Evidence {
     observation: Observation,

@@ -11,17 +11,23 @@ export class CoreError extends Error {
     readonly status: number,
     path: string,
     readonly detail?: string,
+    /** The problem's Node-compatible `code`, such as `draft_changed`. */
+    readonly code?: string,
   ) {
     super(`Rust core answered ${status} for ${path}${detail ? `: ${detail}` : ""}`);
     this.name = "CoreError";
   }
 }
 
-/** The `detail` of a problem+json error body, when it has one. */
-async function problemDetail(response: Response): Promise<string | undefined> {
+/** The `detail` and `code` of a problem+json error body, when it has them. */
+async function problem(response: Response): Promise<{ detail?: string; code?: string }> {
   const body: unknown = await response.json().catch(() => undefined);
-  if (typeof body !== "object" || body === null || !("detail" in body)) return undefined;
-  return typeof body.detail === "string" ? body.detail : undefined;
+  if (typeof body !== "object" || body === null) return {};
+  const text = (key: string) => {
+    const value: unknown = (body as Record<string, unknown>)[key];
+    return typeof value === "string" ? value : undefined;
+  };
+  return { detail: text("detail"), code: text("code") };
 }
 
 // One leading slash only: "//host" and "/\host" are cross-origin in browsers. Tabs and
@@ -36,7 +42,10 @@ export async function fetchCore(path: string, init?: RequestInit): Promise<Respo
     );
   }
   const response = await fetch(path, { ...init, credentials: "same-origin" });
-  if (!response.ok) throw new CoreError(response.status, path, await problemDetail(response));
+  if (!response.ok) {
+    const { detail, code } = await problem(response);
+    throw new CoreError(response.status, path, detail, code);
+  }
   return response;
 }
 

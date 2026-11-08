@@ -47,59 +47,11 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-#[cfg(feature = "desktop_rebuild")]
-fn show_origin_notice(text: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        use gtk::prelude::*;
-        let dialog = gtk::MessageDialog::builder()
-            .title("Print Partner")
-            .text(text)
-            .message_type(gtk::MessageType::Info)
-            .buttons(gtk::ButtonsType::Ok)
-            .modal(true)
-            .build();
-        dialog.run();
-        dialog.close();
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        rfd::MessageDialog::new()
-            .set_title("Print Partner")
-            .set_description(text)
-            .set_level(rfd::MessageLevel::Info)
-            .show();
-    }
-}
-
 fn show_startup_error() {
-    let title = "Print Partner could not start";
-    let description = "The desktop runtime or its verified resources could not start. Check that this installation is complete and that another Print Partner instance is not using its data directory.";
-    #[cfg(target_os = "linux")]
-    {
-        use gtk::prelude::*;
-        // Tauri initializes GTK on this thread and owns its main context. A
-        // background dialog thread cannot acquire that context before run().
-        // Run the modal GTK loop here, including failures before shell setup.
-        if gtk::init().is_ok() {
-            let dialog = gtk::MessageDialog::builder()
-                .title(title)
-                .text(title)
-                .secondary_text(description)
-                .message_type(gtk::MessageType::Error)
-                .buttons(gtk::ButtonsType::Ok)
-                .modal(true)
-                .build();
-            dialog.run();
-            dialog.close();
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    rfd::MessageDialog::new()
-        .set_title(title)
-        .set_description(description)
-        .set_level(rfd::MessageLevel::Error)
-        .show();
+    pp_desktop::platform::startup_error(
+        "Print Partner could not start",
+        "The desktop runtime or its verified resources could not start. Check that this installation is complete and that another Print Partner instance is not using its data directory.",
+    );
 }
 
 fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
@@ -136,17 +88,7 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
     } = launch_args;
     let stage = match stage {
         Some(stage) => stage,
-        None => {
-            let resources = app.path().resource_dir()?;
-            if cfg!(target_os = "macos") {
-                resources
-                    .parent()
-                    .context("App Contents unavailable")?
-                    .to_owned()
-            } else {
-                resources.join("desktop-runtime")
-            }
-        }
+        None => pp_desktop::platform::bundled_stage(&app.path().resource_dir()?)?,
     };
     let data = desktop_data_dir(data, || {
         app.path()
@@ -319,11 +261,10 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
     let shutdown_requested = core.shutdown_requested();
     let app_handle = app.handle().clone();
     let stop_signal = runtime.spawn(async move {
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
         tokio::select! {
             _ = shutdown_requested => {},
             _ = tokio::signal::ctrl_c() => {},
-            _ = async { if let Some(signal) = terminate.as_mut() { signal.recv().await; } else { std::future::pending::<()>().await; } } => {},
+            _ = pp_desktop::platform::terminate() => {},
             _ = async { if let Some(seconds) = test_exit { tokio::time::sleep(std::time::Duration::from_secs(seconds)).await; } else { std::future::pending::<()>().await; } } => {},
         }
         app_handle.exit(0);
@@ -348,7 +289,7 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
             && !origin_notice_shown.swap(true, std::sync::atomic::Ordering::AcqRel)
             && let Some(notice) = origin_notice.as_deref()
         {
-            show_origin_notice(notice);
+            pp_desktop::platform::notice(notice);
         }
         #[cfg(not(feature = "desktop_rebuild"))]
         let _ = &origin_notice;
@@ -376,16 +317,17 @@ fn run(core_log: &pp_core::CoreLog) -> Result<u8> {
                 });
             });
         }
-        #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Reopen { .. } = event {
+        if pp_desktop::platform::reopen_requested(&event) {
             let _ = window.show();
             let _ = window.set_focus();
         }
         let _ = (&window, &event);
     });
     stop_signal.abort();
-    // Remove the focus socket while this process still holds the data lock.
-    drop(focus_server);
+    // Close the focus endpoint while this process still holds the data lock.
+    if let Some(server) = focus_server {
+        runtime.block_on(server.stop());
+    }
     let receipt = runtime.block_on(core.shutdown());
     println!("{}", serde_json::to_string(&receipt)?);
     ensure!(receipt.complete(), "Desktop shutdown incomplete");
@@ -417,8 +359,7 @@ fn build_tray(
     let folder = MenuItem::with_id(app, "data", "Open data folder", true, None::<&str>)?;
     let log_folder = MenuItem::with_id(app, "log_folder", "Reveal log folder", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Print Partner", true, None::<&str>)?;
-    // Open at login is a per-user LaunchAgent, so only macOS gets the item (T-31).
-    let login_agent = if cfg!(target_os = "macos") {
+    let login_agent = if pp_desktop::platform::LOGIN_AGENT {
         app.path()
             .home_dir()
             .ok()

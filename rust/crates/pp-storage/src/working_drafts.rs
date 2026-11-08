@@ -72,6 +72,8 @@ pub enum Request {
     Header {
         draft_id: PositiveId,
     },
+    /// The Build's current header, read before any draft exists (GRE-1120).
+    BuildHeader,
 }
 
 /// The JSON body of Node's draft Part edit route. It accepts what
@@ -315,6 +317,9 @@ pub enum Outcome {
     },
     Header {
         header: header::HeaderView,
+    },
+    BuildHeader {
+        header: header::BuildHeaderView,
     },
     ProfileNotFound,
     DraftNotFound,
@@ -980,6 +985,7 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<O
             let Some(draft) = load(draft_id)? else { return Ok(Outcome::DraftNotFound); };
             Outcome::Header { header: header::view(&tx, &tenant, profile, num(&draft.header, "id")?)? }
         }
+        Request::BuildHeader => Outcome::BuildHeader { header: header::build_view(&tx, &tenant, profile)? },
         Request::AcceptPreview { draft_id } => Outcome::AcceptPreview {
             preview: crate::plan_publication::preview::preview(&tx, &tenant, profile, i64::try_from(draft_id.get())?)?,
         },
@@ -1909,6 +1915,9 @@ impl Outcome {
                 ),
             },
             Self::Header { header } => ("header", Some("header"), serde_json::to_vec(&header)?),
+            Self::BuildHeader { header } => {
+                ("build_header", Some("header"), serde_json::to_vec(&header)?)
+            }
             Self::ProfileNotFound => ("profile_not_found", None, Vec::new()),
             Self::DraftNotFound => ("draft_not_found", None, Vec::new()),
         };

@@ -11,11 +11,11 @@ On ready PRs, the jobs are selected as follows:
 
 - `rust (linux)` and `rust (windows)` run when a `changes` job finds a change to `rust/**`, `rust-toolchain.toml`, `web/package*.json`, `web/apps/**`, `web/packages/**`, `web/tsconfig*.json`, `web/scripts/atomic-package-build.mjs`, `web/scripts/storage-fixtures/**`, `fixtures/**`, `scripts/setup-ci-linux.sh`, `.github/actions/linux-gui-deps/action.yml`, the workflow itself, or the CI filter scripts and their tests. Other changes skip both jobs while keeping their check reports present.
 - `rust (macos)` uses the same path selection. It runs only when relevant inputs change and the PR has the exact `macos` label and is not a draft. Adding or removing the label, marking the PR ready for review and converting it to a draft each start a new run.
-- When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (for example, a change only to a crate the Windows job excludes, such as `pp-server`) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
+- When those jobs run on a pull request, nextest uses an affected-crate filter from `scripts/ci-affected-nextest-filter.py`: for each changed `rust/crates/<pkg>/` path it unions `rdeps(=<pkg>)` so reverse dependents are covered. A crate whose sources read another crate's files by path (for example pp-gateway's `include_str!("../../pp-storage/...")` drift guards) joins the selection when that crate changes. The filtered nextest steps pass `--no-tests=warn`, so a selection that matches nothing in a job's `CARGO_SCOPE` (for example, a change only to a crate that a job's `CARGO_SCOPE` leaves out) passes instead of exiting 4. Shared inputs (workspace `Cargo.toml` / `Cargo.lock`, toolchain, web assets, fixtures, `rust/tests/**`, `rust/scripts/**`, the workflow, or the filter scripts) keep `all()`. Clippy and doctests still cover the whole `CARGO_SCOPE`.
 
 The selection is made at job level by `scripts/ci-path-filter.py`, not with workflow `paths:`, so a skipped job still reports `skipped` and the required `rust (linux)` and `rust (windows)` checks never stay pending. A PR that changes only docs, other workflows or other non-Rust files skips both: PR #1548, which changed one workflow and `ci.md`, reported `rust (linux)` and `rust (windows)` as skipped, and a PR that touches a path above, such as this filter, runs them. Markdown is not a Rust input and does not select them, except the legal texts under `web/apps/server/src/data/` that pp-api and pp-gateway embed with `include_str!`, and anything under `fixtures/`, where parity READMEs sit inside hashed fixture trees. A UI-only change under `web/apps/web/` still selects them on purpose: the Rust jobs run `npm --prefix web run build` and `rust/scripts/build-desktop-manifest.py` on that UI, then test the desktop bundle against the measured manifest. Skipping those PRs would drop that check from the required set. Web CI covers the UI's own lint, tests and build.
 
-Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a push to `main` never cancels another `main` run (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
+Pushes to `main`, merge groups, nightly and manual runs execute all three jobs regardless of paths, and nextest keeps `all()`. A new push to a pull request cancels that pull request's older run, and a running `main` run is never cancelled and at most one newer `main` run waits behind it (see [Superseded runs](#superseded-runs)). Its purpose is to stop code that compiles on one OS only from reaching `main`.
 
 This page covers what the Rust jobs run and how to reproduce them. [Change a CI workflow](ci-controls.md) covers review, the actionlint and zizmor checks, action pins and required checks. Both apply to this workflow.
 
@@ -237,7 +237,7 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 |------------|--------|----------|-------|
 | `rust (linux)` | Aggregate over `rust (linux) build` plus rebuild partitions when selected | The whole workspace | All |
 | `rust (macos)` | `macos-26` | The whole workspace | All except [macOS exclusions](#macos-exclusions) |
-| `rust (windows)` | `windows-latest` | The workspace without [Windows exclusions](#windows-exclusions) | All in those packages |
+| `rust (windows)` | `windows-latest` | The whole workspace | All |
 
 `rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or on `ubuntu-latest`; see [Linux Rust runner](#linux-rust-runner).
 
@@ -395,13 +395,13 @@ cargo test --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast -
 cargo test --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --doc --features desktop_rebuild
 ```
 
-On macOS, set `TMPDIR` to a short directory on a case-sensitive volume before you run the tests. The workflow step `Mount a short case-sensitive TMPDIR` has the commands. Also set `PP_TEST_NODE` to the Node executable, as CI does. Without it the runtime tests fall back to `/usr/bin/node`, which macOS does not have. To skip the same tests as CI, add `-E` with the `NEXTEST_FILTER` value of the macOS job. On Windows, replace `--workspace` with the Windows job's `CARGO_SCOPE` value. On Linux, the Tauri shell also needs the GTK and WebKit packages that the workflow installs with `apt-get`.
+On macOS, set `TMPDIR` to a short directory on a case-sensitive volume before you run the tests. The workflow step `Mount a short case-sensitive TMPDIR` has the commands. Also set `PP_TEST_NODE` to the Node executable, as CI does. Without it the runtime tests fall back to `/usr/bin/node`, which macOS does not have. To skip the same tests as CI, add `-E` with the `NEXTEST_FILTER` value of the macOS job. On Windows, the same `--workspace` commands apply. On Linux, the Tauri shell also needs the GTK and WebKit packages that the workflow installs with `apt-get`.
 
 Clippy and fmt do not read the manifest contents. For a lint-only run, `echo '{}' > rust/bundle-manifest.json` is enough. The tests need the real manifest.
 
 ## Packaged-app smoke
 
-`desktop-packaged-smoke.yml` builds the Linux `.deb`, installs it into a disposable root and launches the installed app on a schema 31 database, in the default build and in the `desktop_rebuild` build. It checks the native window, the persisted Build in the accessibility tree, a clean shutdown and the migrated rows. It is not a required check, and `just ci` does not run it. [Packaged-app smoke](packaged-smoke.md) explains each step and how to run it locally.
+`desktop-packaged-smoke.yml` builds the Linux `.deb` and the macOS app, installs each into a disposable location and launches the installed app on a schema 31 database, in the default build and in the `desktop_rebuild` build. It checks the native window, the persisted Build in the accessibility tree, a clean shutdown and the migrated rows. It is not a required check, and `just ci` does not run it. [Packaged-app smoke](packaged-smoke.md) explains each step and how to run it locally.
 
 ## Read a failure
 
@@ -419,7 +419,7 @@ These failures are common:
 
 `rust/.config/nextest.toml` sets both rules below in the `default` profile, which CI and `just ci` use.
 
-Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
+Tests that start real Node children run in the `process-heavy` test group, and at most two of them run at once. The group holds every `pp-core` `runtime_m0` test, the `slice0_mount` binaries, `pp-server`'s `stop_signal` test and the `pp-compat` `ticket_t_2::` supervisor tests. On a busy runner, four of these at once timed out (GRE-956). Other tests keep running on the remaining threads. To see which tests a build puts in the group, run `cargo nextest show-config test-groups --manifest-path rust/Cargo.toml`.
 
 A test that fails at random goes on the flaky list, the override with `retries = 1`. The rules:
 
@@ -467,16 +467,9 @@ Shared code calls `platform::lock_file(...)` and never names an OS. Every platfo
 
 Do not scatter `#[cfg(...)]` on statements or `if cfg!(...)` checks through shared functions. Tests are the exception: a test, or one block in a test that checks an OS-only fact, may carry its own `#[cfg]`.
 
-## Windows exclusions
+## Windows coverage
 
-The Windows job excludes these crates with `--exclude` items in `CARGO_SCOPE`, so it does not lint or test their own targets. The table below names each port ticket.
-
-| Crate | Port ticket | Why it is excluded |
-|-------|-------------|--------------------|
-| `pp-api`, `pp-gateway`, `pp-server` | GRE-655 | Their own code and tests are not ported yet: `pp-server` and pp-api's `auth-http-fixture` use Unix signals, and their tests use Unix sockets, Unix symlinks, `libc` and mode bits. `pp-gateway`'s library already compiles on Windows as a `pp-core` dependency, and so does `pp-api`'s with `desktop_rebuild` on; only their own tests, binaries and clippy are skipped. |
-| `pp-desktop` | GRE-656 | It is the Tauri shell, and its own code and tests are not ported yet. GRE-656 ends with the Windows job building the whole workspace. |
-
-`pp-os`, `pp-storage`, `pp-source`, `pp-compat` and `pp-core` are not excluded; see [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests run on Windows with Node fixtures (GRE-1194). A clean leader exit waits up to 500 ms for the job to empty before the reap (see the pp-compat README). The HealthFixture tests stay Unix-only under GRE-1203. So do the paused-time tests whose pipe stdio or Unix health listener blocks Tokio's auto-advance. The other paused-time tests run on Windows. The junction-gated respawn test stays Unix-only under GRE-1204. `pp-core` reads and publishes its state files through `pp-os` handles (GRE-1188) and runs its runtime tests against the real Node child on Windows. On Windows its tests use `TerminateProcess` for SIGKILL, `NtSuspendProcess` and `NtResumeProcess` for SIGSTOP and SIGCONT, a junction where Unix uses a FIFO, an `icacls` deny where Unix uses mode 000, and a ToolHelp process snapshot where Unix reads `/proc` or `ps`. A runtime test whose restart fails prints the redacted recent logs. Each test that stays Unix-only names its Windows counterpart in a comment. The Windows job builds and tests `pp-os`, including
+`rust (windows)` lints and tests the whole workspace (`CARGO_SCOPE: --workspace`) with `desktop_rebuild` off and on. See [Windows test portability](#windows-test-portability) for what the pp-storage port (GRE-1154) changed. On Windows, `pp-compat` opens log entries through `pp-os` (GRE-1185) and runs its supervision tests against the Job Object and the private named pipe (GRE-1186); each Unix-only process-group, signal or parent-death test names its Windows counterpart in a comment. Its `ticket_t_2::` supervisor tests run on Windows with Node fixtures (GRE-1194). A clean leader exit waits up to 500 ms for the job to empty before the reap (see the pp-compat README). The HealthFixture tests stay Unix-only under GRE-1203. So do the paused-time tests whose pipe stdio or Unix health listener blocks Tokio's auto-advance. The other paused-time tests run on Windows. The junction-gated respawn test stays Unix-only under GRE-1204. `pp-core` reads and publishes its state files through `pp-os` handles (GRE-1188) and runs its runtime tests against the real Node child on Windows. On Windows its tests use `TerminateProcess` for SIGKILL, `NtSuspendProcess` and `NtResumeProcess` for SIGSTOP and SIGCONT, a junction where Unix uses a FIFO, an `icacls` deny where Unix uses mode 000, and a ToolHelp process snapshot where Unix reads `/proc` or `ps`. A runtime test whose restart fails prints the redacted recent logs. Each test that stays Unix-only names its Windows counterpart in a comment. `pp-gateway`'s tests reach a stand-in Node child through `pp_compat::Endpoint::fake`, which is a Unix socket on Unix and the core-owned named pipe on Windows; on Windows they plant symbolic links with `symlink_file`, the receipt test plants no socket or FIFO because Windows directories cannot hold them, and the 0600 mode checks stay Unix-only. `pp-server` stops on Ctrl+C, Ctrl+Break, a console close, logoff or system shutdown on Windows, where Unix uses SIGINT and SIGTERM (GRE-655); `tests/stop_signal.rs` sends Ctrl+Break on Windows and SIGTERM on Unix. `pp-api`'s `auth_admission_parity` serves its router through a harness loop that reads and discards unread request bytes for up to two seconds before it closes a connection, so a Windows client still receives the early 413 for an over-limit body instead of a reset. The shipping gateway closes without that linger; GRE-1264 tracks the product fix. `pp-desktop` builds the Tauri shell on Windows (GRE-656): dialogs come from rfd, links and folders open through `rundll32 url.dll,FileProtocolHandler`, Ctrl+C, Ctrl+Break and a console close stop it, and single-instance focus uses a private named pipe (see the pp-desktop README). The Windows job builds and tests `pp-os`, including
 renaming and removing a directory while a `Dir` handle on it is open, entry
 operations through a handle after its directory was renamed, and Windows-only
 tests for symbolic links, junctions, directory locks, write-through renames,
@@ -491,9 +484,9 @@ These rules came out of the pp-storage Windows port (GRE-1154). New tests follow
 - Build SQLite `file:` URIs with `pp_storage::sqlite_uri::immutable_uri`. SQLite on Windows cannot open a URI that holds a verbatim `\\?\` prefix.
 - Hand Node a path from `pp_testkit::node_path::node_path`, and an `--import` or `import()` target as a `file:` URL (`pp_testkit::node_path::file_url`, or `pathToFileURL` in scripts). Node cannot resolve verbatim paths, and its ESM loader refuses a bare `C:\` path.
 - Close every connection and file under a directory before removing it. Windows refuses to delete an open file.
+- Store, return or compare a path in its display spelling, `pp_os::display_path`, which turns the verbatim `\\?\C:\…` and `\\?\UNC\…` that `canonicalize` returns into `C:\…` and `\\server\share\…` and leaves every other path unchanged. pp-storage writes a Source's `local_path` and reports Source roots (accepted-plan snapshot roots and draft-preparation roots) that way, and pp-storage and pp-core's review observations compare a stored path with the repos root that way, as Node does. It still opens files through the canonical path.
+- Join a relative path that holds `/` onto a canonical root through its components (`relative.components().collect::<PathBuf>()`). A verbatim `\\?\` path reads `/` as part of a name, not as a separator.
 - Compare paths in the spelling the product reports. `std::env::temp_dir()` on a runner can hold 8.3 short names (`RUNNER~1`), while `canonicalize` returns the long verbatim form.
-
-`rust (windows)` therefore does not compile the Tauri shell yet. When a port ticket's crates build and pass their tests on Windows, delete its `CARGO_SCOPE` exclusion in the same pull request.
 
 ## macOS test filter
 
@@ -510,7 +503,7 @@ To collect twenty consecutive green hosted `rust (macos)` job links after tip is
   - On pull requests, `linux-precheck`, `server-smoke`, the arm64 `bundle` and `macos-storage-gate` run only when the PR has the exact `macos` label, is not a draft, and changes desktop inputs. The selector includes the Rust inputs above, the native workflow, its cleanup tests and the Rust verification helper directory. Fork PRs skip `macos-storage-gate`. The Intel bundle never runs on pull requests.
   - Pushes to `main` or `master`, merge groups, nightly and manual runs select every job, including the Intel bundle.
 
-  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels an older `main` run; pushes to `main`, merge groups, nightly and manual runs each have their own group, and a rerun keeps its run's group: a rerun of a push, merge group, schedule or manual run shares that run's group without cancelling anything, and a rerun of a pull request run stays in the PR group.
+  Every macOS job also needs a successful `linux-precheck`, so a broken web build never starts a macOS runner. Skipped jobs still report their checks. A new push, label change or draft change on a pull request cancels that pull request's older run. A push to `main` never cancels a running `main` run: pushes to `main` share one group (one running, one pending, a newer push replaces only a pending run), while merge groups, nightly and manual runs each have their own group, and a rerun keeps its run's group: a rerun of a push, merge group, schedule or manual run shares that run's group without cancelling anything, and a rerun of a pull request run stays in the PR group.
   The source fixture registers the named `cleanup_source_fixture` function with `trap cleanup_source_fixture EXIT` after a successful attach. It captures `$?` immediately and exits with that status on every cleanup path. Cleanup targets only this step's owned mount. It tries normal detach of the mount three times, with `sleep 2` between failures. If all three fail, it records holders and then forces detach of the whole-disk device that `hdiutil attach` printed first, again up to three times with `sleep 2` between failures. A forced unmount can succeed while ejecting the backing device returns `Resource busy`. The mount path is then an ordinary directory, so the forced retries target the device. The explicit sleeps total at most eight seconds. The `hdiutil` calls and holder diagnostics add time, so eight seconds is not a wall-clock cleanup bound.
 
   After normal detach retries fail, `lsof +f -- "$fixture_mount"` records open files on the source fixture's owned APFS filesystem before forced detach. A diagnostic failure, or failure of all three forced attempts, warns without changing the test exit status. Run `python3 scripts/test_native_image_cleanup.py -v` for executable cleanup fixtures. The same suite runs in `macos-storage-gate`, including a macOS-only disposable APFS image held open by a child process. Linux skips that native proof.
@@ -609,25 +602,36 @@ Pull requests restore only. Each install logs
 
 Only pull request runs cancel superseded runs. Every CI workflow groups a pull
 request by workflow and ref (or PR number) with `cancel-in-progress: true`, so a
-new push replaces the older run. Every other event, pushes to `main` included,
-gets a group of its own (`github.run_id`) with cancelling off, so the validation
-of one merge is never killed by the next. This changed on 2026-11-06 (GRE-1228):
-a sample of 60 `main` push runs had 25 cancelled, 23 succeeded and 12 in progress,
-because a newer merge cancelled each older run and left that merge with no result.
+new push replaces the older run. A run that is already running on `main` is never
+cancelled (GRE-1228): on 2026-11-06 a sample of 60 `main` push runs had 25
+cancelled, 23 succeeded and 12 in progress, because a newer merge cancelled each
+older run and left that merge with no result.
 
-The run count stays bounded because `main` only receives merges of reviewed pull
-requests, one `push` event each, and a workflow starts at most one run per event.
-The path filters still skip jobs that a merge cannot affect. Tag pushes, merge groups,
-the schedule and manual runs each have their own group too. A rerun (attempt 2 and
-later, which `main-red` starts for failed `main` runs) keeps its run's event and
-`run_id`, so a `main` rerun shares the original run's group; it never cancels
-anything and, because the original has finished, does not wait.
+Giving every `main` push its own group removed the cancelling but left the load
+unbounded: on 2026-11-07 four `rust-cross-os` runs ran at once, each with a
+one-hour macOS job, and pull request jobs queued behind them for hours
+(GRE-1248). Pushes to `main` now share one group per workflow (`main` in the
+group name, `cancel-in-progress: false`). GitHub runs one and keeps one pending
+run; a newer push replaces the older **pending** run, which never started. So the
+load is one running plus one pending run per workflow, and the newest run tests
+every merge that was replaced, but a replaced merge gets no run of its own.
+
+Two kinds of check still run once per push, because each compares a push with the
+commit it replaced: the duplication check and the ast-grep ratchet in
+`desktop-fleet-rust.yml`. The clippy-limits ratchet inside `rust-cross-os` also
+compares a push with `github.event.before`; it is bounded like the rest, and the
+merge-group run of the same commit and the PR runs compare against current `main`.
+Tag pushes, other branches, merge groups, the schedule and manual runs keep their
+own `run_id` group, so a merge-group run is never replaced. A rerun (attempt 2 and
+later, which `main-red` starts for failed `main` runs) also keeps its `run_id` group, so it
+never replaces the pending run and, because the original has finished, does not wait.
 
 | Event | Group | `cancel-in-progress` |
 | --- | --- | --- |
 | `pull_request` | workflow and ref (or PR number) | `true` |
-| `push` to `main` | `run_id` | `false` |
-| `push` of a tag, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
+| first attempt of a `push` to `main` | one group per workflow | `false` (one running, one pending) |
+| `push` to `main` of the duplication check and the ast-grep ratchet | `run_id` | `false` |
+| `push` of a tag or another branch, `merge_group`, `schedule`, `workflow_dispatch` | `run_id` | `false` |
 | rerun of a non-PR run | the original run's `run_id` | `false` |
 | rerun of a `pull_request` run | same as the PR group | `true` |
 

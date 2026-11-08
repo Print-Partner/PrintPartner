@@ -111,6 +111,8 @@ const optionalMembers = {
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
   BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason"]),
+  // Accept's serde defaults: no remap, and no header version for a draft without a header row.
+  AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
 };
 
 for (const fixture of document.fixtures) {

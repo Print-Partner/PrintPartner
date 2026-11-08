@@ -56,23 +56,32 @@ type WriteBody<N extends WriteRoute> = [RouteRequest<N>] extends [never]
 /**
  * One write through the generated Rust client: the body is checked against the
  * route's request schema before it is sent, and the answer against its response
- * schema. A route without a request schema is sent with no body. A failed send
+ * schema. A route without a request schema is sent with no body. A route that
+ * declares an `Idempotency-Key` header is never sent without one. A failed send
  * throws; the caller decides whether to resend.
  */
 export async function writeCore<N extends WriteRoute>(
   name: N,
   params: RouteParams<N>,
-  ...[body]: WriteBody<N>
+  ...args: [...WriteBody<N>, idempotencyKey?: string]
 ): Promise<RouteResponse<N>> {
   const route = routes[name];
   const path = routePath(name, params);
-  const request = route.request === null ? null : route.request.safeParse(body);
-  if (request && !request.success) throw new RequestContractError(path);
+  const bodyless = route.request === null;
+  const body: unknown = bodyless ? undefined : args[0];
+  const idempotencyKey = (bodyless ? args[0] : args[1]) as string | undefined;
+  const request = bodyless ? null : route.request.safeParse(body);
+  const keyed = (route.headers as readonly string[]).includes("Idempotency-Key");
+  if ((request && !request.success) || (keyed && !idempotencyKey)) {
+    throw new RequestContractError(path);
+  }
   const response = await fetchCore(path, {
     method: route.method,
-    headers: request
-      ? { accept: "application/json", "content-type": "application/json" }
-      : { accept: "application/json" },
+    headers: {
+      accept: "application/json",
+      ...(request ? { "content-type": "application/json" } : {}),
+      ...(keyed && idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
+    },
     body: request ? JSON.stringify(request.data) : undefined,
   });
   const parsed = route.response.safeParse(await response.json().catch(() => undefined));

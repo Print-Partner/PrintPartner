@@ -29,6 +29,17 @@ pub fn response(status: StatusCode, detail: &str) -> Response {
     build(problem(status, detail, None), Map::new())
 }
 
+/// The Build rename rule's 409: another Build of the tenant has `name`. Accept's
+/// header copy and PATCH /plans/{id} both answer it.
+pub fn duplicate_build_name(name: &str) -> Response {
+    let mut extensions = Map::new();
+    extensions.insert("name".into(), Value::String(name.to_owned()));
+    build(
+        problem(StatusCode::CONFLICT, "", Some("duplicate_build_name")).without_detail(),
+        extensions,
+    )
+}
+
 /// A problem with a Node-compatible `code`; the code may refine the type.
 pub fn coded(status: StatusCode, detail: &str, code: &str) -> Response {
     build(problem(status, detail, Some(code)), Map::new())

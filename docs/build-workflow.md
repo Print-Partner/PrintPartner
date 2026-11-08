@@ -140,17 +140,18 @@ every Rust `BuildWorkflow` fixture with it.
 
 ## Adapter inputs
 
-`WorkflowInputs::inputs(tenant, build)` returns `BuildInputs { due_date, stock }`
-after the storage transaction, outside the writer thread.
+`WorkflowInputs::inputs(tenant, build)` returns `BuildInputs { stock }` after
+the storage transaction, outside the writer thread.
 
-- **Due date.** Storage has no due-date field yet. Order fields and the
-  storage-owned due date belong to slice 7 (GRE-1100, GRE-1095); until then
-  the adapter supplies it.
+- **Due date.** Storage owns it: the read takes each Build's `due_date` from
+  `build_profile_details`, which Accept writes from the draft header
+  ([Draft headers](draft-headers.md)), in the same transaction as the Build's
+  facts (GRE-1100). A Build without a row there has no due date.
 - **Stock.** The Spoolman shortfall computation owns stock. This read does not
   call or depend on it.
 
-The Rust-only startup (`rebuild_api::read_router`) passes `PendingInputs`: no
-due dates and `stock: not_ready`. Consumers wait for the integrated shortfall
+The Rust-only startup (`rebuild_api::read_router`) passes `PendingInputs`:
+`stock: not_ready`. Consumers wait for the integrated shortfall
 result rather than a second local stock authority.
 
 ## Tests

@@ -98,6 +98,8 @@ function build(id) {
     freshness: { status: "current", accepted_input_set_id: id, accepted_at: "2026-10-02T00:05:00Z" },
     archived_at: null,
     last_used_at: "2026-10-03T12:00:00Z",
+    customer: null,
+    due_date: null,
   };
 }
 
@@ -218,6 +220,80 @@ function workflow(found) {
   };
 }
 
+const DIGEST = "a".repeat(64);
+const BASE = { revision_id: 1, plan_version: 1 };
+const DRAFT = { draft_id: 9, state: "open", lifecycle_version: 2, snapshot_digest: DIGEST, base: BASE };
+const draftPart = (id, filename, included, override) => ({
+  draft_part_id: id,
+  base_revision_part_id: id,
+  part_key: filename,
+  filename,
+  relative_path: `stl/${filename}`,
+  source_layer: "base:Fixture Source 01",
+  role: "primary",
+  quantity_inferred: 2,
+  quantity_override: override,
+  quantity_effective: override ?? 2,
+  included,
+});
+const header = (found) => ({ name: found.name, order_number: found.order_number, customer: null, due_date: null });
+
+/** The Plan tab's reads for Build `found`: one open draft that renames it and changes a Part. */
+function planRead(found, rest) {
+  if (rest === "/drafts") return { profile_id: found.id, drafts: [DRAFT] };
+  if (rest === "/drafts/header") return { build: header(found), base: BASE };
+  if (rest === "/drafts/9") {
+    return {
+      profile_id: found.id,
+      draft: DRAFT,
+      parts: [draftPart(11, "fixture_bracket.stl", true, null), draftPart(12, "fixture_gear.stl", false, 4)],
+      diff: { base_is_current: true, added: [], removed: [], changed: [] },
+      reconciliation: { kind: "ready", reused_units: 5, new_units: 0, surplus_units: 0 },
+    };
+  }
+  if (rest === "/drafts/9/header") {
+    return {
+      draft_id: 9,
+      build: header(found),
+      draft: {
+        header: { ...header(found), name: `${found.name} v2`, customer: "Fixture customer", due_date: "2026-12-01" },
+        header_version: 1,
+        updated_at: "2026-11-07T00:00:00.000Z",
+      },
+    };
+  }
+  if (rest !== "/drafts/9/accept-preview") return undefined;
+  return {
+    kind: "changed",
+    revision: { draft_id: 9, expected_snapshot_digest: DIGEST, expected_lifecycle_version: 2, expected_base: BASE, expected_header_version: 1 },
+    snapshot: {
+      saved_before_accept: true,
+      detail: "Print Partner saves a snapshot of the accepted Plan before it accepts this draft.",
+    },
+    changes: {
+      fields: [{ draft_part_id: 12, filename: "fixture_gear.stl", field: "quantity_override", old: null, new: { kind: "integer", value: 4 } }],
+      header: [
+        { field: "name", old: found.name, new: `${found.name} v2` },
+        { field: "customer", old: null, new: "Fixture customer" },
+        { field: "due_date", old: null, new: "2026-12-01" },
+      ],
+      inputs: [],
+      parts_added: [],
+      parts_removed: [],
+      required_units: {
+        added: [],
+        removed: [],
+        printed_affected: [{ token: `ppu_${"0".repeat(31)}1`, filename: "fixture_gear.stl", unit_index: 0, printed: true, assembled: false }],
+      },
+      plates: { cleared: [{ plate_id: "fixture-plate-a", ordinal: 1, printer_name: "Voron 2.4", unit_count: 3 }] },
+      stock: { kind: "off" },
+      duplicate_orders: [{ profile_id: 2, name: "Synthetic Build 00002", order_number: "PO-0002" }],
+      production: null,
+      blocked_by: [],
+    },
+  };
+}
+
 /** A `core` handler for serveDist. Orders is on so the Order column is measured too. */
 export function fakeCore(count, { orders = "on" } = {}) {
   const builds = Array.from({ length: count }, (_, i) => build(i + 1));
@@ -260,6 +336,9 @@ export function fakeCore(count, { orders = "on" } = {}) {
     if (pathname === "/api/v2/printer-checkoff") return { status: 200, body: { results: CHECKOFF } };
     if (pathname === "/api/v2/printers") return { status: 200, body: { printers: PRINTERS } };
     if (pathname === "/api/v2/farm-log") return { status: 200, body: { entries: FARM_LOG, next_cursor: null } };
+    const plan = /^\/api\/v2\/plans\/(\d+)(\/drafts.*)$/.exec(pathname);
+    const planned = plan && builds[Number(plan[1]) - 1] && planRead(builds[Number(plan[1]) - 1], plan[2]);
+    if (planned) return { status: 200, body: planned };
     const match = /^\/api\/v2\/plans\/(\d+)(\/layers|\/workflow|\/checkoff\/units|\/history)?$/.exec(pathname);
     const found = match && builds[Number(match[1]) - 1];
     if (!found) return undefined;

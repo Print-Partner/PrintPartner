@@ -1,11 +1,8 @@
 use crate::AllowedOrigin;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::{process::Stdio, time::Duration};
 use tauri::{Url, ipc::CapabilityBuilder};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::process::Command;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 const SPONSOR_URL: &str = "https://github.com/sponsors/poitee";
 const DENIED: &str = "Sponsor action is unavailable for this page";
 
@@ -17,7 +14,7 @@ pub enum SponsorAction {
 impl SponsorAction {
     pub fn from_startup(gate: pp_core::DesktopRebuild, origin: AllowedOrigin) -> Self {
         Self::new(
-            gate.enabled() && cfg!(any(target_os = "linux", target_os = "macos")),
+            gate.enabled() && crate::platform::sponsor_opener().is_some(),
             origin,
         )
     }
@@ -88,22 +85,15 @@ pub async fn open_sponsor(
     open_fixed_sponsor().await.map_err(str::to_owned)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn open_fixed_sponsor() -> Result<(), &'static str> {
-    #[cfg(target_os = "linux")]
-    let mut command = Command::new("xdg-open");
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("/usr/bin/open");
+    let Some(command) = crate::platform::sponsor_opener() else {
+        return Err("Sponsor action is unavailable on this platform");
+    };
+    let mut command = Command::from(command);
     command.arg(SPONSOR_URL);
     run_browser(command, Duration::from_secs(5)).await
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-async fn open_fixed_sponsor() -> Result<(), &'static str> {
-    Err("Sponsor action is unavailable on this platform")
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn run_browser(mut command: Command, timeout: Duration) -> Result<(), &'static str> {
     command
         .stdin(Stdio::null())
@@ -241,40 +231,41 @@ mod tests {
         }
     }
 
-    // The macOS runner has no /usr/bin/sleep (`sleep` lives at /bin/sleep there),
-    // so the timeout case re-invokes this test binary instead of a system path.
-    // The helper test below outlives the 50ms timeout and is killed by run_browser.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn timeout_helper() -> Command {
+    // Every case re-invokes this test binary, which exists on every OS: an
+    // unknown flag fails, --list succeeds, and the helper test below outlives
+    // the 50ms timeout and is killed by run_browser.
+    fn test_binary(args: &[&str]) -> Command {
         let mut command = Command::new(std::env::current_exe().expect("test binary path"));
-        command.args([
-            "--ignored",
-            "--exact",
-            "native_actions::tests::ticket_t_68_browser_timeout_helper",
-        ]);
+        command.args(args);
         command
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn ticket_t_68_browser_process_reports_failure_and_times_out() {
         assert!(
-            run_browser(Command::new("/usr/bin/false"), Duration::from_secs(1))
+            run_browser(test_binary(&["--no-such-flag"]), Duration::from_secs(10))
                 .await
                 .is_err()
         );
         assert_eq!(
-            run_browser(timeout_helper(), Duration::from_millis(50)).await,
+            run_browser(
+                test_binary(&[
+                    "--ignored",
+                    "--exact",
+                    "native_actions::tests::ticket_t_68_browser_timeout_helper",
+                ]),
+                Duration::from_millis(50)
+            )
+            .await,
             Err("Could not confirm the browser opened")
         );
         assert!(
-            run_browser(Command::new("/usr/bin/true"), Duration::from_secs(1))
+            run_browser(test_binary(&["--list"]), Duration::from_secs(10))
                 .await
                 .is_ok()
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     #[ignore = "spawned as a long-lived helper by ticket_t_68_browser_process_reports_failure_and_times_out"]
     fn ticket_t_68_browser_timeout_helper() {

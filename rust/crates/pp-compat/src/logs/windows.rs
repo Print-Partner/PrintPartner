@@ -13,8 +13,8 @@
 //! target is never written. Access control is a protected DACL that grants only the current
 //! user, the equivalent of modes 0600 and 0700.
 
-use crate::windows_security::{CurrentUser, SE_FILE_OBJECT, SavedDacl};
 use pp_os::FileOpen;
+use pp_os::windows_security::{CurrentUser, SE_FILE_OBJECT, SavedDacl};
 use std::{
     fs::{File, Metadata},
     os::windows::{

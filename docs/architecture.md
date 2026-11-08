@@ -134,10 +134,10 @@ Each linked crate README lists its public interface, effects, flags and tests.
 | [`pp-gateway`](../rust/crates/pp-gateway/README.md) | Listeners, bootstrap/session admission, assets; temporary proxy/ownership code | `pp-compat`, `pp-drivers`, `pp-net`, `pp-os` |
 | [`pp-compat`](../rust/crates/pp-compat/README.md) | Temporary Node supervision/private socket, retired with Node | `pp-os` (Windows log entries, Node path spelling) |
 | [`pp-core`](../rust/crates/pp-core/README.md) | Compose handles/adapters, lock/startup, workers, bounded shutdown | `pp-gateway`, `pp-compat`, `pp-storage`, `pp-perf`, `pp-os`; `pp-source`, `pp-net`, `pp-api` gated |
-| [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core` |
+| [`pp-desktop`](../rust/crates/pp-desktop/README.md) | Tauri shell, native menus/tray, installed lifecycle | `pp-core`, `pp-os` (focus identity, Windows pipe security) |
 | [`pp-server`](../rust/crates/pp-server/README.md) | Docker launcher, signals, headless lifecycle | `pp-core` |
 | [`pp-perf`](../rust/crates/pp-perf/README.md) | Measurement records and regression comparison, not product telemetry | none |
-| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows (open, inspect, enumerate, create, rename, remove), no-follow opens and inspection, file identity, advisory locks, durable rename, display spelling of canonical paths; no policy | none |
+| `pp-os` | Directory handles with handle-relative entry access on Unix and Windows (open, inspect, enumerate, create, rename, remove), no-follow opens and inspection, file identity, advisory locks, durable rename, display spelling of canonical paths, and on Windows the current user's private DACLs (`windows_security`); no policy | none |
 | [`pp-testkit`](../rust/crates/pp-testkit/README.md) | Disposable test installations and the ownership-marker fixture format; only ever a dev-dependency | none (any crate may dev-depend on it) |
 
 The table is the implemented graph, not a manifest for the amendment.
@@ -484,7 +484,7 @@ are not product analytics; no default remote exporter or Sentry initialization.
 | Target | Delivery and required evidence | Baseline gap / release decision |
 | --- | --- | --- |
 | macOS first | Build and sign the app/DMG for the owner-approved architecture set; notarize/staple; test installed WKWebView and restart/update on each supported architecture | Declared 13.5 minimum needs oldest-OS proof; architecture coverage, public identity and key custody remain open |
-| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | One crate (`pp-desktop`) is excluded from baseline Windows CI. Share filesystem mechanics through narrow `pp-os`, port consumers incrementally, and keep signals with their runtime owner; choose signing provider and OS/architecture minima |
+| Windows before 1.0 | Per-user NSIS, Evergreen WebView2, Authenticode; normal-user install/update and native smoke | Baseline Windows CI builds and tests the whole workspace, `pp-desktop` included. Share filesystem mechanics through narrow `pp-os`, port consumers incrementally, and keep signals with their runtime owner; choose signing provider and OS/architecture minima |
 | Linux before 1.0 | AppImage plus selected deb/rpm, WebKitGTK 4.1, no-tray recovery, package/update trust appropriate to format | Declare oldest glibc/distro matrix and hardware GPU evidence. CI software rendering is not hardware certification |
 | Docker | Non-root amd64/arm64, SQLite/volume migration, health, TERM/restart and optional slicer simulator | Runtime base, volume permissions and architecture execution require proof |
 | LAN browsers | Shared UI, authenticated pairing, HTTPS/cookies, revocation and reconnect, mobile accessibility | LAN admission is not delivered by loopback-only routing; certificate trust must work on actual devices |

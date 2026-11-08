@@ -18,7 +18,7 @@ macOS ships first. Windows and Linux ship before 1.0. CI will build and test the
 
 ## Linux package
 
-`rust/scripts/desktop-deb.sh` builds the Linux `.deb` from a completed stage, the way `desktop-bundle.sh` builds the macOS app:
+`rust/scripts/desktop-deb.sh` builds the Linux `.deb` from a completed stage, the way `desktop-bundle.sh` builds the macOS app. Both take `PP_TAURI` for the Tauri CLI command and pass extra arguments such as `--features desktop_rebuild` to `tauri build`:
 
 ```sh
 python3 rust/scripts/stage-desktop.py --web web --node /path/to/node-v24.21.0 --output /tmp/pp-stage --commit "$(git rev-parse HEAD)"

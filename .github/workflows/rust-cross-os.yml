@@ -509,10 +509,7 @@ jobs:
     runs-on: windows-latest
     env:
       RUST_OS: windows
-      # Unix-only crates; remove each exclusion when its port ticket is fixed.
-      CARGO_SCOPE: >-
-        --workspace
-        --exclude pp-desktop
+      CARGO_SCOPE: --workspace
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}
     timeout-minutes: 120
     steps: *rust-steps

@@ -301,13 +301,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("plate.3mf"), b"kept").unwrap();
         #[cfg(unix)]
-        std::os::unix::fs::symlink(
+        use std::os::unix::fs::symlink as symlink_file;
+        #[cfg(windows)]
+        use std::os::windows::fs::symlink_file;
+        symlink_file(
             dir.path().join("missing-target"),
             dir.path().join("plate (1).3mf"),
         )
         .unwrap();
-        #[cfg(not(unix))]
-        std::fs::write(dir.path().join("plate (1).3mf"), b"").unwrap();
         std::fs::create_dir(dir.path().join("plate (2).3mf")).unwrap();
         let policy = policy(Some(dir.path().to_path_buf()));
         let source = url("http://127.0.0.1:46687/jobs/j1/artifact");

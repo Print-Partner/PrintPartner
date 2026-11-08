@@ -1271,3 +1271,31 @@ fn audit_created_build_and_attachments_survive_owner_reopen() {
     assert!(matches!(outcome, BuildOutcome::Read { profile } if profile.name == "Persisted build"));
     owner.shutdown().unwrap();
 }
+
+#[test]
+fn list_reads_the_customer_and_due_date_accept_stored() {
+    let f = Fixture::new();
+    f.mutate("INSERT INTO build_profiles(id,tenant_id,name,order_number) SELECT 20,tenant_id,'Second','PO-7' FROM build_profiles WHERE id=1; UPDATE build_profiles SET order_number='PO-7' WHERE id=1; INSERT INTO build_profile_details(profile_id,tenant_id,customer,due_date,updated_at) VALUES(20,'default','Acme','2026-12-01','2026-11-07T00:00:00.000Z');");
+    let BuildOutcome::Listed { profiles } = f.run(BuildCommand::List).unwrap() else {
+        panic!("list")
+    };
+    let header: Vec<_> = profiles
+        .iter()
+        .map(|p| {
+            (
+                p.id,
+                p.order_number.as_deref(),
+                p.customer.as_deref(),
+                p.due_date.as_deref(),
+            )
+        })
+        .collect();
+    // Two Builds share an order number: both are listed, neither merged.
+    assert_eq!(
+        header,
+        vec![
+            (20, Some("PO-7"), Some("Acme"), Some("2026-12-01")),
+            (1, Some("PO-7"), None, None),
+        ]
+    );
+}

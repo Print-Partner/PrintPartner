@@ -3421,10 +3421,13 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "http-body",
+ "hyper",
+ "hyper-util",
  "lettre",
  "log",
  "pp-services",
  "pp-storage",
+ "pp-testkit",
  "reqwest",
  "rmcp",
  "rusqlite",
@@ -3540,6 +3543,7 @@ dependencies = [
  "anyhow",
  "gtk",
  "pp-core",
+ "pp-os",
  "rfd",
  "serde",
  "serde_json",
@@ -3549,6 +3553,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3608,6 +3613,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3649,9 +3655,12 @@ name = "pp-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "pp-core",
  "serde_json",
+ "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

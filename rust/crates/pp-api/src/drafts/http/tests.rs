@@ -436,11 +436,27 @@ fn policy() -> pp_storage::auth::AuthPolicy {
     }
 }
 
+/// Every entry still under `directory`, deepest first.
+fn remaining(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .flat_map(|entry| {
+            let path = entry.path();
+            let mut found = remaining(&path);
+            found.push(path);
+            found
+        })
+        .collect()
+}
+
 struct ReadServer {
     origin: String,
     client: Client,
     owner: pp_storage::WriterOwner,
-    task: tokio::task::JoinHandle<()>,
+    serving: crate::serving::Serving,
     /// Last field: removed only after `owner` has dropped, even on panic.
     directory: crate::scratch::Scratch,
 }
@@ -502,19 +518,11 @@ impl ReadServer {
             Some(hold) => draft_router_with_hold(config, client, auth, hold),
             None => draft_router(config, client, auth),
         };
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
         Self {
             origin,
             client: Client::builder().no_proxy().build().unwrap(),
             owner,
-            task,
+            serving: crate::serving::Serving::start(listener, router),
             directory,
         }
     }
@@ -539,23 +547,44 @@ impl ReadServer {
             )
             .unwrap()
     }
+    /// Stops the server and removes its scratch directory once. Windows refuses
+    /// to delete a file another handle still has open, so a refusal fails the
+    /// test with the OS error and the entries that were left.
     async fn close(self) {
-        self.task.abort();
-        let _ = self.task.await;
-        self.owner.shutdown().unwrap();
+        let directory = self.stopped().await;
+        if let Err(error) = std::fs::remove_dir_all(&*directory) {
+            panic!(
+                "draft server scratch {} was not removed: {error}; left: {:?}",
+                directory.display(),
+                remaining(&directory)
+            );
+        }
     }
     /// Shuts the writer down and serves the same database again.
     async fn restart(self) -> Self {
+        let directory = self.stopped().await;
+        Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
+    }
+    /// Drops the client's pooled connections, stops the server once no
+    /// connection task holds the router, and shuts the writer down. axum's
+    /// graceful shutdown alone returns while a connection task may still hold
+    /// the router and the storage clients it captured, and Windows cannot
+    /// remove a file those clients still hold open.
+    async fn stopped(self) -> crate::scratch::Scratch {
         let Self {
-            task,
+            client,
             owner,
+            mut serving,
             directory,
             ..
         } = self;
-        task.abort();
-        let _ = task.await;
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(10), serving.stop())
+            .await
+            .expect("draft server connections close")
+            .unwrap();
         owner.shutdown().unwrap();
-        Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
+        directory
     }
 }
 
@@ -2097,6 +2126,7 @@ async fn accept_preview_of_an_unchanged_draft_refuses_exactly_as_accept() {
         [job.to_string()],
     )
     .unwrap();
+    drop(sql);
     let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
     assert_eq!(
         preview,
@@ -2389,6 +2419,7 @@ async fn reconciliation_under_write_contention_is_transaction_unavailable() {
     );
     assert!(started.elapsed() < Duration::from_secs(30));
     holder.execute_batch("ROLLBACK").unwrap();
+    drop(holder);
     assert!(draft_events(&server).is_empty());
     server.close().await;
 }

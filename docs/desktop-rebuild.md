@@ -2739,6 +2739,8 @@ is refused (see Writer admission above), so no Node verify, monitor or claim
 writes `printer.checkoff_links`, progress or outcomes beside a burst. A burst
 does not run Node's unattributed-print claim or Spoolman deduction after verify;
 those are GRE-1169 and GRE-411 (deduction intent).
+MCP `propose_verify_printer_checkoff` applies through the same burst
+(GRE-1170, below).
 
 A burst body is `{ "idempotency_key": "...", "beds": [{ "link_id", "decisions",
 "additional_decisions"? }] }`: 1 to 200 characters of key and 1 to 50 beds, each
@@ -2780,6 +2782,48 @@ without that hash or its unit list (written before they existed) refuses with
 every other progress write (409 `Archived Plan Progress cannot be changed`). An unknown token is 404. No printer, webhook or
 Spoolman call happens in either transaction.
 
+#### Reconcile by operation id (GRE-1170)
+
+`GET /printer-checkoff/verify-batch?idempotency_key=...` (also at `/api/v2`,
+same admission) answers what a key settled to without resending the body. The
+key is read like the burst's key (JS-trimmed, 1 to 200 characters), and it must
+appear exactly once, otherwise the answer is 400. The read writes no Checkoff
+state; as on every route, an API key's `last_used_at` may be recorded.
+
+| State | Body | Meaning |
+| --- | --- | --- |
+| `applied` | `{idempotency_key, state, applied_at, undone_at: null, receipt}` | The burst committed; `receipt` is the stored response |
+| `undone` | the same with `undone_at` | The burst committed and was undone |
+| `expired` | `applied_at`, `undone_at` and `receipt` are null | The burst committed, its receipt was trimmed, and the key cannot run again |
+| `unknown` | `applied_at`, `undone_at` and `receipt` are null | The key is in neither list, but the retired list is full (5,000 keys), so a key older than the newest 5,100 bursts may have been dropped. The lookup cannot tell whether it ran, and replay would treat it as new |
+| 404 `burst_not_found` | problem body | The key is in neither list and no key was ever dropped, so no burst used it and nothing was applied. Resending the same request with the same key is safe |
+
+#### MCP `propose_verify_printer_checkoff` (GRE-1170)
+
+The Rust MCP (`/mcp`, `/api/v1/mcp`, API key always required) ports Node's
+`propose_verify_printer_checkoff` with the same name and schema
+(`{link_id, decisions}`). The propose step reads the link in a writer
+transaction that changes no Checkoff state and refuses as Node does: `link_id
+and decisions are required`, `Checkoff link not found`, or `Checkoff link is
+not awaiting verification`. Nothing is written until `confirm_apply`.
+`confirm_apply` runs the proposal as a one-bed burst with the idempotency key
+`mcp:<action_id>`, so it shares this burst's receipt, replay, undo and farm log.
+It answers `{ok: true, result: <burst receipt>}`, which carries `undo_token`.
+Node answered with the single-verify body. A refused burst answers
+`{ok: false, status, detail}`, writes nothing and stays pending for a retry or
+dismiss.
+
+The action id is the operation id. `confirm_apply` for an action this session
+no longer holds (applied already, or proposed before a restart or in another
+session) looks up `mcp:<action_id>`. If that burst exists, the call answers
+`{ok, reconciled: true, action_id, detail, result, undone_at}` instead of
+Node's unknown-action error: `ok` is true while the burst stands, and false
+once it was undone or its receipt expired. Otherwise, including an `unknown`
+lookup, the call answers Node's unknown-action error. If the lookup cannot run
+(the writer is busy or past its deadline, or authentication fails), the call
+answers `{"error": "Checkoff is unavailable"}` and the action is not reported
+as unknown.
+
 The replacement UI's Today screen confirms one bed, or units picked on several
 beds as one burst (one request, one Undo), through the generated client (`verifyCheckoffBurst`, `undoCheckoffBurst`) and resends a
 lost send with the same key; see `web/apps/ui/README.md` (Today).
@@ -2791,7 +2835,7 @@ unit decisions and imported-extra `additional_decisions`, and leaves out beds wi
 nothing to decide (a plate still `watching`), which the route would refuse.
 
 ```sh
-cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild -E 'test(verify_batch)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml --no-tests=fail --features pp-storage/desktop_rebuild,pp-core/desktop_rebuild,pp-api/desktop_rebuild -E 'test(verify_batch)'
 npm --prefix web exec -w @print-partner/contracts -- vitest run src/checkoff-burst.test.ts
 ```
 
@@ -3357,7 +3401,9 @@ failure is 500 `Accepted Plan data is inconsistent`.
 `PP_DESKTOP_REBUILD=1`, for 58 requests in 14 phases on copies of
 `accepted-plate-node.db`. `build_header_patch_and_archive_match_node` replays
 it through `build_router`: 51 cases match Node's status, body and changed
-tables. Seven are declared corrections that write nothing: the two
+tables, after the replay removes GRE-1100's `customer` and `due_date` from
+each Rust summary (Node's summary has neither, and the replay requires both to
+be present and null). Seven are declared corrections that write nothing: the two
 duplicate-name renames (409 above), a blank name beside an archive (400, where
 Node answered 500), a PATCH or archive body that is not JSON under
 `Content-Type: application/json` and an empty archive body under that type
@@ -3444,6 +3490,104 @@ and after each of the 18 saves the stored selection text and the Source's
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(variants_flat)'
+```
+
+### Plan features and decision append in Rust (GRE-1243)
+
+GRE-421's seventh part (GRE-1243). `pp_api::builds::build_router` serves Node's
+`GET` and `PATCH /plans/{id}/features` and `POST /plans/{id}/decisions` at `/`,
+`/api/v1` and `/api/v2`, as `BuildCommand::PlanFeatures` and
+`BuildCommand::AppendDecision`. With `desktop_rebuild` and
+`PP_DESKTOP_REBUILD=1` or `true`, Rust alone reads and writes
+`feature_toggles:plan:<id>` through these routes and alone appends
+`plan_decisions` rows. With the flag off the router mounts nothing and Node
+keeps both. `GET /plans/{id}/decisions` stays in the planning router
+(GRE-1119), and `/settings/features`, the tenant layer, stays Node's.
+
+A features request checks in Node's order:
+
+0. The credential is checked first, as Node's `onRequest` hook does. Then a
+   PATCH body Fastify's parser refuses (empty, not JSON, or a `__proto__` or
+   `constructor.prototype` key under `application/json`) is 400 `Request is
+   invalid`. A decision append refuses those bodies at the same point.
+1. The id must match `/^[1-9]\d*$/` and be a safe integer, and a PATCH body
+   must be an object whose keys are all features (`farm`, `orders`, `bambu`,
+   `spoolman`) and whose values are all booleans or `null`. Otherwise the
+   answer is 400 `Invalid plan feature input` once the credential checks. So
+   `0x1`, `01` and `1.0` are 400 here, unlike the `Number()` ids of the other
+   Build routes.
+2. The Plan must be the tenant's, else 404 `Plan not found`.
+3. The tenant layer `feature_toggles` and the Plan layer must both be JSON
+   objects whose feature keys hold booleans, else 500
+   `FEATURE_TOGGLES_INVALID`.
+
+A patch applies in registry order (`farm`, `orders`, `bambu`, `spoolman`):
+`null` removes the key, a boolean replaces it in place or appends it. Layers
+are read as Node's `parseFeatureLayer` reads them
+(`pp_storage::source_scan::node_json::RawObject`): unknown keys, JavaScript
+property order and each number's source text (`1.50`, `1E+2`, `-0`,
+`12345678901234567890`) survive, and strings are re-escaped as
+`JSON.stringify` writes them. One immediate writer transaction checks the
+Plan, reads both layers and writes the Plan layer's text even when it is
+unchanged or empty, so an emptied layer is `{}` and the row is never deleted.
+The read and the write share that transaction, so Node's 409 compare-and-set
+conflict cannot occur. `FeatureClient`'s Plan-scope `set` writes the same
+way; its tenant-scope `set` keeps sorted keys and deletes an empty row, as
+before, because Node owns that operation. The answer is Node's
+`{profile_id, overrides, effective}`, where `effective` gives each feature's
+`enabled` and its `source` (`plan`, `user` or `default`).
+
+A decision append reads the id with `Number()`, so `0xc` and `12.0` name Plan
+12. A missing, foreign or non-numeric Plan is 404 `Profile not found` before
+the body is read. `kind` defaults to `user_note` when it is absent or `null`
+and must be `applied_action`, `dismissed_action`, `user_note` or `choice`,
+else 400 `Invalid kind`. `actor` is `assistant` only for exactly that string,
+else `user`. `params` (default `{}`) and `result` (default `null`) are stored
+as `JSON.stringify` writes them. Node hands `action_type`, `label`, `summary`
+and `rationale` to better-sqlite3 unchecked, with only `null` falling back to
+`""` or `null`, and Rust binds them the same way:
+
+- A number is bound as a double that the TEXT column stores as text: `5` is
+  `"5.0"`, `1e21` is `"1.0e+21"` and `-0` is `"0.0"`. A lone surrogate becomes
+  U+FFFD.
+- An array is spread into the parameter list, so `["x"]` stores `"x"`, and
+  `[]` beside `["a","b"]` shifts the later values into the neighbouring
+  columns as Node does. An object is a named-parameter bag that binds nothing.
+- A boolean, or an array element that is not a string, number or `null`, is
+  400 `SQLite3 can only bind numbers, strings, bigints, buffers, and null`. A
+  second object is 400 `You cannot specify named parameters in two different
+  objects`. Any count other than eleven parameters is 400 `Too few parameter
+  values were provided` or `Too many parameter values were provided`;
+  a twelfth bindable value stops binding there, before any later field is
+  checked. A NOT NULL failure is 400 with SQLite's message.
+
+The answer is the inserted row as Node's `mapPlanDecision` returns it. The
+append writes only `plan_decisions`: no publication row or blocker.
+
+Both routes follow Fastify's `text/plain` parser, which hands the route the
+body as a string. A `text/plain` feature patch is therefore 400 `Invalid plan
+feature input` whatever it says, and a `text/plain` decision has no fields, so
+it appends the defaults, as `{}` does. Any other content type is read as JSON,
+as on the other Rust Build routes.
+
+`fixtures/parity/plan-features-decisions/node.json` is Node's answer for 114
+requests on one database, run with `PP_DESKTOP_REBUILD=1` except four with it
+unset. `plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables`
+in `ticket_t_10_fixtures` replays them through `build_router` merged with
+`planning_router`, as `pp-core` composes them. 102 match Node's status, body
+and changed tables. Eight bodies Fastify's parser refuses are declared
+corrections (400 `Request is invalid` without Fastify's codes). The four
+flag-off cases reach a router built with the flag off, which mounts nothing:
+404 and nothing written, where Node answers its own 404 `Plan not found` for
+features and still appends the decision. After each of the 34 writes, the
+Plan's stored layer text or the decision rows it added equal Node's byte for
+byte, and every 200 body also has Node's key order (error bodies come from the
+shared problem builder, which writes `code` before `detail`). A malformed body
+sent with an unknown session is 401 and writes nothing. Regenerate the golden with
+`node fixtures/parity/plan-features-decisions/generate.mjs`.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml --features desktop_rebuild --no-tests=fail -p pp-api -E 'test(plan_features_decisions) | test(plan_feature_ids)'
 ```
 
 ### D21 accepted read JSON bodies, GRE-616 PR 1
@@ -3593,6 +3737,7 @@ With both gates on, `draft_router` serves these paths at the root and
 | PUT | `/plans/{id}/drafts/{draft_id}/reconciliation` | `ReconciliationClient::reconcile` with typed `ReconciliationRequest` |
 | POST | `/plans/{id}/drafts/{draft_id}/abandon` | `abandon` with typed `AbandonRequest` |
 | POST | `/plans/{id}/drafts/save` | draft-only autosave, `WorkingDraftClient::autosave` (GRE-418) |
+| GET | `/plans/{id}/drafts/header` | Build header and Accepted base before any draft (GRE-1120) |
 | GET | `/plans/{id}/drafts/{draft_id}/header` | draft header beside the Build's header (GRE-1197) |
 | PUT | `/plans/{id}/drafts/header` | draft header save, `WorkingDraftClient::save_header` (GRE-1197) |
 

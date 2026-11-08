@@ -11,8 +11,6 @@ use super::{
 use pp_compat::CompatExit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -436,11 +434,7 @@ fn write_record(data_dir: &Path, record: &CutoverRecord) -> std::io::Result<()> 
         "{TEMPORARY_PREFIX}{}{TEMPORARY_SUFFIX}",
         hex::encode(rand::random::<[u8; 16]>())
     ));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(&temporary)?;
+    let mut file = pp_os::create_new_private_file(&temporary)?;
     let written = (|| {
         file.write_all(&encoded)?;
         file.sync_all()?;
@@ -593,13 +587,7 @@ fn append_evidence_with_directory_sync(
     let mut line = serde_json::to_vec(evidence)?;
     line.push(b'\n');
     create_evidence_log(data_dir)?;
-    let mut options = fs::OpenOptions::new();
-    options.append(true).create(true);
-    #[cfg(unix)]
-    options
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let mut file = options.open(data_dir.join(EVIDENCE_FILE))?;
+    let mut file = open_evidence_log(&data_dir.join(EVIDENCE_FILE))?;
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -609,6 +597,32 @@ fn append_evidence_with_directory_sync(
     file.write_all(&line)?;
     file.sync_all()?;
     sync_directory(data_dir)
+}
+
+/// Opens the evidence log for appending, creating it with mode 0600, without
+/// following a link or blocking on a FIFO planted at its name.
+#[cfg(unix)]
+fn open_evidence_log(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+/// Opens the evidence log for appending, creating it, and opens a reparse
+/// point planted at its name as itself instead of following it.
+#[cfg(windows)]
+fn open_evidence_log(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
 }
 
 /// Unix creates a missing evidence log in the append itself; the directory
@@ -721,10 +735,10 @@ mod tests {
                 append_evidence_with_directory_sync(&dir, &Evidence::Cutover(&receipt), |path| {
                     assert_eq!(path, &*dir);
                     assert_eq!(fs::read(path.join(EVIDENCE_FILE)).unwrap(), expected_log);
-                    Err(std::io::Error::from_raw_os_error(libc::EIO))
+                    Err(std::io::Error::other("injected directory sync failure"))
                 })
                 .unwrap_err();
-            assert_eq!(error.raw_os_error(), Some(libc::EIO));
+            assert_eq!(error.to_string(), "injected directory sync failure");
             assert_eq!(fs::read(dir.join(CUTOVER_FILE)).unwrap(), authority);
         }
         let (owners, boot) = recover(&dir, Some(&index)).unwrap();
@@ -760,7 +774,7 @@ mod tests {
             },
             |path| {
                 assert_eq!(fs::read(path.join(CUTOVER_FILE)).unwrap(), expected);
-                Err(std::io::Error::from_raw_os_error(libc::EIO))
+                Err(std::io::Error::other("injected directory sync failure"))
             },
         );
         assert_eq!(fs::read(dir.join(CUTOVER_FILE)).unwrap(), expected);

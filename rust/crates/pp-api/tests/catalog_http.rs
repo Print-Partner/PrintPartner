@@ -597,9 +597,7 @@ fn assert_source(actual: &Value, expected: &Value, directory: &Path) {
         assert_eq!(&actual[key], value, "{key}");
     }
     let id = actual["id"].as_i64().unwrap();
-    let path = directory
-        .canonicalize()
-        .unwrap()
+    let path = pp_testkit::node_path::node_path(&directory.canonicalize().unwrap())
         .join("repos")
         .join(id.to_string());
     assert_eq!(actual["local_path"].as_str(), path.to_str());

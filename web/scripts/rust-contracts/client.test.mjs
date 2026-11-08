@@ -109,6 +109,8 @@ const optionalMembers = {
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
+  // Accept's serde defaults: no remap, and no header version for a draft without a header row.
+  AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
 };
 
 for (const fixture of document.fixtures) {

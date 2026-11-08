@@ -15,9 +15,10 @@ use crate::{
 };
 use anyhow::{Result, anyhow, ensure};
 use model::{Assignment, Prepared};
+pub use pp_contracts::autosave::ApplyPlanDraftReceipt;
 pub use pp_contracts::publication::{ApplyRequest, Outcome};
 use pp_contracts::{
-    autosave::{ApplyPlanDraftReceipt, PositiveId},
+    autosave::PositiveId,
     publication::{ReconciliationReason, UnmappableLink},
 };
 use rusqlite::{Connection, Transaction, params};

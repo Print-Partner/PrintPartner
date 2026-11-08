@@ -7,7 +7,7 @@ shared Cargo registry and sccache for trusted `main`, merge-group and manual run
 
 Status: the kit, the proof workflow and the `PP_PR_RUNNER` switch exist
 ([ci.md](ci.md#pull-request-runner-switch)). Nothing runs on pp-iso until a host is
-installed, except the manual `pp-iso-proof.yml` run, or until `PP_PR_RUNNER=pp-iso` is set; the switch covers the Linux Rust jobs only.
+installed; then only the manual `pp-iso-proof.yml` run, plus the Linux Rust PR jobs when `PP_PR_RUNNER=pp-iso`. The switch covers the Linux Rust jobs only.
 
 ## Why
 

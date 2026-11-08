@@ -138,6 +138,10 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   execution and bed-clear facts, last-heard time and distinct not-set-up,
   manual and unreachable reasons. They write nothing. See
   [Farm reads](farm-reads.md).
+- Send queue actions (GRE-365): Send now, Send ready, Reconcile and Remove
+  under `/api/v2/printer-send-queue`, and the printer-upload worker, which is
+  the only Rust code that uploads to a printer. Every upload follows a user's
+  dispatch; nothing is retried. See [Send queue](send-queue.md).
 - Match suggestions (GRE-1091):
   `GET /api/v2/printer-checkoff/unattributed/suggestions` proposes a Build and
   Plate for each unmatched print with confidence `exact`, `likely` or `none`
@@ -306,7 +310,7 @@ The rebuild ships as small PRs to `main`, each under about 1.5k lines and checka
 Each slice is done when:
 
 - the existing suites pass with the feature off and on, and the default build is unchanged;
-- a reviewer engine other than the author's scores it above 8 on the exact head, with all checks green.
+- it passes the [merge gate](development/definition-of-done.md#merge-gate) on the exact head, with all checks green: `review-gate` for a normal slice, plus the coordinator's scorer run when the gate passed only through the coordinator record, and two scorer seats at 9 or more for a sensitive one.
 
 Slices land in this order. Linear tracks each one under GRE-595. A slice is one Linear item and may ship as several PRs (D16 ships as four, D14 as five). Some modules already exist on main from earlier PRs (for example #129 to #131); a slice ports only the delta from the reference branch.
 

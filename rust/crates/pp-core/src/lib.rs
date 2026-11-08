@@ -51,6 +51,9 @@ pub mod review_observations;
 pub mod rebuild_api;
 
 #[cfg(feature = "desktop_rebuild")]
+pub mod send_worker;
+
+#[cfg(feature = "desktop_rebuild")]
 pub mod source_acquisition;
 
 #[cfg(feature = "desktop_rebuild")]
@@ -249,6 +252,13 @@ enum Backend {
     Rust {
         writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
         status: Arc<tokio::sync::watch::Sender<RustStatus>>,
+        /// The send worker's stop flag, its wake (so an idle worker sees the
+        /// flag at once) and its task.
+        sends: (
+            Arc<std::sync::atomic::AtomicBool>,
+            Arc<tokio::sync::Notify>,
+            tokio::task::JoinHandle<()>,
+        ),
     },
 }
 
@@ -524,7 +534,12 @@ async fn start_rust_resources(
         bind_origin(writer.lease().context("Storage lease unavailable")?).await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let hosts = Arc::new(printer_status::StoredMoonrakerHosts::new(writer.client()));
-    let status_routes = printer_status::StatusRoutes::new(&writer, &origin)?;
+    let send_worker = send_worker::SendWorker::new(
+        &writer,
+        rebuild_api::desktop_policy(),
+        pp_gateway::printer_host::HostSends::new()?,
+    )?;
+    let status_routes = printer_status::StatusRoutes::new(&writer, &origin, send_worker.waker())?;
     let writer = Arc::new(std::sync::Mutex::new(writer));
     let product = rebuild_api::product_router(
         desktop_rebuild,
@@ -543,6 +558,12 @@ async fn start_rust_resources(
     )?;
     // The writer opened above and the gateway is serving.
     status.send_replace(RustStatus::Ready);
+    let stop_sends = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sends = (
+        Arc::clone(&stop_sends),
+        send_worker.waker(),
+        send_worker.spawn(stop_sends),
+    );
     Ok(Resources {
         owners,
         origin_change,
@@ -551,6 +572,7 @@ async fn start_rust_resources(
         backend: Backend::Rust {
             writer,
             status: Arc::new(status),
+            sends,
         },
         gate: ShutdownGate::new(),
     })
@@ -828,9 +850,13 @@ async fn stop_resources(
             stop_node(gateway, gate, supervisor, owner, plan).await
         }
         #[cfg(feature = "desktop_rebuild")]
-        Backend::Rust { writer, status } => {
+        Backend::Rust {
+            writer,
+            status,
+            sends,
+        } => {
             status.send_replace(RustStatus::Stopping);
-            let receipt = stop_rust(gateway, gate, writer).await;
+            let receipt = stop_rust(gateway, gate, writer, sends).await;
             status.send_replace(RustStatus::Stopped);
             (receipt, None)
         }
@@ -844,7 +870,15 @@ async fn stop_rust(
     gateway: Gateway,
     gate: ShutdownGate,
     writer: Arc<std::sync::Mutex<pp_storage::WriterOwner>>,
+    (stop_sends, wake, sends): (
+        Arc<std::sync::atomic::AtomicBool>,
+        Arc<tokio::sync::Notify>,
+        tokio::task::JoinHandle<()>,
+    ),
 ) -> ShutdownReceipt {
+    // No new upload starts from here; one in flight may finish below.
+    stop_sends.store(true, std::sync::atomic::Ordering::Release);
+    wake.notify_one();
     let (tracked_idle, gateway_idle) = drain::reject_and_wait(
         MUTATION_DRAIN,
         &gate,
@@ -855,6 +889,12 @@ async fn stop_rust(
     .await;
     gateway.finish_drain();
     let gateway_stopped = gateway.stop().await.is_ok();
+    // An upload in flight finishes; one still running at the bound is
+    // dropped, and startup recovery marks it for reconciliation.
+    let abort = sends.abort_handle();
+    if tokio::time::timeout(MUTATION_DRAIN, sends).await.is_err() {
+        abort.abort();
+    }
     let mut receipt = ShutdownReceipt::drained(tracked_idle, gateway_idle, None, gateway_stopped);
     receipt.compat_reaped = true;
     if !gateway_stopped {

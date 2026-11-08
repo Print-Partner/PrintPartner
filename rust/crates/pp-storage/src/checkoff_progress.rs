@@ -663,6 +663,54 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
     Ok(Op::Unit { target, change })
 }
 
+/// Node's `createPrinterCheckoffLink` for a successful printer upload: a
+/// watching link for the Build named in `raw`, appended to the tenant's links.
+/// `None` when Node creates none: no file name, integration or printer.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn link_upload(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    raw: &Value,
+) -> Result<Option<String>> {
+    let present = |key: &str| {
+        raw[key]
+            .as_str()
+            .is_some_and(|text| !links::js_trim(text).is_empty())
+    };
+    if !["filename", "integration_id", "printer_id"]
+        .into_iter()
+        .all(present)
+    {
+        return Ok(None);
+    }
+    let now = links::now();
+    let mut link = raw.clone();
+    link["id"] = Value::String(links::uuid());
+    link["state"] = Value::from("watching");
+    link["host_outcome"] = Value::from("unknown");
+    link["saw_active"] = Value::Bool(false);
+    link["created_at"] = Value::String(now.clone());
+    if !present("host_name") {
+        link["host_name"] = Value::from("Printer");
+    }
+    if link["unlabeled_names"]
+        .as_array()
+        .is_some_and(|names| names.is_empty())
+    {
+        link["unlabeled_names"] = Value::Null;
+    }
+    // Node's `createPrinterCheckoffLink` answers `null` here, and the send
+    // still finishes without a link.
+    let Some(link) = links::parse(&link, &now) else {
+        return Ok(None);
+    };
+    let id = links::js_string(&link["id"]);
+    let mut all = links::load(tx, tenant, &now)?;
+    all.push(link);
+    links::save_all(tx, tenant, all)?;
+    Ok(Some(id))
+}
+
 pub(crate) fn execute(
     connection: &mut Connection,
     command: Command,

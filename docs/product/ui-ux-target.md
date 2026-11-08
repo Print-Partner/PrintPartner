@@ -150,7 +150,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Plan feature overrides | `GET` and `PATCH /plans/{id}/features` (also at `/api/v1` and `/api/v2`) | Exists in Node; served from Rust behind `desktop_rebuild` (GRE-1243); see [Plan features and decision append in Rust](../desktop-rebuild.md#plan-features-and-decision-append-in-rust-gre-1243) |
 | Printers | `GET /api/v2/printers` | Exists in Rust behind `desktop_rebuild` (GRE-1125): Moonraker and PrusaLink observed; Bambu reads as Manual until it has a Rust status watcher (GRE-362). See [Farm reads](../farm-reads.md) |
 | Printer checkoff and unmatched | `GET /api/v2/printer-checkoff`, `/unattributed` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
-| Send queue | `GET /api/v2/printer-send-queue` | Exists in Rust behind `desktop_rebuild` (GRE-1125), read-only |
+| Send queue | `GET /api/v2/printer-send-queue`; `POST .../{id}/dispatch`, `.../drain`, `.../{id}/reconcile`, `DELETE .../{id}` | Exists in Rust behind `desktop_rebuild`: the read (GRE-1125), plus Send now, Send ready, Reconcile and Remove with the upload worker (GRE-365). Adding to the queue is still Node only. Reconcile has no UI yet (GRE-1219). See [Send queue](../send-queue.md) |
 | Spoolman stock | `GET /integrations/:id/spoolman/spools` | Port |
 | Spoolman shortfalls | `GET /plans/:id/filament-shortfalls` (Rust-only) | Exists; grams needed reads the per-send grams table (schema 46) and stays `unknown` (`grams_not_recorded`) until the GRE-1165 writers record grams per send (slicer estimate at send, measured at finish); basis is `measured`, `estimated` or `unknown` with a reason. The workflow projection consumes it next |
 | Accept | `POST /api/v2/plans/{id}/drafts/{draft_id}/apply` with an `Idempotency-Key` | Exists in Rust behind `desktop_rebuild`; the generated client's `acceptDraft` (GRE-1120). The Plan tab sends the previewed `revision`, so a stale Accept is `draft_changed` |
@@ -159,11 +159,11 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Health with module flags | `GET /health` `modules` list with off reason (Rust-only mode) | Exists |
 | Ranked task feed | `GET /api/v1/tasks` | Exists (GRE-1123), a view over the workflow projection |
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
-| Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md) |
+| Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md). The replacement UI shows it at `/farm/log`, linked from Farm, with Undo on each entry the core reports undoable and the reason on the rest (GRE-1101) |
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
-| Build history | `GET /plans/:id/history` | New contract issue; keep UI ticket GRE-1023 unchanged |
+| Build history | `GET /plans/:id/history` | Exists in Rust behind `desktop_rebuild` (GRE-1092); the generated client names it `readBuildHistory`. The replacement History tab lists it newest first with Show older entries, and shows sends and checkoff bursts as not undoable with the reason (GRE-1101). Undo of manual and printer bursts from History is GRE-1259; keep UI ticket GRE-1023 unchanged. See [Build history](../build-history.md) |
 | Accept preview with checks | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | Exists in Rust behind `desktop_rebuild` (GRE-1207 added the header changes) |
-| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | Exists in Rust behind `desktop_rebuild` (GRE-1094), for snapshots Accept saved; see [Build history](../build-history.md#restore-a-snapshot-as-a-draft) |
+| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | Exists in Rust behind `desktop_rebuild` (GRE-1094), for snapshots Accept saved; see [Build history](../build-history.md#restore-a-snapshot-as-a-draft). `R` on a History snapshot is GRE-1260 |
 | Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |
 

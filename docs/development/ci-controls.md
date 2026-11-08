@@ -26,6 +26,7 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `.github/dependabot.yml` and `.github/zizmor.yml`.
 - `rust/scripts/check-*` and `rust/deny.toml`.
 - The action pin, CI tool pin, desktop workflow, and workaround checks and their tests.
+- The Windows tier selector `scripts/ci-path-filter.py` and its test `scripts/test_ci_path_filter.py`.
 - The duplication checker, its tests, and `scripts/duplication-baseline.json`.
 - The PR evidence checker and its test, and the `scripts/linear/` directory.
   Linear PR sync runs a script from that directory with the Linear secret. Python imports files next to that script before the standard library.

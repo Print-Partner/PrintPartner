@@ -43,6 +43,10 @@ pub const INTERRUPTED_ERROR: &str = "Interrupted by process restart. Printer out
 /// An item whose Rust upload was dispatched but had not started when the
 /// process stopped. Nothing was sent.
 pub const NOT_STARTED_ERROR: &str = "Interrupted by process restart before the upload began. Nothing was sent to the printer. Send now sends it.";
+/// An item whose upload lost its worker before the upload began while this
+/// process kept running, for example when storage refused both the upload's
+/// admission and the failure that should have followed it. Nothing was sent.
+pub const NOT_ADMITTED_ERROR: &str = "The send did not start because storage could not admit it. Nothing was sent to the printer. Send now sends it.";
 /// An item whose upload stopped with its printer outcome unknown while this
 /// process kept running.
 pub const UNKNOWN_OUTCOME_ERROR: &str = "Printer outcome is unknown, so this send was not marked successful. The staged file remains for an explicit retry. This process will not retry a print on its own.";
@@ -227,6 +231,17 @@ pub(crate) fn trim(tx: &Connection, tenant: &str) -> Result<()> {
         params![tenant, MAX_ITEMS],
     )?;
     Ok(())
+}
+
+/// True when `job` is the upload a send queue item dispatched. Its send
+/// needs the Farm feature, as Node's queue requires.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn owns(tx: &Connection, job: &crate::jobs::JobRecord) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM printer_send_queue WHERE tenant_id=?1 AND upload_job_id=?2)",
+        params![job.tenant, job.job_id],
+        |row| row.get(0),
+    )?)
 }
 
 /// At startup, the item of an upload that job recovery left awaiting

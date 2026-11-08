@@ -233,6 +233,9 @@ class MergeGroupWorkflowTests(unittest.TestCase):
         self.assertIn("(needs.changes.result != 'success' || "
                       "needs.changes.outputs.relevant != 'false')",
                       workflow["jobs"]["rust-macos"]["if"])
+        for label in ["macos", "ci:full"]:
+            self.assertIn(f"contains(github.event.pull_request.labels.*.name, '{label}')",
+                          workflow["jobs"]["rust-macos"]["if"])
 
     def test_merge_group_runs_filters_even_for_docs_only_changes(self):
         with tempfile.TemporaryDirectory() as directory:

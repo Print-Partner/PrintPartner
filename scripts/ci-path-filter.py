@@ -40,11 +40,13 @@ def relevant(path, kind):
 
 WINDOWS_LABELS = {"ci:full", "ci:windows"}
 # Platform-gated code: Windows names, Unix-only code that needs a Windows counterpart, Linux-only
-# code whose fallback runs on Windows, and path-separator handling.
+# code whose fallback runs on Windows, and path-separator handling: node:path's `sep` (namespaced or
+# destructured), `path.win32`, a backslash string literal ("\\" or '\\') and a backslash regex (/\\/).
 WINDOWS_MARKERS = re.compile(rb"windows|win32|unix|linux|os::fd|target_family|target_os|\blibc\b|named.?pipe|"
-                             rb"\\\\\.\\pipe|process\.platform|/proc/|path\.sep|path\.win32|/\\\\/g")
+                             rb"\\\\\.\\pipe|process\.platform|/proc/|\bsep\b|path\.win32|"
+                             rb"[\"']\\\\[\"']|/\\\\/")
 WINDOWS_PATHS = ("rust/crates/pp-os/", "rust/crates/pp-desktop/icons/", ".github/workflows/", ".github/actions/")
-WINDOWS_FILES = {"rust/Cargo.lock", "web/package.json", "web/package-lock.json", "web/scripts/atomic-package-build.mjs",
+WINDOWS_FILES = {".gitattributes", "rust/Cargo.lock", "web/package.json", "web/package-lock.json", "web/scripts/atomic-package-build.mjs",
                  "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
                  "rust/crates/pp-desktop/tauri.conf.json",
                  "rust/scripts/fetch-historical-schema-commits.sh", "rust-toolchain.toml", ".github/actionlint.yaml",

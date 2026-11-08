@@ -135,7 +135,7 @@ function SaveStatus({ writes }: { writes: Writes }) {
     writes.header.isPending || writes.parts.isPending
       ? "Saving to the draft"
       : failed
-        ? `Not saved: ${refusalText(failed, "save")}`
+        ? `${resendable(failed) ? "Save not confirmed" : "Not saved"}: ${refusalText(failed, "save")}`
         : last.isSuccess
           ? "Saved to the draft. The Build changes only when you accept."
           : "";

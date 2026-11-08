@@ -889,6 +889,9 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
     await within(gate).findByText(/saves a snapshot/);
     fireEvent.click(within(gate).getByRole("button", { name: "Accept" }));
     await waitFor(() => expect(accepts).toBe(3));
+    expect(
+      await within(gate).findByText(/could not confirm whether Accept went through/),
+    ).toBeTruthy();
     await waitFor(() =>
       expect(
         within(gate).getByRole("button", { name: "Accept" }).getAttribute("aria-disabled"),
@@ -925,6 +928,23 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
     await screen.findByText("Saved to the draft. The Build changes only when you accept.");
     const [first, replay] = writes(fetchMock);
     expect(replay!.key).toBe(first!.key);
+  });
+
+  it("says a header save whose outcome stays unknown is not confirmed, resending one key", async () => {
+    const fetchMock = core({
+      write: (path) =>
+        path === "/api/v2/plans/2/drafts/header" ? problem(503, "outcome_unknown") : undefined,
+    });
+    renderAt(fetchMock);
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "Bracket kit v3" } });
+    fireEvent.blur(name);
+    expect(
+      await screen.findByText(/^Save not confirmed: The core could not confirm this save/),
+    ).toBeTruthy();
+    const sent = writes(fetchMock);
+    expect(sent).toHaveLength(3);
+    expect(new Set(sent.map((write) => write.key)).size).toBe(1);
   });
 
   it("shows a refused preview in words", async () => {

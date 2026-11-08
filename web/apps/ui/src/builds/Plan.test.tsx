@@ -940,11 +940,24 @@ describe("UI6-03 and UI6-04 Accept sends the previewed revision", () => {
     fireEvent.change(name, { target: { value: "Bracket kit v3" } });
     fireEvent.blur(name);
     expect(
-      await screen.findByText(/^Save not confirmed: The core could not confirm this save/),
+      await screen.findByText(
+        /^Save not confirmed: The core could not confirm this save\. Check the field/,
+      ),
     ).toBeTruthy();
+    expect(name.value).toBe("Bracket kit v3");
     const sent = writes(fetchMock);
     expect(sent).toHaveLength(3);
     expect(new Set(sent.map((write) => write.key)).size).toBe(1);
+  });
+
+  it("asks to check again when a preview's outcome is unknown, without Accept's text", async () => {
+    renderAt(core({ preview: () => problem(503, "outcome_unknown") }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+    const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+    expect(
+      await within(gate).findByText("The core could not answer for certain. Check again."),
+    ).toBeTruthy();
+    expect(within(gate).queryByText(/Accept went through/)).toBeNull();
   });
 
   it("shows a refused preview in words", async () => {

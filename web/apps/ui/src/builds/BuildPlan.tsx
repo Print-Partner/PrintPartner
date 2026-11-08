@@ -567,7 +567,7 @@ function AcceptGate({
       )}
       {accept.isError && (
         <p role="alert" className="pp-field-error">
-          {refusalText(accept.error)}
+          {refusalText(accept.error, "accept")}
         </p>
       )}
       <div className="pp-dialog-actions">

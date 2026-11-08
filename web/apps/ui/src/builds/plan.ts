@@ -135,9 +135,15 @@ const REFUSALS: Record<string, string> = {
   build_archived: "This Build is archived, so its Plan cannot change.",
   draft_not_found: "This draft no longer exists.",
   idempotency_conflict: "A different change was already sent with this request. Try again.",
+  outcome_unknown: "The core could not answer for certain. Check again.",
+  already_applied: "This draft was already accepted.",
+};
+
+/** Accept keeps its key after an unknown outcome, so pressing it again replays the first answer. */
+const ACCEPT_REFUSALS: Record<string, string> = {
+  ...REFUSALS,
   outcome_unknown:
     "The core could not confirm whether Accept went through. Press Accept again to check; it will not accept twice.",
-  already_applied: "This draft was already accepted.",
 };
 
 /** Draft saves preview nothing, so their stale refusals say what to redo instead. */
@@ -148,16 +154,20 @@ const SAVE_REFUSALS: Record<string, string> = {
   base_changed:
     "The accepted Plan changed since this draft was made, so this draft takes no more changes.",
   outcome_unknown:
-    "The core could not confirm this save. The draft as saved is shown; make the change again if it is missing.",
+    "The core could not confirm this save. Check the field, and make the change again if it is missing.",
 };
 
 /**
  * A refusal in words: the code's sentence for an Accept or a draft save, else the core's
  * detail, else the error.
  */
-export function refusalText(error: Error, write: "accept" | "save" = "accept"): string {
+export function refusalText(
+  error: Error,
+  write: "preview" | "accept" | "save" = "preview",
+): string {
   if (error instanceof CoreError) {
-    const texts = write === "save" ? SAVE_REFUSALS : REFUSALS;
+    const texts =
+      write === "save" ? SAVE_REFUSALS : write === "accept" ? ACCEPT_REFUSALS : REFUSALS;
     return (error.code && texts[error.code]) || error.detail || error.message;
   }
   return error.message;

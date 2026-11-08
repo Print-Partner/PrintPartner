@@ -201,3 +201,65 @@ async fn gre_1207_accept_refuses_a_header_saved_after_the_preview() {
     assert_eq!(build_header(&server).0, "Unreviewed kit");
     server.close().await;
 }
+
+#[tokio::test]
+async fn gre_1120_build_header_read_answers_without_a_draft() {
+    let server = ReadServer::start(Some("true"), "default").await;
+    server
+        .sql()
+        .execute(
+            "INSERT INTO build_profile_details (profile_id,tenant_id,customer,due_date,updated_at) VALUES (1,'default','Acme','2026-12-01','2026-11-07T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+    let (name, order, _, _) = build_header(&server);
+    let expected = json!({
+        "build": {"name":name,"order_number":order,"customer":"Acme","due_date":"2026-12-01"},
+        "base": {"revision_id":1,"plan_version":1}
+    });
+    for path in ["/plans/1/drafts/header", "/api/v2/plans/1/drafts/header"] {
+        assert_eq!(
+            json_reply(server.request(Method::GET, path), 200).await,
+            expected
+        );
+    }
+    json_reply(server.request(Method::GET, "/plans/99/drafts/header"), 404).await;
+    server.close().await;
+}
+
+#[tokio::test]
+async fn gre_1120_accept_failing_inside_its_transaction_leaves_no_partial_acceptance() {
+    let setup = aligned_setup();
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &setup).await;
+    select_units(&server).await;
+    propose(&server, "Renamed kit");
+    let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
+    let mut body = preview["revision"].clone();
+    body.as_object_mut().unwrap().remove("draft_id");
+    let before = logical_database(&server.sql());
+    for table in ["plan_snapshot_headers", "build_profile_details"] {
+        server
+            .sql()
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_accept BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"
+            ))
+            .unwrap();
+        let reply = keyed(&server, APPLY, Some(table))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status().as_u16(), 500, "{table}");
+        assert!(!reply.text().await.unwrap().contains("injected"));
+        server
+            .sql()
+            .execute_batch("DROP TRIGGER fail_accept")
+            .unwrap();
+        assert_eq!(logical_database(&server.sql()), before, "{table}");
+    }
+    let receipt = json_reply(keyed(&server, APPLY, Some("after")).json(&body), 200).await;
+    assert_eq!(receipt["revision_id"], 2);
+    assert_eq!(build_header(&server).0, "Renamed kit");
+    assert_eq!(snapshot_headers(&server).len(), 1);
+    server.close().await;
+}

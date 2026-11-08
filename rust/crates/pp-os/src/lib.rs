@@ -114,12 +114,22 @@ use unix as platform;
 mod windows;
 #[cfg(windows)]
 use windows as platform;
+#[cfg(windows)]
+pub mod windows_security;
 
 /// Identity of a filesystem object, stable while the object exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Identity {
     device: u64,
     index: u64,
+}
+
+impl Identity {
+    /// The device (the volume serial number on Windows) and the file number,
+    /// to name the object to another process.
+    pub fn parts(self) -> (u64, u64) {
+        (self.device, self.index)
+    }
 }
 
 /// The type an entry had when it was inspected.

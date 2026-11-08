@@ -11,7 +11,7 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 ## Review and merge policy
 
-- Review depth (re-scope, 2026-11-08). A normal PR needs a passing `review-gate`, which is one Claude review or the coordinator record, and green required checks. The second-vendor scorer applies to sensitive PRs and to heads whose `review-gate` passed only through the coordinator record; see [Merge gate](#merge-gate).
+- Review depth (re-scope, 2026-11-08). A normal PR needs a passing `review-gate` (Droid, the Claude code and security reviews, or the coordinator record) and green required checks. The second-vendor scorer applies to sensitive PRs and to heads whose `review-gate` passed only through the coordinator record; see [Merge gate](#merge-gate).
 - P0 and P1 findings block the merge. Fix them in the PR.
 - A P2 that affects real user data, security, or causes a crash becomes a bug ticket in its chunk.
 - Every other P2 and all P3s go on the post-parity polish list (GRE-974) or in a PR comment. Do not create a ticket for them.

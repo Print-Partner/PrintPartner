@@ -123,14 +123,25 @@ function byDueDate(builds: ProfileSummary[]): ProfileSummary[] {
 }
 
 /**
+ * The form the core compares order numbers in (`pp_storage::order_authority::normalize`): trimmed,
+ * inner whitespace runs collapsed to one space, lowercased. `null` for a blank one.
+ */
+export function normalizeOrderNumber(order: string | null): string | null {
+  const words = (order ?? "").split(/\s+/).filter((word) => word !== "");
+  return words.length === 0 ? null : words.join(" ").toLowerCase();
+}
+
+/**
  * For each unarchived Build whose order number another unarchived Build also carries, those other
- * Builds. Blank order numbers don't count, matching the Accept preview's duplicate check.
+ * Builds. Order numbers compare as the Accept preview's duplicate check compares them; blank ones
+ * don't count.
  */
 function sharedOrders(builds: ProfileSummary[]): Map<number, ProfileSummary[]> {
   const byOrder = new Map<string, ProfileSummary[]>();
   for (const build of builds) {
-    if (build.archived_at !== null || !build.order_number?.trim()) continue;
-    byOrder.set(build.order_number, [...(byOrder.get(build.order_number) ?? []), build]);
+    const order = normalizeOrderNumber(build.order_number);
+    if (build.archived_at !== null || order === null) continue;
+    byOrder.set(order, [...(byOrder.get(order) ?? []), build]);
   }
   const shared = new Map<number, ProfileSummary[]>();
   for (const group of byOrder.values()) {

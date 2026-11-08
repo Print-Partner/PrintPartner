@@ -617,8 +617,12 @@ fn blocked_by(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<Vec<Bl
         .collect())
 }
 
-/// Other unarchived Plans with the order number Build `profile` has after
-/// Accept: the draft header's when it has one, else the current one.
+/// Other unarchived Plans that hold the order number Build `profile` has
+/// after Accept, compared after [`crate::order_authority::normalize`]: the
+/// draft header's when it has one, else the current one. Accept refuses a
+/// draft that takes a held order (`duplicate_order`), so on a ready preview
+/// these are duplicates the Build already shares, as copied data can hold.
+/// They are reported, never merged.
 fn duplicate_orders(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -630,23 +634,19 @@ fn duplicate_orders(
         || checked.profile_row["orderNumber"].as_str(),
         |state| state.header.order_number.as_deref(),
     );
-    let Some(order) = order.filter(|order| !order.trim().is_empty()) else {
+    let Some(order) = order.and_then(crate::order_authority::normalize) else {
         return Ok(Vec::new());
     };
-    rows(
-        tx,
-        "SELECT id,name,order_number FROM build_profiles WHERE tenant_id=? AND id<>? AND archived_at IS NULL AND order_number=? ORDER BY id",
-        &[&tenant, &profile, &order],
-    )?
-    .iter()
-    .map(|row| {
-        Ok(DuplicateOrder {
-            profile_id: num(row, "id")?,
-            name: text(row, "name")?.into(),
-            order_number: text(row, "orderNumber")?.into(),
-        })
-    })
-    .collect()
+    Ok(
+        crate::order_authority::holders(tx, tenant, &order, profile)?
+            .into_iter()
+            .map(|holder| DuplicateOrder {
+                profile_id: holder.profile_id,
+                name: holder.name,
+                order_number: holder.order_number,
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]

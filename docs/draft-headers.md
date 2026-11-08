@@ -13,11 +13,11 @@ The 42 to 43 step installs three side tables from
 `pp-storage/src/working_drafts/header_schema.sql`, validates them, and stamps 43
 in one transaction. It alters no table Node uses.
 
-| Table | Key | Columns |
-| --- | --- | --- |
-| `plan_draft_headers` | `draft_id`, cascades with its draft | `name` (1 to 4096 characters), `order_number`, `customer` (null or 1 to 4096), `due_date` (null or a real `YYYY-MM-DD` day), `header_version` (1 to 2147483647), `updated_at` |
-| `build_profile_details` | `profile_id`, cascades with its Build | `customer`, `due_date`, `updated_at` |
-| `plan_draft_header_receipts` | tenant, Plan, actor and hashed `Idempotency-Key` | `payload_digest`, `draft_id` (cascades with its draft), and the saved header and version, never updated |
+| Table                        | Key                                              | Columns                                                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan_draft_headers`         | `draft_id`, cascades with its draft              | `name` (1 to 4096 characters), `order_number`, `customer` (null or 1 to 4096), `due_date` (null or a real `YYYY-MM-DD` day), `header_version` (1 to 2147483647), `updated_at` |
+| `build_profile_details`      | `profile_id`, cascades with its Build            | `customer`, `due_date`, `updated_at`                                                                                                                                          |
+| `plan_draft_header_receipts` | tenant, Plan, actor and hashed `Idempotency-Key` | `payload_digest`, `draft_id` (cascades with its draft), and the saved header and version, never updated                                                                       |
 
 `build_profile_details` holds the Build's customer and due date. Part A creates
 it empty; Accept writes it ([Accept](#accept)). GRE-1100 and GRE-1095 read the due date
@@ -45,12 +45,21 @@ The body is a `SaveDraftHeaderRequest`:
 
 ```json
 {
-  "expected_base": {"revision_id": 1, "plan_version": 1},
-  "expected_draft": {"draft_id": 2, "state": "open", "lifecycle_version": 0,
-    "snapshot_digest": "...", "base": {"revision_id": 1, "plan_version": 1}},
+  "expected_base": { "revision_id": 1, "plan_version": 1 },
+  "expected_draft": {
+    "draft_id": 2,
+    "state": "open",
+    "lifecycle_version": 0,
+    "snapshot_digest": "...",
+    "base": { "revision_id": 1, "plan_version": 1 }
+  },
   "expected_header_version": null,
-  "header": {"name": "Bracket kit", "order_number": "PO-7",
-    "customer": "Acme", "due_date": "2026-12-01"}
+  "header": {
+    "name": "Bracket kit",
+    "order_number": "PO-7",
+    "customer": "Acme",
+    "due_date": "2026-12-01"
+  }
 }
 ```
 
@@ -158,13 +167,13 @@ Every new draft row goes through `insert_snapshot`, which takes an `Origin`:
 draft's header row forward. The argument has no default, so a new draft path
 must choose.
 
-| Path | Header source | Test that fails without the carry |
-| --- | --- | --- |
-| Recompute | the open draft it abandons | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` (pp-api) |
-| Rebase | the source draft | `rebase_carries_the_source_draft_header` (`working_draft_rebase.rs`) |
-| Save (publishing) | the observed draft | `save_carries_the_source_draft_header` (`working_draft_save.rs`) |
-| Autosave | none: it writes into the open draft in place, or creates a draft when none is open | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` checks the row survives |
-| Header save | writes its own row | `gre_1197_header_save_creates_a_draft_when_none_is_open` |
+| Path                                                                          | Header source                                                                                                                                                                              | Test that fails without the carry                                                            |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Recompute                                                                     | the open draft it abandons                                                                                                                                                                 | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` (pp-api)                    |
+| Rebase                                                                        | the source draft                                                                                                                                                                           | `rebase_carries_the_source_draft_header` (`working_draft_rebase.rs`)                         |
+| Save (publishing)                                                             | the observed draft                                                                                                                                                                         | `save_carries_the_source_draft_header` (`working_draft_save.rs`)                             |
+| Autosave                                                                      | none: it writes into the open draft in place, or creates a draft when none is open                                                                                                         | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` checks the row survives     |
+| Header save                                                                   | writes its own row                                                                                                                                                                         | `gre_1197_header_save_creates_a_draft_when_none_is_open`                                     |
 | Restore as draft ([GRE-1094](build-history.md#restore-a-snapshot-as-a-draft)) | the snapshot's `plan_snapshot_headers` row, checked as a header save checks it (empty optional text reads as none), as header version 1, through `insert_snapshot` with `Origin::Snapshot` | `restore_as_draft_creates_a_draft_that_accept_publishes_without_rewinding_evidence` (pp-api) |
 
 Passing `Origin::New` in recompute or Save, or dropping the carry for
@@ -185,15 +194,19 @@ route writes these columns in the same flow.
 Before its selection, which writes, Accept refuses a header whose name another
 Build of the tenant already has, the rule a Build rename checks: 409
 `{ code: "duplicate_build_name", name }`. The Accept preview returns the same
-refusal from the same point. Duplicate order numbers are reported, not refused
-(`duplicate_orders`; GRE-1095 owns the refusal).
+refusal from the same point. It also refuses a header that gives the Build an
+order number another unarchived Build holds: 409
+`{ code: "duplicate_order", order_number, builds }`, where `builds` lists each
+holder's `profile_id`, `name` and stored `order_number`
+([Order authority](#order-authority-gre-1095)).
 
 The preview (`GET .../accept-preview`) lists the header fields the draft
 changes in `changes.header`: `{ field, old, new }` for `name`,
 `order_number`, `customer` and `due_date`, `null` for an empty field. A
 draft whose Parts and inputs equal its base but whose header differs is
-`changed`, not `no_change`. `duplicate_orders` checks the order number the
-Build has after Accept.
+`changed`, not `no_change`. `duplicate_orders` lists the other unarchived
+Builds holding the order number the Build has after Accept. On a ready
+preview these can only be duplicates the Build already shares.
 
 A header save changes neither the snapshot digest nor the lifecycle version,
 so the preview's `revision` also carries `expected_header_version`: the
@@ -247,6 +260,42 @@ Two limits remain:
   answers `draft_changed`. The replacement UI's Plan tab creates header rows
   and accepts them through the gate ([The Plan tab](#the-plan-tab-gre-1120)).
 
+## Order authority (GRE-1095)
+
+One order is one Build. An order number belongs to at most one unarchived
+Build of a tenant. `pp-storage/src/order_authority.rs` owns the rule:
+
+- **Normalization.** Two order numbers are the same order when they match
+  after trimming JavaScript whitespace, collapsing each inner whitespace run
+  to one space, and lowercasing. `" PO-7 "`, `"po-7"` and `"PO-7"` are one
+  order. `"#1001"` and `"1001"` are two, because punctuation is kept. A blank
+  or missing order number holds no order. The replacement UI's Builds list
+  groups duplicates with the same rule (`normalizeOrderNumber` in
+  `web/apps/ui/src/builds/BuildsList.tsx`).
+- **Enforcement.** Accept is the only Rust write of
+  `build_profiles.order_number`. It checks the draft header's order number
+  inside its immediate transaction, before anything writes, and refuses with
+  `duplicate_order` when another unarchived Build holds it. Two Accepts of
+  one order on different Builds therefore serialize, and the second is
+  refused. The preview and Rust MCP's `propose_apply_plan_draft` and
+  `confirm_apply` run the same check, so MCP proposes nothing for such a
+  draft and a stale proposal is refused at confirm and stays pending.
+  Archived Builds and other tenants hold nothing.
+- **Existing duplicates.** Copied Node data can already hold two unarchived
+  Builds with one order. Nothing merges, renumbers or blocks them. A Build
+  keeps an order it already holds, in any spelling, through Accept. The
+  Accept preview's `duplicate_orders` and the Builds list's "Duplicate order"
+  mark report them. Archive one of them to resolve it.
+
+There is no schema step: a unique index would need a normalized column and
+would refuse the existing duplicates. Not covered yet: duplicating a Build as
+a detached experiment and promoting it, which Node still serves
+(`POST /plans/:id/duplicate` copies the order number), and order import.
+
+Tests: `order_authority_*` in `pp-storage` (normalization, `claim`) and in
+`pp-api/src/drafts/http/tests/order_authority.rs` (HTTP refusal and preview,
+the concurrent race, existing duplicates across restart, MCP).
+
 ## Schema 45
 
 When Accept saves its `pre_apply` snapshot of the replaced Plan, it also saves
@@ -256,6 +305,6 @@ snapshot payload is unchanged. The 44 to 45 step installs the table from
 `pp-storage/src/plan_publication/snapshot_header_schema.sql`, takes
 `pre-schema45.db`, and alters no table Node uses.
 
-| Table | Key | Columns |
-| --- | --- | --- |
+| Table                   | Key                                                   | Columns                                                       |
+| ----------------------- | ----------------------------------------------------- | ------------------------------------------------------------- |
 | `plan_snapshot_headers` | `snapshot_id`, cascades with its `plan_snapshots` row | `name`, `order_number`, `customer`, `due_date`, `captured_at` |

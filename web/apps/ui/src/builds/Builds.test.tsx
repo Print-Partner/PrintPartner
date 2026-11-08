@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
+import { normalizeOrderNumber } from "./BuildsList";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -210,7 +211,8 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
   const DATED = [
     summary(1, "Undated", { order_number: "SO-7" }),
     summary(2, "Due later", { due_date: "2026-11-20" }),
-    summary(3, "Late", { order_number: "SO-7", due_date: "2026-11-10" }),
+    // The same order as "Undated" once normalized, as the core compares them.
+    summary(3, "Late", { order_number: " so-7 ", due_date: "2026-11-10" }),
     summary(4, "Late but printed", {
       due_date: "2026-11-01",
       accepted_progress: { kind: "ready", total_units: 4, remaining_units: 0 },
@@ -286,6 +288,13 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
     // A filter that hides one of the pair still says the order is shared.
     fireEvent.click(screen.getByRole("radio", { name: /No due date/ }));
     expect(within(row("Undated")).getByText("Also on Late")).toBeTruthy();
+  });
+  it("normalizes order numbers as order_authority::normalize does", () => {
+    expect(normalizeOrderNumber("\uFEFF Po-7\u3000")).toBe("po-7");
+    expect(normalizeOrderNumber("Order \u00A0\t 12")).toBe("order 12");
+    expect(normalizeOrderNumber("#1001")).not.toBe(normalizeOrderNumber("1001"));
+    expect(normalizeOrderNumber(" \u2028 ")).toBeNull();
+    expect(normalizeOrderNumber(null)).toBeNull();
   });
 });
 
@@ -643,7 +652,11 @@ describe("UI2-02 Build Overview", () => {
     renderAt("/builds/2/sources", core(plans));
     expect(screen.getByRole("heading", { level: 1, name: "Sources" })).toBeTruthy();
     expect(screen.getByText(/This tab arrives in a later slice/)).toBeTruthy();
-    const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole("link");
-    expect(tabs.find((t) => t.getAttribute("aria-current") === "page")?.textContent).toBe("Sources");
+    const tabs = within(screen.getByRole("navigation", { name: "Build sections" })).getAllByRole(
+      "link",
+    );
+    expect(tabs.find((t) => t.getAttribute("aria-current") === "page")?.textContent).toBe(
+      "Sources",
+    );
   });
 });

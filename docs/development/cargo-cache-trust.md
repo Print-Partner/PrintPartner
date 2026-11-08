@@ -19,9 +19,10 @@ merged. It changes no runner, cache, workflow, permissions, or application behav
 
 ## What the repository establishes
 
-[Rust cross-OS](../../.github/workflows/rust-cross-os.yml) selects local Linux
-only when the event is `pull_request` and the head repository equals
-`github.repository`. Fork PRs and non-PR events retain the hosted fallback.
+[Rust cross-OS](../../.github/workflows/rust-cross-os.yml) selects pp-local only on
+`push` to `main`, `merge_group` and `workflow_dispatch`, never on a `pull_request`. A pull request
+uses Blacksmith, hosted or, when the head repository equals `github.repository`, pp-iso, as
+`PP_PR_RUNNER` says; the nightly schedule uses `ubuntu-latest`.
 There is no actor exception, so a same-repository Dependabot PR satisfies the
 same routing predicate as a human-authored PR. The label selects a runner pool,
 not a cache namespace.
@@ -30,8 +31,8 @@ not a cache namespace.
 lockfile updates for `/rust`. Those updates can introduce new dependency code.
 
 [Embedded-driver smoke](../../.github/workflows/desktop-e2e.yml) and
-[WebKit smoke](../../.github/workflows/desktop-webkit.yml) use the same Linux
-routing predicate. Embedded-driver smoke and WebKit smoke run `Swatinem/rust-cache` on every runner; Rust cross-OS skips it
+[WebKit smoke](../../.github/workflows/desktop-webkit.yml) run on
+`ubuntu-24.04`, hardcoded in their `runs-on` lines. Embedded-driver smoke and WebKit smoke run `Swatinem/rust-cache` on every runner; Rust cross-OS skips it
 only when the runner kind is pp-local (`PP_RUNNER_KIND`). Hosted, Blacksmith and pp-iso
 runners and the shared Rust steps on macOS and Windows retain that action.
 

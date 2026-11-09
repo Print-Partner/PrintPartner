@@ -30,18 +30,18 @@ It prints each PNG path at the end and exits 1 on any failure, including an uncl
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |
 | `--publish PR --note TEXT` | After a clean run, run `evidence publish` for the PNGs with `EVIDENCE_REPO=Print-Partner/PrintPartner`. |
-| `--self-test` | Runs `node --test scripts/evidence/safety.test.mjs`, captures `/builds`, and checks the PNG, the clean stop and the removed data directory. |
+| `--self-test` | Runs `node --test scripts/evidence/safety.test.mjs scripts/evidence/steps.test.mjs`, captures `/builds`, and checks the PNG, the clean stop and the removed data directory. |
 
 ## Setup steps
 
 | Step | What it does through the Rust API |
 | --- | --- |
 | `settle-reconciliation:BUILD` | Resolves every conflict on the Build's open draft with a `replace` decision (`PUT .../drafts/{draft}/reconciliation`). Does nothing without an open draft or conflicts. |
-| `snapshot:BUILD` | Accepts the Build's open draft, which stores a pre-apply snapshot and a new revision. Without an open draft it opens one by saving the current header unchanged. Settles reconciliation first. |
+| `snapshot:BUILD` | Accepts the Build's open draft. Without an open draft it opens one by saving the current header unchanged. Settles reconciliation first. Accept stores a pre-apply snapshot only when the Build has an Accepted revision whose Source rows the core can still read: no snapshot without an Accepted revision or its input set, with a missing Source row, or with `legacy:` rows. The step reads `snapshot.saved_before_accept` from the accept preview and fails with `Build N: Accept saves no snapshot (<core note>)` before Accept when it is false. |
 
 `--module` is not an API step: no Rust route writes tenant Module choices yet (Node owns `PATCH /settings/features`). It writes the `default` tenant's `feature_toggles` setting in the generated seed, the row that route and Rust's `/health` read, before the copy is made.
 
-Add a step in `STEPS` in `capture.mjs` and its name in `STEP_NAMES` in `run.py`.
+Add a step in `STEPS` in `steps.mjs` and its name in `STEP_NAMES` in `run.py`.
 
 Example: History after a snapshot:
 

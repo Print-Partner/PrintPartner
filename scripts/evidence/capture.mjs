@@ -6,12 +6,13 @@
 // once. Nothing here prints the bootstrap URL, cookies or the account password: every
 // failure goes through safety.mjs, which prints only fixed messages.
 import { execFileSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CaptureError, guarded, installReport, makeApi } from "./safety.mjs";
+import { STEPS } from "./steps.mjs";
 
 installReport();
 
@@ -71,76 +72,6 @@ async function settle(page, path) {
   }
   await page.waitForTimeout(300);
 }
-
-const plan = (id) => `/api/v2/plans/${id}`;
-const idempotent = () => ({ "Idempotency-Key": randomUUID() });
-
-/** The Build's open draft, or null. */
-async function openDraft(api, id) {
-  const { drafts } = await api("GET", `${plan(id)}/drafts`);
-  return drafts.find((draft) => draft.state === "open") ?? null;
-}
-
-/** Resolves every reconciliation conflict on the open draft by replacing the part. */
-async function settleReconciliation(api, id) {
-  const draft = await openDraft(api, id);
-  if (!draft) return "no open draft";
-  const workspace = await api("GET", `${plan(id)}/drafts/${draft.draft_id}`);
-  if (workspace.reconciliation.kind === "ready") return "already settled";
-  const decisions = workspace.reconciliation.conflicts.map((conflict) => ({
-    kind: "replace",
-    target_draft_part_id: conflict.target_draft_part_id,
-  }));
-  const settled = await api(
-    "PUT",
-    `${plan(id)}/drafts/${draft.draft_id}/reconciliation`,
-    { decisions, expected_snapshot_digest: workspace.draft.snapshot_digest },
-    idempotent(),
-  );
-  if (settled.reconciliation.kind !== "ready") throw new CaptureError(`Build ${id} still has conflicts`);
-  return `settled ${decisions.length} conflict(s)`;
-}
-
-/**
- * Accepts the Build's open draft, which stores a pre-apply snapshot first. Without an
- * open draft it opens one by saving the current header unchanged.
- */
-async function snapshot(api, id) {
-  let draft = await openDraft(api, id);
-  if (!draft) {
-    const { build, base } = await api("GET", `${plan(id)}/drafts/header`);
-    await api(
-      "PUT",
-      `${plan(id)}/drafts/header`,
-      { expected_base: base, expected_draft: null, expected_header_version: null, header: build },
-      idempotent(),
-    );
-    draft = await openDraft(api, id);
-    if (!draft) throw new CaptureError(`Build ${id}: saving the header opened no draft`);
-  }
-  await settleReconciliation(api, id);
-  const preview = await api("GET", `${plan(id)}/drafts/${draft.draft_id}/accept-preview`);
-  const revision = preview.revision;
-  await api(
-    "POST",
-    `${plan(id)}/drafts/${draft.draft_id}/apply`,
-    {
-      expected_snapshot_digest: revision.expected_snapshot_digest,
-      expected_lifecycle_version: revision.expected_lifecycle_version,
-      expected_base: revision.expected_base,
-      expected_header_version: revision.expected_header_version,
-      remap_checkoff_links: false,
-    },
-    idempotent(),
-  );
-  return `accepted draft ${draft.draft_id} (${preview.kind}); snapshot stored`;
-}
-
-// Named setup steps. Each takes a Build ID; run.py checks names and arguments.
-const STEPS = {
-  "settle-reconciliation": settleReconciliation,
-  snapshot,
-};
 
 async function main() {
   const launch = display

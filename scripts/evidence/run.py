@@ -202,7 +202,7 @@ def parse_args(argv):
                         help=f"after a clean run, publish the PNGs to this {EVIDENCE_REPO} PR with evidence publish")
     parser.add_argument("--note", default="", help="note for --publish")
     parser.add_argument("--self-test", action="store_true",
-                        help="run safety.test.mjs, capture /builds once, and check the PNG and the cleanup")
+                        help="run safety.test.mjs and steps.test.mjs, capture /builds once, and check the PNG and the cleanup")
     args = parser.parse_args(argv)
     if args.self_test:
         if args.shot or args.step or args.publish:
@@ -419,8 +419,8 @@ def main(argv=None):
         signal.signal(signum, on_signal)
 
     if args.self_test:
-        # The redaction test: a failed request must not print the session cookie.
-        run(node, "--test", HERE / "safety.test.mjs")
+        # The redaction tests (no cookie in a failed request) and the setup step tests.
+        run(node, "--test", HERE / "safety.test.mjs", HERE / "steps.test.mjs")
     binary = build(node, args.rebuild)
     if args.out is None:
         out_dir = Path(tempfile.mkdtemp(prefix=f"pp-evidence-{args.seed}-"))

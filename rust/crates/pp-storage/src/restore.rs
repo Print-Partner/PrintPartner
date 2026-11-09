@@ -5,15 +5,21 @@
 //! there, and admits its schema as startup admits a live database. It never
 //! touches live files. Activation, which swaps the staged copy into place,
 //! is not part of this module yet.
+//!
+//! Restore work belongs to one [`WriterOwner`]. Its [`Activity`] refuses new
+//! work once the owner starts to close, and the owner keeps its lease while
+//! work is still running, so the next owner's [`recover`] never removes an
+//! upload or stage in use.
 
 use crate::{WriterOwner, archive, ownership_marker, schema};
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::{
     fmt,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant},
 };
 
 const WORK_DIR: &str = ".pp-restore";
@@ -23,10 +29,6 @@ const INCOMING_SUFFIX: &str = ".tar.gz";
 /// matches the default decompressed limit in [`archive::Limits`].
 pub const MAX_UPLOAD_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const STAGED_PREFIX: &str = "staged-";
-
-/// Serializes staging in this process, so one stage never removes the
-/// directory another is writing.
-static GATE: Mutex<()> = Mutex::new(());
 
 /// A restore refused before any live file changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,12 +64,71 @@ pub struct Staged {
     pub metadata: archive::Metadata,
     /// Schema version of the archived database.
     pub schema_version: u64,
+    /// Why an earlier stage could not be removed, if one could not. The new
+    /// stage is complete either way; the next open removes the leftover.
+    pub cleanup_error: Option<String>,
+}
+
+/// Restore work in flight for one [`WriterOwner`].
+#[derive(Default)]
+pub(crate) struct Activity {
+    state: Mutex<ActivityState>,
+    idle: Condvar,
+    /// Serializes staging, so one stage never removes another's directory.
+    staging: Mutex<()>,
+}
+
+#[derive(Default)]
+struct ActivityState {
+    closed: bool,
+    active: usize,
+}
+
+/// One running restore operation. Dropping it lets a closing owner go on.
+struct Active<'a>(&'a Activity);
+
+impl Drop for Active<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.lock();
+        state.active -= 1;
+        self.0.idle.notify_all();
+    }
+}
+
+impl Activity {
+    fn lock(&self) -> MutexGuard<'_, ActivityState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn enter(&self) -> Result<Active<'_>> {
+        let mut state = self.lock();
+        ensure!(!state.closed, "Storage owner is closed");
+        state.active += 1;
+        Ok(Active(self))
+    }
+
+    /// Refuses new restore work and waits up to `limit` for work in flight.
+    /// Returns how many operations are still running.
+    pub(crate) fn close(&self, limit: Duration) -> usize {
+        let mut state = self.lock();
+        state.closed = true;
+        let deadline = Instant::now() + limit;
+        while state.active > 0 && Instant::now() < deadline {
+            state = self
+                .idle
+                .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        state.active
+    }
 }
 
 /// Restore staging for the data directory of one open [`WriterOwner`].
 #[derive(Clone)]
 pub struct InstallationClient {
     data_dir: PathBuf,
+    activity: Arc<Activity>,
 }
 
 impl WriterOwner {
@@ -78,6 +139,7 @@ impl WriterOwner {
             .ok_or_else(|| anyhow!("Storage owner is closed"))?;
         Ok(InstallationClient {
             data_dir: lease.data_dir().to_owned(),
+            activity: self.restore.clone(),
         })
     }
 }
@@ -89,22 +151,32 @@ pub struct Upload {
     path: PathBuf,
     written: u64,
     limit: u64,
-    /// Set when a write failed; [`InstallationClient::stage`] refuses it.
+    /// Set by the first failed write. It never clears, and
+    /// [`InstallationClient::stage`] refuses a failed upload.
     failed: bool,
+    activity: Arc<Activity>,
 }
 
 impl Upload {
     /// Appends `bytes`, refusing with [`Refusal::TooLarge`] once the total
-    /// would pass the limit. Nothing past the limit is written. After any
-    /// failed write the upload can no longer be staged.
+    /// would pass the limit. Nothing past the limit is written. The first
+    /// failed write, including one refused because the owner is closing,
+    /// fails the upload for good.
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        let written = self.written.saturating_add(bytes.len() as u64);
-        self.failed = true;
-        ensure!(written <= self.limit, Refusal::TooLarge(self.limit));
-        self.file.write_all(bytes)?;
-        self.written = written;
-        self.failed = false;
-        Ok(())
+        ensure!(
+            !self.failed,
+            Refusal::InvalidArchive("the upload already failed".into())
+        );
+        let result = (|| {
+            let _active = self.activity.enter()?;
+            let written = self.written.saturating_add(bytes.len() as u64);
+            ensure!(written <= self.limit, Refusal::TooLarge(self.limit));
+            self.file.write_all(bytes)?;
+            self.written = written;
+            Ok(())
+        })();
+        self.failed |= result.is_err();
+        result
     }
 }
 
@@ -118,8 +190,11 @@ impl InstallationClient {
     /// Starts an upload of at most `limit` bytes, capped at
     /// [`MAX_UPLOAD_BYTES`].
     pub fn begin_upload(&self, limit: u64) -> Result<Upload> {
+        let _active = self.activity.enter()?;
         require_marker(&self.data_dir)?;
         let work = work_dir(&self.data_dir)?;
+        #[cfg(test)]
+        tests::after_work_dir(&self.data_dir);
         let path = work.join(format!("{INCOMING_PREFIX}{}{INCOMING_SUFFIX}", random_id()));
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -131,14 +206,25 @@ impl InstallationClient {
             written: 0,
             limit: limit.min(MAX_UPLOAD_BYTES),
             failed: false,
+            activity: self.activity.clone(),
         })
     }
 
-    /// Validates and extracts `upload` and admits its schema. On success it
-    /// replaces any earlier staged restore; on a refusal the earlier one is
-    /// kept. The upload is removed either way. Live files are not touched.
+    /// Validates and extracts `upload` and admits its schema. Live files are
+    /// not touched and the upload is removed either way. A refusal removes
+    /// only its own stage. Earlier stages are removed only after the new one
+    /// is complete; if that fails, the new stage is still returned, with
+    /// [`Staged::cleanup_error`] set, and the next open removes the leftover.
+    /// `.pp-restore` itself stays until the next open, so a concurrent
+    /// [`Self::begin_upload`] never loses its directory.
     pub fn stage(&self, upload: Upload) -> Result<Staged> {
-        let _gate = gate()?;
+        ensure!(
+            Arc::ptr_eq(&upload.activity, &self.activity),
+            "Upload belongs to another storage owner"
+        );
+        let _active = self.activity.enter()?;
+        let _staging =
+            (self.activity.staging.lock()).map_err(|_| anyhow!("Restore staging lock poisoned"))?;
         require_marker(&self.data_dir)?;
         ensure!(
             !upload.failed,
@@ -158,37 +244,44 @@ impl InstallationClient {
             );
             let schema_version = admit_schema(&staged)
                 .map_err(|error| Refusal::UnsupportedSchema(format!("{error:#}")))?;
-            Ok(Staged {
-                restore_id,
-                metadata,
-                schema_version,
-            })
+            Ok((metadata, schema_version))
         })();
         drop(upload);
-        match &result {
-            Ok(_) => remove_entries(&work, |name| {
-                is_staged(name) && Some(name) != staged_name(&staged)
-            })?,
-            Err(_) => {
-                let _ = std::fs::remove_dir_all(&staged);
-                let _ = std::fs::remove_dir(&work);
-            }
-        }
-        result
+        let (metadata, schema_version) = result.inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&staged);
+        })?;
+        Ok(Staged {
+            cleanup_error: remove_earlier_stages(&work, &restore_id).err(),
+            restore_id,
+            metadata,
+            schema_version,
+        })
     }
 }
 
-fn gate() -> Result<MutexGuard<'static, ()>> {
-    GATE.lock().map_err(|_| anyhow!("Restore gate poisoned"))
-}
-
-/// `staged-<32 hex>`, the only stage name this build creates or removes.
-fn is_staged(name: &str) -> bool {
-    name.strip_prefix(STAGED_PREFIX).is_some_and(is_id)
-}
-
-fn staged_name(staged: &Path) -> Option<&str> {
-    staged.file_name().and_then(|name| name.to_str())
+/// Removes every `staged-<id>` directory except `keep`, and reports the
+/// first failure. Entries of another name or type are left alone.
+fn remove_earlier_stages(work: &Path, keep: &str) -> Result<(), String> {
+    let mut first_error = None;
+    let entries = std::fs::read_dir(work).map_err(|error| format!("List {WORK_DIR}: {error}"))?;
+    for entry in entries {
+        let removed = entry.map_err(anyhow::Error::from).and_then(|entry| {
+            let name = entry.file_name();
+            match leftover(&entry.path(), &name.to_string_lossy()) {
+                Ok(Some(Leftover::Staged))
+                    if name.to_str() != Some(&format!("{STAGED_PREFIX}{keep}")) =>
+                {
+                    std::fs::remove_dir_all(entry.path())
+                        .with_context(|| format!("Remove {}", name.to_string_lossy()))
+                }
+                _ => Ok(()),
+            }
+        });
+        if let Err(error) = removed {
+            first_error.get_or_insert(format!("{error:#}"));
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn require_marker(data_dir: &Path) -> Result<()> {
@@ -203,7 +296,7 @@ fn require_marker(data_dir: &Path) -> Result<()> {
 /// data directory.
 fn work_dir(data_dir: &Path) -> Result<PathBuf> {
     let work = data_dir.join(WORK_DIR);
-    if !exists(&work) {
+    if work.symlink_metadata().is_err() {
         pp_os::create_private_dir(&work)?;
     }
     ensure!(
@@ -241,68 +334,76 @@ fn admit_schema(directory: &Path) -> Result<u64> {
     Ok(version)
 }
 
-fn exists(path: &Path) -> bool {
-    path.symlink_metadata().is_ok()
+/// A `.pp-restore` entry this build creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leftover {
+    /// `incoming-<32 hex>.tar.gz`, a regular file.
+    Incoming,
+    /// `staged-<32 hex>`, a real directory.
+    Staged,
 }
 
-/// Removes each entry of `directory` whose name passes `remove`, without
-/// following links.
-fn remove_entries(directory: &Path, remove: impl Fn(&str) -> bool) -> Result<()> {
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if !name.to_str().is_some_and(&remove) {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(entry.path())?;
-        } else {
-            std::fs::remove_file(entry.path())?;
-        }
+/// Which leftover `path` (named `name`) is, `None` for any other name. A
+/// leftover name on a link or the wrong type is an error.
+fn leftover(path: &Path, name: &str) -> Result<Option<Leftover>> {
+    let kind = if name.strip_prefix(STAGED_PREFIX).is_some_and(is_id) {
+        Leftover::Staged
+    } else if name
+        .strip_prefix(INCOMING_PREFIX)
+        .and_then(|rest| rest.strip_suffix(INCOMING_SUFFIX))
+        .is_some_and(is_id)
+    {
+        Leftover::Incoming
+    } else {
+        return Ok(None);
+    };
+    let file_type = path.symlink_metadata()?.file_type();
+    match kind {
+        Leftover::Staged if file_type.is_dir() => Ok(Some(kind)),
+        Leftover::Incoming if file_type.is_file() => Ok(Some(kind)),
+        _ => bail!("{name} is a link or has the wrong type"),
     }
-    Ok(())
 }
 
 /// Clears an interrupted stage. Runs at open, under the directory lock and
 /// after the ownership marker was admitted, before the database is read.
-/// Only `incoming-<id>.tar.gz` and `staged-<id>` are removed. Any other entry
-/// in `.pp-restore`, or a `.pp-restore` that is not a directory, refuses the
-/// open without removing anything, because this build cannot tell whether it
-/// holds the only copy of an installation.
+/// Every entry is checked before anything is removed: only a regular file
+/// `incoming-<id>.tar.gz` and a real directory `staged-<id>` are removed. Any
+/// other entry, a link, a wrong type, or a `.pp-restore` that is not a real
+/// directory refuses the open without removing anything, because this build
+/// cannot tell whether it holds the only copy of an installation.
 pub(crate) fn recover(data_dir: &Path) -> Result<()> {
     let work = data_dir.join(WORK_DIR);
     let Ok(metadata) = work.symlink_metadata() else {
         return Ok(());
     };
-    ensure!(
-        metadata.file_type().is_dir(),
-        "Restore work directory {} is not a directory; move it aside to open",
-        work.display()
-    );
-    let leftover = |name: &str| {
-        is_staged(name)
-            || name
-                .strip_prefix(INCOMING_PREFIX)
-                .and_then(|rest| rest.strip_suffix(INCOMING_SUFFIX))
-                .is_some_and(is_id)
+    let refuse = |detail: String| {
+        anyhow!(
+            "Restore work directory {} {detail}; move it aside to open",
+            work.display()
+        )
     };
-    for entry in std::fs::read_dir(&work)? {
-        let name = entry?.file_name();
-        ensure!(
-            name.to_str().is_some_and(leftover),
-            "Restore work directory {} holds unexpected entry {}; move it aside to open",
-            work.display(),
-            name.to_string_lossy()
-        );
+    if !metadata.file_type().is_dir() {
+        return Err(refuse("is not a directory".into()));
     }
-    remove_entries(&work, leftover)
-        .and_then(|()| Ok(std::fs::remove_dir(&work)?))
-        .with_context(|| {
-            format!(
-                "Clear the interrupted restore in {}; move it aside to open",
-                work.display()
-            )
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&work)? {
+        let path = entry?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        match leftover(&path, &name) {
+            Ok(Some(kind)) => found.push((path.clone(), kind)),
+            Ok(None) => return Err(refuse(format!("holds unexpected entry {name}"))),
+            Err(error) => return Err(refuse(format!("holds {error:#}"))),
+        }
+    }
+    found
+        .iter()
+        .try_for_each(|(path, kind)| match kind {
+            Leftover::Staged => std::fs::remove_dir_all(path),
+            Leftover::Incoming => std::fs::remove_file(path),
         })
+        .and_then(|()| std::fs::remove_dir(&work))
+        .map_err(|error| refuse(format!("could not be cleared: {error}")))
 }
 
 #[cfg(all(test, unix))]

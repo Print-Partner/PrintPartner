@@ -5,8 +5,30 @@ use super::*;
 use crate::{Limits, ownership_marker::WriterGate};
 use pp_testkit::{Installation, MarkerState as KitMarker, Spec};
 use rusqlite::{Connection, OpenFlags};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::mpsc, thread};
 use tar::{EntryType, Header};
+
+type Hook = Box<dyn FnOnce() + Send>;
+static AFTER_WORK_DIR: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+/// Called by `begin_upload` between creating `.pp-restore` and its file.
+pub(super) fn after_work_dir(data_dir: &Path) {
+    let hook = {
+        let mut hooks = AFTER_WORK_DIR.lock().unwrap();
+        let index = hooks.iter().position(|(dir, _)| dir == data_dir);
+        index.map(|index| hooks.remove(index).1)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+fn on_work_dir(root: &Path, hook: impl FnOnce() + Send + 'static) {
+    AFTER_WORK_DIR
+        .lock()
+        .unwrap()
+        .push((root.to_owned(), Box::new(hook)));
+}
 
 const SEED: &str = "INSERT INTO build_profiles(id, name) VALUES (7, 'Seven'), (29, 'Twenty-nine');
 INSERT INTO plan_snapshots(id, profile_id, name, created_at, payload_json)
@@ -249,7 +271,7 @@ fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
     let refuse = |version: u64, scope: &str, extra: &[(&[u8], EntryType)]| {
         let archive = archive_with(scratch.path(), version, scope, extra);
         let error = stage(&client, &archive).unwrap_err();
-        assert!(!root.join(WORK_DIR).exists());
+        assert!(work_entries(&root).is_empty());
         assert!(!root.parent().unwrap().join("escape").exists());
         refusal(&error)
             .cloned()
@@ -288,7 +310,10 @@ fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
         );
     }
     assert!(!Path::new("/tmp/escape").exists());
-    assert_eq!(installation.entries().unwrap(), entries);
+    // `.pp-restore` stays, empty, until the next open.
+    let mut with_work = entries;
+    with_work.insert(WORK_DIR.into());
+    assert_eq!(installation.entries().unwrap(), with_work);
     assert_eq!(state(&root), before);
     assert_eq!(std::fs::read(installation.marker_path()).unwrap(), marker);
     owner.shutdown().unwrap();
@@ -313,6 +338,9 @@ fn ticket_t_8_restore_unmarked_installations_and_oversized_uploads_refuse_before
     let error = upload.write(b"5").unwrap_err();
     assert_eq!(refusal(&error), Some(&Refusal::TooLarge(4)));
     assert_eq!(std::fs::metadata(&upload.path).unwrap().len(), 4);
+    // A failed upload stays failed, even after a write that would fit.
+    let error = upload.write(b"").unwrap_err();
+    assert!(error.to_string().contains("already failed"), "{error:#}");
     let error = client.stage(upload).unwrap_err();
     assert!(
         matches!(refusal(&error), Some(Refusal::InvalidArchive(detail)) if detail.contains("did not complete")),
@@ -388,4 +416,158 @@ fn ticket_t_8_restore_an_unknown_work_entry_or_linked_work_directory_refuses_ope
     );
     std::fs::remove_file(&work).unwrap();
     open(&root).unwrap().shutdown().unwrap();
+}
+
+#[test]
+fn ticket_t_8_restore_a_wrong_type_or_link_under_a_leftover_name_refuses_open() {
+    let (_installation, root) = installation();
+    open(&root).unwrap().shutdown().unwrap();
+    let work = root.join(WORK_DIR);
+    let id = random_id();
+    let incoming = format!("{INCOMING_PREFIX}{id}{INCOMING_SUFFIX}");
+    let staged = format!("{STAGED_PREFIX}{id}");
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep"), b"keep").unwrap();
+    for (name, shape) in [(&incoming, "dir"), (&staged, "file"), (&staged, "link")] {
+        std::fs::create_dir(&work).unwrap();
+        // A valid leftover beside it is not removed either.
+        std::fs::create_dir(work.join(format!("{STAGED_PREFIX}{}", random_id()))).unwrap();
+        let path = work.join(name);
+        match shape {
+            "dir" => {
+                std::fs::create_dir(&path).unwrap();
+                std::fs::write(path.join("keep"), b"keep").unwrap();
+            }
+            "file" => std::fs::write(&path, b"keep").unwrap(),
+            _ => std::os::unix::fs::symlink(outside.path(), &path).unwrap(),
+        }
+        let error = open(&root).err().unwrap();
+        assert!(
+            error.to_string().contains("wrong type"),
+            "{name}: {error:#}"
+        );
+        assert_eq!(work_entries(&root).len(), 2, "{name}");
+        std::fs::remove_dir_all(&work).unwrap();
+    }
+    assert_eq!(std::fs::read(outside.path().join("keep")).unwrap(), b"keep");
+    open(&root).unwrap().shutdown().unwrap();
+}
+
+/// A refused stage between `begin_upload` creating `.pp-restore` and its
+/// file never removes the directory under the upload.
+#[test]
+fn ticket_t_8_restore_an_upload_survives_a_refused_stage_racing_it() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let newer = archive_with(scratch.path(), schema::CURRENT_VERSION + 1, "full", &[]);
+    let client = owner.installation().unwrap();
+    let racing = client.clone();
+    on_work_dir(&root, move || {
+        stage(&racing, &newer).unwrap_err();
+    });
+    let mut upload = client.begin_upload(16).unwrap();
+    upload.write(b"still here").unwrap();
+    assert_eq!(std::fs::read(&upload.path).unwrap(), b"still here");
+    drop(upload);
+    owner.shutdown().unwrap();
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn ticket_t_8_restore_a_failed_cleanup_of_an_earlier_stage_still_returns_the_new_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let (backup, backed_up) = backup_then_change(&owner, &root, scratch.path());
+    let client = owner.installation().unwrap();
+    let first = stage(&client, &backup).unwrap();
+    let first_dir = root
+        .join(WORK_DIR)
+        .join(format!("{STAGED_PREFIX}{}", first.restore_id));
+    let locked = first_dir.join("repos/source-a");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let second = stage(&client, &backup).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let detail = second
+        .cleanup_error
+        .expect("the earlier stage could not be removed");
+    assert!(detail.contains(&first.restore_id), "{detail}");
+    let second_dir = root
+        .join(WORK_DIR)
+        .join(format!("{STAGED_PREFIX}{}", second.restore_id));
+    assert_eq!(state(&second_dir), backed_up);
+    assert!(first_dir.exists());
+    owner.shutdown().unwrap();
+    // The next open removes both.
+    open(&root).unwrap().shutdown().unwrap();
+    assert!(!root.join(WORK_DIR).exists());
+}
+
+/// Holds `begin_upload` inside its work until the returned sender fires.
+fn hold_upload(
+    root: &Path,
+    client: &InstallationClient,
+) -> (mpsc::Sender<()>, thread::JoinHandle<Result<Upload>>) {
+    let (inside, entered) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    on_work_dir(root, move || {
+        inside.send(()).unwrap();
+        released.recv().unwrap();
+    });
+    let client = client.clone();
+    let upload = thread::spawn(move || client.begin_upload(16));
+    entered.recv().unwrap();
+    (release, upload)
+}
+
+#[test]
+fn ticket_t_8_restore_shutdown_waits_for_restore_work_and_refuses_new_work() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let (release, upload) = hold_upload(&root, &client);
+    let shutdown = thread::spawn(move || owner.shutdown());
+    thread::sleep(Duration::from_millis(500));
+    assert!(!shutdown.is_finished(), "shutdown waits for the upload");
+    release.send(()).unwrap();
+    let mut upload = upload.join().unwrap().unwrap();
+    shutdown.join().unwrap().unwrap();
+    let error = upload.write(b"late").unwrap_err();
+    assert!(error.to_string().contains("closed"), "{error:#}");
+    assert!(
+        client
+            .begin_upload(16)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("closed")
+    );
+    assert!(
+        client
+            .stage(upload)
+            .unwrap_err()
+            .to_string()
+            .contains("closed")
+    );
+    open(&root).unwrap().shutdown().unwrap();
+}
+
+#[test]
+fn ticket_t_8_restore_shutdown_keeps_the_lease_while_restore_work_runs_on() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let (release, upload) = hold_upload(&root, &client);
+    let error = owner.shutdown().unwrap_err();
+    assert!(
+        error.to_string().contains("Restore work still active"),
+        "{error:#}"
+    );
+    // The lease is kept, so no other owner can clear the work in flight.
+    assert!(open(&root).is_err());
+    release.send(()).unwrap();
+    let upload = upload.join().unwrap().unwrap();
+    assert!(upload.path.exists());
 }

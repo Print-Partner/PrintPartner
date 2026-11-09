@@ -291,6 +291,8 @@ pub struct WriterOwner {
     client: SettingsClient,
     join: Option<JoinHandle<()>>,
     lease: Option<lease::StorageLease>,
+    #[cfg(feature = "desktop_rebuild")]
+    restore: Arc<restore::Activity>,
 }
 
 fn snapshot(connection: &Connection, tenant: &str, key: &str) -> Result<SettingSnapshot> {
@@ -956,6 +958,8 @@ impl WriterOwner {
                 client: SettingsClient { shared, readers },
                 join: Some(join),
                 lease: Some(lease),
+                #[cfg(feature = "desktop_rebuild")]
+                restore: Arc::default(),
             },
             ready,
         ))
@@ -1072,6 +1076,9 @@ impl WriterOwner {
         }
         #[cfg(feature = "desktop_rebuild")]
         self.client.shared.job_subscriptions.stop_owner();
+        // Restore work runs in `.pp-restore`, which the next owner clears.
+        #[cfg(feature = "desktop_rebuild")]
+        let restore_active = self.restore.close(READER_DRAIN);
         {
             let mut queue = self
                 .client
@@ -1110,6 +1117,12 @@ impl WriterOwner {
         ensure!(
             remaining_readers == 0,
             "Reader checkouts still active after {}s: {remaining_readers}; ownership retained until process exit",
+            READER_DRAIN.as_secs()
+        );
+        #[cfg(feature = "desktop_rebuild")]
+        ensure!(
+            restore_active == 0,
+            "Restore work still active after {}s: {restore_active}; ownership retained until process exit",
             READER_DRAIN.as_secs()
         );
         if let Some(lease) = self.lease.take() {

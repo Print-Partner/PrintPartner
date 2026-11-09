@@ -45,5 +45,13 @@
     "scripts/check-duplication.mjs",
     "scripts/check-duplication.test.mjs"
   ],
-  "scorer_authors": []
+  "scorer_authors": [
+    "poitee"
+  ],
+  "scorer_seats": {
+    "gpt-6.1-sol": "openai",
+    "gpt-6-astra": "openai",
+    "claude-fable-5-2": "anthropic",
+    "claude-opus-5-5": "anthropic"
+  }
 }

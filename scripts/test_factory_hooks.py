@@ -909,9 +909,10 @@ class CoordinatorMergeClassTests(unittest.TestCase):
                 patch.object(guard.subprocess, "run", side_effect=gh), patch.object(Path, "read_text", read):
             return guard.check_command(MERGE_FORM, "/coordinator")
 
-    def scores(self, author="trusted", head=SHA, seats=("one", "two"), score=9):
+    def scores(self, author="trusted", head=SHA, seats=("gpt-6.1-sol", "gpt-6-astra"), score=9,
+               vendor="openai", author_vendor="anthropic"):
         # Separate pages prove the guard includes all paginated results.
-        return [[{"user": {"login": author}, "body": f"pp-score head={head} seat={seat} score={score}"}]
+        return [[{"user": {"login": author}, "body": f"pp-score head={head} seat={seat} vendor={vendor} score={score} author={author_vendor}"}]
                 for seat in seats]
 
     def test_owner_refused(self):
@@ -922,6 +923,32 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
     def test_sensitive_two_allowed_scores(self):
         self.assertIsNone(self.check(["rust/rules/a.yml"], ["trusted"], self.scores()))
+
+    def test_sensitive_anthropic_scores_for_openai_author(self):
+        self.assertIsNone(self.check(["rust/rules/a.yml"], ["poitee"], self.scores(
+            author="poitee", seats=("claude-fable-5-2", "claude-opus-5-5"),
+            vendor="anthropic", author_vendor="openai")))
+
+    def test_sensitive_invalid_score_records_refused(self):
+        missing_author = self.scores()
+        missing_author[0][0]["body"] = missing_author[0][0]["body"].replace(" author=anthropic", "")
+        malformed = self.scores()
+        malformed[0][0]["body"] = malformed[0][0]["body"].replace("score=9", "score=oops")
+        for comments in (
+            self.scores(author_vendor="openai"),
+            self.scores(seats=("gpt-6.1-sol", "unknown")),
+            self.scores(vendor="unknown"), self.scores(author_vendor="unknown"),
+            missing_author, malformed,
+            self.scores() + self.scores(seats=("unknown",)),
+            self.scores() + self.scores(score=8),
+            self.scores() + self.scores(vendor="anthropic", author_vendor="openai",
+                                        seats=("claude-opus-5-5",)),
+        ):
+            with self.subTest(comments=comments):
+                self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
+
+    def test_gh_invalid_json_refused(self):
+        self.assertIn("merge refused", self.check(["rust/rules/a.yml"], error=ValueError("invalid JSON")))
 
     def test_lane_allowed(self):
         self.assertIsNone(self.check(["docs/example.md"]))
@@ -934,7 +961,7 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
     def test_untrusted_stale_low_or_duplicate_scores_refused(self):
         for comments in (self.scores(author="outsider"), self.scores(head="a" * 40),
-                         self.scores(score=8), self.scores(seats=("one", "one")), [[]]):
+                         self.scores(score=8), self.scores(seats=("gpt-6.1-sol", "gpt-6.1-sol")), [[]]):
             with self.subTest(comments=comments):
                 self.assertIn("two qualifying", self.check(["rust/rules/a.yml"], ["trusted"], comments))
 

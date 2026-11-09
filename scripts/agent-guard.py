@@ -1065,6 +1065,8 @@ def coordinator_merge_reason(args, cwd):
             return "The owner merges this PR: it changes owner-class paths."
         if kind == "lane":
             return None
+        # The coordinator posts from the owner's account. A dedicated bot
+        # identity is the follow-up; the login alone cannot identify seats.
         authors = config["scorer_authors"]
         if not authors:
             return "Sensitive PR refused: the owner must configure scorer_authors first."
@@ -1079,7 +1081,16 @@ def coordinator_merge_reason(args, cwd):
                     raise ValueError("missing comment author or body")
                 if login in authors:
                     bodies.append(body)
-        if not merge_class.has_two_scores(bodies, sha):
+        # author= records the head branch's author vendor, supplied by the
+        # coordinator. Never infer a model vendor from the GitHub login.
+        author_vendors = set()
+        for body in bodies:
+            for line in body.splitlines():
+                match = merge_class.SCORE.fullmatch(line.strip())
+                if match and match.group(1) == sha:
+                    author_vendors.add(match.group(5))
+        author_vendor = next(iter(author_vendors)) if len(author_vendors) == 1 else None
+        if not merge_class.has_two_scores(bodies, sha, author_vendor, config["scorer_seats"]):
             return "Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head."
         return None
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, StopIteration):

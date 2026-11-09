@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-import merge_class as mc
+from scripts import merge_class as mc
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA = "a" * 40
@@ -67,36 +67,71 @@ class CoverageTests(unittest.TestCase):
 
     def test_merge_classes_file_is_valid_json(self):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors"})
-        self.assertEqual(data["scorer_authors"], [])
+        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors", "scorer_seats"})
+        self.assertEqual(data["scorer_authors"], ["poitee"])
+        self.assertEqual(data["scorer_seats"], {
+            "gpt-6.1-sol": "openai", "gpt-6-astra": "openai",
+            "claude-fable-5-2": "anthropic", "claude-opus-5-5": "anthropic",
+        })
 
 
 class ScoreTests(unittest.TestCase):
-    def line(self, sha, seat, score):
-        return f"pp-score head={sha} seat={seat} score={score}"
+    def setUp(self):
+        self.allowed = json.loads(mc.CLASSES.read_text())["scorer_seats"]
 
-    def test_two_seats_at_nine_on_the_head_pass(self):
-        comments = [self.line(SHA, "alpha", 9), self.line(SHA, "sol", 10)]
-        self.assertTrue(mc.has_two_scores(comments, SHA))
+    def line(self, seat="gpt-6.1-sol", sha=SHA, score=9, vendor="openai", author="anthropic"):
+        return f"pp-score head={sha} seat={seat} vendor={vendor} score={score} author={author}"
 
-    def test_one_seat_twice_does_not_count_twice(self):
-        comments = [self.line(SHA, "alpha", 9), self.line(SHA, "alpha", 10)]
-        self.assertFalse(mc.has_two_scores(comments, SHA))
+    def check(self, comments, author="anthropic", head=SHA):
+        return mc.has_two_scores(comments, head, author, self.allowed)
 
-    def test_scores_below_nine_do_not_count(self):
-        comments = [self.line(SHA, "alpha", 8), self.line(SHA, "sol", 8)]
-        self.assertFalse(mc.has_two_scores(comments, SHA))
+    def test_two_openai_seats_pass_for_anthropic(self):
+        self.assertTrue(self.check([self.line(), self.line("gpt-6-astra")]))
 
-    def test_scores_on_another_head_do_not_count(self):
-        comments = [self.line(OTHER, "alpha", 9), self.line(SHA, "sol", 9)]
-        self.assertFalse(mc.has_two_scores(comments, SHA))
+    def test_two_anthropic_seats_pass_for_openai(self):
+        self.assertTrue(self.check([
+            self.line(seat, vendor="anthropic", author="openai")
+            for seat in ("claude-fable-5-2", "claude-opus-5-5")
+        ], author="openai"))
 
-    def test_score_must_be_its_own_line(self):
-        comments = ["looks good. " + self.line(SHA, "alpha", 9), self.line(SHA, "sol", 9)]
-        self.assertFalse(mc.has_two_scores(comments, SHA))
+    def test_duplicate_seat_counts_once(self):
+        self.assertFalse(self.check([self.line(), self.line(score=10)]))
 
-    def test_head_must_be_a_full_sha(self):
-        self.assertFalse(mc.has_two_scores([self.line("abc", "a", 9), self.line("abc", "b", 9)], "abc"))
+    def test_stale_head_does_not_count(self):
+        self.assertFalse(self.check([self.line(), self.line("gpt-6-astra", sha=OTHER)]))
+
+    def test_missing_or_unknown_author_vendor_refused(self):
+        for author in (None, "", "unknown"):
+            self.assertFalse(self.check([self.line(), self.line("gpt-6-astra")], author=author))
+
+    def test_invalid_record_refuses_even_with_two_good_scores(self):
+        good = [self.line(), self.line("gpt-6-astra")]
+        for bad in (
+            self.line(score=8), self.line(author="openai"),
+            self.line("unknown"), self.line(vendor="anthropic"),
+            self.line(vendor="unknown"), self.line(author="unknown"),
+            self.line().replace(" author=anthropic", ""),
+            self.line().replace(" vendor=openai", ""),
+            self.line().replace("score=9", "score=nine"),
+            self.line().replace("score=9", "score=" + "9" * 5000),
+            self.line().replace("head=" + SHA, "head=abc"),
+            "prose " + self.line(), self.line() + " extra",
+            self.line("claude-opus-5-5", vendor="anthropic", author="openai"),
+            None,
+        ):
+            with self.subTest(bad=bad):
+                self.assertFalse(self.check(good + [bad]))
+
+    def test_all_unapproved_seats_refused(self):
+        for seat in ("opencode/pulse-alpha-free", "cursor/grok-4.7", "grok-4.7", "pi/halo/qwen38-flash"):
+            self.assertFalse(self.check([self.line(), self.line(seat)]))
+
+    def test_head_must_be_full_sha(self):
+        self.assertFalse(self.check([self.line(), self.line("gpt-6-astra")], head="abc"))
+
+    def test_prose_and_valid_stale_scores_are_ignored(self):
+        self.assertTrue(self.check(["Review complete.", self.line(sha=OTHER),
+                                   self.line(), self.line("gpt-6-astra")]))
 
 
 if __name__ == "__main__":

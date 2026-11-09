@@ -16,7 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "scripts" / "merge-classes.json"
 CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
-SCORE = re.compile(r"^pp-score head=([0-9a-f]{40}) seat=(\S+) score=(\d+)$")
+SCORE = re.compile(
+    r"pp-score head=([0-9a-f]{40}) seat=(\S+) vendor=(openai|anthropic)"
+    r" score=([0-9]+) author=(openai|anthropic)"
+)
+VENDORS = {"openai", "anthropic"}
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -80,16 +84,43 @@ def uncovered(entries, classes):
     return [e for e in entries if not any(rx.match(e) for rx in covered)]
 
 
-def has_two_scores(comments, head):
-    """True when two distinct seats posted score 9 or more on the exact head."""
-    if not FULL_SHA.match(head):
+def has_two_scores(comments, head, author_vendor, allowed_seats):
+    """Require two allowed, independent seats at 9+; malformed records refuse.
+
+    Ordinary prose is ignored. Every pp-score line must parse, including old
+    records; valid records for another head never count toward this head.
+    """
+    if (not isinstance(head, str) or not FULL_SHA.fullmatch(head)
+            or not isinstance(author_vendor, str) or author_vendor not in VENDORS
+            or not isinstance(allowed_seats, dict) or not allowed_seats
+            or any(not isinstance(seat, str) or not seat
+                   or not isinstance(vendor, str) or vendor not in VENDORS
+                   for seat, vendor in allowed_seats.items())
+            or not isinstance(comments, (list, tuple))):
         return False
     seats = set()
     for body in comments:
+        if not isinstance(body, str):
+            return False
         for line in body.splitlines():
-            m = SCORE.match(line.strip())
-            if m and m.group(1) == head and int(m.group(3)) >= 9:
-                seats.add(m.group(2))
+            if "pp-score" not in line:
+                continue
+            match = SCORE.fullmatch(line.strip())
+            if not match:
+                return False
+            record_head, seat, vendor, score, author = match.groups()
+            if allowed_seats.get(seat) != vendor or vendor == author:
+                return False
+            if record_head != head:
+                continue
+            if author != author_vendor:
+                return False
+            try:
+                if int(score) < 9:
+                    return False
+            except ValueError:
+                return False
+            seats.add(seat)
     return len(seats) >= 2
 
 

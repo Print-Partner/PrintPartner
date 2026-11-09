@@ -1,4 +1,0 @@
-blind_id	question	grade	reason
-C1	Q3 crate dependency edges	0	Missing docs/architecture.md crate map update; names only ADR 0007.
-C2	Q1 Accept publishes a Plan	0	Omits begin_immediate writer transaction; says only generic transaction.
-C3	Q3 crate dependency edges	1	Names ALLOWED, Cargo.toml, architecture.md and ADR 0007 steps; no wrong answer.

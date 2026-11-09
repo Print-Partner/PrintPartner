@@ -4139,8 +4139,11 @@ for the finished print's file name and filament length in one read
 (`HostReads::finished_filament`: Moonraker `print_stats` `state`, `filename`
 and `filament_used`; PrusaLink's job `state`, `file` and `consumed_material`,
 read as millimetres). The length counts only when that read still reports the
-print finished (`complete` or `FINISHED`) under the same base name, so a slow
-observer never records the next print's usage against this one. Storage then picks the newest `watching` Checkoff link of that
+print finished (`complete` or `FINISHED`), so a slow observer never records the
+next print's usage against this one. When the status named a file, the read
+must name the same base name. When it named none, the read's file name is used:
+PrusaLink's `/api/v1/status` job carries no `file`, so a PrusaLink finish is
+named by `/api/v1/job` alone. Storage then picks the newest `watching` Checkoff link of that
 host created no later than the moment the observer saw the finish, so a send of
 the same file name uploaded after it never takes its length, and whose `filename` or `remote_path` has the finished file's base name
 (trimmed, `\` read as `/`, case-insensitive, like Node's

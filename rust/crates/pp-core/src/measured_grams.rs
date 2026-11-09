@@ -4,9 +4,11 @@
 //! or PrusaLink host goes to `complete` straight from `printing` or `paused` (an outage in
 //! between does not count as a new state), it asks the printer once for the
 //! finished print's file name and filament length. The length counts only
-//! when that same read still reports the print finished and names the same
-//! file, so a slow observer never records the next print's usage. Storage
-//! converts it
+//! when that same read still reports the print finished and, when the status
+//! named a file, names the same file, so a slow observer never records the
+//! next print's usage. A status without a file name still counts: PrusaLink's
+//! `/api/v1/status` job carries no `file`, so its name comes from that
+//! finished read alone. Storage converts it
 //! with the send's grams per millimetre for the newest watching Checkoff link
 //! of that host whose file is the finished one and that existed when the
 //! finish was seen. A link is measured once; a later finish of the same file
@@ -49,8 +51,8 @@ pub(crate) async fn observe(
         match transition {
             Ok(transition) => {
                 if let Some(filename) = finished(&mut active, &transition) {
-                    let at = SystemTime::now();
-                    record(&settings, &reads, &grams, &transition.id, &filename, at).await;
+                    let (id, at) = (&transition.id, SystemTime::now());
+                    record(&settings, &reads, &grams, id, filename.as_deref(), at).await;
                 }
             }
             // A missed change may hide a finish; its estimate stays.
@@ -60,12 +62,13 @@ pub(crate) async fn observe(
     }
 }
 
-/// The finished file's name when `transition` ends a print this process saw
-/// running. `active` keeps each host's last answered state.
+/// `Some` when `transition` ends a print this process saw running, holding
+/// the file name the status reported, if any. `active` keeps each host's last
+/// answered state.
 fn finished(
     active: &mut HashMap<String, PrinterHostState>,
     transition: &Transition,
-) -> Option<String> {
+) -> Option<Option<String>> {
     let state = transition.status.state.clone();
     if matches!(state, PrinterHostState::Offline | PrinterHostState::Unknown) {
         return None;
@@ -75,23 +78,27 @@ fn finished(
         before,
         Some(PrinterHostState::Printing | PrinterHostState::Paused)
     );
-    (state == PrinterHostState::Complete && was_running)
-        .then(|| transition.status.filename.clone())
-        .flatten()
-        .filter(|filename| !filename.trim().is_empty())
+    (state == PrinterHostState::Complete && was_running).then(|| {
+        transition
+            .status
+            .filename
+            .clone()
+            .filter(|filename| !filename.trim().is_empty())
+    })
 }
 
 /// Reads host `integration_id`'s finished print once and records its
-/// filament length for `filename`'s watching link that existed when the
-/// print was seen finishing at `finished_at`. A failed read or write, a
-/// printer no longer reporting `filename` as finished, or no positive length
-/// leaves the estimate.
+/// filament length for the watching link of the file that read names, as
+/// long as the link existed when the print was seen finishing at
+/// `finished_at`. When the status named `filename`, the read must name the
+/// same file. A failed read or write, a printer no longer reporting a
+/// finished print (or `filename`), or no positive length leaves the estimate.
 pub(crate) async fn record(
     settings: &SettingsClient,
     reads: &HostReads,
     grams: &PrintGramsClient,
     integration_id: &str,
-    filename: &str,
+    filename: Option<&str>,
     finished_at: SystemTime,
 ) -> Option<Measurement> {
     let (client, id) = (settings.clone(), integration_id.to_owned());
@@ -108,14 +115,11 @@ pub(crate) async fn record(
         let name = name.trim().replace('\\', "/");
         name.rsplit('/').next().unwrap_or_default().to_lowercase()
     };
-    if base(&reported) != base(filename) || !(measured_mm.is_finite() && measured_mm > 0.0) {
+    let other_file = filename.is_some_and(|filename| base(&reported) != base(filename));
+    if base(&reported).is_empty() || other_file || !(measured_mm.is_finite() && measured_mm > 0.0) {
         return None;
     }
-    let (grams, id, filename) = (
-        grams.clone(),
-        integration_id.to_owned(),
-        filename.to_owned(),
-    );
+    let (grams, id, filename) = (grams.clone(), integration_id.to_owned(), reported);
     tokio::task::spawn_blocking(move || {
         grams.measured(&id, &filename, measured_mm, finished_at, WRITE_WAIT)
     })
@@ -153,14 +157,27 @@ mod tests {
         );
         assert_eq!(step("a", Printing, Some("a.gcode")), None);
         assert_eq!(step("a", Offline, None), None);
-        assert_eq!(step("a", Complete, Some("a.gcode")), Some("a.gcode".into()));
+        assert_eq!(
+            step("a", Complete, Some("a.gcode")),
+            Some(Some("a.gcode".into()))
+        );
         assert_eq!(
             step("a", Complete, Some("a.gcode")),
             None,
             "same state again"
         );
         assert_eq!(step("b", Paused, Some("b.gcode")), None);
-        assert_eq!(step("b", Complete, Some(" ")), None, "no filename");
+        assert_eq!(
+            step("b", Complete, Some(" ")),
+            Some(None),
+            "a blank name still finishes; the finished read names the file"
+        );
+        assert_eq!(step("e", Printing, None), None);
+        assert_eq!(
+            step("e", Complete, None),
+            Some(None),
+            "PrusaLink's status job has no file"
+        );
         assert_eq!(step("c", Printing, Some("c.gcode")), None);
         assert_eq!(step("c", Error, Some("c.gcode")), None);
         assert_eq!(
@@ -169,6 +186,9 @@ mod tests {
             "error is not running"
         );
         assert_eq!(step("d", Paused, Some("d.gcode")), None);
-        assert_eq!(step("d", Complete, Some("d.gcode")), Some("d.gcode".into()));
+        assert_eq!(
+            step("d", Complete, Some("d.gcode")),
+            Some(Some("d.gcode".into()))
+        );
     }
 }

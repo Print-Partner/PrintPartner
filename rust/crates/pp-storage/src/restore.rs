@@ -417,5 +417,12 @@ pub(crate) fn recover(data_dir: &Path) -> Result<()> {
         .map_err(|error| refuse(format!("could not be cleared: {error}")))
 }
 
+/// Test hook: [`WriterOwner`]'s shutdown calls it once writer, reader and
+/// restore admission are closed, with the one deadline both drains use.
+#[cfg(all(test, unix))]
+pub(crate) fn admission_closed(data_dir: &Path, deadline: Instant) {
+    tests::admission_closed(data_dir, deadline);
+}
+
 #[cfg(all(test, unix))]
 mod tests;

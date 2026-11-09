@@ -1127,8 +1127,7 @@ impl WriterOwner {
             queue.closed = true;
             self.client.shared.changed.notify_all();
         }
-        let deadline = Instant::now() + self.drain;
-        let remaining_readers = {
+        {
             let mut readers = self
                 .client
                 .readers
@@ -1138,6 +1137,19 @@ impl WriterOwner {
             readers.closed = true;
             readers.idle.clear();
             self.client.readers.changed.notify_all();
+        }
+        let deadline = Instant::now() + self.drain;
+        #[cfg(all(test, unix, feature = "desktop_rebuild"))]
+        if let Some(lease) = &self.lease {
+            restore::admission_closed(lease.data_dir(), deadline);
+        }
+        let remaining_readers = {
+            let mut readers = self
+                .client
+                .readers
+                .state
+                .lock()
+                .map_err(|_| anyhow!("Reader pool poisoned"))?;
             while readers.active > 0 && Instant::now() < deadline {
                 readers = self
                     .client

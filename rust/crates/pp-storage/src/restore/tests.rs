@@ -39,6 +39,21 @@ pub(super) fn removal_fault(path: &Path) -> std::io::Result<()> {
     }
 }
 
+type DeadlineHook = Box<dyn FnOnce(Instant) + Send>;
+static ADMISSION_CLOSED: Mutex<Vec<(PathBuf, DeadlineHook)>> = Mutex::new(Vec::new());
+
+/// Called by shutdown once admission is closed, with the drain deadline.
+pub(super) fn admission_closed(data_dir: &Path, deadline: Instant) {
+    let hook = {
+        let mut hooks = ADMISSION_CLOSED.lock().unwrap();
+        let index = hooks.iter().position(|(dir, _)| dir == data_dir);
+        index.map(|index| hooks.remove(index).1)
+    };
+    if let Some(hook) = hook {
+        hook(deadline);
+    }
+}
+
 fn on_work_dir(root: &Path, hook: impl FnOnce() + Send + 'static) {
     AFTER_WORK_DIR
         .lock()
@@ -608,15 +623,23 @@ fn ticket_t_8_restore_shutdown_keeps_the_lease_while_restore_work_runs_on() {
 #[test]
 fn ticket_t_8_restore_shutdown_refuses_new_work_at_once_and_drains_against_one_deadline() {
     let mut held = held_upload();
-    let drain = Duration::from_millis(1500);
+    let drain = Duration::from_millis(300);
     held.owner.set_drain(drain);
     let settings = held.owner.client();
     let checkout = settings.reader(Duration::from_secs(1)).unwrap();
+    let (closed, admission) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel::<()>();
+    ADMISSION_CLOSED.lock().unwrap().push((
+        held.root.clone(),
+        Box::new(move |deadline| {
+            closed.send((Instant::now(), deadline)).unwrap();
+            resumed.recv().unwrap();
+        }),
+    ));
     let owner = held.owner;
-    let started = Instant::now();
     let shutdown = thread::spawn(move || owner.shutdown());
-    thread::sleep(Duration::from_millis(200));
-    assert!(!shutdown.is_finished(), "shutdown is still draining");
+    // Shutdown is held right after it closed admission, before any wait.
+    let (closed_at, deadline) = admission.recv().unwrap();
     let setting = Setting {
         tenant: "default".into(),
         key: "restore.test".into(),
@@ -633,15 +656,46 @@ fn ticket_t_8_restore_shutdown_refuses_new_work_at_once_and_drains_against_one_d
     );
     assert!(settings.reader(Duration::ZERO).is_err());
     assert!(held.client.begin_upload(16).is_err());
+    // One deadline, taken once admission closed and no later than `drain`
+    // after it. Both the reader and the restore wait use it.
+    assert!(deadline <= closed_at + drain, "{deadline:?} {closed_at:?}");
+    resume.send(()).unwrap();
     let error = shutdown.join().unwrap().unwrap_err();
-    let elapsed = started.elapsed();
     assert!(error.to_string().contains("still active"), "{error:#}");
-    // Two waits of `drain` each would take 3 s; one shared deadline takes 1.5 s.
-    assert!(
-        elapsed >= drain && elapsed < drain * 3 / 2,
-        "shutdown took {elapsed:?} for a {drain:?} drain"
-    );
     drop(checkout);
     held.release.send(()).unwrap();
     held.upload.join().unwrap().unwrap();
+}
+
+/// Tar iteration stops at the end-of-archive block, so only reading the gzip
+/// stream to its end catches a damaged CRC or length trailer.
+#[test]
+fn ticket_t_8_restore_a_corrupt_gzip_trailer_refuses_and_keeps_the_earlier_stage() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let good = archive_with(scratch.path(), 34, "full", &[]);
+    let earlier = stage(&client, &good).unwrap();
+    for trailer_byte in [8, 1] {
+        // The trailer is the CRC-32 (8 to 5 bytes from the end), then the length.
+        let mut bytes = std::fs::read(&good).unwrap();
+        let at = bytes.len() - trailer_byte;
+        bytes[at] ^= 0xff;
+        let corrupt = scratch
+            .path()
+            .join(format!("corrupt-{trailer_byte}.tar.gz"));
+        std::fs::write(&corrupt, bytes).unwrap();
+        assert!(archive::validate(&corrupt, archive::Limits::default()).is_err());
+        let error = stage(&client, &corrupt).unwrap_err();
+        assert!(
+            matches!(refusal(&error), Some(Refusal::InvalidArchive(detail)) if detail.contains("gzip")),
+            "byte {trailer_byte} from the end: {error:#}"
+        );
+        assert_eq!(
+            work_entries(&root),
+            [format!("{STAGED_PREFIX}{}", earlier.restore_id)]
+        );
+    }
+    owner.shutdown().unwrap();
 }

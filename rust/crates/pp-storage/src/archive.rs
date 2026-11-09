@@ -20,6 +20,9 @@ pub const DATABASE_FILE: &str = "print-partner.db";
 pub const WAL_FILE: &str = "print-partner.db-wal";
 const CORE_FILES: [&str; 3] = [METADATA_FILE, DATABASE_FILE, WAL_FILE];
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
+/// Zero padding allowed after the tar end-of-archive block, before the gzip
+/// trailer. Tar writers pad to a record (10 KiB by default).
+const MAX_TRAILING_BYTES: u64 = 1024 * 1024;
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -678,6 +681,17 @@ fn validate_into(
             std::io::copy(&mut entry, &mut std::io::sink())?;
         }
     }
+    // Tar iteration stops at the end-of-archive block. Read the gzip stream
+    // to its end so the decoder checks the CRC and length trailer.
+    let trailing = std::io::copy(
+        &mut reader.into_inner().take(MAX_TRAILING_BYTES + 1),
+        &mut std::io::sink(),
+    )
+    .context("Backup archive gzip stream is corrupt")?;
+    ensure!(
+        trailing <= MAX_TRAILING_BYTES,
+        "Backup archive has more than {MAX_TRAILING_BYTES} bytes after the tar end"
+    );
     let metadata = metadata.ok_or_else(|| anyhow!("Backup archive is missing {METADATA_FILE}"))?;
     ensure!(
         seen.contains(DATABASE_FILE),

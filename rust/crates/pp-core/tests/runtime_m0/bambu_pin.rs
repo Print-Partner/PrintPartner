@@ -72,20 +72,21 @@ async fn seeded_printer(data: &std::path::Path) -> (Broker, Identity) {
 /// later one to `then`: one printer address behind which the certificate
 /// changes between two Test connections.
 async fn forwarder(first: SocketAddr, then: SocketAddr) -> (u16, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let task = tokio::spawn(async move {
-        let mut target = first;
-        while let Ok((mut inbound, _)) = listener.accept().await {
-            let to = std::mem::replace(&mut target, then);
+    let front = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let front_port = front.local_addr().unwrap().port();
+    let relay = async move {
+        let mut targets = std::iter::once(first).chain(std::iter::repeat(then));
+        while let (Ok((mut inbound, _)), Some(to)) = (front.accept().await, targets.next()) {
             tokio::spawn(async move {
                 if let Ok(mut outbound) = tokio::net::TcpStream::connect(to).await {
                     let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
                 }
             });
         }
-    });
-    (port, task)
+    };
+    (front_port, tokio::spawn(relay))
 }
 
 /// Waits until `broker` holds a Test connection's pushall reply.

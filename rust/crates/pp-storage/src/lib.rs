@@ -612,10 +612,19 @@ impl WriterOwner {
             locked.abandon();
             return Err(error);
         }
-        locked.preflight()?;
+        if let Err(error) = locked.preflight() {
+            locked.abandon();
+            return Err(error);
+        }
         let lease = lease::StorageLease::acquire_locked(locked)?;
         let path = lease.data_dir().join("print-partner.db");
-        let version = lease.preflight()?;
+        let version = match lease.preflight() {
+            Ok(version) => version,
+            Err(error) => {
+                lease.abandon();
+                return Err(error);
+            }
+        };
         // Preserve one literal per line so the covers suppression applies only to that literal.
         #[rustfmt::skip]
         let directories = [

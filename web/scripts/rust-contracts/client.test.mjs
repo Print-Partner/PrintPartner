@@ -111,7 +111,8 @@ const optionalMembers = {
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
-  BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason", "entries.*.restorable"]),
+  BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason", "entries.*.undo.detail", "entries.*.undo.scope", "entries.*.restorable"]),
+  BuildHistoryUndo: new Set(["entry.undo", "entry.undo.reason", "entry.undo.detail", "entry.undo.scope", "entry.restorable"]),
   // Accept's serde defaults: no remap, and no header version for a draft without a header row.
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
 };

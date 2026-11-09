@@ -34,7 +34,7 @@ explicitly. The compose files keep a `build:` section as a fallback, so
 during a release. If `docker compose pull` returns `denied` or `unauthorized`,
 use `docker compose up --build` instead, or `docker login ghcr.io` with a token
 that has `read:packages`. See
-[docs/INSTALL.md](../docs/INSTALL.md#denied-or-unauthorized-when-pulling-the-image).
+[docs/INSTALL.md](../docs/INSTALL.md#the-image-pull-is-denied).
 
 The app service has a healthcheck that polls `GET /health` every 30s using Node's built-in `fetch` (the `node:22-bookworm-slim` runtime image ships no curl/wget). `docker ps` shows the container as `healthy` once the server responds.
 

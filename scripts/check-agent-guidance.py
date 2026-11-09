@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Check the shared agent guide and its linked readiness documents, offline."""
+"""Check local links and heading anchors in every tracked Markdown page, offline.
+
+Link validation runs over every page `git ls-files '*.md'` lists. Title and skill-metadata
+rules apply only to the shared agent guidance in DOCUMENTS.
+"""
 
 from pathlib import Path
 import re
@@ -17,13 +21,20 @@ DOCUMENTS = (
     "docs/development/factory-missions.md",
     "docs/development/agent-workflow.md",
 )
-LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
+# An inline link or image destination: bare (one level of parentheses allowed) or in angle
+# brackets, with an optional title.
+LINK = re.compile(r"\[[^\]]*\]\(\s*(<[^>\n]*>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)")
+# A reference definition, such as `[guide]: docs/guide.md#setup`.
+REFERENCE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(<[^>\n]*>|\S+)")
 HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$")
 FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 INLINE_LINK = re.compile(r"\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])")
 CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
 EMPHASIS = re.compile(r"(?<![\w\\])(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)")
+# An explicit HTML anchor, such as `<a id="settings-for-chad"></a>`, which GitHub keeps.
+HTML_ANCHOR = re.compile(r"<a\s(?:[^>\"']|\"[^\"]*\"|'[^']*')*?(?<![\w-])(?:id|name)\s*=\s*[\"']([^\"']+)[\"']",
+                         re.I)
 
 
 def rendered_text(source):
@@ -42,9 +53,10 @@ def rendered_text(source):
     return re.sub(r"\0(\d+)\0", lambda match: code[int(match.group(1))], text)
 
 
-def anchors(markdown):
-    """Return the heading anchors GitHub generates for a Markdown document."""
-    found, seen, opening = set(), {}, None
+def prose(markdown, keep_code=False):
+    """Yield the lines of a Markdown document outside fenced code blocks, with inline code spans
+    removed: links and anchors written as code are examples, not links."""
+    opening = None
     for line in markdown.splitlines():
         fence = FENCE.match(line)
         if opening:
@@ -56,6 +68,15 @@ def anchors(markdown):
         if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
             opening = fence.group(1)
             continue
+        yield line if keep_code else CODE_SPAN.sub("", line)
+
+
+def anchors(markdown):
+    """Return the anchors GitHub generates for a Markdown document's headings, plus explicit
+    HTML `id` and `name` anchors."""
+    found, seen = set(), {}
+    for line in prose(markdown, keep_code=True):
+        found.update(HTML_ANCHOR.findall(CODE_SPAN.sub("", line)))
         heading = HEADING.match(line)
         if heading:
             slug = re.sub(r"[^\w\- ]", "", rendered_text(heading.group(1)).lower()).replace(" ", "-")
@@ -70,24 +91,52 @@ def anchors(markdown):
     return found
 
 
-def check_document(root, relative):
+def check_links(root, relative, cache=None):
+    """Local link and anchor errors in one Markdown page. External links are not fetched.
+    Links inside fenced code blocks are examples and are skipped. `cache` maps a page's
+    resolved path to its anchors, so each page is parsed once per run."""
+    cache = {} if cache is None else cache
     path = root / relative
-    if not path.is_file():
-        return [f"{relative}: missing document"]
-    body = path.read_text(encoding="utf-8")
+    try:
+        lines = list(prose(path.read_text(encoding="utf-8")))
+    except UnicodeDecodeError:
+        return [f"{relative}: not UTF-8"]
+    targets = LINK.findall("\n".join(lines))
+    targets += [match.group(1) for line in lines if (match := REFERENCE.match(line))]
     errors = []
-    if not body.startswith("# ") and path.name != "SKILL.md":
-        errors.append(f"{relative}: missing title")
-    for target in LINK.findall(body):
+    for target in targets:
+        target = target[1:-1] if target.startswith("<") and target.endswith(">") else target
         url = urlsplit(target)
         if url.scheme or url.netloc:
             continue
         destination = (path.parent / unquote(url.path)).resolve() if url.path else path.resolve()
         if not destination.is_relative_to(root.resolve()) or not destination.exists():
             errors.append(f"{relative}: missing or outside-checkout link {target}")
-        elif url.fragment and destination.suffix == ".md" and destination.is_file() \
-                and unquote(url.fragment) not in anchors(destination.read_text(encoding="utf-8")):
+            continue
+        if not (url.fragment and destination.suffix == ".md" and destination.is_file()):
+            continue
+        if destination not in cache:
+            try:
+                cache[destination] = anchors(destination.read_text(encoding="utf-8"))
+            except UnicodeDecodeError:
+                cache[destination] = set()
+        if unquote(url.fragment) not in cache[destination]:
             errors.append(f"{relative}: missing heading for link {target}")
+    return errors
+
+
+def check_policy(root, relative):
+    """Title and skill-metadata rules, which apply only to the shared guidance in DOCUMENTS."""
+    path = root / relative
+    if not path.is_file():
+        return [f"{relative}: missing document"]
+    try:
+        body = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return [f"{relative}: not UTF-8"]
+    errors = []
+    if not body.startswith("# ") and path.name != "SKILL.md":
+        errors.append(f"{relative}: missing title")
     if path.name == "SKILL.md":
         parts = body.split("---\n", 2)
         if len(parts) != 3 or parts[0]:
@@ -102,6 +151,23 @@ def check_document(root, relative):
     return errors
 
 
+def check_document(root, relative):
+    """Every rule for one guidance document: its policy, then its links."""
+    errors = check_policy(root, relative)
+    if errors and errors[0].endswith("missing document"):
+        return errors
+    return errors + check_links(root, relative)
+
+
+def tracked_markdown(root):
+    """Every tracked Markdown page that exists in the working tree."""
+    result = subprocess.run(["git", "ls-files", "-z", "--", "*.md"], cwd=root,
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise RuntimeError("git ls-files failed: " + result.stderr.strip())
+    return [p for p in result.stdout.split("\0") if p and (root / p).is_file()]
+
+
 def check_trackability(root):
     result = subprocess.run(
         ["git", "check-ignore", "--no-index", "--", *DOCUMENTS],
@@ -114,14 +180,22 @@ def check_trackability(root):
 
 
 def main():
-    errors = [error for relative in DOCUMENTS
-              for error in check_document(ROOT, relative)]
+    errors = [error for relative in DOCUMENTS for error in check_policy(ROOT, relative)]
     errors.extend(check_trackability(ROOT))
+    try:
+        pages = tracked_markdown(ROOT)
+    except RuntimeError as error:
+        pages = []
+        errors.append(str(error))
+    # A guidance document that is not committed yet still gets its links checked.
+    pages = sorted(set(pages) | {d for d in DOCUMENTS if (ROOT / d).is_file()})
+    cache = {}
+    errors.extend(error for relative in pages for error in check_links(ROOT, relative, cache))
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print(f"Agent guidance: {len(DOCUMENTS)} documents, local links, heading anchors, skill metadata, "
-          "and Git trackability passed.")
+    print(f"Agent guidance: {len(DOCUMENTS)} documents' titles, skill metadata and Git trackability, "
+          f"and local links and heading anchors in {len(pages)} tracked Markdown pages passed.")
     return 0
 
 

@@ -24,7 +24,7 @@ name: Review gate
 # scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
 # the guard), as Dependabot's action bumps do, it needs both path 3 (the
 # owner's marker for that head) and path 1 or 2.
-# Every push or edit waits up to 30 minutes, or 2 if a Claude job is missing, then judges the
+# Every push or edit waits up to 30 minutes, or 2 minutes if a Claude job is missing, then judges the
 # paths above. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
 # A PR into another branch runs that branch's copy of this file; see the note under the trigger.
 on:

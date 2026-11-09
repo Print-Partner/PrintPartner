@@ -479,9 +479,9 @@ fn ticket_t_8_restore_a_failed_cleanup_of_an_earlier_stage_still_returns_the_new
     use std::os::unix::fs::PermissionsExt;
     let (_installation, root) = installation();
     let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let (backup, backed_up) = backup_then_change(&owner, &root, scratch.path());
-    let client = owner.installation().unwrap();
     let first = stage(&client, &backup).unwrap();
     let first_dir = root
         .join(WORK_DIR)
@@ -505,29 +505,50 @@ fn ticket_t_8_restore_a_failed_cleanup_of_an_earlier_stage_still_returns_the_new
     assert!(!root.join(WORK_DIR).exists());
 }
 
-/// Holds `begin_upload` inside its work until the returned sender fires.
-fn hold_upload(
-    root: &Path,
-    client: &InstallationClient,
-) -> (mpsc::Sender<()>, thread::JoinHandle<Result<Upload>>) {
+/// A marked installation with an owner whose `begin_upload` is held inside
+/// its work, on another thread, until the returned sender fires.
+struct Held {
+    _installation: Installation,
+    root: PathBuf,
+    owner: WriterOwner,
+    client: InstallationClient,
+    release: mpsc::Sender<()>,
+    upload: thread::JoinHandle<Result<Upload>>,
+}
+
+fn held_upload() -> Held {
+    let (installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
     let (inside, entered) = mpsc::channel();
     let (release, released) = mpsc::channel::<()>();
-    on_work_dir(root, move || {
+    on_work_dir(&root, move || {
         inside.send(()).unwrap();
         released.recv().unwrap();
     });
-    let client = client.clone();
-    let upload = thread::spawn(move || client.begin_upload(16));
+    let uploading = client.clone();
+    let upload = thread::spawn(move || uploading.begin_upload(16));
     entered.recv().unwrap();
-    (release, upload)
+    Held {
+        _installation: installation,
+        root,
+        owner,
+        client,
+        release,
+        upload,
+    }
 }
 
 #[test]
 fn ticket_t_8_restore_shutdown_waits_for_restore_work_and_refuses_new_work() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let client = owner.installation().unwrap();
-    let (release, upload) = hold_upload(&root, &client);
+    let Held {
+        _installation,
+        root,
+        owner,
+        client,
+        release,
+        upload,
+    } = held_upload();
     let shutdown = thread::spawn(move || owner.shutdown());
     thread::sleep(Duration::from_millis(500));
     assert!(!shutdown.is_finished(), "shutdown waits for the upload");
@@ -556,11 +577,9 @@ fn ticket_t_8_restore_shutdown_waits_for_restore_work_and_refuses_new_work() {
 
 #[test]
 fn ticket_t_8_restore_shutdown_keeps_the_lease_while_restore_work_runs_on() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let client = owner.installation().unwrap();
-    let (release, upload) = hold_upload(&root, &client);
-    let error = owner.shutdown().unwrap_err();
+    let held = held_upload();
+    let (root, release, upload) = (held.root, held.release, held.upload);
+    let error = held.owner.shutdown().unwrap_err();
     assert!(
         error.to_string().contains("Restore work still active"),
         "{error:#}"

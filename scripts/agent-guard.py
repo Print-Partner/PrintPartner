@@ -91,6 +91,7 @@ UNREAD_BODY = ("The guard must read a comment body literally to check it for a p
                "Write the body as a literal argument, or to a file passed with --body-file in a command "
                "of its own; no variables, substitutions, or stdin.")
 VARIABLE = "GitHub Actions variables are owner-maintained; ask the maintainer to change them."
+ALIAS = "A gh alias hides the command from the guard; run the full gh command instead."
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -908,6 +909,9 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
         if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]):
             return None
         return MERGE if args[0] == "pr" else RELEASE
+    # An alias could expand to any command, including a merge the guard refuses.
+    if args[:1] == ["alias"] and args[1:2] and args[1] in ("set", "import"):
+        return None if all(arg in ("--help", "-h") for arg in args[2:]) and args[2:] else ALIAS
     if args[:1] == ["variable"]:
         # Only reads and help are allowed; any other form, including options before the subcommand, may write.
         if not args[1:] or args[1] in VARIABLE_READS or all(arg in ("--help", "-h") for arg in args[1:]):

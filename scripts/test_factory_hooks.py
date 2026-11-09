@@ -868,6 +868,25 @@ class CoordinatorMergeTests(unittest.TestCase):
                     with self.subTest(command=command, cwd=cwd):
                         self.assertEqual(result.returncode, 2, result.stderr)
 
+    def test_gh_alias_writes_are_refused(self):
+        for command in ("gh alias set m 'pr merge 12 --admin'", "gh alias set --shell m 'gh pr merge 12 --admin'",
+                        "gh alias import aliases.yml", "gh alias import -"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh alias hides the command", result.stderr)
+        for command in ("gh alias list", "gh alias set --help", "gh alias delete m"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_graphql_and_eval_merges_are_refused(self):
+        for command in (f"eval '{MERGE_FORM}'",
+                        "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
     def test_merge_outside_a_git_checkout_is_refused(self):
         with tempfile.TemporaryDirectory() as folder:
             for result in self.results(MERGE_FORM, folder, None):

@@ -39,7 +39,7 @@ Commit before computing the filter; it reads committed changes only. **Sensitive
 
 ## Sensitive PRs
 
-A PR is sensitive when it touches schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths: `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, and `.claude/`. When unsure, it is sensitive. Say so in the PR body. The coordinator scores its exact head with two seats (Crouton Alpha and DeepSeek V4.1 Flash on OpenCode free) and needs 9 or more from each; see [Merge gate](../../../docs/development/definition-of-done.md#merge-gate). Sensitive PRs and marker-only heads merge only from the coordinator worktree.
+A PR is sensitive when it touches schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths: `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, and `.claude/`. When unsure, it is sensitive. Say so in the PR body. The coordinator scores its exact head with two seats (Crouton Alpha and DeepSeek V4.1 Flash on OpenCode free) and needs 9 or more from each; see [Merge gate](../../../docs/development/definition-of-done.md#merge-gate). Sensitive PRs and marker-only heads merge only from the coordinator worktree, and the owner merges changes to the safety guard, its hook adapters, and CI controls.
 
 ## Review
 
@@ -54,13 +54,13 @@ Before pushing, have a fresh-context reviewer read the diff: correctness and AGE
 
 ## While CI runs
 
-- **Standing rebase rule.** When `main` moves and the PR conflicts, merge `origin/main` into the branch, regenerate generated files, rerun the affected checks, and push, without asking. These pushes don't count against "push once". Never rebase a pushed branch or force-push.
+- **Standing rebase rule** (done by merging, not rebasing). When `main` moves and the PR conflicts, merge `origin/main` into the branch, regenerate generated files, rerun the affected checks, and push, without asking. These pushes don't count against "push once". Never rebase a pushed branch or force-push.
 - No CI reruns, except once per job for a flake that has a ticket or an external 429 or 5xx.
 - `rust (windows)` is advisory; don't chase a red Windows job unless the ticket is Windows work. While the ruleset still lists it as required, a red run blocks the merge; report readiness instead.
 
 ## Merge or report
 
-For a normal PR, merge it yourself once every [Lane merges](../../../docs/development/definition-of-done.md#lane-merges) condition holds on the exact head: not sensitive, `review-gate` passed on a Claude or Droid review, every required check green, nothing else pending, every thread resolved, base `main`. Run exactly:
+For a normal PR, merge it yourself once every [Lane merges](../../../docs/development/definition-of-done.md#lane-merges) condition holds on the exact head: not sensitive, `review-gate` passed on a Claude or Droid review, every required check green, nothing else pending, every other check passed or on the advisory list of merge gate item 3, every thread resolved, base `main`. Run it from your own Print Partner worktree. Run exactly:
 
 ```sh
 gh pr merge <number> --squash --match-head-commit <40-character head sha>

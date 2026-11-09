@@ -162,9 +162,11 @@ Lanes merge their own normal PRs, and the coordinator merges the rest. Both use 
 gh pr merge <number> --squash --match-head-commit <40-character sha>
 ```
 
-The command must stand alone and run inside a Git checkout: an explicit PR number, a literal lowercase full SHA, and no other option such as `--admin`, `--auto`, `--delete-branch`, or `-R`; no wrapper, environment assignment, `cd`, pipeline, `sh -c` script, or substitution. Every other merge is refused, including `gh api` merge calls. `--match-head-commit` makes GitHub refuse the merge if the PR moved past that SHA.
+The command must stand alone and run inside a Git checkout: an explicit PR number, a literal lowercase full SHA, and no other option such as `--admin`, `--auto`, `--delete-branch`, or `-R`; no wrapper, environment assignment, `cd`, pipeline, `sh -c` script, or substitution. Every other merge is refused, including `gh api` merge calls. The guard also refuses `gh alias set` and `gh alias import`, since an alias hides the command it runs. `--match-head-commit` makes GitHub refuse the merge if the PR moved past that SHA.
 
 The guard cannot tell a sensitive PR from a normal one, so it allows the form from any checkout. Who may run it is a rule of the [merge gate](definition-of-done.md#merge-gate): a lane merges only its own PR, only when the PR is not sensitive (item 6) and its `review-gate` passed on a Claude or Droid review of that exact head, not only on the coordinator record. Sensitive PRs and marker-only heads merge from the coordinator worktree. The owner merges changes to the safety guard, its hook adapters, and CI controls. The coordinator audits every merge after the fact; see [Lane merges](definition-of-done.md#lane-merges).
+
+Remaining risk: the guard checks that the command runs inside a Git checkout, not which repository or PR it targets. `gh` resolves the PR from the checkout's remotes and default repo, which an earlier command (`gh repo set-default`, `git remote add`, an exported `GH_REPO`) can change, and the guard does not check that the PR is the lane's own. It cannot see an alias that already exists in the `gh` config either. Lanes run the merge from their own Print Partner worktree, and the coordinator's audit catches the rest.
 
 ### Coordinator worktree
 

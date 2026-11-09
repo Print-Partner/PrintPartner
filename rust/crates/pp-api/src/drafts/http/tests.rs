@@ -609,7 +609,13 @@ fn media_type(status: u16) -> &'static str {
 
 async fn json_reply(request: reqwest::RequestBuilder, status: u16) -> Value {
     let response = request.send().await.unwrap();
-    assert_eq!(response.status().as_u16(), status);
+    let actual = response.status().as_u16();
+    if actual != status {
+        panic!(
+            "status {actual}, expected {status}: {}",
+            response.text().await.unwrap()
+        );
+    }
     assert_eq!(response.headers()["content-type"], media_type(status));
     crate::problem::without_envelope(response.json().await.unwrap())
 }
@@ -3005,9 +3011,13 @@ async fn ticket_t_61_autosave_refusals_write_nothing() {
 
 #[path = "tests/accept_header.rs"]
 mod accept_header;
+#[path = "tests/gre487_stale_patch.rs"]
+mod gre487_stale_patch;
 #[path = "tests/header.rs"]
 mod header;
 #[path = "tests/mcp_accept.rs"]
 mod mcp_accept;
+#[path = "tests/order_authority.rs"]
+mod order_authority;
 #[path = "tests/restore_as_draft.rs"]
 mod restore_as_draft;

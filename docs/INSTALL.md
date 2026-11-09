@@ -20,11 +20,11 @@ Both commands must succeed. Install Docker from the [official Docker documentati
 ## Download Print Partner
 
 ```bash
-git clone https://github.com/poitee/PrintPartner.git
+git clone https://github.com/Print-Partner/PrintPartner.git
 cd PrintPartner
 ```
 
-If you do not use Git, download the source archive from the [Print Partner repository](https://github.com/poitee/PrintPartner), extract it, and open that directory in a terminal.
+If you do not use Git, download the source archive from the [Print Partner repository](https://github.com/Print-Partner/PrintPartner), extract it, and open that directory in a terminal.
 
 ## Start the container
 

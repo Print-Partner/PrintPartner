@@ -75,7 +75,10 @@ function history(b) {
     plan_id: b.id,
     entries: [
       entry("decision", "3", 30, "Print the brackets in PETG", { actor: "assistant" }),
-      entry("checkoff_burst", "7", 25, "4 units checked off", { undo: { undoable: false, reason: "no_undo_token" } }),
+      entry("checkoff_burst", "manual-5a1f", 27, "Checked off 2 units, assembled 1", { undo: { undoable: true } }),
+      entry("checkoff_burst", "7", 25, "4 units checked off", {
+        undo: { undoable: false, reason: "no_undo_token", detail: "No undo is recorded for this Checkoff burst" },
+      }),
       entry("send", "q-2", 20, "Sent plate 2 to Voron 2.4", { undo: { undoable: false, reason: "printer_command" } }),
       entry("snapshot", "2", 12, "Before accepting revision 2"),
       entry("revision", "2", 10, "Accepted revision 2"),

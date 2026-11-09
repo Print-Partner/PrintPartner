@@ -44,7 +44,7 @@ is not established.
   `check-macos-bundle.py` require `CFBundleIdentifier=com.poitee.printpartner`
   and the expected product bundle. The native macOS workflow uses the same
   app name for original and relocated artifacts. The web release workflow
-  publishes tags under `poitee/PrintPartner` with titles `Print Partner <tag>`.
+  publishes tags under `Print-Partner/PrintPartner` with titles `Print Partner <tag>`.
   Executable and archive names are artifact roles, not replacement bundle IDs.
 
 ## Data, keychain, signing, and updates
@@ -68,7 +68,7 @@ during assembly, then sign the outer app. Signing, notarization, stapling, and
 clean-device launch require separate macOS receipts.
 
 The compatibility update checker reads version tags from the configured
-GitHub repository, defaulting to `poitee/PrintPartner`. It reports availability;
+GitHub repository, defaulting to `Print-Partner/PrintPartner`. It reports availability;
 it is not a native installer. A future native updater must retain the stable
 application identifier and verify its signing key and target artifacts.
 Do not infer working native updates from the version checker or Linux stage.

@@ -28,6 +28,8 @@ pub mod manifest_options;
 pub mod manifest_text;
 #[cfg(feature = "desktop_rebuild")]
 pub mod native_secrets;
+#[cfg(feature = "desktop_rebuild")]
+pub mod order_authority;
 pub mod ownership_marker;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plan_publication;

@@ -24,6 +24,10 @@
           "squash"
         ],
         "dismiss_stale_reviews_on_push": false,
+        "dismissal_restriction": {
+          "allowed_actors": [],
+          "enabled": false
+        },
         "require_code_owner_review": false,
         "require_extra_approval_for_unattributed_changes": true,
         "require_last_push_approval": false,
@@ -50,10 +54,6 @@
             "integration_id": 15368
           },
           {
-            "context": "rust (windows)",
-            "integration_id": 15368
-          },
-          {
             "context": "Lint Evidence block",
             "integration_id": 15368
           },
@@ -67,7 +67,7 @@
       "type": "required_status_checks"
     }
   ],
-  "source": "poitee/PrintPartner",
+  "source": "Print-Partner/PrintPartner",
   "source_type": "Repository",
   "target": "branch"
 }

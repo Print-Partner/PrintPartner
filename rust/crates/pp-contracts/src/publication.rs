@@ -83,6 +83,20 @@ pub enum Outcome {
     DuplicateBuildName {
         name: String,
     },
+    /// The draft gives the Build an order number that another unarchived
+    /// Build holds (GRE-1095). `order_number` is the draft's, as saved.
+    DuplicateOrder {
+        order_number: String,
+        builds: Vec<OrderHolder>,
+    },
+}
+/// An unarchived Build that holds an order number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct OrderHolder {
+    pub profile_id: i64,
+    pub name: String,
+    pub order_number: String,
 }
 #[cfg(test)]
 mod tests {

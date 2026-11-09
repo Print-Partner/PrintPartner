@@ -411,6 +411,7 @@ def shell_commands(source):  # noqa: C901
         elif char == '"':
             j, text = i + 1, []
             while True:
+                tick()
                 if j >= len(source):
                     raise ValueError("unterminated quote")
                 c = source[j]
@@ -1246,7 +1247,7 @@ class TooComplex(Exception):
 def merge_state():
     """Return the per-line state every check of one command line shares: the memo, the visit count, and the
     deadline. check_command makes it once for the top-level line and passes it to every nested script."""
-    return {"memo": {}, "steps": 0, "deadline": time.monotonic() + CHECK_SECONDS}
+    return {"memo": {}, "lists": {}, "steps": 0, "deadline": time.monotonic() + CHECK_SECONDS}
 
 
 PARSER_TICKS = 0
@@ -1266,7 +1267,7 @@ def check_deadline():
         raise TooComplex(TOO_COMPLEX)
 
 
-def hidden_merge(args, depth=0, strict=False, state=None, scan=True):
+def hidden_merge(words, state, depth=0, strict=False, scan=True, start=0):
     """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
     as a shell's -c script, or as the command line inside an alias value or a runner's command string.
 
@@ -1282,8 +1283,10 @@ def hidden_merge(args, depth=0, strict=False, state=None, scan=True):
     scan is False when a runner's own suffix loop reached these words: the loop already tries every later
     word as a program, so a runner found here does not scan its words again. Raises TooComplex past the step
     budget or the deadline.
+
+    The words checked are words[start:]. state is the line's merge_state(); every caller passes the one its
+    command line started with, so no call starts a fresh budget.
     """
-    state = merge_state() if state is None else state
     # Every visit counts, memo hits and depth-limit visits included, before any other work.
     state["steps"] += 1
     if state["steps"] > STEP_BUDGET or time.monotonic() > state["deadline"]:
@@ -1291,13 +1294,16 @@ def hidden_merge(args, depth=0, strict=False, state=None, scan=True):
     if depth >= NESTING_LIMIT:
         # Past the limit the guard stops reading, so it fails closed: text that still names gh, after quotes and
         # backslashes are removed, or holds an expansion counts as a merge.
-        raw = " ".join(args)
+        raw = " ".join(words[start:])
         return EXPANDED in raw or bool(re.search(r"\bgh\b", unquoted(raw)))
-    # One result per (words, depth, strict, scan): a suffix can come up again through another path.
-    key = (tuple(args), depth, strict, scan)
+    # One result per position (the word list, the start index, depth, strict, scan). The key holds no copy of the
+    # words, so the memo stays small however long the line is; "lists" keeps each list alive so its id stays
+    # unique while the line is checked.
+    key = (id(words), start, depth, strict, scan)
     if key in state["memo"]:
         return state["memo"][key]
-    state["memo"][key] = result = merge_in(args, depth, strict, state, scan)
+    state["lists"][id(words)] = words
+    state["memo"][key] = result = merge_in(words[start:], depth, strict, state, scan)
     return result
 
 
@@ -1329,15 +1335,21 @@ def merge_in(args, depth, strict, state, scan):
         # each is tried in program position: gh itself, a wrapper, a shell's -c, or interpreter code. The words
         # after an ordinary program, such as a grep pattern, stay data. One pass covers every later word, so a
         # runner met in it does not scan again (scan=False); its strings and expansions are still checked.
-        if scan and any(hidden_merge(rest[i:], depth + 1, True, state, scan=False) for i in range(len(rest))
+        if scan and any(hidden_merge(rest, state, depth + 1, True, scan=False, start=i) for i in range(len(rest))
                         if not rest[i].startswith("-")):
             return True
     for text in strings:
-        try:
-            inner = shell_commands(text)
-        except (Unclear, ValueError):
-            return names_merge(text)
-        if any(hidden_merge(words, depth + 1, inner_strict, state) for words, *_ in inner):
+        # The same command string often repeats, as in several identical sh -c scripts; its result is kept by
+        # its text, which the key refers to without copying.
+        key = ("text", text, depth, inner_strict)
+        if key not in state["memo"]:
+            try:
+                inner = shell_commands(text)
+            except (Unclear, ValueError):
+                state["memo"][key] = names_merge(text)
+            else:
+                state["memo"][key] = any(hidden_merge(words, state, depth + 1, inner_strict) for words, *_ in inner)
+        if state["memo"][key]:
             return True
     return False
 
@@ -1452,8 +1464,12 @@ def check_line(command, cwd, outer, state):
                     return SHELL_OPTIONS
                 if script is not None:
                     # The script's own substitutions were already classified as nested commands.
-                    reason = check_command(script.replace(EXPANDED, ""), here,
-                                           (head_moves, config_unknown, env_config), state)
+                    # Identical scripts on one line, as in several sh -c '<same text>', are checked once.
+                    inherited = (head_moves, config_unknown, env_config)
+                    key = ("script", script, here, inherited)
+                    if key not in state["memo"]:
+                        state["memo"][key] = check_command(script.replace(EXPANDED, ""), here, inherited, state)
+                    reason = state["memo"][key]
                     if reason:
                         return reason
                     continue
@@ -1474,7 +1490,7 @@ def check_line(command, cwd, outer, state):
         # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
         # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
         # alone stays allowed.
-        if any(hidden_merge(args, state=state) for args, *_ in parsed):
+        if any(hidden_merge(args, state) for args, *_ in parsed):
             return MERGE
     except TooComplex:
         return TOO_COMPLEX

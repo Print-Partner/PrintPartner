@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 import time
 import unittest
 from unittest.mock import patch
@@ -1345,6 +1346,23 @@ class HiddenMergeTests(unittest.TestCase):
         started = time.monotonic()
         self.assertIn("too complex", guard.check_command("echo " + "$(" * 3000 + "x" + ")" * 3000, self.lane))
         self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_memory_stays_small_on_a_long_line(self):
+        # r4519290573 at f45f9f5c: the memo copied every suffix it visited; 32K one-letter words peaked at 535 MB.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        tracemalloc.start()
+        try:
+            reason = guard.check_command("xargs echo " + " ".join(["a"] * 32000), self.lane)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertIn("too complex", reason)
+        self.assertLess(peak, 50_000_000)
+
+    def test_deep_recursion_in_a_nested_script_is_too_complex(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        nested = "sh -c " + shlex.quote("echo " + "$(" * 3000 + "x" + ")" * 3000)
+        self.assertIn("too complex", guard.check_command(nested, self.lane))
 
     def test_nested_scripts_share_one_line_state(self):
         guard = in_process(ROOT / "scripts/agent-guard.py")

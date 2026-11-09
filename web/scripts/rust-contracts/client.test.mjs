@@ -103,15 +103,16 @@ test("a descriptor table missing a key value is refused", () => {
 
 // Members a body may omit: RFC 9457 problem members, `modules` (Rust-only runtime),
 // the Health members Node's `/health` never sends, and Build history's `undo`, which only
-// bursts and sends carry, with its `reason` only when refused (docs/build-history.md).
+// bursts and sends carry, with its `reason` only when refused, and `restorable`, which only
+// snapshots carry (docs/build-history.md).
 const optionalMembers = {
   Problem: new Set(["code", "detail", "errors"]),
   Health: new Set(["modules", "degraded_detail", "single_user_auth", "single_user_setup_required", "owner_mapping_required", "github_oauth_configured", "discord_oauth_configured"]),
   VerifyBatchRequest: new Set(["beds.*.decisions.*.reason", "beds.*.decisions.*.note"]),
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
-  BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason", "entries.*.undo.detail", "entries.*.undo.scope"]),
-  BuildHistoryUndo: new Set(["entry.undo", "entry.undo.reason", "entry.undo.detail", "entry.undo.scope"]),
+  BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason", "entries.*.undo.detail", "entries.*.undo.scope", "entries.*.restorable"]),
+  BuildHistoryUndo: new Set(["entry.undo", "entry.undo.reason", "entry.undo.detail", "entry.undo.scope", "entry.restorable"]),
   // Accept's serde defaults: no remap, and no header version for a draft without a header row.
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),
 };

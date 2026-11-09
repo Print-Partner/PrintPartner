@@ -749,7 +749,7 @@ mod codegen {
         )
     }
 
-    /// One entry per type, and one burst per undo state.
+    /// One entry per type, one burst per undo state, and a restorable snapshot.
     fn build_history() -> BuildHistoryPage {
         let refused = |reason| {
             Some(Undo {
@@ -783,14 +783,16 @@ mod codegen {
         .into_iter()
         .enumerate()
         .map(|(index, (kind, actor, undo))| {
-            history::contract_entry(
+            let mut entry = history::contract_entry(
                 kind,
                 &(MAX_SAFE - index as i64).to_string(),
                 "2026-11-05T01:00:00.000Z",
                 actor,
                 UNICODE,
                 undo,
-            )
+            );
+            entry.restorable = (kind == EntryType::Snapshot).then_some(true);
+            entry
         })
         .collect();
         BuildHistoryPage {

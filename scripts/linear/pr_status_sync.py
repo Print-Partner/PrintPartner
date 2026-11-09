@@ -24,11 +24,11 @@ Fork PRs are excluded from both event handling and reconciliation.
 Usage:
   pr_status_sync.py event  --pr N        # one PR (Actions pull_request event)
   pr_status_sync.py reconcile [--dry-run] # cron fallback over recent PRs
-Env: LINEAR_API_KEY, GH_TOKEN (read), GITHUB_REPOSITORY (default poitee/PrintPartner)
+Env: LINEAR_API_KEY, GH_TOKEN (read), GITHUB_REPOSITORY (default Print-Partner/PrintPartner)
 """
 import argparse, datetime as dt, http.client, json, os, re, subprocess, sys, time, urllib.error, urllib.request
 
-REPO = os.environ.get("GITHUB_REPOSITORY", "poitee/PrintPartner")
+REPO = os.environ.get("GITHUB_REPOSITORY", "Print-Partner/PrintPartner")
 TEAM = os.environ.get("LINEAR_TEAM_KEY", "GRE")
 STALE_HOURS = int(os.environ.get("STALE_HOURS", "48"))
 REPLAY_HOURS = 3  # reconcile --hours in linear-pr-sync.yml

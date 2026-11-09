@@ -157,5 +157,5 @@ These pages record an investigation, audit, or ticket's evidence at one point in
 
 ## Project media
 
-- [Project site](https://poitee.github.io/PrintPartner/)
+- [Project site](https://print-partner.github.io/PrintPartner/)
 - [Screenshot capture guide](screenshots/README.md)

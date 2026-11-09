@@ -110,10 +110,11 @@ UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "par
                      "ssh", "unbuffer", "chronic", "ionice", "taskset", "chrt", "systemd-run", "busybox", "entr",
                      "stdbuf", "strace", "ltrace", "fakeroot", "firejail", "bwrap", "unshare", "nsenter", "chroot",
                      "expect", "tmux", "screen", "dtach", "at", "batch"}
-# Runners that hand an argument to a shell as a command line (script -c, su -c, flock -c, ssh host, watch, tmux).
+# Runners that hand an argument to a shell as a command line (script -c, su -c, flock -c, entr -s, ssh host,
+# watch, tmux).
 # The others run a program with arguments, so only their program positions are commands.
 STRING_RUNNERS = {"script", "su", "runuser", "flock", "expect", "ssh", "watch", "tmux", "screen", "dtach",
-                  "parallel", "at", "batch"}
+                  "parallel", "at", "batch", "entr"}
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.

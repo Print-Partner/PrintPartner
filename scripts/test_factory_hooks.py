@@ -1230,7 +1230,7 @@ class HiddenMergeTests(unittest.TestCase):
                "gh pr merge 12 && gh pr merge --help", "gh pr merge --help; gh pr merge 12",
                # A shell's -c under an argv runner, and a command string under a runner that runs one.
                "xargs sh -c 'gh pr merge 1'", "find . -exec sh -c 'gh pr merge 1' \\;", "watch 'gh pr merge 1'",
-               "flock /tmp/x -c 'gh pr merge 1'",
+               "flock /tmp/x -c 'gh pr merge 1'", "entr -s 'gh pr merge 1'",
                "G=/usr/bin/gh; \"$G\" api -X PUT repos/o/r/pulls/12/merge", "declare G='gh pr'; $G view 12",
                # gh aliases and extensions run commands the guard never sees.
                "gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'", "gh alias import aliases.yml",
@@ -1257,7 +1257,7 @@ class HiddenMergeTests(unittest.TestCase):
                "command gh pr merge --help", "echo gh pr merge 12", "grep -e gh -e pr -e merge docs/x.md",
                # An argv runner's program arguments are data (r4518829993).
                "find docs -name '*.md' -exec grep -l 'gh pr merge' {} +", "printf 'a.md\\n' | xargs grep -n 'gh pr merge'",
-               "xargs echo 'gh pr merge 1'",
+               "xargs echo 'gh pr merge 1'", "entr -s 'make test'",
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
                "sh -c 'gh api repos/o/r/pulls/12/merge'",
                "gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",

@@ -29,8 +29,12 @@ fn as_int(raw: Option<&Value>) -> Option<i64> {
         Value::Number(number) => number.as_f64()?,
         Value::String(text) => {
             let text = js_trim(text);
+            // Digits only (no sign), summed as a double like `Number()`.
             let radix = |digits: &str, radix: u32| {
-                u64::from_str_radix(digits, radix).ok().map(|n| n as f64)
+                (!digits.is_empty()).then_some(())?;
+                digits.chars().try_fold(0.0, |sum: f64, digit| {
+                    Some(sum * f64::from(radix) + f64::from(digit.to_digit(radix)?))
+                })
             };
             match text.get(..2) {
                 _ if text.is_empty() => return None,
@@ -148,6 +152,10 @@ mod tests {
             (json!("4"), Some(4)),
             (json!(" 5 "), Some(5)),
             (json!("0x10"), Some(16)),
+            (json!("0x+1"), None),
+            (json!("0x"), None),
+            (json!("0b102"), None),
+            (json!("0x10000000000000000"), Some(i64::MAX)),
             (json!("1e2"), Some(100)),
             (json!("2.7"), Some(2)),
             (json!(""), None),

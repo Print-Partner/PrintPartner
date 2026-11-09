@@ -26,7 +26,12 @@ async fn started(product: Option<axum::Router>) -> (Gateway, String, Scratch) {
     (gateway, cookie, root)
 }
 
-fn get(gateway: &Gateway, path: &str, cookie: Option<&str>, peer: Option<&str>) -> Request<Body> {
+pub(crate) fn get(
+    gateway: &Gateway,
+    path: &str,
+    cookie: Option<&str>,
+    peer: Option<&str>,
+) -> Request<Body> {
     let mut request = Request::builder()
         .uri(path)
         .header("host", &gateway.state.host)
@@ -70,7 +75,7 @@ fn with_header(
     request
 }
 
-struct NoHosts;
+pub(crate) struct NoHosts;
 impl MoonrakerHosts for NoHosts {
     fn read(
         &self,
@@ -294,6 +299,7 @@ async fn slice0_mount_rust_only_runtime_reports_rust_status() {
     let mut gateway = Gateway::start_rust_only(
         listener,
         root.to_path_buf(),
+        ServedUi::Legacy,
         |_| stub(),
         receiver,
         Arc::new(NoHosts),

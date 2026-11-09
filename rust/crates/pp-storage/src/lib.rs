@@ -59,6 +59,8 @@ pub mod source_scan;
 pub mod source_sync;
 pub mod sqlite_uri;
 #[cfg(feature = "desktop_rebuild")]
+pub mod tls_pins;
+#[cfg(feature = "desktop_rebuild")]
 pub mod uploads;
 #[cfg(feature = "desktop_rebuild")]
 pub mod working_drafts;
@@ -119,6 +121,8 @@ enum Work {
     Setting(SettingCommand),
     Backup(PathBuf),
     Archive(Box<archive::Job>),
+    #[cfg(feature = "desktop_rebuild")]
+    TlsPin(tls_pins::Command),
 }
 enum WriterControl {
     PageCount,
@@ -359,6 +363,13 @@ fn execute(
             archive::write(&tx, &job)?;
             tx.rollback()?;
             return Ok(true);
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Work::TlsPin(command) => {
+            let tx = writer_admission::begin_immediate(connection, admission)?;
+            let changed = tls_pins::execute(&tx, command)?;
+            tx.commit()?;
+            return Ok(changed);
         }
     };
     #[cfg(test)]

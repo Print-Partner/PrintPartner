@@ -3,7 +3,7 @@
 //! [`admit`] opens the storage writer, which takes the directory lease and
 //! applies the marker decision (`pp_storage::ownership_marker`) before any
 //! schema write. Only an accepted directory reaches the release check
-//! (`pp_compat::verify_bundle`), `cutover::recover` and source-sync admission,
+//! (`pp_compat::verify_rust_only_release`), `cutover::recover` and source-sync admission,
 //! in that order. A refused directory sees none of the three and stays as it
 //! was. A failure after the marker decision shuts the writer down, which
 //! releases the lease; the marker and schema stay, because Rust now owns the

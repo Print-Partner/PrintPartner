@@ -7,6 +7,10 @@
 //! - `GET /printers/{id}/files/content?path=` and `/printers/{id}/cameras/view?id=`
 //!   (GRE-1174), which stream the printer's reply through at the same mounts
 //! - `POST /api/v1/integrations/{id}/test`, under `/api/v1` only, as in Node
+//! - `GET /api/v1/integrations/{id}/tls-pin` and
+//!   `POST /api/v1/integrations/{id}/tls-pin/reset` (GRE-1245, Rust-only): the
+//!   certificate pin a Bambu Test connection took, and its deliberate reset.
+//!   Neither contacts the printer.
 //!
 //! Every route is read-only on the printer: it lists, describes, probes or
 //! streams a file or camera image, and never uploads, starts, deletes or
@@ -71,6 +75,10 @@ pub enum HostAnswer<T> {
     Failed(String),
     /// Storage could not answer in time.
     Busy,
+    /// The tenant has the integration's feature turned off.
+    FeatureDisabled(&'static str),
+    /// The stored feature choices cannot be read.
+    FeatureInvalid,
 }
 
 pub type Answer<T> = Pin<Box<dyn Future<Output = HostAnswer<T>> + Send>>;
@@ -96,6 +104,11 @@ pub trait PrinterHostPort: Send + Sync + 'static {
     fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>>;
     /// `Ok` holds Node's `{ok, message}` test result.
     fn test(&self, integration: String) -> Answer<Value>;
+    /// `Ok` holds `{pinned, sha256_prefix, pinned_at}` for the integration.
+    fn tls_pin(&self, integration: String) -> Answer<Value>;
+    /// Deletes the integration's pin; `Ok` holds `{reset}`, whether one was
+    /// stored.
+    fn reset_tls_pin(&self, integration: String) -> Answer<Value>;
 }
 
 /// Node's per-route `rateLimit` budgets, one window per route. Node keys them
@@ -106,6 +119,8 @@ const CAMERAS_LIMIT: u32 = 60;
 const FILE_CONTENT_LIMIT: u32 = 20;
 const CAMERA_VIEW_LIMIT: u32 = 20;
 const TEST_LIMIT: u32 = 5;
+const PIN_LIMIT: u32 = 60;
+const PIN_RESET_LIMIT: u32 = 5;
 const WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
@@ -166,7 +181,9 @@ fn routes(port: Arc<dyn PrinterHostPort>) -> Router {
     };
     let v1 = printers
         .clone()
-        .route("/integrations/{id}/test", post(test));
+        .route("/integrations/{id}/test", post(test))
+        .route("/integrations/{id}/tls-pin", get(tls_pin))
+        .route("/integrations/{id}/tls-pin/reset", post(reset_tls_pin));
     Router::new()
         .merge(mount(printers, port.clone()))
         .nest("/api/v1", mount(v1, port))
@@ -205,6 +222,16 @@ fn refusal<T>(answer: HostAnswer<T>, unsupported: impl FnOnce() -> Response) -> 
         HostAnswer::Busy => failure(
             StatusCode::SERVICE_UNAVAILABLE,
             "Printer settings are unavailable",
+        ),
+        HostAnswer::FeatureDisabled(feature) => crate::problem::coded(
+            StatusCode::FORBIDDEN,
+            &format!("Feature {feature} is disabled."),
+            "FEATURE_DISABLED",
+        ),
+        HostAnswer::FeatureInvalid => crate::problem::coded(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Stored feature toggles are invalid.",
+            "FEATURE_TOGGLES_INVALID",
         ),
     }
 }
@@ -442,7 +469,12 @@ async fn test(State(app): State<App>, Path(id): Path<String>) -> Response {
     if let Some(after) = app.windows.consume("test", TEST_LIMIT) {
         return throttled(after);
     }
-    match app.port.test(id).await {
+    integration_answer(app.port.test(id).await)
+}
+
+/// An integration's answer, or Node's 404 for an unknown integration.
+fn integration_answer(answer: HostAnswer<Value>) -> Response {
+    match answer {
         HostAnswer::Ok(result) => axum::Json(result).into_response(),
         HostAnswer::NotFound => failure(StatusCode::NOT_FOUND, "Integration not found"),
         other => refusal(other, || {
@@ -452,6 +484,20 @@ async fn test(State(app): State<App>, Path(id): Path<String>) -> Response {
             )
         }),
     }
+}
+
+async fn tls_pin(State(app): State<App>, Path(id): Path<String>) -> Response {
+    if let Some(after) = app.windows.consume("tls-pin", PIN_LIMIT) {
+        return throttled(after);
+    }
+    integration_answer(app.port.tls_pin(id).await)
+}
+
+async fn reset_tls_pin(State(app): State<App>, Path(id): Path<String>) -> Response {
+    if let Some(after) = app.windows.consume("tls-pin-reset", PIN_RESET_LIMIT) {
+        return throttled(after);
+    }
+    integration_answer(app.port.reset_tls_pin(id).await)
 }
 
 #[cfg(test)]

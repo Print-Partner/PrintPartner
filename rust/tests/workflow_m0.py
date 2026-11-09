@@ -64,7 +64,12 @@ def main():
         _, headers = request(launch.removeprefix(origin), allowed=(303,))
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         html, document_headers = request("/builds", headers={"Accept": "text/html"})
+        # Feature-off (Node-backed) runtime: the legacy document policy, unchanged by GRE-1117.
+        # A Rust-only runtime sends rust/crates/pp-gateway/src/replacement-csp.txt instead;
+        # `cargo nextest run -p pp-gateway -E 'test(csp)'` checks that one.
         assert document_headers["Content-Security-Policy"] == "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        assert not any(directive in document_headers["Content-Security-Policy"] for directive in ("script-src", "style-src", "connect-src", "nonce-"))
+        assert b'name="pp-style-nonce"' not in html, "feature-off document gained the replacement style nonce"
         assert b'<div id="root">' in html
         source, _ = request("/sources", "POST", {"name": "Isolated desktop source", "source_kind": "local"})
         boundary = "pp-m0-local-upload"

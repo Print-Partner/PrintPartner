@@ -20,3 +20,5 @@ packaging
 *.pyc
 .venv
 __pycache__
+rust/target
+rust/bundle-manifest.json

@@ -120,7 +120,7 @@ jobs:
           # appears within GRACE seconds ends the wait, even if its sibling is running.
           # Everything below judges the final state; waiting cannot create a pass.
           MAX_WAIT = int(os.environ.get("PP_GATE_MAX_WAIT_SECONDS", "1800"))
-          GRACE, INTERVAL = min(600, MAX_WAIT), int(os.environ.get("PP_GATE_POLL_SECONDS", "30"))
+          GRACE, INTERVAL = min(120, MAX_WAIT), int(os.environ.get("PP_GATE_POLL_SECONDS", "30"))
           CLAUDE_JOBS = tuple(name for name, (path, _) in ORIGINS.items()
                               if path == ".github/workflows/claude-review.yml")
           started_at = time.monotonic()
@@ -286,7 +286,7 @@ jobs:
 
           def report_missing():
               for name in missing:
-                  print(f"::error::{name} was not created for {HEAD} within the 10-minute grace period. "
+                  print(f"::error::{name} was not created for {HEAD} within the 2-minute grace period. "
                         "A rerun is the usual fix. See "
                         f"https://github.com/{REPO}/blob/{DEFAULT}/docs/development/ci-controls.md#review-gate-outage")
 

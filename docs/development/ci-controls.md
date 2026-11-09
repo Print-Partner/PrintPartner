@@ -208,7 +208,7 @@ An edit to a pull request body, title or base can start workflows. This matrix c
 | Event | `review-gate` | `Lint Evidence block` | `droid.yml`, `linear-pr-sync.yml` |
 | --- | --- | --- | --- |
 | Push (`synchronize`) | runs and waits for the Claude review; cancels the older run | runs, except on a draft PR, where the job skips | do not start |
-| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to ten minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips on a draft PR or unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
+| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips on a draft PR or unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
 | Base change (`edited`) | edit run: judges the head against the new base and cancels an older run that read the old one | runs, except on a draft PR | same as above |
 | Owner comment with a `pp-review-gate` marker (created, edited or deleted) | rerun by `review-gate-rerun.yml`; a marker from anyone else does not rerun | does not run | `droid.yml` starts only when the comment is created, and skips unless it contains `@droid` |
 | Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | do not start |
@@ -226,7 +226,7 @@ When GitHub posts an Actions outage, open the affected workflow run page and che
 for the outage notice. After the outage ends, rerun `review-gate` on every open
 PR's current head, including heads whose gate never started during the outage.
 
-The gate gives `claude-code-review` and `claude-security-review` a **10-minute
+The gate gives `claude-code-review` and `claude-security-review` a **2-minute
 grace period** to appear. If either is still missing, it stops waiting and fails
 with the job name and this runbook link unless another valid review path passes.
 Jobs that exist and are queued or running retain the **30-minute total ceiling**

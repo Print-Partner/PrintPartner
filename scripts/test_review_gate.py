@@ -241,7 +241,7 @@ class ReviewGateStepTests(unittest.TestCase):
         for missing in range(2):
             with self.subTest(missing=finished[missing]["name"]):
                 result = self.assertPasses(checks_seq=[[finished[1 - missing]], finished],
-                                           wait="1800", clock=[0, 599, 600])
+                                           wait="1800", clock=[0, 119, 120])
                 self.assertIn(f"Waiting for {finished[missing]['name']}", result.stdout)
                 self.assertNotIn("::error::", result.stdout)
 
@@ -250,16 +250,16 @@ class ReviewGateStepTests(unittest.TestCase):
                                  ("claude-security-review", "claude-code-review")):
             with self.subTest(missing=missing):
                 result = self.assertFails(reason=f"::error::{missing} was not created for {HEAD}",
-                                          checks=[run(sibling, None)], wait="1800", clock=[0, 599, 600])
+                                          checks=[run(sibling, None)], wait="1800", clock=[0, 119, 120])
                 self.assertEqual(result.stdout.count("Waiting for"), 1)
-                self.assertIn("10-minute grace period", result.stdout)
+                self.assertIn("2-minute grace period", result.stdout)
                 self.assertIn("A rerun is the usual fix", result.stdout)
                 self.assertIn("docs/development/ci-controls.md#review-gate-outage", result.stdout)
 
     def test_queued_jobs_wait_past_grace_but_stop_at_ceiling(self):
         queued = [{**run(name, None), "status": "queued", "started_at": None}
                   for name in ("claude-code-review", "claude-security-review")]
-        result = self.assertFails(checks=queued, wait="1800", clock=[0, 600, 1799, 1800])
+        result = self.assertFails(checks=queued, wait="1800", clock=[0, 120, 1799, 1800])
         self.assertEqual(result.stdout.count("Waiting for"), 2)
         self.assertIn("claude-security-review is queued", result.stdout)
         self.assertNotIn("was not created", result.stdout)
@@ -268,7 +268,7 @@ class ReviewGateStepTests(unittest.TestCase):
         for conclusion in ("success", "neutral", "failure", "skipped"):
             with self.subTest(conclusion=conclusion):
                 result = self.gate(checks=[run("claude-code-review"), run("claude-security-review", conclusion)],
-                                   wait="1800", clock=[0, 601])
+                                   wait="1800", clock=[0, 121])
                 self.assertEqual(result.returncode, 0 if conclusion in ("success", "neutral") else 1)
                 self.assertIn(f"claude-security-review is {conclusion}", result.stdout)
                 self.assertNotIn("Waiting for", result.stdout)
@@ -277,7 +277,7 @@ class ReviewGateStepTests(unittest.TestCase):
     def test_missing_jobs_do_not_remove_alternate_review_paths(self):
         for evidence in ({"checks": [run("droid-review")]}, {"pages": [[marker()]]}):
             with self.subTest(evidence=evidence):
-                result = self.assertPasses(**evidence, wait="1800", clock=[0, 600])
+                result = self.assertPasses(**evidence, wait="1800", clock=[0, 120])
                 self.assertNotIn("::error::", result.stdout)
 
     def test_only_the_latest_claude_runs_are_waited_on(self):

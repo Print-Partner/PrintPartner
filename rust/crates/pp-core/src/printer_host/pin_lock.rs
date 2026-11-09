@@ -155,31 +155,46 @@ mod tests {
         Box::leak(Box::default())
     }
 
+    /// Queues a pin write the writer has not answered and drops the request;
+    /// returns the writer's end.
+    async fn queued(locks: &'static PinLocks) -> mpsc::Sender<Result<bool>> {
+        let (writer, reply) = mpsc::channel();
+        let guard = locks.lock("a").await.unwrap();
+        let request = under_lock(guard, move || Ok(Some(reply)), Ok);
+        assert!(
+            tokio::time::timeout(SHORT, request).await.is_err(),
+            "the request is dropped while the write is queued"
+        );
+        writer
+    }
+
+    async fn held(locks: &'static PinLocks, why: &str) {
+        let next = tokio::time::timeout(SHORT * 3, locks.lock("a")).await;
+        assert!(next.is_err(), "{why}");
+    }
+
+    async fn freed(locks: &'static PinLocks) {
+        let next = tokio::time::timeout(Duration::from_secs(2), locks.lock("a")).await;
+        assert!(matches!(next, Ok(Some(_))), "the writer answered");
+    }
+
     /// GRE-1296: a queued pin write keeps the lock past a dropped request
     /// until the writer answers, whether it applies, refuses or stops.
     #[tokio::test]
     async fn ticket_t_23_a_queued_write_keeps_the_lock_until_the_writer_answers() {
         let locks = private();
         for answer in [Some(Ok(true)), Some(Err(anyhow!("refused"))), None] {
-            let (writer, reply) = mpsc::channel::<Result<bool>>();
-            let guard = locks.lock("a").await.unwrap();
-            let request = under_lock(guard, move || Ok(Some(reply)), Ok);
-            assert!(
-                tokio::time::timeout(SHORT, request).await.is_err(),
-                "the request is dropped while the write is queued"
-            );
-            assert!(
-                tokio::time::timeout(SHORT * 3, locks.lock("a"))
-                    .await
-                    .is_err(),
-                "the lock was freed while a pin write could still land"
-            );
+            let writer = queued(locks).await;
+            held(
+                locks,
+                "the lock was freed while a pin write could still land",
+            )
+            .await;
             match answer {
                 Some(answer) => writer.send(answer).unwrap(),
                 None => drop(writer),
             }
-            let next = tokio::time::timeout(Duration::from_secs(2), locks.lock("a")).await;
-            assert!(matches!(next, Ok(Some(_))), "the writer answered");
+            freed(locks).await;
         }
         assert!(locks.slots().is_empty());
     }
@@ -189,18 +204,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn ticket_t_23_no_elapsed_time_frees_a_queued_write() {
         let locks = private();
-        let (writer, reply) = mpsc::channel::<Result<bool>>();
-        let guard = locks.lock("a").await.unwrap();
-        let request = under_lock(guard, move || Ok(Some(reply)), Ok);
-        assert!(tokio::time::timeout(SHORT, request).await.is_err());
+        let writer = queued(locks).await;
         tokio::time::advance(Duration::from_secs(3600)).await;
-        assert!(
-            tokio::time::timeout(SHORT, locks.lock("a")).await.is_err(),
-            "an hour freed the lock while a pin write could still land"
-        );
+        held(
+            locks,
+            "an hour freed the lock while a pin write could still land",
+        )
+        .await;
         writer.send(Ok(true)).unwrap();
-        let next = tokio::time::timeout(Duration::from_secs(1), locks.lock("a")).await;
-        assert!(matches!(next, Ok(Some(_))), "the writer answered");
+        freed(locks).await;
     }
 
     /// A command that queued nothing releases the lock as soon as `after`

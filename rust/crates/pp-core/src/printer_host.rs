@@ -18,6 +18,7 @@ use std::{sync::atomic::AtomicBool, time::Duration};
 mod pin_lock;
 use pin_lock::{PIN_LOCKS, under_lock};
 #[cfg(test)]
+#[path = "printer_host/tests/stalled_pin.rs"]
 mod stalled_pin_tests;
 
 const READER_WAIT: Duration = Duration::from_millis(500);

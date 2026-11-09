@@ -118,12 +118,12 @@ export const unitConflicts = (workspace: DraftWorkspace): UnitConflict[] =>
   workspace.reconciliation.kind === "unresolved" ? workspace.reconciliation.conflicts : [];
 
 /** A draft Part's name by its ID, for a conflict's target. */
-export function draftPartName(workspace: DraftWorkspace, id: number): string {
+function draftPartName(workspace: DraftWorkspace, id: number): string {
   return workspace.parts.find((p) => p.draft_part_id === id)?.filename ?? `Part ${id}`;
 }
 
 /** An accepted Part's name by its revision Part ID, from what the workspace shows of the base. */
-export function acceptedPartName(workspace: DraftWorkspace, id: number): string {
+function acceptedPartName(workspace: DraftWorkspace, id: number): string {
   const { changed, removed } = workspace.diff;
   return (
     removed.find((p) => p.revision_part_id === id)?.filename ??

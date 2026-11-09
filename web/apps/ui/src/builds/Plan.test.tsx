@@ -1308,6 +1308,113 @@ describe("GRE-1276 the Accept gate matches printed units first", () => {
     );
   });
 
+  describe("keeps a pick only while it is still one of its Part's options", () => {
+    type Conflict = Extract<
+      DraftWorkspace["reconciliation"],
+      { kind: "unresolved" }
+    >["conflicts"][number];
+    const UNSAFE_GEAR: Conflict = {
+      kind: "unsafe_predecessor",
+      target_draft_part_id: 12,
+      predecessor_revision_part_id: 12,
+    };
+    const ambiguousBracket = (candidates: number[]): Conflict => ({
+      kind: "ambiguous_exact_match",
+      target_draft_part_id: 11,
+      candidate_revision_part_ids: candidates,
+    });
+    const conflicted = (conflicts: Conflict[], digest = DIGEST): DraftWorkspace => ({
+      ...workspace({ ...DRAFT, snapshot_digest: digest }),
+      parts: [part(11, "bracket.stl", true, null), part(12, "gear.stl", true, 4)],
+      diff: {
+        base_is_current: true,
+        added: [],
+        changed: [],
+        removed: [20, 30].map((id) => ({
+          revision_part_id: id,
+          filename: `bracket-${id}.stl`,
+          relative_path: `stl/bracket-${id}.stl`,
+          source_layer: "base:Kit",
+        })),
+      },
+      reconciliation: { kind: "unresolved", conflicts },
+    });
+
+    /** Answers both conflicts, saves, and lets the core come back with `after`. */
+    async function answerThenChange(after: Conflict[]) {
+      let sends = 0;
+      const fetchMock = core({
+        draft: () =>
+          sends === 0
+            ? conflicted([ambiguousBracket([11, 20]), UNSAFE_GEAR])
+            : conflicted(after, MATCHED),
+        preview: needsMatch,
+        write: (path) => {
+          if (path !== RECONCILE) return undefined;
+          sends += 1;
+          return json(conflicted(after, MATCHED));
+        },
+      });
+      renderAt(fetchMock);
+      fireEvent.click(await screen.findByRole("button", { name: "Review and accept" }));
+      const gate = await screen.findByRole("dialog", { name: "Accept this draft" });
+      const bracket = await within(gate).findByRole("group", { name: /^bracket\.stl / });
+      fireEvent.click(within(bracket).getByRole("radio", { name: /bracket-20\.stl \(Part 20\)/ }));
+      const gear = within(gate).getByRole("group", { name: /^gear\.stl changed/ });
+      fireEvent.click(within(gear).getByRole("radio", { name: /^Keep the units already printed/ }));
+      fireEvent.click(within(gate).getByRole("button", { name: "Save these choices" }));
+      await waitFor(() => expect(sends).toBe(1));
+      return { gate, fetchMock };
+    }
+
+    const checked = (group: HTMLElement) =>
+      within(group)
+        .getAllByRole<HTMLInputElement>("radio")
+        .filter((radio) => radio.checked);
+    const save = (gate: HTMLElement) =>
+      within(gate).getByRole("button", { name: "Save these choices" });
+
+    it("drops the pick when the conflict's kind changes, and Save waits for a new one", async () => {
+      const { gate, fetchMock } = await answerThenChange([
+        { kind: "unsafe_predecessor", target_draft_part_id: 11, predecessor_revision_part_id: 20 },
+        UNSAFE_GEAR,
+      ]);
+      const bracket = await within(gate).findByRole("group", { name: /^bracket\.stl changed/ });
+      expect(checked(bracket)).toHaveLength(0);
+      expect(save(gate).getAttribute("aria-disabled")).toBe("true");
+      expect(within(gate).getByText("Choose for 1 more Part first.")).toBeTruthy();
+      fireEvent.click(save(gate));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+      expect(reconciles(fetchMock)).toHaveLength(1);
+      fireEvent.click(
+        within(bracket).getByRole("radio", { name: /^Keep the units already printed/ }),
+      );
+      await waitFor(() => expect(save(gate).getAttribute("aria-disabled")).toBeNull());
+    });
+
+    it("drops the pick when the same kind comes back with other candidates", async () => {
+      const { gate } = await answerThenChange([ambiguousBracket([11, 30]), UNSAFE_GEAR]);
+      const bracket = await within(gate).findByRole("group", { name: /^bracket\.stl matches/ });
+      await within(bracket).findByRole("radio", { name: /bracket-30\.stl \(Part 30\)/ });
+      expect(checked(bracket)).toHaveLength(0);
+      expect(save(gate).getAttribute("aria-disabled")).toBe("true");
+    });
+
+    it("keeps the picks of conflicts that come back unchanged", async () => {
+      const { gate, fetchMock } = await answerThenChange([ambiguousBracket([11, 20]), UNSAFE_GEAR]);
+      await waitFor(() => expect(save(gate).getAttribute("aria-disabled")).toBeNull());
+      const bracket = within(gate).getByRole("group", { name: /^bracket\.stl matches/ });
+      expect(checked(bracket).map((radio) => radio.labels?.[0]?.textContent)).toEqual([
+        "Keep the printed units of the accepted bracket-20.stl (Part 20).",
+      ]);
+      fireEvent.click(save(gate));
+      await waitFor(() => expect(reconciles(fetchMock)).toHaveLength(2));
+      expect(reconciles(fetchMock)[1]!.body.decisions).toEqual(
+        reconciles(fetchMock)[0]!.body.decisions,
+      );
+    });
+  });
+
   it("asks to match again when the preview still needs it after a match, without a loop", async () => {
     let sends = 0;
     const fetchMock = core({

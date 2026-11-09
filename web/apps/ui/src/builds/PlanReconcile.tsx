@@ -25,7 +25,7 @@ export const planKey = (id: number) => ["core", "plan", id] as const;
  * lost send is resent with the same key and body; so is the next send of the same
  * decisions after an unconfirmed outcome, and the core replays the first answer.
  */
-export function useReconcile(id: number, draftId: number) {
+function useReconcile(id: number, draftId: number) {
   const client = useQueryClient();
   // The key of a send whose outcome is not known yet, and the decisions it carried.
   const unsure = useRef<{ key: string; decisions: string } | null>(null);
@@ -96,6 +96,10 @@ function stepBlocked({
   return null;
 }
 
+/** A decision's identity, independent of key order. */
+const decisionKey = (decision: UnitDecision) =>
+  `${decision.kind}:${decision.target_draft_part_id}:${predecessorOf(decision) ?? ""}`;
+
 const predecessorOf = (decision: UnitDecision) =>
   "predecessor_revision_part_id" in decision ? decision.predecessor_revision_part_id : null;
 
@@ -121,7 +125,8 @@ function ConflictChoice({
   const taken = new Set(
     [...chosen].filter(([t]) => t !== target).map(([, decision]) => predecessorOf(decision)),
   );
-  const current = JSON.stringify(chosen.get(target));
+  const picked = chosen.get(target);
+  const current = picked ? decisionKey(picked) : null;
   return (
     <fieldset className="pp-reconcile-choice">
       <legend>{question}</legend>
@@ -133,7 +138,7 @@ function ConflictChoice({
             <input
               type="radio"
               name={`reconcile-${target}`}
-              checked={current === JSON.stringify(decision)}
+              checked={current === decisionKey(decision)}
               disabled={disabled}
               onChange={() => onChoose(decision)}
             />
@@ -155,7 +160,7 @@ type Reconcile = ReturnType<typeof useReconcile>;
  * with conflicts, it asks each in plain words and sends the answers. Either way the gate
  * previews again only after the core saved the match.
  */
-export function ReconcileStep({
+function ReconcileStep({
   workspace,
   reconcile,
   sent,
@@ -177,9 +182,19 @@ export function ReconcileStep({
   const reasonId = useId();
   const conflicts = unitConflicts(workspace);
   const [picked, setPicked] = useState<ReadonlyMap<number, UnitDecision>>(new Map());
-  // Only choices for Parts still in conflict count; the core answers each send afresh.
+  // A pick counts only while it is still one of its Part's current options: when a conflict
+  // comes back with another kind or other candidates, the old answer is dropped and the
+  // Part needs a fresh one, so Save never sends a choice the user cannot see.
   const chosen = new Map(
-    [...picked].filter(([t]) => conflicts.some((c) => c.target_draft_part_id === t)),
+    [...picked].filter(([target, decision]) => {
+      const conflict = conflicts.find((c) => c.target_draft_part_id === target);
+      return (
+        conflict !== undefined &&
+        conflictOptions(workspace, conflict).some(
+          (option) => decisionKey(option.decision) === decisionKey(decision),
+        )
+      );
+    }),
   );
   const automatic = conflicts.length === 0;
   // A draft with nothing to decide is matched without asking, once per gate and only before

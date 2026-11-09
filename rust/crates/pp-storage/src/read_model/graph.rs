@@ -307,7 +307,6 @@ pub(super) fn rows(
     let mut stmt = tx.prepare(&format!("SELECT * FROM {table} WHERE {condition}"))?;
     let names = stmt
         .column_names()
-        .iter()
         .map(|v| v.to_string())
         .collect::<Vec<_>>();
     let result = stmt

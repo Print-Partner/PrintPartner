@@ -679,11 +679,7 @@ impl Snapshot {
         let mut result = BTreeMap::new();
         for table in tables {
             let mut statement = db.prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))?;
-            let columns: Vec<String> = statement
-                .column_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+            let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
             let rows = statement
                 .query_map([], |row| {
                     columns

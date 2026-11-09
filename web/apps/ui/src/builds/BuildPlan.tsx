@@ -1,4 +1,8 @@
-import type { AcceptDraftReceipt, DraftAcceptPreview } from "@print-partner/rust-client";
+import type {
+  AcceptDraftReceipt,
+  DraftAcceptPreview,
+  DraftWorkspace,
+} from "@print-partner/rust-client";
 import {
   useIsMutating,
   useMutation,
@@ -20,6 +24,7 @@ import { NotFound } from "../screen/screens";
 import { ModuleOff, MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { plural } from "../today/beds";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
+import { planKey, useMatchStep } from "./PlanReconcile";
 import {
   acceptBody,
   fieldName,
@@ -40,7 +45,8 @@ import {
   type PreviewChanges,
 } from "./plan";
 
-export const planKey = (id: number) => ["core", "plan", id] as const;
+// History restores into the Plan cache by this key.
+export { planKey };
 const draftWriteKey = (id: number) => ["core", "plan-draft-write", id] as const;
 
 /** The navigation state History hands the Plan tab after Restore as draft. */
@@ -510,25 +516,48 @@ function acceptBlocked(preview: DraftAcceptPreview | undefined, offline: boolean
   return null;
 }
 
+/** Why the gate's Accept is off, or null when it can run. */
+function gateBlocked({
+  preview,
+  data,
+  needsMatch,
+  offline,
+  accepting,
+}: {
+  preview: { isError: boolean; isFetching: boolean };
+  data: DraftAcceptPreview | undefined;
+  needsMatch: boolean;
+  offline: boolean;
+  accepting: boolean;
+}): string | null {
+  if (!offline && needsMatch) return "Match the printed units first.";
+  if (!offline && preview.isError) return "The preview failed. Check again before you accept.";
+  const reason = acceptBlocked(data, offline);
+  if (reason) return reason;
+  if (accepting) return "Accepting.";
+  return preview.isFetching ? "Checking what Accept would change." : null;
+}
+
 /**
  * The Accept gate: previews old against new through Accept's own checks, says that a
  * snapshot is saved first, and accepts exactly the revision it previewed.
  */
 function AcceptGate({
   id,
-  draftId,
+  workspace,
   restoredFrom,
   onClose,
   onAccepted,
 }: {
   id: number;
-  draftId: number;
+  workspace: DraftWorkspace;
   /** The snapshot this draft restores, when History opened the gate. */
   restoredFrom: string | null;
   onClose: () => void;
   onAccepted: (receipt: AcceptDraftReceipt) => void;
 }) {
   const offline = useConnection() === "offline";
+  const draftId = workspace.draft.draft_id;
   const [key, setKey] = useState(newKey);
   const reasonId = useId();
   const preview = useQuery({
@@ -554,14 +583,15 @@ function AcceptGate({
   });
   // A failed re-preview keeps the old data; that preview is no longer what Accept checks.
   const data = preview.isError ? undefined : preview.data;
-  const blocked =
-    (preview.isError && !offline ? "The preview failed. Check again before you accept." : null) ??
-    acceptBlocked(data, offline) ??
-    (accept.isPending
-      ? "Accepting."
-      : preview.isFetching
-        ? "Checking what Accept would change."
-        : null);
+  // A match clears the last Accept refusal; the next Accept answers against a new preview.
+  const match = useMatchStep(id, workspace, preview, () => accept.reset());
+  const blocked = gateBlocked({
+    preview,
+    data,
+    needsMatch: match.needed,
+    offline,
+    accepting: accept.isPending,
+  });
   return (
     <Dialog title="Accept this draft" onClose={onClose} className="pp-gate">
       {restoredFrom && (
@@ -571,7 +601,8 @@ function AcceptGate({
         </p>
       )}
       {preview.isPending && <p role="status">Checking what Accept would change.</p>}
-      {preview.isError && (
+      {match.step}
+      {preview.isError && !match.needed && (
         <div role="alert" className="pp-banner" data-kind="error">
           <p>{refusalText(preview.error)}</p>
           <button type="button" className="pp-button" onClick={() => void preview.refetch()}>
@@ -581,6 +612,7 @@ function AcceptGate({
       )}
       {data && (
         <>
+          {match.done}
           <p className="pp-gate-snapshot">{data.snapshot.detail}</p>
           {data.kind === "no_change" ? (
             <p>Accepting changes nothing in the Plan.</p>
@@ -686,7 +718,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
       {gate && draft && !busy && (
         <AcceptGate
           id={id}
-          draftId={draft.workspace.draft.draft_id}
+          workspace={draft.workspace}
           restoredFrom={
             restored?.draftId === draft.workspace.draft.draft_id ? restored.summary : null
           }

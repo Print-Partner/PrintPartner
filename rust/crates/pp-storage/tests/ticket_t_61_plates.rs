@@ -722,11 +722,7 @@ fn json_rows(sql: &Connection, table: &str) -> Vec<Value> {
     let mut statement = sql
         .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
         .unwrap();
-    let names: Vec<String> = statement
-        .column_names()
-        .iter()
-        .map(|n| n.to_string())
-        .collect();
+    let names: Vec<String> = statement.column_names().map(|n| n.to_string()).collect();
     statement
         .query_map([], |row| {
             let mut object = serde_json::Map::new();

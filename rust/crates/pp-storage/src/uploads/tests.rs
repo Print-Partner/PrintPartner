@@ -129,8 +129,12 @@ fn each_upgrade_step_backs_up_its_input_before_writing() {
     let raw = Connection::open(schema35.join("schema37.db")).unwrap();
     raw.execute_batch(&format!("DROP TABLE plan_apply_admissions; {LATER_TABLES} UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'"))
         .unwrap();
-    raw.backup("main", schema35.join("schema35.db"), None)
-        .unwrap();
+    raw.backup(
+        "main",
+        schema35.join("schema35.db"),
+        rusqlite::backup::NO_PROGRESS,
+    )
+    .unwrap();
     let at35 = std::fs::read(schema35.join("schema35.db")).unwrap();
 
     for (label, input, previous) in [
@@ -175,8 +179,12 @@ fn restored_database_gets_its_own_legacy_backup() {
     let raw = Connection::open(&scratch).unwrap();
     raw.execute_batch(&format!("DROP TABLE plan_apply_admissions; {LATER_TABLES} UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'"))
         .unwrap();
-    raw.backup("main", directory.join("schema35.db"), None)
-        .unwrap();
+    raw.backup(
+        "main",
+        directory.join("schema35.db"),
+        rusqlite::backup::NO_PROGRESS,
+    )
+    .unwrap();
     drop(raw);
     let at35 = std::fs::read(directory.join("schema35.db")).unwrap();
     for suffix in ["", "-wal", "-shm"] {

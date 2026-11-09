@@ -2,6 +2,7 @@
 import contextlib
 import io
 import os
+import shutil
 from pathlib import Path
 import signal
 import subprocess
@@ -191,16 +192,36 @@ class EvidenceCache(unittest.TestCase):
         self.refused()
 
     def test_a_token_in_a_foreign_remote_never_reaches_the_output(self):
-        self.make_cache(f"https://x-access-token:{TOKEN}@github.com/poitee/PrintPartner")
-        self.git("remote", "set-url", "--push", "origin", f"https://x-access-token:{TOKEN}@github.com/poitee/x")
-        program = "import run; run.evidence_cache()"
-        result = subprocess.run([sys.executable, "-c", program], cwd=Path(run.__file__).parent,
-                                env=dict(os.environ, XDG_CACHE_HOME=self.base), capture_output=True, text=True)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("evidence cache remote is not Print-Partner/PrintPartner", result.stderr)
-        self.assertIn(str(self.cache), result.stderr)
-        self.assertNotIn(TOKEN, result.stdout + result.stderr)
-        self.assertNotIn("x-access-token", result.stdout + result.stderr)
+        # The second and third make urlsplit raise ValueError quoting the whole netloc.
+        for url in (f"https://x-access-token:{TOKEN}@github.com/poitee/PrintPartner",
+                    f"https://x-access-token:{TOKEN}@github.com\u2100/poitee/PrintPartner",
+                    f"https://x-access-token:{TOKEN}@github.com\uff0fpoitee/PrintPartner"):
+            with self.subTest(url=url.encode("unicode_escape").decode()):
+                self.make_cache(url)
+                try:
+                    self.git("remote", "set-url", "--push", "origin", url)
+                    program = "import run; run.evidence_cache()"
+                    result = subprocess.run([sys.executable, "-c", program], cwd=Path(run.__file__).parent,
+                                            env=dict(os.environ, XDG_CACHE_HOME=self.base),
+                                            capture_output=True, text=True)
+                finally:
+                    shutil.rmtree(self.cache)
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 1, output)
+                self.assertIn("evidence cache remote is not Print-Partner/PrintPartner", result.stderr)
+                self.assertIn(str(self.cache), result.stderr)
+                self.assertNotIn(TOKEN, output)
+                self.assertNotIn("x-access-token", output)
+                self.assertNotIn("Traceback", output)
+
+    def test_any_error_in_the_check_becomes_the_fixed_refusal(self):
+        self.make_cache(GOOD)
+        for error in (ValueError(f"netloc 'x-access-token:{TOKEN}@github.com' is invalid"),
+                      UnicodeError(TOKEN), OSError(TOKEN)):
+            with self.subTest(error=type(error).__name__), mock.patch.object(run, "remote_urls", side_effect=error):
+                message = self.refused()
+                self.assertNotIn(TOKEN, message)
+                self.assertIn("evidence cache remote is not Print-Partner/PrintPartner", message)
 
 
 if __name__ == "__main__":

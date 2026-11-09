@@ -59,7 +59,7 @@ scripts/evidence/run.sh --step snapshot:2 --shot /builds/2/history
 
 ## Publishing
 
-`/opt/agent-fleet/bin/evidence` still defaults to `poitee/PrintPartner`, and it pushes to the `origin` of its cache clone, whichever repository that clone came from. `--publish` passes `EVIDENCE_REPO=Print-Partner/PrintPartner` and its own cache, `~/.cache/evidence-repo-Print-Partner-PrintPartner`, and refuses to publish unless every fetch URL and every push URL of that clone's `origin` (`git remote get-url [--push] --all origin`) is `github.com/Print-Partner/PrintPartner` after dropping userinfo, one trailing `/` and `.git`, and mapping `git@github.com:` to the same form. The refusal names the cache path, never the remote, because a remote URL can carry a token. To publish by hand:
+`/opt/agent-fleet/bin/evidence` still defaults to `poitee/PrintPartner`, and it pushes to the `origin` of its cache clone, whichever repository that clone came from. `--publish` passes `EVIDENCE_REPO=Print-Partner/PrintPartner` and its own cache, `~/.cache/evidence-repo-Print-Partner-PrintPartner`, and refuses to publish unless every fetch URL and every push URL of that clone's `origin` (`git remote get-url [--push] --all origin`) is `github.com/Print-Partner/PrintPartner` after dropping userinfo, one trailing `/` and `.git`, and mapping `git@github.com:` to the same form. The refusal names the cache path, never the remote, because a remote URL can carry a token. Any error while reading or parsing the remote, such as Python's `ValueError` for an NFKC-unsafe character in the host, which quotes the whole netloc, counts as a refusal and is dropped. To publish by hand:
 
 ```sh
 EVIDENCE_REPO=Print-Partner/PrintPartner EVIDENCE_CACHE=~/.cache/evidence-repo-Print-Partner-PrintPartner \

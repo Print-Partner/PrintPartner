@@ -334,15 +334,18 @@ def normalize_remote(url):
     git@github.com:<owner>/<repo> to the same form. Anything else, including another
     host, a port, a query or a deeper path, is None, so normalizing never makes a
     different repository match."""
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme in ("https", "ssh") and not parts.query and not parts.fragment:
-        try:
-            port = parts.port
-        except ValueError:
+    try:
+        # urlsplit, hostname and port raise ValueError quoting the netloc, userinfo
+        # included, for example on NFKC-unsafe characters; such a URL never matches.
+        parts = urllib.parse.urlsplit(url)
+        url_form = parts.scheme in ("https", "ssh") and not parts.query and not parts.fragment
+        if url_form and parts.port is not None:
             return None
-        if port is not None:
-            return None
-        host, path = parts.hostname, parts.path
+        host = parts.hostname if url_form else None
+    except ValueError:
+        return None
+    if url_form:
+        path = parts.path
     elif not parts.scheme or "://" not in url:
         match = SCP_REMOTE.fullmatch(url)
         if not match or match.group(2).startswith("/"):
@@ -377,13 +380,22 @@ def evidence_cache():
     never prints a URL: a remote can carry a token."""
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache = base / f"evidence-repo-{EVIDENCE_REPO.replace('/', '-')}"
-    if cache.exists():
+    if cache.exists() and not cache_remote_ok(cache):
+        # Raised outside any except block, so no exception that saw a URL is chained or printed.
+        raise SystemExit(f"refusing to publish: evidence cache remote is not {EVIDENCE_REPO}; "
+                         f"move {cache} aside and run again")
+    return cache
+
+
+def cache_remote_ok(cache):
+    """Whether every fetch and push URL of the cache's origin is EVIDENCE_REPO. Any error
+    counts as no, and is dropped, because its message can quote a URL and its token."""
+    try:
         urls = remote_urls(cache)
         expected = f"github.com/{EVIDENCE_REPO}"
-        if urls is None or any(normalize_remote(url) != expected for url in urls):
-            raise SystemExit(f"refusing to publish: evidence cache remote is not {EVIDENCE_REPO}; "
-                             f"move {cache} aside and run again")
-    return cache
+        return urls is not None and all(normalize_remote(url) == expected for url in urls)
+    except Exception:
+        return False
 
 
 def publish(pr, shots, note):

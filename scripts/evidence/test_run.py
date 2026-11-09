@@ -1,7 +1,14 @@
 """Argument checks for run.py. The end-to-end check is `scripts/evidence/run.sh --self-test`."""
 import contextlib
 import io
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import run
 
@@ -51,6 +58,54 @@ class ParseArgs(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse("--shot", "/builds", "--note", "x")
         self.assertEqual(parse("--shot", "/builds", "--publish", "7", "--note", "x").publish, 7)
+
+
+class Stop(Exception):
+    pass
+
+
+class Spawn(unittest.TestCase):
+    def setUp(self):
+        def raise_stop(_signum, _frame):
+            raise Stop()
+        self.previous = signal.signal(signal.SIGTERM, raise_stop)
+        self.addCleanup(signal.signal, signal.SIGTERM, self.previous)
+
+    def test_a_signal_during_spawn_lands_after_the_process_is_recorded(self):
+        real = subprocess.Popen
+
+        def popen_then_signal(*args, **kwargs):
+            os.kill(os.getpid(), signal.SIGTERM)  # held until spawn records the process
+            return real(*args, **kwargs)
+
+        procs = {}
+        with mock.patch.object(subprocess, "Popen", popen_then_signal), self.assertRaises(Stop):
+            run.spawn(procs, "child", [sys.executable, "-c", "import time; time.sleep(30)"])
+        self.assertIn("child", procs)
+        self.assertEqual(run.stop(procs["child"], "child", 5), -signal.SIGTERM)
+
+    def test_the_child_does_not_inherit_the_held_signals(self):
+        procs = {}
+        child = run.spawn(procs, "child", [sys.executable, "-c",
+                                           "import signal; print(sorted(signal.pthread_sigmask(signal.SIG_BLOCK, [])))"],
+                          stdout=subprocess.PIPE, text=True)
+        out, _ = child.communicate(timeout=30)
+        self.assertEqual(out.strip(), "[]")
+
+
+class EvidenceCache(unittest.TestCase):
+    def test_uses_a_cache_for_this_repository_and_refuses_another_origin(self):
+        with tempfile.TemporaryDirectory() as base, mock.patch.dict(os.environ, {"XDG_CACHE_HOME": base}):
+            cache = run.evidence_cache()
+            self.assertEqual(cache, Path(base) / "evidence-repo-Print-Partner-PrintPartner")
+            subprocess.run(["git", "init", "-q", str(cache)], check=True)
+            subprocess.run(["git", "-C", str(cache), "remote", "add", "origin",
+                            "https://github.com/poitee/PrintPartner"], check=True)
+            with self.assertRaises(SystemExit) as refused:
+                run.evidence_cache()
+            self.assertIn("refusing to publish", str(refused.exception))
+            subprocess.run(["git", "-C", str(cache), "remote", "set-url", "origin", run.EVIDENCE_REMOTE], check=True)
+            self.assertEqual(run.evidence_cache(), cache)
 
 
 if __name__ == "__main__":

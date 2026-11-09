@@ -28,6 +28,7 @@ ROOT = HERE.parent.parent
 EVIDENCE_BIN = os.environ.get("PP_EVIDENCE_BIN", "/opt/agent-fleet/bin/evidence")
 # The installed tool still defaults to the old repository; always pass this one.
 EVIDENCE_REPO = "Print-Partner/PrintPartner"
+EVIDENCE_REMOTE = f"https://github.com/{EVIDENCE_REPO}"
 STEP_NAMES = ("settle-reconciliation", "snapshot")
 MODULES = ("farm", "orders", "bambu", "spoolman")
 SHOT_PATH = re.compile(r"^/(?!/)[A-Za-z0-9/_.~-]*$")
@@ -41,6 +42,7 @@ BUILT_FILES = (BINARY, ROOT / "rust/bundle-manifest.json", ROOT / "web/apps/ui/d
 BUILD_INPUTS = ("web/apps", "web/packages", "web/package.json", "web/package-lock.json",
                 "rust/crates", "rust/Cargo.toml", "rust/Cargo.lock", "rust/scripts")
 READY_SECS = 300
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 CAPTURE_SECS = 900
 
 
@@ -200,7 +202,7 @@ def parse_args(argv):
                         help=f"after a clean run, publish the PNGs to this {EVIDENCE_REPO} PR with evidence publish")
     parser.add_argument("--note", default="", help="note for --publish")
     parser.add_argument("--self-test", action="store_true",
-                        help="capture /builds once and check the PNG and the cleanup")
+                        help="run safety.test.mjs, capture /builds once, and check the PNG and the cleanup")
     args = parser.parse_args(argv)
     if args.self_test:
         if args.shot or args.step or args.publish:
@@ -248,6 +250,21 @@ def capture(args, origin, ui_origin, credential, out_dir, node, browser_tmp):
     run(node, HERE / "capture.mjs", json.dumps(config), env=env, timeout=CAPTURE_SECS)
 
 
+def spawn(procs, key, args, **kwargs):
+    """Starts a process and records it in procs[key] with stop signals held, so a signal
+    cannot land after the process exists but before cleanup can see it. The child gets
+    the caller's signal mask back before exec, so it can still be stopped."""
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
+    try:
+        procs[key] = subprocess.Popen(
+            args, start_new_session=True,
+            preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous), **kwargs)
+    finally:
+        # A held signal is delivered here, after the process is recorded.
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+    return procs[key]
+
+
 def session(args, work, out_dir, node, binary):
     """Starts the core and the UI server, captures, and always stops both. Returns failures."""
     seed, launch_tmp, private = work / "seed", work / "tmp", work / "private"
@@ -255,7 +272,7 @@ def session(args, work, out_dir, node, binary):
     private.mkdir(mode=0o700)
     (private / "browser").mkdir(mode=0o700)
     log = work / "launcher.log"
-    launcher = preview = None
+    procs = {}
     failures = []
     try:
         run("npm", "--prefix", "web", "run", "--silent", "fixture:synthetic", "--", "--seed", args.seed, seed,
@@ -265,18 +282,21 @@ def session(args, work, out_dir, node, binary):
         # adds the Rust ownership marker, and removes the copy when it stops.
         env = dict(os.environ, PP_DESKTOP_REBUILD="1", TMPDIR=str(launch_tmp))
         with log.open("w") as handle:
-            launcher = subprocess.Popen(
+            launcher = spawn(
+                procs, "launcher",
                 [sys.executable, str(ROOT / "scripts/verify-rust-gateway/verify.py"), "launch",
                  "--repo", str(ROOT), "--binary", str(binary), "--seed", str(seed),
                  "--credential-file", str(private / "credential.json")],
-                cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
+                cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT)
         origin = wait_for(lambda: server_origin(log), "Rust-only core", launcher, READY_SECS)
         say(f"core ready at {origin} (PP_DESKTOP_REBUILD=1)")
         port = free_port()
-        preview = subprocess.Popen(
-            [str(ROOT / "web/node_modules/.bin/vite"), "preview", "--host", "127.0.0.1", "--port", str(port), "--strictPort"],
+        preview = spawn(
+            procs, "preview",
+            [str(ROOT / "web/node_modules/.bin/vite"), "preview", "--host", "127.0.0.1", "--port", str(port),
+             "--strictPort"],
             cwd=ROOT / "web/apps/ui", env=dict(os.environ, PP_UI_CORE_URL=origin),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         ui_origin = f"http://127.0.0.1:{port}"
         wait_for(lambda: answers(ui_origin + "/"), "replacement UI server", preview, 60)
         capture(args, origin, ui_origin, private / "credential.json", out_dir, node,
@@ -284,9 +304,10 @@ def session(args, work, out_dir, node, binary):
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
         failures.append(str(error))
     finally:
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        for signum in STOP_SIGNALS:
             signal.signal(signum, signal.SIG_IGN)
-        stop(preview, "vite preview", 10)
+        launcher = procs.get("launcher")
+        stop(procs.get("preview"), "vite preview", 10)
         status = stop(launcher, "launcher", 90)
         text = log.read_text() if log.exists() else ""
         if launcher is not None and (status != 0 or "STOP: exit=0" not in text):
@@ -300,6 +321,25 @@ def session(args, work, out_dir, node, binary):
         if leftovers:
             failures.append(f"launcher left data behind: {leftovers}")
     return failures
+
+
+def evidence_cache():
+    """A publisher clone for EVIDENCE_REPO only. The tool pushes to its cache clone's
+    origin, so a cache cloned for another repository would receive the PNGs."""
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    cache = base / f"evidence-repo-{EVIDENCE_REPO.replace('/', '-')}"
+    if cache.exists():
+        remote = subprocess.run(["git", "-C", str(cache), "remote", "get-url", "origin"],
+                                capture_output=True, text=True).stdout.strip()
+        if remote != EVIDENCE_REMOTE:
+            raise SystemExit(f"refusing to publish: {cache} pushes to {remote or 'no origin'}, "
+                             f"not {EVIDENCE_REMOTE}; move it aside and run again")
+    return cache
+
+
+def publish(pr, shots, note):
+    env = dict(os.environ, EVIDENCE_REPO=EVIDENCE_REPO, EVIDENCE_CACHE=str(evidence_cache()))
+    run(EVIDENCE_BIN, "publish", pr, *shots, *(["--note", note] if note else []), env=env)
 
 
 def check_png(path):
@@ -323,6 +363,9 @@ def main(argv=None):
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, on_signal)
 
+    if args.self_test:
+        # The redaction test: a failed request must not print the session cookie.
+        run(node, "--test", HERE / "safety.test.mjs")
     binary = build(node, args.rebuild)
     if args.out is None:
         out_dir = Path(tempfile.mkdtemp(prefix=f"pp-evidence-{args.seed}-"))
@@ -337,14 +380,14 @@ def main(argv=None):
         failures = [f"stopped by {stop_reason or 'SIGINT'}"]
     finally:
         # Cleanup must finish even if a second signal arrives.
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        for signum in STOP_SIGNALS:
             signal.signal(signum, signal.SIG_IGN)
         shutil.rmtree(work, ignore_errors=True)
         if work.exists():
             failures.append(f"could not remove {work}")
         else:
             say(f"removed {work} (seed, data directory, credentials and browser profile)")
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        for signum in STOP_SIGNALS:
             signal.signal(signum, signal.SIG_DFL)
         signal.signal(signal.SIGINT, signal.default_int_handler)
     if failures:
@@ -359,8 +402,7 @@ def main(argv=None):
         check_png(out_dir / "builds.png")
         say("self-test: PASS (PNG written, core stopped cleanly, data directory removed)")
     if args.publish is not None:
-        run(EVIDENCE_BIN, "publish", args.publish, *shots, *(["--note", args.note] if args.note else []),
-            env=dict(os.environ, EVIDENCE_REPO=EVIDENCE_REPO))
+        publish(args.publish, shots, args.note)
     return 0
 
 

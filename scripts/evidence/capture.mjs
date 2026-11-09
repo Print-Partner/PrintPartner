@@ -3,13 +3,17 @@
 // UI server and passes everything in one JSON argument; see scripts/evidence/README.md.
 //
 // The bootstrap credential is read from CREDENTIAL_FILE and the file is removed at
-// once. Nothing here prints the bootstrap URL, cookies or the account password.
+// once. Nothing here prints the bootstrap URL, cookies or the account password: every
+// failure goes through safety.mjs, which prints only fixed messages.
 import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, renameSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { CaptureError, guarded, installReport, makeApi } from "./safety.mjs";
+
+installReport();
 
 const config = JSON.parse(process.argv[2]);
 const { root, coreOrigin, uiOrigin, shots, steps, outDir, fullPage, display } = config;
@@ -18,11 +22,17 @@ const resolver = pathToFileURL(resolve(root, "web/apps/web/test/browser/browserE
 const { browserExecutable } = await import(resolver.href);
 
 const credentialFile = process.env.CREDENTIAL_FILE;
-const { bootstrap_url: bootstrapUrl } = JSON.parse(readFileSync(credentialFile, "utf8"));
+const credential = readFileSync(credentialFile, "utf8");
 rmSync(credentialFile);
+let bootstrapUrl;
+try {
+  bootstrapUrl = JSON.parse(credential).bootstrap_url;
+} catch {
+  throw new CaptureError("the credential file is not JSON");
+}
 // An invalid URL's error carries the input, so compare without printing it.
-if (!URL.canParse(bootstrapUrl) || new URL(bootstrapUrl).origin !== coreOrigin) {
-  throw new Error("the bootstrap link is not on the core origin");
+if (typeof bootstrapUrl !== "string" || !URL.canParse(bootstrapUrl) || new URL(bootstrapUrl).origin !== coreOrigin) {
+  throw new CaptureError("the bootstrap link is not on the core origin");
 }
 
 const VIEWPORT = { width: 1440, height: 900 };
@@ -50,33 +60,16 @@ async function settle(page, path) {
     );
   } catch {
     const status = await page.locator(".pp-connection").getAttribute("data-status").catch(() => null);
-    const health = await page.request.get(new URL("/health", page.url()).href).catch((error) => error);
-    const probe = health instanceof Error ? health.message : `${health.status()} ${health.headers()["content-type"]}`;
-    throw new Error(
+    const health = await page.request.get(new URL("/health", page.url()).href).catch(() => null);
+    const probe = health ? `${health.status()} ${health.headers()["content-type"]}` : "transport error";
+    throw new CaptureError(
       `${path} was not ready after ${READY_MS / 1000}s (connection ${status}, UI /health ${probe})`,
     );
   }
   if (await page.getByRole("heading", { name: "Not found", exact: true }).count()) {
-    throw new Error(`${path} has no screen in the replacement UI`);
+    throw new CaptureError(`${path} has no screen in the replacement UI`);
   }
   await page.waitForTimeout(300);
-}
-
-function makeApi(request, origin) {
-  return async (method, path, body, headers = {}) => {
-    const response = await request.fetch(new URL(path, origin).href, {
-      method,
-      headers: { Origin: origin, ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
-      data: body === undefined ? undefined : JSON.stringify(body),
-      maxRedirects: 0,
-    });
-    if (!response.ok()) {
-      const detail = (await response.text()).slice(0, 300);
-      throw new Error(`${method} ${path} answered ${response.status()}: ${detail}`);
-    }
-    const text = await response.text();
-    return text ? JSON.parse(text) : null;
-  };
 }
 
 const plan = (id) => `/api/v2/plans/${id}`;
@@ -104,7 +97,7 @@ async function settleReconciliation(api, id) {
     { decisions, expected_snapshot_digest: workspace.draft.snapshot_digest },
     idempotent(),
   );
-  if (settled.reconciliation.kind !== "ready") throw new Error(`Build ${id} still has conflicts`);
+  if (settled.reconciliation.kind !== "ready") throw new CaptureError(`Build ${id} still has conflicts`);
   return `settled ${decisions.length} conflict(s)`;
 }
 
@@ -123,7 +116,7 @@ async function snapshot(api, id) {
       idempotent(),
     );
     draft = await openDraft(api, id);
-    if (!draft) throw new Error(`Build ${id}: saving the header opened no draft`);
+    if (!draft) throw new CaptureError(`Build ${id}: saving the header opened no draft`);
   }
   await settleReconciliation(api, id);
   const preview = await api("GET", `${plan(id)}/drafts/${draft.draft_id}/accept-preview`);
@@ -163,14 +156,9 @@ async function main() {
     const context = await browser.newContext({ viewport: display ? null : VIEWPORT });
     const page = await context.newPage();
 
-    try {
-      await page.goto(bootstrapUrl);
-    } catch {
-      // Playwright's message would include the URL, which is a sign-in secret.
-      throw new Error("opening the bootstrap link failed");
-    }
-    if (new URL(page.url()).pathname === "/__desktop/bootstrap") throw new Error("bootstrap did not redirect");
-    await page.goto("about:blank");
+    await guarded(page.goto(bootstrapUrl), "opening the bootstrap link failed");
+    if (new URL(page.url()).pathname === "/__desktop/bootstrap") throw new CaptureError("bootstrap did not redirect");
+    await guarded(page.goto("about:blank"), "leaving the bootstrap page failed");
 
     // The Rust routes need a Rust session as well as the desktop cookie. The data is
     // disposable, so a fresh account with a random password is registered every run.
@@ -187,22 +175,27 @@ async function main() {
     }
 
     for (const { path, file: name } of shots) {
-      await page.goto(new URL(path, uiOrigin).href);
+      await guarded(page.goto(new URL(path, uiOrigin).href), `opening ${path} failed`);
       await settle(page, path);
       const file = join(outDir, name);
       if (display) {
         // The installed evidence tool captures the display; move its file into outDir.
-        const written = execFileSync(display.evidenceBin, ["shot", name.replace(/\.png$/, "")], {
-          cwd: outDir,
-          env: { ...process.env, EVIDENCE_DISPLAY: display.name },
-          encoding: "utf8",
-        })
-          .trim()
-          .split("\n")
-          .pop();
+        let written;
+        try {
+          written = execFileSync(display.evidenceBin, ["shot", name.replace(/\.png$/, "")], {
+            cwd: outDir,
+            env: { ...process.env, EVIDENCE_DISPLAY: display.name },
+            encoding: "utf8",
+          })
+            .trim()
+            .split("\n")
+            .pop();
+        } catch {
+          throw new CaptureError(`evidence shot failed for ${path}`);
+        }
         if (resolve(outDir, written) !== resolve(file)) renameSync(resolve(outDir, written), file);
       } else {
-        await page.screenshot({ path: file, fullPage });
+        await guarded(page.screenshot({ path: file, fullPage }), `screenshot of ${path} failed`);
       }
       log(`shot ${path} -> ${file}`);
     }

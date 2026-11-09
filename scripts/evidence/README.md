@@ -30,7 +30,7 @@ It prints each PNG path at the end and exits 1 on any failure, including an uncl
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |
 | `--publish PR --note TEXT` | After a clean run, run `evidence publish` for the PNGs with `EVIDENCE_REPO=Print-Partner/PrintPartner`. |
-| `--self-test` | Captures `/builds` and checks the PNG, the clean stop and the removed data directory. |
+| `--self-test` | Runs `node --test scripts/evidence/safety.test.mjs`, captures `/builds`, and checks the PNG, the clean stop and the removed data directory. |
 
 ## Setup steps
 
@@ -53,13 +53,15 @@ scripts/evidence/run.sh --step snapshot:2 --shot /builds/2/history
 
 - Only synthetic data: the seed is generated each run, and `verify.py --seed` refuses a directory without `SYNTHETIC-DATASET.json`. Its printers have no host link (`*.invalid` names), so the core contacts no printer and nothing can send a print.
 - Loopback only: the core, the UI server and every request use `127.0.0.1`.
-- Secrets: the bootstrap link stays in a `0700` directory, the capture program deletes it after reading it, the account password is random and never printed, and Chromium's profile lives in the work directory that cleanup removes. A failed navigation to the bootstrap link reports a fixed message, not the URL. The launcher log (server stderr, no bootstrap link) is kept only when the core did not stop cleanly, next to the PNGs as `launcher.log`.
+- Secrets: the bootstrap link stays in a `0700` directory, the capture program deletes it after reading it, the account password is random and never printed, and Chromium's profile lives in the work directory that cleanup removes. Playwright's errors carry a call log with every request header, the session cookie included, and navigation errors carry the URL. `safety.mjs` turns every request, navigation and screenshot failure into a fixed message (method, path, status or `transport error`), and prints any other uncaught error as its class name only. `safety.test.mjs` proves a failed request prints no cookie.
+- Signals: the core and the UI server are started with SIGINT, SIGTERM and SIGHUP held until the process is recorded, so a signal can never leave one running that cleanup does not know about. The launcher log (server stderr, no bootstrap link) is kept only when the core did not stop cleanly, next to the PNGs as `launcher.log`.
 - Open every PNG before you attach it. The repository is public.
 
 ## Publishing
 
-`/opt/agent-fleet/bin/evidence` still defaults to `poitee/PrintPartner`; `--publish` passes `EVIDENCE_REPO=Print-Partner/PrintPartner`. To publish by hand:
+`/opt/agent-fleet/bin/evidence` still defaults to `poitee/PrintPartner`, and it pushes to the `origin` of its cache clone, whichever repository that clone came from. `--publish` passes `EVIDENCE_REPO=Print-Partner/PrintPartner` and its own cache, `~/.cache/evidence-repo-Print-Partner-PrintPartner`, and refuses to publish when that clone's `origin` is anything else. To publish by hand:
 
 ```sh
-EVIDENCE_REPO=Print-Partner/PrintPartner evidence publish <pr> <files...> --note "..."
+EVIDENCE_REPO=Print-Partner/PrintPartner EVIDENCE_CACHE=~/.cache/evidence-repo-Print-Partner-PrintPartner \
+  evidence publish <pr> <files...> --note "..."
 ```

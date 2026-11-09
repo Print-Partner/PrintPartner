@@ -235,6 +235,84 @@ async fn ticket_t_25_bambu_reconnect_awaits_a_fresh_report_without_a_second_push
     status_only(&broker);
 }
 
+/// A change report carries `gcode_state` when the state changes, but little
+/// else. Only the answer to the session's own pushall is a base: a change
+/// before it, in the first session or after a reconnect inside the pushall
+/// spacing, is never published or counted as heard.
+#[tokio::test]
+async fn ticket_t_25_bambu_a_change_only_report_is_never_the_base() {
+    let identity = Identity::generate().unwrap();
+    let finish = json!({"print": {"gcode_state": "FINISH"}})
+        .to_string()
+        .into_bytes();
+    let mut script = Script::reporting(CODE, SERIAL, &printing());
+    // Before SUBACK on every connection.
+    script.retained = Some(finish.clone());
+    script.replies.push(Reply::Close);
+    let broker = Broker::start(identity.clone(), script.clone())
+        .await
+        .unwrap();
+    // After SUBACK too, from the reconnect on, when no pushall goes out.
+    script.after_suback = vec![finish];
+    let guard = HttpGuard::new(Arc::new(SystemResolver), Duration::from_secs(2), 1 << 20).unwrap();
+    let mut watchers =
+        Watchers::with_guard(guard, Duration::from_millis(300)).without_node_fallback();
+    let (observations, mut changes) = watching(&mut watchers, &broker, &identity).await;
+
+    let mut seen = Vec::new();
+    let mut heard = None;
+    until("the reconnected session awaits the pushall answer", || {
+        while let Ok(change) = changes.try_recv() {
+            if change.status.state == PrinterHostState::Offline {
+                heard = observations.last_heard("x1c");
+                broker.script(script.clone());
+            }
+            seen.push(change.status);
+        }
+        let states: Vec<_> = seen.iter().map(|status| status.state.clone()).collect();
+        states.ends_with(&[
+            PrinterHostState::Printing,
+            PrinterHostState::Offline,
+            PrinterHostState::Unknown,
+        ])
+    })
+    .await;
+    // The reconnected session got the change before and after SUBACK and
+    // sent no pushall; it keeps awaiting instead of showing a bare FINISH.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    while let Ok(change) = changes.try_recv() {
+        seen.push(change.status);
+    }
+    let published: Vec<_> = seen
+        .iter()
+        .filter(|status| {
+            !matches!(
+                status.state,
+                PrinterHostState::Unknown | PrinterHostState::Offline
+            )
+        })
+        .collect();
+    assert_eq!(published.len(), 1, "{seen:?}");
+    assert_eq!(
+        published[0].message.as_deref(),
+        Some("Printing frame_x.3mf"),
+        "the base is the pushall answer, not the earlier FINISH"
+    );
+    assert_eq!(
+        observations.latest("x1c").unwrap().message.as_deref(),
+        Some("Awaiting status")
+    );
+    assert_eq!(
+        observations.last_heard("x1c"),
+        heard,
+        "a change report before the base is not hearing from the printer"
+    );
+    assert_eq!(count(&broker, PUSHALL), 1);
+    assert_eq!(count(&broker, "CONNECT bblp access code"), 2);
+    watchers.stop().await;
+    status_only(&broker);
+}
+
 #[tokio::test]
 async fn ticket_t_25_bambu_suspend_ends_the_session_and_resume_starts_one() {
     let (broker, identity) = printer(Vec::new()).await;

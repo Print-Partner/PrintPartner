@@ -575,7 +575,9 @@ impl Driver {
     ) -> Result<std::convert::Infallible, Failure> {
         let topic = format!("device/{}/report", self.config.serial);
         let mut stream = self.open(verifier).await?;
-        let early = tokio::time::timeout(self.status_timeout, subscribe(&mut stream, &topic))
+        // A report before SUBACK came before this session's pushall, so it
+        // may be a change report: it is not a base.
+        tokio::time::timeout(self.status_timeout, subscribe(&mut stream, &topic))
             .await
             .map_err(|_| Failure::Offline(TIMED_OUT.into()))??;
         let deferred = session
@@ -588,17 +590,16 @@ impl Driver {
         };
         // Changes made while no session was open never arrive as changes, so
         // a report held from an earlier session is stale.
-        session.print = early;
-        match &session.print {
-            Some(print) => report(located(status_from_print(print)), true),
-            None => report(located(Status::unknown("Awaiting status")), false),
-        }
+        session.print = None;
+        session.requested = false;
+        report(located(Status::unknown("Awaiting status")), false);
         if deferred.is_none() {
             stream
                 .write_all(&mqtt::pushall(&self.config.serial))
                 .await?;
             stream.flush().await?;
             session.pushed = Some(tokio::time::Instant::now());
+            session.requested = true;
         }
         let pushed_late = std::sync::atomic::AtomicBool::new(false);
         let (mut reader, mut writer) = tokio::io::split(stream);
@@ -608,6 +609,10 @@ impl Driver {
                 let packet = tokio::time::timeout(idle, mqtt::read(&mut reader))
                     .await
                     .map_err(|_| Failure::Offline(TIMED_OUT.into()))??;
+                if pushed_late.load(std::sync::atomic::Ordering::Relaxed) && session.print.is_none()
+                {
+                    session.requested = true;
+                }
                 if let mqtt::Packet::Publish {
                     topic: from,
                     payload,
@@ -684,15 +689,24 @@ pub struct Session {
     /// The last full `print` object, with every later change merged in.
     print: Option<Value>,
     pushed: Option<tokio::time::Instant>,
+    /// This session sent pushall and has no full report yet.
+    requested: bool,
 }
 
 impl Session {
-    /// Merges one report's `print` object into the last full one. Until a
-    /// full report (one with a non-blank `gcode_state`) arrives, changes have
-    /// nothing to merge into and give no status.
+    /// Merges one report's `print` object into the last full one. Only the
+    /// answer to this session's pushall is full: the first report with a
+    /// non-blank `gcode_state` after the session sent it. A change report
+    /// can carry `gcode_state` too, when the state changes, but little else.
+    /// Until the answer arrives there is nothing to merge into, so reports
+    /// give no status; the answer supersedes them.
     fn merge(&mut self, payload: &[u8]) -> Option<Status> {
         match &mut self.print {
-            None => self.print = Some(usable(payload)?),
+            None if self.requested => {
+                self.print = Some(usable(payload)?);
+                self.requested = false;
+            }
+            None => return None,
             Some(Value::Object(full)) => {
                 let report: Value = serde_json::from_slice(payload).ok()?;
                 let Value::Object(changed) = report.get("print")?.clone() else {

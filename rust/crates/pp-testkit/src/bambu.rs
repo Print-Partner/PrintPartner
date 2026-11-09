@@ -160,6 +160,9 @@ pub struct Script {
     /// Published on the report topic between SUBSCRIBE and SUBACK, as a
     /// broker may send a retained message.
     pub retained: Option<Vec<u8>>,
+    /// Published on the report topic right after SUBACK, unasked, as a
+    /// printer publishes a change report.
+    pub after_suback: Vec<Vec<u8>>,
     pub replies: Vec<Reply>,
 }
 
@@ -172,6 +175,7 @@ impl Script {
             connack: 0,
             suback: 0,
             retained: None,
+            after_suback: Vec::new(),
             replies: vec![Reply::Publish {
                 topic: format!("device/{serial}/report"),
                 payload: report.to_vec(),
@@ -370,6 +374,9 @@ async fn serve<S>(
                     .as_ref()
                     .map_or_else(Vec::new, |payload| publish(&topic, payload));
                 out.extend(frame(0x90, &[body[0], body[1], script.suback]));
+                for payload in &script.after_suback {
+                    out.extend(publish(&topic, payload));
+                }
                 out
             }
             3 => {

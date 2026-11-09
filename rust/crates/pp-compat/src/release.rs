@@ -514,32 +514,30 @@ mod tests {
         let stop = CancellationToken::new();
         // No Node executable, backend code, workspace packages or node_modules exist.
         verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap();
+        let refusal = |bundle: &Bundle| {
+            verify_rust_only_with(&release, bundle, &assets, &stop)
+                .unwrap_err()
+                .to_string()
+        };
 
         let mut other = bundle.clone();
         other.commit = "def".into();
-        let error = verify_rust_only_with(&release, &other, &assets, &stop).unwrap_err();
         assert_eq!(
-            error.to_string(),
+            refusal(&other),
             "Requested release differs from embedded identity"
         );
-
         std::fs::write(assets.join("assets/app.js"), b"changed").unwrap();
-        let error = verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
-        assert_eq!(error.to_string(), "Release artifact content mismatch");
+        assert_eq!(refusal(&bundle), "Release artifact content mismatch");
         std::fs::write(assets.join("assets/app.js"), b"export {};").unwrap();
-
         std::fs::write(assets.join("extra.js"), b"unmeasured").unwrap();
-        let error = verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
-        assert_eq!(error.to_string(), "Release file inventory mismatch");
+        assert_eq!(refusal(&bundle), "Release file inventory mismatch");
         std::fs::remove_file(assets.join("extra.js")).unwrap();
 
         let manifests = bundle.community_manifests_dir().unwrap();
         std::fs::write(manifests.join("registry-index.yaml"), b"changed").unwrap();
-        let error = verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
-        assert_eq!(error.to_string(), "Release artifact content mismatch");
+        assert_eq!(refusal(&bundle), "Release artifact content mismatch");
         std::fs::remove_dir_all(&manifests).unwrap();
-        let error = verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap_err();
-        assert_eq!(error.to_string(), "Release root missing");
+        assert_eq!(refusal(&bundle), "Release root missing");
 
         // A release with no community manifests accepts no directory or an
         // empty one, and refuses unmeasured files there.

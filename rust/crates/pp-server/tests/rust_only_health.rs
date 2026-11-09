@@ -11,7 +11,7 @@ mod release;
 mod scratch;
 
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::Read,
     path::{Path, PathBuf},
     process::{Child, Output, Stdio},
     time::{Duration, Instant},
@@ -66,38 +66,31 @@ fn rust_only_server_needs_no_node_and_reports_health() {
             .unwrap(),
     );
     let child = &mut server.0;
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut stderr = child.stderr.take().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut origin = String::new();
-        let _ = stdout.read_line(&mut origin);
-        if sender.send(origin).is_err() {
-            return;
+    // Wait for the status file, not stdout: it is what the healthcheck reads.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let recorded = loop {
+        let state = std::fs::read(&status)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        if let Some(state) = state.filter(|state| state["state"] == "ready") {
+            break state;
         }
-        let mut rest = String::new();
-        let _ = stdout.read_to_string(&mut rest);
-        let _ = sender.send(rest);
-    });
-    let Ok(origin) = receiver.recv_timeout(Duration::from_secs(60)) else {
-        panic!("pp-server printed no origin within 60 s");
+        if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+            let mut error = String::new();
+            let _ = child.stderr.take().unwrap().read_to_string(&mut error);
+            panic!("pp-server never became ready: {error}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
     };
-    if !origin.starts_with("http://127.0.0.1:") {
-        let mut error = String::new();
-        let _ = stderr.read_to_string(&mut error);
-        panic!("unexpected first line: {origin:?}, stderr: {error}");
-    }
+    let origin = recorded["origin"].as_str().unwrap().to_owned();
+    assert!(origin.starts_with("http://127.0.0.1:"), "{origin}");
     // The marker itself is pp-storage's to test: a workspace build unifies its
     // test-only test-unmarked-writer feature, which skips writing it.
     assert!(
         data.join("print-partner.db").is_file(),
         "Rust opened SQLite storage"
     );
-    let recorded: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
-    assert_eq!(recorded["state"], "ready");
     assert_eq!(recorded["pid"], child.id());
-    assert_eq!(recorded["origin"], origin.trim());
     for (probe, line) in [
         ("liveness", "liveness ok (ready)\n"),
         ("readiness", "readiness ok (ready)\n"),
@@ -120,11 +113,22 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let rest = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(exit.success(), "{rest}");
-    let receipt: serde_json::Value = serde_json::from_str(rest.trim()).unwrap();
-    assert_eq!(receipt["storage_released"], true, "{receipt}");
-    assert_eq!(receipt["errors"], serde_json::json!([]), "{receipt}");
+    let mut printed = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut printed)
+        .unwrap();
+    let mut lines = printed.lines();
+    assert_eq!(lines.next(), Some(origin.as_str()), "origin first");
+    let receipt: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert!(
+        exit.success()
+            && receipt["storage_released"] == true
+            && receipt["errors"] == serde_json::json!([]),
+        "incomplete shutdown: {receipt}"
+    );
     assert!(!status.exists(), "the status file leaves with the server");
     let output = healthcheck("liveness", &status);
     assert_eq!(output.status.code(), Some(1));

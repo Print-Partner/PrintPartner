@@ -56,7 +56,7 @@ What the numbers leave out:
 
 ## Baseline, 2026-11-08
 
-Captured 2026-11-08 on a shared Linux host: Intel Xeon E5-2650 v3, 12 logical CPUs, 31 GiB, kernel 7.0.0-42. `pp-server` was a release build with `desktop_rebuild` of main at `a71591e4c` (sha256 `87bd1e32…5bc6`), Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, seed 388. Ten rounds per runtime, `--max-load 16 --quiet-timeout 180`. Other agents' builds kept the 1-minute load between 9.5 and 22 for the whole run, so both runtimes ran on a busy machine and the spread is wide; compare medians. Raw samples and all metadata: [performance-baseline-2026-11-08.json](performance-baseline-2026-11-08.json).
+Captured 2026-11-08 on a shared Linux host: Intel Xeon E5-2650 v3, 12 logical CPUs, 31 GiB, kernel 7.0.0-42. `pp-server` was a release build with `desktop_rebuild` from a checkout of main at `a71591e4c` (sha256 `87bd1e32…5bc6`). The samples record `checkout_dirty: true`: the harness and these docs (`scripts/perf-baseline/`, `scripts/local-ci.py`, `docs/`) were not yet committed. No file under `rust/` or `web/` differed from `a71591e4c`. Toolchain: Rust 1.99.0, Node 24.21.0. Dataset digest `41d97179…44ad1`, seed 388. Ten rounds per runtime, `--max-load 16 --quiet-timeout 180`. Other agents' builds kept the 1-minute load at run start between 8.4 and 22.1 for the whole run (Node 8.4 to 20.0, Rust 11.0 to 22.1, from `load_at_start`), so both runtimes ran on a busy machine and the spread is wide; compare medians. Raw samples and all metadata: [performance-baseline-2026-11-08.json](performance-baseline-2026-11-08.json).
 
 | Measure | Node median | Node p95 | Rust median | Rust p95 | Rust/Node (median) | n (Node/Rust) | Note |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |

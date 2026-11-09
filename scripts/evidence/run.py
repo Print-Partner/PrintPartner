@@ -44,6 +44,7 @@ BUILD_INPUTS = ("web/apps", "web/packages", "web/package.json", "web/package-loc
 READY_SECS = 300
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 CAPTURE_SECS = 900
+CLONE_SECS = 300
 
 
 class Stopped(Exception):
@@ -375,16 +376,40 @@ def remote_urls(cache):
 
 
 def evidence_cache():
-    """A publisher clone for EVIDENCE_REPO only. The tool pushes to its cache clone's
-    origin, so a cache whose origin fetches or pushes elsewhere is refused. The refusal
-    never prints a URL: a remote can carry a token."""
+    """A publisher clone for EVIDENCE_REPO only, checked before every publish. The tool
+    pushes to its cache clone's origin, so a cache whose origin fetches or pushes
+    elsewhere is refused. A missing cache is cloned here first, so the first publish is
+    checked too: a global insteadOf or pushInsteadOf rule shows in the effective URLs.
+    No refusal prints a URL or git's output, which can quote a URL and its token."""
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache = base / f"evidence-repo-{EVIDENCE_REPO.replace('/', '-')}"
-    if cache.exists() and not cache_remote_ok(cache):
-        # Raised outside any except block, so no exception that saw a URL is chained or printed.
+    fresh = not cache.exists()
+    if fresh and not clone_cache(cache):
+        shutil.rmtree(cache, ignore_errors=True)
+        raise SystemExit(f"refusing to publish: cloning {EVIDENCE_REPO} into {cache} failed")
+    if not cache_remote_ok(cache):
+        if fresh:
+            shutil.rmtree(cache, ignore_errors=True)
+            # Raised outside any except block, so no exception that saw a URL is chained.
+            raise SystemExit(f"refusing to publish: evidence cache remote is not {EVIDENCE_REPO} "
+                             f"(a git insteadOf or pushInsteadOf rule rewrites it); removed {cache}")
         raise SystemExit(f"refusing to publish: evidence cache remote is not {EVIDENCE_REPO}; "
                          f"move {cache} aside and run again")
     return cache
+
+
+def clone_cache(cache):
+    """Clones EVIDENCE_REPO into cache the way the publisher does. Output is discarded."""
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            ["git", "clone", "--quiet", "--no-checkout", "--filter=blob:none",
+             f"https://github.com/{EVIDENCE_REPO}", str(cache)],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=CLONE_SECS,
+            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 def cache_remote_ok(cache):

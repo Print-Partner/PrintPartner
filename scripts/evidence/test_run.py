@@ -132,25 +132,88 @@ class EvidenceCache(unittest.TestCase):
         base = tempfile.TemporaryDirectory()
         self.addCleanup(base.cleanup)
         self.base = base.name
-        patcher = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": self.base})
+        # An empty global git config, so the machine's own insteadOf rules cannot change results.
+        self.gitconfig = Path(self.base) / "gitconfig"
+        self.gitconfig.write_text("")
+        self.env = {"XDG_CACHE_HOME": self.base, "GIT_CONFIG_GLOBAL": str(self.gitconfig),
+                    "GIT_CONFIG_NOSYSTEM": "1"}
+        patcher = mock.patch.dict(os.environ, self.env)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.cache = Path(self.base) / "evidence-repo-Print-Partner-PrintPartner"
 
     def git(self, *args):
         subprocess.run(["git", "-C", str(self.cache), *args], check=True, capture_output=True)
 
     def make_cache(self, url):
-        self.cache = Path(self.base) / "evidence-repo-Print-Partner-PrintPartner"
         subprocess.run(["git", "init", "-q", str(self.cache)], check=True)
         self.git("remote", "add", "origin", url)
+
+    def fake_clone(self, cache):
+        """Stands in for the network clone: a repository whose origin is the real URL."""
+        self.make_cache(GOOD)
+        return True
+
+    def global_config(self, *pairs):
+        for key, value in pairs:
+            subprocess.run(["git", "config", "--global", key, value], check=True)
+
+    def publish_in_child(self):
+        """Runs publish() in a fresh process with a stand-in publisher that records a run."""
+        marker = Path(self.base) / "publisher-ran"
+        publisher = Path(self.base) / "evidence"
+        publisher.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+        publisher.chmod(0o755)
+        result = subprocess.run([sys.executable, "-c", "import run; run.publish(1622, [], '')"],
+                                cwd=Path(run.__file__).parent, capture_output=True, text=True,
+                                env=dict(os.environ, **self.env, PP_EVIDENCE_BIN=str(publisher)))
+        return result, marker.exists()
 
     def refused(self):
         with self.assertRaises(SystemExit) as refusal:
             run.evidence_cache()
         return str(refusal.exception)
 
-    def test_no_cache_yet_is_allowed(self):
-        self.assertEqual(run.evidence_cache(), Path(self.base) / "evidence-repo-Print-Partner-PrintPartner")
+    def test_a_missing_cache_is_cloned_then_checked(self):
+        with mock.patch.object(run, "clone_cache", side_effect=self.fake_clone) as clone:
+            self.assertEqual(run.evidence_cache(), self.cache)
+        clone.assert_called_once_with(self.cache)
+
+    def test_an_insteadof_rule_on_a_fresh_clone_is_refused_before_publishing(self):
+        # A local repository stands in for the foreign one, so the clone succeeds offline.
+        foreign = Path(self.base) / f"foreign-x-access-token-{TOKEN}.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(foreign)], check=True)
+        self.global_config((f"url.{foreign.as_uri()}.insteadOf", GOOD))
+        result, published = self.publish_in_child()
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, output)
+        self.assertIn("evidence cache remote is not Print-Partner/PrintPartner", result.stderr)
+        self.assertFalse(published, "the publisher must not run")
+        self.assertFalse(self.cache.exists(), "the refused clone is removed")
+        self.assertNotIn(TOKEN, output)
+        self.assertNotIn("x-access-token", output)
+
+    def test_a_pushinsteadof_rule_on_a_fresh_clone_is_refused(self):
+        self.global_config((f"url.https://x-access-token:{TOKEN}@github.com/poitee/.pushInsteadOf",
+                            "https://github.com/Print-Partner/"))
+        with mock.patch.object(run, "clone_cache", side_effect=self.fake_clone):
+            message = self.refused()
+        self.assertIn("pushInsteadOf", message)
+        self.assertNotIn(TOKEN, message)
+        self.assertFalse(self.cache.exists())
+
+    def test_a_failed_clone_is_refused_without_git_output(self):
+        missing = Path(self.base) / f"missing-x-access-token-{TOKEN}.git"
+        self.global_config((f"url.{missing.as_uri()}.insteadOf", GOOD))
+        result, published = self.publish_in_child()
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, output)
+        self.assertIn(f"refusing to publish: cloning Print-Partner/PrintPartner into {self.cache} failed",
+                      result.stderr)
+        self.assertFalse(published)
+        self.assertFalse(self.cache.exists())
+        self.assertNotIn(TOKEN, output)
+        self.assertNotIn("fatal:", output)
 
     def test_accepts_the_repository_in_its_usual_forms(self):
         self.make_cache(GOOD)
@@ -192,17 +255,19 @@ class EvidenceCache(unittest.TestCase):
         self.refused()
 
     def test_a_token_in_a_foreign_remote_never_reaches_the_output(self):
-        # The second and third make urlsplit raise ValueError quoting the whole netloc.
+        # The others make urlsplit raise ValueError quoting the whole netloc: U+2100, a
+        # fullwidth slash, and a fullwidth colon before the port.
         for url in (f"https://x-access-token:{TOKEN}@github.com/poitee/PrintPartner",
                     f"https://x-access-token:{TOKEN}@github.com\u2100/poitee/PrintPartner",
-                    f"https://x-access-token:{TOKEN}@github.com\uff0fpoitee/PrintPartner"):
+                    f"https://x-access-token:{TOKEN}@github.com\uff0fpoitee/PrintPartner",
+                    f"https://x-access-token:{TOKEN}@github.com\uff1a443/Print-Partner/PrintPartner"):
             with self.subTest(url=url.encode("unicode_escape").decode()):
                 self.make_cache(url)
                 try:
                     self.git("remote", "set-url", "--push", "origin", url)
                     program = "import run; run.evidence_cache()"
                     result = subprocess.run([sys.executable, "-c", program], cwd=Path(run.__file__).parent,
-                                            env=dict(os.environ, XDG_CACHE_HOME=self.base),
+                                            env=dict(os.environ, **self.env),
                                             capture_output=True, text=True)
                 finally:
                     shutil.rmtree(self.cache)

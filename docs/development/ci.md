@@ -30,12 +30,12 @@ This page covers what the Rust jobs run and how to reproduce them. [Change a CI 
 
 ## Agent guidance check
 
-The `agent-guidance` job in `actionlint.yml` checks the root `AGENTS.md` and the
-repo skills in `.factory/skills/`. It checks local file links (not heading
-anchors), each skill's `name` and `description`, and that Git does not ignore
-these files. It also tests the staged-Rust snapshot in the opt-in pre-commit
-hook, including sparse worktrees. It makes no network requests. Run it locally
-with `just guidance`.
+The `agent-guidance` job in `actionlint.yml` runs `scripts/check-agent-guidance.py`. It makes no network requests.
+
+- **Links in every page:** for every tracked Markdown page (`git ls-files '*.md'`), each local link (inline, image or reference definition) must point to a file or directory inside the checkout, and each `#anchor` into a Markdown page must match a heading anchor as GitHub generates it or an explicit HTML `id` or `name` anchor. Links in fenced code blocks and inline code are examples and are skipped. External links are not fetched.
+- **Guidance rules:** only for the shared guidance (the root `AGENTS.md`, `docs/development/agent-workflow.md`, `docs/development/factory-missions.md` and the repo skills in `.factory/skills/`): a `# ` title (skills excepted), each skill's `name` and `description`, and that Git does not ignore these files.
+
+The job also tests the agent safety guard, the staged-Rust snapshot in the opt-in pre-commit hook (including sparse worktrees) and the Factory environment. Run it locally with `just guidance`; the `agent-guidance` step of `just ci` runs the link check and its tests. Renaming a heading or moving a page fails this check until every link to it is updated.
 
 ## Large-file and pre-commit checks
 
@@ -245,7 +245,7 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 | Check name | Runner | Packages | Tests |
 |------------|--------|----------|-------|
 | `rust (linux)` | Aggregate over `rust (linux) build` plus rebuild partitions when selected | The whole workspace | All |
-| `rust (macos)` | `macos-26` | The whole workspace | All except [macOS exclusions](#macos-exclusions) |
+| `rust (macos)` | `macos-26` | The whole workspace | All; see [macOS test filter](#macos-test-filter) |
 | `rust (windows)` | `windows-latest` | The whole workspace | All |
 
 `rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or `ubuntu-latest` for non-PR events; on pull requests only the build and the aggregate run (the rebuild partitions do not), on `blacksmith-4vcpu-ubuntu-2404` (default), `ubuntu-latest` (`hosted`) or pp-iso ([the switch](#pull-request-runner-switch)); see [Linux Rust runner](#linux-rust-runner).
@@ -310,6 +310,7 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | `selector-tests` | The path-filter and macOS-alert unit tests | `rust-cross-os.yml` `changes` |
 | `perf-baseline-tests` | The unit tests of the Node-versus-Rust baseline harness in `scripts/perf-baseline` | None yet. A local-only line; see [Performance](performance.md). |
 | `actionlint` | `actionlint -color` | `actionlint` (required) |
+| `agent-guidance` | `test_agent_guidance.py` and `check-agent-guidance.py`: local links and anchors in every tracked Markdown page, and the guidance title and skill rules | `agent-guidance` in `actionlint.yml` |
 | `zizmor` | `zizmor --min-severity informational --config .github/zizmor.yml .` | `zizmor` (required) |
 | `ast-grep` | `ast-grep test`, `test_ast_grep.py` and `check-ast-grep.py` against `origin/main` | `ast-grep ratchet` |
 | `boundaries` | `check-boundaries.py --self-test` and `check-domain-deps.py --self-test` | `chain-tip-gate.yml` |

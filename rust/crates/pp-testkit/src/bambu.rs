@@ -16,6 +16,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    sync::watch,
     task::JoinHandle,
 };
 
@@ -201,6 +202,7 @@ pub struct Broker {
     log: Arc<Mutex<Vec<String>>>,
     identity: Arc<Mutex<Identity>>,
     script: Arc<Mutex<Script>>,
+    held: watch::Sender<bool>,
     task: JoinHandle<()>,
 }
 
@@ -217,8 +219,9 @@ impl Broker {
         let log = Arc::new(Mutex::new(Vec::new()));
         let identity = Arc::new(Mutex::new(identity));
         let script = Arc::new(Mutex::new(script));
-        let (shared_log, shared_identity, shared_script) =
-            (log.clone(), identity.clone(), script.clone());
+        let (held, _) = watch::channel(false);
+        let (shared_log, shared_identity, shared_script, shared_held) =
+            (log.clone(), identity.clone(), script.clone(), held.clone());
         let task = tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
@@ -227,6 +230,7 @@ impl Broker {
                 let server = lock(&shared_identity).server();
                 let script = lock(&shared_script).clone();
                 let log = shared_log.clone();
+                let held = shared_held.subscribe();
                 tokio::spawn(async move {
                     lock(&log).push("TCP".into());
                     let Ok(server) = server else {
@@ -239,7 +243,7 @@ impl Broker {
                         return;
                     };
                     lock(&log).push("TLS".into());
-                    serve(stream, &script, &log).await;
+                    serve(stream, &script, &log, held).await;
                 });
             }
         });
@@ -248,6 +252,7 @@ impl Broker {
             log,
             identity,
             script,
+            held,
             task,
         })
     }
@@ -265,6 +270,16 @@ impl Broker {
 
     pub fn script(&self, script: Script) {
         *lock(&self.script) = script;
+    }
+
+    /// Holds every connection's reply to pushall, logging `HELD`, until
+    /// [`Broker::release`]: a Test connection that stays mid-test.
+    pub fn hold(&self) {
+        self.held.send_replace(true);
+    }
+
+    pub fn release(&self) {
+        self.held.send_replace(false);
     }
 }
 
@@ -323,8 +338,12 @@ pub fn publish(topic: &str, payload: &[u8]) -> Vec<u8> {
     frame(0x30, &body)
 }
 
-async fn serve<S>(mut stream: S, script: &Script, log: &Mutex<Vec<String>>)
-where
+async fn serve<S>(
+    mut stream: S,
+    script: &Script,
+    log: &Mutex<Vec<String>>,
+    mut held: watch::Receiver<bool>,
+) where
     S: AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     while let Some((header, body)) = packet(&mut stream).await {
@@ -357,6 +376,12 @@ where
                 let (topic, at) = field(&body, 0);
                 let payload = String::from_utf8_lossy(&body[at..]);
                 lock(log).push(format!("PUBLISH {topic} {payload}"));
+                if *held.borrow_and_update() {
+                    lock(log).push("HELD".into());
+                    if held.wait_for(|held| !held).await.is_err() {
+                        return;
+                    }
+                }
                 let mut out = Vec::new();
                 for reply in &script.replies {
                     match reply {

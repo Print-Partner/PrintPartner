@@ -13,7 +13,11 @@ use pp_storage::{
     tls_pins::{self, Pin},
 };
 use serde_json::{Value, json};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, atomic::AtomicBool},
+    time::Duration,
+};
 
 const READER_WAIT: Duration = Duration::from_millis(500);
 /// Types Node has an adapter for that this runtime cannot read yet.
@@ -32,6 +36,59 @@ pub(crate) struct StoredPrinterHosts {
 impl StoredPrinterHosts {
     pub(crate) fn new(settings: SettingsClient, reads: HostReads) -> Self {
         Self { settings, reads }
+    }
+}
+
+/// One lock per integration for its certificate pin, in [`PIN_LOCKS`] so
+/// every [`StoredPrinterHosts`] in the process shares it. A Bambu Test connection holds it from
+/// reading the pin through the network test to writing the pin, and a reset
+/// takes it too. Without it, two first-use tests could both read "no pin" and
+/// the second could send the access code to a different certificate before
+/// the first one's pin is stored.
+#[derive(Default)]
+struct PinLocks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+static PIN_LOCKS: std::sync::LazyLock<PinLocks> = std::sync::LazyLock::new(PinLocks::default);
+
+impl PinLocks {
+    async fn lock(&'static self, integration: &str) -> PinGuard {
+        let entry = {
+            let mut locks = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            locks.entry(integration.to_owned()).or_default().clone()
+        };
+        PinGuard {
+            guard: Some(entry.lock_owned().await),
+            locks: self,
+            integration: integration.to_owned(),
+        }
+    }
+}
+
+/// Releases the integration's lock and drops its entry once no one else
+/// holds or waits on it, so the map only keeps integrations in use.
+struct PinGuard {
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    locks: &'static PinLocks,
+    integration: String,
+}
+
+impl Drop for PinGuard {
+    fn drop(&mut self) {
+        let mut locks = self
+            .locks
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(self.guard.take());
+        if locks
+            .get(&self.integration)
+            .is_some_and(|entry| Arc::strong_count(entry) == 1)
+        {
+            locks.remove(&self.integration);
+        }
     }
 }
 
@@ -272,6 +329,9 @@ impl PrinterHostPort for StoredPrinterHosts {
     fn reset_tls_pin(&self, integration: String) -> Answer<Value> {
         let settings = self.settings.clone();
         Box::pin(async move {
+            // Waits out a Test connection in flight, so a first-use pin it
+            // is about to store cannot outlive this reset.
+            let _pin = PIN_LOCKS.lock(&integration).await;
             let reset = tokio::task::spawn_blocking(move || {
                 let Some(_) = printer_hosts::integration(&settings, READER_WAIT, &integration)?
                 else {
@@ -299,7 +359,9 @@ const WRITE_WAIT: Duration = Duration::from_secs(5);
 /// printer presents and, once it has read the printer's status, stores that
 /// certificate's pin; only this route ever writes one. A pin taken at another
 /// address, or a different certificate, fails without trusting anything.
+/// Holds the integration's [`PIN_LOCKS`] entry throughout.
 async fn bambu_test(settings: &SettingsClient, reads: &HostReads, id: String) -> HostAnswer<Value> {
+    let _pin = PIN_LOCKS.lock(&id).await;
     let client = settings.clone();
     let lookup = id.clone();
     let stored = tokio::task::spawn_blocking(move || {

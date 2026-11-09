@@ -112,7 +112,9 @@ def main():
     for title, slug, _, _, section in sections:
         print(f"{title} | docs/records/{slug}.md | {section.count(b'\n')}")
     print(f"Moved lines (including headings and trailing blank lines): {total}")
-    print(f"Plan expected 2189: {'MATCH' if total == 2189 else 'MISMATCH'}")
+    if total != 2258:
+        raise ValueError(f"Moved lines {total} differ from the plan's 2258")
+    print("Plan expected 2258: MATCH")
     print(f"{SOURCE}: {original.count(b'\n')} -> {actual.count(b'\n')} lines")
     print("PASS: nine records match parent bytes except heading levels and listed link-target repairs.")
     print("PASS: nine pointer targets exist; all other source bytes are unchanged.")

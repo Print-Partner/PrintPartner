@@ -87,9 +87,11 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         let _ = stderr.read_to_string(&mut error);
         panic!("unexpected first line: {origin:?}, stderr: {error}");
     }
+    // The marker itself is pp-storage's to test: a workspace build unifies its
+    // test-only test-unmarked-writer feature, which skips writing it.
     assert!(
-        data.join(".pp-rust-owned.json").is_file(),
-        "Rust owns the data directory"
+        data.join("print-partner.db").is_file(),
+        "Rust opened SQLite storage"
     );
     let recorded: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();

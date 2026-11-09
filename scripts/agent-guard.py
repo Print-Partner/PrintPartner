@@ -110,6 +110,10 @@ UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "par
                      "ssh", "unbuffer", "chronic", "ionice", "taskset", "chrt", "systemd-run", "busybox", "entr",
                      "stdbuf", "strace", "ltrace", "fakeroot", "firejail", "bwrap", "unshare", "nsenter", "chroot",
                      "expect", "tmux", "screen", "dtach", "at", "batch"}
+# Runners that hand an argument to a shell as a command line (script -c, su -c, flock -c, ssh host, watch, tmux).
+# The others run a program with arguments, so only their program positions are commands.
+STRING_RUNNERS = {"script", "su", "runuser", "flock", "expect", "ssh", "watch", "tmux", "screen", "dtach",
+                  "parallel", "at", "batch"}
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -1188,7 +1192,7 @@ def command_strings(name, rest):
         values = [arg.split("=", 1)[1] for arg in rest if re.match(r"^alias\.[^=\s]+=", arg)]
         values += [rest[i + 1] for i, arg in enumerate(rest[:-1]) if re.fullmatch(r"alias\.\S+", arg)]
         return [value[1:] if value.startswith("!") else value for value in values]
-    if name in UNWRAPPED_RUNNERS:
+    if name in STRING_RUNNERS:
         return [arg for arg in rest if re.search(r"\s", arg)]
     return []
 
@@ -1240,9 +1244,11 @@ def hidden_merge(args, depth=0, strict=False):
     if name in UNWRAPPED_RUNNERS:
         raw = " ".join(rest)
         # The parser marks every expansion and substitution; a literal $ or backtick in single quotes is data.
-        if merge_tokens(rest, api=True) or (EXPANDED in raw and re.search(r"\bgh\b", unquoted(raw))):
+        if EXPANDED in raw and re.search(r"\bgh\b", unquoted(raw)):
             return True
-        # The runner's own arguments may start another wrapper, shell, or runner.
+        # Each word could be where the runner's program starts (after xargs -n 1, flock FILE, find -exec), so
+        # each is tried in program position: gh itself, a wrapper, a shell's -c, or interpreter code. The words
+        # after an ordinary program, such as a grep pattern, stay data.
         if depth < 3 and any(hidden_merge(rest[i:], depth + 1, True) for i in range(len(rest))
                              if not rest[i].startswith("-")):
             return True

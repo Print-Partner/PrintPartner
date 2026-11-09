@@ -254,8 +254,10 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                         # no tests; nextest exits 4 on that unless told otherwise.
                         filtered_runs = [step["run"] for step in jobs[job_id]["steps"]
                                          if "cargo nextest run" in step.get("run", "")
-                                         and '-E "$NEXTEST_FILTER"' in step["run"]]
+                                         and "$NEXTEST_FILTER" in step["run"]]
                         self.assertEqual(len(filtered_runs), 2)
+                        # The off pass narrows NEXTEST_FILTER (scripts/ci-desktop-rebuild-off-filter.py).
+                        self.assertEqual(sum('-E "($NEXTEST_FILTER) & ($off_filter)"' in run for run in filtered_runs), 1)
                         for run in filtered_runs:
                             self.assertIn("--no-tests=warn", run.split())
                     self.assertEqual(jobs["rust-linux-rebuild"]["env"]["NEXTEST_FILTER"], "all()")

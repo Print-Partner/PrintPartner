@@ -25,10 +25,17 @@ fn server_binary() -> PathBuf {
     }
 }
 
-fn fail(child: &mut Child, message: &str) -> ! {
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("{message}");
+/// Owns the server process: dropping it, on any path including a panic or a
+/// failed assertion, kills and reaps the child, so no server outlives the test.
+struct Server(Child);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
 }
 
 fn healthcheck(probe: &str, status: &Path) -> Output {
@@ -46,16 +53,19 @@ fn rust_only_server_needs_no_node_and_reports_health() {
     let data = root.join("data");
     let status = root.join("status.json");
     let bundle = release::launch(data.clone()).bundle;
-    let mut child = child_process::command(server_binary())
-        .env("PP_DESKTOP_REBUILD", "1")
-        .args(["--data".as_ref(), data.as_os_str()])
-        .args(["--web".as_ref(), bundle.web_root.as_os_str()])
-        .args(["--commit", &bundle.commit])
-        .args(["--status-file".as_ref(), status.as_os_str()])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut server = Server(
+        child_process::command(server_binary())
+            .env("PP_DESKTOP_REBUILD", "1")
+            .args(["--data".as_ref(), data.as_os_str()])
+            .args(["--web".as_ref(), bundle.web_root.as_os_str()])
+            .args(["--commit", &bundle.commit])
+            .args(["--status-file".as_ref(), status.as_os_str()])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let child = &mut server.0;
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut stderr = child.stderr.take().unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -70,15 +80,12 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         let _ = sender.send(rest);
     });
     let Ok(origin) = receiver.recv_timeout(Duration::from_secs(60)) else {
-        fail(&mut child, "pp-server printed no origin within 60 s");
+        panic!("pp-server printed no origin within 60 s");
     };
     if !origin.starts_with("http://127.0.0.1:") {
         let mut error = String::new();
         let _ = stderr.read_to_string(&mut error);
-        fail(
-            &mut child,
-            &format!("unexpected first line: {origin:?}, stderr: {error}"),
-        );
+        panic!("unexpected first line: {origin:?}, stderr: {error}");
     }
     assert!(
         data.join(".pp-rust-owned.json").is_file(),
@@ -107,7 +114,7 @@ fn rust_only_server_needs_no_node_and_reports_health() {
             break exit;
         }
         if Instant::now() >= deadline {
-            fail(&mut child, "pp-server did not stop within 30 s of SIGTERM");
+            panic!("pp-server did not stop within 30 s of SIGTERM");
         }
         std::thread::sleep(Duration::from_millis(50));
     };

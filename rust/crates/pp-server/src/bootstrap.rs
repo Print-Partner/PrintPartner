@@ -41,18 +41,42 @@ pub(crate) type Mint = Arc<dyn Fn() -> Result<String> + Send + Sync>;
 /// on every exit path including an early return or a panic.
 pub(crate) struct Listener {
     path: PathBuf,
+    owner: u32,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for Listener {
     fn drop(&mut self) {
         self.task.abort();
-        if std::fs::symlink_metadata(&self.path)
-            .is_ok_and(|metadata| metadata.file_type().is_socket())
-        {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        let _ = remove_own_socket(&self.path, self.owner);
     }
+}
+
+/// Unlink `path` when it is a socket `owner` owns. Nothing there is fine; any
+/// other entry is left alone and refused.
+fn remove_own_socket(path: &Path, owner: u32) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() && metadata.uid() == owner => {
+            std::fs::remove_file(path).context("Remove the sign-in socket")
+        }
+        Ok(_) => bail!("{} exists and is not this account's socket", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("Inspect the sign-in socket path"),
+    }
+}
+
+/// Start the listener for a Rust-only runtime. The Node-backed runtime keeps
+/// its data directory as it was, so it gets none. Without the listener the
+/// server still serves; only headless sign-in is unavailable.
+pub(crate) fn start(runtime: &pp_core::CoreRuntime, data_dir: &Path) -> Option<Listener> {
+    if !runtime.rust_only() {
+        return None;
+    }
+    let handle = runtime.handle();
+    let mint: Mint = Arc::new(move || Ok(handle.browser_launch_target()?.into_url()));
+    listen(data_dir, mint)
+        .inspect_err(|error| eprintln!("pp-server bootstrap-url is unavailable: {error:#}"))
+        .ok()
 }
 
 /// Listen on `<data_dir>/.pp-server-bootstrap.sock`. The caller holds the data
@@ -65,14 +89,7 @@ pub(crate) fn listen(data_dir: &Path, mint: Mint) -> Result<Listener> {
 
 fn listen_for(data_dir: &Path, mint: Mint, owner: u32) -> Result<Listener> {
     let path = data_dir.join(SOCKET);
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_socket() && metadata.uid() == owner => {
-            std::fs::remove_file(&path).context("Remove the stopped server's sign-in socket")?;
-        }
-        Ok(_) => bail!("{} exists and is not this account's socket", path.display()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("Inspect the sign-in socket path"),
-    }
+    remove_own_socket(&path, owner)?;
     let listener = tokio::net::UnixListener::bind(&path).context("Bind the sign-in socket")?;
     // A socket without group or other write permission is already closed to
     // other accounts while this narrows it.
@@ -93,7 +110,7 @@ fn listen_for(data_dir: &Path, mint: Mint, owner: u32) -> Result<Listener> {
             }
         }
     });
-    Ok(Listener { path, task })
+    Ok(Listener { path, owner, task })
 }
 
 async fn answer(mut stream: tokio::net::UnixStream, owner: u32, mint: Mint) -> std::io::Result<()> {
@@ -272,6 +289,18 @@ mod tests {
         (mint, calls)
     }
 
+    /// A directory with a listener whose mint counts its calls.
+    fn serving() -> (
+        tempfile::TempDir,
+        Listener,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let directory = directory();
+        let (mint, calls) = counting_mint();
+        let listener = listen(directory.path(), mint).unwrap();
+        (directory, listener, calls)
+    }
+
     async fn request_off_thread(data: &Path, uid: u32) -> Result<String> {
         let data = data.to_owned();
         tokio::task::spawn_blocking(move || request_as(&data, uid))
@@ -281,9 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_owner_gets_a_fresh_url_per_request_from_an_owner_only_socket() {
-        let directory = directory();
-        let (mint, calls) = counting_mint();
-        let listener = listen(directory.path(), mint).unwrap();
+        let (directory, listener, calls) = serving();
         let socket = std::fs::symlink_metadata(directory.path().join(SOCKET)).unwrap();
         assert_eq!(socket.mode() & 0o777, 0o600);
         let uid = effective_uid();
@@ -313,9 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_malformed_request_is_refused() {
-        let directory = directory();
-        let (mint, calls) = counting_mint();
-        let listener = listen(directory.path(), mint).unwrap();
+        let (directory, listener, calls) = serving();
         let path = directory.path().join(SOCKET);
         let answer = tokio::task::spawn_blocking(move || {
             let mut stream = std::os::unix::net::UnixStream::connect(path).unwrap();
@@ -399,9 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_socket_open_to_others_is_not_used() {
-        let directory = directory();
-        let (mint, calls) = counting_mint();
-        let listener = listen(directory.path(), mint).unwrap();
+        let (directory, listener, calls) = serving();
         let path = directory.path().join(SOCKET);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660)).unwrap();
         let error = request_off_thread(directory.path(), effective_uid())

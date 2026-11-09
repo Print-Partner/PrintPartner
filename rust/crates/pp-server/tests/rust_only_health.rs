@@ -7,36 +7,13 @@
 mod child_process;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
+#[path = "support/rust_only.rs"]
+mod rust_only;
 #[path = "../../pp-storage/tests/common/scratch.rs"]
 mod scratch;
 
-use std::{
-    io::Read,
-    path::{Path, PathBuf},
-    process::{Child, Output, Stdio},
-    time::{Duration, Instant},
-};
-
-fn server_binary() -> PathBuf {
-    if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {
-        child_process::bin_exe("pp-server")
-    } else {
-        env!("CARGO_BIN_EXE_pp-server").into()
-    }
-}
-
-/// Owns the server process: dropping it, on any path including a panic or a
-/// failed assertion, kills and reaps the child, so no server outlives the test.
-struct Server(Child);
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        if let Ok(None) = self.0.try_wait() {
-            let _ = self.0.kill();
-        }
-        let _ = self.0.wait();
-    }
-}
+use rust_only::{Server, server_binary};
+use std::{path::Path, process::Output};
 
 fn healthcheck(probe: &str, status: &Path) -> Output {
     child_process::command(server_binary())
@@ -50,39 +27,9 @@ fn healthcheck(probe: &str, status: &Path) -> Output {
 #[test]
 fn rust_only_server_needs_no_node_and_reports_health() {
     let root = scratch::Scratch::new("pp-rust-only-health-");
-    let data = root.join("data");
-    let status = root.join("status.json");
-    let bundle = release::launch(data.clone()).bundle;
-    let mut server = Server(
-        child_process::command(server_binary())
-            .env("PP_DESKTOP_REBUILD", "1")
-            .args(["--data".as_ref(), data.as_os_str()])
-            .args(["--web".as_ref(), bundle.web_root.as_os_str()])
-            .args(["--commit", &bundle.commit])
-            .args(["--status-file".as_ref(), status.as_os_str()])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let child = &mut server.0;
-    // Wait for the status file, not stdout: it is what the healthcheck reads.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let recorded = loop {
-        let state = std::fs::read(&status)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-        if let Some(state) = state.filter(|state| state["state"] == "ready") {
-            break state;
-        }
-        if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
-            let mut error = String::new();
-            let _ = child.stderr.take().unwrap().read_to_string(&mut error);
-            panic!("pp-server never became ready: {error}");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let origin = recorded["origin"].as_str().unwrap().to_owned();
+    let server = Server::start(&root);
+    let (data, status) = (server.data.clone(), server.status.clone());
+    let origin = server.origin().to_owned();
     assert!(origin.starts_with("http://127.0.0.1:"), "{origin}");
     // The marker itself is pp-storage's to test: a workspace build unifies its
     // test-only test-unmarked-writer feature, which skips writing it.
@@ -90,7 +37,7 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         data.join("print-partner.db").is_file(),
         "Rust opened SQLite storage"
     );
-    assert_eq!(recorded["pid"], child.id());
+    assert_eq!(server.ready["pid"], server.child.id());
     for (probe, line) in [
         ("liveness", "liveness ok (ready)\n"),
         ("readiness", "readiness ok (ready)\n"),
@@ -100,26 +47,7 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         assert_eq!(String::from_utf8_lossy(&output.stdout), line);
     }
 
-    let pid = libc::pid_t::try_from(child.id()).unwrap();
-    // SAFETY: plain FFI call with the child's pid; no memory is shared.
-    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let exit = loop {
-        if let Some(exit) = child.try_wait().unwrap() {
-            break exit;
-        }
-        if Instant::now() >= deadline {
-            panic!("pp-server did not stop within 30 s of SIGTERM");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let mut printed = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut printed)
-        .unwrap();
+    let (exit, printed, _) = server.stop();
     let mut lines = printed.lines();
     assert_eq!(lines.next(), Some(origin.as_str()), "origin first");
     let receipt: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();

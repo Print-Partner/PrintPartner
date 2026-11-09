@@ -145,22 +145,9 @@ async fn serve(args: Vec<String>) -> Result<()> {
             return Err(error);
         }
     }
-    // `pp-server bootstrap-url` reaches the runtime through this socket. Without
-    // it the server still serves; only headless sign-in is unavailable.
-    // Rust-only starts only: the Node-backed runtime keeps its existing data
-    // directory contents.
+    // `pp-server bootstrap-url` reaches a Rust-only runtime through this socket.
     #[cfg(unix)]
-    let bootstrap = runtime
-        .rust_only()
-        .then(|| {
-            let handle = runtime.handle();
-            let mint: bootstrap::Mint =
-                std::sync::Arc::new(move || Ok(handle.browser_launch_target()?.into_url()));
-            bootstrap::listen(&data, mint)
-                .inspect_err(|error| eprintln!("pp-server bootstrap-url is unavailable: {error:#}"))
-                .ok()
-        })
-        .flatten();
+    let bootstrap = bootstrap::start(&runtime, &data);
     // Register signal streams before announcing the origin: a signal sent right after
     // the origin line is queued here instead of taking the default action.
     let stop_signal = platform::stop_signal()?;

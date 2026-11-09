@@ -172,8 +172,10 @@ impl Policy {
                     None => template.replace(" 'nonce-{nonce}'", ""),
                 }
                 .replace("{ws_origin}", ws_origin);
+                // The template and a loopback origin are plain ASCII; if that
+                // ever fails, fail closed with a policy that allows nothing.
                 axum::http::HeaderValue::from_str(&policy)
-                    .expect("Policy holds only header-safe characters")
+                    .unwrap_or_else(|_| axum::http::HeaderValue::from_static("default-src 'none'"))
             }
         }
     }
@@ -198,8 +200,10 @@ async fn nonce_document(asset: AssetFile, nonce: &str) -> Option<Vec<u8>> {
     Some(html)
 }
 
-/// The byte offset just after the `<head ...>` start tag, in any letter case
-/// and with any attributes. Without one, just after a leading `<!doctype ...>`
+/// The byte offset just after the first `<head ...>` start tag, in any letter
+/// case and with any attributes. A plain byte scan, not an HTML parser: it is
+/// meant for the Vite-built `index.html`, which has no comment or script text
+/// before `<head>`. Without one, just after a leading `<!doctype ...>`
 /// (the parser then opens `<head>` itself and the element lands in it, and the
 /// page stays out of quirks mode); otherwise the start.
 fn nonce_position(html: &[u8]) -> usize {

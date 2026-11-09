@@ -178,22 +178,39 @@ def gated_arm_lines(lib):
     return first, last
 
 
+ARM_CLOSE = re.compile(r" {20}\},?\s*$")
+
+
+def body_lines(header, rest):
+    """Body lines of one arm: for a braced arm `... => {`, the lines between its opening `{` line and
+    its closing `}`; for an expression arm `... => expr,`, the header line plus any wrapped lines."""
+    if header.rstrip().endswith("{"):
+        while rest and ARM_CLOSE.match(rest[-1]):
+            rest = rest[:-1]
+        return len(rest)
+    return 1 + len(rest)
+
+
 def envelope_arms(body):
     """(variant, body lines, gated) for each arm of the writer's `match envelope` block."""
-    arms, name, count, gated, pending_gate = [], None, 0, False, False
+    arms, current, pending_gate = [], None, False
+
+    def close():
+        if current:
+            name, gated, header, rest = current
+            arms.append((name, body_lines(header, rest), gated))
+
     for line in body.splitlines():
         if line.startswith(" " * 20 + GATE):
             pending_gate = True
             continue
         arm = re.match(r" {20}Envelope::([A-Za-z]+)", line)
         if arm:
-            if name:
-                arms.append((name, count, gated))
-            name, count, gated, pending_gate = arm.group(1), 0, pending_gate, False
-            continue
-        count += 1
-    if name:
-        arms.append((name, count, gated))
+            close()
+            current, pending_gate = (arm.group(1), pending_gate, line, []), False
+        elif current:
+            current[3].append(line)
+    close()
     return arms
 
 
@@ -254,9 +271,9 @@ def writer_rows(repo, src):
         arms = envelope_arms(block.group(1))
         over = sorted(((n, c) for n, c, g in arms if g and c > 1), key=lambda a: -a[1])
         longest = ", ".join(f"{n} {c}" for n, c in over[:4])
-        row("Writer `match envelope` block lines / gated arms longer than one line (closing brace counted)",
+        row("Writer `match envelope` block lines / gated arms whose body is longer than one line",
             f"{block.group(1).count(chr(10)) + 1} / {len(over)} of {sum(1 for a in arms if a[2])} ({longest})",
-            "parse the `match envelope` block in lib.rs; count lines between `Envelope::` arms")
+            "parse the match envelope block in lib.rs; body lines exclude a braced arm's { and } lines")
     env_files = [p for p in src if p != LIB and "Envelope::" in repo.text(p)]
     row("pp-storage src files outside lib.rs that name `Envelope::`", len(env_files),
         "files under pp-storage/src containing 'Envelope::', lib.rs excluded")

@@ -193,7 +193,7 @@ impl InstallationClient {
         let _active = self.activity.enter()?;
         require_marker(&self.data_dir)?;
         let work = work_dir(&self.data_dir)?;
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         tests::after_work_dir(&self.data_dir);
         let path = work.join(format!("{INCOMING_PREFIX}{}{INCOMING_SUFFIX}", random_id()));
         let file = std::fs::OpenOptions::new()
@@ -271,7 +271,7 @@ fn remove_earlier_stages(work: &Path, keep: &str) -> Result<(), String> {
                 Ok(Some(Leftover::Staged))
                     if name.to_str() != Some(&format!("{STAGED_PREFIX}{keep}")) =>
                 {
-                    std::fs::remove_dir_all(entry.path())
+                    remove_stage(&entry.path())
                         .with_context(|| format!("Remove {}", name.to_string_lossy()))
                 }
                 _ => Ok(()),
@@ -282,6 +282,14 @@ fn remove_earlier_stages(work: &Path, keep: &str) -> Result<(), String> {
         }
     }
     first_error.map_or(Ok(()), Err)
+}
+
+/// Removes one stage directory. Tests can make it fail without relying on
+/// file permissions, which root ignores.
+fn remove_stage(path: &Path) -> std::io::Result<()> {
+    #[cfg(all(test, unix))]
+    tests::removal_fault(path)?;
+    std::fs::remove_dir_all(path)
 }
 
 fn require_marker(data_dir: &Path) -> Result<()> {

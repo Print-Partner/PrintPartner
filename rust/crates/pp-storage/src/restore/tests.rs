@@ -23,6 +23,21 @@ pub(super) fn after_work_dir(data_dir: &Path) {
     }
 }
 
+/// Stage directories whose next removal fails, whoever runs the test.
+static FAILING_REMOVALS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Called by `stage` before it removes an earlier stage directory.
+pub(super) fn removal_fault(path: &Path) -> std::io::Result<()> {
+    let mut failing = FAILING_REMOVALS.lock().unwrap();
+    match failing.iter().position(|known| known == path) {
+        Some(index) => {
+            failing.remove(index);
+            Err(std::io::Error::other("injected removal failure"))
+        }
+        None => Ok(()),
+    }
+}
+
 fn on_work_dir(root: &Path, hook: impl FnOnce() + Send + 'static) {
     AFTER_WORK_DIR
         .lock()
@@ -473,10 +488,8 @@ fn ticket_t_8_restore_an_upload_survives_a_refused_stage_racing_it() {
     owner.shutdown().unwrap();
 }
 
-#[cfg(not(target_os = "macos"))]
 #[test]
 fn ticket_t_8_restore_a_failed_cleanup_of_an_earlier_stage_still_returns_the_new_one() {
-    use std::os::unix::fs::PermissionsExt;
     let (_installation, root) = installation();
     let owner = open(&root).unwrap();
     let client = owner.installation().unwrap();
@@ -486,10 +499,8 @@ fn ticket_t_8_restore_a_failed_cleanup_of_an_earlier_stage_still_returns_the_new
     let first_dir = root
         .join(WORK_DIR)
         .join(format!("{STAGED_PREFIX}{}", first.restore_id));
-    let locked = first_dir.join("repos/source-a");
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+    FAILING_REMOVALS.lock().unwrap().push(first_dir.clone());
     let second = stage(&client, &backup).unwrap();
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
     let detail = second
         .cleanup_error
         .expect("the earlier stage could not be removed");

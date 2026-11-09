@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -27,13 +28,11 @@ class SourceScanTests(unittest.TestCase):
         enum = "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\nenum Policy {\n    Strict,\n    " + GATE + "\n    Nfc,\n}\n"
         additive = {
             "module": f"{GATE}\npub mod rebuild;\n",
-            "use": f"{GATE}\nuse std::fmt;\n",
-            "function with attributes": f"{GATE}\n#[must_use]\n/// Docs.\npub(crate) async fn f() {{}}\n",
-            "inherent impl": f"{GATE}\nimpl Directory {{}}\n",
-            "method with a unique name": f"impl Directory {{\n    {GATE}\n    pub fn create_child(&self) {{}}\n}}\n",
-            "item in a mod block": f"mod inner {{\n    {GATE}\n    pub fn f() {{}}\n}}\n",
+            "free function with attributes": f"{GATE}\n#[must_use]\n/// Docs.\npub(crate) async fn rebuild_only() {{}}\n",
+            "struct with a unique name": f"{GATE}\npub struct RebuildOnly;\n",
+            "item in a mod block": f"mod inner {{\n    {GATE}\n    pub fn rebuild_only() {{}}\n}}\n",
             "file": f'#![cfg(feature = "desktop_rebuild")]\nfn f() {{ let x = 1; }}\n',
-            "glob import in another module": f"{GATE}\nuse std::fmt;\nmod tests {{\n    use super::*;\n}}\n",
+            "glob import in another module": f"{GATE}\nfn rebuild_only() {{}}\nmod tests {{\n    use super::*;\n}}\n",
             "gated variant and its arm": enum + (f"fn f(p: Policy) {{ match p {{ Policy::Strict => 1,\n"
                                                  f"    {GATE}\n    Policy::Nfc => 2, }}; }}\n"),
             "arm through Self": enum + (f"impl Policy {{\n    fn f(self) -> u8 {{\n        match self {{\n"
@@ -61,8 +60,17 @@ class SourceScanTests(unittest.TestCase):
             "list element": f"const L: &[u8] = &[\n    1,\n    {GATE}\n    Extra,\n];\n",
             "trait impl": f"{GATE}\nimpl Drop for Lock {{\n    fn drop(&mut self) {{}}\n}}\n",
             "item next to a glob import": f"use other::*;\n{GATE}\nconst LIMIT: u8 = 2;\n",
+            "gated use": f"{GATE}\nuse std::fmt;\n",
+            "gated use of a trait": f"{GATE}\nuse unicode_normalization::UnicodeNormalization;\n",
+            "gated inherent impl block": f"{GATE}\nimpl Directory {{\n    fn create_child(&self) {{}}\n}}\n",
+            # The review threads on #1632: inherent methods win over trait methods from any crate.
+            "gated impl block that shadows a local trait": (f"{GATE}\nimpl S {{ fn len(&self) -> usize {{ 0 }} }}\n"
+                                                            "trait L { fn len(&self) -> usize; }\n"),
             "method that could shadow": (f"impl S {{\n    {GATE}\n    fn len(&self) -> usize {{ 0 }}\n}}\n"
                                          "trait L { fn len(&self) -> usize; }\n"),
+            "method with a unique name": f"impl Directory {{\n    {GATE}\n    pub fn create_child(&self) {{}}\n}}\n",
+            "free function named like a prelude item": f"{GATE}\nfn drop() {{}}\n",
+            "struct named like a prelude type": f"{GATE}\nstruct Result;\n",
             "macro": f"{GATE}\nmacro_rules! m {{ () => {{}} }}\n",
             "arm on an ungated variant": enum + (f"fn f(p: Policy) {{ match p {{\n    {GATE}\n    Policy::Strict => 2,\n"
                                                  "    _ => 1, }; }\n"),
@@ -78,6 +86,16 @@ class SourceScanTests(unittest.TestCase):
         for label, text in sensitive.items():
             with self.subTest(label):
                 self.assertTrue(off.off_reasons(self.package(src__lib_rs=text)))
+        # Each std trait method from the review threads, as a gated method or impl block.
+        for method in ("len", "read", "to_string", "into", "clone", "fmt"):
+            for text in (f"impl Directory {{\n    {GATE}\n    pub fn {method}(&self) {{}}\n}}\n",
+                         f"{GATE}\nimpl Directory {{\n    pub fn {method}(&self) {{}}\n}}\n",
+                         f"{GATE}\npub fn {method}() {{}}\n"):
+                with self.subTest(method=method, text=text):
+                    self.assertTrue(off.off_reasons(self.package(src__lib_rs=text)))
+        # A free item whose name another crate in the workspace also defines is not unique.
+        self.assertTrue(off.off_reasons(self.package(src__lib_rs=f"{GATE}\npub fn rebuild_only() {{}}\n"),
+                                        {"rebuild_only": 2}))
         # Tests, benches and build scripts count too.
         self.assertTrue(off.off_reasons(self.package(build_rs='fn main() { cfg!(feature = "desktop_rebuild"); }')))
         self.assertTrue(off.off_reasons(self.package(tests__t_rs='#[cfg(not(feature = "desktop_rebuild"))]\n'
@@ -120,6 +138,30 @@ class FilterTests(unittest.TestCase):
         self.assertIn("pp-elsewhere", str(raised.exception))
 
 
+    def test_cargo_metadata_is_read_as_utf_8(self):
+        # rust (windows) on #1632 decoded it with cp1252 and crashed on a non-ASCII byte.
+        calls = []
+
+        def fake_run(command, **options):
+            calls.append(options)
+            return subprocess.CompletedProcess(command, 0, stdout='{"name": "caf\u00e9"}', stderr="")
+
+        original, off.subprocess.run = off.subprocess.run, fake_run
+        self.addCleanup(setattr, off.subprocess, "run", original)
+        self.assertEqual(off.cargo_metadata(Path("Cargo.toml")), {"name": "caf\u00e9"})
+        self.assertEqual(calls[0]["encoding"], "utf-8")
+
+    def test_a_failed_cargo_metadata_stops_with_its_error(self):
+        def fake_run(command, **options):
+            return subprocess.CompletedProcess(command, 101, stdout="", stderr="error: lock file needs updating")
+
+        original, off.subprocess.run = off.subprocess.run, fake_run
+        self.addCleanup(setattr, off.subprocess, "run", original)
+        with self.assertRaises(SystemExit) as raised:
+            off.cargo_metadata(Path("Cargo.toml"))
+        self.assertIn("error: lock file needs updating", str(raised.exception))
+
+
 class ExternalFeatureTests(unittest.TestCase):
     def test_only_reviewed_additive_features_pass(self):
         before = {"axum 1": ("axum", {"json"}), "serde_json 1": ("serde_json", {"std"}),
@@ -152,9 +194,11 @@ class ExternalFeatureTests(unittest.TestCase):
 class RepositoryTests(unittest.TestCase):
     def test_current_split(self):
         """A package that moves between the passes shows up here for review."""
-        additive = sorted(name for name, folder in off.packages(ROOT / "rust/crates").items() if not off.off_reasons(folder))
+        names = off.defined_names(ROOT / "rust/crates")
+        additive = sorted(name for name, folder in off.packages(ROOT / "rust/crates").items()
+                          if not off.off_reasons(folder, names))
         self.assertEqual(additive, ["pp-api-types", "pp-contracts", "pp-domain", "pp-drivers", "pp-net", "pp-os",
-                                    "pp-perf", "pp-services", "pp-source", "pp-testkit"])
+                                    "pp-perf", "pp-services", "pp-testkit"])
 
     def test_the_workflow_narrows_only_the_off_pass(self):
         # Text checks: the changes job runs this file without PyYAML.

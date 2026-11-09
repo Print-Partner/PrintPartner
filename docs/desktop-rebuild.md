@@ -1040,7 +1040,7 @@ On success, the audit prints the commit IDs, each file's blob identity and refer
 
 Exit 0 means all identity checks passed. Exit 1 reports a file, inventory, or gate mismatch. Exit 2 reports missing Git, missing historical objects, or a Git command failure. Failures go to stderr without a success summary. A checkout without the pinned history must fetch history containing those full commit IDs before rerunning. The audit never fetches, checks out files, writes files, or runs Cargo. Blob equality proves historical file identity, not a fresh probe execution. Later media changes do not invalidate this fixed audit.
 
-The existing full source suites cover media, direct-model binding, and archive behavior. CI runs them in the `desktop_rebuild`-on pass only, because pp-source gates nothing but whole items (see [The desktop_rebuild-off nextest pass](development/ci.md#the-desktop_rebuild-off-nextest-pass)); the commands below run them with the feature off and on:
+The existing full source suites cover media, direct-model binding, and archive behavior with the feature off and on:
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-source

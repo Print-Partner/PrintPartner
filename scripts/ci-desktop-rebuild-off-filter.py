@@ -8,18 +8,21 @@ desktop_rebuild or DESKTOP_REBUILD anywhere except a plain
 `#[cfg(feature = "desktop_rebuild")]` (or `#![cfg(...)]` heading a file) that
 gates one of these, which only add code with the feature on:
 
-- an item at module level or in a `mod` block: `mod`, inherent `impl`, `fn`,
-  `struct`, `enum`, `const`, `static`, `type`, `trait`, `use`, but not in a module
-  with a glob import (`use x::*;`), where the item could shadow an imported one;
-- a method, constant or type in an inherent `impl` block whose name the package
-  defines nowhere else, so it cannot shadow a trait method;
+- a whole `mod` at module level or in a `mod` block;
+- a free `fn`, `struct`, `enum`, `const`, `static`, `type` or `trait` there, when
+  its name is defined once in the whole workspace, is not in SHADOWING_NAMES (the
+  prelude and common std trait methods), and its module has no glob import
+  (`use x::*;`), so it cannot shadow anything ungated code uses;
 - an enum variant, when the enum derives only Debug, Clone, Copy, PartialEq, Eq
   or Hash and has no `repr` or explicit discriminants, so no order or index moves;
 - a match arm with one pattern on such a gated variant of the same enum.
 
 Anything else (`not(...)`, `cfg!`, `cfg_attr`, `any`/`all`, other spacing, the
-runtime switch, a gated statement, field, list element, trait impl or macro)
-marks the package sensitive. Every package that depends on a sensitive one, by
+runtime switch, a gated `use`, `impl` block, method, statement, field, list
+element, trait impl or macro) marks the package sensitive. Inherent methods win
+method resolution over trait methods from any crate, so a gated method or impl
+block could change what an ungated call does; the scan does not try to prove it
+cannot. Every package that depends on a sensitive one, by
 any dependency kind, is selected too, because it compiles against the off build.
 A package left out therefore compiles off as a strict subset of its on build,
 and the on pass runs each of its tests with the same code. Tests compiled only
@@ -51,6 +54,17 @@ VARIANT = re.compile(r"^\s*([A-Z]\w*)\s*(?:\(.*\)|\{.*\})?\s*,?\s*$")
 ARM = re.compile(r"^\s*(?:(\w+)::)+([A-Z]\w*)\b\s*(?:\(.*\)|\{.*\})?\s*(?:if\b[^|]*)?=>")
 SAFE_DERIVES = {"Debug", "Clone", "Copy", "PartialEq", "Eq", "Hash"}
 GLOB = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+[^;]*\*\s*;")
+# Names a gated item must not take even when unique: it could shadow the prelude or, as a
+# method, a std trait method that ungated code calls.
+SHADOWING_NAMES = {
+    "Box", "Clone", "Copy", "Default", "Drop", "Eq", "Err", "Fn", "FnMut", "FnOnce", "From", "Into",
+    "IntoIterator", "Iterator", "None", "Ok", "Option", "Ord", "PartialEq", "PartialOrd", "Result", "Send",
+    "Sized", "Some", "String", "Sync", "ToOwned", "ToString", "TryFrom", "TryInto", "Unpin", "Vec",
+    "as_mut", "as_ref", "borrow", "clone", "cmp", "default", "deref", "drop", "eq", "flush", "fmt", "from",
+    "from_str", "hash", "into", "into_iter", "iter", "len", "next", "partial_cmp", "read", "to_owned",
+    "to_string", "try_from", "try_into", "write",
+}
+DEFINITION = re.compile(r"\b(?:fn|const|static|struct|enum|type|trait|mod|union)\s+(\w+)|\bas\s+(\w+)\s*[;,}]")
 STRING = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'')
 # External features the on build adds to packages the off build already resolves, from
 # `cargo metadata` off and on. Reviewed 2026-11-09 for GRE-1278: each adds API (an
@@ -155,15 +169,32 @@ def gates(text):
             yield number + 1, None, contexts[number]
 
 
-def off_reasons(package_dir):
-    """Return why a package's code can differ with the feature off; empty when it cannot."""
+def defined_names(crates_root):
+    """Count how often each name is defined or imported under an alias in the workspace's sources."""
+    counts = {}
+    for path in sorted(Path(crates_root).rglob("*.rs")):
+        if "target" in path.relative_to(crates_root).parts:
+            continue
+        for match in DEFINITION.finditer(path.read_text(encoding="utf-8", errors="replace")):
+            name = match.group(1) or match.group(2)
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def off_reasons(package_dir, names=None):
+    """Return why a package's code can differ with the feature off; empty when it cannot.
+
+    names counts the definitions in the whole workspace (defined_names); by default only
+    this package's own sources are counted.
+    """
     package_dir = Path(package_dir)
     sources = {}
     for path in sorted(package_dir.rglob("*.rs")):
         relative = path.relative_to(package_dir)
         if "target" not in relative.parts:
             sources[relative] = path.read_text(encoding="utf-8", errors="replace")
-    variants, names = set(), {}
+    variants = set()
+    names = defined_names(package_dir) if names is None else names
     for text in sources.values():
         lines = text.splitlines()
         for _, index, context in gates(text):
@@ -171,8 +202,6 @@ def off_reasons(package_dir):
                 found = VARIANT.match(lines[index])
                 if found and safe_enum(lines, context[-1][2]):
                     variants.add((context[-1][1], found.group(1)))
-        for match in re.finditer(r"\b(?:fn|const|type)\s+(\w+)", text):
-            names[match.group(1)] = names.get(match.group(1), 0) + 1
     reasons = []
     for relative, text in sources.items():
         lines = text.splitlines()
@@ -199,13 +228,10 @@ def additive(gated, context, glob, variants, names):
     top = context[-1] if context else ("mod", "", 0)
     item = ITEM.match(gated)
     if all(kind == "mod" for kind in kinds):
-        if not item:
+        if not item or item.group(1) in ("impl", "use"):
             return False
-        if item.group(1) == "impl":
-            return not re.search(r"\bfor\b", gated)
-        return item.group(1) == "mod" or not glob
-    if top[0] == "impl" and all(kind in ("mod", "impl") for kind in kinds):
-        return bool(item) and item.group(1) in ("fn", "const", "type") and names.get(item.group(2), 0) == 1
+        return item.group(1) == "mod" or (not glob and item.group(2) not in SHADOWING_NAMES
+                                          and names.get(item.group(2), 0) == 1)
     if top[0] == "enum" and all(kind in ("mod", "enum") for kind in kinds):
         found = VARIANT.match(gated)
         return bool(found) and (top[1], found.group(1)) in variants
@@ -270,7 +296,8 @@ def off_filter(crates_root, graph, off, on):
         raise SystemExit(f"desktop_rebuild adds external features {', '.join(unreviewed)}. Check that each "
                          "only adds API, then list it in ADDITIVE_FEATURES in "
                          "scripts/ci-desktop-rebuild-off-filter.py.")
-    sensitive = {name for name, folder in found.items() if off_reasons(folder)}
+    names = defined_names(crates_root)
+    sensitive = {name for name, folder in found.items() if off_reasons(folder, names)}
     if not sensitive:
         raise SystemExit("No package mentions desktop_rebuild beyond additive gates; the scan is probably "
                          "reading the wrong files.")
@@ -279,7 +306,8 @@ def off_filter(crates_root, graph, off, on):
 
 def cargo_metadata(manifest, *features):
     command = ["cargo", "metadata", "--format-version", "1", "--locked", "--manifest-path", str(manifest), *features]
-    result = subprocess.run(command, capture_output=True, text=True)
+    # cargo writes UTF-8; Windows would otherwise decode it with the console code page.
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
     if result.returncode:
         raise SystemExit(f"{' '.join(command)} failed:\n{result.stderr}")
     return json.loads(result.stdout)
@@ -295,8 +323,9 @@ if __name__ == "__main__":
     on_metadata = cargo_metadata(rust / "Cargo.toml", "--features", FEATURE)
     graph = workspace_graph(off_metadata)
     expression = off_filter(rust / "crates", graph, resolved_features(off_metadata), resolved_features(on_metadata))
+    names = defined_names(rust / "crates")
     for name, folder in packages(rust / "crates").items():
-        reasons = off_reasons(folder)
+        reasons = off_reasons(folder, names)
         why = (reasons[0] if reasons else "depends on a sensitive package" if f"(={name})" in expression
                else "on pass only: additive gates")
         print(f"{name}: {why}", file=sys.stderr)

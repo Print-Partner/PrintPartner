@@ -63,8 +63,7 @@ service launch, logs, driving, assertions, and shutdown.
 In the approved Mission plan, name the operation owner, default-off flag modes,
 SQLite/ID/recovery invariants, and the evidence each milestone must produce.
 Every Mission PR stays under about 600 changed lines. Finish one PR's review (`review-gate`)
-and CI before opening the next. Mission workers never merge, even though the safety guard
-allows the merge form; they report readiness. The coordinator merges
+and CI before opening the next. Mission workers never merge. The coordinator merges
 from its own worktree under the [merge gate](definition-of-done.md#merge-gate).
 
 The project hook runs [the safety guard](agent-workflow.md#safety-guard) before

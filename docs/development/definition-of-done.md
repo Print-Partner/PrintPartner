@@ -28,7 +28,7 @@ Every other decision goes to the owner in one daily list: scope, cutover, defaul
 
 Every PR starts its description with `Fixes GRE-xxx` and closes its ticket when it merges. Don't write `Refs GRE-xxx`.
 
-When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. Whoever merges, lane or coordinator, checks that the quotes match the parent's unmet items before merging; when the scorer runs on that head, it checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
+When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The coordinator checks that the quotes match the parent's unmet items before it merges; when the scorer runs on that head, it checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
 
 ## Ticket states
 
@@ -36,7 +36,9 @@ When some acceptance items stay unmet, split them out before the merge: create a
 
 ## Merge gate
 
-A lane merges its own normal PR. The coordinator merges sensitive PRs (item 6) and marker-only heads, from its own worktree (see [Coordinator worktree](agent-workflow.md#coordinator-worktree)). The owner merges changes to the safety guard, its hook adapters, and CI controls. Every merge needs all of these on the same head commit:
+The coordinator merges, from its own worktree (see [Safety guard](agent-workflow.md#safety-guard)). Lanes and other agents report readiness and never merge. The owner merges changes to the safety guard, its hook adapters, and CI controls.
+
+The coordinator merges a PR only when all of these hold on the same head commit:
 
 1. **Exact head.** Every check, review, and score below is on the PR's current head SHA.
 2. **Required checks** are green, including `review-gate`.
@@ -44,29 +46,7 @@ A lane merges its own normal PR. The coordinator merges sensitive PRs (item 6) a
 4. **All review threads** are resolved.
 5. **Scorer, sensitive PRs and marker-only heads.** For a PR that item 6 names, and for any head whose `review-gate` passed only through the coordinator record, the coordinator runs its own scorer on that head from a [scorer seat](#scorer-seats) whose vendor differs from the PR's author. A marker-only head passes with a score strictly above 8; a sensitive PR needs item 6. Other PRs, whose gate passed on a Claude or Droid review, need no scorer run (re-scope, 2026-11-08).
 6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths (CI workflows, `.github/zizmor.yml`, the safety guard, `.factory/` and `.claude/`; see [Code review](#code-review)) need a score of 9 or more from each of two [scorer seats](#scorer-seats).
-7. **Command.** `gh pr merge <number> --squash --match-head-commit <sha>`, with the full 40-character head SHA, run on its own. Never `--admin`, `--auto`, or `--delete-branch`. The safety guard allows only this form; see [Merges](agent-workflow.md#merges).
-
-### Lane merges
-
-A lane may merge its own PR only when, on the exact head:
-
-- the PR is not sensitive: it touches none of the item 6 areas or paths. The lane checks this against the PR's file list (`gh pr diff <number> --name-only`) and its own diff; when unsure, the PR is sensitive;
-- `review-gate` passed through a Droid or Claude review of that head (path 1 or 2 under [Code review](#code-review)), not only through the coordinator record;
-- every required check passes, nothing else is pending, and every other check passes or is on the item 3 list;
-- every review thread is resolved;
-- the PR's base is `main`.
-
-Otherwise the lane reports readiness to the coordinator and stops.
-
-Outside the coordinator worktree, the safety guard enforces part of this list before it allows the merge: it refuses a lane merge whose base is not `main`, whose head is not the given SHA, whose file list or diff is incomplete, that renames or copies a file, that changes a lane-protected path (CI and agent configs, every script directory and file a workflow runs, and every schema file), or whose diff adds or removes a schema line in any file under `rust/` or in any Rust or SQL file. A failed lookup, or lookups that run past their shared 8-second deadline, refuse too. [Merges](agent-workflow.md#merges) lists exactly what it checks and what it cannot see. The other item 6 areas (auth and sessions, backup and restore, Accept and publication, secret handling) have no fixed paths, so they rely on the lane's judgement and the coordinator's audit.
-
-The coordinator audits merges at least daily. It lists every PR merged since the start of its last audit, on any base, and checks each one's base, files, and merger against this list and item 6:
-
-```sh
-gh pr list -R Print-Partner/PrintPartner --state merged --search "merged:>=<last audit date>" --limit 200 --json number,mergedAt,baseRefName,files,mergedBy
-```
-
-When the list returns 200 PRs, it narrows the date range and lists again until a range returns fewer. For any merge that broke a rule, it opens a revert PR and notes it on the ticket.
+7. **Command.** `gh pr merge <number> --squash --match-head-commit <sha>`, with the full 40-character head SHA. Never `--admin` or `--auto`.
 
 ### Scorer seats
 
@@ -99,7 +79,7 @@ On a PR, the gate runs on `pull_request_target`, so GitHub runs the default bran
 
 Every reviewer posts findings as review threads, and the ruleset requires every thread to be resolved, whichever path passed the gate. Fix the finding, or reply with the reason it does not apply and resolve the thread.
 
-Remaining risk: a PR can still add a `pull_request` workflow with a job named `review-gate`. The real gate detects that check and fails, but GitHub may still show the spoofed check as passing next to it, and the ruleset matches required checks by name and app. Lanes also push with the owner's account, so the protected-files rule does not stop a lane from editing a workflow. Whoever merges, lane or coordinator, therefore reads the `review-gate` run and the head's other check runs before every merge, and the coordinator audits lane merges under [Lane merges](#lane-merges). A PR that edits a workflow or the guard counts as sensitive, so a lane never merges it, and its head is scored by two seats under the [merge gate](#merge-gate). The ruleset does not require code-owner review, so CODEOWNERS only requests the owner's review. A future hardening step is a dedicated GitHub App that posts `review-gate` as its own check run, with the ruleset pinned to that app's `integration_id`, so no workflow job can produce a matching check.
+Remaining risk: a PR can still add a `pull_request` workflow with a job named `review-gate`. The real gate detects that check and fails, but GitHub may still show the spoofed check as passing next to it, and the ruleset matches required checks by name and app. Lanes also push with the owner's account, so the protected-files rule does not stop a lane from editing a workflow. Merges therefore stay with the owner and the coordinator, who read the `review-gate` run and the head's other check runs before every merge. A PR that edits a workflow or the guard counts as sensitive, so its head is scored by two seats under the [merge gate](#merge-gate). The ruleset does not require code-owner review, so CODEOWNERS only requests the owner's review. A future hardening step is a dedicated GitHub App that posts `review-gate` as its own check run, with the ruleset pinned to that app's `integration_id`, so no workflow job can produce a matching check.
 
 ### Factory Droid
 
@@ -133,9 +113,9 @@ When no automatic review passes the gate, for example while Droid is out of usag
 
 The gate counts a marker only when the comment's author is `poitee` (the workflows pin that login instead of reading `github.repository_owner`, so moving the repository to an organization changes nothing) and one line of the comment is exactly that text: single spaces, the fields in that order, `head=` equal to the PR's current head SHA in full lowercase, `reviewer=` made of letters, digits and `._:/@+-`, and `findings=` a whole number. A marker for an older head, or in any other spelling or encoding, never counts.
 
-Outside the [coordinator worktree](agent-workflow.md#coordinator-worktree), the safety guard refuses any command line that names `pp-review-gate` in any case, raw or after decoding JSON and GraphQL escapes, URL encoding, or HTML entities, wherever it appears: in a `gh` comment, a `bash -c` or `python3 -c` script, or an `echo` into a file for later posting. It classifies the `-c` scripts of `sh`, `bash`, `zsh`, and `dash` like top-level commands, and refuses `eval` or `source` of anything that runs `git` or `gh`. It also refuses a comment body it cannot read literally: a variable (`$VAR`, `${...}`), a command substitution (`$(...)` or backticks), an ANSI-C `$'...'` string, stdin, a missing file, a REST `--input` body that is not JSON, or a body file in a command line with other commands.
+Outside the [coordinator worktree](agent-workflow.md#coordinator-merges), the safety guard refuses any command line that names `pp-review-gate` in any case, raw or after decoding JSON and GraphQL escapes, URL encoding, or HTML entities, wherever it appears: in a `gh` comment, a `bash -c` or `python3 -c` script, or an `echo` into a file for later posting. It classifies the `-c` scripts of `sh`, `bash`, `zsh`, and `dash` like top-level commands, and refuses `eval` or `source` of anything that runs `git` or `gh`. It also refuses a comment body it cannot read literally: a variable (`$VAR`, `${...}`), a command substitution (`$(...)` or backticks), an ANSI-C `$'...'` string, stdin, a missing file, a REST `--input` body that is not JSON, or a body file in a command line with other commands.
 
-Remaining risk: the guard cannot see a marker that a program builds at run time, for example from base64 or character codes. The gate accepts only the exact raw marker from the owner account, so such a marker passes only if it is built exactly. A lane's marker and the coordinator's both come from `poitee`, so the author of a marker proves nothing. That is why a head whose `review-gate` passed only through the coordinator record merges only from the coordinator worktree, after the coordinator's own scorer run on that head (item 5 of the [merge gate](#merge-gate)). A lane never merges a marker-only head.
+Remaining risk: the guard cannot see a marker that a program builds at run time, for example from base64 or character codes. The gate accepts only the exact raw marker from the owner account, so such a marker passes only if it is built exactly. A lane's marker and the coordinator's both come from `poitee`, so the author of a marker proves nothing. That is why a head whose `review-gate` passed only through the coordinator record merges only after the coordinator's own scorer run on that head (item 5 of the [merge gate](#merge-gate)), and merges stay with the owner and the coordinator.
 
 ### Copilot
 

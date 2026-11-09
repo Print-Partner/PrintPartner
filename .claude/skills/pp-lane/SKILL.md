@@ -1,11 +1,11 @@
 ---
 name: pp-lane
-description: Standard Print Partner lane procedure, from a GRE ticket to a merged PR or a readiness report. Use when a brief names a GRE ticket for a lane to implement.
+description: Standard Print Partner lane procedure, from a GRE ticket to a PR and a readiness report. Use when a brief names a GRE ticket for a lane to implement.
 ---
 
 # Print Partner lane
 
-A lane takes one GRE ticket from `main` to a merged PR, or to a readiness report when the PR is sensitive. The brief names the ticket and anything special; everything else is here. The [agent guide](../../../AGENTS.md) rules apply throughout, and the brief wins where it says otherwise.
+A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lanes never merge; the coordinator merges every PR under the [merge gate](../../../docs/development/definition-of-done.md#merge-gate). The brief names the ticket and anything special; everything else is here. The [agent guide](../../../AGENTS.md) rules apply throughout, and the brief wins where it says otherwise.
 
 ## Start
 
@@ -13,7 +13,7 @@ A lane takes one GRE ticket from `main` to a merged PR, or to a readiness report
 2. Read the ticket's acceptance items and its newest **Handoff** comment, if any ([Pick up a ticket](../../../docs/development/agent-workflow.md#pick-up-a-ticket)). Comment "Claimed by <lane>" on the ticket.
 3. Read the [definition of done](../../../docs/development/definition-of-done.md), [Review and merge](../../../docs/development/agent-workflow.md#review-and-merge), and the docs for the code you touch ([Architecture](../../../docs/architecture.md), [Desktop rebuild flag](../../../docs/desktop-rebuild.md), and any page the ticket links).
 4. Check overlap: list open PRs (`gh pr list --state open`) and skip or coordinate with any that touch the same files.
-5. Decide whether the PR is sensitive (below). Sensitive PRs run the full local set and end in a readiness report, not a merge.
+5. Decide whether the PR is sensitive (below). Sensitive PRs run the full local set.
 
 ## Build
 
@@ -29,7 +29,7 @@ A lane takes one GRE ticket from `main` to a merged PR, or to a readiness report
 
 ## Sensitive PRs
 
-A PR is sensitive when it touches schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths: `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, and `.claude/`. When unsure, it is sensitive. Say so in the PR body. The coordinator scores its exact head with two of the [scorer seats](../../../docs/development/definition-of-done.md#scorer-seats) and needs 9 or more from each. The guard refuses a lane merge that touches CI, agent configs, workflow scripts, or schema files, or whose diff changes a schema line ([Merges](../../../docs/development/agent-workflow.md#merges) lists exactly what it checks); auth, backup and restore, Accept and publication, and secrets are your call, so treat any doubt as sensitive. Sensitive PRs and marker-only heads merge only from the coordinator worktree, and the owner merges changes to the safety guard, its hook adapters, and CI controls.
+A PR is sensitive when it touches schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths: `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, and `.claude/`. When unsure, it is sensitive. Say so in the PR body and in your readiness report. The coordinator scores its exact head with two of the [scorer seats](../../../docs/development/definition-of-done.md#scorer-seats) and needs 9 or more from each. The owner merges changes to the safety guard, its hook adapters, and CI controls.
 
 ## Review
 
@@ -46,16 +46,15 @@ Before pushing, have a fresh-context reviewer read the diff: correctness and AGE
 
 - **Standing rebase rule** (done by merging, not rebasing). When `main` moves and the PR conflicts, merge `origin/main` into the branch, regenerate generated files, rerun the affected checks, and push, without asking. These pushes don't count against "push once". Never rebase a pushed branch or force-push.
 - No CI reruns, except once per job for a flake that has a ticket or an external 429 or 5xx.
-- `rust (windows)` is advisory; don't chase a red Windows job unless the ticket is Windows work. While the ruleset still lists it as required, a red run blocks the merge; report readiness instead.
+- `rust (windows)` is advisory; don't chase a red Windows job unless the ticket is Windows work.
 
-## Merge or report
+## Report readiness
 
-For a normal PR, merge it yourself once every [Lane merges](../../../docs/development/definition-of-done.md#lane-merges) condition holds on the exact head: not sensitive, `review-gate` passed on a Claude or Droid review, every required check green, nothing else pending, every other check passed or on the advisory list of merge gate item 3, every thread resolved, base `main`. Run it from your own Print Partner worktree. Run exactly:
+Never merge. The safety guard refuses `gh pr merge` and `gh api` merges outside the coordinator worktree. When the PR is done, report readiness to the coordinator:
 
-```sh
-gh pr merge <number> --squash --match-head-commit <40-character head sha>
-```
+- the PR URL and the full head SHA;
+- the state of checks and reviews on that head: required checks, `review-gate`, any pending or failing check, and open review threads;
+- whether the PR is sensitive, and why;
+- any acceptance item moved to a child ticket.
 
-Never add `--admin`, `--auto`, or `--delete-branch`. For a sensitive PR, a marker-only head, or any doubt, report readiness to the coordinator instead: PR URL, head SHA, check and review state, open threads, and why it needs the coordinator.
-
-If you stop with work in flight, post a [Handoff](../../../docs/development/agent-workflow.md#post-a-handoff). Finish with `PR <full URL>, head <SHA>`.
+If you stop with work in flight, post a [Handoff](../../../docs/development/agent-workflow.md#post-a-handoff). Finish with `PR <full URL>, head <SHA>, checks and reviews <state>`.

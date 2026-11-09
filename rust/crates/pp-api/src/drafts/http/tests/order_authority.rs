@@ -188,6 +188,22 @@ async fn second_build(server: &ReadServer, order: &str) -> (String, Value) {
     (format!("/api/v2/plans/3/drafts/{draft}/apply"), body)
 }
 
+/// Build `profile`'s Accept requests, pre-Accept snapshots and open drafts:
+/// the rows a losing Accept must leave as they were.
+fn loser_rows(server: &ReadServer, profile: i64) -> [i64; 3] {
+    [
+        "SELECT count(*) FROM plan_apply_requests WHERE profile_id=?1",
+        "SELECT count(*) FROM plan_snapshots WHERE profile_id=?1 AND source='pre_apply'",
+        "SELECT count(*) FROM plan_drafts WHERE profile_id=?1 AND state='open'",
+    ]
+    .map(|sql| {
+        server
+            .sql()
+            .query_row(sql, [profile], |row| row.get(0))
+            .unwrap()
+    })
+}
+
 /// ORD-01: Accepts of one order number on two Builds, sent at once, publish
 /// exactly one; the other answers `duplicate_order` naming the winner and
 /// writes nothing of its own. Repeated so the race starts either way round.
@@ -197,6 +213,7 @@ async fn order_authority_two_concurrent_accepts_of_one_order_publish_exactly_one
         let server = ReadServer::start(Some("true"), "default").await;
         propose_order(&server, "PO-9");
         let (second, second_body) = second_build(&server, "po-9").await;
+        let before = [loser_rows(&server, 1), loser_rows(&server, 3)];
         let first = keyed(&server, APPLY, Some("race-1")).json(&header_body());
         let other = keyed(&server, &second, Some("race-2")).json(&second_body);
         let (a, b) = if round % 2 == 0 {
@@ -242,26 +259,10 @@ async fn order_authority_two_concurrent_accepts_of_one_order_publish_exactly_one
             .unwrap();
         // Build 1 starts with revision 1; Build 3 with none.
         assert_eq!(revisions, if loser == 1 { 1 } else { 0 }, "round {round}");
-        let count = |sql: &str| -> i64 {
-            server
-                .sql()
-                .query_row(sql, [loser], |row| row.get(0))
-                .unwrap()
-        };
         assert_eq!(
-            count("SELECT count(*) FROM plan_apply_requests WHERE profile_id=?1"),
-            0,
-            "round {round}"
-        );
-        assert_eq!(
-            count("SELECT count(*) FROM plan_snapshots WHERE profile_id=?1 AND source='pre_apply'"),
-            0,
-            "round {round}"
-        );
-        assert_eq!(
-            count("SELECT count(*) FROM plan_drafts WHERE profile_id=?1 AND state='open'"),
-            1,
-            "round {round}: the loser's draft stays open"
+            loser_rows(&server, loser),
+            before[if loser == 1 { 0 } else { 1 }],
+            "round {round}: the loser writes nothing of its own"
         );
         server.close().await;
     }

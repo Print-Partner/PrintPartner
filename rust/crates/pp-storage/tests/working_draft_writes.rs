@@ -80,7 +80,6 @@ impl Fixture {
         let mut statement = connection.prepare(sql).unwrap();
         let columns = statement
             .column_names()
-            .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let rows = statement

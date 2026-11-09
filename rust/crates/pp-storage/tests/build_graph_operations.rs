@@ -321,8 +321,7 @@ fn review_working_counts_non_scalar_metadata_edits() {
             .prepare("SELECT * FROM plan_revision_parts")
             .unwrap()
             .column_names()
-            .iter()
-            .filter(|s| !matches!(**s, "id" | "revision_id" | "projection_part_id"))
+            .filter(|s| !matches!(*s, "id" | "revision_id" | "projection_part_id"))
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
             .join(",");

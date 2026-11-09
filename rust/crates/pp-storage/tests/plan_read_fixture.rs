@@ -124,7 +124,6 @@ impl Fixture {
                     .unwrap();
                 let names = statement
                     .column_names()
-                    .iter()
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>();
                 let mut rows = statement.query([revision]).unwrap();

@@ -922,8 +922,12 @@ fn client_validates_reused_required_unit_named_utf8_text_at_boundary() {
         c.execute_batch("INSERT INTO users(id,display_name,is_admin,created_at) VALUES('default','Fixture',0,'2026-09-06T00:00:00.000Z')").unwrap();
         c.execute("INSERT INTO sessions(id,user_id,expires_at,provider) VALUES(?,'default','2099-01-01T00:00:00.000Z','email')", [digest]).unwrap();
         let dir = crate::tests::directory("reused-unit-text");
-        c.backup("main", dir.join("print-partner.db"), None)
-            .unwrap();
+        c.backup(
+            "main",
+            dir.join("print-partner.db"),
+            rusqlite::backup::NO_PROGRESS,
+        )
+        .unwrap();
         drop(c);
         let (owner, _) = WriterOwner::open(&dir, crate::Limits::default()).unwrap();
         let command = PublicationCommand::new(
@@ -1030,11 +1034,7 @@ mod transaction {
         let mut statement = c
             .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
             .unwrap();
-        let names: Vec<_> = statement
-            .column_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let names: Vec<_> = statement.column_names().map(|s| s.to_string()).collect();
         let result = statement
             .query_map([], |row| {
                 let mut result = serde_json::Map::new();

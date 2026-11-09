@@ -444,8 +444,11 @@ pub(crate) fn write(connection: &Connection, job: &Job) -> Result<()> {
             .path()
             .filter(|path| !path.is_empty())
             .ok_or_else(|| anyhow!("Archive source database has no path"))?;
-        Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?
-            .backup("main", &snapshot, None)?;
+        Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?.backup(
+            "main",
+            &snapshot,
+            rusqlite::backup::NO_PROGRESS,
+        )?;
         let metadata = job.metadata.to_json()?;
         let output = std::fs::OpenOptions::new()
             .write(true)

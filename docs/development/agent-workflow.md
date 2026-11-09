@@ -333,6 +333,8 @@ Open the screenshot and confirm it shows the Builds page and the dialog, not a l
 
 #### Replacement UI on a Rust-only core
 
+`scripts/evidence/run.sh` runs every step below in one command and cleans up after itself; see [the harness README](../../scripts/evidence/README.md). The manual steps follow.
+
 `verify.py` builds `pp-server` without the `desktop_rebuild` feature, so its own build always runs the Node-backed runtime. For the replacement UI (`web/apps/ui`), build the server with the feature, then start it Rust-only on a copy of a synthetic dataset:
 
 ```sh

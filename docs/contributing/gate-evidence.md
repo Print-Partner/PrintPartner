@@ -29,6 +29,20 @@ do not count as UI changes. Any of these forms passes:
 Links inside fenced code blocks or HTML comments do not count. When the change
 has no visible effect, give the reason on the `Exemption:` line instead.
 
+For the replacement UI (`web/apps/ui`) on a Rust-only core, one command builds
+`pp-server` with `desktop_rebuild`, starts it with `PP_DESKTOP_REBUILD=1` on
+loopback and a seeded throwaway data directory, signs in a throwaway account,
+saves a PNG per path, and deletes the data afterwards:
+
+```sh
+scripts/evidence/run.sh --seed 1138 --shot /builds --shot /builds/2/history
+```
+
+`--step snapshot:2` and `--step settle-reconciliation:2` reach a state through
+the Rust API first, `--module farm` turns a Module on in the seed, and
+`--publish <pr>` runs `evidence publish` for the PNGs.
+See [the harness README](../../scripts/evidence/README.md).
+
 Apart from this rule, the lint does not require Steps/Result fields or
 artifacts and does not check hosts. Those removed requirements are tracked in
 [GRE-583](https://linear.app/greetz/issue/GRE-583).

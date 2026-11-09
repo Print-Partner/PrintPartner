@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Pick the runners for the Rust and packaged-smoke jobs.
 
-Main pushes, merge groups and manual runs use pp-local for the Linux Rust jobs unless
-the PP_RUST_RUNNER repository variable says hosted or the fleet looks unavailable.
-The nightly schedule stays hosted. Pull requests follow the PP_PR_RUNNER variable:
+Main pushes and manual runs use pp-local for the Linux Rust jobs unless the
+PP_RUST_RUNNER repository variable says hosted or the fleet looks unavailable.
+Merge groups and the nightly schedule stay hosted: a merge group holds PR code that has
+not landed, and the shared pp-local cache must only see code from main. Pull requests follow the PP_PR_RUNNER variable:
 blacksmith (the default when unset or unknown), hosted (GitHub's runners), or pp-iso.
 blacksmith runs rust (linux) and the packaged smoke job on Blacksmith runners; hosted
 puts both back on GitHub's; pp-iso runs rust (linux) on the isolated pool while the smoke
@@ -29,7 +30,7 @@ HOSTED = "ubuntu-latest"
 # pp-iso covers pull requests only for the Linux Rust jobs; Blacksmith runs rust (linux) and the
 # packaged smoke job on pull requests only, and every other event stays on GitHub's free runners.
 BLACKSMITH = {"linux": "blacksmith-4vcpu-ubuntu-2404", "smoke": "blacksmith-4vcpu-ubuntu-2404"}
-LOCAL_EVENTS = {"push", "merge_group", "workflow_dispatch"}
+LOCAL_EVENTS = {"push", "workflow_dispatch"}
 STALE_MINUTES = 15
 # Only these jobs run on pp-local; their names keep the required check names.
 LOCAL_JOBS = ("rust (linux)",)

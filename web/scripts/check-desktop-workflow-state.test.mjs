@@ -15,7 +15,7 @@ function run(t, response, overrides = {}) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const gh = join(directory, 'gh');
   writeFileSync(gh, `#!/usr/bin/env node
-const expected = ['api', '--hostname', 'github.com', 'repos/poitee/PrintPartner/actions/workflows/desktop-contracts.yml'];
+const expected = ['api', '--hostname', 'github.com', 'repos/Print-Partner/PrintPartner/actions/workflows/desktop-contracts.yml'];
 if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) process.exit(9);
 if (process.env.TEST_API_ERROR) { console.error('fixture API error'); process.exit(1); }
 console.log(process.env.TEST_API_RESPONSE);
@@ -23,7 +23,7 @@ console.log(process.env.TEST_API_RESPONSE);
   chmodSync(gh, 0o755);
   return spawnSync(process.execPath, [cli], {
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GITHUB_REPOSITORY: 'poitee/PrintPartner',
+    env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, GITHUB_REPOSITORY: 'Print-Partner/PrintPartner',
       GH_TOKEN: 'fixture-token', TEST_API_RESPONSE: response, TEST_API_ERROR: '', ...overrides },
   });
 }

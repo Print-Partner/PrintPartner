@@ -50,13 +50,7 @@ The coordinator merges a PR only when all of these hold on the same head commit:
 
 ### Scorer seats
 
-The owner's choice (2026-11-08). A seat counts only when its model's vendor differs from the PR author's.
-
-1. OpenCode `opencode/crouton-alpha-free`, variant `max` (OpenCode free).
-2. OpenCode `opencode/deepseek-v4.1-flash-free`, variant `max` (OpenCode free).
-3. Fallback: Cursor `grok-4.7`, when the OpenCode free quota runs out or a seat's vendor matches the author's.
-
-A sensitive PR needs two seats; a marker-only head needs one. Take them in this order.
+Two scorer seats from different vendors, named by the owner on Execution status. Which models fill them is the owner's decision, so this page names none. A seat counts only when its model's vendor differs from the PR author's. A sensitive PR needs both seats; a marker-only head needs one.
 
 `post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR or a marker-only head, the gate is the coordinator's own scorer run on the exact head.
 
@@ -104,7 +98,7 @@ Mention `@droid` in a PR or issue comment to ask Droid a question or request ano
 When no automatic review passes the gate, for example while Droid is out of usage on a PR the Claude jobs skip, the coordinator records its own review:
 
 1. Check out the PR head at its exact SHA in a separate worktree, for example `git fetch origin pull/<n>/head` and then `git worktree add --detach <path> <sha>`.
-2. Run an independent model review on that checkout. The reviewer comes from a different vendor than the PR's author; use the [scorer seat](#scorer-seats) order. Post its findings as PR review threads.
+2. Run an independent model review on that checkout. The reviewer comes from a different vendor than the PR's author; use one of the [scorer seats](#scorer-seats). Post its findings as PR review threads.
 3. Wait until every finding is fixed or answered and its thread resolved. A fix is a new push, so start again at step 1 for the new head.
 4. From the coordinator worktree, post the marker as a PR comment:
 

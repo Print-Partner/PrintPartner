@@ -17,6 +17,7 @@ guidance:
     python3 -B scripts/check-agent-guidance.py
     python3 -B -m unittest discover -s scripts -p test_factory_hooks.py -v
     python3 -B -m unittest discover -s scripts -p test_pre_commit_sparse_snapshot.py -v
+    python3 -B -m unittest discover -s scripts -p test_factory_environment.py -v
 
 # Opt in to the staged-change checks in .githooks/pre-commit.
 hooks:

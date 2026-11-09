@@ -160,6 +160,8 @@ impl Drop for Fixture {
 
 /// History rows for Build 1 around its fixture revision (accepted
 /// 2026-10-02T21:06:51.938Z), plus rows another Build and another tenant own.
+/// Snapshot 2 records revision 1, so it is restorable; snapshot 3 names a
+/// revision this Build does not have, and snapshot 1 none.
 fn seed(db: &Connection) {
     db.execute_batch(
         "INSERT INTO build_profiles (id,tenant_id,name) VALUES (2,'default','Other Build');
@@ -170,8 +172,8 @@ fn seed(db: &Connection) {
            (4,'foreign',1,'2026-10-03T09:00:00.000Z','assistant','choice','Foreign','Foreign tenant decision');
          INSERT INTO plan_snapshots (id,tenant_id,profile_id,name,created_at,source,payload_json) VALUES
            (1,'default',1,'Before PETG','2026-10-01T08:00:00.000Z','user','{}'),
-           (2,'default',1,'','2026-10-02T21:06:50.000Z','pre_apply','{}'),
-           (3,'default',1,'Assistant copy','2026-10-04T08:00:00.000Z','assistant','{}');
+           (2,'default',1,'','2026-10-02T21:06:50.000Z','pre_apply','{\"accepted_plan_revision_id\":1}'),
+           (3,'default',1,'Assistant copy','2026-10-04T08:00:00.000Z','assistant','{\"accepted_plan_revision_id\":99}');
          INSERT INTO print_jobs (id,tenant_id,profile_id,filename,at,link_id) VALUES
            ('job-a','default',1,'plate_1.gcode','2026-10-05T20:00:00.000Z','link-a'),
            ('job-b','default',2,'other.gcode','2026-10-05T20:00:00.000Z','link-b');
@@ -233,17 +235,17 @@ fn build_history_lists_every_source_newest_first() {
                 "summary":"Sent plate_1.gcode to MK4","link":{"kind":"send","id":"send-a"},
                 "undo":{"undoable":false,"reason":"printer_command"}}),
             json!({"id":"snapshot:3","type":"snapshot","at":"2026-10-04T08:00:00.000Z","actor":"assistant",
-                "summary":"Assistant copy","link":{"kind":"snapshot","id":"3"}}),
+                "summary":"Assistant copy","link":{"kind":"snapshot","id":"3"},"restorable":false}),
             json!({"id":"decision:2","type":"decision","at":"2026-10-03T09:00:00.000Z","actor":"user",
                 "summary":"user_note","link":{"kind":"decision","id":"2"}}),
             json!({"id":"revision:1","type":"revision","at":"2026-10-02T21:06:51.938Z","actor":"user",
                 "summary":"Accepted revision 1","link":{"kind":"revision","id":"1"}}),
             json!({"id":"snapshot:2","type":"snapshot","at":"2026-10-02T21:06:50.000Z","actor":"user",
-                "summary":"Snapshot before apply","link":{"kind":"snapshot","id":"2"}}),
+                "summary":"Snapshot before apply","link":{"kind":"snapshot","id":"2"},"restorable":true}),
             json!({"id":"decision:1","type":"decision","at":"2026-10-01T09:00:00.000Z","actor":"assistant",
                 "summary":"Swapped the frame to PETG","link":{"kind":"decision","id":"1"}}),
             json!({"id":"snapshot:1","type":"snapshot","at":"2026-10-01T08:00:00.000Z","actor":"user",
-                "summary":"Before PETG","link":{"kind":"snapshot","id":"1"}}),
+                "summary":"Before PETG","link":{"kind":"snapshot","id":"1"},"restorable":false}),
             json!({"id":"checkoff_burst:outcomes-p4","type":"checkoff_burst","at":"2026-09-30T10:00:00.000Z","actor":"user",
                 "summary":"Checked off 1 unit, rejected 1","link":{"kind":"checkoff_burst","id":"outcomes-p4"},
                 "undo":{"undoable":false,"reason":"no_undo_token"}}),

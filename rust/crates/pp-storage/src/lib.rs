@@ -28,6 +28,8 @@ pub mod manifest_options;
 pub mod manifest_text;
 #[cfg(feature = "desktop_rebuild")]
 pub mod native_secrets;
+#[cfg(feature = "desktop_rebuild")]
+pub mod order_authority;
 pub mod ownership_marker;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plan_publication;
@@ -35,6 +37,8 @@ pub mod plan_publication;
 pub mod plates;
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_domain::printer_display_state;
+#[cfg(feature = "desktop_rebuild")]
+pub use pp_domain::slicer_grams;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]

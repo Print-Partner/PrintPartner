@@ -8,7 +8,7 @@ Project maintainers should add **`print-partner.manifest.yaml`** at the **root**
 
 ## Submit a community manifest
 
-1. Fork [PrintPartner](https://github.com/poitee/PrintPartner).
+1. Fork [PrintPartner](https://github.com/Print-Partner/PrintPartner).
 2. Add `manifests/community/{slug}/manifest.yaml` and `meta.yaml` (submitter, `repo_url`, branch).
    A slug is 1 to 64 lowercase letters, digits, dots, hyphens or underscores, and starts with a letter or digit. Example: `ldo-2.4-sb-tap`.
    The stems `kit-catalog` and `registry-index` are reserved for application data and cannot be slugs in registry submissions.

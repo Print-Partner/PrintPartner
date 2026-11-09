@@ -77,7 +77,11 @@ impl Farm {
                 .join("a.gcode");
             if *staged {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, b"G28\nG1 X10\n").unwrap();
+                std::fs::write(
+                    &path,
+                    b"G28\nG1 X10\n; filament used [mm] = 5000\n; filament used [g] = 12.5\n",
+                )
+                .unwrap();
             }
             database
                 .execute(
@@ -133,6 +137,22 @@ impl Farm {
             .unwrap()
     }
 
+    /// The newest Checkoff link's `print_link_grams` row as
+    /// `[grams, units, basis, grams_per_mm, measured_mm]`.
+    fn grams(&self) -> Value {
+        let links = self.links();
+        let link = links.as_array().unwrap().last().unwrap()["id"].clone();
+        let row: String = self
+            .database()
+            .query_row(
+                "SELECT json_array(grams,units,basis,grams_per_mm,measured_mm) FROM print_link_grams WHERE tenant_id='default' AND link_id=?1",
+                [link.as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&row).unwrap()
+    }
+
     fn links(&self) -> Value {
         self.database()
             .query_row(
@@ -182,6 +202,9 @@ async fn ticket_t_26_upload_only_send_uploads_once_and_never_calls_print_start()
     let link = &farm.links()[0];
     assert_eq!(result["checkoff_link_id"], link["id"]);
     assert_eq!(result["checkoff_units"], 1);
+    assert_eq!(result["filament_estimate_g"], 12.5);
+    assert_eq!(result["filament_grams_per_mm"], 0.0025);
+    assert_eq!(farm.grams(), json!([12.5, 1, "estimated", 0.0025, null]));
     assert_eq!(
         (
             link["profile_id"].clone(),

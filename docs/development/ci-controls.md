@@ -208,7 +208,7 @@ An edit to a pull request body, title or base can start workflows. This matrix c
 | Event | `review-gate` | `Lint Evidence block` | `droid.yml`, `linear-pr-sync.yml` |
 | --- | --- | --- | --- |
 | Push (`synchronize`) | runs and waits for the Claude review; cancels the older run | runs, except on a draft PR, where the job skips | do not start |
-| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to two minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips on a draft PR or unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
+| Body or title edit (`edited`) | edit run: a full run in the same cancelling group as pushes (the newest run for the PR wins); it waits for a running Claude job (up to 30 minutes) and up to ten minutes for one that has not appeared | runs, except on a draft PR; a title edit lints the same body again, a body edit lints the new one | `droid.yml` starts and its job skips on a draft PR or unless the body or title contains `@droid`; `linear-pr-sync.yml` starts and syncs only same-repository PRs into the default branch |
 | Base change (`edited`) | edit run: judges the head against the new base and cancels an older run that read the old one | runs, except on a draft PR | same as above |
 | Owner comment with a `pp-review-gate` marker (created, edited or deleted) | rerun by `review-gate-rerun.yml`; a marker from anyone else does not rerun | does not run | `droid.yml` starts only when the comment is created, and skips unless it contains `@droid` |
 | Review workflow finishes | rerun by `review-gate-rerun.yml` | does not run | do not start |
@@ -219,6 +219,26 @@ Neither required check can safely skip an edit on a ready PR. A draft PR is the 
 - `review-gate` has to run on a base change, because a review of a head against one base does not cover the same head against `main`. GitHub does not filter `edited` events by field, and a job-level `if` has the same skipped-required-check problem, so every edit starts an edit run. It reads the API and takes seconds unless a Claude job is running or has not appeared yet, and it cancels the older run for the same PR, so the newest run decides.
 
 `scripts/test_merge_group_workflows.py` keeps `Lint Evidence block` in the shape the table shows, and `scripts/test_review_gate.py` keeps `review-gate` in it. No test pins the `droid.yml` and `linear-pr-sync.yml` cells. To reduce edit-triggered runs, batch body changes into a single edit. Editing before a push still starts the edit-triggered workflows.
+
+## Review gate outage
+
+When GitHub posts an Actions outage, open the affected workflow run page and check
+for the outage notice. After the outage ends, rerun `review-gate` on every open
+PR's current head, including heads whose gate never started during the outage.
+
+The gate gives `claude-code-review` and `claude-security-review` a **10-minute
+grace period** to appear. If either is still missing, it stops waiting and fails
+with the job name and this runbook link unless another valid review path passes.
+Jobs that exist and are queued or running retain the **30-minute total ceiling**
+when neither job is missing.
+
+For a missing review job, rerun its `claude-review.yml` workflow **once only**
+when an external cause, such as the GitHub outage, explains the missing job.
+A rerun is the usual fix; if the job is still missing, investigate the run and
+workflow configuration instead of repeatedly rerunning it. Rerun `review-gate`
+after the review finishes if it remains red. Do not push empty commits to force
+a run. Do not add a job-level `if` to skip a required check: GitHub counts a
+skipped required job as a pass.
 
 ## Emergency path
 

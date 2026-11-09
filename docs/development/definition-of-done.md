@@ -35,7 +35,7 @@ The coordinator merges, from its own worktree (see [Safety guard](agent-workflow
 The coordinator merges a PR only when all of these hold on the same head commit:
 
 1. **Exact head.** Every check, review, and score below is on the PR's current head SHA.
-2. **Required checks** are green, including `review-gate`.
+2. **Required checks** are green, including `review-gate`. For missing review jobs or a GitHub outage, follow [Review gate outage](ci-controls.md#review-gate-outage).
 3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)` and `rust (windows)`, which are advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list. Windows work is deferred until after cutover (re-scope, 2026-11-08), and the owner removed `rust (windows)` from the required checks on 2026-11-08.
 4. **All review threads** are resolved.
 5. **Scorer, sensitive PRs and marker-only heads.** For a PR that item 6 names, and for any head whose `review-gate` passed only through the coordinator record, the coordinator runs its own scorer on that head from a seat whose vendor differs from the PR's author. A marker-only head passes with a score strictly above 8; a sensitive PR needs item 6. Other PRs, whose gate passed on a Claude or Droid review, need no scorer run (re-scope, 2026-11-08).

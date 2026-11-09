@@ -124,7 +124,7 @@ class ReviewGateStepTests(unittest.TestCase):
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
     def gate(self, checks=(), pages=None, files=(), author=OWNER, blobs=None, changed_files=None, pr_base="main",
-             droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0", moved_to=None, moved_base=None, moves_on_call=1):
+             droid_log=f"log\n{DROID_RAN}\nlog", checks_seq=None, wait="0", moved_to=None, moved_base=None, moves_on_call=1, clock=None):
         state = self.folder / "state.json"
         for counter in (".n", ".pulls"):
             Path(str(state) + counter).unlink(missing_ok=True)
@@ -141,7 +141,14 @@ class ReviewGateStepTests(unittest.TestCase):
                "PR_NUMBER": "7", "HEAD_SHA": HEAD, "AUTHOR": author, "OWNER": OWNER, "DEFAULT_BRANCH": "main",
                "PP_GATE_MAX_WAIT_SECONDS": wait, "PP_GATE_POLL_SECONDS": "0",
                "GITHUB_STEP_SUMMARY": str(self.folder / "summary.md")}
-        result = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True, check=False)
+        command = [sys.executable, str(script)]
+        if clock is not None:
+            # Execute the unchanged workflow with a deterministic clock; gh still uses the fixture.
+            runner = ("import runpy, sys; from unittest.mock import patch\n"
+                      f"with patch('time.monotonic', side_effect={clock!r}), patch('time.sleep'):\n"
+                      "    runpy.run_path(sys.argv[1], run_name='__main__')\n")
+            command = [sys.executable, "-c", runner, str(script)]
+        result = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
         self.assertNotIn("unexpected gh call", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         return result
@@ -228,6 +235,50 @@ class ReviewGateStepTests(unittest.TestCase):
         broken = [run("claude-code-review", "failure"), finished[1]]
         failed = self.assertFails(checks_seq=[review, broken], checks=broken, wait="5")
         self.assertIn("claude-code-review is failure", failed.stdout)
+
+    def test_missing_job_before_grace_keeps_waiting(self):
+        finished = [run("claude-code-review"), run("claude-security-review")]
+        for missing in range(2):
+            with self.subTest(missing=finished[missing]["name"]):
+                result = self.assertPasses(checks_seq=[[finished[1 - missing]], finished],
+                                           wait="1800", clock=[0, 599, 600])
+                self.assertIn(f"Waiting for {finished[missing]['name']}", result.stdout)
+                self.assertNotIn("::error::", result.stdout)
+
+    def test_missing_job_at_grace_fails_even_with_running_sibling(self):
+        for missing, sibling in (("claude-code-review", "claude-security-review"),
+                                 ("claude-security-review", "claude-code-review")):
+            with self.subTest(missing=missing):
+                result = self.assertFails(reason=f"::error::{missing} was not created for {HEAD}",
+                                          checks=[run(sibling, None)], wait="1800", clock=[0, 599, 600])
+                self.assertEqual(result.stdout.count("Waiting for"), 1)
+                self.assertIn("10-minute grace period", result.stdout)
+                self.assertIn("A rerun is the usual fix", result.stdout)
+                self.assertIn("docs/development/ci-controls.md#review-gate-outage", result.stdout)
+
+    def test_queued_jobs_wait_past_grace_but_stop_at_ceiling(self):
+        queued = [{**run(name, None), "status": "queued", "started_at": None}
+                  for name in ("claude-code-review", "claude-security-review")]
+        result = self.assertFails(checks=queued, wait="1800", clock=[0, 600, 1799, 1800])
+        self.assertEqual(result.stdout.count("Waiting for"), 2)
+        self.assertIn("claude-security-review is queued", result.stdout)
+        self.assertNotIn("was not created", result.stdout)
+
+    def test_completed_jobs_after_grace_use_their_results(self):
+        for conclusion in ("success", "neutral", "failure", "skipped"):
+            with self.subTest(conclusion=conclusion):
+                result = self.gate(checks=[run("claude-code-review"), run("claude-security-review", conclusion)],
+                                   wait="1800", clock=[0, 601])
+                self.assertEqual(result.returncode, 0 if conclusion in ("success", "neutral") else 1)
+                self.assertIn(f"claude-security-review is {conclusion}", result.stdout)
+                self.assertNotIn("Waiting for", result.stdout)
+                self.assertNotIn("was not created", result.stdout)
+
+    def test_missing_jobs_do_not_remove_alternate_review_paths(self):
+        for evidence in ({"checks": [run("droid-review")]}, {"pages": [[marker()]]}):
+            with self.subTest(evidence=evidence):
+                result = self.assertPasses(**evidence, wait="1800", clock=[0, 600])
+                self.assertNotIn("::error::", result.stdout)
 
     def test_only_the_latest_claude_runs_are_waited_on(self):
         older, newer = "2026-11-04T15:00:00Z", "2026-11-04T16:00:00Z"

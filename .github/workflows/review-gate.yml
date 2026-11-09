@@ -24,8 +24,8 @@ name: Review gate
 # scripts/agent-guard.py, .factory/ or .claude/ (the hook configs that load
 # the guard), as Dependabot's action bumps do, it needs both path 3 (the
 # owner's marker for that head) and path 1 or 2.
-# Every push or edit waits up to 30 minutes for the head's Claude jobs, then fails unless one
-# path holds. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
+# Every push or edit waits up to 30 minutes, or 10 if a Claude job is missing, then judges the
+# paths above. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
 # A PR into another branch runs that branch's copy of this file; see the note under the trigger.
 on:
   pull_request_target:
@@ -117,10 +117,10 @@ jobs:
           changed, pr_base = pull["changed_files"], pull["base"]["ref"]
           # Claude's review starts with this run, so wait for its jobs instead of failing early.
           # Only the Claude jobs are waited on, only for a bounded time, and a job that never
-          # appears within GRACE seconds counts as not running. Everything below judges the final
-          # state, so waiting decides when the gate judges and cannot create a pass.
+          # appears within GRACE seconds ends the wait, even if its sibling is running.
+          # Everything below judges the final state; waiting cannot create a pass.
           MAX_WAIT = int(os.environ.get("PP_GATE_MAX_WAIT_SECONDS", "1800"))
-          GRACE, INTERVAL = min(120, MAX_WAIT), int(os.environ.get("PP_GATE_POLL_SECONDS", "30"))
+          GRACE, INTERVAL = min(600, MAX_WAIT), int(os.environ.get("PP_GATE_POLL_SECONDS", "30"))
           CLAUDE_JOBS = tuple(name for name, (path, _) in ORIGINS.items()
                               if path == ".github/workflows/claude-review.yml")
           started_at = time.monotonic()
@@ -149,10 +149,14 @@ jobs:
                   print(f"::error::The PR head or base moved while waiting for {HEAD}; the run for the "
                         "change judges it.")
                   sys.exit(1)
+              elapsed = time.monotonic() - started_at
+              missing = [name for name in CLAUDE_JOBS if name not in seen]
+              if missing and elapsed >= GRACE:
+                  break
               waiting = [name for name in CLAUDE_JOBS
                          if name in seen and seen[name]["status"] != "completed"
-                         or (name not in seen and time.monotonic() - started_at < GRACE)]
-              if not waiting or time.monotonic() - started_at >= MAX_WAIT:
+                         or (name not in seen and elapsed < GRACE)]
+              if not waiting or elapsed >= MAX_WAIT:
                   break
               print(f"Waiting for {', '.join(waiting)} on {HEAD}.", flush=True)
               time.sleep(INTERVAL)
@@ -278,8 +282,18 @@ jobs:
           if moved():
               print(f"::error::The PR head or base moved while judging {HEAD}; the run for the change judges it.")
               sys.exit(1)
+
+
+          def report_missing():
+              for name in missing:
+                  print(f"::error::{name} was not created for {HEAD} within the 10-minute grace period. "
+                        "A rerun is the usual fix. See "
+                        f"https://github.com/{REPO}/blob/{DEFAULT}/docs/development/ci-controls.md#review-gate-outage")
+
+
           if touched:
               if not (marker and (droid_ok or claude_ok)):
+                  report_missing()
                   print(f"::error::{AUTHOR} is not the repository owner and changes {', '.join(touched)}. "
                         f"This PR needs both the owner's pp-review-gate marker for {HEAD} and a passing Droid "
                         f"or Claude review; marker: {'yes' if marker else 'no'}, automated review: "
@@ -294,6 +308,7 @@ jobs:
           elif marker:
               print(f"Passed: coordinator marker for {HEAD} ({marker}).")
           else:
+              report_missing()
               print(f"::error::No finished review of {HEAD}: droid-review is {droid}, claude-code-review is {code}, "
                     f"claude-security-review is {security}, and no coordinator marker names this head. "
                     "A review from a workflow file this PR changes away from the default branch does not count.")

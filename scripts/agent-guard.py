@@ -1193,6 +1193,8 @@ def command_strings(name, rest):
         values = [arg.split("=", 1)[1] for arg in rest if re.match(r"^alias\.[^=\s]+=", arg)]
         values += [rest[i + 1] for i, arg in enumerate(rest[:-1]) if re.fullmatch(r"alias\.\S+", arg)]
         return [value[1:] if value.startswith("!") else value for value in values]
+    if name == "entr" and not any(re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*", arg) for arg in rest):
+        return []
     if name in STRING_RUNNERS:
         return [arg for arg in rest if re.search(r"\s", arg)]
     return []
@@ -1214,9 +1216,12 @@ def code_merge(code):
 
 # How deep hidden_merge follows nested shells, runners, and alias values before it stops reading.
 NESTING_LIMIT = 6
+# How many distinct (words, depth) checks one command line may take. Past it the guard fails closed, so a long
+# line cannot keep the hook running past its time limit, where a runner would let the command through.
+STEP_BUDGET = 5000
 
 
-def hidden_merge(args, depth=0, strict=False):
+def hidden_merge(args, depth=0, strict=False, state=None):
     """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
     as a shell's -c script, or as the command line inside an alias value or a runner's command string.
 
@@ -1234,6 +1239,21 @@ def hidden_merge(args, depth=0, strict=False):
         # backslashes are removed, or holds an expansion counts as a merge.
         raw = " ".join(args)
         return EXPANDED in raw or bool(re.search(r"\bgh\b", unquoted(raw)))
+    # Each runner tries every later word as its program, so the same suffix comes up again and again; one result
+    # per (words, depth, strict) keeps the work linear in practice, and the step budget bounds it in any case.
+    state = {"memo": {}, "steps": 0} if state is None else state
+    key = (tuple(args), depth, strict)
+    if key in state["memo"]:
+        return state["memo"][key]
+    state["steps"] += 1
+    if state["steps"] > STEP_BUDGET:
+        return True
+    state["memo"][key] = result = merge_in(args, depth, strict, state)
+    return result
+
+
+def merge_in(args, depth, strict, state):
+    """The body of hidden_merge for one (words, depth, strict); hidden_merge adds the memo and the budget."""
     name, rest, *_ = program(args)
     if name is None:
         return False
@@ -1259,14 +1279,15 @@ def hidden_merge(args, depth=0, strict=False):
         # Each word could be where the runner's program starts (after xargs -n 1, flock FILE, find -exec), so
         # each is tried in program position: gh itself, a wrapper, a shell's -c, or interpreter code. The words
         # after an ordinary program, such as a grep pattern, stay data.
-        if any(hidden_merge(rest[i:], depth + 1, True) for i in range(len(rest)) if not rest[i].startswith("-")):
+        if any(hidden_merge(rest[i:], depth + 1, True, state) for i in range(len(rest))
+               if not rest[i].startswith("-")):
             return True
     for text in strings:
         try:
             inner = shell_commands(text)
         except (Unclear, ValueError):
             return names_merge(text)
-        if any(hidden_merge(words, depth + 1, inner_strict) for words, *_ in inner):
+        if any(hidden_merge(words, depth + 1, inner_strict, state) for words, *_ in inner):
             return True
     return False
 
@@ -1384,7 +1405,8 @@ def check_command(command, cwd, outer=None):
         # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
         # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
         # alone stays allowed.
-        if any(hidden_merge(args) for args, *_ in parsed):
+        state = {"memo": {}, "steps": 0}
+        if any(hidden_merge(args, state=state) for args, *_ in parsed):
             return MERGE
     except Unclear as error:
         return str(error) or UNCLEAR

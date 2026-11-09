@@ -142,6 +142,7 @@ Known limits of the merge refusals, accepted rather than fixed:
 - Interpreter code (`python3 -c`, `node -e`) is matched as text, not run. The matcher removes quote characters and backslashes first, so `m\erge` and `me''rge` inside the code are caught. String concatenation, such as `"me" + "rge"`, is not detected; main allows it too.
 - Under an argv runner such as `find -exec` or `xargs`, each word after the runner's own options is tried as the program it runs, because the guard has no table of each runner's option values. So `find docs -exec grep -e gh -e pr -e merge {} +` is refused, while the same `grep` run directly is allowed.
 - The same matcher refuses interpreter code whose text only contains `gh pr merge`, such as `python3 -c 'print("gh pr merge 12")'`. That conservative side of it is accepted.
+- The guard follows nested shells, runners, and alias values six levels deep, and checks at most 5,000 distinct command suffixes per line. Past either limit it fails closed: any leftover text that names `gh`, even `gh pr view`, is refused with the merge reason.
 - The guard cannot see a merge run from a script file or `make`, a command an interpreter builds at run time, an alias, `gh` config, or extension that already exists, a git alias such as `git -c alias.p='push origin HEAD:main' p`, or a shell redirect into a hook or config file. Merges stay with the coordinator, under the merge gate.
 
 ### Claude Code

@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -1243,6 +1244,11 @@ class HiddenMergeTests(unittest.TestCase):
                "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "xargs " + nested_shells("gh pr merge 1", 10),
+               # Accepted edge: under an argv runner each later word is tried as the program it runs.
+               "find docs -exec grep -e gh -e pr -e merge {} +",
+               # Quotes and backslashes are removed before interpreter code is matched.
+               "python3 -c 'import os; os.system(\"gh pr m\\\\erge 12\")'",
+               "python3 -c \"import os; os.system('gh pr me''rge 12')\"", "entr -cs 'gh pr merge 1'",
                "G=/usr/bin/gh; \"$G\" api -X PUT repos/o/r/pulls/12/merge", "declare G='gh pr'; $G view 12",
                # gh aliases and extensions run commands the guard never sees.
                "gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'", "gh alias import aliases.yml",
@@ -1270,6 +1276,8 @@ class HiddenMergeTests(unittest.TestCase):
                # An argv runner's program arguments are data (r4518829993).
                "find docs -name '*.md' -exec grep -l 'gh pr merge' {} +", "printf 'a.md\\n' | xargs grep -n 'gh pr merge'",
                "xargs echo 'gh pr merge 1'", "entr -s 'make test'", "xargs " + nested_shells("echo hi", 10),
+               # entr runs its arguments as a shell command line only with -s.
+               "entr echo 'gh pr merge 1'",
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
                "sh -c 'gh api repos/o/r/pulls/12/merge'",
                "gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",
@@ -1292,6 +1300,15 @@ class HiddenMergeTests(unittest.TestCase):
                 for result in results:
                     with self.subTest(command=command, cwd=cwd):
                         self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_runner_words_are_classified_quickly(self):
+        # Every later word of a runner is tried as its program; 40 runner names as data once took 18 s.
+        flood = "xargs echo " + " ".join(["find"] * 40)
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        started = time.monotonic()
+        self.assertIsNone(guard.check_command(flood, self.lane))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertIsNotNone(guard.check_command(flood + " gh pr merge 1", self.lane))
 
     def test_split_variables_name_the_reason(self):
         for command, results in self.run_all(("G=gh; P=pr; M=merge; $G $P $M 12", "G=gh; $G pr view 12"),

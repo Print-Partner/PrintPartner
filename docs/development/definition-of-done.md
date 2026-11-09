@@ -42,6 +42,8 @@ The coordinator merges a PR only when all of these hold on the same head commit:
 6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths (CI workflows, `.github/zizmor.yml`, the safety guard, `.factory/` and `.claude/`; see [Code review](#code-review)) need a score of 9 or more from each of two seats.
 7. **Command.** `gh pr merge <number> --squash --match-head-commit <sha>`, with the full 40-character head SHA. Never `--admin` or `--auto`.
 
+The safety guard classifies the PR files with `scripts/merge-classes.json`. It refuses owner-class PRs and requires two qualifying score seats from comment authors listed in `scorer_authors` for sensitive PRs. That list starts empty: the owner must fill it before sensitive coordinator merges are allowed. Missing or unreadable GitHub data, an incomplete file list, a different head, or an unnumbered merge command is refused. These checks do not replace the coordinator’s checks above or prove that a posted score came from its own run.
+
 Scorer seats, in order. Use the first available seat whose vendor differs from the author's:
 
 1. OpenCode `opencode/pulse-alpha-free`, falling back to `opencode/deepseek-v4.1-flash-free`.

@@ -44,5 +44,6 @@
     "scripts/duplication-baseline.json",
     "scripts/check-duplication.mjs",
     "scripts/check-duplication.test.mjs"
-  ]
+  ],
+  "scorer_authors": []
 }

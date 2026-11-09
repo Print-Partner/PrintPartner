@@ -67,7 +67,8 @@ class CoverageTests(unittest.TestCase):
 
     def test_merge_classes_file_is_valid_json(self):
         data = json.loads((ROOT / "scripts" / "merge-classes.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive"})
+        self.assertEqual(set(data) - {"_about"}, {"owner", "sensitive", "scorer_authors"})
+        self.assertEqual(data["scorer_authors"], [])
 
 
 class ScoreTests(unittest.TestCase):

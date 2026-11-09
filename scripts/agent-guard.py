@@ -17,6 +17,7 @@ invocation, it refuses rather than guessing.
 
 import argparse
 import html
+import importlib.util
 import itertools
 import json
 import os
@@ -1004,7 +1005,7 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
 def coordinator_merge(args, cwd):
     """Whether args is the one merge the coordinator may run.
 
-    The form is gh pr merge [<number>] --squash --match-head-commit <full sha>, with no other
+    The form is gh pr merge <number> --squash --match-head-commit <full sha>, with no other
     option, run from the coordinator worktree (see coordinator_worktree).
     """
     if args[:3] != ["gh", "pr", "merge"] or cwd is None:
@@ -1022,7 +1023,67 @@ def coordinator_merge(args, cwd):
             number = arg
         else:
             return False
-    return bool(squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
+    return bool(number and squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
+
+
+def coordinator_merge_reason(args, cwd):
+    """Check files and trusted score records for an already validated merge command."""
+    try:
+        # Adapters load this file by path, without putting scripts on sys.path.
+        spec = importlib.util.spec_from_file_location("merge_class", Path(__file__).with_name("merge_class.py"))
+        merge_class = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(merge_class)
+        config = json.loads(merge_class.CLASSES.read_text(encoding="utf-8"))
+        for key in ("owner", "sensitive", "scorer_authors"):
+            if not isinstance(config[key], list) or any(not isinstance(v, str) or not v for v in config[key]):
+                raise ValueError("invalid merge class configuration")
+        sha = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--match-head-commit=")), None)
+        if sha is None:
+            sha = args[args.index("--match-head-commit") + 1]
+        operands = args[3:].copy()
+        if "--match-head-commit" in operands:
+            index = operands.index("--match-head-commit")
+            del operands[index:index + 2]
+        number = next(arg for arg in operands if re.fullmatch(r"[1-9][0-9]*", arg))
+
+        def gh_json(*arguments):
+            result = subprocess.run(["gh", *arguments], cwd=cwd, capture_output=True,
+                                    text=True, timeout=30, check=True)
+            return json.loads(result.stdout)
+
+        pr = gh_json("pr", "view", number, "--json", "files,headRefOid,changedFiles")
+        files = pr["files"]
+        if (not isinstance(files, list) or not files or pr["headRefOid"] != sha
+                or type(pr["changedFiles"]) is not int or pr["changedFiles"] != len(files)):
+            raise ValueError("missing, incomplete, or stale PR files")
+        paths = [entry["path"] for entry in files]
+        if any(not isinstance(path, str) or not path for path in paths):
+            raise ValueError("missing PR file path")
+        classes = {key: [merge_class.glob_regex(p) for p in config[key]] for key in ("owner", "sensitive")}
+        kind = merge_class.classify(paths, classes)
+        if kind == "owner":
+            return "The owner merges this PR: it changes owner-class paths."
+        if kind == "lane":
+            return None
+        authors = config["scorer_authors"]
+        if not authors:
+            return "Sensitive PR refused: the owner must configure scorer_authors first."
+        pages = gh_json("api", f"repos/{{owner}}/{{repo}}/issues/{number}/comments", "--paginate", "--slurp")
+        if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
+            raise ValueError("missing PR comment pages")
+        bodies = []
+        for page in pages:
+            for comment in page:
+                login, body = comment["user"]["login"], comment["body"]
+                if not isinstance(login, str) or not login or not isinstance(body, str):
+                    raise ValueError("missing comment author or body")
+                if login in authors:
+                    bodies.append(body)
+        if not merge_class.has_two_scores(bodies, sha):
+            return "Sensitive PR refused: need two qualifying scorer seats from allowed authors on this head."
+        return None
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
+        return "Cannot verify merge class or scores; merge refused (missing or unreadable data)."
 
 
 def coordinator_worktree(cwd):
@@ -1108,7 +1169,7 @@ def check_command(command, cwd, outer=None):
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
         if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and coordinator_merge(parsed[0][0], cwd):
-            return None
+            return coordinator_merge_reason(parsed[0][0], cwd)
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.

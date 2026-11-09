@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
+import unittest.mock
 
 import yaml
 
@@ -36,7 +37,7 @@ def fake_tools(directory, tools):
 class LocalCi:
     """Run main() with fake tools on PATH and a runner that records each step's script."""
 
-    def __init__(self, test, tools=TOOLS, node22="v22.23.3", fail=(), codes=None):
+    def __init__(self, test, tools=TOOLS, node22="v22.23.3", fail=(), codes=None, affected="rdeps(=pp-fake)"):
         scratch = Path(test.enterContext(tempfile.TemporaryDirectory()))
         self.env = {"PATH": str(fake_tools(scratch / "bin", tools)), "CARGO_TARGET_DIR": str(scratch / "target")}
         if node22:
@@ -45,6 +46,12 @@ class LocalCi:
         self.codes = codes or {}
         self.ran = []
         self.envs = {}
+        self.affected = affected
+        self.affected_calls = 0
+
+    def filter_for(self, env):
+        self.affected_calls += 1
+        return self.affected
 
     def runner(self, step_id, script, cwd, env):
         self.ran.append(step_id)
@@ -54,7 +61,7 @@ class LocalCi:
     def __call__(self, *argv):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = local_ci.main(list(argv), env=self.env, run=self.runner)
+            code = local_ci.main(list(argv), env=self.env, run=self.runner, affected=self.filter_for)
         self.output = out.getvalue()
         self.summary = {line.split()[1]: line.split()[0]
                         for line in self.output.split("== local CI summary ==")[-1].splitlines()
@@ -274,6 +281,160 @@ class LocalCiTests(unittest.TestCase):
                     self.assertIn(command, lines)
                     checked += 1
         self.assertGreater(checked, 20)
+
+    def test_fast_runs_every_step_but_the_full_test_and_doc_passes_then_affected_nextest(self):
+        ci = LocalCi(self)
+        self.assertEqual(ci("--fast"), 0)
+        full = [step.id for step in local_ci.STEPS if not step.host_only]
+        left_out = ["nextest-off", "nextest-on", "doc-off", "doc-on"]
+        expected = [("nextest-affected" if step == "nextest-on" else step)
+                    for step in full if step == "nextest-on" or step not in left_out]
+        self.assertEqual(ci.ran, expected)
+        for step in left_out:
+            self.assertNotIn(step, ci.summary)
+        self.assertEqual(ci.summary["nextest-affected"], "PASS")
+        for step in ["rust-windows", "rust-macos", "pr-evidence"]:
+            self.assertEqual(ci.summary[step], "SKIP", step)
+        self.assertLess(ci.ran.index("historical-schema"), ci.ran.index("nextest-affected"))
+
+    def test_fast_nextest_runs_desktop_rebuild_on_with_the_affected_filter(self):
+        ci = LocalCi(self, affected="rdeps(=pp-storage) + rdeps(=pp-gateway)")
+        self.assertEqual(ci("--fast"), 0)
+        self.assertEqual(ci.affected_calls, 1)
+        env = ci.envs["nextest-affected"]
+        self.assertEqual(env["NEXTEST_FILTER"], "rdeps(=pp-storage) + rdeps(=pp-gateway)")
+        self.assertEqual(env["INSTA_UPDATE"], "no")
+        step = next(step for step in local_ci.fast_steps() if step.id == "nextest-affected")
+        nextest_on = next(step for step in local_ci.STEPS if step.id == "nextest-on")
+        self.assertEqual(step.commands, nextest_on.commands)
+        self.assertIn("--features desktop_rebuild", step.commands[0])
+        self.assertIn('-E "$NEXTEST_FILTER"', step.commands[0])
+
+    def test_fast_lists_its_own_steps_and_accepts_only_and_skip(self):
+        ci = LocalCi(self)
+        self.assertEqual(ci("--fast", "--list"), 0)
+        self.assertIn("nextest-affected", ci.output)
+        for step in ["nextest-off", "nextest-on", "doc-off", "doc-on"]:
+            self.assertNotIn(step + " ", ci.output)
+        ci = LocalCi(self)
+        self.assertEqual(ci("--fast", "--only", "fmt,nextest-affected"), 0)
+        self.assertEqual(ci.ran, ["fmt", "nextest-affected"])
+        ci = LocalCi(self)
+        self.assertEqual(ci("--fast", "--skip", "nextest-affected"), 0)
+        self.assertEqual(ci.affected_calls, 0)
+        self.assertEqual(ci("--fast", "--only", "nextest-on"), 2)
+        self.assertEqual(ci("--only", "nextest-affected"), 2)
+
+    def test_fast_skips_nextest_without_computing_a_filter_when_nextest_is_missing(self):
+        tools = {k: v for k, v in TOOLS.items() if k != "cargo-nextest"}
+        ci = LocalCi(self, tools=tools)
+        self.assertEqual(ci("--fast", "--only", "nextest-affected", "--fail-on-skip"), 1)
+        self.assertEqual(ci.summary["nextest-affected"], "SKIP")
+        self.assertEqual(ci.ran, [])
+        self.assertEqual(ci.affected_calls, 0)
+
+    def test_fast_nextest_failure_fails_the_run(self):
+        ci = LocalCi(self, fail={"nextest-affected"})
+        self.assertEqual(ci("--fast"), 1)
+        self.assertEqual(ci.summary["nextest-affected"], "FAIL")
+
+    def test_sccache_wraps_rustc_when_installed_and_changes_nothing_otherwise(self):
+        missing = Path(self.enterContext(tempfile.TemporaryDirectory())) / "no-sccache"
+        self.enterContext(unittest.mock.patch.object(local_ci, "FLEET_SCCACHE", missing))
+        for args in ((), ("--fast",)):
+            with self.subTest(args=args):
+                ci = LocalCi(self, tools={**TOOLS, "sccache": "sccache 0.10.0"})
+                self.assertEqual(ci(*args), 0)
+                sccache = str(Path(ci.env["PATH"]) / "sccache")
+                for env in ci.envs.values():
+                    self.assertEqual(env["RUSTC_WRAPPER"], sccache)
+                    self.assertEqual(env["CARGO_INCREMENTAL"], "0")
+                ci = LocalCi(self)
+                self.assertEqual(ci(*args), 0)
+                for env in ci.envs.values():
+                    self.assertNotIn("RUSTC_WRAPPER", env)
+                    self.assertNotIn("CARGO_INCREMENTAL", env)
+
+    def test_sccache_falls_back_to_the_fleet_install_and_keeps_a_callers_wrapper(self):
+        fleet = fake_tools(Path(self.enterContext(tempfile.TemporaryDirectory())), {"sccache": "sccache 0.10.0"})
+        self.enterContext(unittest.mock.patch.object(local_ci, "FLEET_SCCACHE", fleet / "sccache"))
+        ci = LocalCi(self)
+        self.assertEqual(ci("--only", "fmt"), 0)
+        self.assertEqual(ci.envs["fmt"]["RUSTC_WRAPPER"], str(fleet / "sccache"))
+        self.assertEqual(ci.envs["fmt"]["CARGO_INCREMENTAL"], "0")
+        for wrapper in ("/usr/bin/other-wrapper", ""):
+            with self.subTest(wrapper=wrapper):
+                ci = LocalCi(self)
+                ci.env["RUSTC_WRAPPER"] = wrapper
+                self.assertEqual(ci("--only", "fmt"), 0)
+                self.assertEqual(ci.envs["fmt"]["RUSTC_WRAPPER"], wrapper)
+                self.assertNotIn("CARGO_INCREMENTAL", ci.envs["fmt"])
+
+
+class AffectedFilterTests(unittest.TestCase):
+    """affected_nextest_filter() with a fake git, against the real filter script's rules."""
+
+    BASE = "a" * 40
+
+    def filter_for(self, outputs):
+        calls = []
+
+        def git(env, *args):
+            calls.append(args)
+            return outputs.get(args[0])
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            expression = local_ci.affected_nextest_filter({}, git=git)
+        return expression, calls, out.getvalue()
+
+    def test_diffs_the_working_tree_against_the_merge_base_with_origin_main(self):
+        expression, calls, output = self.filter_for({
+            "merge-base": self.BASE + "\n",
+            "diff": "rust/crates/pp-domain/src/lib.rs\0docs/x.md\0",
+            "ls-files": "rust/crates/pp-os/src/new.rs\0",
+        })
+        self.assertEqual(calls[0], ("merge-base", "origin/main", "HEAD"))
+        self.assertEqual(calls[1], ("diff", "--name-only", "--no-renames", "-z", self.BASE))
+        self.assertEqual(calls[2], ("ls-files", "--others", "--exclude-standard", "-z"))
+        self.assertEqual(expression, "rdeps(=pp-domain) + rdeps(=pp-os)")
+        self.assertIn(expression, output)
+
+    def test_shared_inputs_force_all(self):
+        for path in ["rust/Cargo.lock", "web/apps/web/src/main.tsx", "fixtures/http/a.json",
+                     "scripts/ci-affected-nextest-filter.py"]:
+            with self.subTest(path=path):
+                expression, _, _ = self.filter_for({
+                    "merge-base": self.BASE,
+                    "diff": f"rust/crates/pp-domain/src/lib.rs\0{path}\0",
+                    "ls-files": "",
+                })
+                self.assertEqual(expression, "all()")
+
+    def test_no_merge_base_or_a_failed_diff_falls_back_to_all(self):
+        for outputs in ({"merge-base": None}, {"merge-base": ""},
+                        {"merge-base": self.BASE, "diff": None, "ls-files": ""},
+                        {"merge-base": self.BASE, "diff": "", "ls-files": None}):
+            with self.subTest(outputs=outputs):
+                expression, _, output = self.filter_for(outputs)
+                self.assertEqual(expression, "all()")
+                self.assertIn("using all()", output)
+
+    def test_a_broken_filter_script_falls_back_to_all(self):
+        def broken():
+            raise SyntaxError("broken filter")
+
+        self.enterContext(unittest.mock.patch.object(local_ci, "load_filter_module", broken))
+        expression, _, output = self.filter_for({
+            "merge-base": self.BASE, "diff": "rust/crates/pp-domain/src/lib.rs\0", "ls-files": ""})
+        self.assertEqual(expression, "all()")
+        self.assertIn("using all()", output)
+
+    def test_real_git_returns_a_filter_for_this_checkout(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            expression = local_ci.affected_nextest_filter(dict(local_ci.os.environ))
+        self.assertTrue(expression == "all()" or expression.startswith("rdeps(="), expression)
 
 
 if __name__ == "__main__":

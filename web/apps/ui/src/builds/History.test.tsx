@@ -192,10 +192,169 @@ describe("UI8-03 History says which entries cannot be undone and why", () => {
       "Not undoableA printer command cannot be undone",
     );
     expect(row("3 units checked off").lastElementChild!.textContent).toBe(
-      "Not undoableHistory cannot undo checkoff bursts yet. Undo a printer burst from the Farm log, or your last manual burst on the Checkoff tab",
+      "Not undoableNo undo is kept for this burst",
     );
     expect(row("Accepted revision 2").lastElementChild!.textContent).toBe("");
     expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+});
+
+type Undo = NonNullable<Entry["undo"]>;
+const refusedUndo = (reason: NonNullable<Undo["reason"]>, detail = "Refused"): Undo => ({
+  undoable: false,
+  reason,
+  detail,
+});
+const SCOPE = "Undo reverses the whole burst: 2 beds on Builds 2 and 5";
+const BURST = entry("checkoff_burst", "job-a", 45, "Checked off 2 units", {
+  undo: { undoable: true, scope: SCOPE },
+});
+const UNDO_PATH = "/api/v2/plans/2/history/checkoff_burst%3Ajob-a/undo";
+const BURSTS: BuildHistoryPage = {
+  plan_id: 2,
+  entries: [
+    BURST,
+    entry("checkoff_burst", "manual-b", 44, "Unchecked 1 unit", {
+      undo: refusedUndo("state_changed", "Checkoff changed since this burst"),
+    }),
+    entry("checkoff_burst", "manual-c", 43, "Assembled 1 unit", {
+      undo: refusedUndo("already_undone"),
+    }),
+    entry("checkoff_burst", "job-1", 42, "Checked off 1 unit from plate.gcode", {
+      undo: refusedUndo("archived"),
+    }),
+    entry("send", "q-1", 30, "Sent plate 1 to Voron 2.4", { undo: refusedUndo("printer_command") }),
+  ],
+  next_cursor: null,
+};
+
+/** History with one undoable burst. `undoAnswer` answers each undo POST and calls `land`
+ * when the core applied that undo; History then lists the burst as already undone. */
+function undoable(
+  undoAnswer: (land: () => void) => Response = (land) => {
+    land();
+    return json({ undone_at: "2026-11-05T11:00:00.000Z", entry: null });
+  },
+) {
+  let undone = false;
+  return core((path, init) => {
+    if (path === UNDO_PATH && init?.method === "POST") {
+      return undoAnswer(() => {
+        undone = true;
+      });
+    }
+    if (path !== "/api/v2/plans/2/history") return json({ title: "Not Found", status: 404 }, 404);
+    if (!undone) return json(BURSTS);
+    const done = { ...BURST, undo: refusedUndo("already_undone") };
+    return json({ ...BURSTS, entries: [done, ...BURSTS.entries.slice(1)] });
+  });
+}
+
+const undoCell = (summary: string) => row(summary).lastElementChild!.textContent;
+
+describe("UI8-03 Undo of a checkoff burst works from History", () => {
+  it("offers Undo only where the core allows it and says why elsewhere", async () => {
+    renderAt("/builds/2/history", undoable());
+    await screen.findByText("Checked off 2 units");
+    expect(within(row("Checked off 2 units")).getByRole("button", { name: "Undo" })).toBeTruthy();
+    expect(undoCell("Checked off 2 units")).toBe(`Undo${SCOPE}`);
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(1);
+    expect(undoCell("Unchecked 1 unit")).toBe(
+      "Not undoableCheckoff changed sinceCheckoff changed since this burst",
+    );
+    expect(undoCell("Assembled 1 unit")).toBe("Not undoableAlready undone");
+    expect(undoCell("Checked off 1 unit from plate.gcode")).toBe(
+      "Not undoableA Build it touched is archived",
+    );
+    expect(undoCell("Sent plate 1 to Voron 2.4")).toBe(
+      "Not undoableA printer command cannot be undone",
+    );
+  });
+
+  it("undoes a burst with a bodyless POST and reloads every core read", async () => {
+    const fetchMock = undoable();
+    const { queryClient } = renderAt("/builds/2/history", fetchMock);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    await screen.findByText("Checked off 2 units");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    const status = await screen.findByText("Undid the checkoff burst: Checked off 2 units.");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(document.activeElement).toBe(status.parentElement);
+    const post = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(post[0]).toBe(UNDO_PATH);
+    expect(post[1]!.body).toBeUndefined();
+    await waitFor(() => expect(undoCell("Checked off 2 units")).toBe("Not undoableAlready undone"));
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([["core"]]);
+  });
+
+  it("says why a refused undo failed", async () => {
+    const detail = "Checkoff changed since this burst: a later change on its Parts depends on it";
+    renderAt(
+      "/builds/2/history",
+      undoable(() => json({ title: "Conflict", status: 409, detail }, 409)),
+    );
+    await screen.findByText("Checked off 2 units");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not undo the checkoff burst.");
+    expect(alert.textContent).toContain(detail);
+  });
+
+  it("sends one undo however often Undo is clicked while it is in flight", async () => {
+    const fetchMock = undoable();
+    renderAt("/builds/2/history", fetchMock);
+    await screen.findByText("Checked off 2 units");
+    const button = screen.getByRole("button", { name: "Undo" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await screen.findByText("Undid the checkoff burst: Checked off 2 units.");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it.each([
+    [409, "This Checkoff burst was already undone"],
+    // A printer burst's undo deletes its entry.
+    [404, "History entry not found"],
+  ])(
+    "counts an undo whose answer was lost as done when the resend answers %i %s",
+    async (code, detail) => {
+      let sends = 0;
+      const fetchMock = undoable((land) => {
+        sends += 1;
+        // The first send lands, but its answer is lost on the way back.
+        if (sends === 1) {
+          land();
+          throw new TypeError("Failed to fetch");
+        }
+        return json({ title: "Refused", status: code, detail }, code);
+      });
+      renderAt("/builds/2/history", fetchMock);
+      await screen.findByText("Checked off 2 units");
+      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+      await screen.findByText("Undid the checkoff burst: Checked off 2 units.");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(sends).toBe(2);
+      await waitFor(() =>
+        expect(undoCell("Checked off 2 units")).toBe("Not undoableAlready undone"),
+      );
+    },
+  );
+
+  it("says an undo may not have reached the core when every send is lost", async () => {
+    renderAt(
+      "/builds/2/history",
+      undoable(() => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    await screen.findByText("Checked off 2 units");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "The undo of the checkoff burst may not have reached the core. History was reloaded",
+    );
+    expect(alert.textContent).not.toContain("Could not undo");
+    expect(document.activeElement).toBe(alert.parentElement);
   });
 });
 

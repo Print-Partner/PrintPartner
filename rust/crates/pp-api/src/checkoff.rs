@@ -32,13 +32,19 @@
 //! sets printed and assembled state on a Build's Required units as one burst
 //! with no printer link, and `/bursts/undo` reverses it.
 //!
+//! Build history undo (GRE-1259) shares it:
+//! `POST /plans/{id}/history/{entry_id}/undo` undoes the Checkoff burst a
+//! History entry names through that burst's own undo, with admission as the
+//! History read. Storage resolves the entry, so no undo token reaches the
+//! client.
+//!
 //! Unattributed prints (GRE-1182) share it too:
 //! `POST /printer-checkoff/unattributed/{id}/claim` attributes a print to a
 //! Build and creates its Checkoff link, and `/dismiss` drops it from Match
 //! review. Storage owns both writes; there is no Node fallback.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Gate, failure, storage_answer},
+    accepted::{AcceptedHttpConfig, Gate, build_id, failure, storage_answer},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -89,6 +95,10 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         .route(
             "/plans/{id}/checkoff/bursts/undo",
             post(manual_burst::<true>),
+        )
+        .route(
+            "/plans/{id}/history/{entry_id}/undo",
+            post(undo_history_entry),
         )
         .route(
             "/printer-checkoff/unattributed/{id}/claim",
@@ -255,6 +265,27 @@ async fn undo_farm_log_entry(
     Path(id): Path<String>,
 ) -> Response {
     run(app, presented, Request::UndoFarmLogEntry { id }).await
+}
+
+/// A Build id that is not a positive decimal integer still authenticates in
+/// storage, then answers 404 `Profile not found` as the History read does.
+async fn undo_history_entry(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path((id, entry_id)): Path<(String, String)>,
+) -> Response {
+    let profile_id = build_id(&id)
+        .and_then(|id| i64::try_from(id.get()).ok())
+        .unwrap_or(0);
+    run(
+        app,
+        presented,
+        Request::UndoHistoryEntry {
+            profile: profile_id,
+            id: entry_id,
+        },
+    )
+    .await
 }
 
 async fn claim_unattributed(

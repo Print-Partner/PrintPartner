@@ -142,11 +142,7 @@ impl Drop for Fixture {
 
 fn rows(db: &Connection, sql: &str) -> Vec<Value> {
     let mut statement = db.prepare(sql).unwrap();
-    let names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
     statement
         .query_map([], |row| {
             let mut fields = Map::new();

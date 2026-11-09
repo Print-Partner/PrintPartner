@@ -30,6 +30,7 @@ fn client(capacity: usize) -> PublicationClient {
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             import_quota: Mutex::new(None),
             domain_events: crate::domain_events::Feed::new(0),
+            print_file_snapshots: Arc::default(),
         }),
         policy: policy(),
     }
@@ -573,8 +574,12 @@ fn owner_installs_schema_dispatches_random_tokens_and_drains_before_stop() {
     seed_session(&c, "default");
     c.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='35' WHERE key='schema_version' AND tenant_id='default'").unwrap();
     let dir = crate::tests::directory("publication-owner");
-    c.backup("main", dir.join("print-partner.db"), None)
-        .unwrap();
+    c.backup(
+        "main",
+        dir.join("print-partner.db"),
+        rusqlite::backup::NO_PROGRESS,
+    )
+    .unwrap();
     let before = std::fs::read(dir.join("print-partner.db")).unwrap();
     let (owner, ready) = WriterOwner::open(&dir, crate::Limits::default()).unwrap();
     assert_eq!(ready.version, crate::schema::CURRENT_VERSION);

@@ -190,11 +190,7 @@ impl Fixture {
     fn rows(&self, sql: &str) -> Value {
         let connection = self.sql();
         let mut statement = connection.prepare(sql).unwrap();
-        let columns: Vec<_> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let columns: Vec<_> = statement.column_names().map(str::to_owned).collect();
         let rows = statement
             .query_map([], |row| {
                 Ok(Value::Object(

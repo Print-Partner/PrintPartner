@@ -205,7 +205,7 @@ async fn remote(app: &App, printer: &str, raw: &str) -> Inspection {
         _ => Value::Null,
     };
     let stream = match app.hosts.file(printer.to_owned(), path).await {
-        HostAnswer::Ok(Some(stream)) if (200..300).contains(&stream.status) => stream,
+        HostAnswer::Ok(Some(file)) if (200..300).contains(&file.stream.status) => file.stream,
         HostAnswer::Busy => return Inspection::Busy,
         _ => return Inspection::Unreadable,
     };

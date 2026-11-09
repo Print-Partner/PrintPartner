@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, bail};
-use pp_core::{CoreRuntime, CoreStatus, DesktopLaunch, VerifiedBundle};
+use pp_core::{CoreRuntime, CoreStatus, DesktopLaunch, DesktopRebuild, VerifiedBundle};
 use std::io::Write;
 
 mod args;
+mod health;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
@@ -12,23 +13,68 @@ mod windows;
 #[cfg(windows)]
 use windows as platform;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().map(String::as_str) == Some("healthcheck") {
+        args.next();
+        return healthcheck(args);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve(args.collect()))
+}
+
+/// `pp-server healthcheck`: exits 0 when the probe passes, 1 when it fails.
+fn healthcheck(args: impl Iterator<Item = String>) -> Result<()> {
+    let (probe, status_file, timeout) = match health::parse(args)? {
+        health::Command::Help => {
+            println!("{}", health::USAGE);
+            return Ok(());
+        }
+        health::Command::Check {
+            probe,
+            status_file,
+            timeout,
+        } => (probe, status_file, timeout),
+    };
+    match health::check(probe, &status_file, timeout) {
+        Ok(line) => {
+            println!("{line}");
+            Ok(())
+        }
+        Err(error) => {
+            println!("unhealthy: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn serve(args: Vec<String>) -> Result<()> {
     let args::Arguments {
         data,
         web,
         node,
         commit,
         credential_file,
-    } = args::parse(std::env::args().skip(1))?;
+        status_file,
+    } = args::parse(args.into_iter())?;
     let web = web.context("--web is required")?.canonicalize()?;
     let package: serde_json::Value =
         serde_json::from_slice(&std::fs::read(web.join("package.json"))?)?;
     let version = package["version"]
         .as_str()
         .context("Package version missing")?;
+    // A Rust-only start runs no Node child and does not measure Node, so the
+    // Docker image ships none and omits --node.
+    let node = match node {
+        Some(node) => node.canonicalize()?,
+        None if DesktopRebuild::from_env().enabled() => std::path::PathBuf::new(),
+        None => bail!("--node is required"),
+    };
+    let status = status_file.map(health::StatusFile::create).transpose()?;
     let bundle = VerifiedBundle {
-        node: node.context("--node is required")?.canonicalize()?,
+        node,
         entry: web.join("apps/server/dist/current/desktop.js"),
         web_root: web.clone(),
         runtime_version: format!("{version}-web"),
@@ -68,11 +114,26 @@ async fn main() -> Result<()> {
     // Register signal streams before announcing the origin: a signal sent right after
     // the origin line is queued here instead of taking the default action.
     let stop_signal = platform::stop_signal()?;
+    if let Some(Err(error)) = status
+        .as_ref()
+        .map(|status| status.publish(health::State::Ready, Some(runtime.origin())))
+    {
+        let receipt = runtime.shutdown().await;
+        anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");
+        return Err(error);
+    }
     println!("{}", runtime.origin());
     let shutdown_requested = runtime.shutdown_requested();
     tokio::select! {
         _ = stop_signal => {}
         _ = shutdown_requested => {}
+    }
+    // Readiness fails from here on. A failed write still finishes the shutdown.
+    if let Some(Err(error)) = status
+        .as_ref()
+        .map(|status| status.publish(health::State::Stopping, None))
+    {
+        eprintln!("{error:#}");
     }
     let receipt = runtime.shutdown().await;
     println!("{}", serde_json::to_string(&receipt)?);

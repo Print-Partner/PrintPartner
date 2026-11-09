@@ -57,6 +57,13 @@ impl Served {
             McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
             auth.clone(),
             owner
+                .build_graph_with_observations(
+                    mcp_rpc::policy(),
+                    Arc::new(owner.source_reads().unwrap()),
+                    Default::default(),
+                )
+                .unwrap(),
+            owner
                 .build_workflow(mcp_rpc::policy(), Arc::new(PendingInputs))
                 .unwrap(),
             owner

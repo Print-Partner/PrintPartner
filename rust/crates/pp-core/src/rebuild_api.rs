@@ -248,7 +248,7 @@ pub fn read_router(
     // separately; MCP's Plan Accept uses this bundle's draft client (GRE-1236).
     let builds = build_router(
         BuildHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        builds_client,
+        builds_client.clone(),
     );
     let catalog = admit_catalog_routes(
         CatalogHttpConfig::from_startup(origin, api_key_tenant, policy, Some("1"))?,
@@ -275,6 +275,7 @@ pub fn read_router(
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
+        builds_client,
         workflow_client,
         drafts_client,
         planning_client,

@@ -25,6 +25,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import time
 from urllib.parse import unquote_plus, urlsplit
 
 MERGE = ("Merge only with a standalone `gh pr merge <number> --squash --match-head-commit <40-character sha>` "
@@ -131,16 +132,26 @@ LANE_PROTECTED_FILES = frozenset({
     "rust/tests/webkit_stl_smoke.py", "rust/tests/workflow_m0.py",
 })
 SCHEMA_NAME = re.compile(r"schema|migrat", re.I)
-# A changed line that touches the schema, in any Rust or SQL file of a lane's PR.
+# A changed line that touches the schema, in any file under rust/ or any Rust or SQL file of a lane's PR.
 SCHEMA_LINE = re.compile(r"(?-i:SCHEMA_STEPS|schema_version)|\b(?:CREATE|ALTER|DROP)\s+TABLE\b"
-                         r"|\bCREATE\s+(?:UNIQUE\s+)?INDEX\b", re.I)
+                         r"|\bCREATE\s+(?:UNIQUE\s+)?INDEX\b|\bDROP\s+INDEX\b|\bPRAGMA\s+user_version\b", re.I)
 DIFF_HEADER = re.compile(r"diff --git a/(\S+) b/(\S+)")
-# Each gh lookup gets this long; hook configs give the whole guard 10 seconds.
-PR_LOOKUP_SECONDS = 4
+# The git and gh lookups for one lane merge share this budget. Hook configs give the whole guard 10 seconds,
+# and a runner treats a killed hook as a non-blocking error, so the guard must finish and refuse first.
+LOOKUP_SECONDS = 8
+LOOKUP_TIMEOUT = f"the PR lookups ran past the guard's {LOOKUP_SECONDS}-second limit."
 EXTENSION = "gh extensions run code the guard cannot read; ask the maintainer to install one."
 GH_CONFIG = "The gh config can define aliases that hide a command from the guard; ask the maintainer to change it."
 # A merge named anywhere in a command line, such as in xargs, find -exec, a variable, or an alias value.
-NAMED_MERGE = re.compile(r"\bpr\b[\s'\"\\]*merge\b")
+# It is matched after quote characters and backslashes are removed, so me''rge or m\\erge still match.
+NAMED_MERGE = re.compile(r"\bpr\s*merge\b")
+MERGE_WORD = re.compile(r"\bmerge\b|mergepullrequest", re.I)
+# Programs that run another command from their arguments in a way program() does not unwrap. A gh command
+# under one of them that names a merge, or that the guard cannot read literally, is refused.
+UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "parallel", "su", "runuser", "doas",
+                     "ssh", "unbuffer", "chronic", "ionice", "taskset", "chrt", "systemd-run", "busybox", "entr",
+                     "stdbuf", "strace", "ltrace", "fakeroot", "firejail", "bwrap", "unshare", "nsenter", "chroot",
+                     "expect", "tmux", "screen", "dtach", "at", "batch"}
 # These point git, and so gh's repository lookup, somewhere other than the command's directory.
 GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE")
 # Git commands that can change which branch HEAD names before a later push runs.
@@ -1075,7 +1086,15 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     return API_WRITE
 
 
-def gated_merge(args, cwd):
+def time_left(deadline):
+    """Return the seconds left before deadline, or raise TimeoutExpired once it has passed."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise subprocess.TimeoutExpired("lookup", 0)
+    return left
+
+
+def gated_merge(args, cwd, deadline):
     """Return (number, sha) when args is the one merge form the guard allows, else None.
 
     The form is gh pr merge <number> --squash --match-head-commit <full sha>, with no other option,
@@ -1096,7 +1115,7 @@ def gated_merge(args, cwd):
             number = arg
         else:
             return None
-    if number and squash and sha and FULL_SHA.match(sha) and git_checkout(cwd):
+    if number and squash and sha and FULL_SHA.match(sha) and git_checkout(cwd, deadline):
         return number, sha
     return None
 
@@ -1109,15 +1128,17 @@ def lane_protected(path):
     return path.startswith("rust/") and (path.endswith(".sql") or bool(SCHEMA_NAME.search(posixpath.basename(path))))
 
 
-def lane_merge_reason(number, sha, cwd):
-    """Return why a lane may not merge PR number at sha, or None. Any lookup failure refuses."""
+def lane_merge_reason(number, sha, cwd, deadline):
+    """Return why a lane may not merge PR number at sha, or None. Any lookup failure or timeout refuses."""
     try:
         result = subprocess.run(["gh", "pr", "view", number, "--json", "files,baseRefName,headRefOid,changedFiles"],
-                                cwd=cwd, capture_output=True, text=True, timeout=PR_LOOKUP_SECONDS, check=True,
+                                cwd=cwd, capture_output=True, text=True, timeout=time_left(deadline), check=True,
                                 env={**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"})
         view = json.loads(result.stdout)
         base, head, count = view["baseRefName"], view["headRefOid"], view["changedFiles"]
         files = [(entry["path"], entry.get("changeType", "")) for entry in view["files"]]
+    except subprocess.TimeoutExpired:
+        return LANE_MERGE + LOOKUP_TIMEOUT
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         return LANE_MERGE + "the guard could not read the PR with gh pr view."
     if base != "main":
@@ -1132,18 +1153,20 @@ def lane_merge_reason(number, sha, cwd):
         # gh names only the new path of a rename or copy, so the old path cannot be checked.
         if change in ("RENAMED", "COPIED"):
             return LANE_MERGE + f"the PR renames or copies {path}, and gh does not name the old path."
-    return schema_diff_reason(number, cwd, {path for path, _ in files})
+    return schema_diff_reason(number, cwd, {path for path, _ in files}, deadline)
 
 
-def schema_diff_reason(number, cwd, paths):
+def schema_diff_reason(number, cwd, paths, deadline):
     """Return why a lane may not merge PR number because its diff touches the schema, or None.
 
     The diff must name every path in paths; a missing, unreadable, or unparsable diff refuses.
     """
     try:
         diff = subprocess.run(["gh", "pr", "diff", number, "--color", "never"], cwd=cwd, capture_output=True,
-                              text=True, timeout=PR_LOOKUP_SECONDS, check=True,
+                              text=True, timeout=time_left(deadline), check=True,
                               env={**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}).stdout
+    except subprocess.TimeoutExpired:
+        return LANE_MERGE + LOOKUP_TIMEOUT
     except (OSError, subprocess.SubprocessError, ValueError):
         return LANE_MERGE + "the guard could not read the PR's diff with gh pr diff."
     seen, current, in_hunk = set(), None, False
@@ -1156,19 +1179,20 @@ def schema_diff_reason(number, cwd, paths):
             seen.update(header.groups())
         elif line.startswith("@@"):
             in_hunk = current is not None
-        elif in_hunk and line[:1] in ("+", "-") and current.endswith((".rs", ".sql")) and SCHEMA_LINE.search(line[1:]):
+        elif in_hunk and line[:1] in ("+", "-") and (current.startswith("rust/") or current.endswith((".rs", ".sql"))) \
+                and SCHEMA_LINE.search(line[1:]):
             return LANE_MERGE + f"the PR's diff of {current} adds or removes a schema line."
     if paths - seen:
         return LANE_MERGE + "the PR's diff does not cover every changed file."
     return None
 
 
-def git_checkout(cwd):
+def git_checkout(cwd, deadline):
     """Whether cwd lies inside a Git work tree, so gh resolves the PR against that checkout's remote."""
     try:
         env = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_ENV}
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
-                             text=True, timeout=5, check=True, env=env).stdout.strip()
+                             text=True, timeout=time_left(deadline), check=True, env=env).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return False
     return bool(top)
@@ -1237,6 +1261,28 @@ def sourced_reason(name, rest, cwd):
     return EVAL if EXPANDED in text or re.search(r"\b(?:gh|git)\b", text) else None
 
 
+def unquoted(text):
+    """Return text without quote characters, backslashes, or the expansion marker, for word matching."""
+    return re.sub(r"['\"\\]", "", text.replace(EXPANDED, " "))
+
+
+def names_merge(text):
+    """Whether text names gh and a PR merge once quotes and backslashes are removed."""
+    text = unquoted(text)
+    return bool(re.search(r"\bgh\b", text) and NAMED_MERGE.search(text))
+
+
+def runner_merge(args):
+    """Whether args runs gh through a runner the guard does not unwrap, with a merge or unreadable text."""
+    name, rest, *_ = program(args)
+    if name not in UNWRAPPED_RUNNERS:
+        return False
+    raw = " ".join(rest)
+    text = unquoted(raw)
+    return bool(re.search(r"\bgh\b", text)
+                and (MERGE_WORD.search(text) or any(mark in raw for mark in ("$", "`", EXPANDED, "\\x"))))
+
+
 def check_command(command, cwd, outer=None):
     """Return why a shell command run in cwd is refused, or None to allow it.
 
@@ -1257,9 +1303,10 @@ def check_command(command, cwd, outer=None):
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
         alone = outer is None and len(parsed) == 1 and not any(parsed[0][1:])
-        target = gated_merge(parsed[0][0], cwd) if alone else None
+        deadline = time.monotonic() + LOOKUP_SECONDS
+        target = gated_merge(parsed[0][0], cwd, deadline) if alone else None
         if target:
-            return None if coordinator_worktree(cwd) else lane_merge_reason(*target, cwd)
+            return None if coordinator_worktree(cwd) else lane_merge_reason(*target, cwd, deadline)
         help_only = alone and parsed[0][0][:3] == ["gh", "pr", "merge"] and parsed[0][0][3:] \
             and all(arg in ("--help", "-h") for arg in parsed[0][0][3:])
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
@@ -1313,8 +1360,10 @@ def check_command(command, cwd, outer=None):
             if reason:
                 return reason
         # Outside the one gated form, a command line that names gh and a PR merge is refused, wherever the
-        # words appear: xargs or find -exec arguments, a variable, or a shell or git alias value.
-        if re.search(r"\bgh\b", command) and NAMED_MERGE.search(command) and not help_only:
+        # words appear: xargs or find -exec arguments, a variable, or a shell or git alias value. The guard
+        # checks the raw line and each command's unquoted words, so quoting cannot split the words.
+        texts = [command] + [" ".join(args) for args, *_ in parsed]
+        if not help_only and (any(names_merge(text) for text in texts) or any(runner_merge(args) for args, *_ in parsed)):
             return MERGE
     except Unclear as error:
         return str(error) or UNCLEAR

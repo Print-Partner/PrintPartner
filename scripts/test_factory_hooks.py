@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -688,6 +689,8 @@ import json, os, sys, time
 with open(os.environ["PP_TEST_GH_LOG"], "a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
 mode = os.environ["PP_TEST_GH_MODE"]
+if mode == "slow":
+    time.sleep(5)
 if mode == "fail":
     sys.exit("gh: could not resolve to a PullRequest")
 if mode == "sleep":
@@ -994,11 +997,25 @@ class CoordinatorMergeTests(unittest.TestCase):
                     self.assertIn(reason, result.stderr)
 
     def test_lane_merge_fails_closed_when_the_lookup_fails(self):
-        for mode in ("fail", "garbage", "sleep", "missing-key"):
+        for mode in ("fail", "garbage", "missing-key"):
             for result in self.results(MERGE_FORM, self.lane, None, mode=mode):
                 with self.subTest(mode=mode):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("could not read the PR", result.stderr)
+
+    def test_lane_merge_lookups_share_one_deadline(self):
+        # "sleep" stalls gh pr view for 30 s; "slow" answers each lookup after 5 s, so view and diff together
+        # need 10 s. Hooks get 10 s in all, so both must refuse inside the guard's 8-second budget.
+        for mode in ("sleep", "slow"):
+            for adapter, payload in ((GUARD, droid_command(MERGE_FORM, self.lane)),
+                                     (CLAUDE, claude_call("Bash", self.lane, command=MERGE_FORM))):
+                started = time.monotonic()
+                result = hook(adapter, payload, None, {**self.gh_env, "PP_TEST_GH_MODE": mode})
+                elapsed = time.monotonic() - started
+                with self.subTest(mode=mode, adapter=adapter.name):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("ran past the guard's 8-second limit", result.stderr)
+                    self.assertLess(elapsed, 9.5)
 
     # Seat 2's probes at d505dfcb: each ran a merge the guard used to allow.
     SHA_ARG = f"--squash --match-head-commit {SHA}"
@@ -1014,6 +1031,16 @@ class CoordinatorMergeTests(unittest.TestCase):
                     f"timeout 5 gh pr merge 12 {SHA_ARG}", f"nice gh pr merge 12 {SHA_ARG}",
                     f"python3 -c 'import os; os.system(\"gh pr merge 12 {SHA_ARG} --admin\")'",
                     f"echo 'gh pr merge 12 {SHA_ARG} --admin' > merge.sh", "gh pr  'merge' 12",
+                    # Quoting and escapes the shell removes after the guard reads the line.
+                    f"printf '%s\\n' --admin | xargs gh pr me''rge 12 {SHA_ARG}",
+                    f"find . -maxdepth 0 -exec gh pr mer''ge 12 --admin \\;",
+                    f"xargs gh pr m\\erge 12 --admin", f'xargs gh pr "mer"ge 12 --admin', "xargs g''h pr merge 12",
+                    "xargs gh pr $'m\\x65rge' 12 --admin", f"script -c \"gh pr mer''ge 12 --admin\" /dev/null",
+                    "setsid gh pr 'mer'ge 12 --admin", "flock /tmp/x gh pr me\\rge 12 --admin",
+                    "watch -n 1 gh pr me''rge 12 --admin", "parallel gh pr me''rge ::: 12",
+                    "xargs gh api -X PUT repos/o/r/pulls/12/merge", "find . -exec gh api -X PUT repos/o/r/pulls/12/mer''ge \\;",
+                    "xargs gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+                    "xargs gh $(printf pr) view 12", "setsid gh pr `echo x` 12", "tmux new-session gh pr me''rge 12",
                     f"gh alias set m 'pr merge 12 {SHA_ARG}'")
 
     def test_named_merges_are_refused(self):
@@ -1033,7 +1060,9 @@ class CoordinatorMergeTests(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("gh extensions run code", result.stderr)
-        for command in ("gh extension list", "gh extension install --help", "gh pr merge --help", "gh pr view 12",
+        for command in ("printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",
+                        "find . -name '*.md' -exec grep -l merge {} \\;", "setsid gh pr checks 12",
+                        "gh extension list", "gh extension install --help", "gh pr merge --help", "gh pr view 12",
                         "gh pr comment 12 -b 'Ready to merge once CI is green.'"):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
@@ -1088,6 +1117,24 @@ class CoordinatorMergeTests(unittest.TestCase):
         self.set_diff({"docs/guide.md": ["+Run CREATE TABLE in the fixture."],
                        path: [" // ALTER TABLE happens in schema.rs", "+let n = 1;", "--- a SQL comment removed",
                               "+pub const SCHEMA_VERSION: u32 = 2;"]})
+        for result in self.results(MERGE_FORM, self.lane, None):
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_lane_merge_refuses_ddl_in_any_file_under_rust(self):
+        # DDL kept outside .rs and .sql, for example in a text file that a Rust module includes.
+        for path in ("rust/crates/pp-storage/src/ddl/v41.txt", "rust/crates/pp-storage/src/ddl/v41.ddl",
+                     "rust/crates/pp-core/fixtures/steps.json"):
+            for line in ("+ALTER TABLE uploads ADD COLUMN size INTEGER;", "+PRAGMA user_version = 41;",
+                         "-DROP INDEX uploads_by_hash;", "+create index i on t (a);"):
+                self.set_view(changedFiles=1, files=[{"path": path, "changeType": "ADDED"}])
+                self.set_diff({path: [line]})
+                for result in self.results(MERGE_FORM, self.lane, None):
+                    with self.subTest(path=path, line=line):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn(f"diff of {path} adds or removes a schema line", result.stderr)
+        # Outside rust/, only Rust and SQL files are scanned.
+        self.set_view(changedFiles=1, files=[{"path": "docs/storage.md", "changeType": "MODIFIED"}])
+        self.set_diff({"docs/storage.md": ["+Step 41 runs ALTER TABLE uploads ADD COLUMN size."]})
         for result in self.results(MERGE_FORM, self.lane, None):
             self.assertEqual(result.returncode, 0, result.stderr)
 

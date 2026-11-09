@@ -718,19 +718,46 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
 
     def test_rerun_picks_only_this_prs_gate_run_into_main(self):
         script = load("review-gate-rerun.yml")["jobs"]["rerun"]["steps"][0]["run"]
+        step = load("review-gate-rerun.yml")["jobs"]["rerun"]["steps"][0]
+        # The default branch reaches the filter through env, never through ${{ }} in run.
+        self.assertEqual(step["env"]["DEFAULT_BRANCH"], "${{ github.event.repository.default_branch }}")
+        self.assertNotIn("${{", script)
+        self.assertIn('run=$(PR="$pr" gh api ', script)
         (line,) = [line.strip() for line in script.splitlines() if "--jq" in line and "workflow_runs" in line]
-        # The line ends the $(...) substitution. Let bash expand its quoting and $pr, then run it with jq.
-        jq_filter = subprocess.run(["bash", "-c", f'pr=7; set -- {line.removeprefix("--jq ").removesuffix(")")}; printf %s "$1"'],
+        # The line ends the $(...) substitution. Let bash undo its quoting, then run the filter with jq.
+        jq_filter = subprocess.run(["bash", "-c", f'set -- {line.removeprefix("--jq ").removesuffix(")")}; printf %s "$1"'],
                                    capture_output=True, text=True, check=True).stdout
-        runs = {"workflow_runs": [
-            {"id": 3, "status": "completed", "pull_requests": [{"number": 8, "base": {"ref": "release"}}]},
+        self.assertNotIn('"main"', jq_filter)
+        into = {"main": {"number": 7, "base": {"ref": "main"}}, "release": {"number": 8, "base": {"ref": "release"}}}
+        runs = [
+            {"id": 3, "status": "completed", "pull_requests": [into["release"]]},
             {"id": 2, "status": "completed", "pull_requests": [{"number": 7, "base": {"ref": "release"}}]},
+            # PR 7 into main and PR 8 into release open on one head: a run that lists both may be
+            # release's copy of the gate, so it is never picked.
+            {"id": 4, "status": "completed", "pull_requests": [into["main"], into["release"]]},
             {"id": 9, "status": "completed", "pull_requests": []},
-            {"id": 1, "status": "in_progress", "pull_requests": [{"number": 7, "base": {"ref": "main"}}]}]}
-        for listed, expected in ((runs, "1 in_progress"), ({"workflow_runs": runs["workflow_runs"][:3]}, "")):
-            picked = subprocess.run(["jq", "-r", jq_filter], input=json.dumps(listed), capture_output=True,
-                                    text=True, check=True).stdout.strip()
-            self.assertEqual(picked, expected)
+            {"id": 1, "status": "in_progress", "pull_requests": [into["main"]]}]
+        for listed, branch, expected in ((runs, "main", "1 in_progress"), (runs[:4], "main", ""),
+                                         (runs, "trunk", "")):
+            with self.subTest(runs=[run["id"] for run in listed], branch=branch):
+                picked = subprocess.run(["jq", "-r", jq_filter], input=json.dumps({"workflow_runs": listed}),
+                                        capture_output=True, text=True, check=True,
+                                        env={**os.environ, "PR": "7", "DEFAULT_BRANCH": branch}).stdout.strip()
+                self.assertEqual(picked, expected)
+        # Head H carries PR 7 into main and PR 8 into release. release's run is newer, so it is listed
+        # first; the rerun must still pick main's run for PR 7.
+        head_h = [{"id": 20, "status": "completed", "pull_requests": [into["release"]]},
+                  {"id": 10, "status": "completed", "pull_requests": [into["main"]]}]
+        picked = subprocess.run(["jq", "-r", jq_filter], input=json.dumps({"workflow_runs": head_h}), capture_output=True,
+                                text=True, check=True, env={**os.environ, "PR": "7", "DEFAULT_BRANCH": "main"}).stdout
+        self.assertEqual(picked.strip(), "10 completed")
+        # Another default branch name works the same way.
+        trunk = [{**run, "pull_requests": [{**pr, "base": {"ref": "trunk" if pr["base"]["ref"] == "main"
+                                                            else pr["base"]["ref"]}} for pr in run["pull_requests"]]}
+                 for run in runs]
+        picked = subprocess.run(["jq", "-r", jq_filter], input=json.dumps({"workflow_runs": trunk}), capture_output=True,
+                                text=True, check=True, env={**os.environ, "PR": "7", "DEFAULT_BRANCH": "trunk"}).stdout
+        self.assertEqual(picked.strip(), "1 in_progress")
 
     def test_superseded_gate_and_rerun_runs_collapse_per_pr(self):
         gate = load("review-gate.yml")["concurrency"]

@@ -11,8 +11,8 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { useOutletContext } from "react-router";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useLocation, useNavigate, useOutletContext } from "react-router";
 import { CoreError } from "../core/client";
 import { useModule } from "../core/modules";
 import { readCore, writeCore } from "../core/rust";
@@ -44,13 +44,26 @@ import {
   type PlanData,
   type PreviewChanges,
 } from "./plan";
+
+// History restores into the Plan cache by this key.
+export { planKey };
 const draftWriteKey = (id: number) => ["core", "plan-draft-write", id] as const;
+
+/** The navigation state History hands the Plan tab after Restore as draft. */
+export interface RestoredState {
+  restored: { draftId: number; summary: string };
+}
+
+const restoredOf = (state: unknown): RestoredState["restored"] | null => {
+  const restored = (state as Partial<RestoredState> | null)?.restored;
+  return restored && typeof restored.draftId === "number" ? restored : null;
+};
 
 /**
  * The Build's header, the Accepted base and the open draft, if any. Every value the tab
  * shows comes from the Rust core; nothing here guesses the accepted Plan.
  */
-const planQuery = (id: number) => ({
+export const planQuery = (id: number) => ({
   queryKey: planKey(id),
   queryFn: async ({ signal }: { signal: AbortSignal }): Promise<PlanData> => {
     const [drafts, { build, base }] = await Promise.all([
@@ -532,11 +545,14 @@ function gateBlocked({
 function AcceptGate({
   id,
   workspace,
+  restoredFrom,
   onClose,
   onAccepted,
 }: {
   id: number;
   workspace: DraftWorkspace;
+  /** The snapshot this draft restores, when History opened the gate. */
+  restoredFrom: string | null;
   onClose: () => void;
   onAccepted: (receipt: AcceptDraftReceipt) => void;
 }) {
@@ -578,6 +594,12 @@ function AcceptGate({
   });
   return (
     <Dialog title="Accept this draft" onClose={onClose} className="pp-gate">
+      {restoredFrom && (
+        <p className="pp-gate-restored">
+          This draft restores {restoredFrom}. Accepting publishes that Plan. Printed units and
+          printer commands stay as they are.
+        </p>
+      )}
       {preview.isPending && <p role="status">Checking what Accept would change.</p>}
       {match.step}
       {preview.isError && !match.needed && (
@@ -637,9 +659,22 @@ const refreshAfterAccept = (client: QueryClient, id: number) =>
 function PlanBody({ id, data }: { id: number; data: PlanData }) {
   const client = useQueryClient();
   const writes = useDraftWrites(id);
-  const [gate, setGate] = useState(false);
-  const [accepted, setAccepted] = useState<AcceptDraftReceipt | null>(null);
   const draft = data.draft;
+  const location = useLocation();
+  const navigate = useNavigate();
+  // History's Restore as draft lands here with the restored draft, whose gate opens at once.
+  // The state is cleared so a reload or Back does not open it again.
+  const [restored] = useState(() => {
+    const state = restoredOf(location.state);
+    return state && state.draftId === draft?.workspace.draft.draft_id ? state : null;
+  });
+  const [gate, setGate] = useState(restored !== null);
+  useEffect(() => {
+    if (restoredOf(location.state)) {
+      void navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.state, location.pathname, navigate]);
+  const [accepted, setAccepted] = useState<AcceptDraftReceipt | null>(null);
   // A field's blur can start a save in the same turn as a click, so ask the cache, not
   // the last render, whether one is still running.
   const saving = () => client.isMutating({ mutationKey: draftWriteKey(id) }) > 0;
@@ -684,6 +719,9 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
         <AcceptGate
           id={id}
           workspace={draft.workspace}
+          restoredFrom={
+            restored?.draftId === draft.workspace.draft.draft_id ? restored.summary : null
+          }
           onClose={() => setGate(false)}
           onAccepted={(receipt) => {
             setGate(false);

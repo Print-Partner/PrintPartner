@@ -422,20 +422,13 @@ pub(super) fn page(tx: &Transaction<'_>, tenant: &str, query: &Query, repos: &Pa
 impl From<burst::Blocked> for FarmLogUndo {
     fn from(blocked: burst::Blocked) -> Self {
         use burst::Blocked as B;
-        match blocked {
-            B::NotFound => {
-                Self::refused(FarmUndoReason::ReceiptExpired, "Checkoff burst not found")
-            }
-            B::Undone => Self::refused(
-                FarmUndoReason::AlreadyUndone,
-                "This Checkoff burst was already undone",
-            ),
-            B::Archived => Self::refused(
-                FarmUndoReason::Archived,
-                "Archived Plan Progress cannot be changed",
-            ),
-            B::Changed(reason) => Self::refused(FarmUndoReason::StateChanged, &reason),
-        }
+        let reason = match blocked {
+            B::NotFound => FarmUndoReason::ReceiptExpired,
+            B::Undone => FarmUndoReason::AlreadyUndone,
+            B::Archived => FarmUndoReason::Archived,
+            B::Changed(_) => FarmUndoReason::StateChanged,
+        };
+        Self::refused(reason, blocked.detail())
     }
 }
 

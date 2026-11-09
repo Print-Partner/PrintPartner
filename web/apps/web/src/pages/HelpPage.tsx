@@ -271,7 +271,7 @@ export default function HelpPage() {
           <p className="text-xs">
             Maintainer docs:{" "}
             <a
-              href="https://github.com/poitee/PrintPartner/blob/main/docs/playbooks/kit-studio-build.md"
+              href="https://github.com/Print-Partner/PrintPartner/blob/main/docs/playbooks/kit-studio-build.md"
               target="_blank"
               rel="noreferrer"
               className="text-primary hover:underline"

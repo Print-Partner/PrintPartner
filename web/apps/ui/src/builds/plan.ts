@@ -215,6 +215,8 @@ const REFUSALS: Record<string, string> = {
     "The accepted Plan changed since this draft was made, so this draft cannot be accepted.",
   header_changed: "The header was changed somewhere else. The latest values are shown.",
   duplicate_build_name: "Another Build already has this name. Choose a different name.",
+  duplicate_order:
+    "Another Build already holds this order number. Change the order number, or archive the other Build first.",
   build_archived: "This Build is archived, so its Plan cannot change.",
   draft_not_found: "This draft no longer exists.",
   idempotency_conflict: "A different change was already sent with this request. Try again.",

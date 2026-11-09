@@ -216,6 +216,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "BuildHistoryPage",
     ),
+    ClientRoute {
+        text_params: &["entry_id"],
+        ..route(
+            "undoBuildHistoryEntry",
+            "POST",
+            "/api/v2/plans/{id}/history/{entry_id}/undo",
+            None,
+            "BuildHistoryUndo",
+        )
+    },
     route(
         "listPrinters",
         "GET",
@@ -350,7 +360,7 @@ mod codegen {
         PrinterStateView,
     };
     use pp_storage::read_model::history::{
-        self, Actor, EntryType, Page as BuildHistoryPage, Undo, UndoReason,
+        self, Actor, EntryType, Page as BuildHistoryPage, Undo, UndoReason, Undone,
     };
     use pp_storage::{
         build_graph::wire::{
@@ -478,6 +488,7 @@ mod codegen {
         )?;
         schema("PlanDecisionList", schemars::schema_for!(PlanDecisionList))?;
         schema("BuildHistoryPage", schemars::schema_for!(BuildHistoryPage))?;
+        schema("BuildHistoryUndo", schemars::schema_for!(Undone))?;
         schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
         schema("FarmPrinterList", schemars::schema_for!(FarmPrinterList))?;
         schema(
@@ -738,14 +749,17 @@ mod codegen {
         )
     }
 
-    /// One entry of each type, with each undo state History reports.
+    /// One entry per type, one burst per undo state, and a restorable snapshot.
     fn build_history() -> BuildHistoryPage {
         let refused = |reason| {
             Some(Undo {
                 undoable: false,
                 reason: Some(reason),
+                detail: Some(UNICODE.into()),
+                scope: None,
             })
         };
+        let burst = |undo| (EntryType::CheckoffBurst, Actor::User, undo);
         let entries = [
             (EntryType::Revision, Actor::User, None),
             (EntryType::Snapshot, Actor::Assistant, None),
@@ -754,23 +768,31 @@ mod codegen {
                 Actor::User,
                 refused(UndoReason::PrinterCommand),
             ),
-            (
-                EntryType::CheckoffBurst,
-                Actor::User,
-                refused(UndoReason::NoUndoToken),
-            ),
+            burst(Some(Undo {
+                undoable: true,
+                reason: None,
+                detail: None,
+                scope: Some(UNICODE.into()),
+            })),
+            burst(refused(UndoReason::NoUndoToken)),
+            burst(refused(UndoReason::AlreadyUndone)),
+            burst(refused(UndoReason::StateChanged)),
+            burst(refused(UndoReason::Archived)),
             (EntryType::Decision, Actor::Assistant, None),
         ]
         .into_iter()
-        .map(|(kind, actor, undo)| {
-            history::contract_entry(
+        .enumerate()
+        .map(|(index, (kind, actor, undo))| {
+            let mut entry = history::contract_entry(
                 kind,
-                "9007199254740991",
+                &(MAX_SAFE - index as i64).to_string(),
                 "2026-11-05T01:00:00.000Z",
                 actor,
                 UNICODE,
                 undo,
-            )
+            );
+            entry.restorable = (kind == EntryType::Snapshot).then_some(true);
+            entry
         })
         .collect();
         BuildHistoryPage {
@@ -1717,7 +1739,31 @@ mod codegen {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);
         }
         cases.push(served("FarmLogPage", "every-undo", log)?);
-        cases.push(served("BuildHistoryPage", "every-type", build_history())?);
+        let history = build_history();
+        cases.push(served(
+            "BuildHistoryUndo",
+            "manual-burst-stays",
+            Undone {
+                undone_at: "2026-11-05T01:00:00.000Z".into(),
+                entry: history
+                    .entries
+                    .iter()
+                    .find(|entry| {
+                        entry.undo.as_ref().and_then(|undo| undo.reason)
+                            == Some(UndoReason::AlreadyUndone)
+                    })
+                    .cloned(),
+            },
+        )?);
+        cases.push(served(
+            "BuildHistoryUndo",
+            "printer-burst-removed",
+            Undone {
+                undone_at: "2026-11-05T01:00:00.000Z".into(),
+                entry: None,
+            },
+        )?);
+        cases.push(served("BuildHistoryPage", "every-type", history)?);
         cases.push(served(
             "BuildHistoryPage",
             "last",

@@ -82,7 +82,7 @@ export default function AboutUpdatesCard({
           <p className="text-muted-foreground">
             Could not reach GitHub to check for updates. You can try again or see{" "}
             <a
-              href="https://github.com/poitee/PrintPartner/releases"
+              href="https://github.com/Print-Partner/PrintPartner/releases"
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary underline-offset-4 hover:underline"

@@ -1904,8 +1904,20 @@ fn link_printer_upload(
         }),
     )?;
     if let Some(id) = link {
-        result.checkoff_link_id = Some(id);
         result.checkoff_units = checkoff_units.len() as u64;
+        if let Some(grams) = result.filament_estimate_g
+            && result.checkoff_units > 0
+        {
+            crate::print_grams::record_estimate(
+                tx,
+                &job.tenant,
+                &id,
+                grams,
+                result.checkoff_units,
+                result.filament_grams_per_mm,
+            )?;
+        }
+        result.checkoff_link_id = Some(id);
     }
     Ok(())
 }

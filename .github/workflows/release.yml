@@ -30,7 +30,7 @@ jobs:
       contents: write
       packages: write
     env:
-      IMAGE: ghcr.io/poitee/print-partner
+      IMAGE: ghcr.io/print-partner/print-partner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,11 +100,11 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.identity.outputs.candidate_tag }}
           annotations: |
-            index:org.opencontainers.image.source=https://github.com/poitee/PrintPartner
+            index:org.opencontainers.image.source=https://github.com/Print-Partner/PrintPartner
             index:org.opencontainers.image.version=${{ steps.identity.outputs.version }}
             index:org.opencontainers.image.revision=${{ steps.identity.outputs.commit }}
             index:org.opencontainers.image.ref.name=${{ steps.identity.outputs.tag }}
-            manifest-descriptor:org.opencontainers.image.source=https://github.com/poitee/PrintPartner
+            manifest-descriptor:org.opencontainers.image.source=https://github.com/Print-Partner/PrintPartner
             manifest-descriptor:org.opencontainers.image.version=${{ steps.identity.outputs.version }}
             manifest-descriptor:org.opencontainers.image.revision=${{ steps.identity.outputs.commit }}
             manifest-descriptor:org.opencontainers.image.ref.name=${{ steps.identity.outputs.tag }}

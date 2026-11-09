@@ -25,10 +25,17 @@ name: Review gate
 # the guard), as Dependabot's action bumps do, it needs both path 3 (the
 # owner's marker for that head) and path 1 or 2.
 # Every push or edit waits up to 30 minutes for the head's Claude jobs, then fails unless one
-# path holds. Only a PR into the default branch passes on a review run; any other base needs
-# the owner's marker. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
+# path holds. An edit reruns the gate. review-gate-rerun.yml reruns it on review end.
+# A PR into another branch runs that branch's copy of this file; see the note under the trigger.
 on:
   pull_request_target:
+    # This copy runs only for PRs into main. It fails a PR whose base is not the default branch
+    # (a rerun after a retarget) and fails when any review-gate check run on the head lists a PR
+    # into another base, whose copy of this file could always pass. GitHub fills a run's
+    # pull_requests from the PRs open from its head branch now, not from the PR that started it,
+    # so this catches such a PR only while it is open; definition-of-done.md names the remaining
+    # risk. .github/zizmor.yml ignores the trigger by line: keep it on line 31.
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, edited]
   merge_group:
     types: [checks_requested]
@@ -174,6 +181,12 @@ jobs:
               return (found["path"].split("@")[0], found["event"]) if found else None
 
 
+          def other_bases(found):
+              """The bases other than the default branch of the PRs an Actions run lists."""
+              return sorted({(item.get("base") or {}).get("ref") or "unknown"
+                             for item in (found or {}).get("pull_requests") or []} - {DEFAULT})
+
+
           def for_this_pr(name):
               """Whether the latest run of a check came from this PR into the default branch.
 
@@ -184,11 +197,13 @@ jobs:
               """
               found = workflow_run(latest[name]) if name in latest else None
               prs = (found or {}).get("pull_requests") or []
-              return (pr_base == DEFAULT and bool(prs) and any(str(item.get("number")) == PR for item in prs)
-                      and all((item.get("base") or {}).get("ref") == DEFAULT for item in prs))
+              return (pr_base == DEFAULT and bool(prs) and not other_bases(found)
+                      and any(str(item.get("number")) == PR for item in prs))
 
 
           problems, latest, touched = [], {}, []
+          if pr_base != DEFAULT:
+              problems.append(f"The PR targets {pr_base}, not {DEFAULT}; review-gate passes only PRs into {DEFAULT}.")
           if changed >= FILES_API_LIMIT or len(listed) != changed:
               problems.append(f"GitHub listed {len(listed)} of the PR's {changed} changed files (the files API stops "
                               f"at {FILES_API_LIMIT}), so the gate cannot check every path. Split the PR.")
@@ -199,6 +214,12 @@ jobs:
               if where != ORIGINS[name]:
                   problems.append(f"check run {name} ({run['id']}) comes from {where or 'another app'}, "
                                   f"not {ORIGINS[name][0]} on {ORIGINS[name][1]}.")
+              elif name == "review-gate" and other_bases(workflow_run(run)):
+                  # Same file and event, but listed for a PR into another branch, whose copy of the
+                  # gate could always pass. Its result must not stand next to this one on the head.
+                  problems.append(f"check run review-gate ({run['id']}) lists a PR into "
+                                  f"{', '.join(other_bases(workflow_run(run)))}, so it may come from that "
+                                  f"branch's copy of the gate. Close that PR or push a new head.")
               elif name not in latest or newest(run) > newest(latest[name]):
                   latest[name] = run
 

@@ -4163,21 +4163,27 @@ print finished (`complete` or `FINISHED`), so a slow observer never records the
 next print's usage against this one. When the status named a file, the read
 must name the same base name. When it named none, the read's file name is used:
 PrusaLink's `/api/v1/status` job carries no `file`, so a PrusaLink finish is
-named by `/api/v1/job` alone. Storage then picks the newest `watching`, `awaiting_verify` or `verified`
-Checkoff link of that
-host created no later than the moment the observer saw the finish, so a send of
-the same file name uploaded after it never takes its length, and whose `filename` or `remote_path` has the finished file's base name
-(trimmed, `\` read as `/`, case-insensitive, like Node's
-`printerFilenamesMatch`) and calls `record_measured` for it in one write. The
-observer records nothing when:
+named by `/api/v1/job` alone. Storage then picks the newest matching Checkoff
+link of that host and calls `record_measured` for it in one write. A link
+matches when it is `watching`, `awaiting_verify` or `verified`, was created no
+later than the moment the observer saw the finish (so a send of the same file
+name uploaded after it never takes its length), and its `filename` or
+`remote_path` has the finished file's base name (trimmed, `\` read as `/`,
+case-insensitive, like Node's `printerFilenamesMatch`). Newest means the
+greatest `created_at`, ties broken by link ID, never the position in the
+stored list, which a save reorders. Only that newest link is considered: when
+it already has a measured length, the finish records nothing, and no older
+link is filled in its place. The observer records nothing when:
 
 - it did not see the print running, such as a `complete` already showing at
   startup, or after it lagged behind the transition stream;
 - the read fails, no longer reports that file as finished, or reports no
   positive length (the read is not retried);
 - no `watching`, `awaiting_verify` or `verified` link names the file;
-- the link already has a measured length, such as when the same file name is
-  printed again from the printer's own history: the first measurement stays.
+- the newest matching link already has a measured length, such as when the
+  same file name is printed again from the printer's own history: the first
+  measurement stays, and an older unmeasured send of that file (for example a
+  cancelled one) keeps its estimate.
 
 In each case the estimate stays. The observer never changes Checkoff state and
 never dispatches a send, and it does not port Node's guess that a print near

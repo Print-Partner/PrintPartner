@@ -633,6 +633,35 @@ async fn gre_1165_the_newest_send_of_a_file_takes_the_length_whatever_the_list_o
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn gre_1165_a_reprint_after_the_newest_send_is_measured_never_fills_an_older_send() {
+    use pp_storage::print_grams::Measurement;
+    let (printer, _) = Farm::finished_on_moonraker().await;
+    let (farm, l1, l2) = two_sends_of_one_file(&printer).await;
+    // L1 was cancelled at the printer, so it stays `watching` with its estimate.
+    let mut links = farm.links();
+    for link in links.as_array_mut().unwrap() {
+        if link["id"] == l1.as_str() {
+            link["state"] = json!("watching");
+        }
+    }
+    farm.database()
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='printer.checkoff_links'",
+            [links.to_string()],
+        )
+        .unwrap();
+    assert_eq!(farm.finish("a.gcode").await, Some(Measurement::Recorded));
+    assert_eq!(farm.grams_of(&l2), measured(), "L2's own finish");
+    assert_eq!(
+        farm.finish("a.gcode").await,
+        Some(Measurement::AlreadyMeasured),
+        "a reprint from the printer's history"
+    );
+    assert_eq!(farm.grams_of(&l1), estimate(), "L1 keeps its estimate");
+    assert_eq!(farm.grams_of(&l2), measured(), "L2 keeps its measurement");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn gre_1165_no_finished_length_for_the_file_keeps_the_estimate() {
     let stats = |state: &str, filename: &str, used: f64| {
         format!(

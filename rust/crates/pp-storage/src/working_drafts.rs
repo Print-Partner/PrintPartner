@@ -2108,7 +2108,7 @@ mod tests {
 
     /// Sets the returned token from SQLite's progress handler, so it trips
     /// during the next query.
-    fn cancel_during_sql(connection: &Connection) -> Arc<AtomicBool> {
+    fn cancel_during_sql(connection: &mut Connection) -> Arc<AtomicBool> {
         let cancelled = Arc::new(AtomicBool::new(false));
         let flag = cancelled.clone();
         connection
@@ -2185,7 +2185,7 @@ mod tests {
             read_phase(&mut connection, 1, "working", &AtomicBool::new(false)),
             Ok(RecomputeOutcome::Existing { .. })
         ));
-        let cancelled = cancel_during_sql(&connection);
+        let cancelled = cancel_during_sql(&mut connection);
         let Err(error) = read_phase(&mut connection, 1, "working", &cancelled) else {
             panic!("a replay cancelled while loading returned an outcome");
         };
@@ -2212,7 +2212,7 @@ mod tests {
             Ok(RecomputeOutcome::AcceptedBaselineRequired)
         ));
         for profile in [999, 1] {
-            let cancelled = cancel_during_sql(&connection);
+            let cancelled = cancel_during_sql(&mut connection);
             let Err(error) = read_phase(&mut connection, profile, "new", &cancelled) else {
                 panic!("Plan {profile} cancelled while reading returned an outcome");
             };

@@ -11,7 +11,7 @@ rust-version = "1.99"
 license = "AGPL-3.0-only"
 
 [workspace.dependencies]
-rusqlite = { version = "=0.40.2", features = ["bundled", "backup"] }
+rusqlite = { version = "=0.41.1", features = ["bundled", "backup"] }
 anyhow = "=1.0.104"
 axum = { version = "=0.8.9", features = ["ws"] }
 tokio = { version = "=1.53.3", features = ["full"] }

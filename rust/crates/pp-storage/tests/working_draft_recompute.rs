@@ -187,7 +187,6 @@ impl Fixture {
         let mut statement = connection.prepare(sql).unwrap();
         let columns = statement
             .column_names()
-            .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let rows = statement
@@ -780,7 +779,9 @@ fn cap_sized_assignment_selection_recomputes_with_default_limits() {
     let (f, owner) = large_carried_draft(11);
     owner.shutdown().unwrap();
     let golden = f.path.join("golden.db");
-    f.sql().backup("main", &golden, None).unwrap();
+    f.sql()
+        .backup("main", &golden, rusqlite::backup::NO_PROGRESS)
+        .unwrap();
     for trial in 0..5 {
         for carry in [true, false] {
             f.sql()

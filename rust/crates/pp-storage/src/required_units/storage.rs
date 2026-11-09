@@ -101,7 +101,7 @@ fn each_row(
 ) -> Result<()> {
     check()?;
     let mut statement = tx.prepare(sql)?;
-    let columns: Vec<_> = statement.column_names().iter().map(|n| camel(n)).collect();
+    let columns: Vec<_> = statement.column_names().map(camel).collect();
     let mut query = statement.query(args)?;
     let mut count = 0;
     let mut total = 0;
@@ -144,7 +144,7 @@ fn part_rows_checked(
 ) -> Result<Vec<DraftPart>> {
     check()?;
     let mut statement = tx.prepare(sql)?;
-    let columns: Vec<_> = statement.column_names().iter().map(|n| camel(n)).collect();
+    let columns: Vec<_> = statement.column_names().map(camel).collect();
     let mut query = statement.query(args)?;
     let mut parts = Vec::new();
     let mut total = 0;

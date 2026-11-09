@@ -25,17 +25,7 @@ A lane takes one GRE ticket from `main` to a merged PR, or to a readiness report
 
 ## Check
 
-**Normal PRs run the fast local set**: every local CI step except `nextest-off`, `nextest-on`, `doc-off`, and `doc-on`, plus nextest on the affected crates with `desktop_rebuild` on. Use `just ci --fast` once GRE-1279 lands; until then:
-
-```sh
-python3 scripts/local-ci.py --skip nextest-off,nextest-on,doc-off,doc-on
-git merge-base origin/main HEAD
-git rev-parse HEAD
-EVENT_NAME=pull_request BASE_SHA=<merge-base sha> HEAD_SHA=<head sha> GITHUB_OUTPUT=/dev/null GITHUB_STEP_SUMMARY=/dev/null python3 scripts/ci-affected-nextest-filter.py
-INSTA_UPDATE=no cargo nextest run --manifest-path rust/Cargo.toml --locked --workspace --no-fail-fast --no-tests=warn --features desktop_rebuild -E '<printed filter>'
-```
-
-Commit before computing the filter; it reads committed changes only. **Sensitive PRs run the full `just ci`.** Rust builds share one sccache through `RUSTC_WRAPPER`; leave it set. A SKIP is not a pass: list each one under Evidence.
+**Normal PRs run `just ci --fast`**: every local CI step except `nextest-off`, `nextest-on`, `doc-off`, and `doc-on`, plus `nextest-affected`, which runs nextest with `desktop_rebuild` on for the crates the branch changes and their reverse dependents. Run `git fetch origin` first so the merge base is current. [Run the required checks with one command](../../../docs/development/ci.md#run-the-required-checks-with-one-command) has the details. **Sensitive PRs run the full `just ci`.** Rust builds share one sccache through `RUSTC_WRAPPER`; leave it set. A SKIP is not a pass: list each one under Evidence.
 
 ## Sensitive PRs
 

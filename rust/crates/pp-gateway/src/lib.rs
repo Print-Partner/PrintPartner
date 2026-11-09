@@ -277,6 +277,8 @@ struct GatewayState {
     host: String,
     cookie_name: String,
     assets: PathBuf,
+    /// Legacy on the Node-backed runtime; the replacement policy on a Rust-only one.
+    asset_policy: assets::Policy,
     compat: CompatHandle,
     rate_limits: Option<tokio::sync::Mutex<rate_limit::Budgets>>,
     access: Arc<Mutex<Sessions>>,
@@ -377,6 +379,7 @@ impl Gateway {
         )>,
     ) -> Result<Self> {
         let (rust_status, hosts) = rust_only.unzip();
+        let rust_only = rust_status.is_some();
         let address = listener.local_addr()?;
         anyhow::ensure!(
             address.ip().is_loopback(),
@@ -427,6 +430,11 @@ impl Gateway {
             None => Watchers::new()?,
         };
         let observations = watchers.observations();
+        let asset_policy = if rust_only {
+            assets::Policy::replacement(&origin)
+        } else {
+            assets::Policy::Legacy
+        };
         let state = Arc::new(GatewayState {
             watchers: tokio::sync::Mutex::new(watchers),
             hosts,
@@ -441,6 +449,7 @@ impl Gateway {
             host,
             cookie_name: format!("pp_desktop_{}", address.port()),
             assets,
+            asset_policy,
             compat,
             rate_limits: (owners.owner_of("http.GET /legal/summary") == Owner::Rust)
                 .then(|| tokio::sync::Mutex::new(rate_limit::Budgets::default())),
@@ -1016,8 +1025,15 @@ async fn handle(
         } else {
             path.trim_start_matches('/')
         };
-        let response =
-            assets::serve(&state.assets, relative, request.method(), request.headers()).await;
+        let response = assets::serve(
+            &state.assets,
+            relative,
+            document && spa,
+            &state.asset_policy,
+            request.method(),
+            request.headers(),
+        )
+        .await;
         return response.map(|body| {
             Body::new(TrackedBody {
                 body,
@@ -2031,6 +2047,9 @@ impl http_body::Body for TrackedBody {
         self.body.size_hint()
     }
 }
+
+#[cfg(test)]
+mod csp;
 
 #[cfg(test)]
 mod slice0_mount;

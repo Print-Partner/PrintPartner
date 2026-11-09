@@ -1,3 +1,5 @@
+// First, so its settings apply before any other module builds a Zod schema.
+import { adoptStyleNonce } from "./csp";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter } from "react-router";
@@ -9,6 +11,7 @@ import "./theme/theme.css";
 import "./typography.css";
 import "./index.css";
 
+adoptStyleNonce();
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html is missing #root");
 

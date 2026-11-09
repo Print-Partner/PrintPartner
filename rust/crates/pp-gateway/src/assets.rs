@@ -130,9 +130,82 @@ async fn open_contained(root: &Path, path: &Path) -> Option<AssetFile> {
     })
 }
 
+/// The Content-Security-Policy every asset response carries.
+pub(super) enum Policy {
+    /// The Node-backed runtime: frame, object, base and ancestor rules only.
+    Legacy,
+    /// The Rust-only runtime, which only a `desktop_rebuild` build started with
+    /// `PP_DESKTOP_REBUILD` runs: `replacement-csp.txt`, with the gateway's own
+    /// WebSocket origin for the printer event stream.
+    Replacement { ws_origin: String },
+}
+
+const LEGACY_POLICY: &str =
+    "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+/// Shared with `web/apps/ui/test/browser/csp.browser.mjs`, which loads the
+/// built replacement UI under this exact policy.
+const REPLACEMENT_POLICY: &str = include_str!("replacement-csp.txt");
+/// The document carries its style nonce on this element's `nonce` attribute.
+/// `web/apps/ui/src/csp.ts` hands it to the libraries that insert
+/// `<style>` elements at run time (Radix scroll lock).
+const NONCE_META_NAME: &str = "pp-style-nonce";
+/// `index.html` is read whole to add the nonce; the built one is under 1 KiB.
+const MAX_DOCUMENT_BYTES: u64 = 1 << 20;
+
+impl Policy {
+    pub(super) fn replacement(origin: &str) -> Self {
+        let authority = origin.strip_prefix("http://").unwrap_or(origin);
+        Self::Replacement {
+            ws_origin: format!("ws://{authority}"),
+        }
+    }
+
+    /// `nonce` is set only on a replacement document; other responses allow
+    /// no inline style at all.
+    fn header(&self, nonce: Option<&str>) -> axum::http::HeaderValue {
+        match self {
+            Self::Legacy => axum::http::HeaderValue::from_static(LEGACY_POLICY),
+            Self::Replacement { ws_origin } => {
+                let template = REPLACEMENT_POLICY.trim_end();
+                let policy = match nonce {
+                    Some(nonce) => template.replace("{nonce}", nonce),
+                    None => template.replace(" 'nonce-{nonce}'", ""),
+                }
+                .replace("{ws_origin}", ws_origin);
+                axum::http::HeaderValue::from_str(&policy)
+                    .expect("Policy holds only header-safe characters")
+            }
+        }
+    }
+}
+
+/// Reads `index.html` and adds the nonce element as the first child of
+/// `<head>`, so it exists before any module script runs.
+async fn nonce_document(asset: AssetFile, nonce: &str) -> Option<Vec<u8>> {
+    if asset.length > MAX_DOCUMENT_BYTES {
+        return None;
+    }
+    let mut html = Vec::with_capacity(asset.length as usize + 64);
+    asset
+        .file
+        .take(asset.length)
+        .read_to_end(&mut html)
+        .await
+        .ok()?;
+    let element = format!("<meta name=\"{NONCE_META_NAME}\" nonce=\"{nonce}\">");
+    let at = html
+        .windows(6)
+        .position(|window| window == b"<head>")
+        .map_or(0, |start| start + 6);
+    html.splice(at..at, element.into_bytes());
+    Some(html)
+}
+
 pub(super) async fn serve(
     root: &Path,
     relative: &str,
+    document: bool,
+    policy: &Policy,
     method: &Method,
     request_headers: &HeaderMap,
 ) -> Response<Body> {
@@ -150,7 +223,10 @@ pub(super) async fn serve(
     };
     let mime = content_type(&identity.path, relative);
     let preferences = Preferences::parse(request_headers);
-    let gzip = if preferences.prefers_gzip() && !relative.ends_with(".gz") {
+    // A replacement document gets a fresh nonce per response, so it is always
+    // read from the identity file, never from a precompressed sibling.
+    let nonced = document && matches!(policy, Policy::Replacement { .. });
+    let gzip = if !nonced && preferences.prefers_gzip() && !relative.ends_with(".gz") {
         let mut sibling = identity.path.as_os_str().to_owned();
         sibling.push(".gz");
         open_contained(root, Path::new(&sibling)).await
@@ -177,18 +253,32 @@ pub(super) async fn serve(
         }
         return response;
     };
-    let body = if *method == Method::HEAD {
-        Body::empty()
+    let (body, length, nonce) = if nonced {
+        let nonce = hex::encode(rand::random::<[u8; 16]>());
+        let Some(html) = nonce_document(asset, &nonce).await else {
+            return super::error(StatusCode::INTERNAL_SERVER_ERROR, "Document unreadable");
+        };
+        let length = html.len() as u64;
+        let body = if *method == Method::HEAD {
+            Body::empty()
+        } else {
+            Body::from(html)
+        };
+        (body, length, Some(nonce))
+    } else if *method == Method::HEAD {
+        (Body::empty(), asset.length, None)
     } else {
-        Body::from_stream(ReaderStream::with_capacity(
+        let length = asset.length;
+        let body = Body::from_stream(ReaderStream::with_capacity(
             asset.file.take(asset.length),
             64 * 1024,
-        ))
+        ));
+        (body, length, None)
     };
     let mut response = Response::new(body);
     let headers = response.headers_mut();
     headers.insert("content-type", axum::http::HeaderValue::from_static(mime));
-    headers.insert("content-length", asset.length.into());
+    headers.insert("content-length", length.into());
     headers.insert(
         "vary",
         axum::http::HeaderValue::from_static("accept-encoding"),
@@ -211,12 +301,7 @@ pub(super) async fn serve(
         "x-content-type-options",
         axum::http::HeaderValue::from_static("nosniff"),
     );
-    headers.insert(
-        "content-security-policy",
-        axum::http::HeaderValue::from_static(
-            "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
-        ),
-    );
+    headers.insert("content-security-policy", policy.header(nonce.as_deref()));
     response
 }
 

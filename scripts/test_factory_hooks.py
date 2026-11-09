@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1178,6 +1179,13 @@ class UnreadableCommentBodyTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
 
 
+def nested_shells(command, levels):
+    """Wrap command in sh -c that many times, quoting each level for the shell."""
+    for _ in range(levels):
+        command = "sh -c " + shlex.quote(command)
+    return command
+
+
 class HiddenMergeTests(unittest.TestCase):
     """Merges spelled so the shell, not the guard, assembles them. Lanes never merge (GRE-1280)."""
 
@@ -1231,6 +1239,10 @@ class HiddenMergeTests(unittest.TestCase):
                # A shell's -c under an argv runner, and a command string under a runner that runs one.
                "xargs sh -c 'gh pr merge 1'", "find . -exec sh -c 'gh pr merge 1' \\;", "watch 'gh pr merge 1'",
                "flock /tmp/x -c 'gh pr merge 1'", "entr -s 'gh pr merge 1'",
+               # Nested shells (Sol at 7a96c572); past the nesting limit the guard fails closed.
+               "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
+               "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
+               "xargs " + nested_shells("gh pr merge 1", 10),
                "G=/usr/bin/gh; \"$G\" api -X PUT repos/o/r/pulls/12/merge", "declare G='gh pr'; $G view 12",
                # gh aliases and extensions run commands the guard never sees.
                "gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'", "gh alias import aliases.yml",
@@ -1257,7 +1269,7 @@ class HiddenMergeTests(unittest.TestCase):
                "command gh pr merge --help", "echo gh pr merge 12", "grep -e gh -e pr -e merge docs/x.md",
                # An argv runner's program arguments are data (r4518829993).
                "find docs -name '*.md' -exec grep -l 'gh pr merge' {} +", "printf 'a.md\\n' | xargs grep -n 'gh pr merge'",
-               "xargs echo 'gh pr merge 1'", "entr -s 'make test'",
+               "xargs echo 'gh pr merge 1'", "entr -s 'make test'", "xargs " + nested_shells("echo hi", 10),
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
                "sh -c 'gh api repos/o/r/pulls/12/merge'",
                "gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",

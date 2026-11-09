@@ -1212,6 +1212,10 @@ def code_merge(code):
     return merge_tokens(CODE_WORD.findall(code.replace(EXPANDED, " ")), api=True)
 
 
+# How deep hidden_merge follows nested shells, runners, and alias values before it stops reading.
+NESTING_LIMIT = 6
+
+
 def hidden_merge(args, depth=0, strict=False):
     """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
     as a shell's -c script, or as the command line inside an alias value or a runner's command string.
@@ -1225,6 +1229,11 @@ def hidden_merge(args, depth=0, strict=False):
     ordinary program, as in echo gh pr merge 12, are data. Help is decided for each simple command, as main's
     gh_reason does: gh pr merge followed only by --help or -h is help.
     """
+    if depth >= NESTING_LIMIT:
+        # Past the limit the guard stops reading, so it fails closed: text that still names gh, after quotes and
+        # backslashes are removed, or holds an expansion counts as a merge.
+        raw = " ".join(args)
+        return EXPANDED in raw or bool(re.search(r"\bgh\b", unquoted(raw)))
     name, rest, *_ = program(args)
     if name is None:
         return False
@@ -1250,17 +1259,15 @@ def hidden_merge(args, depth=0, strict=False):
         # Each word could be where the runner's program starts (after xargs -n 1, flock FILE, find -exec), so
         # each is tried in program position: gh itself, a wrapper, a shell's -c, or interpreter code. The words
         # after an ordinary program, such as a grep pattern, stay data.
-        if depth < 3 and any(hidden_merge(rest[i:], depth + 1, True) for i in range(len(rest))
-                             if not rest[i].startswith("-")):
+        if any(hidden_merge(rest[i:], depth + 1, True) for i in range(len(rest)) if not rest[i].startswith("-")):
             return True
-    if depth < 3:
-        for text in strings:
-            try:
-                inner = shell_commands(text)
-            except (Unclear, ValueError):
-                return names_merge(text)
-            if any(hidden_merge(words, depth + 1, inner_strict) for words, *_ in inner):
-                return True
+    for text in strings:
+        try:
+            inner = shell_commands(text)
+        except (Unclear, ValueError):
+            return names_merge(text)
+        if any(hidden_merge(words, depth + 1, inner_strict) for words, *_ in inner):
+            return True
     return False
 
 

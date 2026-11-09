@@ -589,9 +589,23 @@ pub fn validate(archive: &Path, limits: Limits) -> Result<Metadata> {
         .len();
     let scratch = std::env::temp_dir().join(random_name("pp-backup-validate-"));
     pp_os::create_private_dir(&scratch)?;
-    let result = validate_into(archive, compressed, limits, &scratch);
+    let result = validate_into(archive, compressed, limits, &scratch, false);
     let _ = std::fs::remove_dir_all(&scratch);
     result
+}
+
+/// Validates like [`validate`] and writes every entry under `destination`,
+/// a new empty directory, for a whole-installation restore to stage. The
+/// entry guard admits only regular files and directories under the core
+/// files and declared roots, so nothing is written outside `destination`
+/// and no link is created.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn extract(archive: &Path, limits: Limits, destination: &Path) -> Result<Metadata> {
+    let compressed = archive
+        .metadata()
+        .with_context(|| format!("Open backup archive {}", archive.display()))?
+        .len();
+    validate_into(archive, compressed, limits, destination, true)
 }
 
 fn validate_into(
@@ -599,6 +613,7 @@ fn validate_into(
     compressed: u64,
     limits: Limits,
     scratch: &Path,
+    extract_all: bool,
 ) -> Result<Metadata> {
     let mut reader = tar::Archive::new(GzDecoder::new(File::open(archive)?));
     let mut seen = BTreeSet::new();
@@ -644,11 +659,17 @@ fn validate_into(
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes)?;
             metadata = Some(bytes);
-        } else if path == DATABASE_FILE || path == WAL_FILE {
+        } else if entry_type == EntryType::Directory && extract_all {
+            std::fs::create_dir_all(scratch.join(&path))?;
+        } else if path == DATABASE_FILE || path == WAL_FILE || extract_all {
+            let target = scratch.join(&path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             let mut output = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(scratch.join(&path))?;
+                .open(target)?;
             std::io::copy(&mut entry, &mut output)?;
         } else {
             std::io::copy(&mut entry, &mut std::io::sink())?;

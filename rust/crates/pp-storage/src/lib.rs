@@ -46,6 +46,8 @@ pub mod profiles;
 pub mod read_model;
 #[cfg(feature = "desktop_rebuild")]
 pub mod required_units;
+#[cfg(feature = "desktop_rebuild")]
+pub mod restore;
 mod schema;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
@@ -596,6 +598,11 @@ impl WriterOwner {
         );
         let locked = lease::admit_directory(directory)?.lock()?;
         if let Err(error) = ownership_marker::admit_writer(&locked, gate) {
+            locked.abandon();
+            return Err(error);
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        if let Err(error) = restore::recover(locked.path()) {
             locked.abandon();
             return Err(error);
         }

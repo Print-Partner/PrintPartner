@@ -177,12 +177,29 @@ Set `PP_STORAGE_FIXTURE_BIN` to run the Rust check too. It opens a copy with `pp
 
 The generator does not produce open drafts, Checkoff progress, printer sends, exports or historical schema versions. Tests that need those build them separately.
 
+## Whole-installation restore: staging
+
+With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Activation, which swaps the staged copy into place, and the HTTP routes are not built yet (GRE-404, GRE-1161). Build snapshot restore is a separate Plan operation.
+
+Staging (`WriterOwner::installation`, then `InstallationClient::begin_upload` and `stage`) takes no filesystem path from the caller:
+
+1. Both steps need a valid `.pp-rust-owned.json`; an unmarked data directory refuses with `Refusal::Unmarked` before writing anything.
+2. The upload is written to `<data>/.pp-restore/incoming-<32 hex>.tar.gz`, opened with `create_new`. A write that would pass the caller's byte limit refuses with `Refusal::TooLarge` and writes nothing past the limit. A `.pp-restore` that is a symlink or not a directory refuses.
+3. `archive::extract` runs the same entry, scope, size, ratio and `integrity_check` validation as `archive::validate` and writes every entry under `<data>/.pp-restore/staged-<32 hex>/`. The entry guard admits only regular files and directories under the core files and declared roots, with no absolute, `.` or `..` component, so a hostile entry cannot write outside the stage or create a link. Only a `full` scope is accepted.
+4. `schema::preflight` admits the staged database as startup admits a live one: a schema newer than this build, older than 31, missing (version 0), or failing a job-table check refuses with `Refusal::UnsupportedSchema`.
+
+The upload file is removed whether staging succeeds or not. A refusal removes its staged copy and keeps an earlier successful stage; a successful stage removes earlier ones. Stages in one process run one at a time.
+
+`WriterOwner::open` runs `restore::recover` under the directory lock, after the ownership marker decision and before preflight. It removes leftover `incoming-<id>.tar.gz` files and `staged-<id>` directories, then `.pp-restore` itself. Any other entry there, or a `.pp-restore` that is not a real directory, refuses the open and removes nothing, because this build cannot tell whether it holds the only copy of an installation.
+
+Tests: `pp-storage/src/restore/tests.rs` (`ticket_t_8_restore_*`, on pp-testkit installations with a copied schema-34 database).
+
 ## To be written
 
 The storage milestone fills in these sections:
 
 - Schema versions and how migrations run on startup.
-- Backup, restore and downgrade blocking.
+- Restore activation, and downgrade blocking.
 - Durable jobs and recovery after an interrupted external effect. An interrupted printer send is never retried automatically.
 
 [Operations](../OPERATIONS.md) describes backups for the current Node server.

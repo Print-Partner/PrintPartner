@@ -1302,13 +1302,30 @@ class HiddenMergeTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 2, result.stderr)
 
     def test_runner_words_are_classified_quickly(self):
-        # Every later word of a runner is tried as its program; 40 runner names as data once took 18 s.
-        flood = "xargs echo " + " ".join(["find"] * 40)
+        # A runner tries every later word as its program; runner names as data once took 18 s for 40 words and
+        # 22.9 s for 800 (Sol at c545852a), past the hook's 10-second limit.
         guard = in_process(ROOT / "scripts/agent-guard.py")
+        for words, limit in ((40, 1.0), (800, 2.5)):
+            flood = "xargs echo " + " ".join(["find"] * words)
+            started = time.monotonic()
+            reason = guard.check_command(flood, self.lane)
+            with self.subTest(words=words):
+                self.assertLess(time.monotonic() - started, limit)
+                self.assertTrue(reason is None or "too complex" in reason, reason)
+                if words == 40:
+                    self.assertIsNone(reason)
+        self.assertIsNotNone(guard.check_command("xargs echo " + " ".join(["find"] * 40) + " gh pr merge 1", self.lane))
+        # An ordinary long line stays allowed quickly.
         started = time.monotonic()
-        self.assertIsNone(guard.check_command(flood, self.lane))
+        self.assertIsNone(guard.check_command("echo " + " ".join(f"word{i}" for i in range(5000)), self.lane))
         self.assertLess(time.monotonic() - started, 1.0)
-        self.assertIsNotNone(guard.check_command(flood + " gh pr merge 1", self.lane))
+
+    def test_the_check_refuses_a_line_past_its_budget_or_deadline(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        self.assertIn("too complex", guard.check_command("xargs echo " + " ".join(["find"] * 6000), self.lane))
+        with patch.object(guard, "CHECK_SECONDS", 0):
+            self.assertIn("too complex", guard.check_command("xargs echo find find", self.lane))
+        self.assertIsNone(guard.check_command("xargs echo find find", self.lane))
 
     def test_split_variables_name_the_reason(self):
         for command, results in self.run_all(("G=gh; P=pr; M=merge; $G $P $M 12", "G=gh; $G pr view 12"),

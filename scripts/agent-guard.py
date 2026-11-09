@@ -25,6 +25,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import time
 from urllib.parse import unquote_plus, urlsplit
 
 MERGE = ("Only the coordinator worktree merges, with `gh pr merge <number> --squash --match-head-commit <sha>`; "
@@ -1216,12 +1217,25 @@ def code_merge(code):
 
 # How deep hidden_merge follows nested shells, runners, and alias values before it stops reading.
 NESTING_LIMIT = 6
-# How many distinct (words, depth) checks one command line may take. Past it the guard fails closed, so a long
-# line cannot keep the hook running past its time limit, where a runner would let the command through.
+# How many hidden_merge visits, and how many seconds, one command line may take. Past either the guard refuses
+# the line as too complex, so a long line cannot keep the hook running past its 10-second limit, where the hook
+# runner would let the command through.
 STEP_BUDGET = 5000
+CHECK_SECONDS = 2.0
+TOO_COMPLEX = ("This command line is too complex for the guard to check in time; split it into simpler "
+               "commands.")
 
 
-def hidden_merge(args, depth=0, strict=False, state=None):
+class TooComplex(Exception):
+    pass
+
+
+def merge_state():
+    """Return the per-line state hidden_merge shares: its memo, its visit count, and its deadline."""
+    return {"memo": {}, "steps": 0, "deadline": time.monotonic() + CHECK_SECONDS}
+
+
+def hidden_merge(args, depth=0, strict=False, state=None, scan=True):
     """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
     as a shell's -c script, or as the command line inside an alias value or a runner's command string.
 
@@ -1233,27 +1247,31 @@ def hidden_merge(args, depth=0, strict=False, state=None):
     program() unwraps, in the arguments of a runner, in -c or -e code, and in alias values. The arguments of an
     ordinary program, as in echo gh pr merge 12, are data. Help is decided for each simple command, as main's
     gh_reason does: gh pr merge followed only by --help or -h is help.
+
+    scan is False when a runner's own suffix loop reached these words: the loop already tries every later
+    word as a program, so a runner found here does not scan its words again. Raises TooComplex past the step
+    budget or the deadline.
     """
+    state = merge_state() if state is None else state
+    # Every visit counts, memo hits and depth-limit visits included, before any other work.
+    state["steps"] += 1
+    if state["steps"] > STEP_BUDGET or time.monotonic() > state["deadline"]:
+        raise TooComplex(TOO_COMPLEX)
     if depth >= NESTING_LIMIT:
         # Past the limit the guard stops reading, so it fails closed: text that still names gh, after quotes and
         # backslashes are removed, or holds an expansion counts as a merge.
         raw = " ".join(args)
         return EXPANDED in raw or bool(re.search(r"\bgh\b", unquoted(raw)))
-    # Each runner tries every later word as its program, so the same suffix comes up again and again; one result
-    # per (words, depth, strict) keeps the work linear in practice, and the step budget bounds it in any case.
-    state = {"memo": {}, "steps": 0} if state is None else state
-    key = (tuple(args), depth, strict)
+    # One result per (words, depth, strict, scan): a suffix can come up again through another path.
+    key = (tuple(args), depth, strict, scan)
     if key in state["memo"]:
         return state["memo"][key]
-    state["steps"] += 1
-    if state["steps"] > STEP_BUDGET:
-        return True
-    state["memo"][key] = result = merge_in(args, depth, strict, state)
+    state["memo"][key] = result = merge_in(args, depth, strict, state, scan)
     return result
 
 
-def merge_in(args, depth, strict, state):
-    """The body of hidden_merge for one (words, depth, strict); hidden_merge adds the memo and the budget."""
+def merge_in(args, depth, strict, state, scan):
+    """The body of hidden_merge for one (words, depth, strict, scan); hidden_merge adds the memo and the limits."""
     name, rest, *_ = program(args)
     if name is None:
         return False
@@ -1278,9 +1296,10 @@ def merge_in(args, depth, strict, state):
             return True
         # Each word could be where the runner's program starts (after xargs -n 1, flock FILE, find -exec), so
         # each is tried in program position: gh itself, a wrapper, a shell's -c, or interpreter code. The words
-        # after an ordinary program, such as a grep pattern, stay data.
-        if any(hidden_merge(rest[i:], depth + 1, True, state) for i in range(len(rest))
-               if not rest[i].startswith("-")):
+        # after an ordinary program, such as a grep pattern, stay data. One pass covers every later word, so a
+        # runner met in it does not scan again (scan=False); its strings and expansions are still checked.
+        if scan and any(hidden_merge(rest[i:], depth + 1, True, state, scan=False) for i in range(len(rest))
+                        if not rest[i].startswith("-")):
             return True
     for text in strings:
         try:
@@ -1405,9 +1424,11 @@ def check_command(command, cwd, outer=None):
         # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
         # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
         # alone stays allowed.
-        state = {"memo": {}, "steps": 0}
+        state = merge_state()
         if any(hidden_merge(args, state=state) for args, *_ in parsed):
             return MERGE
+    except TooComplex:
+        return TOO_COMPLEX
     except Unclear as error:
         return str(error) or UNCLEAR
     except ValueError:

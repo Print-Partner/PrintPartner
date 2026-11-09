@@ -241,7 +241,7 @@ enum ReadError {
 }
 
 /// Mounts list/workspace reads, Accept previews, part edits, Required-unit
-/// reconciliation, abandon, recompute, rebase and Accept when the startup gate is on. Storage accepts the presented credential before a handler runs.
+/// reconciliation, abandon, recompute, rebase, Accept and snapshot restore when the startup gate is on. Storage accepts the presented credential before a handler runs.
 /// API-key reads also resolve the key so `lastUsedAt` commits as Node does.
 /// A disabled gate mounts nothing.
 pub fn draft_router(
@@ -301,7 +301,10 @@ fn mount(
         .route("/plans/{id}/drafts/{draft_id}/abandon", post(abandon))
         .route("/plans/{id}/drafts/recompute", post(lifecycle::recompute))
         .route("/plans/{id}/drafts/save", post(lifecycle::autosave))
-        .route("/plans/{id}/drafts/header", put(lifecycle::save_header))
+        .route(
+            "/plans/{id}/drafts/header",
+            get(build_header).put(lifecycle::save_header),
+        )
         .route(
             "/plans/{id}/drafts/{draft_id}/rebase",
             post(lifecycle::rebase),
@@ -309,6 +312,10 @@ fn mount(
         .route(
             "/plans/{id}/drafts/{draft_id}/apply",
             post(lifecycle::apply),
+        )
+        .route(
+            "/plans/{id}/snapshots/{snapshot_id}/restore",
+            post(lifecycle::restore),
         )
         .route_layer(middleware::from_fn_with_state(app, authorize));
     admit_draft_routes(config, routes)
@@ -334,7 +341,7 @@ async fn authorize(
         return invalid_request();
     };
     let (operation_name, draft_id) = match &operation {
-        Request::List => ("list", None),
+        Request::List | Request::BuildHeader => ("list", None),
         Request::Read { draft_id }
         | Request::Diff { draft_id }
         | Request::Workspace { draft_id }
@@ -442,6 +449,10 @@ fn read_target(path: &str) -> Option<(PositiveId, Request)> {
     }
     match parts.next() {
         None => parts.next().is_none().then_some((profile, Request::List)),
+        Some("header") => parts
+            .next()
+            .is_none()
+            .then_some((profile, Request::BuildHeader)),
         Some(draft) => {
             let draft_id = path_id(draft)?;
             let request = match parts.next() {
@@ -484,6 +495,14 @@ async fn header(Extension(read): Extension<Authorized>) -> Response {
         Outcome::Header { header } => json_response(StatusCode::OK, header),
         Outcome::ProfileNotFound => profile_missing(),
         Outcome::DraftNotFound => draft_missing(),
+        _ => internal_error(),
+    }
+}
+
+async fn build_header(Extension(read): Extension<Authorized>) -> Response {
+    match read.outcome.as_ref() {
+        Outcome::BuildHeader { header } => json_response(StatusCode::OK, header),
+        Outcome::ProfileNotFound => profile_missing(),
         _ => internal_error(),
     }
 }
@@ -627,14 +646,20 @@ fn idempotency_key(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// The writes Node refuses without an `Idempotency-Key`: reconciliation,
-/// recompute, rebase and Accept, and the Rust-only draft autosave and draft
-/// header save.
+/// recompute, rebase and Accept, and the Rust-only draft autosave, draft
+/// header save and snapshot restore.
 fn keyed_write(method: &Method, path: &str) -> bool {
     match *method {
         Method::PUT => path.ends_with("/reconciliation") || path.ends_with("/drafts/header"),
-        Method::POST => ["/recompute", "/rebase", "/apply", "/drafts/save"]
-            .iter()
-            .any(|action| path.ends_with(action)),
+        Method::POST => [
+            "/recompute",
+            "/rebase",
+            "/apply",
+            "/drafts/save",
+            "/restore",
+        ]
+        .iter()
+        .any(|action| path.ends_with(action)),
         _ => false,
     }
 }

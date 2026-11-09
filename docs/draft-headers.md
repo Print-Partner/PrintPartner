@@ -92,6 +92,65 @@ Required-unit parity fixtures, and Node has no header, so the header has its own
 read beside it. Both routes are in the generated `@print-partner/rust-client`
 (`readDraftHeader`, `saveDraftHeader`).
 
+## Read without a draft: `GET /plans/{id}/drafts/header`
+
+Returns `BuildHeaderView`: the Build's current header (`build`, as above) and its
+Accepted base (`base`: `revision_id` and `plan_version`, `null` and `0` before
+the first Accept). The Plan tab reads it before any draft exists, shows the
+header, and names that base when its first header save creates the draft. It
+writes nothing. An unknown Plan is 404. The generated client calls it
+`readBuildHeader` (GRE-1120).
+
+## The Plan tab (GRE-1120)
+
+The replacement UI's Plan tab (`web/apps/ui/src/builds/BuildPlan.tsx`) uses only
+these routes through the generated client:
+
+- The header form saves a field when it loses focus or on Enter, with
+  `saveDraftHeader`. It names the open draft and the header version it read,
+  so a change made elsewhere is refused with `header_changed`, and the tab
+  rereads. A blank name is refused in the form and never sent.
+- Each Part's Included box and quantity override save as one
+  `autosaveDraft` decision. Writes run one at a time, and each names the draft
+  the previous one left. While an Included save is queued or running, the
+  box shows its value and the next click toggles from that; a refused save
+  shows the saved value again.
+- Review and accept opens the gate. It reads `previewDraftAccept`, shows the
+  snapshot note, the header's old and new values, Part changes, printed
+  Required units affected, cleared Plates, stock impact and duplicate orders,
+  and sends the preview's `revision` without `draft_id` as the `acceptDraft`
+  body with a new `Idempotency-Key`. A refusal shows its reason and previews
+  again. Accept stays off until that preview arrives, and the refused changes
+  stay visible meanwhile. If it fails, the old changes are hidden and Accept
+  stays off, with "The preview failed", until Check again succeeds. The next Accept
+  uses a new key. Accept stays off, with the reason,
+  while the preview lists running work in `blocked_by` or checkoff links and
+  queued sends in `production`: the tab sends `remap_checkoff_links: false`,
+  so Accept would refuse with `production_active`.
+- A lost answer or a 5xx, such as 503 `outcome_unknown`, is not a refusal.
+  Header, Part and Accept writes resend it with the same `Idempotency-Key`
+  and the body of the first attempt, even if the Plan was read again in
+  between, and the core answers a repeat with the first receipt. If the outcome is
+  still unknown, the gate keeps its key and preview, so the next Accept
+  replays the same request instead of starting a new one.
+- Once the draft writes settle, the saved header replaces every field not
+  typed in since the last save was sent. Typing in one field while another
+  saves is kept, and a field changed back to its old value while a save runs
+  is sent too.
+- Review and accept opens the gate only after every draft write has landed,
+  so the preview, and the revision Accept sends, include the edit made just
+  before the click. Start a draft does nothing while a save is running,
+  because that save already starts the draft.
+- The Rust MCP router's `propose_apply_plan_draft` (under
+  `PP_DESKTOP_REBUILD`) accepts through the same Rust preview and Accept, so
+  it copies the draft header too (GRE-1236, below). The desktop gateway still
+  answers `/mcp` and `/api/v1/mcp` with 403 before any product route, with
+  or without the flag (`pp-gateway/src/lib.rs`), so a desktop client does not
+  reach it yet. Node's own MCP ignores the draft header.
+- Offline, every field is read-only and every button is `aria-disabled` with
+  the reason. With the Orders module off, the order number, customer and due
+  date fields are hidden and the tab says why.
+
 ## Draft paths that carry the header
 
 Every new draft row goes through `insert_snapshot`, which takes an `Origin`:
@@ -106,7 +165,7 @@ must choose.
 | Save (publishing) | the observed draft | `save_carries_the_source_draft_header` (`working_draft_save.rs`) |
 | Autosave | none: it writes into the open draft in place, or creates a draft when none is open | `gre_1197_autosave_keeps_and_recompute_carries_the_draft_header` checks the row survives |
 | Header save | writes its own row | `gre_1197_header_save_creates_a_draft_when_none_is_open` |
-| Restore as draft (GRE-1094, not built) | the restored revision's header, through `insert_snapshot` | GRE-1094 adds its test |
+| Restore as draft ([GRE-1094](build-history.md#restore-a-snapshot-as-a-draft)) | the snapshot's `plan_snapshot_headers` row, checked as a header save checks it (empty optional text reads as none), as header version 1, through `insert_snapshot` with `Origin::Snapshot` | `restore_as_draft_creates_a_draft_that_accept_publishes_without_rewinding_evidence` (pp-api) |
 
 Passing `Origin::New` in recompute or Save, or dropping the carry for
 `Rebased`, makes the matching test fail; this was checked by hand for this change.
@@ -126,15 +185,19 @@ route writes these columns in the same flow.
 Before its selection, which writes, Accept refuses a header whose name another
 Build of the tenant already has, the rule a Build rename checks: 409
 `{ code: "duplicate_build_name", name }`. The Accept preview returns the same
-refusal from the same point. Duplicate order numbers are reported, not refused
-(`duplicate_orders`; GRE-1095 owns the refusal).
+refusal from the same point. It also refuses a header that gives the Build an
+order number another unarchived Build holds: 409
+`{ code: "duplicate_order", order_number, builds }`, where `builds` lists each
+holder's `profile_id`, `name` and stored `order_number`
+([Order authority](#order-authority-gre-1095)).
 
 The preview (`GET .../accept-preview`) lists the header fields the draft
 changes in `changes.header`: `{ field, old, new }` for `name`,
 `order_number`, `customer` and `due_date`, `null` for an empty field. A
 draft whose Parts and inputs equal its base but whose header differs is
-`changed`, not `no_change`. `duplicate_orders` checks the order number the
-Build has after Accept.
+`changed`, not `no_change`. `duplicate_orders` lists the other unarchived
+Builds holding the order number the Build has after Accept. On a ready
+preview these can only be duplicates the Build already shares.
 
 A header save changes neither the snapshot digest nor the lifecycle version,
 so the preview's `revision` also carries `expected_header_version`: the
@@ -182,13 +245,51 @@ Two limits remain:
   it stands in Save's transaction, because Node's `SavePlanChoicesRequest`
   carries no header version. Whatever routes Save to Rust must add a
   client-observed version first.
-- **Web client.** `applyPlanDraft` in `web/apps/web/src/api/endpoints/planDrafts.ts`
-  sends no `expected_header_version`, so Accept from the web UI answers
-  `draft_changed` for a draft that has a header row. No UI flow creates a
-  header row today, and no web code calls the Accept preview yet. GRE-1120,
-  not built yet, adds the Accept gate. It must show the preview, header
-  included, and send that preview's `revision` without `draft_id` (the draft
-  id goes in the path), `expected_header_version` included, as the Accept body.
+- **Old web client.** `applyPlanDraft` in the old UI
+  (`web/apps/web/src/api/endpoints/planDrafts.ts`) sends no
+  `expected_header_version`, so its Accept of a draft that has a header row
+  answers `draft_changed`. The replacement UI's Plan tab creates header rows
+  and accepts them through the gate ([The Plan tab](#the-plan-tab-gre-1120)).
+
+## Order authority (GRE-1095)
+
+One order is one Build. An order number belongs to at most one unarchived
+Build of a tenant. `pp-storage/src/order_authority.rs` owns the rule:
+
+- **Normalization.** Two order numbers are the same order when they match
+  after trimming JavaScript whitespace, collapsing each inner whitespace run
+  to one space, and lowercasing. `" PO-7 "`, `"po-7"` and `"PO-7"` are one
+  order. `"#1001"` and `"1001"` are two, because punctuation is kept. A blank
+  or missing order number holds no order. The replacement UI's Builds list
+  groups duplicates with the same rule (`normalizeOrderNumber` in
+  `web/apps/ui/src/builds/BuildsList.tsx`).
+- **Enforcement.** Accept is the only Rust write of
+  `build_profiles.order_number`. It checks the draft header's order number
+  inside its immediate transaction, before anything writes, and refuses with
+  `duplicate_order` when another unarchived Build holds it. Two Accepts of
+  one order on different Builds therefore serialize, and the second is
+  refused. The preview and Rust MCP's `propose_apply_plan_draft` and
+  `confirm_apply` run the same check, so MCP proposes nothing for such a
+  draft and a stale proposal is refused at confirm and stays pending.
+  Archived Builds and other tenants hold nothing.
+- **Existing duplicates.** Copied Node data can already hold two unarchived
+  Builds with one order. Nothing merges, renumbers or blocks them. A Build
+  keeps an order it already holds, in any spelling, through Accept. The
+  Accept preview's `duplicate_orders` and the Builds list's "Duplicate order"
+  mark report them. Archive one of them to resolve it.
+
+The rule covers Rust Accept and Rust MCP under `desktop_rebuild` and
+`PP_DESKTOP_REBUILD`. Node writes order numbers without it: Node's Accept
+with the flag off, `POST /plans/:id/duplicate` (copies the order number),
+and kit import. Duplicating a Build as a detached experiment, promoting it,
+and order import are not built yet.
+
+There is no schema step: a unique index would need a normalized column and
+would refuse the existing duplicates.
+
+Tests: `order_authority_*` in `pp-storage` (normalization, `claim`) and in
+`pp-api/src/drafts/http/tests/order_authority.rs` (HTTP refusal and preview,
+the concurrent race, existing duplicates across restart, MCP).
 
 ## Schema 45
 

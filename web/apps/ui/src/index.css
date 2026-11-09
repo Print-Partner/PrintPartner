@@ -592,3 +592,151 @@ body {
 .pp-burst-preview p {
   margin: 0 0 8px;
 }
+
+/* Plan tab and Accept gate (GRE-1120). */
+.pp-plan-status {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.pp-plan-status p,
+.pp-save-status {
+  margin: 0;
+}
+
+.pp-save-status {
+  min-height: 1.5em;
+  color: var(--text-muted);
+}
+
+.pp-save-status[data-failed] {
+  color: var(--status-danger);
+}
+
+.pp-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 12px 16px;
+}
+
+.pp-field {
+  display: grid;
+  gap: 4px;
+}
+
+.pp-field input,
+.pp-quantity {
+  box-sizing: border-box;
+  min-height: var(--touch-target-min);
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-base);
+  color: var(--text);
+  font: inherit;
+}
+
+.pp-field input[aria-invalid="true"],
+.pp-quantity[aria-invalid="true"] {
+  border-color: var(--status-danger);
+}
+
+.pp-field-error {
+  display: block;
+  margin: 4px 0 0;
+  color: var(--status-danger);
+}
+
+.pp-quantity {
+  width: 7rem;
+}
+
+.pp-plan-parts,
+.pp-gate-header {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pp-plan-parts :is(th, td),
+.pp-gate-header :is(th, td) {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.pp-plan-parts input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+  accent-color: var(--interaction-accent);
+}
+
+.pp-path {
+  display: block;
+  font-weight: var(--font-weight-regular);
+}
+
+.pp-gate {
+  width: min(48rem, 100%);
+}
+
+.pp-gate-section h3 {
+  margin: 16px 0 4px;
+  font-size: var(--text-md);
+}
+
+.pp-gate-section ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.pp-gate-snapshot,
+.pp-gate-restored {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border-left: 4px solid var(--interaction-accent);
+  background: var(--surface-raised);
+}
+
+.pp-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 16px;
+}
+
+/* At 400% zoom the Parts table stacks each Part, so nothing scrolls sideways. */
+@media (max-width: 40rem) {
+  .pp-plan-parts,
+  .pp-plan-parts tbody,
+  .pp-plan-parts tr,
+  .pp-plan-parts :is(th, td) {
+    display: block;
+  }
+
+  .pp-plan-parts thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .pp-plan-parts tr {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .pp-plan-parts :is(th, td) {
+    padding: 4px 0;
+    border-bottom: 0;
+  }
+}
+
+.pp-plan-parts :is(th, td),
+.pp-gate-header :is(th, td) {
+  overflow-wrap: anywhere;
+}

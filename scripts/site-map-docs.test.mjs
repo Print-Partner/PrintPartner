@@ -32,8 +32,8 @@ test("public documentation matches the current product map", () => {
     assert.match(pages, new RegExp(`pipeline-step">${stage}<`));
   }
 
-  assert.match(readme, /github\.com\/poitee\/PrintPartner/);
-  assert.match(install, /git clone https:\/\/github\.com\/poitee\/PrintPartner\.git/);
+  assert.match(readme, /github\.com\/Print-Partner\/PrintPartner/);
+  assert.match(install, /git clone https:\/\/github\.com\/Print-Partner\/PrintPartner\.git/);
   assert.match(pkg.description, /Builds/);
   assert.match(pkg.description, /Production/);
 

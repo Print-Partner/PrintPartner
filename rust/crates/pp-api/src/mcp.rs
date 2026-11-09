@@ -5,6 +5,9 @@
 //! cookie alone is refused, and so is a key the auth worker does not resolve
 //! to that tenant (unknown, revoked or expired). Host and Origin must match
 //! the listener exactly. Write tools only propose; `confirm_apply` applies.
+//! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
+//! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
+//! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`).
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -18,8 +21,10 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
-use pp_services::mcp_domain::{McpSession, ToolResult, UnportedDomain, server_info};
-use pp_storage::build_graph::PositiveId;
+use checkoff::CheckoffDomain;
+use pp_services::mcp_domain::{McpSession, ToolResult, server_info};
+use pp_storage::build_graph::{BuildGraphClient, PositiveId};
+use pp_storage::checkoff_progress::ProgressClient;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
     read_model::{
@@ -82,24 +87,31 @@ struct Guard {
 /// The clients ported tools use: `get_build_workflow` reads the same client as
 /// `GET /plans/{id}/workflow`, and Plan Accept uses the draft routes' client
 /// and checks the Build planning brief with the planning routes' client.
+/// `progress` applies confirmed Checkoff proposals. `builds` lists Builds and
+/// `planning` also reads decisions and snapshots for the read tools.
 #[derive(Clone)]
 struct Reads {
+    builds: BuildGraphClient,
     workflow: WorkflowClient,
     drafts: WorkingDraftClient,
     planning: PlanningClient,
+    progress: ProgressClient,
     wait: Duration,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
 /// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
 /// `workflow` and Plan Accept uses `drafts` and `planning`, each with the
-/// request's API key.
+/// request's API key. Checkoff proposals apply through `progress`; `builds`
+/// serves `list_plans`.
 pub fn mcp_router(
     config: McpHttpConfig,
     auth: RebuildAuthClient,
+    builds: BuildGraphClient,
     workflow: WorkflowClient,
     drafts: WorkingDraftClient,
     planning: PlanningClient,
+    progress: ProgressClient,
 ) -> Router {
     if !config.enabled {
         return Router::new();
@@ -110,9 +122,11 @@ pub fn mcp_router(
         .with_allowed_hosts([config.host.clone()])
         .with_allowed_origins([config.origin.clone()]);
     let reads = Reads {
+        builds,
         workflow,
         drafts,
         planning,
+        progress,
         wait: config.wait,
     };
     let service = StreamableHttpService::new(
@@ -157,7 +171,23 @@ pub(crate) fn test_router(
     let planning = owner
         .build_planning(policy, owner.source_reads().unwrap())
         .unwrap();
-    let router = mcp_router(config, auth.clone(), workflow, drafts, planning);
+    let progress = owner.checkoff_progress().unwrap();
+    let builds = owner
+        .build_graph_with_observations(
+            policy,
+            Arc::new(owner.source_reads().unwrap()),
+            Default::default(),
+        )
+        .unwrap();
+    let router = mcp_router(
+        config,
+        auth.clone(),
+        builds,
+        workflow,
+        drafts,
+        planning,
+        progress,
+    );
     (router, auth)
 }
 
@@ -237,17 +267,45 @@ fn failure(status: StatusCode, detail: &str) -> Response {
 }
 
 /// One MCP session: its own pending proposals, product tools from the catalog.
+/// `turn` runs one session tool call at a time, so the caller's key set on
+/// the domain belongs to the call that uses it. The blocking task holds it, so
+/// a call whose request was cancelled still finishes before the next starts.
 struct ProductMcp {
-    session: McpSession<UnportedDomain>,
+    session: Arc<McpSession<CheckoffDomain>>,
+    turn: Arc<tokio::sync::Mutex<()>>,
     reads: Reads,
 }
 
 impl ProductMcp {
     fn new(reads: Reads) -> Self {
         Self {
-            session: McpSession::new(UnportedDomain, None),
+            session: Arc::new(McpSession::new(
+                CheckoffDomain::new(reads.progress.clone(), reads.wait),
+                None,
+            )),
+            turn: Arc::new(tokio::sync::Mutex::new(())),
             reads,
         }
+    }
+
+    /// A catalog or session tool, on a blocking thread with the caller's key.
+    async fn session_tool(
+        &self,
+        name: String,
+        arguments: Value,
+        presented: Option<PresentedCredential>,
+    ) -> Result<ToolResult, ErrorData> {
+        let turn = self.turn.clone().lock_owned().await;
+        let session = self.session.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            session.port().set_caller(presented);
+            let result = session.call_tool(&name, &arguments);
+            session.port().set_caller(None);
+            result
+        })
+        .await;
+        result.map_err(internal)?.map_err(|error| internal(error.0))
     }
 
     /// `get_build_workflow`: the Build's workflow, read with the caller's key
@@ -347,7 +405,9 @@ impl ServerHandler for ProductMcp {
             .and_then(|parts| parts.extensions.get::<KeyPrincipal>())
             .ok_or_else(|| internal("MCP request has no resolved API key"))?;
         let arguments = request.arguments.map(Value::Object).unwrap_or(Value::Null);
-        let presented = parts.and_then(|parts| parts.extensions.get::<PresentedCredential>());
+        let presented = parts
+            .and_then(|parts| parts.extensions.get::<PresentedCredential>())
+            .cloned();
         let confirming = (request.name == "confirm_apply")
             .then(|| arguments.get("action_id").and_then(Value::as_str))
             .flatten()
@@ -355,33 +415,40 @@ impl ServerHandler for ProductMcp {
             .filter(|action| action.action_type == plan_accept::PROPOSE);
         let result = match presented {
             Some(presented) if request.name == "get_build_workflow" => {
-                self.build_workflow(&arguments, presented.clone()).await
+                self.build_workflow(&arguments, presented).await
+            }
+            Some(presented) if reads::TOOLS.contains(&request.name.as_ref()) => {
+                self.read_tool(&request.name, &arguments, presented).await
             }
             Some(presented) if request.name == plan_accept::PROPOSE => {
-                self.propose_accept(&arguments, presented.clone()).await
+                self.propose_accept(&arguments, presented).await
             }
             Some(presented) if confirming.is_some() => {
                 // Taken before Accept so a concurrent confirm cannot apply it twice.
                 match confirming.and_then(|action| self.session.take_pending(&action.id)) {
-                    Some(action) => self.confirm_accept(action, presented.clone()).await,
-                    None => self
-                        .session
-                        .call_tool(&request.name, &arguments)
-                        .map_err(|error| internal(error.0))?,
+                    Some(action) => self.confirm_accept(action, presented).await,
+                    None => {
+                        self.session_tool(request.name.to_string(), arguments, Some(presented))
+                            .await?
+                    }
                 }
             }
-            _ => self
-                .session
-                .call_tool(&request.name, &arguments)
-                .map_err(|error| internal(error.0))?,
+            presented => {
+                self.session_tool(request.name.to_string(), arguments, presented)
+                    .await?
+            }
         };
         let result: CallToolResult = serde_json::from_value(result.to_json()).map_err(internal)?;
         Ok(result.into())
     }
 }
 
+#[path = "mcp/checkoff.rs"]
+mod checkoff;
 #[path = "mcp/plan_accept.rs"]
 mod plan_accept;
+#[path = "mcp/reads.rs"]
+mod reads;
 
 #[cfg(test)]
 #[path = "mcp/tests.rs"]

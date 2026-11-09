@@ -11,8 +11,8 @@
 use super::{
     Basis, Body, Outcome, Refusal, Response, archived,
     burst::{
-        self, canonical, load_list, mark_undone, replayed, restore_progress, state_changed,
-        state_hash,
+        self, Blocked, canonical, load_list, mark_undone, replayed, restore_progress,
+        state_changed, state_hash,
     },
     complete_rows, current, is_token, links, progress_changed, read,
 };
@@ -26,7 +26,7 @@ use std::{
     path::Path,
 };
 
-const KEY: &str = "checkoff.manual_bursts";
+pub(super) const KEY: &str = "checkoff.manual_bursts";
 const RETIRED_KEY: &str = "checkoff.manual_bursts_retired";
 pub(super) const MAX_UNITS: usize = 1000;
 
@@ -72,12 +72,12 @@ impl ManualBurst {
         {
             return Err(bad(&format!("Unknown field {extra}")));
         }
-        let key = object
-            .get("idempotency_key")
-            .and_then(Value::as_str)
-            .map(links::js_trim)
-            .filter(|k| !k.is_empty() && k.chars().count() <= 200)
-            .ok_or_else(|| bad("idempotency_key must be 1 to 200 characters"))?;
+        let key = super::burst::idempotency_key(
+            object
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )?;
         let expected = object
             .get("expected")
             .cloned()
@@ -360,6 +360,13 @@ pub(super) enum Op {
     CompleteLink {
         link_id: String,
     },
+    /// `POST /plans/{id}/history/{entry_id}/undo`: the undo of a manual or
+    /// printer burst Build history lists (GRE-1259).
+    #[cfg(feature = "desktop_rebuild")]
+    UndoHistoryEntry {
+        profile: i64,
+        id: String,
+    },
 }
 
 pub(super) fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
@@ -368,35 +375,50 @@ pub(super) fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> O
         Op::Undo { profile, token } => undo(tx, tenant, profile, &token, repos),
         #[cfg(feature = "desktop_rebuild")]
         Op::CompleteLink { link_id } => super::verify::manual_complete(tx, tenant, &link_id),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::UndoHistoryEntry { profile, id } => {
+            super::history_undo::undo_entry(tx, tenant, profile, &id, repos)
+        }
     }
 }
 
-/// Why undo must refuse, or `None` when the Accepted Plan and everything that
-/// can depend on the burst's units are as the burst left them.
-fn undo_conflict(
+/// The undo checks, without writing: `None` when the receipt is kept and not
+/// undone, and the Accepted Plan and everything that can depend on the burst's
+/// units are as the burst left them.
+pub(super) fn undo_blocked(
     tx: &Transaction<'_>,
     tenant: &str,
-    profile: i64,
-    undo: &Value,
+    receipts: &[Value],
+    (profile, token): (i64, &str),
     repos: &Path,
-) -> Result<std::result::Result<Option<String>, Refusal>> {
-    let changed_plan = format!("The Accepted Plan for Build {profile} changed since this burst");
+) -> Result<Option<Blocked>> {
+    let undo = match burst::kept(receipts, |r| {
+        r["undo_token"] == token && r["profile_id"] == profile
+    }) {
+        Ok(receipt) => &receipt["undo"],
+        Err(blocked) => return Ok(Some(blocked)),
+    };
+    let changed_plan = || {
+        Blocked::Changed(format!(
+            "The Accepted Plan for Build {profile} changed since this burst"
+        ))
+    };
     let snapshot = match read(tx, tenant, profile, repos)? {
         AcceptedRead::Ready { snapshot } => snapshot,
-        _ => return Ok(Ok(Some(changed_plan))),
+        _ => return Ok(Some(changed_plan())),
     };
     if archived(&snapshot) {
-        return Ok(Err(Refusal::Archived));
+        return Ok(Some(Blocked::Archived));
     }
     if serde_json::to_value(Basis::from(&*snapshot))? != undo["basis"] {
-        return Ok(Ok(Some(changed_plan)));
+        return Ok(Some(changed_plan()));
     }
     if state_changed(tx, tenant, undo)? {
-        return Ok(Ok(Some(
+        return Ok(Some(Blocked::Changed(
             "Checkoff changed since this burst: a later change on its Parts depends on it".into(),
         )));
     }
-    Ok(Ok(None))
+    Ok(None)
 }
 
 pub(super) fn undo(
@@ -407,21 +429,16 @@ pub(super) fn undo(
     repos: &Path,
 ) -> Outcome {
     let mut receipts = load_list(tx, tenant, KEY)?;
+    if let Some(blocked) = undo_blocked(tx, tenant, &receipts, (profile, token), repos)? {
+        return blocked.refusal();
+    }
     let Some(position) = receipts
         .iter()
         .position(|r| r["undo_token"] == token && r["profile_id"] == profile)
     else {
         return refuse(404, "Checkoff burst not found");
     };
-    if receipts[position].get("undone_at").is_some() {
-        return refuse(409, "This Checkoff burst was already undone");
-    }
     let undo = receipts[position]["undo"].clone();
-    match undo_conflict(tx, tenant, profile, &undo, repos)? {
-        Err(refusal) => return Ok(Err(refusal)),
-        Ok(Some(reason)) => return refuse(409, &reason),
-        Ok(None) => {}
-    }
     for part in restore_progress(tx, tenant, &undo)? {
         progress_changed(tx, tenant, profile, Some(part))?;
     }

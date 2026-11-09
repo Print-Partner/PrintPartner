@@ -110,6 +110,13 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "DraftWorkspace",
     ),
     route(
+        "readBuildHeader",
+        "GET",
+        "/api/v2/plans/{id}/drafts/header",
+        None,
+        "BuildHeaderView",
+    ),
+    route(
         "readDraftHeader",
         "GET",
         "/api/v2/plans/{id}/drafts/{draft_id}/header",
@@ -134,6 +141,36 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
             "/api/v2/plans/{id}/drafts/{draft_id}/reconciliation",
             Some("ReconcileDraftRequest"),
             "DraftWorkspace",
+        )
+    },
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
+            "restoreSnapshotAsDraft",
+            "POST",
+            "/api/v2/plans/{id}/snapshots/{snapshot_id}/restore",
+            Some("RestoreSnapshotRequest"),
+            "DraftWorkspace",
+        )
+    },
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
+            "autosaveDraft",
+            "POST",
+            "/api/v2/plans/{id}/drafts/save",
+            Some("SavePlanChoicesRequest"),
+            "DraftAutosaved",
+        )
+    },
+    ClientRoute {
+        headers: &["Idempotency-Key"],
+        ..route(
+            "acceptDraft",
+            "POST",
+            "/api/v2/plans/{id}/drafts/{draft_id}/apply",
+            Some("AcceptDraftRequest"),
+            "AcceptDraftReceipt",
         )
     },
     route(
@@ -172,6 +209,23 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         None,
         "PlanDecisionList",
     ),
+    route(
+        "readBuildHistory",
+        "GET",
+        "/api/v2/plans/{id}/history",
+        None,
+        "BuildHistoryPage",
+    ),
+    ClientRoute {
+        text_params: &["entry_id"],
+        ..route(
+            "undoBuildHistoryEntry",
+            "POST",
+            "/api/v2/plans/{id}/history/{entry_id}/undo",
+            None,
+            "BuildHistoryUndo",
+        )
+    },
     route(
         "listPrinters",
         "GET",
@@ -305,6 +359,9 @@ mod codegen {
         BedClearState, PrinterDisplayDescriptor, PrinterDisplayState, PrinterExecutionState,
         PrinterStateView,
     };
+    use pp_storage::read_model::history::{
+        self, Actor, EntryType, Page as BuildHistoryPage, Undo, UndoReason, Undone,
+    };
     use pp_storage::{
         build_graph::wire::{
             AcceptedProgressSummary, AcceptedProgressUnavailableReason, FreshnessReasons,
@@ -324,6 +381,7 @@ mod codegen {
             PreviewRevision, ProductionCheck, SnapshotNote, SpoolImpact, StockImpact, UnitChanges,
             UnitRef, Unmappable,
         },
+        plan_publication::{ApplyPlanDraftReceipt, ApplyRequest},
         read_model::{
             build_workflow::{TaskFeed, UnavailableBuild, rank},
             farm::{
@@ -349,10 +407,12 @@ mod codegen {
         },
         working_drafts::{
             AbandonRequest, EditRequest,
+            autosave::{AutosaveReceipt, DraftAutosaved, SavePlanChoicesRequest},
             header::{
-                BuildHeader, DraftHeaderReceipt, DraftHeaderSaved, DraftHeaderState, HeaderView,
-                SaveDraftHeaderRequest,
+                BuildHeader, BuildHeaderView, DraftHeaderReceipt, DraftHeaderSaved,
+                DraftHeaderState, HeaderView, SaveDraftHeaderRequest,
             },
+            restore::RestoreSnapshotRequest,
         },
     };
     use pp_storage::{
@@ -386,11 +446,29 @@ mod codegen {
         schema("DraftIdentity", schemars::schema_for!(DraftIdentity))?;
         schema("DraftAcceptPreview", schemars::schema_for!(AcceptPreview))?;
         schema("DraftHeaderView", schemars::schema_for!(HeaderView))?;
+        schema("BuildHeaderView", schemars::schema_for!(BuildHeaderView))?;
         schema(
             "SaveDraftHeaderRequest",
             schemars::schema_for!(SaveDraftHeaderRequest),
         )?;
         schema("DraftHeaderSaved", schemars::schema_for!(DraftHeaderSaved))?;
+        schema(
+            "RestoreSnapshotRequest",
+            schemars::schema_for!(RestoreSnapshotRequest),
+        )?;
+        schema(
+            "SavePlanChoicesRequest",
+            schemars::schema_for!(SavePlanChoicesRequest),
+        )?;
+        schema("DraftAutosaved", schemars::schema_for!(DraftAutosaved))?;
+        schema("AcceptDraftRequest", schemars::schema_for!(ApplyRequest))?;
+        // Node's receipt parser refuses unknown keys; as a response the
+        // client strips them like every other answer.
+        let mut receipt = schemars::schema_for!(ApplyPlanDraftReceipt);
+        if let Some(object) = receipt.schema.object.as_mut() {
+            object.additional_properties = None;
+        }
+        schema("AcceptDraftReceipt", receipt)?;
         schema("EditDraftPartsRequest", schemars::schema_for!(EditRequest))?;
         schema("AbandonDraftRequest", schemars::schema_for!(AbandonRequest))?;
         schema(
@@ -409,6 +487,8 @@ mod codegen {
             schemars::schema_for!(BuildPlanningResponse),
         )?;
         schema("PlanDecisionList", schemars::schema_for!(PlanDecisionList))?;
+        schema("BuildHistoryPage", schemars::schema_for!(BuildHistoryPage))?;
+        schema("BuildHistoryUndo", schemars::schema_for!(Undone))?;
         schema("PrinterState", schemars::schema_for!(PrinterStateView))?;
         schema("FarmPrinterList", schemars::schema_for!(FarmPrinterList))?;
         schema(
@@ -669,6 +749,59 @@ mod codegen {
         )
     }
 
+    /// One entry per type, one burst per undo state, and a restorable snapshot.
+    fn build_history() -> BuildHistoryPage {
+        let refused = |reason| {
+            Some(Undo {
+                undoable: false,
+                reason: Some(reason),
+                detail: Some(UNICODE.into()),
+                scope: None,
+            })
+        };
+        let burst = |undo| (EntryType::CheckoffBurst, Actor::User, undo);
+        let entries = [
+            (EntryType::Revision, Actor::User, None),
+            (EntryType::Snapshot, Actor::Assistant, None),
+            (
+                EntryType::Send,
+                Actor::User,
+                refused(UndoReason::PrinterCommand),
+            ),
+            burst(Some(Undo {
+                undoable: true,
+                reason: None,
+                detail: None,
+                scope: Some(UNICODE.into()),
+            })),
+            burst(refused(UndoReason::NoUndoToken)),
+            burst(refused(UndoReason::AlreadyUndone)),
+            burst(refused(UndoReason::StateChanged)),
+            burst(refused(UndoReason::Archived)),
+            (EntryType::Decision, Actor::Assistant, None),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (kind, actor, undo))| {
+            let mut entry = history::contract_entry(
+                kind,
+                &(MAX_SAFE - index as i64).to_string(),
+                "2026-11-05T01:00:00.000Z",
+                actor,
+                UNICODE,
+                undo,
+            );
+            entry.restorable = (kind == EntryType::Snapshot).then_some(true);
+            entry
+        })
+        .collect();
+        BuildHistoryPage {
+            plan_id: MAX_SAFE,
+            entries,
+            next_cursor: Some("djF8".into()),
+        }
+    }
+
     /// One entry per kind and undo reason, filled and null.
     fn farm_log() -> FarmLogPage {
         let refused = |reason| FarmLogUndo {
@@ -812,6 +945,8 @@ mod codegen {
             freshness,
             archived_at: text("2026-11-03T20:00:00.000Z"),
             last_used_at: text("2026-11-03T21:00:00.000Z"),
+            customer: text(UNICODE),
+            due_date: text("2026-12-01"),
         }
     }
 
@@ -1022,6 +1157,28 @@ mod codegen {
                 },
             )?,
             served("DraftHeaderView", "proposed", &proposed)?,
+            served(
+                "BuildHeaderView",
+                "accepted",
+                BuildHeaderView {
+                    build: full.clone(),
+                    base: DraftBase {
+                        revision_id: Some(MAX_SAFE),
+                        plan_version: MAX_SAFE,
+                    },
+                },
+            )?,
+            served(
+                "BuildHeaderView",
+                "never-accepted",
+                BuildHeaderView {
+                    build: empty.clone(),
+                    base: DraftBase {
+                        revision_id: None,
+                        plan_version: 0,
+                    },
+                },
+            )?,
             served(
                 "DraftHeaderSaved",
                 "saved",
@@ -1427,6 +1584,70 @@ mod codegen {
         ]
     }
 
+    /// Autosave and Accept: their bodies at the bounds, and their answers.
+    fn lifecycle_fixtures(workspace: &Workspace) -> Result<Vec<Value>, serde_json::Error> {
+        let digest = "e".repeat(64);
+        let base = json!({"revision_id": MAX_SAFE, "plan_version": MAX_SAFE});
+        let choices = |name: &str, value: Value| {
+            request::<SavePlanChoicesRequest>("SavePlanChoicesRequest", name, value)
+        };
+        let accept =
+            |name: &str, value: Value| request::<ApplyRequest>("AcceptDraftRequest", name, value);
+        let decision = json!({"kind": "set_quantity_override", "target": {"part_key": UNICODE, "relative_path": "a/b.stl", "source_layer": null}, "value": null});
+        let revision = json!({"expected_snapshot_digest": digest, "expected_lifecycle_version": 2_147_483_646, "expected_base": base});
+        let receipt: ApplyPlanDraftReceipt = serde_json::from_value(json!({
+            "profile_id": MAX_SAFE, "draft_id": MAX_SAFE, "revision_id": MAX_SAFE,
+            "plan_version": MAX_SAFE, "draft_lifecycle_version": MAX_SAFE,
+            "revision_digest": digest, "required_unit_mapping_digest": digest,
+            "applied_at": "2026-11-06T12:00:00.000Z"
+        }))?;
+        let with = |key: &str, value: Value| {
+            let mut body = revision.clone();
+            body[key] = value;
+            body
+        };
+        Ok(vec![
+            served(
+                "DraftAutosaved",
+                "saved",
+                DraftAutosaved {
+                    receipt: AutosaveReceipt {
+                        profile_id: MAX_SAFE,
+                        draft_id: MAX_SAFE,
+                        reconciliation_id: MAX_SAFE,
+                        snapshot_digest: digest.clone(),
+                        saved_at: "2026-11-06T12:00:00.000Z".into(),
+                    },
+                    workspace: Box::new(workspace.clone()),
+                },
+            )?,
+            choices(
+                "new-draft",
+                json!({"expected_base": {"revision_id": null, "plan_version": 0}, "expected_draft": null, "remap_checkoff_links": false, "decisions": [decision]}),
+            ),
+            choices(
+                "missing-draft",
+                json!({"expected_base": base, "remap_checkoff_links": true, "decisions": [decision]}),
+            ),
+            served("AcceptDraftReceipt", "applied", receipt)?,
+            accept("revision", revision.clone()),
+            accept(
+                "header-version",
+                with("expected_header_version", json!(u32::MAX)),
+            ),
+            accept(
+                "null-header-version",
+                with("expected_header_version", Value::Null),
+            ),
+            accept("remap", with("remap_checkoff_links", json!(true))),
+            accept("draft-id", with("draft_id", json!(1))),
+            accept(
+                "stale-lifecycle",
+                with("expected_lifecycle_version", json!(2_147_483_647_u64)),
+            ),
+        ])
+    }
+
     fn fixtures() -> Result<Vec<Value>, serde_json::Error> {
         let summaries = summaries();
         let workspaces = workspaces();
@@ -1518,6 +1739,40 @@ mod codegen {
             cases.push(served("FarmLogEntry", &entry.id, entry)?);
         }
         cases.push(served("FarmLogPage", "every-undo", log)?);
+        let history = build_history();
+        cases.push(served(
+            "BuildHistoryUndo",
+            "manual-burst-stays",
+            Undone {
+                undone_at: "2026-11-05T01:00:00.000Z".into(),
+                entry: history
+                    .entries
+                    .iter()
+                    .find(|entry| {
+                        entry.undo.as_ref().and_then(|undo| undo.reason)
+                            == Some(UndoReason::AlreadyUndone)
+                    })
+                    .cloned(),
+            },
+        )?);
+        cases.push(served(
+            "BuildHistoryUndo",
+            "printer-burst-removed",
+            Undone {
+                undone_at: "2026-11-05T01:00:00.000Z".into(),
+                entry: None,
+            },
+        )?);
+        cases.push(served("BuildHistoryPage", "every-type", history)?);
+        cases.push(served(
+            "BuildHistoryPage",
+            "last",
+            BuildHistoryPage {
+                plan_id: 1,
+                entries: vec![],
+                next_cursor: None,
+            },
+        )?);
         cases.push(served(
             "FarmLogPage",
             "last",
@@ -1586,6 +1841,7 @@ mod codegen {
             cases.push(served("DraftAcceptPreview", name, value)?);
         }
         cases.extend(header_fixtures()?);
+        cases.extend(lifecycle_fixtures(&workspaces[0])?);
         for (index, value) in workspaces.into_iter().enumerate() {
             cases.push(served(
                 "DraftWorkspace",
@@ -1645,6 +1901,33 @@ mod codegen {
         ] {
             cases.push(request::<AbandonRequest>(
                 "AbandonDraftRequest",
+                name,
+                value,
+            ));
+        }
+        let base = json!({"revision_id": 1, "plan_version": 1});
+        let open = json!({"draft_id": MAX_SAFE, "state": "open", "lifecycle_version": 0,
+            "snapshot_digest": digest, "base": base});
+        for (name, value) in [
+            (
+                "no-open-draft",
+                json!({"mode": "draft", "expected_base": base, "expected_draft": null}),
+            ),
+            (
+                "open-draft",
+                json!({"mode": "draft", "expected_base": base, "expected_draft": open}),
+            ),
+            (
+                "other-mode",
+                json!({"mode": "direct", "expected_base": base, "expected_draft": null}),
+            ),
+            (
+                "missing-draft",
+                json!({"mode": "draft", "expected_base": base}),
+            ),
+        ] {
+            cases.push(request::<RestoreSnapshotRequest>(
+                "RestoreSnapshotRequest",
                 name,
                 value,
             ));

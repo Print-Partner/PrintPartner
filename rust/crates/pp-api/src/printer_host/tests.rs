@@ -18,6 +18,8 @@ fn answer(printer: &str) -> HostAnswer<Value> {
         "off" => HostAnswer::Unavailable,
         "spool" => HostAnswer::Unsupported,
         "down" => HostAnswer::Failed("Moonraker directory listing returned HTTP 500".into()),
+        "bambu-off" => HostAnswer::FeatureDisabled("bambu"),
+        "bambu-bad" => HostAnswer::FeatureInvalid,
         _ => HostAnswer::Busy,
     }
 }
@@ -32,6 +34,8 @@ fn answer_with<T>(printer: &str, ok: impl FnOnce() -> T) -> HostAnswer<T> {
         HostAnswer::Unsupported => HostAnswer::Unsupported,
         HostAnswer::Failed(detail) => HostAnswer::Failed(detail),
         HostAnswer::Busy => HostAnswer::Busy,
+        HostAnswer::FeatureDisabled(feature) => HostAnswer::FeatureDisabled(feature),
+        HostAnswer::FeatureInvalid => HostAnswer::FeatureInvalid,
     }
 }
 
@@ -89,7 +93,13 @@ impl PrinterHostPort for Fake {
         Box::pin(async move { HostAnswer::Ok(Some(source)) })
     }
     fn build_exists(&self, profile_id: i64) -> Answer<bool> {
-        Box::pin(async move { HostAnswer::Ok(profile_id == 1) })
+        Box::pin(async move {
+            match profile_id {
+                // Storage that cannot answer within its reader wait.
+                3 => HostAnswer::Busy,
+                _ => HostAnswer::Ok(profile_id == 1),
+            }
+        })
     }
     fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>> {
         self.calls
@@ -135,6 +145,25 @@ impl PrinterHostPort for Fake {
             }
             other => other,
         };
+        Box::pin(async move { answer })
+    }
+    fn tls_pin(&self, integration: String) -> Answer<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("tls-pin {integration}"));
+        let answer = answer_with(
+            &integration,
+            || json!({"pinned": true, "sha256_prefix": "ab12cd34ef56", "pinned_at": "2026-11-07T05:00:00.000Z"}),
+        );
+        Box::pin(async move { answer })
+    }
+    fn reset_tls_pin(&self, integration: String) -> Answer<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("reset {integration}"));
+        let answer = answer_with(&integration, || json!({"reset": true}));
         Box::pin(async move { answer })
     }
 }
@@ -410,6 +439,11 @@ async fn ticket_t_21_file_content_streams_a_listed_file_like_node() {
             "Choose an existing Build before opening a print file",
         ),
         (content(None, Some("1")), 400, "path is required"),
+        (
+            content(Some("plates/plate.gcode"), Some("3")),
+            503,
+            "Printer settings are unavailable",
+        ),
     ];
     for (query, status, detail) in refused {
         let (got, problem) = body(open("moon", query).await).await;
@@ -683,5 +717,62 @@ async fn gre_1214_file_content_captures_a_build_snapshot_like_node() {
         fake.calls.lock().unwrap().len(),
         6,
         "every request with a Build opened the file once"
+    );
+}
+
+#[tokio::test]
+async fn ticket_t_23_tls_pin_routes_answer_and_keep_their_budgets() {
+    let (app, fake) = app();
+    let read = |id: &str| tls_pin(State(app.clone()), Path(id.into()));
+    assert_eq!(
+        body(read("moon").await).await,
+        (
+            200,
+            json!({"pinned": true, "sha256_prefix": "ab12cd34ef56", "pinned_at": "2026-11-07T05:00:00.000Z"})
+        )
+    );
+    let (status, problem) = body(read("gone").await).await;
+    assert_eq!(
+        (status, &problem["detail"]),
+        (404, &json!("Integration not found"))
+    );
+    let reset = |id: &str| reset_tls_pin(State(app.clone()), Path(id.into()));
+    assert_eq!(
+        body(reset("moon").await).await,
+        (200, json!({"reset": true}))
+    );
+    for _ in 1..PIN_RESET_LIMIT {
+        assert_eq!(body(reset("moon").await).await.0, 200);
+    }
+    assert_eq!(body(reset("moon").await).await.0, 429);
+    assert_eq!(
+        fake.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.starts_with("reset"))
+            .count(),
+        PIN_RESET_LIMIT as usize,
+        "a throttled reset never reaches storage"
+    );
+}
+
+#[tokio::test]
+async fn ticket_t_23_connection_test_answers_bambu_feature_admission_like_node() {
+    let (app, _) = app();
+    let probe = |id: &str| test(State(app.clone()), Path(id.into()));
+    let (status, problem) = body(probe("bambu-off").await).await;
+    assert_eq!(
+        (status, &problem["detail"], &problem["code"]),
+        (
+            403,
+            &json!("Feature bambu is disabled."),
+            &json!("FEATURE_DISABLED")
+        )
+    );
+    let (status, problem) = body(probe("bambu-bad").await).await;
+    assert_eq!(
+        (status, &problem["code"]),
+        (500, &json!("FEATURE_TOGGLES_INVALID"))
     );
 }

@@ -779,19 +779,16 @@ async fn ticket_t_68_cookie_ambiguous_logout_cannot_revoke_session() {
 }
 
 /// One request as the Node child saw it: method, path and headers.
-#[cfg(unix)]
 type Seen = (String, String, Vec<(String, String)>);
 
 /// Stand-in for the Node child. It answers every request with an empty JSON
 /// list, so the gateway's own integration snapshot reads succeed, and logs
 /// each request before answering it.
-#[cfg(unix)]
-fn logging_node(socket: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<Vec<Seen>>> {
-    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+fn logging_node(mut child: pp_compat::FakeChild) -> std::sync::Arc<std::sync::Mutex<Vec<Seen>>> {
     let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = log.clone();
     tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
+        while let Ok(stream) = child.accept().await {
             let seen = seen.clone();
             tokio::spawn(async move {
                 let service = move |request: Request<hyper::body::Incoming>| {
@@ -829,13 +826,12 @@ fn logging_node(socket: &std::path::Path) -> std::sync::Arc<std::sync::Mutex<Vec
 }
 
 /// A gateway whose Node child is `logging_node`, with a desktop session.
-#[cfg(unix)]
 async fn gateway_with_logging_node(
-    socket: &std::path::Path,
+    dir: &std::path::Path,
 ) -> (Gateway, String, std::sync::Arc<std::sync::Mutex<Vec<Seen>>>) {
-    let log = logging_node(socket);
-    let (compat, _publication) =
-        CompatHandle::replaceable(Some(pp_compat::Endpoint::bound_to(socket)));
+    let (endpoint, child) = pp_compat::Endpoint::fake(dir).unwrap();
+    let log = logging_node(child);
+    let (compat, _publication) = CompatHandle::replaceable(Some(endpoint));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut gateway = Gateway::start(
         listener,
@@ -848,12 +844,10 @@ async fn gateway_with_logging_node(
     (gateway, cookie, log)
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_68_forged_trust_headers_never_reach_node() {
     let scratch = tempfile::tempdir().unwrap();
-    let (gateway, cookie, log) =
-        gateway_with_logging_node(&scratch.path().join("compat.sock")).await;
+    let (gateway, cookie, log) = gateway_with_logging_node(scratch.path()).await;
     let origin = gateway.origin().to_owned();
     let session = cookie.split_once('=').unwrap().1.to_owned();
     let forged = request(&origin, "/api/v1/printers")
@@ -921,12 +915,10 @@ async fn ticket_t_68_forged_trust_headers_never_reach_node() {
     gateway.stop().await.unwrap();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn ticket_t_68_keyless_mcp_is_refused_on_loopback_and_never_reaches_node() {
     let scratch = tempfile::tempdir().unwrap();
-    let (gateway, cookie, log) =
-        gateway_with_logging_node(&scratch.path().join("compat.sock")).await;
+    let (gateway, cookie, log) = gateway_with_logging_node(scratch.path()).await;
     let origin = gateway.origin().to_owned();
     let mcp = |method: &str, path: &str| {
         request(&origin, path)

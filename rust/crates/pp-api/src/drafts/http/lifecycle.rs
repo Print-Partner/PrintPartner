@@ -2,12 +2,13 @@
 use super::*;
 use pp_storage::{
     plan_publication::{ApplyRequest, PublicationCommand},
-    required_units::{DraftIdentity, Workspace},
+    required_units::{DomainCode, DraftIdentity, Workspace},
     working_drafts::{
         RebaseArgs, RebaseOutcome, RebaseRequest, RebaseWorkspaceOutcome, RecomputeOutcome,
         RecomputeRequest, RecomputeWorkspaceOutcome,
-        autosave::{AutosaveCommand, AutosaveOutcome},
+        autosave::{AutosaveCommand, AutosaveOutcome, DraftAutosaved},
         header::{HeaderCommand, HeaderOutcome, HeaderRefusal},
+        restore::{RestoreCommand, RestoreOutcome, RestoreRefusal, RestoreSnapshotRequest},
         save::Refusal as SaveRefusal,
     },
 };
@@ -324,10 +325,19 @@ impl Accept {
             AcceptOutcome::AcceptedBaselineRequired => conflict("accepted_baseline_required", None),
             AcceptOutcome::InputsChanged => conflict("inputs_changed", None),
             AcceptOutcome::IdempotencyConflict => conflict("idempotency_conflict", None),
-            AcceptOutcome::DuplicateBuildName { name } => refusal(
+            AcceptOutcome::DuplicateBuildName { name } => {
+                crate::problem::duplicate_build_name(&name)
+            }
+            AcceptOutcome::DuplicateOrder {
+                order_number,
+                builds,
+            } => refusal(
                 StatusCode::CONFLICT,
-                "duplicate_build_name",
-                [("name", json!(name))],
+                "duplicate_order",
+                [
+                    ("order_number", json!(order_number)),
+                    ("builds", json!(builds)),
+                ],
             ),
             AcceptOutcome::BuildArchived => domain_error("build_archived"),
             AcceptOutcome::TokenAllocationFailed => domain_error("token_allocation_failed"),
@@ -414,10 +424,9 @@ pub(super) async fn autosave(
     };
     let work = move |client: &WorkingDraftClient, flag, wait| client.autosave(command, flag, wait);
     match run_write(&app, work).await {
-        Ok(AutosaveOutcome::Saved { receipt, workspace }) => json_response(
-            StatusCode::OK,
-            json!({"receipt": receipt, "workspace": workspace}),
-        ),
+        Ok(AutosaveOutcome::Saved { receipt, workspace }) => {
+            json_response(StatusCode::OK, DraftAutosaved { receipt, workspace })
+        }
         Ok(AutosaveOutcome::Refused { reason }) => present_autosave(reason),
         Err(error) => write_failure(error, "autosave", profile, None),
     }
@@ -444,11 +453,7 @@ pub(super) async fn save_header(
     match run_write(&app, work).await {
         Ok(HeaderOutcome::Saved(saved)) => json_response(StatusCode::OK, saved),
         Ok(HeaderOutcome::Refused { reason }) => match reason {
-            HeaderRefusal::Invalid { field, detail } => refusal(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_header",
-                [("field", json!(field)), ("reason", json!(detail))],
-            ),
+            HeaderRefusal::Invalid { field, detail } => invalid_header(field, detail),
             HeaderRefusal::HeaderChanged { current } => refusal(
                 StatusCode::CONFLICT,
                 "header_changed",
@@ -458,6 +463,72 @@ pub(super) async fn save_header(
         },
         Err(error) => write_failure(error, "draft header", profile, None),
     }
+}
+
+/// Restore a Plan snapshot as a draft (GRE-1094):
+/// `POST /plans/{id}/snapshots/{snapshot_id}/restore` with a
+/// `RestoreSnapshotRequest` and an `Idempotency-Key`. Answers the restored
+/// draft's workspace, selected as a recomputed draft's is. Only Accept
+/// publishes it.
+pub(super) async fn restore(
+    Extension(app): Extension<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((target, key)) = snapshot_target(uri.path()).zip(idempotency_key(&headers)) else {
+        return invalid_request();
+    };
+    let request = match typed_body::<RestoreSnapshotRequest>(&body) {
+        Ok(request) => request,
+        Err(response) => return *response,
+    };
+    let Ok(command) = RestoreCommand::new(presented.into_credential(), target, request, key) else {
+        return invalid_request();
+    };
+    let work =
+        move |client: &WorkingDraftClient, flag, wait| client.restore_snapshot(command, flag, wait);
+    match run_write(&app, work).await {
+        Ok(RestoreOutcome::Restored(outcome)) => present_edit(outcome),
+        Ok(RestoreOutcome::Refused { reason }) => match reason {
+            RestoreRefusal::Draft(reason) => present_autosave(reason),
+            RestoreRefusal::SnapshotNotFound => coded(
+                StatusCode::NOT_FOUND,
+                "Snapshot not found",
+                "snapshot_not_found",
+            ),
+            RestoreRefusal::NotRestorable => conflict("snapshot_not_restorable", None),
+            RestoreRefusal::RequiredUnitSetUnavailable => {
+                present_edit(WorkspaceOutcome::DomainError {
+                    code: DomainCode::RequiredUnitSetUnavailable,
+                })
+            }
+            RestoreRefusal::HeaderInvalid { field, detail } => invalid_header(field, detail),
+            RestoreRefusal::PrintedUnitsAffected { tokens } => refusal(
+                StatusCode::CONFLICT,
+                "printed_units_affected",
+                [("tokens", json!(tokens))],
+            ),
+        },
+        Err(error) => write_failure(error, "snapshot restore", target.0, None),
+    }
+}
+
+fn invalid_header(field: &str, detail: &str) -> Response {
+    refusal(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_header",
+        [("field", json!(field)), ("reason", json!(detail))],
+    )
+}
+
+/// The Plan and snapshot of `/plans/{id}/snapshots/{snapshot_id}/restore`,
+/// at the root or under `/api/v2`.
+fn snapshot_target(path: &str) -> Option<(PositiveId, PositiveId)> {
+    let path = path.strip_prefix("/api/v2").unwrap_or(path);
+    let (profile, rest) = path.strip_prefix("/plans/")?.split_once("/snapshots/")?;
+    Some((path_id(profile)?, path_id(rest.strip_suffix("/restore")?)?))
 }
 
 fn present_autosave(reason: SaveRefusal) -> Response {

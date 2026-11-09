@@ -43,7 +43,7 @@ Any agent or person can take over Print Partner Desktop work: Capy, Factory Droi
 | Plan | Notion "Print Partner: execution plan v17.1". Phases P1 to P7, in order. |
 | Live status | Notion "Execution status (live)". One row per lane with its PRs, tickets, and next step, plus a Landed list with shas and a "Needs Chad" list. |
 | Execution record | Linear, team GRE, project "Print Partner Desktop (Rust core)". The newest **Handoff** comment on a ticket says where its work stands. |
-| Code | GitHub `poitee/printpartner`. All work in progress is on a pushed branch or an open PR. |
+| Code | GitHub `Print-Partner/PrintPartner`. All work in progress is on a pushed branch or an open PR. |
 
 The Notion page [Agent handoff: how to take over any lane](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5) holds the operating rules and Chad's decisions, newest first. Read it before you take over. [Sources of truth](contributing.md#sources-of-truth) says which page wins when they disagree. If it disagrees with this page or the code, stop and ask, as for a [task brief](#start-from-a-task-brief).
 
@@ -83,6 +83,8 @@ python3 -m venv "${TMPDIR:-/tmp}/pp-dev-venv"
 "${TMPDIR:-/tmp}/pp-dev-venv/bin/pip" install -r requirements-dev.txt
 PATH="${TMPDIR:-/tmp}/pp-dev-venv/bin:$PATH" python3 scripts/local-ci.py --only local-ci-self-test,python-lint --fail-on-skip
 ```
+
+Before you push, a normal PR runs `just ci --fast` and lists that command and its summary under Evidence. A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full `just ci`. [Run the required checks with one command](ci.md#run-the-required-checks-with-one-command) says what `--fast` leaves out.
 
 A full local CI run exits 0 even when steps print SKIP, because a tool or platform is missing. A SKIP is not a pass. List each one under Evidence. For steps that must run on your machine, add `--fail-on-skip`:
 

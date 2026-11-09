@@ -3,8 +3,8 @@
 //! expose their cached statuses to the authenticated `pp-api` status route and
 //! farm reads. No adapter writes: monitoring never changes Checkoff or
 //! dispatches a send.
-use crate::printer_host::StoredPrinterHosts;
-use anyhow::Result;
+use crate::{printer_host::StoredPrinterHosts, send_worker::QueueTargets};
+use anyhow::{Context, Result};
 use axum::Router;
 use pp_api::{
     accepted::AcceptedHttpConfig,
@@ -13,6 +13,7 @@ use pp_api::{
     printer_host::printer_host_router,
     printer_status::{PrinterStatusPort, StatusLookup, printer_status_router},
     printer_stream::{HEARTBEAT, PrinterStream, printer_stream_router},
+    send_queue::send_queue_router,
 };
 use pp_gateway::printer_host::HostReads;
 use pp_gateway::{
@@ -28,6 +29,7 @@ use pp_storage::{
             iso_time, read_settings,
         },
     },
+    send_queue::writes::SendQueueClient,
 };
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::RecvError;
@@ -119,15 +121,16 @@ impl FarmObservations for WatchedFarm {
         if !watched(&integration.kind) {
             return Observation::NotWatched;
         }
-        let Some(observations) = self.0.observations() else {
-            return Observation::Unavailable;
-        };
-        observe(
-            &observations,
-            &integration.id,
-            observations.latest(&integration.id),
-        )
+        observed(&self.0, &integration.id)
     }
+}
+
+/// What the watchers last observed for integration `id`.
+pub(crate) fn observed(status: &MoonrakerStatus, id: &str) -> Observation {
+    let Some(observations) = status.observations() else {
+        return Observation::Unavailable;
+    };
+    observe(&observations, id, observations.latest(id))
 }
 
 /// Whether the status watchers poll this kind of integration.
@@ -248,10 +251,15 @@ pub struct StatusRoutes {
     stream_config: AcceptedHttpConfig,
     settings: SettingsClient,
     reads: HostReads,
+    send_config: AcceptedHttpConfig,
+    send_queue: SendQueueClient,
+    exports: std::path::PathBuf,
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl StatusRoutes {
-    pub fn new(owner: &WriterOwner, origin: &str) -> Result<Self> {
+    /// `wake` is the send worker's: each dispatch wakes it.
+    pub fn new(owner: &WriterOwner, origin: &str, wake: Arc<tokio::sync::Notify>) -> Result<Self> {
         let tenant = crate::rebuild_api::DESKTOP_TENANT;
         let policy = crate::rebuild_api::desktop_policy();
         Ok(Self {
@@ -262,6 +270,14 @@ impl StatusRoutes {
             stream_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
             settings: owner.client(),
             reads: HostReads::new()?,
+            send_config: AcceptedHttpConfig::from_startup(origin, tenant, Some("1"))?,
+            send_queue: owner.send_queue(policy)?,
+            exports: owner
+                .lease()
+                .context("Storage lease unavailable")?
+                .data_dir()
+                .join("exports"),
+            wake,
         })
     }
 
@@ -271,6 +287,12 @@ impl StatusRoutes {
         let settings = self.settings;
         let hosts = StoredPrinterHosts::new(settings.clone(), self.reads);
         let snapshots = settings.print_file_snapshots();
+        let targets = QueueTargets {
+            settings: settings.clone(),
+            exports: self.exports,
+            status: status.clone(),
+            wake: self.wake,
+        };
         status.spawn_observer(move |observations, cancelled| {
             produce(settings, producer, observations, cancelled)
         });
@@ -291,6 +313,11 @@ impl StatusRoutes {
             Arc::new(WatchedFarm(status)),
         ))
         .merge(printer_stream_router(self.stream_config, self.farm, stream))
+        .merge(send_queue_router(
+            self.send_config,
+            self.send_queue,
+            Arc::new(targets),
+        ))
     }
 }
 

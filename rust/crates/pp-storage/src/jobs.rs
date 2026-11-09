@@ -203,6 +203,13 @@ pub enum WorkerOperation {
         result: Box<CompletedResult>,
     },
     Fail,
+    /// The printer definitely refused the admitted printer upload, so nothing
+    /// printed: the effect is denied and the job fails with the reason.
+    #[cfg(feature = "desktop_rebuild")]
+    DenyEffect(String),
+    /// Fails a job that admitted no effect, with the reason the user sees.
+    #[cfg(feature = "desktop_rebuild")]
+    FailWith(String),
 }
 /// A damaged document is retained for inspection and repair, never executed.
 #[derive(Debug)]
@@ -1852,6 +1859,68 @@ fn close_unresolved_upload(
     }
     save(tx, &mut job, event)
 }
+/// A worker's failure reason as the job keeps it: at most 500 characters.
+#[cfg(feature = "desktop_rebuild")]
+fn bounded_reason(reason: &str) -> String {
+    let reason = reason.trim();
+    match reason.char_indices().nth(500) {
+        Some((end, _)) => reason[..end].to_owned(),
+        None if reason.is_empty() => "Upload failed".into(),
+        None => reason.to_owned(),
+    }
+}
+/// Node's `createPrinterCheckoffLink` after a successful printer upload: a
+/// Build-bound send gets a watching Checkoff link in the job's transaction,
+/// and the public result names it.
+#[cfg(feature = "desktop_rebuild")]
+fn link_printer_upload(
+    tx: &Transaction<'_>,
+    job: &JobRecord,
+    result: &mut PrinterUploadResult,
+) -> Result<()> {
+    let Payload::PrinterUpload {
+        profile_id: Some(profile_id),
+        checkoff_units,
+        unlabeled_names,
+        ..
+    } = &job.payload
+    else {
+        return Ok(());
+    };
+    let link = crate::checkoff_progress::link_upload(
+        tx,
+        &job.tenant,
+        &serde_json::json!({
+            "profile_id": profile_id,
+            "integration_id": result.integration_id,
+            "printer_id": result.printer_id,
+            "host_name": result.host_name,
+            "filename": result.filename,
+            "remote_path": result.remote_path,
+            "upload_job_id": job.job_id,
+            "units": checkoff_units,
+            "unlabeled_names": unlabeled_names,
+            "started": result.started,
+        }),
+    )?;
+    if let Some(id) = link {
+        result.checkoff_units = checkoff_units.len() as u64;
+        if let Some(grams) = result.filament_estimate_g
+            && result.checkoff_units > 0
+        {
+            crate::print_grams::record_estimate(
+                tx,
+                &job.tenant,
+                &id,
+                grams,
+                result.checkoff_units,
+                result.filament_grams_per_mm,
+            )?;
+        }
+        result.checkoff_link_id = Some(id);
+    }
+    Ok(())
+}
 #[cfg(feature = "desktop_rebuild")]
 const PRINTED_WITHOUT_RECEIPT: &str = "You reconciled this send: it printed. The printer never confirmed the upload, so this job keeps no result.";
 #[cfg(feature = "desktop_rebuild")]
@@ -1964,6 +2033,20 @@ fn recover_attempt(tx: &Transaction<'_>, mut job: JobRecord, restart: bool) -> R
     #[cfg(feature = "desktop_rebuild")]
     if restart && job.kind == JobKind::PrinterUpload {
         crate::send_queue::interrupted(tx, &job)?;
+    }
+    // A printer upload whose worker lost its lease before any effect never
+    // runs again on its own: only Send now sends it (startup does the same
+    // in `send_queue`).
+    #[cfg(feature = "desktop_rebuild")]
+    if !restart && job.kind == JobKind::PrinterUpload && job.state == PersistentState::Queued {
+        release_printer_upload(
+            tx,
+            &job.tenant,
+            "open",
+            &job.job_id,
+            crate::send_queue::NOT_ADMITTED_ERROR,
+            "attempt_recovered",
+        )?;
     }
     #[cfg(not(feature = "desktop_rebuild"))]
     let _ = restart;
@@ -3397,7 +3480,9 @@ fn advance(
             WorkerOperation::BeginEffect(_)
             | WorkerOperation::ConfirmEffect(_)
             | WorkerOperation::Finish(_)
-            | WorkerOperation::FinishPublic { .. } => {
+            | WorkerOperation::FinishPublic { .. }
+            | WorkerOperation::DenyEffect(_)
+            | WorkerOperation::FailWith(_) => {
                 return Err(anyhow!("Sync operation belongs to its journal owner"));
             }
             WorkerOperation::Heartbeat | WorkerOperation::Progress(_) | WorkerOperation::Fail => {}
@@ -3521,10 +3606,19 @@ fn advance(
                 }
             }
             #[cfg(feature = "desktop_rebuild")]
-            if matches!(_effect_policy, EffectAdmissionPolicy::EnforceFeatures)
-                && intent.operation == EffectOperation::SpoolmanDeduction
-            {
-                require_spoolman(tx, &job)?;
+            if matches!(_effect_policy, EffectAdmissionPolicy::EnforceFeatures) {
+                use pp_domain::features::Feature;
+                match intent.operation {
+                    EffectOperation::SpoolmanDeduction => {
+                        require_feature(tx, &job, Feature::Spoolman)?;
+                    }
+                    EffectOperation::PrinterUpload | EffectOperation::PrinterUploadAndStart
+                        if crate::send_queue::owns(tx, &job)? =>
+                    {
+                        require_feature(tx, &job, Feature::Farm)?;
+                    }
+                    _ => {}
+                }
             }
             job.effects.push(EffectReceipt {
                 intent,
@@ -3561,11 +3655,41 @@ fn advance(
         }
         WorkerOperation::Finish(result) => finish(&mut job, result)?,
         #[cfg(feature = "desktop_rebuild")]
-        WorkerOperation::FinishPublic { artifact, result } => {
+        WorkerOperation::FinishPublic {
+            artifact,
+            mut result,
+        } => {
             ensure!(result.kind() == job.kind, "Completed result kind mismatch");
             let event = finish(&mut job, artifact)?;
+            if let CompletedResult::PrinterUpload(upload) = result.as_mut() {
+                link_printer_upload(tx, &job, upload)?;
+            }
             job.public_result = Some(*result);
             event
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        WorkerOperation::DenyEffect(reason) => {
+            ensure!(
+                job.kind == JobKind::PrinterUpload && job.state == PersistentState::EffectAdmitted,
+                "No admitted printer effect"
+            );
+            job.effects
+                .last_mut()
+                .ok_or_else(|| anyhow!("No effect intent"))?
+                .deny()?;
+            job.state = PersistentState::Failed;
+            job.recovery = Some(bounded_reason(&reason));
+            "effect_denied"
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        WorkerOperation::FailWith(reason) => {
+            ensure!(
+                job.effects.is_empty() && job.state == PersistentState::Running,
+                "Job admitted an effect"
+            );
+            job.state = PersistentState::Failed;
+            job.recovery = Some(bounded_reason(&reason));
+            "failed"
         }
         WorkerOperation::Fail => {
             if job.state == PersistentState::EffectAdmitted {
@@ -3701,22 +3825,30 @@ fn refuse_advance(
 }
 
 #[cfg(feature = "desktop_rebuild")]
-fn require_spoolman(tx: &Transaction<'_>, job: &JobRecord) -> Result<()> {
+/// `feature` is on for the printer upload's Plan, or for the user when it
+/// has none: Spoolman for a deduction, Farm for a send.
+fn require_feature(
+    tx: &Transaction<'_>,
+    job: &JobRecord,
+    feature: pp_domain::features::Feature,
+) -> Result<()> {
     use pp_domain::{PositiveId, features::Feature};
 
     let Payload::PrinterUpload { profile_id, .. } = &job.payload else {
-        return Err(anyhow!("Spoolman deduction requires printer upload"));
+        return Err(anyhow!("Feature admission requires printer upload"));
     };
     let plan = profile_id
         .map(PositiveId::new)
         .transpose()
         .map_err(anyhow::Error::msg)?;
-    let view = crate::features::resolve_for_tenant(tx, &job.tenant, plan)?;
+    let view = if feature == Feature::Farm {
+        crate::features::resolve_for_send(tx, &job.tenant, plan)?
+    } else {
+        crate::features::resolve_for_tenant(tx, &job.tenant, plan)?
+    };
     ensure!(
-        view.effective().enabled(Feature::Spoolman),
-        JobFailure::FeatureDisabled {
-            feature: Feature::Spoolman
-        }
+        view.effective().enabled(feature),
+        JobFailure::FeatureDisabled { feature }
     );
     Ok(())
 }

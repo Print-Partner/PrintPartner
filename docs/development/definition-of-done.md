@@ -6,11 +6,12 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 1. **One job per PR.** Keep the diff under about 1,500 lines, or about 600 for a Mission PR. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
 2. **Unslopped.** Run the unslop pass on code, comments and docs before review. Remove filler comments, dead code and speculative abstractions.
-3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. The coordinator's scorer run passes the [merge gate](#merge-gate).
+3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. A sensitive PR, or a head whose `review-gate` passed only through the coordinator record, also passes the coordinator's scorer run under the [merge gate](#merge-gate).
 4. **Docs in the same PR.** When the PR changes behavior, setup or an interface, update the matching page under `docs/` in the same PR.
 
 ## Review and merge policy
 
+- Review depth (re-scope, 2026-11-08). A normal PR needs a passing `review-gate` (Droid, the Claude code and security reviews, or the coordinator record) and green required checks. The second-vendor scorer applies to sensitive PRs and to heads whose `review-gate` passed only through the coordinator record; see [Merge gate](#merge-gate).
 - P0 and P1 findings block the merge. Fix them in the PR.
 - A P2 that affects real user data, security, or causes a crash becomes a bug ticket in its chunk.
 - Every other P2 and all P3s go on the post-parity polish list (GRE-974) or in a PR comment. Do not create a ticket for them.
@@ -21,7 +22,7 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 Every PR starts its description with `Fixes GRE-xxx` and closes its ticket when it merges. Don't write `Refs GRE-xxx`.
 
-When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The scorer checks that the quotes match the parent's unmet items. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
+When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The coordinator checks that the quotes match the parent's unmet items before it merges; when the scorer runs on that head, it checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
 
 ## Ticket states
 
@@ -35,10 +36,10 @@ The coordinator merges a PR only when all of these hold on the same head commit:
 
 1. **Exact head.** Every check, review, and score below is on the PR's current head SHA.
 2. **Required checks** are green, including `review-gate`.
-3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)`, which is advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list.
+3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)` and `rust (windows)`, which are advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list. Windows work is deferred until after cutover (re-scope, 2026-11-08), and the owner removed `rust (windows)` from the required checks on 2026-11-08.
 4. **All review threads** are resolved.
-5. **Scorer.** The coordinator runs its own scorer on that head. The seat is from a different vendor than the PR's author, and the score is strictly above 8.
-6. **Sensitive PRs** that touch schema or migrations, auth, backup, Accept, or secrets need a score of 9 or more from each of two seats.
+5. **Scorer, sensitive PRs and marker-only heads.** For a PR that item 6 names, and for any head whose `review-gate` passed only through the coordinator record, the coordinator runs its own scorer on that head from a seat whose vendor differs from the PR's author. A marker-only head passes with a score strictly above 8; a sensitive PR needs item 6. Other PRs, whose gate passed on a Claude or Droid review, need no scorer run (re-scope, 2026-11-08).
+6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths (CI workflows, `.github/zizmor.yml`, the safety guard, `.factory/` and `.claude/`; see [Code review](#code-review)) need a score of 9 or more from each of two seats.
 7. **Command.** `gh pr merge <number> --squash --match-head-commit <sha>`, with the full 40-character head SHA. Never `--admin` or `--auto`.
 
 Scorer seats, in order. Use the first available seat whose vendor differs from the author's:
@@ -47,7 +48,7 @@ Scorer seats, in order. Use the first available seat whose vendor differs from t
 2. Cursor `grok-4.7`.
 3. Pi `halo/qwen38-flash`.
 
-`post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; the gate is the coordinator's own scorer run on the exact head.
+`post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR or a marker-only head, the gate is the coordinator's own scorer run on the exact head.
 
 ## Code review
 
@@ -59,7 +60,7 @@ The required `review-gate` check (`.github/workflows/review-gate.yml`) passes on
 
 Every push or edit of the PR starts a new `review-gate` run. It waits up to 30 minutes for the head's Claude jobs, then fails unless one of these holds for the head. `.github/workflows/review-gate-rerun.yml` reruns the gate when a Droid or Claude review run finishes and when the owner creates, edits, or deletes a marker comment. A rerun repeats the default branch's gate, so a fork workflow that borrows a review workflow's name can trigger a rerun but cannot make it pass. If the check stays red after a review finished, rerun the `review-gate` job from the PR's Checks tab.
 
-The gate runs on `pull_request_target`, so GitHub runs the default branch's copy of `review-gate.yml`, never the PR's. The job reads the GitHub API only, with read permissions and no secrets, and never checks out or runs PR code. It applies these checks before any path counts:
+On a PR, the gate runs on `pull_request_target`, so GitHub runs the default branch's copy of `review-gate.yml`, never the PR's. On a merge group it only confirms that every PR in the group passed this PR check on its current head ([Merge queue](ci.md#merge-queue)). The job reads the GitHub API only, with read permissions and no secrets, and never checks out or runs PR code. It applies these checks before any path counts:
 
 - **Result origin.** A `droid-review` or Claude result counts only when its check suite comes from the GitHub Actions app, from the expected workflow path, on `pull_request`, and GitHub ran the default branch's copy of that file. The workflow run must also belong to this PR: this PR targets the default branch, the run's `pull_requests` list names this PR, and every PR it names targets the default branch. A run from another PR with the same head SHA but another base, which runs that base's copy of the workflow, never counts, and neither does a run with an empty list. That holds when the file's blob at the head equals the default branch's blob, or the PR does not change the file, so the merge commit carries the base's copy.
 - **Same-named checks.** The gate fails when any check run on the head named `review-gate`, `droid-review`, `claude-code-review`, or `claude-security-review` comes from another app, another workflow file, or another event.
@@ -68,7 +69,7 @@ The gate runs on `pull_request_target`, so GitHub runs the default branch's copy
 
 Every reviewer posts findings as review threads, and the ruleset requires every thread to be resolved, whichever path passed the gate. Fix the finding, or reply with the reason it does not apply and resolve the thread.
 
-Remaining risk: a PR can still add a `pull_request` workflow with a job named `review-gate`. The real gate detects that check and fails, but GitHub may still show the spoofed check as passing next to it, and the ruleset matches required checks by name and app. Lanes also push with the owner's account, so the protected-files rule does not stop a lane from editing a workflow. Merges therefore stay with the owner and the coordinator, who score every head under the [merge gate](#merge-gate) and read the `review-gate` run itself. The ruleset does not require code-owner review, so CODEOWNERS only requests the owner's review. A future hardening step is a dedicated GitHub App that posts `review-gate` as its own check run, with the ruleset pinned to that app's `integration_id`, so no workflow job can produce a matching check.
+Remaining risk: a PR can still add a `pull_request` workflow with a job named `review-gate`. The real gate detects that check and fails, but GitHub may still show the spoofed check as passing next to it, and the ruleset matches required checks by name and app. Lanes also push with the owner's account, so the protected-files rule does not stop a lane from editing a workflow. Merges therefore stay with the owner and the coordinator, who read the `review-gate` run and the head's other check runs before every merge. A PR that edits a workflow or the guard counts as sensitive, so its head is scored by two seats under the [merge gate](#merge-gate). The ruleset does not require code-owner review, so CODEOWNERS only requests the owner's review. A future hardening step is a dedicated GitHub App that posts `review-gate` as its own check run, with the ruleset pinned to that app's `integration_id`, so no workflow job can produce a matching check.
 
 ### Factory Droid
 
@@ -104,7 +105,7 @@ The gate counts a marker only when the comment's author is `poitee` (the workflo
 
 Outside the [coordinator worktree](agent-workflow.md#coordinator-merges), the safety guard refuses any command line that names `pp-review-gate` in any case, raw or after decoding JSON and GraphQL escapes, URL encoding, or HTML entities, wherever it appears: in a `gh` comment, a `bash -c` or `python3 -c` script, or an `echo` into a file for later posting. It classifies the `-c` scripts of `sh`, `bash`, `zsh`, and `dash` like top-level commands, and refuses `eval` or `source` of anything that runs `git` or `gh`. It also refuses a comment body it cannot read literally: a variable (`$VAR`, `${...}`), a command substitution (`$(...)` or backticks), an ANSI-C `$'...'` string, stdin, a missing file, a REST `--input` body that is not JSON, or a body file in a command line with other commands.
 
-Remaining risk: the guard cannot see a marker that a program builds at run time, for example from base64 or character codes. The gate accepts only the exact raw marker from the owner account, so such a marker passes only if it is built exactly. That is why merges stay with the owner and the coordinator, who score each head and check who posted its marker.
+Remaining risk: the guard cannot see a marker that a program builds at run time, for example from base64 or character codes. The gate accepts only the exact raw marker from the owner account, so such a marker passes only if it is built exactly. A lane's marker and the coordinator's both come from `poitee`, so the author of a marker proves nothing. That is why a head whose `review-gate` passed only through the coordinator record merges only after the coordinator's own scorer run on that head (item 5 of the [merge gate](#merge-gate)), and merges stay with the owner and the coordinator.
 
 ### Copilot
 
@@ -124,4 +125,4 @@ The owner can also turn on **Automatically request Copilot code review** in the 
 
 ## Evidence
 
-Put verification output under `## Evidence` in the PR body. The `Lint Evidence block` CI check fails when that section is empty and the `Exemption:` line gives no reason. A PR that changes the web UI or desktop app also needs a screenshot or video under Evidence. [Gate evidence](../contributing/gate-evidence.md) describes the check and the desktop capture steps.
+Put verification output under `## Evidence` in the PR body. Before pushing, a normal PR runs `just ci --fast` and lists it under Evidence; a sensitive PR (item 6 of the [merge gate](#merge-gate)) runs the full `just ci` and lists that. List every SKIP line too. The `Lint Evidence block` CI check fails when that section is empty and the `Exemption:` line gives no reason. A PR that changes the web UI or desktop app also needs a screenshot or video under Evidence. [Gate evidence](../contributing/gate-evidence.md) describes the check and the desktop capture steps.

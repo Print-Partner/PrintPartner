@@ -33,6 +33,7 @@ mod preparation;
 #[cfg(test)]
 mod preparation_tests;
 mod rebase;
+pub mod restore;
 pub mod save;
 pub use rebase::{
     Conflict as RebaseConflict, Field as RebaseField, RebaseArgs, RebaseOutcome, RebaseRequest,
@@ -72,6 +73,8 @@ pub enum Request {
     Header {
         draft_id: PositiveId,
     },
+    /// The Build's current header, read before any draft exists (GRE-1120).
+    BuildHeader,
 }
 
 /// The JSON body of Node's draft Part edit route. It accepts what
@@ -315,6 +318,9 @@ pub enum Outcome {
     },
     Header {
         header: header::HeaderView,
+    },
+    BuildHeader {
+        header: header::BuildHeaderView,
     },
     ProfileNotFound,
     DraftNotFound,
@@ -604,6 +610,13 @@ enum Operation {
         key: String,
         observations: Observations,
         reply: mpsc::Sender<Result<header::HeaderOutcome>>,
+    },
+    Restore {
+        snapshot: PositiveId,
+        request: restore::RestoreSnapshotRequest,
+        key: String,
+        observations: Observations,
+        reply: mpsc::Sender<Result<restore::RestoreOutcome>>,
     },
 }
 enum RecomputeReply {
@@ -980,6 +993,7 @@ pub(super) fn execute(connection: &mut Connection, command: Command) -> Result<O
             let Some(draft) = load(draft_id)? else { return Ok(Outcome::DraftNotFound); };
             Outcome::Header { header: header::view(&tx, &tenant, profile, num(&draft.header, "id")?)? }
         }
+        Request::BuildHeader => Outcome::BuildHeader { header: header::build_view(&tx, &tenant, profile)? },
         Request::AcceptPreview { draft_id } => Outcome::AcceptPreview {
             preview: crate::plan_publication::preview::preview(&tx, &tenant, profile, i64::try_from(draft_id.get())?)?,
         },
@@ -1061,6 +1075,28 @@ pub(super) fn write(
                     credential: &credential,
                     policy,
                     profile,
+                    request: &request,
+                    key: &key,
+                    observations: &observations,
+                    cancelled: &cancelled,
+                },
+                admission,
+            ));
+        }
+        Operation::Restore {
+            snapshot,
+            request,
+            key,
+            observations,
+            reply,
+        } => {
+            let _ = reply.send(restore::execute(
+                connection,
+                restore::Args {
+                    credential: &credential,
+                    policy,
+                    profile,
+                    snapshot,
                     request: &request,
                     key: &key,
                     observations: &observations,
@@ -1231,17 +1267,7 @@ fn select_draft(
 ) -> Result<WorkspaceOutcome> {
     let draft_id = draft.identity.draft_id;
     if !draft.ordinary["requiredUnitReconciliation"].is_null() {
-        let read = Command {
-            credential,
-            profile,
-            request: Request::Workspace { draft_id },
-            policy,
-            cancelled: cancelled.clone(),
-        };
-        return match execute(connection, read)? {
-            Outcome::Workspace { workspace } => Ok(WorkspaceOutcome::Ready { workspace }),
-            _ => Err(anyhow!("Selected Plan draft is missing")),
-        };
+        return ready_workspace(connection, credential, policy, profile, cancelled, draft_id);
     }
     auto_select(
         connection,
@@ -1252,6 +1278,43 @@ fn select_draft(
         &draft.identity.snapshot_digest,
         cancelled,
     )
+}
+/// Abandons every open draft of Build `profile`, for recompute and restore,
+/// and returns their IDs in order. Each stays rebasable.
+fn abandon_open(tx: &Transaction<'_>, tenant: &str, profile: i64) -> Result<Vec<i64>> {
+    let open: Vec<i64> = tx
+        .prepare("SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' ORDER BY id")?
+        .query_map(params![tenant, profile], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    tx.execute(
+        "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE tenant_id=? AND profile_id=? AND state='open'",
+        params![tenant, profile],
+    )?;
+    for &draft in &open {
+        crate::domain_events::draft_changed(tx, tenant, profile, draft)?;
+    }
+    Ok(open)
+}
+/// The draft's workspace as it stands, without selecting.
+fn ready_workspace(
+    connection: &mut Connection,
+    credential: Credential,
+    policy: auth::AuthPolicy,
+    profile: PositiveId,
+    cancelled: &Arc<AtomicBool>,
+    draft_id: PositiveId,
+) -> Result<WorkspaceOutcome> {
+    let read = Command {
+        credential,
+        profile,
+        request: Request::Workspace { draft_id },
+        policy,
+        cancelled: cancelled.clone(),
+    };
+    match execute(connection, read)? {
+        Outcome::Workspace { workspace } => Ok(WorkspaceOutcome::Ready { workspace }),
+        _ => Err(anyhow!("Selected Plan draft is missing")),
+    }
 }
 /// Node's `autoReconcile` for an unselected draft: a selection with no
 /// decisions, keyed by the snapshot digest.
@@ -1597,24 +1660,14 @@ fn recompute(
             prepared.digest =
                 model::planning(&prepared.base, &prepared.capture.inputs, &prepared.parts)?;
         }
-        let open: Vec<i64> = tx
-            .prepare("SELECT id FROM plan_drafts WHERE tenant_id=? AND profile_id=? AND state='open' ORDER BY id")?
-            .query_map(params![tenant, profile], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        tx.execute(
-            "UPDATE plan_drafts SET state='abandoned',lifecycle_version=lifecycle_version+1 WHERE tenant_id=? AND profile_id=? AND state='open'",
-            params![tenant, profile],
-        )?;
-        for &draft in &open {
-            crate::domain_events::draft_changed(tx, &tenant, profile, draft)?;
-        }
+        let open = abandon_open(tx, &tenant, profile)?;
         let id = insert_snapshot(
             tx,
             &tenant,
             &actor,
             profile,
             key,
-            &prepared,
+            prepared.rows(),
             open.last().copied().map_or(Origin::New, Origin::Draft),
         )?;
         let created = draft(tx, &tenant, profile, id)?
@@ -1804,12 +1857,24 @@ fn carry_open_edits(
     Ok(changed)
 }
 
-/// The draft a new draft row comes from. Every origin but `New` carries that
-/// draft's header row forward.
+/// Where a new draft row comes from. `Draft` and `Rebased` carry that
+/// draft's header row forward; `Snapshot` writes the header the Plan
+/// snapshot saved.
+#[derive(Clone, Copy)]
 enum Origin<'a> {
     New,
     Draft(i64),
     Rebased(&'a rebase::Source<'a>),
+    Snapshot(Option<&'a header::BuildHeader>),
+}
+
+/// The rows a new draft holds: its Accepted base, inputs and Parts, and their
+/// planning digest.
+struct DraftRows<'a> {
+    base: &'a Value,
+    inputs: &'a [Value],
+    parts: &'a [DraftPart],
+    digest: &'a str,
 }
 
 fn insert_snapshot(
@@ -1818,11 +1883,11 @@ fn insert_snapshot(
     actor: &str,
     profile: i64,
     key: &str,
-    prepared: &preparation::PreparedDraftSnapshot,
+    prepared: DraftRows<'_>,
     origin: Origin<'_>,
 ) -> Result<i64> {
     let (rebased_from, header_from) = match origin {
-        Origin::New => (None, None),
+        Origin::New | Origin::Snapshot(_) => (None, None),
         Origin::Draft(id) => (None, Some(id)),
         Origin::Rebased(source) => (Some(source), Some(source.id)),
     };
@@ -1832,7 +1897,7 @@ fn insert_snapshot(
             tenant,
             profile,
             sql_scalar(&prepared.base["baseRevisionId"])?,
-            num(&prepared.base, "basePlanVersion")?,
+            num(prepared.base, "basePlanVersion")?,
             prepared.digest,
             actor,
             key,
@@ -1847,7 +1912,10 @@ fn insert_snapshot(
     if let Some(from) = header_from {
         header::carry(tx, tenant, from, id)?;
     }
-    for input in &prepared.capture.inputs {
+    if let Origin::Snapshot(Some(saved)) = origin {
+        header::write(tx, tenant, id, saved, 1)?;
+    }
+    for input in prepared.inputs {
         let mut values = vec![tenant.to_owned().into(), id.into()];
         for field in model::INPUT_FIELDS {
             values.push(sql_scalar(&input[*field])?);
@@ -1858,7 +1926,7 @@ fn insert_snapshot(
         )?;
     }
     let fields = [vec!["baseRevisionPartId"], model::PART_FIELDS.to_vec()].concat();
-    for part in &prepared.parts {
+    for part in prepared.parts {
         let mut values = vec![tenant.to_owned().into(), id.into()];
         values.extend(
             part.sql_fields(&fields)?
@@ -1909,6 +1977,9 @@ impl Outcome {
                 ),
             },
             Self::Header { header } => ("header", Some("header"), serde_json::to_vec(&header)?),
+            Self::BuildHeader { header } => {
+                ("build_header", Some("header"), serde_json::to_vec(&header)?)
+            }
             Self::ProfileNotFound => ("profile_not_found", None, Vec::new()),
             Self::DraftNotFound => ("draft_not_found", None, Vec::new()),
         };

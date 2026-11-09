@@ -6,7 +6,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Purpose
 
-- Verifies the measured release, frontend and backend, against the embedded bundle manifest once during core startup (`verify_bundle`). Before each child restart the supervisor rechecks only the backend files (`release::verify_backend`).
+- Verifies the measured release, frontend and backend, against the embedded bundle manifest once during core startup (`verify_bundle`). A Rust-only start runs no Node child and calls `verify_rust_only_release` instead: identity, frontend and community manifests only. Before each child restart the supervisor rechecks only the backend files (`release::verify_backend`).
 - Spawns, watches, restarts with backoff, crash-guards, and stops the Node child (`Supervisor`).
 - Forwards HTTP to the child over a per-generation private channel with a private key (`Endpoint::forward`).
 - Owns the local log files, the one redaction policy, and the table of Node environment settings.
@@ -24,7 +24,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | `Supervisor::start`, `start_with_config`, `disarm_restarts`, `shutdown` | Child lifecycle. `SpawnSpec` and `SupervisorConfig` configure it; `shutdown` returns `CompatExit`. |
 | `CompatHandle` | Clonable handle: `status` (`watch` of `Status`), `endpoint()`, `recover()` after the crash guard trips. |
 | `Endpoint` | `forward`, `rate_limit_bucket`, `bound_to`. |
-| `Bundle`, `MeasuredBundle`, `verify_bundle` | Release identity and the proof that its files match the manifest. |
+| `Bundle`, `MeasuredBundle`, `verify_bundle`, `verify_rust_only_release` | Release identity and the proof that its files match the manifest. |
 | `drain` | Process-group stop helpers: `drive_shutdown_group`, `reap_process_group`, `SIGTERM_GRACE`. On Windows the group is the child's Job Object. |
 | `redact` | `Scrubber`, `scrub`, `REDACTED`: the scrub policy for logs, the Logs view, and opt-in Sentry. |
 | `settings` | `ENVIRONMENT` maps each Node env name to an `Owner`; `fixed_env`. |
@@ -48,6 +48,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Unit tests in `src/lib.rs`, `src/logs.rs`, `src/redact.rs`, `src/release.rs`, `src/settings.rs`, `src/account_pin.rs`, and `src/ticket_t_2.rs` (with `src/tests/built_startup.rs`). Node fixtures are in `src/fixtures/` and `tests/fixtures/`. Child tests use `PP_TEST_NODE`, else `node`.
 - `tests/ticket_t_10_draftreads_bundle.rs`: `Bundle::community_manifests_dir`. `tests/ticket_t_11_packaging.rs`: runs `rust/scripts/precompress-spa.py`. `tests/installed_bundle_lifecycle.rs`: macOS only.
 - `tests/process-group-cleanup.md` records why one drain fixture runs in its own process.
+- `Endpoint::fake` gives other crates' tests an endpoint with no child process and a `FakeChild` that answers in Node's place: it accepts on a Unix socket, or on Windows dials the core's named pipe and keeps one dial queued, as Node does.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-compat

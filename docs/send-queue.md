@@ -5,9 +5,10 @@ table. Node keeps them as one JSON array in each tenant's `printer.send_queue`
 setting. This page covers the storage half: the table, how Rust reads a queue
 Node left behind, and when the items move. It is compiled only with the
 default-off `desktop_rebuild` feature, and only the Rust-only launcher
-(`PP_DESKTOP_REBUILD=1` or `true`) opens the writer that moves them. The send
-routes and the upload worker are GRE-365 itself; no Rust code sends to a
-printer yet; the queue's storage writes are below.
+(`PP_DESKTOP_REBUILD=1` or `true`) opens the writer that moves them. The
+storage writes come first below; the send routes and the upload worker that
+sends to printers (GRE-365) follow in [Routes](#routes-gre-365) and
+[Upload worker](#upload-worker-gre-365-gre-1215).
 
 ## Schema 44
 
@@ -107,7 +108,7 @@ write commits.
 | `Reconcile` | The user's answer for an item whose last send has an unknown outcome; see below. Otherwise 409 `This item has no send with an unknown printer outcome`. |
 | `Remove` | A `queued` or `error` item becomes `cancelled`; otherwise 409 `Item not cancellable`. |
 | `Missing` | A `queued` or `error` item whose staged file is gone becomes `error` with Node's `Artifact file missing on disk`. |
-| `Get`, `Ready` | The item, or up to 8 `queued` items in stored order (optionally for one printer), as Node's dispatch and drain read them. |
+| `Get`, `Ready` | The item, or up to 8 `queued` items in stored order (optionally for one printer), as Node's dispatch and drain read them. `Ready` answers the first item's Farm refusal instead, so the drain refuses as a whole. |
 
 An unknown id is 404 `Queue item not found`. A tenant whose queue stayed in
 the legacy setting gets 409 for every request; that queue is only read.
@@ -117,7 +118,12 @@ uploaded-only job makes it `done`; a failed job makes it `error` with the
 job's reason (`Upload failed` when it has none); a cancelled one `Send
 cancelled`; and a job whose printer outcome is unknown makes it `error` with
 the unknown-outcome text. That includes an attempt whose lease expired while
-the process kept running: only startup recovery uses the interrupted text.
+the process kept running: only startup recovery uses the interrupted text. An
+attempt whose lease expired before any effect was admitted is never queued
+again: the job fails, and its item is `error` with `NOT_ADMITTED_ERROR`
+("The send did not start because storage could not admit it. Nothing was sent
+to the printer. Send now sends it."), so the upload never starts minutes later
+without a user action.
 
 ## Unknown outcomes
 
@@ -159,10 +165,114 @@ A receipt kept from an attempt whose authority was refused counts as
 confirmed when the user says it printed. Otherwise the receipt is moved into
 the reconciliation record, which keeps it as evidence.
 
-The upload worker and the HTTP routes come in the next change.
+## Routes (GRE-365)
+
+`pp_api::send_queue` serves the user actions in the Rust-only runtime, under
+`/api/v2`, behind `PP_DESKTOP_REBUILD` and the accepted gate (loopback, exact
+Host and Origin, and a session or API key). `pp-core` mounts them with the
+status routes. Node's add-to-queue route (`POST /printer-send-queue`, a
+multipart upload) is not ported yet.
+
+| Route | Answer |
+| --- | --- |
+| `POST /printer-send-queue/{id}/dispatch` (Send now) | 200 `{item, job_id}`. Body `{"force": true}` skips the idle check. |
+| `POST /printer-send-queue/drain` (Send ready) | 200 `{results: [{item_id, job_id} or {item_id, error}]}`, or one 403 `FEATURE_DISABLED` / 500 `FEATURE_TOGGLES_INVALID` when Farm refuses a ready item. Optional `printer_id` must be a non-empty string. |
+| `POST /printer-send-queue/{id}/reconcile` | 200 `{item}`. Body `{"printed": true|false, "job_id": "<upload_job_id>"}`; `job_id` may be omitted or null only when the item has no `upload_job_id`. A `job_id` for another send is 409 `send_changed`; a missing or non-boolean `printed`, or a non-string `job_id`, is 400. |
+| `DELETE /printer-send-queue/{id}` (Remove) | 200 `{item}`, and the item's staged directory is deleted. |
+
+Send now checks storage first, so an unknown outcome is always 409
+`send_outcome_unknown`. Storage also requires the Farm feature for the item's
+Plan, or for the user when the Plan is gone, as Node's
+`storedQueueAdmissionProblem` does: 403 `FEATURE_DISABLED` when it is off and
+500 `FEATURE_TOGGLES_INVALID` when the stored toggles cannot be read. Send
+ready checks Farm once over the items it would send, before it sends any, and
+answers that one problem for the whole request instead of a 200 with per-item
+errors, as Node's drain route does. Then Send now checks the printer without
+contacting it:
+
+- the file name must end in `.gcode`, `.bgcode` or `.gco` (400);
+- the staged file must be under `exports` in a `printer-uploads` directory
+  (400 `Invalid artifact path`). A missing file makes the item `error` with
+  `Artifact file missing on disk` and answers 409;
+- the printer must be in the fleet (404) and be linked to an enabled
+  Moonraker or PrusaLink host (400);
+- an item with `wait_for_idle` needs the status watcher's latest state to
+  be idle or complete, unless the request forces it (409 `Printer is printing
+  — wait for Idle or force dispatch`). Moonraker and PrusaLink hosts have
+  watchers here (PrusaLink since GRE-1175); any other kind needs `force`.
+
+Send ready does the same for each queued item it reads (up to 8), sends at
+most one per printer, and skips an item refused with 409. That item stays as
+it is, except an item whose staged file is gone, which becomes `error` as in
+Send now. Any other refusal is listed as `{item_id, error}`.
+
+## Upload worker (GRE-365, GRE-1215)
+
+`pp_core::send_worker::SendWorker` is the only code that uploads to a
+printer, and only `printer-upload` jobs that a dispatch enqueued. It starts
+with the Rust-only runtime. When idle it waits for a dispatch to wake it, or
+30 seconds for an attempt whose lease expired, so it does not poll storage.
+Shutdown lets an upload in flight finish for up
+to the mutation drain bound. For each job it:
+
+1. checks the job's original authority, resolves the host, and reads the
+   staged file (at most 64 MiB);
+2. admits one effect (`printer_upload`, or `printer_upload_and_start`)
+   before any request. Storage admits it only while Farm is still on, so a
+   send whose Farm was turned off after Send now fails with `Feature farm is
+   disabled.` and contacts no printer;
+3. sends once through the Moonraker or PrusaLink driver. An upload-only send
+   never calls `print/start`. A confirmed send finishes the job with the
+   printer, host and remote path, creates the Build's Checkoff link, and
+   deletes the staged directory, as Node does. A failed label read falls back
+   to the printer id and `Printer`, and a link Node would not create is
+   skipped, so a send the printer confirmed always finishes. When the file states the
+   slicer's filament estimate (see below), the job result carries it as
+   `filament_estimate_g` (and `filament_grams_per_mm` when the file states a
+   length too), and the same transaction records both for the link in
+   `print_link_grams` with basis `estimated`, covering the link's Checkoff units. A definite refusal, including
+   a start the printer refused after the upload, denies the effect, so the
+   job fails, the item is `error` with the reason, and the printer is free.
+   An unknown outcome (for example a connection closed with no answer) leaves
+   the job awaiting reconciliation. Nothing is retried.
+
+A job that fails before the effect (unlinked printer, missing or foreign
+file, an authority or effect admission that storage refuses) fails with its
+reason at once and contacts no printer, so its item is `error` and the
+printer is free. Shutdown stops claiming new uploads before the gateway
+drains. A claimed upload that has not started when shutdown begins fails
+with "Print Partner was stopping" and contacts no printer. The worker checks
+before the effect is admitted and again after, denying the admitted effect.
+Status checks before Send now never trim the queue's terminal history. A
+host that is not Moonraker or PrusaLink fails with "Upload is not supported
+for <type>".
+
+## Slicer gram estimate (GRE-1238)
+
+`pp_domain::slicer_grams::estimate` reads the estimate from the bytes the worker
+already read for the upload, before the upload, and contacts nothing:
+
+- text G-code: within the first and last MiB, `; total filament used [g] =`
+  (PrusaSlicer, SuperSlicer), else `; total filament weight [g] :` (OrcaSlicer,
+  BambuStudio), else `; filament used [g] =` with one value per extruder summed;
+- binary G-code (`.bgcode`): the same keys in the uncompressed print metadata
+  block, else the printer metadata block, before the first G-code block.
+
+The length comes from `; total filament length [mm] :` (OrcaSlicer), else
+`; filament used [mm] =` summed. Grams over length is the send's grams per
+millimetre, which the status watcher multiplies by the length the printer
+measures at finish. With several extruders this is one blended factor over
+all filaments. A file with grams but no positive length records the
+estimate with no factor, so the estimate stays after the print.
+
+A file with no such value, a compressed metadata block, a value that is not a
+positive number, or Cura's metres-only comment gives no estimate, and the link
+then has no grams until the print's measured value arrives. A send without
+Checkoff units creates no link and records nothing.
 
 ## Tests
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild -E 'test(ticket_t_26) | test(remapped_queue_rows_match_literal_node_results)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-core --features pp-api/desktop_rebuild,pp-core/desktop_rebuild -E 'test(ticket_t_26)'
 ```

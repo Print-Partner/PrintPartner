@@ -30,16 +30,18 @@ name: Review gate
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]
+  merge_group:
+    types: [checks_requested]
 
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
   review-gate:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
       actions: read
@@ -48,6 +50,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Require a finished review of the head commit
+        if: github.event_name == 'pull_request_target'
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
@@ -274,3 +277,128 @@ jobs:
                     f"claude-security-review is {security}, and no coordinator marker names this head. "
                     "A review from a workflow file this PR changes away from the default branch does not count.")
               sys.exit(1)
+      # On a merge group this step reports review-gate without judging a review again. It finds
+      # the queue entry whose merge commit is the group head, and passes only when every PR at or
+      # ahead of that entry targets the default branch and the latest review-gate run for that PR
+      # into the default branch succeeded on the PR's current head, from this file on
+      # pull_request_target. Any other result, including an entry it cannot find, fails. It reads the API only, checks out
+      # nothing and gets no secrets. The job has no `if`: a skipped required job counts as a pass.
+      - name: Require a passed review-gate on every pull request in the merge group
+        if: github.event_name != 'pull_request_target'
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: |
+          import json, os, re, subprocess, sys, time
+
+          REPO, EVENT, DEFAULT = os.environ["REPO"], os.environ["EVENT_NAME"], os.environ["DEFAULT_BRANCH"]
+          HEAD, HEAD_REF, BASE_REF = (os.environ["GROUP_HEAD_SHA"], os.environ["GROUP_HEAD_REF"],
+                                      os.environ["GROUP_BASE_REF"])
+          ACTIONS_APP = 15368
+          GATE = (".github/workflows/review-gate.yml", "pull_request_target")
+          ENTRIES_LIMIT = 100
+          QUERY = """query($owner: String!, $name: String!, $branch: String!) {
+            repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) {
+              entries(first: 100) { totalCount nodes { position headCommit { oid }
+                pullRequest { number headRefOid baseRefName } } } } } }"""
+          # GitHub may announce the group before the queue lists its entry, so look again for a while.
+          # Waiting only decides when the step judges; a missing entry still fails.
+          FIND_WAIT = int(os.environ.get("PP_GATE_FIND_WAIT_SECONDS", "120"))
+          INTERVAL = int(os.environ.get("PP_GATE_POLL_SECONDS", "15"))
+
+
+          def fail(message):
+              print(f"::error::{message}")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write(f"## Review gate for merge group `{HEAD}`\n\n**Blocked:** {message}\n")
+              sys.exit(1)
+
+
+          def api(*args):
+              result = subprocess.run(["gh", "api", *args], capture_output=True, text=True)
+              if result.returncode != 0:
+                  fail(f"gh api {args[-1]} failed: {result.stderr.strip()[:300]}")
+              return json.loads(result.stdout)
+
+
+          if EVENT != "merge_group":
+              fail(f"review-gate does not judge {EVENT or 'unknown'} events.")
+          if not re.fullmatch(r"[0-9a-f]{40}", HEAD):
+              fail(f"The merge group head {HEAD!r} is not a commit SHA.")
+          if BASE_REF != f"refs/heads/{DEFAULT}":
+              fail(f"The merge group targets {BASE_REF}, not refs/heads/{DEFAULT}.")
+          named = re.fullmatch(rf"refs/heads/gh-readonly-queue/{re.escape(DEFAULT)}/pr-([0-9]+)-[0-9a-f]+", HEAD_REF)
+          if not named:
+              fail(f"The merge group ref {HEAD_REF} is not a merge queue ref for {DEFAULT}.")
+          owner, name = REPO.split("/", 1)
+          started_at = time.monotonic()
+          while True:
+              queue = api("graphql", "-f", f"query={QUERY}", "-f", f"owner={owner}", "-f", f"name={name}",
+                          "-f", f"branch={DEFAULT}")["data"]["repository"]["mergeQueue"] or {}
+              entries = queue.get("entries") or {"totalCount": 0, "nodes": []}
+              if entries["totalCount"] > ENTRIES_LIMIT:
+                  fail(f"The queue holds {entries['totalCount']} entries; the gate reads only {ENTRIES_LIMIT}.")
+              mine = [entry for entry in entries["nodes"] if (entry.get("headCommit") or {}).get("oid") == HEAD]
+              if mine or time.monotonic() - started_at >= FIND_WAIT:
+                  break
+              print(f"Waiting for the queue to list the entry for {HEAD}.", flush=True)
+              time.sleep(INTERVAL)
+          if len(mine) != 1:
+              fail(f"The merge queue for {DEFAULT} lists {len(mine)} entries for {HEAD}, not one.")
+          (entry,) = mine
+          if str((entry.get("pullRequest") or {}).get("number")) != named.group(1):
+              fail(f"The queue entry for {HEAD} is not PR #{named.group(1)}, which its ref names.")
+          # The group's merge commit sits on every entry ahead of it, so all of them are in the group.
+          group = sorted((item for item in entries["nodes"] if item["position"] <= entry["position"]),
+                         key=lambda item: item["position"])
+
+          problems, passed = [], []
+          for item in group:
+              pull = item.get("pullRequest") or {}
+              number, pr_head = pull.get("number"), pull.get("headRefOid") or ""
+              if pull.get("baseRefName") != DEFAULT:
+                  problems.append(f"PR #{number} targets {pull.get('baseRefName')}, not {DEFAULT}.")
+                  continue
+              if not re.fullmatch(r"[0-9a-f]{40}", pr_head):
+                  problems.append(f"PR #{number} has no head commit in the queue.")
+                  continue
+              pages = api("--paginate", "--slurp",
+                          f"repos/{REPO}/commits/{pr_head}/check-runs?check_name=review-gate&filter=all&per_page=100")
+              runs = [run for page in pages for run in page["check_runs"] if run["name"] == "review-gate"]
+              latest, wrong = None, []
+              for run in runs:
+                  found = None
+                  if (run.get("app") or {}).get("id") == ACTIONS_APP:
+                      found = (api(f"repos/{REPO}/actions/runs?check_suite_id={run['check_suite']['id']}")
+                               .get("workflow_runs") or [None])[0]
+                  if not found or (found["path"].split("@")[0], found["event"]) != GATE:
+                      wrong.append(str(run["id"]))
+                      continue
+                  # pull_request_target runs the base branch's copy of this file, so only a run that
+                  # GitHub lists for this PR, with every listed PR into the default branch, ran main's
+                  # gate. A run for another PR with the same head, maybe into a branch whose copy of the
+                  # gate always passes, does not count. Fork PRs list no PR and fail here.
+                  prs = found.get("pull_requests") or []
+                  if not (any(str(pr.get("number")) == str(number) for pr in prs)
+                          and all((pr.get("base") or {}).get("ref") == DEFAULT for pr in prs)):
+                      continue
+                  if latest is None or (run.get("started_at") or "9999") > (latest.get("started_at") or "9999"):
+                      latest = run
+              if wrong:
+                  problems.append(f"PR #{number} head {pr_head} has review-gate check runs {', '.join(wrong)} "
+                                  f"that do not come from {GATE[0]} on {GATE[1]}.")
+              elif latest is None or latest.get("conclusion") != "success":
+                  state = ("missing for this PR into " + DEFAULT if latest is None
+                           else latest.get("conclusion") or latest.get("status"))
+                  problems.append(f"review-gate on PR #{number} head {pr_head} is {state}, not success.")
+              else:
+                  passed.append(f"PR #{number} at {pr_head}")
+          if problems:
+              fail(" ".join(problems))
+          print(f"Passed: review-gate succeeded on the head of {', '.join(passed)} in merge group {HEAD}.")

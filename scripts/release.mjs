@@ -11,8 +11,12 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const RELEASE_REPOSITORY = "poitee/PrintPartner";
-const IMAGE_REPOSITORY = "ghcr.io/poitee/print-partner";
+const RELEASE_REPOSITORY = "Print-Partner/PrintPartner";
+const IMAGE_REPOSITORY = "ghcr.io/print-partner/print-partner";
+// Releases up to 3.3.0 were published here, before the repository moved to the Print-Partner
+// organization. Compose files and docs keep naming it until the next release, which is the
+// first one published at IMAGE_REPOSITORY, and the release plan then moves them over.
+const LEGACY_IMAGE_REPOSITORY = "ghcr.io/poitee/print-partner";
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -192,13 +196,22 @@ export function planRelease({ repoRoot, nextVersion, date }) {
     add(
       composePath,
       composeContents,
-      composeContents.replace(composeExpression, `PRINT_PARTNER_VERSION:-${validatedNextVersion}`),
+      composeContents
+        .replace(composeExpression, `PRINT_PARTNER_VERSION:-${validatedNextVersion}`)
+        .replaceAll(LEGACY_IMAGE_REPOSITORY, IMAGE_REPOSITORY),
     );
   }
 
   for (const path of VERSIONED_DOCS) {
     const contents = read(repoRoot, path);
-    add(path, contents, replaceMarkedVersions(contents, currentVersion, validatedNextVersion, path));
+    add(
+      path,
+      contents,
+      replaceMarkedVersions(contents, currentVersion, validatedNextVersion, path).replaceAll(
+        LEGACY_IMAGE_REPOSITORY,
+        IMAGE_REPOSITORY,
+      ),
+    );
   }
 
   const changelogPath = "CHANGELOG.md";

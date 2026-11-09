@@ -150,6 +150,16 @@ pub(super) struct PreparedDraftSnapshot {
     pub parts: Vec<DraftPart>,
     pub digest: String,
 }
+impl PreparedDraftSnapshot {
+    pub(super) fn rows(&self) -> super::DraftRows<'_> {
+        super::DraftRows {
+            base: &self.base,
+            inputs: &self.capture.inputs,
+            parts: &self.parts,
+            digest: &self.digest,
+        }
+    }
+}
 /// One captured scanner row. `key` is the normalized relative path.
 ///
 /// Only a key ending in `.stl` is a part. Node's `scanRepo` drops every other

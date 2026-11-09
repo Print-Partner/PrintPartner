@@ -436,11 +436,27 @@ fn policy() -> pp_storage::auth::AuthPolicy {
     }
 }
 
+/// Every entry still under `directory`, deepest first.
+fn remaining(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .flat_map(|entry| {
+            let path = entry.path();
+            let mut found = remaining(&path);
+            found.push(path);
+            found
+        })
+        .collect()
+}
+
 struct ReadServer {
     origin: String,
     client: Client,
     owner: pp_storage::WriterOwner,
-    task: tokio::task::JoinHandle<()>,
+    serving: crate::serving::Serving,
     /// Last field: removed only after `owner` has dropped, even on panic.
     directory: crate::scratch::Scratch,
 }
@@ -502,19 +518,11 @@ impl ReadServer {
             Some(hold) => draft_router_with_hold(config, client, auth, hold),
             None => draft_router(config, client, auth),
         };
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
         Self {
             origin,
             client: Client::builder().no_proxy().build().unwrap(),
             owner,
-            task,
+            serving: crate::serving::Serving::start(listener, router),
             directory,
         }
     }
@@ -539,23 +547,44 @@ impl ReadServer {
             )
             .unwrap()
     }
+    /// Stops the server and removes its scratch directory once. Windows refuses
+    /// to delete a file another handle still has open, so a refusal fails the
+    /// test with the OS error and the entries that were left.
     async fn close(self) {
-        self.task.abort();
-        let _ = self.task.await;
-        self.owner.shutdown().unwrap();
+        let directory = self.stopped().await;
+        if let Err(error) = std::fs::remove_dir_all(&*directory) {
+            panic!(
+                "draft server scratch {} was not removed: {error}; left: {:?}",
+                directory.display(),
+                remaining(&directory)
+            );
+        }
     }
     /// Shuts the writer down and serves the same database again.
     async fn restart(self) -> Self {
+        let directory = self.stopped().await;
+        Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
+    }
+    /// Drops the client's pooled connections, stops the server once no
+    /// connection task holds the router, and shuts the writer down. axum's
+    /// graceful shutdown alone returns while a connection task may still hold
+    /// the router and the storage clients it captured, and Windows cannot
+    /// remove a file those clients still hold open.
+    async fn stopped(self) -> crate::scratch::Scratch {
         let Self {
-            task,
+            client,
             owner,
+            mut serving,
             directory,
             ..
         } = self;
-        task.abort();
-        let _ = task.await;
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(10), serving.stop())
+            .await
+            .expect("draft server connections close")
+            .unwrap();
         owner.shutdown().unwrap();
-        Self::serve(directory, Some("true"), "default", None, 8 * 1024 * 1024).await
+        directory
     }
 }
 
@@ -580,7 +609,13 @@ fn media_type(status: u16) -> &'static str {
 
 async fn json_reply(request: reqwest::RequestBuilder, status: u16) -> Value {
     let response = request.send().await.unwrap();
-    assert_eq!(response.status().as_u16(), status);
+    let actual = response.status().as_u16();
+    if actual != status {
+        panic!(
+            "status {actual}, expected {status}: {}",
+            response.text().await.unwrap()
+        );
+    }
     assert_eq!(response.headers()["content-type"], media_type(status));
     crate::problem::without_envelope(response.json().await.unwrap())
 }
@@ -1651,7 +1686,7 @@ async fn present_abandon_matches_node_conflict_shapes() {
 /// A second Plan with the same order number, a printed bracket unit, an
 /// accepted Plate holding that unit, a watched checkoff link, and Spoolman
 /// on with the bracket on spool 7.
-const PREVIEW_SETUP: &str = "
+const PREVIEW_BASE: &str = "
 UPDATE build_profiles SET order_number='#1001' WHERE id=1;
 INSERT INTO build_profiles(id,tenant_id,name,order_number) VALUES(3,'default','Second Build','#1001');
 UPDATE print_progress SET completed=1 WHERE part_id=1 AND unit_index=0;
@@ -1659,15 +1694,28 @@ UPDATE parts SET spoolman_spool_id=7 WHERE id=1;
 INSERT INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles','{\"spoolman\":true}');
 INSERT INTO app_settings(tenant_id,key,value) VALUES('default','printer.checkoff_links',
   '[{\"id\":\"link-1\",\"state\":\"watching\",\"profile_id\":1,\"filename\":\"bracket.3mf\",\"units\":[{\"part_id\":1,\"unit_index\":0}]}]');
+";
+/// [`PREVIEW_BASE`] and a Plate layout on Accepted revision 1.
+fn preview_setup() -> String {
+    format!("{PREVIEW_BASE}{}", plate_setup(1))
+}
+
+/// A Plate layout on Accepted revision `revision` holding the first bracket
+/// unit.
+fn plate_setup(revision: u32) -> String {
+    format!(
+        "
 INSERT INTO accepted_plate_revisions(id,tenant_id,profile_id,plan_revision_id,plan_version,plan_revision_digest,required_unit_mapping_digest,layout_digest,expected_plate_count,expected_unit_count,revision_number,created_at)
-  SELECT 1,'default',1,1,1,r.snapshot_digest,s.mapping_digest,'layout',1,1,1,'2026-08-21T00:00:00.000Z'
-  FROM plan_revisions r JOIN plan_revision_required_unit_sets s ON s.revision_id=r.id WHERE r.id=1;
+  SELECT 1,'default',1,{revision},{revision},r.snapshot_digest,s.mapping_digest,'layout',1,1,1,'2026-08-21T00:00:00.000Z'
+  FROM plan_revisions r JOIN plan_revision_required_unit_sets s ON s.revision_id=r.id WHERE r.id={revision};
 INSERT INTO accepted_plates(tenant_id,revision_id,plate_id,ordinal,printer_id,printer_name,printer_model,bed_width_um,bed_depth_um,bed_height_um,margin_um)
   VALUES('default',1,'plate-a',1,'sim-1','Simulator','sim',256000,256000,256000,5000);
 INSERT INTO accepted_plate_units(tenant_id,revision_id,plate_id,required_unit_token,x_um,y_um,width_um,depth_um,height_um)
   VALUES('default',1,'plate-a','ppu_00000000000000000000000000000001',0,0,1000,1000,1000);
 INSERT INTO accepted_plate_heads(tenant_id,profile_id,current_revision_id) VALUES('default',1,1);
-";
+"
+    )
+}
 const PREVIEW: &str = "/api/v2/plans/1/drafts/2/accept-preview";
 
 /// Every table's rows, sorted, plus the schema.
@@ -1769,7 +1817,7 @@ fn accept(
 
 #[tokio::test]
 async fn accept_preview_lists_changes_and_checks_then_accept_refuses_its_stale_revision() {
-    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &preview_setup()).await;
     let changed = changed_draft(&server).await;
     let preview = json_reply(server.request(Method::GET, PREVIEW), 200).await;
     let digest = changed["draft"]["snapshot_digest"].clone();
@@ -1936,7 +1984,7 @@ async fn accept_preview_refusals_match_accept() {
 
 #[tokio::test]
 async fn accept_preview_writes_nothing() {
-    let server = ReadServer::start_limited(8 * 1024 * 1024, PREVIEW_SETUP).await;
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &preview_setup()).await;
     changed_draft(&server).await;
     let database = || logical_database(&server.sql());
     let (rows, files) = (database(), managed_files(&server.directory));
@@ -2097,6 +2145,7 @@ async fn accept_preview_of_an_unchanged_draft_refuses_exactly_as_accept() {
         [job.to_string()],
     )
     .unwrap();
+    drop(sql);
     let preview = json_reply(server.request(Method::GET, PREVIEW), 409).await;
     assert_eq!(
         preview,
@@ -2205,10 +2254,22 @@ where
     B: rusqlite::types::FromSql,
     C: rusqlite::types::FromSql,
 {
+    rows(server, sql, [], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })
+}
+
+/// Every row of `sql` with `params`, mapped by `map`.
+fn rows<T, C: FromIterator<T>>(
+    server: &ReadServer,
+    sql: &str,
+    params: impl rusqlite::Params,
+    map: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> C {
     let connection = server.sql();
     let mut statement = connection.prepare(sql).unwrap();
     statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_map(params, map)
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap()
@@ -2389,6 +2450,7 @@ async fn reconciliation_under_write_contention_is_transaction_unavailable() {
     );
     assert!(started.elapsed() < Duration::from_secs(30));
     holder.execute_batch("ROLLBACK").unwrap();
+    drop(holder);
     assert!(draft_events(&server).is_empty());
     server.close().await;
 }
@@ -2949,7 +3011,13 @@ async fn ticket_t_61_autosave_refusals_write_nothing() {
 
 #[path = "tests/accept_header.rs"]
 mod accept_header;
+#[path = "tests/gre487_stale_patch.rs"]
+mod gre487_stale_patch;
 #[path = "tests/header.rs"]
 mod header;
 #[path = "tests/mcp_accept.rs"]
 mod mcp_accept;
+#[path = "tests/order_authority.rs"]
+mod order_authority;
+#[path = "tests/restore_as_draft.rs"]
+mod restore_as_draft;

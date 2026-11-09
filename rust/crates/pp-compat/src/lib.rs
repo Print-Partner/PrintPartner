@@ -15,8 +15,7 @@ use unix as platform;
 mod windows;
 #[cfg(windows)]
 use windows as platform;
-#[cfg(windows)]
-mod windows_security;
+
 /// The supervised child process.
 pub use platform::Child;
 use platform::ParentDeathGuard;
@@ -29,7 +28,7 @@ use axum::{
 use hmac::{Hmac, Mac};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
-pub use release::{MeasuredBundle, verify_bundle};
+pub use release::{MeasuredBundle, verify_bundle, verify_rust_only_release};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::{
@@ -122,6 +121,19 @@ pub struct Endpoint {
     connections: Arc<Connections>,
 }
 
+/// The Node child's end of an [`Endpoint::fake`] channel.
+pub struct FakeChild(platform::FakeChild);
+
+/// One connection a [`FakeChild`] accepted.
+pub type FakeStream = platform::FakeStream;
+
+impl FakeChild {
+    /// The next connection the endpoint opens to its child.
+    pub async fn accept(&mut self) -> std::io::Result<FakeStream> {
+        self.0.accept().await
+    }
+}
+
 struct Connections {
     closed: Mutex<bool>,
     tasks: TaskTracker,
@@ -196,8 +208,20 @@ impl Endpoint {
 
     /// Socket endpoint with no child. Tests drop publication while a refresh is blocked on it.
     pub fn bound_to(socket: impl Into<PathBuf>) -> Arc<Self> {
+        Self::without_child(platform::Channel::unbound(socket.into()))
+    }
+
+    /// Endpoint with no child process, for tests. The returned [`FakeChild`]
+    /// stands in for Node on a channel in `dir`: a Unix socket, or a named pipe
+    /// on Windows.
+    pub fn fake(dir: &Path) -> std::io::Result<(Arc<Self>, FakeChild)> {
+        let (channel, child) = platform::fake_channel(dir)?;
+        Ok((Self::without_child(channel), FakeChild(child)))
+    }
+
+    fn without_child(channel: platform::Channel) -> Arc<Self> {
         Arc::new(Self {
-            channel: Arc::new(platform::Channel::unbound(socket.into())),
+            channel: Arc::new(channel),
             generation: "test-generation".into(),
             key: [9; 32],
             connections: Arc::new(Connections::new()),
@@ -519,7 +543,7 @@ impl Process {
             .canonicalize()
             .context("Measured desktop preload unavailable")?;
         let mut root_argument = std::ffi::OsString::from("--pp-desktop-package-root=");
-        root_argument.push(platform::node_path(&package_root));
+        root_argument.push(pp_os::display_path(&package_root));
         let generation = hex::encode(rand::random::<[u8; 16]>());
         let key = rand::random::<[u8; 32]>();
         let endpoint = Arc::new(Endpoint {
@@ -543,7 +567,7 @@ impl Process {
             .arg("--no-global-search-paths")
             .arg("--import")
             .arg(platform::import_specifier(&preload).context("Desktop preload unavailable")?)
-            .arg(platform::node_path(&spec.bundle.entry))
+            .arg(pp_os::display_path(&spec.bundle.entry))
             .arg(root_argument)
             .env_remove("NODE_OPTIONS")
             .env_remove("NODE_PATH")

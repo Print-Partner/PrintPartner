@@ -6,14 +6,11 @@
 //! Part 2 (token 4, excluded) and Part 3 (tokens 5-6).
 use checkoff_apply::apply;
 use checkoff_fixture::Fixture;
-use pp_storage::{
-    auth::Secret,
-    checkoff_progress::{Basis, Request},
-    read_model::{AcceptedRead, Credential},
-};
+use pp_storage::checkoff_progress::{Basis, Request};
 use serde_json::{Value, json};
-use std::{sync::atomic::AtomicBool, time::Duration};
 
+#[path = "common/accepted_basis.rs"]
+mod accepted_basis;
 #[path = "common/checkoff_apply.rs"]
 mod checkoff_apply;
 #[path = "common/checkoff_fixture.rs"]
@@ -31,20 +28,7 @@ fn token(n: u8) -> String {
 
 impl Fixture {
     fn basis(&self, owner: &pp_storage::WriterOwner) -> Basis {
-        let batch = owner
-            .accepted_reads()
-            .unwrap()
-            .read(
-                Credential::Session(Secret::new("required-unit-fixture-secret".into())),
-                &[1],
-                &AtomicBool::new(false),
-                Duration::from_secs(5),
-            )
-            .unwrap();
-        match batch.builds.into_iter().next().unwrap().accepted {
-            AcceptedRead::Ready { snapshot } => Basis::from(&*snapshot),
-            other => panic!("fixture is not ready: {other:?}"),
-        }
+        accepted_basis::basis(owner)
     }
 
     fn progress(&self) -> Vec<String> {

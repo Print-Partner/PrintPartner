@@ -196,15 +196,13 @@ async fn ticket_t_2_unready_node_routes_return_problem_json_and_keep_rust_surfac
 async fn ticket_t_2_status_refresh_unpublish_returns_problem_json() {
     REFRESH_AFTER_PUBLISHED.store(false, Ordering::SeqCst);
     let sock_dir = Scratch::new("pp-t2-refresh-");
-    let sock = sock_dir.join("compat.sock");
-    let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+    let (endpoint, mut child) = pp_compat::Endpoint::fake(&sock_dir).unwrap();
     let (held_tx, held_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
+        let stream = child.accept().await.unwrap();
         let _ = held_tx.send(stream);
     });
-    let (compat, publication) =
-        CompatHandle::replaceable(Some(pp_compat::Endpoint::bound_to(&sock)));
+    let (compat, publication) = CompatHandle::replaceable(Some(endpoint));
     let assets = Assets::create();
     let tcp = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await

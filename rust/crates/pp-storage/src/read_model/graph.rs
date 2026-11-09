@@ -871,7 +871,11 @@ pub(crate) fn read(
                     code: "source_revision",
                     message: "Accepted Plan Source revision is corrupt".into(),
                 })?;
-                root = Some(resolved.to_string_lossy().into_owned());
+                root = Some(
+                    pp_os::display_path(&resolved)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
                 path = Some(repos.join(locator).to_string_lossy().into_owned());
                 synced = sr.os("synced_at")?;
             } else {

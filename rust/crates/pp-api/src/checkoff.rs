@@ -9,6 +9,12 @@
 //! `idempotency_key`, which returns the stored receipt. Admission is
 //! `accepted::Gate`: loopback, exact Host and Origin, and a session or API key.
 //!
+//! `GET /printer-checkoff/verify-batch?idempotency_key=...` answers what that
+//! key settled to without resending the body (GRE-1170): `applied` or
+//! `undone` with the stored receipt, `expired` once the receipt is trimmed,
+//! `unknown` when the retired-key list is full, or 404 `burst_not_found`
+//! when nothing was applied.
+//!
 //! Node's `POST /printer-checkoff/{id}/manual-complete` (GRE-1169) shares it
 //! too: it marks a watching print on a hand-tracked printer finished and
 //! checks nothing off. Node's single-link verify and dismiss stay on Node,
@@ -26,13 +32,19 @@
 //! sets printed and assembled state on a Build's Required units as one burst
 //! with no printer link, and `/bursts/undo` reverses it.
 //!
+//! Build history undo (GRE-1259) shares it:
+//! `POST /plans/{id}/history/{entry_id}/undo` undoes the Checkoff burst a
+//! History entry names through that burst's own undo, with admission as the
+//! History read. Storage resolves the entry, so no undo token reaches the
+//! client.
+//!
 //! Unattributed prints (GRE-1182) share it too:
 //! `POST /printer-checkoff/unattributed/{id}/claim` attributes a print to a
 //! Build and creates its Checkoff link, and `/dismiss` drops it from Match
 //! review. Storage owns both writes; there is no Node fallback.
 
 use crate::{
-    accepted::{AcceptedHttpConfig, Gate, failure, storage_answer},
+    accepted::{AcceptedHttpConfig, Gate, build_id, failure, storage_answer},
     loopback::PresentedCredential,
 };
 use axum::{
@@ -68,7 +80,10 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
             "/printer-checkoff/{id}/manual-complete",
             post(manual_complete),
         )
-        .route("/printer-checkoff/verify-batch", post(verify_batch))
+        .route(
+            "/printer-checkoff/verify-batch",
+            post(verify_batch).get(burst_status),
+        )
         .route("/printer-checkoff/verify-batch/undo", post(undo_batch))
         .route("/farm-log", get(farm_log))
         .route("/farm-log/{id}/undo", post(undo_farm_log_entry))
@@ -80,6 +95,10 @@ pub fn checkoff_router(config: AcceptedHttpConfig, client: ProgressClient) -> Ro
         .route(
             "/plans/{id}/checkoff/bursts/undo",
             post(manual_burst::<true>),
+        )
+        .route(
+            "/plans/{id}/history/{entry_id}/undo",
+            post(undo_history_entry),
         )
         .route(
             "/printer-checkoff/unattributed/{id}/claim",
@@ -112,6 +131,31 @@ async fn verify_batch(
     body: Bytes,
 ) -> Response {
     apply(app, presented, &body, |body| Request::VerifyBatch { body }).await
+}
+
+/// The raw query as a URL, so `query_pairs` decodes it as `history.rs` does.
+fn query_url(query: Option<String>) -> Option<reqwest::Url> {
+    reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default())).ok()
+}
+
+/// `GET /printer-checkoff/verify-batch?idempotency_key=...` (GRE-1170): what
+/// a burst key settled to, for a caller whose response was lost. Reads only.
+async fn burst_status(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let Some(url) = query_url(query) else {
+        return failure(StatusCode::BAD_REQUEST, "Request is invalid");
+    };
+    let mut keys = url
+        .query_pairs()
+        .filter(|(name, _)| name == "idempotency_key")
+        .map(|(_, value)| value.into_owned());
+    let (Some(key), None) = (keys.next(), keys.next()) else {
+        return failure(StatusCode::BAD_REQUEST, "Give idempotency_key exactly once");
+    };
+    run(app, presented, Request::BurstStatus { key }).await
 }
 
 async fn undo_batch(
@@ -198,8 +242,7 @@ async fn farm_log(
     Extension(presented): Extension<PresentedCredential>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    let Ok(url) = reqwest::Url::parse(&format!("http://localhost/?{}", query.unwrap_or_default()))
-    else {
+    let Some(url) = query_url(query) else {
         return failure(StatusCode::BAD_REQUEST, "Request is invalid");
     };
     let (mut cursor, mut limit) = (None, None);
@@ -222,6 +265,27 @@ async fn undo_farm_log_entry(
     Path(id): Path<String>,
 ) -> Response {
     run(app, presented, Request::UndoFarmLogEntry { id }).await
+}
+
+/// A Build id that is not a positive decimal integer still authenticates in
+/// storage, then answers 404 `Profile not found` as the History read does.
+async fn undo_history_entry(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    Path((id, entry_id)): Path<(String, String)>,
+) -> Response {
+    let profile_id = build_id(&id)
+        .and_then(|id| i64::try_from(id.get()).ok())
+        .unwrap_or(0);
+    run(
+        app,
+        presented,
+        Request::UndoHistoryEntry {
+            profile: profile_id,
+            id: entry_id,
+        },
+    )
+    .await
 }
 
 async fn claim_unattributed(

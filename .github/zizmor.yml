@@ -25,5 +25,5 @@ rules:
       # chain-tip-gate.yml keeps its inline install: it checks out any ref, which may predate the action.
       - desktop-e2e.yml:45
       - desktop-webkit.yml:46
-      - rust-cross-os.yml:162
-      - rust-cross-os.yml:374
+      - rust-cross-os.yml:177
+      - rust-cross-os.yml:390

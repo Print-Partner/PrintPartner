@@ -11,6 +11,25 @@ use std::{
     thread::JoinHandle,
 };
 
+/// The request line of one HTTP request head, read up to its blank line.
+/// `None` when the client closed or failed before the head was complete: a
+/// client cancelled after it connected but before it wrote has sent no
+/// request, so the printers neither record nor answer it.
+fn request_line(socket: &mut TcpStream) -> Option<String> {
+    let mut head = Vec::new();
+    let mut bytes = [0; 4096];
+    while !head.windows(4).any(|end| end == b"\r\n\r\n") {
+        match socket.read(&mut bytes) {
+            Ok(0) | Err(_) => return None,
+            Ok(len) => head.extend_from_slice(&bytes[..len]),
+        }
+    }
+    String::from_utf8_lossy(&head)
+        .lines()
+        .next()
+        .map(str::to_owned)
+}
+
 /// Replays `replies` in request order and repeats the last one. A 3xx reply
 /// carries `Location: /moonraker/`.
 pub struct RecordedPrinter {
@@ -36,10 +55,9 @@ impl RecordedPrinter {
                     break;
                 }
                 let Ok(mut socket) = socket else { continue };
-                let mut bytes = [0; 4096];
-                let len = socket.read(&mut bytes).unwrap_or(0);
-                let request = String::from_utf8_lossy(&bytes[..len]);
-                let line = request.lines().next().unwrap_or_default().to_owned();
+                let Some(line) = request_line(&mut socket) else {
+                    continue;
+                };
                 logged.lock().unwrap_or_else(|e| e.into_inner()).push(line);
                 let call = seen.fetch_add(1, Ordering::SeqCst);
                 let (status, body) = replies[call.min(replies.len() - 1)];
@@ -118,10 +136,9 @@ impl RoutedPrinter {
                     break;
                 }
                 let Ok(mut socket) = socket else { continue };
-                let mut bytes = [0; 4096];
-                let len = socket.read(&mut bytes).unwrap_or(0);
-                let request = String::from_utf8_lossy(&bytes[..len]);
-                let line = request.lines().next().unwrap_or_default().to_owned();
+                let Some(line) = request_line(&mut socket) else {
+                    continue;
+                };
                 let target = line.split(' ').nth(1).unwrap_or_default();
                 let (status, body) = routes
                     .iter()

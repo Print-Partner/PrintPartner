@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   gate:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       VITE_PRINT_PARTNER_DESKTOP: '1'

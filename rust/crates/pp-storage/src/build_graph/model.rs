@@ -10,6 +10,8 @@ pub struct ProfileSummary {
     pub freshness: PlanFreshness,
     pub archived_at: Option<String>,
     pub last_used_at: Option<String>,
+    pub customer: Option<String>,
+    pub due_date: Option<String>,
 }
 
 #[derive(Debug, Clone)]

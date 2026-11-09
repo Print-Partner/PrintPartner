@@ -279,6 +279,71 @@ pub fn printer_link(
     })
 }
 
+/// The stored `config` object of the integration with `id` (the first
+/// object with that id, as [`integration`] finds it), for a driver that reads
+/// fields beyond the common ones. `None` when no row has that id.
+pub fn integration_config(
+    client: &SettingsClient,
+    wait: Duration,
+    id: &str,
+) -> Result<Option<Value>> {
+    let items = setting(client, wait, INTEGRATIONS_KEY)?;
+    Ok(items
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.is_object() && item["id"].as_str() == Some(id))
+        })
+        .map(|item| item["config"].clone()))
+}
+
+/// How Node's printer upload labels a send: the fleet printer's `name` and
+/// its linked integration's `name`, each `None` when missing or not a string.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SendLabels {
+    pub printer_name: Option<String>,
+    pub host_name: Option<String>,
+}
+
+/// The labels for fleet printer `printer_id`.
+pub fn send_labels(
+    client: &SettingsClient,
+    wait: Duration,
+    printer_id: &str,
+) -> Result<SendLabels> {
+    let fleet = setting(client, wait, FLEET_KEY)?;
+    let Some(printer) = fleet
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|printer| js_string(&printer["id"]).as_deref() == Some(printer_id))
+    else {
+        return Ok(SendLabels::default());
+    };
+    let name = |value: &Value| {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+    };
+    let integration = js_string(&printer["integration_id"]).map(|id| id.trim().to_owned());
+    let host_name = match integration {
+        Some(id) if !id.is_empty() => setting(client, wait, INTEGRATIONS_KEY)?
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|item| item["id"].as_str() == Some(id.as_str()))
+            .and_then(|item| name(&item["name"])),
+        _ => None,
+    };
+    Ok(SendLabels {
+        printer_name: name(&printer["name"]),
+        host_name,
+    })
+}
+
 fn setting(client: &SettingsClient, wait: Duration, key: &str) -> Result<Value> {
     Ok(match client.reader(wait)?.snapshot(TENANT, key)? {
         SettingSnapshot::Stored { value } => serde_json::from_str(&value).unwrap_or(Value::Null),

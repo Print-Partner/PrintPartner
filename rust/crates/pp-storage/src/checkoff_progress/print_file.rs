@@ -15,6 +15,10 @@
 //! remote path and file name it was captured for, and to a fingerprint of the
 //! printer's linked integration ([`file_source`]), so a changed host
 //! invalidates it.
+//!
+//! [`UploadStore`] is Node's `pendingUploads`: a print file the operator
+//! uploaded from their own computer, classified on arrival and held under an
+//! `upload_token` for 15 minutes for the assignment that follows (GRE-1255).
 
 use super::{
     Assignment, Body, Outcome, Response,
@@ -24,7 +28,8 @@ use super::{
 use crate::read_model::farm::setting_list;
 use anyhow::Result;
 pub use pp_domain::print_file::Classification;
-use pp_domain::print_file::{MAX_CLASSIFIABLE_BYTES, Rejection, classify};
+pub use pp_domain::print_file::MAX_CLASSIFIABLE_BYTES;
+use pp_domain::print_file::{Classified, Rejection, classify};
 use rusqlite::Transaction;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -178,6 +183,17 @@ fn source_field(body: &Value, key: &str, max: usize) -> Option<String> {
 pub enum FileRoute {
     Preview,
     Assign,
+    /// `POST /printer-checkoff/file-assignments/upload`: the suggestion for an
+    /// uploaded file. The body holds the checked `profile_id` and `filename`
+    /// and the raw `object_names` form field.
+    Upload,
+    /// Only authenticates the caller, as Node's `onRequest` hooks do before
+    /// the upload route reads its body. The body is ignored.
+    Admit,
+    /// Node's `observePrinterCheckoffRemoteFile`: re-observe the file at
+    /// `remote_path` on `integration_id` for every active link and record or
+    /// clear its drift. The body holds those two and the `observed` identity.
+    Observe,
 }
 
 /// What the assignment route parses beyond the shared print-file request.
@@ -238,6 +254,18 @@ pub(super) fn run(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> O
             }
             super::assign::assign(tx, tenant, *assignment, repos)
         }
+        Op::Request {
+            body,
+            route: FileRoute::Upload,
+        } => upload(tx, tenant, &body, repos),
+        Op::Request {
+            route: FileRoute::Admit,
+            ..
+        } => Ok(Ok(Response::ok(Body::Suggestion(Box::new(Value::Null))))),
+        Op::Request {
+            body,
+            route: FileRoute::Observe,
+        } => observe(tx, tenant, &body),
         Op::Request { body, route } => request(tx, tenant, &body, route, repos),
     }
 }
@@ -302,14 +330,7 @@ fn request(
             "Import supports at most 500 object names of up to 200 characters; no objects were imported",
         ));
     }
-    let object_names: Vec<String> = names
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(|name| links::js_slice(links::js_trim(name), 200))
-        .filter(|name| !name.is_empty())
-        .take(500)
-        .collect();
+    let object_names = object_names(names.into_iter().flatten());
     let mut parsed = FileRequest {
         profile_id,
         printer,
@@ -322,7 +343,11 @@ fn request(
         assign: None,
     };
     match route {
-        FileRoute::Preview => {
+        FileRoute::Assign => match assign_input(body) {
+            Ok(input) => parsed.assign = Some(input),
+            Err(response) => return refused(response),
+        },
+        _ => {
             match preview(
                 tx,
                 tenant,
@@ -336,10 +361,6 @@ fn request(
                 Err(refusal) => return Ok(Err(refusal)),
             }
         }
-        FileRoute::Assign => match assign_input(body) {
-            Ok(input) => parsed.assign = Some(input),
-            Err(response) => return refused(response),
-        },
     }
     Ok(Ok(Response::ok(Body::FileRequest(Box::new(parsed)))))
 }
@@ -498,6 +519,69 @@ fn printer(
         source: source(&fleet, &integrations, printer_id),
         host_files,
     }))
+}
+
+/// The upload route's form fields in Node's order: `profile_id` as
+/// `Number()` reads it, then the file part, then its name: busboy keeps what
+/// follows the last `/` or `\` unless that is `.` or `..`, and Node trims it. Returns the Build and
+/// file name, or the 400 detail.
+pub fn upload_form(
+    profile_id: &str,
+    has_file: bool,
+    uploaded_name: &str,
+) -> std::result::Result<(i64, String), &'static str> {
+    let profile_id = links::js_integer(Some(&Value::String(profile_id.to_owned())), 1.0)
+        .ok_or("profile_id is required")?;
+    if !has_file {
+        return Err("Attach the print file as the file part");
+    }
+    let path = uploaded_name.replace('\\', "/");
+    let last = path.rsplit('/').next().unwrap_or_default();
+    let name = links::js_trim(if matches!(last, "." | "..") { "" } else { last });
+    if name.is_empty() || js_len(name) > 500 {
+        return Err("filename is required");
+    }
+    let lower = name.to_lowercase();
+    if ![".gcode", ".gco", ".bgcode", ".3mf"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+    {
+        return Err("Choose a .gcode, .gco, .bgcode, or .3mf print file");
+    }
+    Ok((profile_id, name.to_owned()))
+}
+
+/// Node's `parseUploadedObjectNames`: a JSON array's strings, trimmed and cut
+/// to 200, at most 500; anything else is no names.
+fn uploaded_object_names(raw: &str) -> Vec<String> {
+    let Ok(Value::Array(names)) = serde_json::from_str(raw) else {
+        return Vec::new();
+    };
+    object_names(names.iter())
+}
+
+/// The string names, trimmed and cut to 200, without blanks, at most 500.
+fn object_names<'a>(names: impl Iterator<Item = &'a Value>) -> Vec<String> {
+    names
+        .filter_map(Value::as_str)
+        .map(|name| links::js_slice(links::js_trim(name), 200))
+        .filter(|name| !name.is_empty())
+        .take(500)
+        .collect()
+}
+
+/// The suggestion an upload answers with, against the Build's Accepted Plan.
+fn upload(tx: &Transaction<'_>, tenant: &str, body: &Value, repos: &Path) -> Outcome {
+    let profile_id = links::js_integer(body.get("profile_id"), 1.0).unwrap_or_default();
+    let filename = body["filename"].as_str().unwrap_or_default();
+    let names = uploaded_object_names(body["object_names"].as_str().unwrap_or_default());
+    Ok(
+        match preview(tx, tenant, profile_id, &names, filename, repos)? {
+            Ok(Ok(suggestion)) => Ok(Response::ok(Body::Suggestion(Box::new(suggestion)))),
+            Ok(Err(response)) => Ok(response),
+            Err(refusal) => Err(refusal),
+        },
+    )
 }
 
 /// `suggestPrintFileAttribution` against the Build's Accepted Plan, or
@@ -760,12 +844,7 @@ impl Capture {
     pub fn finish(mut self) -> std::result::Result<(), &'static str> {
         let classified =
             classify(&self.bytes).map_err(|_: Rejection| "Printer file could not be inspected")?;
-        let mut identity = match std::mem::take(&mut self.identity) {
-            Value::Object(identity) => identity,
-            _ => serde_json::Map::new(),
-        };
-        identity.insert("size_bytes".into(), json!(classified.size_bytes));
-        identity.insert("sha256".into(), json!(classified.sha256));
+        let identity = identify(std::mem::take(&mut self.identity), &classified);
         let saved = Saved {
             scope: self.scope.clone(),
             source: std::mem::take(&mut self.source),
@@ -791,8 +870,287 @@ impl Drop for Capture {
     }
 }
 
+/// Node's `detectPrinterFileDrift` for an observed file: the strongest
+/// evidence that `recorded` and `observed` differ, or `None`.
+fn drift_reason(recorded: Option<&Value>, observed: &Value) -> Option<&'static str> {
+    let recorded = recorded.filter(|recorded| recorded.is_object())?;
+    let text = |identity: &Value, key: &str| {
+        identity
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let differs = |key: &str| match (text(recorded, key), text(observed, key)) {
+        (Some(recorded), Some(observed)) => recorded != observed,
+        _ => false,
+    };
+    if differs("sha256") {
+        return Some("content");
+    }
+    if differs("provider_revision") {
+        return Some("revision");
+    }
+    if let (Some(recorded), Some(observed)) =
+        (recorded.get("size_bytes"), observed.get("size_bytes"))
+        && links::js_number(recorded) != links::js_number(observed)
+    {
+        return Some("size");
+    }
+    differs("modified_at").then_some("modified")
+}
+
+/// Node's `observePrinterCheckoffRemoteFile`: every watching or
+/// awaiting-verify link on the integration and path whose drift changes is
+/// patched and moved to the end, as `updatePrinterCheckoffLink` moves it.
+fn observe(tx: &Transaction<'_>, tenant: &str, body: &Value) -> Outcome {
+    let now = links::now();
+    let integration = body["integration_id"].as_str().unwrap_or_default();
+    let path = body["remote_path"].as_str().unwrap_or_default();
+    let observed = &body["observed"];
+    let (mut kept, mut patched) = (Vec::new(), Vec::new());
+    for mut link in links::load(tx, tenant, &now)? {
+        let here = matches!(
+            link.get("state").and_then(Value::as_str),
+            Some("watching" | "awaiting_verify")
+        ) && link.get("integration_id").and_then(Value::as_str) == Some(integration)
+            && link.get("remote_path").and_then(Value::as_str) == Some(path);
+        let reason = drift_reason(link.get("remote_identity"), observed);
+        let current = link
+            .get("remote_drift")
+            .and_then(|drift| drift.get("reason"))
+            .and_then(Value::as_str);
+        if !here || reason == current {
+            kept.push(link);
+            continue;
+        }
+        match reason {
+            Some(reason) => {
+                link.insert(
+                    "remote_drift".into(),
+                    json!({ "reason": reason, "detected_at": now }),
+                );
+            }
+            None => {
+                link.remove("remote_drift");
+            }
+        }
+        patched.push(link);
+    }
+    if !patched.is_empty() {
+        kept.extend(patched);
+        links::save_all(tx, tenant, kept)?;
+    }
+    Ok(Ok(Response::ok(Body::Suggestion(Box::new(Value::Null)))))
+}
+
+/// Classify print-file bytes as Node's `classifyPrintFileBytes` does, with
+/// their `size_bytes` and `sha256` added to the `provider` identity, or the
+/// 409 detail for bytes that are not a print file PrintPartner can read.
+pub fn inspect(bytes: &[u8], provider: Value) -> std::result::Result<Inspected, &'static str> {
+    if bytes.len() > MAX_CLASSIFIABLE_BYTES {
+        return Err(TOO_LARGE_TO_INSPECT);
+    }
+    let classified = classify(bytes).map_err(|reason| reason.message())?;
+    Ok(Inspected {
+        identity: Value::Object(identify(provider, &classified)),
+        classification: classified.classification,
+    })
+}
+
+/// The provider's identity keys, then `size_bytes` and `sha256` from the
+/// bytes, in Node's order.
+fn identify(provider: Value, classified: &Classified) -> serde_json::Map<String, Value> {
+    let mut identity = match provider {
+        Value::Object(identity) => identity,
+        _ => serde_json::Map::new(),
+    };
+    identity.insert("size_bytes".into(), json!(classified.size_bytes));
+    identity.insert("sha256".into(), json!(classified.sha256));
+    identity
+}
+
+/// Node's answer for a printer file past `MAX_CLASSIFIABLE_BYTES`.
+pub const TOO_LARGE_TO_INSPECT: &str = "That print file is too large to inspect";
+
+/// Node's `MAX_PRINT_FILE_UPLOAD_BYTES`: the largest print file one upload takes.
+pub const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+/// Everything held at once, two uploads, as Node's `MAX_PENDING_UPLOAD_BYTES`.
+const MAX_HELD_UPLOAD_BYTES: usize = 2 * MAX_UPLOAD_BYTES;
+
+/// Node's answer for an unknown, expired or foreign `upload_token`.
+pub const UPLOAD_GONE: &str = "That upload is no longer available; upload the print file again";
+
+/// Why an upload is not held.
+#[derive(Debug, PartialEq, Eq)]
+pub enum UploadRefusal {
+    /// The bytes are not a print file PrintPartner can read: Node's 409 detail.
+    Rejected(&'static str),
+    /// Holding them would pass what PrintPartner holds at once: Node's 503.
+    Full,
+}
+
+struct Upload {
+    profile_id: i64,
+    size: usize,
+    expires: Instant,
+    inspected: Inspected,
+    /// An assignment holds it; previews still read it.
+    reserved: bool,
+}
+
+#[derive(Default)]
+struct Uploads(HashMap<String, Upload>);
+
+/// Uploaded print files between the upload and the assignment that records
+/// them. Only the inspection is kept, since the bytes classify the same way
+/// every time; their size still counts toward Node's memory cap, so the same
+/// uploads are refused. One store per process.
+#[derive(Default)]
+pub struct UploadStore(Mutex<Uploads>);
+
+impl UploadStore {
+    fn uploads(&self) -> MutexGuard<'_, Uploads> {
+        let mut uploads = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        uploads
+            .0
+            .retain(|_, upload| upload.reserved || upload.expires > now);
+        uploads
+    }
+
+    /// Classify `bytes` and hold the result for `profile_id` under a new
+    /// token, refusing as Node does: unreadable bytes first, then a full store.
+    pub fn hold(
+        &self,
+        profile_id: i64,
+        bytes: &[u8],
+    ) -> std::result::Result<(String, Inspected), UploadRefusal> {
+        let inspected = inspect(bytes, Value::Null).map_err(UploadRefusal::Rejected)?;
+        let mut uploads = self.uploads();
+        let held: usize = uploads.0.values().map(|upload| upload.size).sum();
+        if held + bytes.len() > MAX_HELD_UPLOAD_BYTES {
+            return Err(UploadRefusal::Full);
+        }
+        let token = links::uuid();
+        uploads.0.insert(
+            token.clone(),
+            Upload {
+                profile_id,
+                size: bytes.len(),
+                expires: Instant::now() + TTL,
+                inspected: inspected.clone(),
+                reserved: false,
+            },
+        );
+        Ok((token, inspected))
+    }
+
+    /// The upload held under `token` for `profile_id`, without spending it,
+    /// while an assignment holds it too.
+    pub fn read(&self, token: &str, profile_id: i64) -> Option<Inspected> {
+        let uploads = self.uploads();
+        let upload = uploads.0.get(token)?;
+        (upload.profile_id == profile_id && upload.expires > Instant::now())
+            .then(|| upload.inspected.clone())
+    }
+
+    /// Hold the upload for one assignment, as [`Self::read`] matches it. No
+    /// other assignment can take it until the hold is spent or dropped;
+    /// dropping it releases the upload.
+    pub fn reserve(self: &Arc<Self>, token: &str, profile_id: i64) -> Option<HeldUpload> {
+        let mut uploads = self.uploads();
+        let upload = uploads.0.get_mut(token)?;
+        if upload.profile_id != profile_id || upload.reserved || upload.expires <= Instant::now() {
+            return None;
+        }
+        upload.reserved = true;
+        Some(HeldUpload {
+            store: Arc::clone(self),
+            token: token.to_owned(),
+            inspected: upload.inspected.clone(),
+            spent: false,
+        })
+    }
+}
+
+/// An upload one assignment holds while it records the print.
+pub struct HeldUpload {
+    store: Arc<UploadStore>,
+    token: String,
+    inspected: Inspected,
+    spent: bool,
+}
+
+impl HeldUpload {
+    pub fn inspected(&self) -> Option<&Inspected> {
+        Some(&self.inspected)
+    }
+
+    /// The link now records what the bytes said, so the upload is gone.
+    pub fn spend(mut self) {
+        self.spent = true;
+    }
+}
+
+impl Drop for HeldUpload {
+    fn drop(&mut self) {
+        let mut uploads = self.store.uploads();
+        if self.spent {
+            uploads.0.remove(&self.token);
+        } else if let Some(upload) = uploads.0.get_mut(&self.token) {
+            upload.reserved = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::drift_reason;
+    use serde_json::json;
+
+    /// Node's `detectPrinterFileDrift` order: content, revision, size, then
+    /// modification time, each only when both sides carry it.
+    #[test]
+    fn drift_takes_the_strongest_evidence_both_sides_carry() {
+        let recorded =
+            json!({ "sha256": "a", "provider_revision": "1", "size_bytes": 1, "modified_at": "m" });
+        let cases = [
+            (
+                json!({ "sha256": "b", "provider_revision": "2" }),
+                Some("content"),
+            ),
+            (
+                json!({ "sha256": "", "provider_revision": "2", "size_bytes": 2 }),
+                Some("revision"),
+            ),
+            (
+                json!({ "size_bytes": 2.0, "modified_at": "n" }),
+                Some("size"),
+            ),
+            (
+                json!({ "size_bytes": 1.0, "modified_at": "n" }),
+                Some("modified"),
+            ),
+            (json!({ "sha256": "a", "modified_at": "" }), None),
+        ];
+        for (observed, reason) in cases {
+            assert_eq!(
+                drift_reason(Some(&recorded), &observed),
+                reason,
+                "{observed}"
+            );
+        }
+        assert_eq!(drift_reason(None, &json!({ "sha256": "b" })), None);
+        assert_eq!(
+            drift_reason(Some(&json!(null)), &json!({ "sha256": "b" })),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod snapshot_store_tests {
     use crate::{Limits, WriterOwner, tests::directory};
     use std::sync::Arc;
 

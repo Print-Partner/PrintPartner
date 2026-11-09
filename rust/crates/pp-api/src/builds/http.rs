@@ -118,7 +118,7 @@ pub(super) enum SummaryContract {
 }
 
 impl SummaryContract {
-    fn of(request: &axum::extract::Request) -> Self {
+    pub(super) fn of(request: &axum::extract::Request) -> Self {
         request
             .extensions()
             .get::<Self>()
@@ -129,7 +129,8 @@ impl SummaryContract {
 
 /// Mounts Plan list/detail GET+HEAD, create/delete, layer list/mutate, touch,
 /// kit-manifest ReadKit plus SaveKit (`PUT`), plan-manifest-builder ReadBuilder,
-/// and variant-dimensions GET+HEAD plus variant-selection `POST` (GRE-1221) at `/`, `/api/v1`, and `/api/v2` when `PP_DESKTOP_REBUILD` was exactly `1` or
+/// variant-dimensions GET+HEAD plus variant-selection `POST` (GRE-1221), and
+/// Plan features GET+PATCH plus decision append `POST` (GRE-1243) at `/`, `/api/v1`, and `/api/v2` when `PP_DESKTOP_REBUILD` was exactly `1` or
 /// `true`. Otherwise mounts nothing. Jobs stay unregistered. `/api/v1` answers
 /// with the legacy Plan summary (see [`SummaryContract`]).
 pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router {
@@ -144,7 +145,11 @@ pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router
     };
     let routes = Router::new()
         .route("/plans", get(list).post(create))
-        .route("/plans/{id}", get(detail).delete(remove))
+        .route(
+            "/plans/{id}",
+            get(detail).delete(remove).patch(super::header::update),
+        )
+        .route("/plans/{id}/archive", post(super::header::archive))
         .route("/plans/{id}/layers", get(list_layers).post(attach_addon))
         .route("/plans/{id}/layers/base", put(set_base))
         .route(
@@ -164,7 +169,12 @@ pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router
         .route(
             "/plans/{id}/variant-selection",
             post(super::variants::select),
-        );
+        )
+        .route(
+            "/plans/{id}/features",
+            get(super::features::read).patch(super::features::patch),
+        )
+        .route("/plans/{id}/decisions", post(super::decisions::append));
     Router::new()
         .merge(routes.clone())
         .nest(
@@ -453,6 +463,8 @@ pub(super) struct Received {
     pub(super) path: String,
     pub(super) contract: SummaryContract,
     pub(super) json: bool,
+    /// Fastify reads a `text/plain` body as a string, never as JSON.
+    pub(super) text: bool,
     pub(super) bytes: axum::body::Bytes,
 }
 
@@ -468,12 +480,14 @@ pub(super) async fn receive(
     };
     let path = request.uri().path().to_owned();
     let contract = SummaryContract::of(&request);
-    let json = request
+    let media = request
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
-        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+        .map(str::trim);
+    let json = media.is_some_and(|media| media.eq_ignore_ascii_case("application/json"));
+    let text = media.is_some_and(|media| media.eq_ignore_ascii_case("text/plain"));
     let Ok(bytes) = to_bytes(request.into_body(), app.body_limit()).await else {
         return Err(Box::new(failure(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -485,6 +499,7 @@ pub(super) async fn receive(
         path,
         contract,
         json,
+        text,
         bytes,
     })
 }
@@ -509,8 +524,23 @@ pub(super) async fn unknown_build(app: App, request: axum::extract::Request) -> 
 
 /// [`unknown_build`] once the request is read.
 pub(super) async fn missing_build(app: App, presented: PresentedCredential) -> Response {
+    refuse_after_auth(
+        app,
+        presented,
+        failure(StatusCode::NOT_FOUND, "Profile not found"),
+    )
+    .await
+}
+
+/// `refusal` once the credential is proven, as Node's auth hook answers
+/// before its route reads the request.
+pub(super) async fn refuse_after_auth(
+    app: App,
+    presented: PresentedCredential,
+    refusal: Response,
+) -> Response {
     match outcome(app, presented, BuildCommand::List).await {
-        Ok(_) => failure(StatusCode::NOT_FOUND, "Profile not found"),
+        Ok(_) => refusal,
         Err(response) => *response,
     }
 }
@@ -601,6 +631,26 @@ fn present(
             let profiles: Vec<_> = profiles.into_iter().filter_map(Result::ok).collect();
             json_response(StatusCode::OK, &json!(ProfileList { profiles }), head)
         }
+        BuildOutcome::RenameTaken { name } => crate::problem::duplicate_build_name(&name),
+        BuildOutcome::NameRequired => failure(StatusCode::BAD_REQUEST, "Profile name is required"),
+        BuildOutcome::FeatureDisabled => crate::problem::coded(
+            StatusCode::FORBIDDEN,
+            "Feature orders is disabled.",
+            "FEATURE_DISABLED",
+        ),
+        BuildOutcome::Uncoercible { archive: true } => {
+            failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        }
+        BuildOutcome::Uncoercible { archive: false } => failure(
+            StatusCode::BAD_REQUEST,
+            "Cannot convert object to primitive value",
+        ),
+        BuildOutcome::FeatureTogglesInvalid => crate::problem::coded(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Stored feature toggles are invalid.",
+            "FEATURE_TOGGLES_INVALID",
+        ),
+        BuildOutcome::ArchiveRefused(refusal) => super::header::archive_refused(refusal),
         BuildOutcome::Read { profile: value } | BuildOutcome::Touched { profile: value } => {
             match summary(*value) {
                 Ok(body) => json_response(StatusCode::OK, &body, head),
@@ -631,6 +681,8 @@ fn present(
         }
         BuildOutcome::Manifest(outcome) => super::manifest_options::present(method, outcome),
         BuildOutcome::Variants(outcome) => super::variants::present(method, outcome),
+        BuildOutcome::PlanFeatures(outcome) => super::features::present(outcome),
+        BuildOutcome::Decision(outcome) => super::decisions::present(outcome),
         BuildOutcome::MissingBuild => failure(StatusCode::NOT_FOUND, "Profile not found"),
         BuildOutcome::InvalidBaseSource => failure(StatusCode::BAD_REQUEST, "Project not found"),
         BuildOutcome::MissingSource => failure(StatusCode::NOT_FOUND, "Project not found"),
@@ -660,7 +712,7 @@ fn present(
 /// Why the legacy v1 contract cannot present a Plan whose accepted progress
 /// is unavailable.
 #[derive(Debug, PartialEq, Eq)]
-enum Refusal {
+pub(super) enum Refusal {
     Integrity,
     CompatibilityDirty,
     Uninitialized,
@@ -670,7 +722,7 @@ enum Refusal {
 }
 
 impl Refusal {
-    fn response(self) -> Response {
+    pub(super) fn response(self) -> Response {
         match self {
             Self::Integrity => failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -868,6 +920,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: None,
+            customer: None,
+            due_date: None,
         });
         assert_eq!(summary.id, 7);
         assert!(matches!(
@@ -912,6 +966,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: Some("used".into()),
+            customer: Some("Acme".into()),
+            due_date: Some("2026-12-01".into()),
         }))
         .unwrap();
         assert_eq!(wire["build_stale"], true);
@@ -955,6 +1011,8 @@ mod tests {
             },
             archived_at: None,
             last_used_at: None,
+            customer: None,
+            due_date: None,
         }
     }
 

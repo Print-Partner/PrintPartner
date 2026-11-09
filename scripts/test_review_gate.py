@@ -111,8 +111,9 @@ class ReviewGateStepTests(unittest.TestCase):
         gh = bin_dir / "gh"
         gh.write_text(f"#!{sys.executable}\n{FAKE_GH}")
         gh.chmod(0o755)
-        (step,) = load("review-gate.yml")["jobs"]["review-gate"]["steps"]
+        step = load("review-gate.yml")["jobs"]["review-gate"]["steps"][0]
         self.assertEqual(step["shell"], "python")
+        self.assertEqual(step["if"], "github.event_name == 'pull_request_target'")
         self.script, self.env = step["run"], dict(step["env"])
         self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
@@ -379,6 +380,229 @@ class ReviewGateStepTests(unittest.TestCase):
             self.assertIn(row, summary)
 
 
+
+GROUP_HEAD = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+HEAD_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+GATE_SUITE, GATE_PR_SUITE, GATE_GROUP_SUITE, EVIL_SUITE = 1, 4, 10, 9
+GATE_PR6_SUITE, OTHER_BASE_SUITE, MIXED_BASE_SUITE, NO_PR_SUITE, OTHER_PR_SUITE = 21, 22, 23, 24, 25
+GATE = ".github/workflows/review-gate.yml"
+INTO_MAIN = [{"number": 7, "base": {"ref": "main"}}]
+# Check suite id -> (workflow path, event, pull requests the Actions run lists).
+GROUP_SUITES = {GATE_SUITE: (GATE, "pull_request_target", INTO_MAIN),
+                GATE_PR_SUITE: (GATE, "pull_request", INTO_MAIN),
+                GATE_GROUP_SUITE: (GATE, "merge_group", []),
+                EVIL_SUITE: (".github/workflows/evil.yml", "merge_group", []),
+                GATE_PR6_SUITE: (GATE, "pull_request_target", [{"number": 6, "base": {"ref": "main"}}]),
+                # Same head, but a PR into another branch, whose copy of the gate GitHub ran.
+                OTHER_BASE_SUITE: (GATE, "pull_request_target", [{"number": 9, "base": {"ref": "x"}}]),
+                MIXED_BASE_SUITE: (GATE, "pull_request_target", INTO_MAIN + [{"number": 9, "base": {"ref": "x"}}]),
+                NO_PR_SUITE: (GATE, "pull_request_target", []),
+                OTHER_PR_SUITE: (GATE, "pull_request_target", [{"number": 8, "base": {"ref": "main"}}])}
+
+FAKE_GROUP_GH = r"""
+import json, os, sys
+from urllib.parse import parse_qs, urlsplit
+state = json.load(open(os.environ["FAKE_GH_STATE"]))
+args = sys.argv[1:]
+if args[:2] == ["api", "graphql"]:
+    fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
+    assert "mergeQueue(branch: $branch)" in fields["query"], fields["query"]
+    assert (fields["owner"], fields["name"], fields["branch"]) == ("o", "r", "main"), fields
+    counter = os.environ["FAKE_GH_STATE"] + ".q"
+    calls = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(calls + 1))
+    seq = state["queue_seq"]
+    queue = seq[min(calls, len(seq) - 1)]
+    print(json.dumps({"data": {"repository": {"mergeQueue": queue}}}))
+    sys.exit(0)
+url = urlsplit([arg for arg in args if not arg.startswith("-")][1])
+query, path = parse_qs(url.query), url.path
+if "/commits/" in path and path.endswith("/check-runs") and "--slurp" in args:
+    assert query["check_name"] == ["review-gate"] and query["filter"] == ["all"], query
+    checks = state["checks"].get(path.split("/commits/")[1].split("/")[0], [])
+    if isinstance(checks, str):
+        sys.exit(checks)
+    print(json.dumps([{"check_runs": checks}]))
+elif path.endswith("/actions/runs") and "--slurp" not in args:
+    suite = state["suites"].get(query["check_suite_id"][0])
+    print(json.dumps({"workflow_runs": [{"path": suite[0], "event": suite[1], "pull_requests": suite[2]}] if suite else []}))
+else:
+    sys.exit(f"unexpected gh call: {sys.argv}")
+"""
+
+
+def entry(position, number, head, group_head=None, base="main"):
+    return {"position": position, "headCommit": {"oid": group_head} if group_head else None,
+            "pullRequest": {"number": number, "headRefOid": head, "baseRefName": base}}
+
+
+def queue(*entries, total=None):
+    return {"entries": {"totalCount": len(entries) if total is None else total, "nodes": list(entries)}}
+
+
+def gate_run(conclusion="success", suite=GATE_SUITE, started="2026-11-08T15:00:00Z", app=15368):
+    return {**run("review-gate", conclusion, suite=suite, app=app, started=started)}
+
+
+class MergeGroupGateTests(unittest.TestCase):
+    """Run the merge-group step of review-gate.yml against a fake gh."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        bin_dir = self.folder / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(f"#!{sys.executable}\n{FAKE_GROUP_GH}")
+        gh.chmod(0o755)
+        step = load("review-gate.yml")["jobs"]["review-gate"]["steps"][1]
+        self.assertEqual(step["shell"], "python")
+        self.assertEqual(step["env"], {
+            "GH_TOKEN": "${{ github.token }}", "REPO": "${{ github.repository }}",
+            "EVENT_NAME": "${{ github.event_name }}",
+            "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+            "GROUP_HEAD_SHA": "${{ github.event.merge_group.head_sha }}",
+            "GROUP_HEAD_REF": "${{ github.event.merge_group.head_ref }}",
+            "GROUP_BASE_REF": "${{ github.event.merge_group.base_ref }}"})
+        self.script = step["run"]
+        self.path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+
+    def gate(self, queue_seq, checks, event="merge_group", head=GROUP_HEAD, base_ref="refs/heads/main",
+             head_ref=f"refs/heads/gh-readonly-queue/main/pr-7-{'1' * 40}", wait="0"):
+        state = self.folder / "state.json"
+        Path(str(state) + ".q").unlink(missing_ok=True)
+        state.write_text(json.dumps({"queue_seq": queue_seq, "checks": checks,
+                                     "suites": {str(key): value for key, value in GROUP_SUITES.items()}}))
+        script = self.folder / "group.py"
+        script.write_text(self.script)
+        env = {"PATH": self.path, "FAKE_GH_STATE": str(state), "GH_TOKEN": "x", "REPO": "o/r",
+               "EVENT_NAME": event, "DEFAULT_BRANCH": "main", "GROUP_HEAD_SHA": head, "GROUP_HEAD_REF": head_ref,
+               "GROUP_BASE_REF": base_ref, "PP_GATE_FIND_WAIT_SECONDS": wait, "PP_GATE_POLL_SECONDS": "0",
+               "GITHUB_STEP_SUMMARY": str(self.folder / "summary.md")}
+        result = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True, check=False)
+        self.assertNotIn("unexpected gh call", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        return result
+
+    def assertPasses(self, *args, **kwargs):
+        result = self.gate(*args, **kwargs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def assertFails(self, reason, *args, **kwargs):
+        result = self.gate(*args, **kwargs)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(reason, result.stdout)
+        self.assertNotIn("Passed", result.stdout)
+        self.assertIn("**Blocked:**", (self.folder / "summary.md").read_text())
+        return result
+
+    def test_a_group_whose_pr_passed_review_gate_on_its_head_passes(self):
+        result = self.assertPasses([queue(entry(1, 7, HEAD, GROUP_HEAD))], {HEAD: [gate_run()]})
+        self.assertIn(f"Passed: review-gate succeeded on the head of PR #7 at {HEAD} in merge group {GROUP_HEAD}.",
+                      result.stdout)
+
+    def test_every_pr_ahead_in_the_queue_must_have_passed(self):
+        ahead = entry(1, 6, HEAD_B, "c" * 40)
+        mine = entry(2, 7, HEAD, GROUP_HEAD)
+        behind = entry(3, 8, OLD, "d" * 40)
+        # PR 8 is behind this group, so its missing review does not count here.
+        passed = gate_run(suite=GATE_PR6_SUITE)
+        result = self.assertPasses([queue(ahead, mine, behind)], {HEAD: [gate_run()], HEAD_B: [passed]})
+        self.assertIn(f"PR #6 at {HEAD_B}, PR #7 at {HEAD}", result.stdout)
+        self.assertFails(f"review-gate on PR #6 head {HEAD_B} is missing", [queue(ahead, mine)], {HEAD: [gate_run()]})
+        self.assertFails(f"review-gate on PR #6 head {HEAD_B} is failure", [queue(ahead, mine)],
+                         {HEAD: [gate_run()], HEAD_B: [gate_run("failure", suite=GATE_PR6_SUITE)]})
+        # PR 7's pass on PR 6's head does not count for PR 6.
+        self.assertFails(f"review-gate on PR #6 head {HEAD_B} is missing", [queue(ahead, mine)],
+                         {HEAD: [gate_run()], HEAD_B: [gate_run()]})
+
+    def test_only_a_run_for_this_pr_into_the_default_branch_counts(self):
+        group = [queue(entry(1, 7, HEAD, GROUP_HEAD))]
+        older, newer = "2026-11-08T15:00:00Z", "2026-11-08T16:00:00Z"
+        for label, suite in {"PR into another branch": OTHER_BASE_SUITE,
+                             "run listing this PR and a PR into another branch": MIXED_BASE_SUITE,
+                             "run listing no PR (fork or merged)": NO_PR_SUITE,
+                             "run for another PR into main": OTHER_PR_SUITE}.items():
+            with self.subTest(label):
+                self.assertFails(f"review-gate on PR #7 head {HEAD} is missing for this PR into main", group,
+                                 {HEAD: [gate_run(suite=suite)]})
+                # A newer pass for another PR cannot replace this PR's failure.
+                self.assertFails(f"review-gate on PR #7 head {HEAD} is failure", group,
+                                 {HEAD: [gate_run("failure", started=older), gate_run(suite=suite, started=newer)]})
+                self.assertPasses(group, {HEAD: [gate_run(started=older),
+                                                 gate_run("failure", suite=suite, started=newer)]})
+
+    def test_api_errors_fail_with_a_summary(self):
+        self.assertFails(f"gh api repos/o/r/commits/{HEAD}/check-runs", [queue(entry(1, 7, HEAD, GROUP_HEAD))],
+                         {HEAD: "HTTP 502"})
+
+    def test_the_latest_review_gate_run_on_the_head_decides(self):
+        older, newer = "2026-11-08T15:00:00Z", "2026-11-08T16:00:00Z"
+        group = [queue(entry(1, 7, HEAD, GROUP_HEAD))]
+        self.assertFails(f"review-gate on PR #7 head {HEAD} is failure", group,
+                         {HEAD: [gate_run(started=older), gate_run("failure", started=newer)]})
+        self.assertPasses(group, {HEAD: [gate_run("failure", started=older), gate_run(started=newer)]})
+        queued = {**gate_run(None), "status": "queued", "started_at": None}
+        self.assertFails(f"review-gate on PR #7 head {HEAD} is queued", group, {HEAD: [gate_run(), queued]})
+        for conclusion in ("cancelled", "skipped", "neutral", "action_required", None):
+            with self.subTest(conclusion=conclusion):
+                self.assertFails(f"review-gate on PR #7 head {HEAD} is", group, {HEAD: [gate_run(conclusion)]})
+
+    def test_same_named_checks_from_another_workflow_or_event_fail_the_group(self):
+        group = [queue(entry(1, 7, HEAD, GROUP_HEAD))]
+        for label, spoof in {"pull_request run of the gate": gate_run(suite=GATE_PR_SUITE),
+                             "merge_group run of the gate": gate_run(suite=GATE_GROUP_SUITE),
+                             "another workflow file": gate_run(suite=EVIL_SUITE),
+                             "another app": gate_run(app=99),
+                             "suite with no workflow run": gate_run(suite=5)}.items():
+            with self.subTest(label):
+                self.assertFails(f"has review-gate check runs {spoof['id']} that do not come from", group,
+                                 {HEAD: [gate_run(), spoof]})
+                self.assertFails("do not come from", group, {HEAD: [spoof]})
+
+    def test_a_group_the_queue_does_not_list_fails(self):
+        checks = {HEAD: [gate_run()]}
+        self.assertFails(f"lists 0 entries for {GROUP_HEAD}", [None], checks)
+        self.assertFails(f"lists 0 entries for {GROUP_HEAD}", [queue()], checks)
+        self.assertFails(f"lists 0 entries for {GROUP_HEAD}", [queue(entry(1, 7, HEAD, "c" * 40))], checks)
+        self.assertFails(f"lists 0 entries for {GROUP_HEAD}", [queue(entry(1, 7, HEAD))], checks)
+        self.assertFails(f"lists 2 entries for {GROUP_HEAD}",
+                         [queue(entry(1, 7, HEAD, GROUP_HEAD), entry(2, 8, HEAD, GROUP_HEAD))], checks)
+        self.assertFails("the gate reads only 100", [queue(entry(1, 7, HEAD, GROUP_HEAD), total=101)], checks)
+
+    def test_the_step_waits_for_the_queue_to_list_the_entry(self):
+        result = self.assertPasses([queue(), queue(entry(1, 7, HEAD)), queue(entry(1, 7, HEAD, GROUP_HEAD))],
+                                   {HEAD: [gate_run()]}, wait="5")
+        self.assertIn(f"Waiting for the queue to list the entry for {GROUP_HEAD}.", result.stdout)
+
+    def test_the_entry_must_be_the_pr_the_group_ref_names(self):
+        self.assertFails("is not PR #8, which its ref names", [queue(entry(1, 7, HEAD, GROUP_HEAD))],
+                         {HEAD: [gate_run()]}, head_ref=f"refs/heads/gh-readonly-queue/main/pr-8-{'1' * 40}")
+
+    def test_groups_outside_the_default_branch_queue_fail(self):
+        group, checks = [queue(entry(1, 7, HEAD, GROUP_HEAD))], {HEAD: [gate_run()]}
+        self.assertFails("targets refs/heads/release, not refs/heads/main", group, checks,
+                         base_ref="refs/heads/release")
+        for ref in ("refs/heads/gh-readonly-queue/release/pr-7-abc", "refs/heads/main",
+                    "refs/heads/gh-readonly-queue/main/pr-7-abc/extra", "refs/heads/feature/pr-7-abc"):
+            with self.subTest(ref=ref):
+                self.assertFails("is not a merge queue ref for main", group, checks, head_ref=ref)
+        for head in ("", "A" * 40, "a" * 39):
+            with self.subTest(head=head):
+                self.assertFails("is not a commit SHA", group, checks, head=head)
+        self.assertFails(f"PR #7 targets release, not main", [queue(entry(1, 7, HEAD, GROUP_HEAD, base="release"))],
+                         checks)
+        self.assertFails("PR #7 has no head commit in the queue", [queue(entry(1, 7, "", GROUP_HEAD))], checks)
+
+    def test_other_events_fail_instead_of_passing(self):
+        for event in ("push", "pull_request", "workflow_dispatch", ""):
+            with self.subTest(event=event):
+                self.assertFails("review-gate does not judge", [queue(entry(1, 7, HEAD, GROUP_HEAD))],
+                                 {HEAD: [gate_run()]}, event=event)
+
+
 SYMLINK_STEP = (
     "links=$(find . -path ./.git -prune -o -type l -print)\n"
     "if [ -n \"$links\" ]; then\n"
@@ -424,13 +648,20 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
     def test_gate_runs_the_base_branch_definition_without_checkout_or_secrets(self):
         text = (WORKFLOWS / "review-gate.yml").read_text(encoding="utf-8")
         workflow = load("review-gate.yml")
-        self.assertEqual(set(workflow["on"]), {"pull_request_target"})
+        self.assertEqual(set(workflow["on"]), {"pull_request_target", "merge_group"})
         self.assertEqual(workflow["on"]["pull_request_target"]["types"],
                          ["opened", "synchronize", "reopened", "ready_for_review", "edited"])
+        self.assertEqual(workflow["on"]["merge_group"], {"types": ["checks_requested"]})
         job = workflow["jobs"]["review-gate"]
+        # A skipped required job counts as a pass, so only the steps depend on the event.
         self.assertNotIn("if", job)
+        self.assertEqual([step["if"] for step in job["steps"]],
+                         ["github.event_name == 'pull_request_target'", "github.event_name != 'pull_request_target'"])
+        for step in job["steps"]:
+            self.assertEqual(set(step), {"name", "if", "shell", "env", "run"})
+            self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
         group = workflow["concurrency"]
-        self.assertEqual(group["cancel-in-progress"], "true")
+        self.assertEqual(group["cancel-in-progress"], "${{ github.event_name == 'pull_request_target' }}")
         self.assertNotIn("github.run_id", group["group"])
         self.assertNotIn("github.run_attempt", group["group"])
         self.assertNotIn("edited", group["group"])
@@ -460,8 +691,9 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
 
     def test_superseded_gate_and_rerun_runs_collapse_per_pr(self):
         gate = load("review-gate.yml")["concurrency"]
-        self.assertEqual(gate["group"], "${{ github.workflow }}-${{ github.event.pull_request.number }}")
-        self.assertEqual(gate["cancel-in-progress"], "true")
+        # Merge groups have no PR number; github.ref is unique per group and they never cancel each other.
+        self.assertEqual(gate["group"], "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}")
+        self.assertEqual(gate["cancel-in-progress"], "${{ github.event_name == 'pull_request_target' }}")
         rerun = load("review-gate-rerun.yml")
         self.assertNotIn("concurrency", rerun)
         concurrency = rerun["jobs"]["rerun"]["concurrency"]

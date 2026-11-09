@@ -13,9 +13,12 @@
 //! different payload is refused.
 //!
 //! Compiled with `desktop_rebuild`; service callers must check `PP_DESKTOP_REBUILD`.
-use super::save::{Refusal, accepted_base, observed_draft, prepare_new, tenant_actor};
+use super::save::{
+    Refusal, accepted_base, keyed_expectations, observed_draft, prepare_new, tenant_actor,
+};
 use super::*;
 pub use pp_contracts::draft_header::{DraftHeader, SaveDraftHeaderRequest};
+use rusqlite::OptionalExtension as _;
 
 /// A stored Build header: trimmed and checked, as a draft holds it and as
 /// the Build reads.
@@ -267,6 +270,36 @@ pub(crate) fn build_header(
     )?)
 }
 
+/// The Build's header beside its Accepted base: what a client reads before any
+/// draft exists, and names as the base of the draft its first save creates.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub struct BuildHeaderView {
+    pub build: BuildHeader,
+    pub base: crate::required_units::view::DraftBase,
+}
+
+pub(crate) fn build_view(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    profile: i64,
+) -> Result<BuildHeaderView> {
+    let base = tx.query_row(
+        "SELECT accepted_plan_revision_id,accepted_plan_version FROM build_profiles WHERE tenant_id=?1 AND id=?2",
+        params![tenant, profile],
+        |row| {
+            Ok(crate::required_units::view::DraftBase {
+                revision_id: row.get(0)?,
+                plan_version: row.get(1)?,
+            })
+        },
+    )?;
+    Ok(BuildHeaderView {
+        build: build_header(tx, tenant, profile)?,
+        base,
+    })
+}
+
 /// Copies draft `from`'s header row, if it has one, to the new draft `to`
 /// unchanged. Every path that writes a draft from an older one calls this.
 pub(crate) fn carry(tx: &Transaction<'_>, tenant: &str, from: i64, to: i64) -> Result<()> {
@@ -277,7 +310,48 @@ pub(crate) fn carry(tx: &Transaction<'_>, tenant: &str, from: i64, to: i64) -> R
     Ok(())
 }
 
-fn write(
+/// The Build header Plan snapshot `snapshot` saved, if it saved one, checked
+/// as a header save checks it, or the first field that fails. The snapshot
+/// copies the Build's header, where Node stores an unset order number,
+/// customer or due date as empty text, so empty text reads as none.
+pub(crate) fn snapshot(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    snapshot: i64,
+) -> Result<std::result::Result<Option<BuildHeader>, (&'static str, &'static str)>> {
+    let saved = tx
+        .query_row(
+            "SELECT name,order_number,customer,due_date FROM plan_snapshot_headers WHERE tenant_id=?1 AND snapshot_id=?2",
+            params![tenant, snapshot],
+            |row| {
+                Ok(DraftHeader {
+                    name: row.get(0)?,
+                    order_number: row.get(1)?,
+                    customer: row.get(2)?,
+                    due_date: row.get(3)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(mut saved) = saved else {
+        return Ok(Ok(None));
+    };
+    for field in [
+        &mut saved.order_number,
+        &mut saved.customer,
+        &mut saved.due_date,
+    ] {
+        if field
+            .as_deref()
+            .is_some_and(|value| trim_js(value).is_empty())
+        {
+            *field = None;
+        }
+    }
+    Ok(normalized(&saved).map(Some))
+}
+
+pub(super) fn write(
     tx: &Transaction<'_>,
     tenant: &str,
     draft: i64,
@@ -381,17 +455,17 @@ fn transact(
 /// The stored receipt key, the request key's SHA-256, and the digest of
 /// everything the save was asked to do, which tells a changed payload apart.
 fn receipt_key(c: &Args<'_>, profile: i64, actor: &str, header: &BuildHeader) -> (String, String) {
-    use sha2::{Digest as _, Sha256};
-    let key = format!(
-        "{KEY_PREFIX}{}",
-        hex::encode(Sha256::digest(c.key.as_bytes()))
+    let request = &c.request;
+    let (key, base, draft) = keyed_expectations(
+        c.key,
+        &request.expected_base,
+        request.expected_draft.as_ref(),
     );
-    let base = &c.request.expected_base;
-    let draft = c.request.expected_draft.as_ref().map(|d| {
-        json!({"id":d.draft_id(),"snapshotDigest":d.snapshot_digest(),"lifecycleVersion":d.lifecycle_version()})
-    });
-    let payload = json!({"profileId":profile,"actorId":actor,"expectedBase":{"revisionId":base.revision_id(),"planVersion":base.plan_version()},"expectedDraft":draft,"expectedHeaderVersion":c.request.expected_header_version,"header":header});
-    (key, required_units::model::digest(&payload))
+    let payload = json!({"profileId":profile,"actorId":actor,"expectedBase":base,"expectedDraft":draft,"expectedHeaderVersion":request.expected_header_version,"header":header});
+    (
+        format!("{KEY_PREFIX}{key}"),
+        required_units::model::digest(&payload),
+    )
 }
 
 /// The receipt key `key` stored: its draft, payload digest and header.
@@ -489,7 +563,15 @@ fn write_observed(
                     Err(reason) => return Ok(Err(HeaderRefusal::Draft(reason))),
                 };
             budget.check()?;
-            let id = insert_snapshot(tx, tenant, actor, profile, key, &prepared, Origin::New)?;
+            let id = insert_snapshot(
+                tx,
+                tenant,
+                actor,
+                profile,
+                key,
+                prepared.rows(),
+                Origin::New,
+            )?;
             write(tx, tenant, id, &header, 1)?;
             id
         }

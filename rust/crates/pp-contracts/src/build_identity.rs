@@ -44,6 +44,18 @@ pub struct ProfileSummary {
         schemars(with = "crate::RequiredNullable<String>")
     )]
     pub last_used_at: Option<String>,
+    /// The Build header's customer, from `build_profile_details`.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "crate::RequiredNullable<String>")
+    )]
+    pub customer: Option<String>,
+    /// The Build header's due date, `YYYY-MM-DD`.
+    #[cfg_attr(
+        feature = "codegen",
+        schemars(with = "crate::RequiredNullable<String>")
+    )]
+    pub due_date: Option<String>,
 }
 
 #[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]

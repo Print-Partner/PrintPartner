@@ -6,6 +6,10 @@ use crate::{Limits, WriterOwner, schema::SchemaReady, tests::directory};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
+/// Tables that schema steps after 40 add. Dropping them, then stamping an
+/// older version, rewinds a fresh database to that version's shape.
+const LATER_TABLES: &str = "DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS printer_tls_pins; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue;";
+
 fn immutable(path: &Path) -> Connection {
     Connection::open_with_flags(
         crate::sqlite_uri::immutable_uri(path).unwrap(),
@@ -57,7 +61,7 @@ fn assert_reopen_is_noop(directory: &Path) {
     owner.shutdown().unwrap();
     assert_eq!(
         (ready.version, ready.previous_version, ready.backup),
-        (46, 46, None)
+        (47, 47, None)
     );
     assert_eq!(backups(directory), before);
     assert_eq!(live_contents(&directory.join("print-partner.db")), original);
@@ -71,18 +75,18 @@ fn assert_reopen_is_noop(directory: &Path) {
 fn each_upgrade_step_backs_up_its_input_before_writing() {
     let node = include_bytes!("../../tests/fixtures/accepted-plan-node.db");
     let (from34, ready) = upgrade("uploads-from34", node);
-    assert_eq!((ready.version, ready.previous_version), (46, 34));
+    assert_eq!((ready.version, ready.previous_version), (47, 34));
     assert_eq!(
         ready.backup,
-        Some(from34.join("backups/pre-schema34-to-46.db"))
+        Some(from34.join("backups/pre-schema34-to-47.db"))
     );
     let chain = backups(&from34);
     let names: Vec<_> = chain
         .iter()
         .map(|(name, version, _)| (name.clone(), version.clone()))
         .collect();
-    let mut expected = vec![("pre-schema34-to-46.db".to_owned(), "34".to_owned())];
-    expected.extend((38..=46).map(|step| (format!("pre-schema{step}.db"), (step - 1).to_string())));
+    let mut expected = vec![("pre-schema34-to-47.db".to_owned(), "34".to_owned())];
+    expected.extend((38..=47).map(|step| (format!("pre-schema{step}.db"), (step - 1).to_string())));
     assert_eq!(names, expected);
     for (name, version) in [
         ("pre-schema38.db", 37),
@@ -123,7 +127,7 @@ fn each_upgrade_step_backs_up_its_input_before_writing() {
     let schema35 = directory("uploads-schema35");
     std::fs::write(schema35.join("schema37.db"), at37).unwrap();
     let raw = Connection::open(schema35.join("schema37.db")).unwrap();
-    raw.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'")
+    raw.execute_batch(&format!("DROP TABLE plan_apply_admissions; {LATER_TABLES} UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'"))
         .unwrap();
     raw.backup("main", schema35.join("schema35.db"), None)
         .unwrap();
@@ -136,12 +140,12 @@ fn each_upgrade_step_backs_up_its_input_before_writing() {
         ("uploads-from39", at39, 39),
         ("uploads-from40", at40, 40),
     ] {
-        let steps: Vec<u64> = (previous.max(36) + 1..=46).collect();
+        let steps: Vec<u64> = (previous.max(36) + 1..=47).collect();
         let (directory, ready) = upgrade(label, input);
-        assert_eq!((ready.version, ready.previous_version), (46, previous));
+        assert_eq!((ready.version, ready.previous_version), (47, previous));
         // Only the legacy pass to 37 names its copy for the from and to versions.
         let name = |step: u64| match step {
-            37 => format!("pre-schema{previous}-to-46.db"),
+            37 => format!("pre-schema{previous}-to-47.db"),
             _ => format!("pre-schema{step}.db"),
         };
         let first = name(steps[0]);
@@ -163,13 +167,13 @@ fn each_upgrade_step_backs_up_its_input_before_writing() {
 fn restored_database_gets_its_own_legacy_backup() {
     let node = include_bytes!("../../tests/fixtures/accepted-plan-node.db");
     let (directory, ready) = upgrade("uploads-restored", node);
-    let earlier = directory.join("backups/pre-schema34-to-46.db");
+    let earlier = directory.join("backups/pre-schema34-to-47.db");
     assert_eq!(ready.backup.as_ref(), Some(&earlier));
     let kept = std::fs::read(&earlier).unwrap();
     let scratch = directory.join("scratch.db");
     std::fs::copy(directory.join("backups/pre-schema38.db"), &scratch).unwrap();
     let raw = Connection::open(&scratch).unwrap();
-    raw.execute_batch("DROP TABLE plan_apply_admissions; DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'")
+    raw.execute_batch(&format!("DROP TABLE plan_apply_admissions; {LATER_TABLES} UPDATE app_settings SET value='35' WHERE tenant_id='default' AND key='schema_version'"))
         .unwrap();
     raw.backup("main", directory.join("schema35.db"), None)
         .unwrap();
@@ -181,8 +185,8 @@ fn restored_database_gets_its_own_legacy_backup() {
     std::fs::write(directory.join("print-partner.db"), &at35).unwrap();
     let (owner, ready) = WriterOwner::open(&directory, Limits::default()).unwrap();
     owner.shutdown().unwrap();
-    assert_eq!((ready.version, ready.previous_version), (46, 35));
-    let own = directory.join("backups/pre-schema35-to-46.db");
+    assert_eq!((ready.version, ready.previous_version), (47, 35));
+    let own = directory.join("backups/pre-schema35-to-47.db");
     assert_eq!(ready.backup.as_ref(), Some(&own));
     assert!(
         std::fs::read(&own).unwrap() == at35,
@@ -245,7 +249,7 @@ fn fresh_database_installs_schema41_without_backups() {
     owner.shutdown().unwrap();
     assert_eq!(
         (ready.version, ready.previous_version, ready.backup),
-        (46, 0, None)
+        (47, 0, None)
     );
     assert!(!directory.join("backups").exists());
     assert_reopen_is_noop(&directory);
@@ -525,7 +529,7 @@ fn step_refuses_drifted_existing_columns_before_its_stamp() {
         "ALTER TABLE projects ADD COLUMN source_configuration_version INTEGER NOT NULL DEFAULT 1",
     );
     let (directory, ready) = upgrade("uploads-column-kept-open", &input);
-    assert_eq!((ready.version, ready.previous_version), (46, 37));
+    assert_eq!((ready.version, ready.previous_version), (47, 37));
     assert_reopen_is_noop(&directory);
 }
 
@@ -553,7 +557,7 @@ const REVISION: &str = "SELECT tenant_id||':'||source_configuration_version||':'
 fn steps_run_after_the_tenant_repair() {
     let input = schema37_input("uploads-repair", &tenant_mismatch_with_provenance());
     let (directory, ready) = upgrade("uploads-repair-open", &input);
-    assert_eq!((ready.version, ready.previous_version), (46, 37));
+    assert_eq!((ready.version, ready.previous_version), (47, 37));
     assert_eq!(
         live(&directory, REVISION),
         "default:3:probe".to_owned().into()
@@ -574,7 +578,7 @@ fn steps_run_after_the_tenant_repair() {
 fn steps_run_after_missing_common_tables_are_restored() {
     let input = schema37_input("uploads-restore", "DROP TABLE source_docs");
     let (directory, ready) = upgrade("uploads-restore-open", &input);
-    assert_eq!((ready.version, ready.previous_version), (46, 37));
+    assert_eq!((ready.version, ready.previous_version), (47, 37));
     assert_eq!(
         live(&directory, "SELECT count(*) FROM source_docs"),
         0.into()
@@ -598,7 +602,7 @@ fn renamed_starter_and_tenant_repair_upgrade_with_the_seed_last() {
     assert_eq!(starters(&database), 0);
     let (owner, ready) = WriterOwner::open(&directory, Limits::default()).unwrap();
     owner.shutdown().unwrap();
-    assert_eq!((ready.version, ready.previous_version), (46, 37));
+    assert_eq!((ready.version, ready.previous_version), (47, 37));
     let first = directory.join("backups/pre-schema38.db");
     assert_eq!(ready.backup, Some(first.clone()));
     assert_eq!(contents(&first), original);
@@ -620,11 +624,11 @@ fn schema39_input(label: &str) -> PathBuf {
     owner.shutdown().unwrap();
     let connection = Connection::open(directory.join("print-partner.db")).unwrap();
     connection.execute_batch(
-        "DROP TABLE IF EXISTS source_sync_targets;
+        &format!("DROP TABLE IF EXISTS source_sync_targets;
          DROP TABLE IF EXISTS source_sync_batches;
          DROP TABLE IF EXISTS source_scan_executions;
-         DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='39' WHERE tenant_id='default' AND key='schema_version';
-         INSERT INTO app_settings(tenant_id,key,value) VALUES('default','scan-migration-marker','preserved');"
+         {LATER_TABLES} UPDATE app_settings SET value='39' WHERE tenant_id='default' AND key='schema_version';
+         INSERT INTO app_settings(tenant_id,key,value) VALUES('default','scan-migration-marker','preserved');")
     ).unwrap();
     directory
 }
@@ -638,7 +642,7 @@ fn schema40_backup_preserves_the_logical_input() {
     owner.shutdown().unwrap();
     let backup = directory.join("backups/pre-schema40.db");
     assert_eq!(ready.backup, Some(backup.clone()));
-    assert_eq!((ready.version, ready.previous_version), (46, 39));
+    assert_eq!((ready.version, ready.previous_version), (47, 39));
     assert_eq!(version_at(&backup), "39");
     assert_eq!(contents(&backup), original);
     crate::source_scan::validate_schema(
@@ -737,7 +741,7 @@ fn schema40_reopen_refuses_journal_drift_without_writes() {
         format!("{error:#}").contains("Local scan schema mismatch"),
         "{error:#}"
     );
-    assert_eq!(version_at(&database), "46");
+    assert_eq!(version_at(&database), "47");
     assert_eq!(live_contents(&database), original);
     assert_eq!(std::fs::read(&database).unwrap(), bytes);
     assert!(!directory.join("backups").exists());
@@ -749,12 +753,12 @@ fn schema40_input(label: &str) -> PathBuf {
     owner.shutdown().unwrap();
     Connection::open(directory.join("print-partner.db"))
         .unwrap()
-        .execute_batch(
+        .execute_batch(&format!(
             "DROP TABLE source_sync_targets;
              DROP TABLE source_sync_batches;
-             DROP TABLE IF EXISTS domain_events; DROP TABLE IF EXISTS print_link_grams; DROP TABLE IF EXISTS plan_snapshot_headers; DROP TABLE IF EXISTS plan_draft_header_receipts; DROP TABLE IF EXISTS plan_draft_headers; DROP TABLE IF EXISTS build_profile_details; DROP TABLE IF EXISTS printer_send_queue; UPDATE app_settings SET value='40' WHERE tenant_id='default' AND key='schema_version';
+             {LATER_TABLES} UPDATE app_settings SET value='40' WHERE tenant_id='default' AND key='schema_version';
              INSERT INTO app_settings(tenant_id,key,value) VALUES('default','sync-migration-marker','preserved');",
-        )
+        ))
         .unwrap();
     directory
 }
@@ -768,7 +772,7 @@ fn schema41_backup_preserves_the_logical_input() {
     owner.shutdown().unwrap();
     let backup = directory.join("backups/pre-schema41.db");
     assert_eq!(ready.backup, Some(backup.clone()));
-    assert_eq!((ready.version, ready.previous_version), (46, 40));
+    assert_eq!((ready.version, ready.previous_version), (47, 40));
     assert_eq!(version_at(&backup), "40");
     assert_eq!(contents(&backup), original);
     assert_reopen_is_noop(&directory);

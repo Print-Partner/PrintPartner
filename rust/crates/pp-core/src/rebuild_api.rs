@@ -21,14 +21,15 @@ use pp_api::{
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
 // non-optional pp-api [dev-dependencies] edge (gated boundary check).
 pub use pp_api::auth::{AuthHttpConfig, CookieTransport, ProviderClient, ResetMailer};
+use pp_gateway::printer_host::HostReads;
 use pp_storage::{
-    WriterOwner,
+    SettingsClient, WriterOwner,
     auth::{
         AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy,
         rebuild::AuthLifetimes, rebuild::RebuildAuthClient,
     },
     build_graph::BuildGraphClient,
-    checkoff_progress::print_file::SnapshotStore,
+    checkoff_progress::ProgressClient,
     read_model::build_workflow::PendingInputs,
     working_drafts::{
         WorkingDraftClient,
@@ -170,6 +171,19 @@ pub fn router(
     )))
 }
 
+/// The printer Checkoff routes and the print-file assignment routes, which
+/// read print files off printers through the stored printer hosts.
+fn checkoff_routes(
+    config: AcceptedHttpConfig,
+    client: ProgressClient,
+    settings: SettingsClient,
+) -> Result<Router> {
+    let snapshots = settings.print_file_snapshots();
+    let hosts = crate::printer_host::StoredPrinterHosts::new(settings, HostReads::new()?);
+    let files = file_assignments_router(config.clone(), client.clone(), snapshots, Arc::new(hosts));
+    Ok(checkoff_router(config, client).merge(files))
+}
+
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
@@ -180,16 +194,6 @@ pub fn router(
 ///
 /// `origin` must match `auth.http`'s listener origin. `api_key_tenant` is the
 /// configured API-key tenant for build and catalog admission.
-/// The print-file snapshot store of `owner`'s database, which the printer
-/// routes capture into.
-fn snapshots(owner: &Mutex<WriterOwner>) -> Result<Arc<SnapshotStore>> {
-    Ok(owner
-        .lock()
-        .map_err(|_| anyhow!("rebuild owner lock poisoned"))?
-        .client()
-        .print_file_snapshots())
-}
-
 pub fn read_router(
     rebuild: DesktopRebuild,
     owner: Arc<Mutex<WriterOwner>>,
@@ -214,7 +218,7 @@ pub fn read_router(
         workflow_client,
         admin_files,
         events_client,
-        checkoff_client,
+        (checkoff_client, settings),
         plates_client,
     ) = {
         let guard = owner
@@ -231,15 +235,16 @@ pub fn read_router(
             guard.build_workflow(policy, Arc::new(PendingInputs))?,
             guard.admin_files()?,
             guard.domain_events_with_policy(policy)?,
-            guard.checkoff_progress_with_policy(policy)?,
+            (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
         )
     };
+    let config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
     // Draft HTTP uses `draft_router` (GRE-820) from the same owner when composed
     // separately; MCP's Plan Accept uses this bundle's draft client (GRE-1236).
     let builds = build_router(
         BuildHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        builds_client,
+        builds_client.clone(),
     );
     let catalog = admit_catalog_routes(
         CatalogHttpConfig::from_startup(origin, api_key_tenant, policy, Some("1"))?,
@@ -252,41 +257,25 @@ pub fn read_router(
     );
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     let accepted = accepted_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?
+        config
+            .clone()
             .with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
         accepted_client,
     );
-    let history = history_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        history_client,
-    );
-    let planning = planning_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        planning_client.clone(),
-    );
-    let workflow = workflow_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        workflow_client.clone(),
-    );
-    let events = events_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        events_client,
-        StreamLimits::default(),
-    );
-    let checkoff_config = AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?;
-    let checkoff = checkoff_router(checkoff_config.clone(), checkoff_client.clone()).merge(
-        file_assignments_router(checkoff_config, checkoff_client, snapshots(&owner)?),
-    );
-    let plates = plates_router(
-        AcceptedHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
-        plates_client,
-    );
+    let history = history_router(config.clone(), history_client);
+    let planning = planning_router(config.clone(), planning_client.clone());
+    let workflow = workflow_router(config.clone(), workflow_client.clone());
+    let events = events_router(config.clone(), events_client, StreamLimits::default());
+    let checkoff = checkoff_routes(config.clone(), checkoff_client.clone(), settings)?;
+    let plates = plates_router(config.clone(), plates_client);
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
+        builds_client,
         workflow_client,
         drafts_client,
         planning_client,
+        checkoff_client,
     );
     let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
     Ok(Some(
@@ -683,9 +672,20 @@ mod tests {
                 "expected_draft": null, "expected_header_version": null,
                 "header": {"name": "Client contract", "order_number": null, "customer": null, "due_date": null}})
             }
+            "SavePlanChoicesRequest" => {
+                json!({"expected_base": {"revision_id": null, "plan_version": 0},
+                "expected_draft": null, "remap_checkoff_links": false, "decisions": [{"kind": "set_included",
+                    "target": {"part_key": "client.stl", "relative_path": "client.stl", "source_layer": null},
+                    "value": true}]})
+            }
+            "AcceptDraftRequest" => json!({"expected_snapshot_digest": "0".repeat(64),
+                "expected_lifecycle_version": 0,
+                "expected_base": {"revision_id": null, "plan_version": 0}}),
             "ReconcileDraftRequest" => {
                 json!({"expected_snapshot_digest": "0".repeat(64), "decisions": []})
             }
+            "RestoreSnapshotRequest" => json!({"mode": "draft",
+                "expected_base": {"revision_id": null, "plan_version": 0}, "expected_draft": null}),
             "VerifyBatchRequest" => json!({"idempotency_key": "client-contract",
                 "beds": [{"link_id": "no-such-link", "decisions": [
                     {"part_id": 1, "unit_index": 0, "result": "confirmed"}]}]}),
@@ -737,6 +737,25 @@ mod tests {
         ) -> pp_storage::read_model::farm::Observation {
             pp_storage::read_model::farm::Observation::Unavailable
         }
+    }
+
+    /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
+    /// print, so those handlers answer their own 404 with a code or detail.
+    fn handler_not_found(status: u16, body: &Value) -> bool {
+        const CODES: [&str; 3] = [
+            "draft_not_found",
+            "snapshot_not_found",
+            "farm_log_entry_not_found",
+        ];
+        const DETAILS: [&str; 4] = [
+            "beds[0]: Checkoff link not found",
+            "Checkoff burst not found",
+            "History entry not found",
+            "Unattributed print not found",
+        ];
+        status == 404
+            && (CODES.iter().any(|code| body["code"] == *code)
+                || DETAILS.iter().any(|detail| body["detail"] == *detail))
     }
 
     #[tokio::test]
@@ -802,7 +821,8 @@ mod tests {
             let path = route
                 .path
                 .replace("{id}", &build)
-                .replace("{draft_id}", "1");
+                .replace("{draft_id}", "1")
+                .replace("{snapshot_id}", "1");
             let body = route.request.map(sample_body);
             let anonymous = send(route.method, &path, route.headers, None, body.clone())
                 .await
@@ -822,14 +842,7 @@ mod tests {
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            // The sample bodies name no stored draft, link, burst or print, so those
-            // handlers answer their own 404 with a detail.
-            let handler_not_found = status == 404
-                && (body["code"] == "draft_not_found"
-                    || body["code"] == "farm_log_entry_not_found"
-                    || body["detail"] == "beds[0]: Checkoff link not found"
-                    || body["detail"] == "Checkoff burst not found"
-                    || body["detail"] == "Unattributed print not found");
+            let handler_not_found = handler_not_found(status, &body);
             // A manual burst names an Accepted Plan basis no stored Build has.
             let handler_stale =
                 status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";

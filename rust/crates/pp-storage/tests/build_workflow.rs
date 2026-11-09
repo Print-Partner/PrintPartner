@@ -36,10 +36,6 @@ impl WorkflowInputs for Inputs {
     }
 }
 
-fn due(day: u8) -> Option<time::Date> {
-    Some(time::Date::from_calendar_date(2026, time::Month::November, day).unwrap())
-}
-
 /// Build 1 of the Node fixture in a scratch directory. `owner` drops before
 /// `root` removes the directory.
 struct Fixture {
@@ -134,25 +130,9 @@ impl Drop for Fixture {
 fn build_workflow_ranks_the_earlier_due_date_first() {
     let f = Fixture::new();
     f.sql("INSERT INTO build_profiles (tenant_id,name) VALUES ('default','Later order'),('default','Sooner order');");
-    let inputs = || {
-        Inputs(HashMap::from([
-            (
-                2,
-                BuildInputs {
-                    due_date: due(20),
-                    stock: Stock::NotReady,
-                },
-            ),
-            (
-                3,
-                BuildInputs {
-                    due_date: due(10),
-                    stock: Stock::NotReady,
-                },
-            ),
-        ]))
-    };
-    let feed = f.tasks(inputs());
+    // The due date is the one Accept stores with the Build header.
+    f.sql("INSERT INTO build_profile_details (profile_id,tenant_id,customer,due_date,updated_at) VALUES (2,'default',NULL,'2026-11-20','2026-11-07T00:00:00.000Z'),(3,'default',NULL,'2026-11-10','2026-11-07T00:00:00.000Z');");
+    let feed = f.tasks(Inputs::default());
     let order: Vec<_> = feed
         .tasks
         .iter()
@@ -174,7 +154,7 @@ fn build_workflow_ranks_the_earlier_due_date_first() {
     );
     // The feed's next action is the Build workflow's own, not a copy.
     for task in &feed.tasks {
-        let workspace = f.workspace(inputs(), task.plan_id as u64);
+        let workspace = f.workspace(Inputs::default(), task.plan_id as u64);
         assert_eq!(task.next_action, workspace.next_action);
         assert_eq!(task.build_name, workspace.build.name);
         assert!(!task.attention);
@@ -327,15 +307,7 @@ fn build_workflow_unchanged_draft_keeps_the_build_next_action() {
 #[test]
 fn build_workflow_takes_stock_shortfall_from_its_adapter() {
     let f = Fixture::new();
-    let stock = |stock| {
-        Inputs(HashMap::from([(
-            1,
-            BuildInputs {
-                due_date: None,
-                stock,
-            },
-        )]))
-    };
+    let stock = |stock| Inputs(HashMap::from([(1, BuildInputs { stock })]));
     let pending = f.workspace(stock(Stock::NotReady), 1);
     assert_eq!(pending.stock, Stock::NotReady);
     assert_eq!(pending.next_action.kind, ActionKind::CheckOffManually);
@@ -494,13 +466,15 @@ fn task_feed_farm(f: &Fixture) -> Inputs {
         "INSERT INTO build_profiles (tenant_id,name) VALUES ('default','Later order'),('default','Sooner order'),('default','Undated order');
          INSERT INTO build_profiles (tenant_id,name,archived_at) VALUES ('default','Archived order','2026-11-01T00:00:00.000Z');",
     );
-    let inputs = |due_date, stock| BuildInputs { due_date, stock };
-    Inputs(HashMap::from([
-        (1, inputs(None, Stock::Ready { shortfalls: 2 })),
-        (2, inputs(due(20), Stock::NotReady)),
-        (3, inputs(due(10), Stock::NotReady)),
-        (5, inputs(due(1), Stock::NotReady)),
-    ]))
+    f.sql(
+        "INSERT INTO build_profile_details (profile_id,tenant_id,customer,due_date,updated_at) VALUES (2,'default',NULL,'2026-11-20','2026-11-07T00:00:00.000Z'),(3,'default',NULL,'2026-11-10','2026-11-07T00:00:00.000Z'),(5,'default',NULL,'2026-11-01','2026-11-07T00:00:00.000Z');",
+    );
+    Inputs(HashMap::from([(
+        1,
+        BuildInputs {
+            stock: Stock::Ready { shortfalls: 2 },
+        },
+    )]))
 }
 
 #[test]
@@ -545,7 +519,14 @@ fn task_feed_order_is_the_projection_order() {
     // The feed is the shared `rank` over each Build's own workflow read.
     let resolved = (1..=4)
         .map(|id| {
-            let due_date = inputs.inputs("default", id).due_date;
+            let day = match id {
+                2 => Some(20),
+                3 => Some(10),
+                _ => None,
+            };
+            let due_date = day.map(|day| {
+                time::Date::from_calendar_date(2026, time::Month::November, day).unwrap()
+            });
             (f.workspace(Inputs(inputs.0.clone()), id as u64), due_date)
         })
         .collect();

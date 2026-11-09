@@ -2,17 +2,15 @@ use super::*;
 use reqwest::{Client, Method};
 use std::net::SocketAddr;
 
+#[path = "../../tests/support/mcp_rpc.rs"]
+mod mcp_rpc;
+#[path = "tests/reads.rs"]
+mod reads;
+use mcp_rpc::{policy, rpc};
+
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";
 /// Header value replaced by the server's own origin.
 const SELF: &str = "<origin>";
-
-fn policy() -> auth::AuthPolicy {
-    auth::AuthPolicy {
-        registration: auth::RegistrationPolicy::Open,
-        session_tenant: auth::SessionTenantPolicy::AccountTenant,
-        first_user: auth::FirstUserTenant::NewUser,
-    }
-}
 
 fn initialize() -> Value {
     json!({
@@ -42,17 +40,30 @@ impl McpServer {
     }
 
     async fn routed(flag: Option<&str>, tenant: &str) -> Self {
+        Self::open(flag, tenant, "").await
+    }
+
+    /// The flag on for `default`, with `seed` run on the fixture first.
+    async fn seeded(seed: &str) -> Self {
+        Self::open(Some("1"), "default", seed).await
+    }
+
+    async fn open(flag: Option<&str>, tenant: &str, seed: &str) -> Self {
         let directory = crate::scratch::Scratch::new("pp-mcp-http-");
+        let database = directory.join("print-partner.db");
         std::fs::write(
-            directory.join("print-partner.db"),
+            &database,
             include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db"),
         )
         .unwrap();
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute_batch(seed)
+            .unwrap();
         let owner = pp_storage::WriterOwner::open(&directory, pp_storage::Limits::default())
             .unwrap()
             .0;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (listener, origin) = mcp_rpc::listen().await;
         let config = McpHttpConfig::from_startup(&origin, tenant, flag).unwrap();
         let (router, _) = test_router(&owner, config, policy());
         let task = tokio::spawn(async move {
@@ -135,13 +146,7 @@ impl McpServer {
         for (name, value) in headers {
             request = request.header(*name, value.replace(SELF, &self.origin));
         }
-        let response = request.send().await.unwrap();
-        let status = response.status().as_u16();
-        let session = response
-            .headers()
-            .get("mcp-session-id")
-            .map(|value| value.to_str().unwrap().to_owned());
-        (status, response.text().await.unwrap(), session)
+        mcp_rpc::send(request).await
     }
 }
 
@@ -149,18 +154,6 @@ impl Drop for McpServer {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-/// The first JSON-RPC message in an SSE or JSON response body.
-fn rpc(body: &str) -> Value {
-    // Skip the empty SSE priming event that precedes the response.
-    let data = body
-        .lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .map(str::trim)
-        .find(|data| !data.is_empty())
-        .unwrap_or(body);
-    serde_json::from_str(data).unwrap_or_else(|_| panic!("JSON-RPC body: {body}"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

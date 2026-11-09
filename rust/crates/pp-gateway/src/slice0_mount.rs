@@ -294,6 +294,7 @@ async fn slice0_mount_rust_only_runtime_reports_rust_status() {
     let mut gateway = Gateway::start_rust_only(
         listener,
         root.to_path_buf(),
+        ServedUi::Legacy,
         |_| stub(),
         receiver,
         Arc::new(NoHosts),

@@ -179,8 +179,8 @@ impl Policy {
     }
 }
 
-/// Reads `index.html` and adds the nonce element as the first child of
-/// `<head>`, so it exists before any module script runs.
+/// Reads `index.html` and adds the nonce element right after the `<head>`
+/// start tag, so it exists before any module script runs.
 async fn nonce_document(asset: AssetFile, nonce: &str) -> Option<Vec<u8>> {
     if asset.length > MAX_DOCUMENT_BYTES {
         return None;
@@ -193,12 +193,43 @@ async fn nonce_document(asset: AssetFile, nonce: &str) -> Option<Vec<u8>> {
         .await
         .ok()?;
     let element = format!("<meta name=\"{NONCE_META_NAME}\" nonce=\"{nonce}\">");
-    let at = html
-        .windows(6)
-        .position(|window| window == b"<head>")
-        .map_or(0, |start| start + 6);
+    let at = nonce_position(&html);
     html.splice(at..at, element.into_bytes());
     Some(html)
+}
+
+/// The byte offset just after the `<head ...>` start tag, in any letter case
+/// and with any attributes. Without one, just after a leading `<!doctype ...>`
+/// (the parser then opens `<head>` itself and the element lands in it, and the
+/// page stays out of quirks mode); otherwise the start.
+fn nonce_position(html: &[u8]) -> usize {
+    let tag_end = |from: usize| {
+        html[from..]
+            .iter()
+            .position(|&byte| byte == b'>')
+            .map(|end| from + end + 1)
+    };
+    let starts = |at: usize, name: &[u8]| {
+        html.get(at..at + name.len())
+            .is_some_and(|bytes| bytes.eq_ignore_ascii_case(name))
+    };
+    let head = (0..html.len()).find(|&at| {
+        starts(at, b"<head")
+            && html
+                .get(at + 5)
+                .is_some_and(|&next| next == b'>' || next.is_ascii_whitespace())
+    });
+    if let Some(end) = head.and_then(tag_end) {
+        return end;
+    }
+    let leading = html
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(html.len());
+    if starts(leading, b"<!doctype") {
+        return tag_end(leading).unwrap_or(0);
+    }
+    0
 }
 
 pub(super) async fn serve(
@@ -235,7 +266,10 @@ pub(super) async fn serve(
     };
     let (asset, content_encoding) = if let Some(gzip) = gzip {
         (gzip, Some("gzip"))
-    } else if preferences.accepts_identity() {
+    } else if nonced || preferences.accepts_identity() {
+        // A replacement document is rewritten per response, so it only
+        // exists uncoded. RFC 9110 section 12.5.3 lets the server send no
+        // content coding; that beats a 406 the browser would show as a page.
         (identity, None)
     } else {
         let mut response = super::error(StatusCode::NOT_ACCEPTABLE, "No acceptable asset encoding");

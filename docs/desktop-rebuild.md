@@ -97,9 +97,12 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   gateway's route-miss path: each request that no gateway, asset or Rust
   product route answered and that entered the compatibility branch. It stays
   at 0 in this mode.
-- Documents and assets carry the replacement UI's Content-Security-Policy
-  instead of the Node-backed runtime's, with a fresh style nonce on each
-  document. See [Content security policy](network-sharing.md#content-security-policy).
+- `Gateway::start_rust_only` takes a `ServedUi`. With `ServedUi::Replacement`
+  (the `apps/ui` build), documents and assets carry the replacement UI's
+  Content-Security-Policy, with a fresh style nonce on each document.
+  `pp-core` passes `ServedUi::Legacy` until GRE-1109 serves `apps/ui`, so the
+  old `apps/web` build keeps its headers. See
+  [Content security policy](network-sharing.md#content-security-policy).
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
   session, then the gateway ends the desktop session and stops the runtime as
   it does today.

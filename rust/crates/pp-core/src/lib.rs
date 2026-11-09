@@ -552,6 +552,9 @@ async fn start_rust_resources(
     let gateway = Gateway::start_rust_only(
         listener,
         assets,
+        // `pp-server` and `pp-desktop` still ship the old `apps/web` build;
+        // GRE-1109 passes `ServedUi::Replacement` when this runtime serves `apps/ui`.
+        pp_gateway::ServedUi::Legacy,
         move |status| product.merge(status_routes.mount(status)),
         receiver,
         hosts,

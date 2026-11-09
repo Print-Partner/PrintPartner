@@ -36,6 +36,18 @@ mod stall;
 
 use ownership::{Owner, cutover::OperationOwners};
 
+/// The web UI build in the gateway's asset root. Only a Rust-only runtime
+/// that serves the replacement UI (`web/apps/ui`) sends the replacement
+/// Content-Security-Policy (`replacement-csp.txt`); every other runtime keeps
+/// the legacy policy. See docs/network-sharing.md#content-security-policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServedUi {
+    /// The old `web/apps/web` build.
+    Legacy,
+    /// The replacement `web/apps/ui` build.
+    Replacement,
+}
+
 /// The status of a runtime with no Node child, where the Rust writer owns the
 /// data directory. `pp-core` owns the sender; the gateway reads it for
 /// `/__runtime`. It has no child `generation` or `pid` because there is no child.
@@ -277,7 +289,7 @@ struct GatewayState {
     host: String,
     cookie_name: String,
     assets: PathBuf,
-    /// Legacy on the Node-backed runtime; the replacement policy on a Rust-only one.
+    /// The replacement policy only on a Rust-only runtime serving `ServedUi::Replacement`.
     asset_policy: assets::Policy,
     compat: CompatHandle,
     rate_limits: Option<tokio::sync::Mutex<rate_limit::Budgets>>,
@@ -343,16 +355,27 @@ impl Gateway {
         product: Option<axum::Router>,
     ) -> Result<Self> {
         let product = product.map(|routes| Box::new(move |_| routes) as ProductRoutes);
-        Self::start_inner(listener, assets, compat, owners, product, None)
+        Self::start_inner(
+            listener,
+            assets,
+            ServedUi::Legacy,
+            compat,
+            owners,
+            product,
+            None,
+        )
     }
 
     /// Start a runtime with no Node child: `product` answers admitted
     /// requests, nothing is forwarded, and `/__runtime` reports `status`.
     /// Moonraker watchers poll the hosts `hosts` reads; `product` receives
     /// the status lookup so an authenticated route can answer from them.
+    /// `ui` names the build in `assets`; only [`ServedUi::Replacement`] gets
+    /// the replacement Content-Security-Policy.
     pub fn start_rust_only(
         listener: TcpListener,
         assets: PathBuf,
+        ui: ServedUi,
         product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
         status: tokio::sync::watch::Receiver<RustStatus>,
         hosts: Arc<dyn MoonrakerHosts>,
@@ -360,6 +383,7 @@ impl Gateway {
         Self::start_inner(
             listener,
             assets,
+            ui,
             CompatHandle::unpublished(),
             &OperationOwners::node_only(),
             Some(Box::new(product)),
@@ -370,6 +394,7 @@ impl Gateway {
     fn start_inner(
         listener: TcpListener,
         assets: PathBuf,
+        ui: ServedUi,
         compat: CompatHandle,
         owners: &OperationOwners,
         product: Option<ProductRoutes>,
@@ -379,7 +404,6 @@ impl Gateway {
         )>,
     ) -> Result<Self> {
         let (rust_status, hosts) = rust_only.unzip();
-        let rust_only = rust_status.is_some();
         let address = listener.local_addr()?;
         anyhow::ensure!(
             address.ip().is_loopback(),
@@ -430,7 +454,7 @@ impl Gateway {
             None => Watchers::new()?,
         };
         let observations = watchers.observations();
-        let asset_policy = if rust_only {
+        let asset_policy = if rust_status.is_some() && ui == ServedUi::Replacement {
             assets::Policy::replacement(&origin)
         } else {
             assets::Policy::Legacy

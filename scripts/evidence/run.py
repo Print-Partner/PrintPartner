@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
@@ -28,7 +29,6 @@ ROOT = HERE.parent.parent
 EVIDENCE_BIN = os.environ.get("PP_EVIDENCE_BIN", "/opt/agent-fleet/bin/evidence")
 # The installed tool still defaults to the old repository; always pass this one.
 EVIDENCE_REPO = "Print-Partner/PrintPartner"
-EVIDENCE_REMOTE = f"https://github.com/{EVIDENCE_REPO}"
 STEP_NAMES = ("settle-reconciliation", "snapshot")
 MODULES = ("farm", "orders", "bambu", "spoolman")
 SHOT_PATH = re.compile(r"^/(?!/)[A-Za-z0-9/_.~-]*$")
@@ -323,17 +323,66 @@ def session(args, work, out_dir, node, binary):
     return failures
 
 
+GITHUB_REPO_PATH = re.compile(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+SCP_REMOTE = re.compile(r"(?:[^@/:]+@)?([^/:]+):(.*)")
+
+
+def normalize_remote(url):
+    """github.com/<owner>/<repo> for a GitHub remote, or None.
+
+    Drops userinfo, one trailing "/" and one trailing ".git", and maps
+    git@github.com:<owner>/<repo> to the same form. Anything else, including another
+    host, a port, a query or a deeper path, is None, so normalizing never makes a
+    different repository match."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme in ("https", "ssh") and not parts.query and not parts.fragment:
+        try:
+            port = parts.port
+        except ValueError:
+            return None
+        if port is not None:
+            return None
+        host, path = parts.hostname, parts.path
+    elif not parts.scheme or "://" not in url:
+        match = SCP_REMOTE.fullmatch(url)
+        if not match or match.group(2).startswith("/"):
+            return None
+        host, path = match.group(1).lower(), "/" + match.group(2)
+    else:
+        return None
+    if host != "github.com":
+        return None
+    path = path.removesuffix("/").removesuffix(".git")
+    match = GITHUB_REPO_PATH.fullmatch(path)
+    if not match or ".." in path:
+        return None
+    return f"github.com/{match.group(1)}/{match.group(2)}"
+
+
+def remote_urls(cache):
+    """Every fetch URL and every effective push URL of the cache's origin, or None."""
+    urls = []
+    for extra in ([], ["--push"]):
+        result = subprocess.run(["git", "-C", str(cache), "remote", "get-url", *extra, "--all", "origin"],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+        urls += result.stdout.split()
+    return urls or None
+
+
 def evidence_cache():
     """A publisher clone for EVIDENCE_REPO only. The tool pushes to its cache clone's
-    origin, so a cache cloned for another repository would receive the PNGs."""
+    origin, so a cache whose origin fetches or pushes elsewhere is refused. The refusal
+    never prints a URL: a remote can carry a token."""
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache = base / f"evidence-repo-{EVIDENCE_REPO.replace('/', '-')}"
     if cache.exists():
-        remote = subprocess.run(["git", "-C", str(cache), "remote", "get-url", "origin"],
-                                capture_output=True, text=True).stdout.strip()
-        if remote != EVIDENCE_REMOTE:
-            raise SystemExit(f"refusing to publish: {cache} pushes to {remote or 'no origin'}, "
-                             f"not {EVIDENCE_REMOTE}; move it aside and run again")
+        urls = remote_urls(cache)
+        expected = f"github.com/{EVIDENCE_REPO}"
+        if urls is None or any(normalize_remote(url) != expected for url in urls):
+            raise SystemExit(f"refusing to publish: evidence cache remote is not {EVIDENCE_REPO}; "
+                             f"move {cache} aside and run again")
     return cache
 
 

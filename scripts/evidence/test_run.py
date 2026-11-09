@@ -122,19 +122,85 @@ class MainStops(unittest.TestCase):
         self.assertIn("FAIL: stopped by SIGTERM\n", printed)
 
 
+TOKEN = "ghp_canaryEvidenceToken0123456789"
+GOOD = "https://github.com/Print-Partner/PrintPartner"
+
+
 class EvidenceCache(unittest.TestCase):
-    def test_uses_a_cache_for_this_repository_and_refuses_another_origin(self):
-        with tempfile.TemporaryDirectory() as base, mock.patch.dict(os.environ, {"XDG_CACHE_HOME": base}):
-            cache = run.evidence_cache()
-            self.assertEqual(cache, Path(base) / "evidence-repo-Print-Partner-PrintPartner")
-            subprocess.run(["git", "init", "-q", str(cache)], check=True)
-            subprocess.run(["git", "-C", str(cache), "remote", "add", "origin",
-                            "https://github.com/poitee/PrintPartner"], check=True)
-            with self.assertRaises(SystemExit) as refused:
-                run.evidence_cache()
-            self.assertIn("refusing to publish", str(refused.exception))
-            subprocess.run(["git", "-C", str(cache), "remote", "set-url", "origin", run.EVIDENCE_REMOTE], check=True)
-            self.assertEqual(run.evidence_cache(), cache)
+    def setUp(self):
+        base = tempfile.TemporaryDirectory()
+        self.addCleanup(base.cleanup)
+        self.base = base.name
+        patcher = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": self.base})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", str(self.cache), *args], check=True, capture_output=True)
+
+    def make_cache(self, url):
+        self.cache = Path(self.base) / "evidence-repo-Print-Partner-PrintPartner"
+        subprocess.run(["git", "init", "-q", str(self.cache)], check=True)
+        self.git("remote", "add", "origin", url)
+
+    def refused(self):
+        with self.assertRaises(SystemExit) as refusal:
+            run.evidence_cache()
+        return str(refusal.exception)
+
+    def test_no_cache_yet_is_allowed(self):
+        self.assertEqual(run.evidence_cache(), Path(self.base) / "evidence-repo-Print-Partner-PrintPartner")
+
+    def test_accepts_the_repository_in_its_usual_forms(self):
+        self.make_cache(GOOD)
+        for url in (GOOD, GOOD + ".git", GOOD + "/", GOOD + ".git/",
+                    "git@github.com:Print-Partner/PrintPartner.git", "ssh://git@github.com/Print-Partner/PrintPartner"):
+            with self.subTest(url=url):
+                self.git("remote", "set-url", "origin", url)
+                self.assertEqual(run.evidence_cache(), self.cache)
+
+    def test_normalizing_never_matches_another_repository(self):
+        for url in ("https://github.com/poitee/PrintPartner", "https://github.com/Print-Partner/PrintPartner2",
+                    "https://github.com/Print-Partner/PrintPartner/extra", "https://github.com.evil/Print-Partner/PrintPartner",
+                    "https://evil.com/github.com/Print-Partner/PrintPartner", "http://github.com/Print-Partner/PrintPartner",
+                    "https://github.com:444/Print-Partner/PrintPartner", "https://github.com/Print-Partner/PrintPartner?x=1",
+                    "git@evil.com:Print-Partner/PrintPartner", "github.com:Print-Partner/PrintPartner/x",
+                    "https://github.com/Print-Partner/Print%50artner", "file:///github.com/Print-Partner/PrintPartner",
+                    "/tmp/github.com/Print-Partner/PrintPartner", ""):
+            with self.subTest(url=url):
+                self.assertNotEqual(run.normalize_remote(url), "github.com/Print-Partner/PrintPartner")
+
+    def test_refuses_another_origin(self):
+        self.make_cache("https://github.com/poitee/PrintPartner")
+        self.assertIn("evidence cache remote is not Print-Partner/PrintPartner", self.refused())
+
+    def test_refuses_a_foreign_pushurl(self):
+        self.make_cache(GOOD)
+        self.git("remote", "set-url", "--push", "origin", "https://github.com/poitee/PrintPartner")
+        self.refused()
+
+    def test_refuses_when_any_push_url_is_foreign(self):
+        self.make_cache(GOOD)
+        self.git("remote", "set-url", "--add", "--push", "origin", GOOD)
+        self.git("remote", "set-url", "--add", "--push", "origin", "https://github.com/poitee/PrintPartner")
+        self.refused()
+
+    def test_refuses_a_cache_without_origin(self):
+        self.make_cache(GOOD)
+        self.git("remote", "remove", "origin")
+        self.refused()
+
+    def test_a_token_in_a_foreign_remote_never_reaches_the_output(self):
+        self.make_cache(f"https://x-access-token:{TOKEN}@github.com/poitee/PrintPartner")
+        self.git("remote", "set-url", "--push", "origin", f"https://x-access-token:{TOKEN}@github.com/poitee/x")
+        program = "import run; run.evidence_cache()"
+        result = subprocess.run([sys.executable, "-c", program], cwd=Path(run.__file__).parent,
+                                env=dict(os.environ, XDG_CACHE_HOME=self.base), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("evidence cache remote is not Print-Partner/PrintPartner", result.stderr)
+        self.assertIn(str(self.cache), result.stderr)
+        self.assertNotIn(TOKEN, result.stdout + result.stderr)
+        self.assertNotIn("x-access-token", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

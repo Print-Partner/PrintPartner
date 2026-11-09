@@ -66,8 +66,10 @@ jobs:
               echo "#$pr moved from $head to $now while waiting; the new head's own gate run judges it."
               exit 0
             fi
-            run=$(gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?event=pull_request_target&head_sha=$head&per_page=1" \
-              --jq '.workflow_runs[0] // empty | "\(.id) \(.status)"')
+            # Only main's gate for this PR: a run for another PR on the same head into another
+            # branch ran that branch's copy of the file. Runs are listed newest first.
+            run=$(gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?event=pull_request_target&head_sha=$head&per_page=100" \
+              --jq "[.workflow_runs[] | select(any(.pull_requests[]?; .number == $pr and .base.ref == \"main\"))][0] // empty | \"\\(.id) \\(.status)\"")
             if [ -z "$run" ]; then
               echo "No review-gate run exists for $head yet; when it starts it reads the current state."
               exit 0

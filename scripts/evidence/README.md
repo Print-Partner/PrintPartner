@@ -74,13 +74,16 @@ What it does not defend: a local user who edits the root-owned publisher, this h
 
 How (`scripts/evidence/publisher.py`, tests in `test_publisher.py`):
 
-- **Isolated git.** The clone, every check and the publisher run with no `GIT_*` variable from the caller. Instead they get `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `credential.helper=!gh auth git-credential` (through `GIT_CONFIG_COUNT`) and `GIT_TERMINAL_PROMPT=0`. No system or global rule, including one that applies only on a branch, can rewrite a URL or turn on tracing. The publisher sets its own commit identity with `git -c`.
-- **A clean cache.** The cache is `~/.cache/evidence-repo-Print-Partner-PrintPartner`, used by its real path. Publishing is refused when any of these holds:
+- **Isolated git.** The clone, every check and the publisher run with no `GIT_*` variable from the caller. Instead they get:
+  - `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`;
+  - pinned settings through `GIT_CONFIG_COUNT`: `credential.helper` cleared and then set to `!gh auth git-credential`, `core.sshCommand=false`, `protocol.allow=never` and `protocol.https.allow=always`;
+  - `GIT_TERMINAL_PROMPT=0`.
+
+  Pinned settings outrank the cache's own config. No system or global rule, including one that applies only on a branch, can rewrite a URL, turn on tracing, add a credential helper or use any transport but https. The publisher sets its own commit identity with `git -c`.
+- **A clean cache, by allowlist.** The cache is `~/.cache/evidence-repo-Print-Partner-PrintPartner`, used by its real path. Local cache config is allowlisted, and the origin is https only. Publishing is refused when any of these holds:
   - the cache or its parent directory is a symlink;
   - `.git` is not a real directory;
-  - the cache's own config has an `include`, `includeIf` or `url.*` key;
-  - any fetch or push URL of `origin` (`git remote get-url [--push] --all origin`) is not `github.com/Print-Partner/PrintPartner`.
-
-  Before comparing, one trailing `/` and one trailing `.git` are dropped, and `git@github.com:` and `ssh://git@github.com/` map to the same form. A URL with any other userinfo is refused, so no URL the harness accepts carries a token.
+  - `git config --local --list` has a key a fresh `git clone --no-checkout --filter=blob:none` does not write. The allowed keys are `core.repositoryformatversion`, `core.filemode`, `core.bare`, `core.logallrefupdates`, `core.ignorecase`, `core.precomposeunicode`, `remote.origin.url`, `remote.origin.fetch`, `remote.origin.promisor`, `remote.origin.partialclonefilter`, `extensions.partialclone`, and `branch.<name>.remote` and `branch.<name>.merge`. So `core.sshCommand`, `http.proxy`, `http.*.extraHeader`, `credential.*`, `protocol.*`, `url.*`, `include*`, `core.hooksPath` and `remote.origin.pushurl` all refuse;
+  - any fetch or push URL of `origin` (`git remote get-url [--push] --all origin`) is not exactly `https://github.com/Print-Partner/PrintPartner`, with or without `.git`. ssh and scp forms, userinfo, other spellings and other repositories are refused, so no accepted URL carries a token.
 - **A checked first publish.** A missing cache is cloned first (`git clone --quiet --no-checkout --filter=blob:none`) and checked the same way. A clone that fails or fails the check is removed.
 - **No output from git or the publisher.** Refusals name the cache path, never a URL. Any error while reading or parsing a remote counts as a refusal and is dropped, for example Python's `ValueError` for an NFKC-unsafe character in a host, which quotes the whole netloc. The publisher's stdout and stderr are captured. On success the harness prints only the evidence URLs it reports, matched against `https://github.com/Print-Partner/PrintPartner/...`. On failure it prints `publish failed (exit N)` and nothing else.

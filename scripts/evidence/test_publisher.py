@@ -78,9 +78,26 @@ class GitEnv(Base):
                    "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "url.x.insteadOf", "GIT_CONFIG_VALUE_0": "y",
                    "GIT_DIR": "/elsewhere", "PATH": "/usr/bin"}
         env = publisher.git_env(hostile)
-        self.assertEqual(env, {"PATH": "/usr/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                               "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper",
-                               "GIT_CONFIG_VALUE_0": "!gh auth git-credential", "GIT_TERMINAL_PROMPT": "0"})
+        self.assertEqual(env, {
+            "PATH": "/usr/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "5",
+            "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+            "GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": "!gh auth git-credential",
+            "GIT_CONFIG_KEY_2": "core.sshCommand", "GIT_CONFIG_VALUE_2": "false",
+            "GIT_CONFIG_KEY_3": "protocol.allow", "GIT_CONFIG_VALUE_3": "never",
+            "GIT_CONFIG_KEY_4": "protocol.https.allow", "GIT_CONFIG_VALUE_4": "always"})
+
+    def test_only_https_transport_and_no_ssh_command_even_with_local_config(self):
+        # A local core.sshCommand and protocol.allow lose to the pinned command-line config.
+        self.make_repo(self.cache)
+        plain_git("-C", str(self.cache), "config", "core.sshCommand", "touch /nonexistent/ran")
+        plain_git("-C", str(self.cache), "config", "protocol.allow", "always")
+        for url in ("git@github.com:Print-Partner/PrintPartner", str(self.base / "elsewhere.git")):
+            with self.subTest(url=url):
+                result = publisher.git("-C", str(self.cache), "ls-remote", url)
+                self.assertNotEqual(result.returncode, 0)
+        effective = publisher.git("-C", str(self.cache), "config", "--get", "core.sshCommand")
+        self.assertEqual(effective.stdout.strip(), "false")
 
     def test_the_users_global_rewrites_have_no_effect(self):
         self.user_rule(f"url.{FOREIGN}.insteadOf", GOOD)
@@ -91,36 +108,32 @@ class GitEnv(Base):
 
 
 class Remotes(Base):
-    def test_accepts_the_repository_in_its_usual_forms(self):
-        for url in (GOOD, GOOD + ".git", GOOD + "/", GOOD + ".git/", "git@github.com:Print-Partner/PrintPartner.git",
-                    "github.com:Print-Partner/PrintPartner", "ssh://git@github.com/Print-Partner/PrintPartner"):
-            with self.subTest(url=url):
-                self.assertEqual(publisher.normalize_remote(url), publisher.EXPECTED)
+    def origin_accepted(self, url):
+        self.make_repo(self.cache, url)
+        try:
+            return publisher.cache_ok(self.cache)
+        finally:
+            shutil.rmtree(self.cache)
 
-    def test_refuses_credentials_in_a_url(self):
-        for url in (f"https://x-access-token:{TOKEN}@github.com/Print-Partner/PrintPartner",
-                    "https://user@github.com/Print-Partner/PrintPartner",
-                    "https://:pw@github.com/Print-Partner/PrintPartner",
-                    "ssh://evil@github.com/Print-Partner/PrintPartner",
-                    "ssh://git:pw@github.com/Print-Partner/PrintPartner",
-                    "evil@github.com:Print-Partner/PrintPartner",
-                    "a@git@github.com:Print-Partner/PrintPartner"):
+    def test_accepts_only_the_exact_https_origin(self):
+        for url in (GOOD, GOOD + ".git"):
             with self.subTest(url=url):
-                self.assertIsNone(publisher.normalize_remote(url))
+                self.assertTrue(self.origin_accepted(url))
 
-    def test_normalizing_never_matches_another_repository(self):
-        for url in ("https://github.com/poitee/PrintPartner", "https://github.com/Print-Partner/PrintPartner2",
-                    "https://github.com/Print-Partner/PrintPartner/extra",
-                    "https://github.com.evil/Print-Partner/PrintPartner",
-                    "https://evil.com/github.com/Print-Partner/PrintPartner",
-                    "http://github.com/Print-Partner/PrintPartner", "https://github.com:444/Print-Partner/PrintPartner",
-                    "https://github.com/Print-Partner/PrintPartner?x=1", "git@evil.com:Print-Partner/PrintPartner",
-                    "github.com:Print-Partner/PrintPartner/x", "https://github.com/Print-Partner/Print%50artner",
-                    "file:///github.com/Print-Partner/PrintPartner", "/tmp/github.com/Print-Partner/PrintPartner",
-                    "https://github.com℀/Print-Partner/PrintPartner",
-                    "https://github.com：443/Print-Partner/PrintPartner", ""):
-            with self.subTest(url=url):
-                self.assertNotEqual(publisher.normalize_remote(url), publisher.EXPECTED)
+    def test_refuses_every_other_origin(self):
+        for url in ("git@github.com:Print-Partner/PrintPartner.git", "ssh://git@github.com/Print-Partner/PrintPartner",
+                    "github.com:Print-Partner/PrintPartner", GOOD + "/", GOOD + ".git/",
+                    f"https://x-access-token:{TOKEN}@github.com/Print-Partner/PrintPartner",
+                    "https://user@github.com/Print-Partner/PrintPartner", "http://github.com/Print-Partner/PrintPartner",
+                    "https://github.com/poitee/PrintPartner", "https://github.com/Print-Partner/PrintPartner2",
+                    "https://github.com/print-partner/printpartner", "https://github.com:443/Print-Partner/PrintPartner",
+                    "https://github.com/Print-Partner/PrintPartner/extra", "https://github.com.evil/Print-Partner/PrintPartner",
+                    "https://github.com/Print-Partner/PrintPartner?x=1", "https://github.com/Print-Partner/Print%50artner",
+                    "https://github.com\u2100/Print-Partner/PrintPartner",
+                    "https://github.com\uff1a443/Print-Partner/PrintPartner", "file:///github.com/Print-Partner/PrintPartner",
+                    "/tmp/github.com/Print-Partner/PrintPartner"):
+            with self.subTest(url=url.encode("unicode_escape").decode().replace(TOKEN, "<token>")):
+                self.assertFalse(self.origin_accepted(url))
 
     def test_a_cache_whose_origin_has_a_token_is_refused(self):
         self.make_repo(self.cache, f"https://x-access-token:{TOKEN}@github.com/Print-Partner/PrintPartner")
@@ -148,18 +161,57 @@ class Remotes(Base):
 
 
 class CacheShape(Base):
-    def test_refuses_local_rewrite_and_include_config(self):
-        for key, value in ((f"url.{FOREIGN}.insteadOf", GOOD), (f"url.{FOREIGN}.pushInsteadOf", GOOD),
-                           ("include.path", "/dev/null"), ("includeIf.onbranch:evidence/**.path", "/dev/null")):
+    def test_refuses_any_local_config_outside_the_allowlist(self):
+        for key, value in (("core.sshCommand", "ssh -o ProxyCommand=elsewhere"),
+                           ("http.proxy", "http://127.0.0.1:9"),
+                           ("credential.helper", "store --file /tmp/captured"),
+                           ("credential.https://github.com.helper", "store"),
+                           ("http.extraHeader", f"Authorization: bearer {TOKEN}"),
+                           ("http.https://github.com/.extraHeader", "X-Leak: 1"),
+                           ("protocol.allow", "always"), ("protocol.ssh.allow", "always"),
+                           ("remote.origin.pushurl", GOOD), ("remote.backup.url", GOOD),
+                           (f"url.{FOREIGN}.insteadOf", GOOD), (f"url.{FOREIGN}.pushInsteadOf", GOOD),
+                           ("include.path", "/dev/null"), ("includeIf.onbranch:evidence/**.path", "/dev/null"),
+                           ("core.hooksPath", "/tmp/hooks"), ("core.fsmonitor", "true"),
+                           ("extensions.worktreeConfig", "true")):
             with self.subTest(key=key.replace(TOKEN, "<token>")):
                 self.make_repo(self.cache)
                 try:
                     plain_git("-C", str(self.cache), "config", key, value)
                     message = self.refused()
-                    self.assertIn("include, includeIf or url config", message)
+                    self.assertIn("a key outside the allowlist", message)
                     self.assertNotIn(TOKEN, message)
                 finally:
                     shutil.rmtree(self.cache)
+
+    def test_a_partial_clone_passes_the_allowlist(self):
+        # The same clone command the harness runs, from a local source (file:// is only for
+        # this setup; the isolated env blocks it), then pointed at the real origin.
+        source = self.base / "source.git"
+        plain_git("init", "-q", "--bare", str(source))
+        plain_git("-C", str(source), "config", "uploadpack.allowFilter", "true")
+        work = self.base / "work"
+        plain_git("init", "-q", "-b", "main", str(work))
+        plain_git("-C", str(work), "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q",
+                  "--allow-empty", "-m", "seed")
+        plain_git("-C", str(work), "push", "-q", str(source), "main")
+        plain_git("clone", "--quiet", "--no-checkout", "--filter=blob:none", source.as_uri(), str(self.cache))
+        plain_git("-C", str(self.cache), "remote", "set-url", "origin", GOOD)
+        keys = publisher.git("-C", str(self.cache), "config", "--local", "--name-only", "--list").stdout.split()
+        self.assertIn("remote.origin.promisor", keys)
+        self.assertTrue(any(key.startswith("branch.") and key.endswith(".merge") for key in keys), keys)
+        self.assertTrue(publisher.local_config_ok(self.cache), keys)
+        # The publisher's `checkout -B evidence/<branch> origin/...` adds branch tracking keys.
+        plain_git("-C", str(self.cache), "config", "branch.evidence/gre-1281.remote", "origin")
+        plain_git("-C", str(self.cache), "config", "branch.evidence/gre-1281.merge", "refs/heads/evidence/gre-1281")
+        self.assertEqual(publisher.evidence_cache(), Path(os.path.realpath(self.cache)))
+
+    @unittest.skipUnless(os.environ.get("PP_EVIDENCE_NETWORK_TESTS") == "1",
+                         "set PP_EVIDENCE_NETWORK_TESTS=1 to clone from GitHub")
+    def test_a_real_harness_clone_passes_the_allowlist(self):
+        self.assertTrue(publisher.clone_cache(self.cache))
+        self.assertTrue(publisher.local_config_ok(self.cache))
+        self.assertTrue(publisher.cache_ok(self.cache))
 
     def test_refuses_a_symlinked_cache(self):
         elsewhere = self.base / "elsewhere"

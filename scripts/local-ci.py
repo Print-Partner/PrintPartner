@@ -163,6 +163,7 @@ STEPS = [
          requires=(("git", None), ("cargo", None), ("python3", None)),
          host_only="" if sys.platform == "linux" else "needs Linux for the Clippy baseline"),
     Step("nextest-off", "nextest, desktop_rebuild off", (
+        "PP_FILTER_CARGO_TESTS=1 python3 -B -m unittest discover -s scripts -p test_ci_desktop_rebuild_off_filter.py",
         "off_filter=$(python3 -B scripts/ci-desktop-rebuild-off-filter.py)",
         CARGO.format("nextest run") + ' --no-fail-fast --no-tests=warn -E "($NEXTEST_FILTER) & ($off_filter)"'),
          (CROSS_OS + "nextest (desktop_rebuild off)",), requires=NEXTEST + (("python3", None),),

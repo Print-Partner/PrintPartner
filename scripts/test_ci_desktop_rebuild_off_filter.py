@@ -1,6 +1,8 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +20,12 @@ def crate(root, name, manifest_tail=""):
         f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n{manifest_tail}')
 
 
+# The changes job runs this file with Python only, so the tests that run cargo need an opt-in. The
+# nextest (desktop_rebuild off) step sets it, after the toolchain and crates are in place.
+CARGO_TESTS = os.environ.get("PP_FILTER_CARGO_TESTS") == "1" and shutil.which("cargo") is not None
+
+
+@unittest.skipUnless(CARGO_TESTS, "set PP_FILTER_CARGO_TESTS=1 with cargo on PATH to run cargo metadata")
 class FixtureWorkspaceTests(unittest.TestCase):
     def test_only_packages_that_cannot_reach_the_feature_skip_the_off_pass(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -179,6 +187,10 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotIn("off_filter", step)
         # macOS PRs skip the on pass, so they keep the whole off pass; no other job sets it.
         self.assertEqual(text.count("PP_NEXTEST_OFF_ALL:"), 1)
+        # The cargo-backed tests run here, where the toolchain and crates already exist; never in changes.
+        self.assertIn("PP_FILTER_CARGO_TESTS=1 python3 -B -m unittest discover -s scripts -p "
+                      "test_ci_desktop_rebuild_off_filter.py\n", off_step)
+        self.assertEqual(text.count("PP_FILTER_CARGO_TESTS"), 1)
         macos = text.split("\n  rust-macos:\n", 1)[1].split("\n  rust-windows:\n", 1)[0]
         self.assertIn("      PP_NEXTEST_OFF_ALL: ${{ github.event_name == 'pull_request' }}\n", macos)
 

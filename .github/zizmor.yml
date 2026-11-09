@@ -26,4 +26,4 @@ rules:
       - desktop-e2e.yml:45
       - desktop-webkit.yml:46
       - rust-cross-os.yml:179
-      - rust-cross-os.yml:396
+      - rust-cross-os.yml:397

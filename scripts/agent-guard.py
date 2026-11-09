@@ -109,6 +109,7 @@ LANE_PROTECTED_FILES = frozenset({
     "rust/crates/pp-storage/src/domain_events.rs",
     "rust/crates/pp-storage/src/jobs.rs",
     "rust/crates/pp-storage/src/native_secrets.rs",
+    "rust/crates/pp-storage/src/order_authority.rs",
     "rust/crates/pp-storage/src/plan_publication.rs",
     "rust/crates/pp-storage/src/plan_publication/preview.rs",
     "rust/crates/pp-storage/src/schema.rs",

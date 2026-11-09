@@ -4,7 +4,9 @@
 //! rmcp. Every request needs a valid API key for the routed tenant: a session
 //! cookie alone is refused, and so is a key the auth worker does not resolve
 //! to that tenant (unknown, revoked or expired). Host and Origin must match
-//! the listener exactly. Write tools only propose; `confirm_apply` applies.
+//! the listener exactly; then the request counts against Node's budget of
+//! 1000 a minute before its key is checked (`mcp/rate_limit.rs`). Write tools
+//! only propose; `confirm_apply` applies.
 //! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
 //! (GRE-1170, `mcp/checkoff.rs`).
 //! LAN peers stay out until the T-14 trust classes land.
@@ -60,6 +62,8 @@ pub struct McpHttpConfig {
     api_key_tenant: String,
     enabled: bool,
     wait: Duration,
+    limit: u32,
+    window: Duration,
 }
 
 impl McpHttpConfig {
@@ -72,7 +76,17 @@ impl McpHttpConfig {
             api_key_tenant: api_key_tenant.into(),
             enabled: rebuild_flag_enabled(flag),
             wait: Duration::from_millis(100),
+            limit: rate_limit::LIMIT,
+            window: rate_limit::WINDOW,
         })
+    }
+
+    /// A smaller budget, so a test can exhaust and reset it.
+    #[cfg(test)]
+    pub(crate) fn with_budget(mut self, limit: u32, window: Duration) -> Self {
+        self.limit = limit;
+        self.window = window;
+        self
     }
 }
 
@@ -81,6 +95,7 @@ struct Guard {
     config: McpHttpConfig,
     auth: RebuildAuthClient,
     admission: Arc<Semaphore>,
+    budget: Arc<rate_limit::Budget>,
 }
 
 /// The clients ported tools use: `get_build_workflow` reads the same client as
@@ -133,6 +148,7 @@ pub fn mcp_router(
         .route_service("/api/v1/mcp", service)
         .layer(middleware::from_fn_with_state(
             Guard {
+                budget: Arc::new(rate_limit::Budget::new(config.limit, config.window)),
                 config,
                 auth,
                 admission: Arc::new(Semaphore::new(ADMISSION_PERMITS)),
@@ -175,8 +191,9 @@ async fn guard(
         config,
         auth,
         admission,
+        budget,
     }): axum::extract::State<Guard>,
-    mut request: axum::extract::Request,
+    request: axum::extract::Request,
     next: Next,
 ) -> Response {
     if let Err((status, detail)) = admit(
@@ -187,6 +204,24 @@ async fn guard(
     ) {
         return failure(status, detail);
     }
+    let quota = budget.consume();
+    if let Some(refused) = quota.rejection() {
+        return refused;
+    }
+    let mut response = authenticated(config, auth, admission, request, next).await;
+    quota.apply(&mut response);
+    response
+}
+
+/// Resolves the request's API key for the routed tenant and runs the request
+/// with it, or refuses.
+async fn authenticated(
+    config: McpHttpConfig,
+    auth: RebuildAuthClient,
+    admission: Arc<Semaphore>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
     let Some(PresentedCredential::ApiKey { tenant, secret }) =
         principal(request.headers(), &config.api_key_tenant)
     else {
@@ -423,6 +458,8 @@ impl ServerHandler for ProductMcp {
 mod checkoff;
 #[path = "mcp/plan_accept.rs"]
 mod plan_accept;
+#[path = "mcp/rate_limit.rs"]
+mod rate_limit;
 
 #[cfg(test)]
 #[path = "mcp/tests.rs"]

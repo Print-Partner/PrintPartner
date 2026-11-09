@@ -407,3 +407,71 @@ async fn gre_1236_mcp_confirm_selects_the_automatic_reconciliation_propose_write
     drop(mcp);
     server.close().await;
 }
+
+/// GRE-1039: a key admits the call, but a write tool still only proposes.
+/// The proposal writes nothing, another authenticated session can neither see
+/// nor confirm it, and only `confirm_apply` in the proposing session applies.
+/// The GRE-1236 tests above cover the Accept outcomes themselves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confirm_apply() {
+    let server = proposed_header().await;
+    let mcp = Mcp::start(&server).await;
+    let other = Mcp::start(&server).await;
+    let before = plan_rows(&server);
+    let (failed, proposed) = mcp.propose().await;
+    assert!(!failed, "{proposed}");
+    assert_eq!(plan_rows(&server), before, "a proposal writes nothing");
+    let id = proposed["action"]["id"].as_str().unwrap().to_owned();
+
+    let (_, pending) = other.call("list_pending_actions", json!({})).await;
+    assert_eq!(pending, json!({"actions": []}));
+    let (failed, refused) = other.confirm(&id).await;
+    assert!(failed, "{refused}");
+    assert_eq!(plan_rows(&server), before, "another session cannot confirm");
+
+    let (failed, confirmed) = mcp.confirm(&id).await;
+    assert!(!failed, "{confirmed}");
+    assert_eq!(build_name(&server), "Renamed by MCP");
+    assert_eq!(snapshot_headers(&server), 1);
+    drop((mcp, other));
+    server.close().await;
+}
+
+/// GRE-1039: rmcp runs each call on its own task and only signals a
+/// cancellation, so a `confirm_apply` whose request the client cancels and
+/// stops reading still finishes: Accept applies once, the proposal is gone
+/// rather than lost half way, and the session serves the next call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ticket_t_16_mcp_a_cancelled_confirm_still_applies_once() {
+    let server = proposed_header().await;
+    let mcp = Mcp::start(&server).await;
+    let (_, proposed) = mcp.propose().await;
+    let id = proposed["action"]["id"].as_str().unwrap().to_owned();
+    let confirm = json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
+        "params":{"name":"confirm_apply","arguments":{"action_id":id}}});
+    // `send` returns at the reply's headers, before its body is read.
+    let reply = mcp.send(&confirm).await;
+    assert_eq!(reply.status(), 200);
+    let cancel = json!({"jsonrpc":"2.0","method":"notifications/cancelled",
+        "params":{"requestId":7,"reason":"client cancelled"}});
+    assert_eq!(mcp.send(&cancel).await.status(), 202);
+    drop(reply);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while build_name(&server) != "Renamed by MCP" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cancelled confirm did not finish"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(snapshot_headers(&server), 1);
+    let (failed, pending) = mcp.call("list_pending_actions", json!({})).await;
+    assert!(!failed, "{pending}");
+    assert_eq!(pending, json!({"actions": []}));
+    let (failed, again) = mcp.confirm(&id).await;
+    assert!(failed, "{again}");
+    assert_eq!(snapshot_headers(&server), 1);
+    drop(mcp);
+    server.close().await;
+}

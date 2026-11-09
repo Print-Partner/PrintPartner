@@ -154,11 +154,12 @@ pub(crate) struct Command {
 }
 
 impl PrintGramsClient {
-    /// Records `measured_mm` for the newest watching Checkoff link of host
+    /// Records `measured_mm` for the newest `watching`, `awaiting_verify` or
+    /// `verified` Checkoff link of host
     /// `integration_id` whose file is `filename` and that existed at
     /// `finished_at`, when the watcher saw the print finish. A link created
     /// later is a newer send of the same file name and never gets this
-    /// length. `None` when no watching link matches.
+    /// length. `None` when no such link matches.
     pub fn measured(
         &self,
         integration_id: &str,
@@ -192,7 +193,7 @@ pub(crate) fn execute(
     admission: crate::writer_admission::Deadline,
 ) -> Result<Option<Measurement>> {
     let tx = crate::writer_admission::begin_immediate(connection, admission)?;
-    let link = crate::checkoff_progress::watching_link(
+    let link = crate::checkoff_progress::finished_link(
         &tx,
         &command.tenant,
         &command.integration_id,

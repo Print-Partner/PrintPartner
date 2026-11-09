@@ -487,6 +487,76 @@ async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn gre_1165_a_link_reconciled_or_verified_before_the_write_is_still_measured() {
+    use pp_storage::print_grams::Measurement;
+    let stats = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"a.gcode","filament_used":4000.0}}}}"#;
+    let printer = RoutedPrinter::start(vec![
+        (UPLOAD.into(), 201, b"{}".to_vec()),
+        (PRINT_STATS.into(), 200, stats.to_vec()),
+    ])
+    .unwrap();
+    let farm = Farm::sent(&printer).await;
+    let set_state = |state: &str| {
+        farm.database()
+            .execute(
+                "UPDATE app_settings SET value=json_set(value,'$[0].state',?1) WHERE tenant_id='default' AND key='printer.checkoff_links'",
+                [state],
+            )
+            .unwrap();
+    };
+    set_state("dismissed");
+    assert_eq!(
+        farm.finish("a.gcode").await,
+        None,
+        "a dismissed link is not measured"
+    );
+    assert_eq!(farm.grams(), estimate());
+    set_state("awaiting_verify");
+    let before_send = std::time::SystemTime::UNIX_EPOCH;
+    assert_eq!(
+        farm.finish_at(Some("a.gcode"), before_send).await,
+        None,
+        "a link created after the finish never takes its length"
+    );
+    assert_eq!(farm.grams(), estimate());
+    assert_eq!(farm.finish("a.gcode").await, Some(Measurement::Recorded));
+    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
+    assert_eq!(
+        farm.links()[0]["state"],
+        "awaiting_verify",
+        "Checkoff is untouched"
+    );
+    assert_eq!(
+        farm.finish("a.gcode").await,
+        Some(Measurement::AlreadyMeasured)
+    );
+
+    let printer = RoutedPrinter::start(vec![
+        (UPLOAD.into(), 201, b"{}".to_vec()),
+        (PRINT_STATS.into(), 200, stats.to_vec()),
+    ])
+    .unwrap();
+    let farm = Farm::sent(&printer).await;
+    farm.database()
+        .execute(
+            "UPDATE app_settings SET value=json_set(value,'$[0].state','verified') WHERE tenant_id='default' AND key='printer.checkoff_links'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(farm.finish("a.gcode").await, Some(Measurement::Recorded));
+    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
+    assert_eq!(
+        farm.links()[0]["state"],
+        "verified",
+        "Checkoff is untouched"
+    );
+    assert_eq!(
+        farm.finish("a.gcode").await,
+        Some(Measurement::AlreadyMeasured)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn gre_1165_no_finished_length_for_the_file_keeps_the_estimate() {
     let stats = |state: &str, filename: &str, used: f64| {
         format!(

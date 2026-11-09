@@ -677,12 +677,15 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
     Ok(Op::Unit { target, change })
 }
 
-/// The newest watching link of host `integration_id`, created at or before
-/// `created_by`, whose filename or remote path names `filename`, matched
-/// like Node's `printerFilenamesMatch`: the trimmed base name,
-/// case-insensitively.
+/// The newest link of host `integration_id` that is `watching`,
+/// `awaiting_verify` or `verified`, created at or before `created_by`, whose
+/// filename or remote path names `filename`, matched like Node's
+/// `printerFilenamesMatch`: the trimmed base name, case-insensitively. The
+/// later two count because Node's checkoff reconcile, and then a fast
+/// verify, can move the link on between the finish and the measured write.
+/// Only the measurement is written; the link's state is never changed here.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn watching_link(
+pub(crate) fn finished_link(
     tx: &Transaction<'_>,
     tenant: &str,
     integration_id: &str,
@@ -702,8 +705,10 @@ pub(crate) fn watching_link(
         .iter()
         .rev()
         .find(|link| {
-            link["state"] == "watching"
-                && link["integration_id"] == integration_id
+            matches!(
+                link["state"].as_str(),
+                Some("watching" | "awaiting_verify" | "verified")
+            ) && link["integration_id"] == integration_id
                 && link["created_at"]
                     .as_str()
                     .is_some_and(|at| at <= created_by)

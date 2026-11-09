@@ -4143,7 +4143,8 @@ print finished (`complete` or `FINISHED`), so a slow observer never records the
 next print's usage against this one. When the status named a file, the read
 must name the same base name. When it named none, the read's file name is used:
 PrusaLink's `/api/v1/status` job carries no `file`, so a PrusaLink finish is
-named by `/api/v1/job` alone. Storage then picks the newest `watching` Checkoff link of that
+named by `/api/v1/job` alone. Storage then picks the newest `watching`, `awaiting_verify` or `verified`
+Checkoff link of that
 host created no later than the moment the observer saw the finish, so a send of
 the same file name uploaded after it never takes its length, and whose `filename` or `remote_path` has the finished file's base name
 (trimmed, `\` read as `/`, case-insensitive, like Node's
@@ -4154,13 +4155,23 @@ observer records nothing when:
   startup, or after it lagged behind the transition stream;
 - the read fails, no longer reports that file as finished, or reports no
   positive length (the read is not retried);
-- no watching link names the file;
+- no `watching`, `awaiting_verify` or `verified` link names the file;
 - the link already has a measured length, such as when the same file name is
   printed again from the printer's own history: the first measurement stays.
 
 In each case the estimate stays. The observer never changes Checkoff state and
 never dispatches a send, and it does not port Node's guess that a print near
 100% that turns idle has finished.
+
+`awaiting_verify` and `verified` links count because the link can move on between the finish
+and the measured write. Node owns the host-completion transition: its
+`POST /printer-checkoff/reconcile` (`reconcilePrinterCheckoff`, polled by the
+old UI) moves a finished `watching` link to `awaiting_verify`, and a fast verify
+then makes it `verified`. That route is still unresolved in the Rust gateway's
+ownership manifest, and the Rust-only runtime has no reconcile of its own: its
+only move out of `watching` is `manual-complete`, which is for `manual:`
+printers that no watcher observes. The observer writes only the grams row and
+never the link's state.
 
 The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
 grams from this table instead of `print_jobs.filament_consumed_g`, which

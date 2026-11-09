@@ -9,7 +9,8 @@
 //! next print's usage. A status without a file name still counts: PrusaLink's
 //! `/api/v1/status` job carries no `file`, so its name comes from that
 //! finished read alone. Storage converts it
-//! with the send's grams per millimetre for the newest watching Checkoff link
+//! with the send's grams per millimetre for the newest `watching`,
+//! `awaiting_verify` or `verified` Checkoff link
 //! of that host whose file is the finished one and that existed when the
 //! finish was seen. A link is measured once; a later finish of the same file
 //! name leaves its measurement. A `complete` the watchers did
@@ -88,7 +89,7 @@ fn finished(
 }
 
 /// Reads host `integration_id`'s finished print once and records its
-/// filament length for the watching link of the file that read names, as
+/// filament length for the open link of the file that read names, as
 /// long as the link existed when the print was seen finishing at
 /// `finished_at`. When the status named `filename`, the read must name the
 /// same file. A failed read or write, a printer no longer reporting a

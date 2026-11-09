@@ -1682,28 +1682,38 @@ pub(super) fn header_version(
     )
 }
 
-/// Draft `draft_id`'s header row, or `DuplicateBuildName` when its name is
-/// one another Build of `tenant` already has, the rule a Build rename checks
-/// (`Profile already exists`).
+/// Draft `draft_id`'s header row, or the refusal Accept answers for it:
+/// `DuplicateBuildName` when its name is one another Build of `tenant`
+/// already has, the rule a Build rename checks (`Profile already exists`),
+/// and `DuplicateOrder` when it gives Build `profile` an order number another
+/// unarchived Build holds ([`crate::order_authority::claim`]). Accept and its
+/// preview call it at the same point, before anything writes.
 fn draft_header(
     tx: &Transaction<'_>,
     tenant: &str,
     profile: i64,
     draft_id: i64,
 ) -> Result<std::result::Result<Option<crate::working_drafts::header::DraftHeaderState>, Outcome>> {
-    let header = crate::working_drafts::header::read(tx, tenant, draft_id)?;
-    let Some(name) = header.as_ref().map(|state| state.header.name.as_str()) else {
+    let Some(state) = crate::working_drafts::header::read(tx, tenant, draft_id)? else {
         return Ok(Ok(None));
     };
-    Ok(
-        if crate::build_graph::header::name_taken(tx, tenant, name, profile)? {
-            Err(Outcome::DuplicateBuildName {
-                name: name.to_owned(),
-            })
-        } else {
-            Ok(header)
-        },
-    )
+    let name = state.header.name.as_str();
+    if crate::build_graph::header::name_taken(tx, tenant, name, profile)? {
+        return Ok(Err(Outcome::DuplicateBuildName {
+            name: name.to_owned(),
+        }));
+    }
+    let proposed = state.header.order_number.as_deref();
+    let current = crate::working_drafts::header::build_header(tx, tenant, profile)?.order_number;
+    if let Err(builds) =
+        crate::order_authority::claim(tx, tenant, profile, current.as_deref(), proposed)?
+    {
+        return Ok(Err(Outcome::DuplicateOrder {
+            order_number: proposed.unwrap_or_default().to_owned(),
+            builds,
+        }));
+    }
+    Ok(Ok(Some(state)))
 }
 
 /// Copies the accepted draft's header to Build `profile`: name and order

@@ -178,7 +178,11 @@ One immediate transaction (`pp_storage::working_drafts::restore`):
    (`base_revision_part_id`) is the current Accepted Part that holds its
    Required-unit tokens, so the selection reuses them when the Part is
    otherwise unchanged. A Part the current Plan no longer has is new, and
-   Accept gives it new tokens; a retired token is never reused.
+   Accept gives it new tokens; a retired token is never reused. Each Part
+   keeps the revision's `included` flag, role override, filament color,
+   custom hex and Spoolman spool. Accept publishes the revision's values, except
+   that a Part with a predecessor takes that Part's live filament, as every
+   Accept does (GRE-479).
 8. A current Part with printed (completed) units must keep at least that many
    units in the restored draft. This is a quantity check only. When a restored
    Part's artifact, Source or role differs from its predecessor's, the

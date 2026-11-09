@@ -16,7 +16,7 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc)
-REPO = "poitee/PrintPartner"
+REPO = "Print-Partner/PrintPartner"
 BASE = {"EVENT_NAME": "push", "REPOSITORY": REPO, "GH_TOKEN": "actions-token", "RUN_ID": "1"}
 
 
@@ -55,7 +55,7 @@ class RustRunnerTests(unittest.TestCase):
         return runner.choose({**BASE, **env}, api or Api(), NOW)
 
     def test_pull_requests_and_other_events_that_stay_hosted(self):
-        for env in ({"EVENT_NAME": "pull_request_target"},
+        for env in ({"EVENT_NAME": "pull_request_target"}, {"EVENT_NAME": "merge_group"},
                     {"EVENT_NAME": "schedule"}, {"EVENT_NAME": ""},
                     {"PP_RUST_RUNNER": "hosted"}, {"PP_RUST_RUNNER": " Hosted "},
                     {"PP_RUST_RUNNER": "maybe"}):
@@ -65,7 +65,7 @@ class RustRunnerTests(unittest.TestCase):
                 self.assertEqual(api.calls, [])
 
     def test_local_events_use_pp_local_by_default(self):
-        for event in ("push", "merge_group", "workflow_dispatch"):
+        for event in ("push", "workflow_dispatch"):
             for mode in ("", "local", "LOCAL"):
                 with self.subTest(event=event, mode=mode):
                     self.assertEqual(self.choose(EVENT_NAME=event, PP_RUST_RUNNER=mode)[0],
@@ -89,7 +89,7 @@ class RustRunnerTests(unittest.TestCase):
         runs_on, reason = self.choose(api, RUNNER_TOKEN="admin")
         self.assertEqual(runs_on, runner.HOSTED)
         self.assertIn("run 7", reason)
-        self.assertIn(("repos/poitee/PrintPartner/actions/runs/7/jobs", "actions-token"), api.calls)
+        self.assertIn(("repos/Print-Partner/PrintPartner/actions/runs/7/jobs", "actions-token"), api.calls)
 
     def test_a_stale_pp_local_rust_job_routes_new_runs_to_hosted(self):
         for jobs, expected in (
@@ -134,9 +134,9 @@ class RustRunnerTests(unittest.TestCase):
                 self.assertEqual(self.choose(**env)[0], blacksmith)
 
     def test_pp_pr_runner_does_not_move_other_events(self):
-        for event in ("push", "merge_group", "workflow_dispatch"):
+        for event in ("push", "workflow_dispatch"):
             self.assertEqual(self.choose(EVENT_NAME=event, PP_PR_RUNNER="blacksmith")[0], runner.LOCAL)
-        for event in ("schedule", "pull_request_target", ""):
+        for event in ("merge_group", "schedule", "pull_request_target", ""):
             self.assertEqual(self.choose(EVENT_NAME=event, PP_PR_RUNNER="blacksmith")[0], runner.HOSTED)
 
     def test_runner_kind_names_the_pool(self):
@@ -166,7 +166,7 @@ class RustRunnerTests(unittest.TestCase):
                 self.assertEqual(values["linux_kind"], kind)
 
     def test_main_keeps_the_smoke_job_hosted_on_local_events(self):
-        for event, mode in (("push", "blacksmith"), ("merge_group", "pp-iso"), ("workflow_dispatch", "blacksmith")):
+        for event, mode in (("push", "blacksmith"), ("push", "pp-iso"), ("workflow_dispatch", "blacksmith")):
             with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
                 output, summary = Path(directory, "output"), Path(directory, "summary")
                 env = {"EVENT_NAME": event, "PP_PR_RUNNER": mode, "REPOSITORY": REPO,

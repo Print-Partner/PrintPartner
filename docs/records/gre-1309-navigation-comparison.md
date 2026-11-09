@@ -31,7 +31,7 @@ Each session gets one question. The prompt names the worktree, says to answer fr
 
 ## Scoring
 
-- **Files opened:** distinct repository files whose contents the session read, counted from the thread's tool log. Read-tool calls and shell commands that print file contents (`cat`, `sed -n`, `head`, `tail`, `nl`, `less`) count. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened.
+- **Files opened** (counted by [`navcount.py`](gre-1309/navcount.py); prompt in [`prompt.txt`](gre-1309/prompt.txt)): distinct repository files whose contents the session read, counted from the thread's tool log. Read-tool calls and shell commands that print file contents (`cat`, `sed -n`, `head`, `tail`, `nl`, `less`) count. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened.
 - **Minutes:** from the run's start to its completion timestamp in the thread log.
 - **Correctness:** the coordinator marks the final answer against the key below. The answer is correct only when it contains every required fact, and incorrect if it names a listed wrong answer as the answer.
 - **Sessions:** three per model, per question, per arm, so 60 in all.
@@ -87,4 +87,99 @@ Wrong answers: `cargo test` or `cargo nextest run` alone; the hand-run list in `
 
 ## Results
 
-Added as sessions finish.
+### Without arm (complete, 2026-11-09)
+
+All 30 sessions ran on `7908c703` between 21:23 and 21:40 UTC. Files are counted by `navcount.py`, which reads each session's tool log and applies the rule in Scoring. "Correct" is the coordinator's mark against the key.
+
+| Question | Model | Session | Files opened | Minutes | Correct |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Claude | 1 | 2 | 0.6 | yes |
+| 1 | Claude | 2 | 5 | 0.6 | yes |
+| 1 | Claude | 3 | 1 | 0.5 | yes |
+| 1 | Codex | 1 | 5 | 0.9 | yes |
+| 1 | Codex | 2 | 4 | 0.4 | yes |
+| 1 | Codex | 3 | 2 | 0.7 | yes |
+| 2 | Claude | 1 | 3 | 0.4 | yes |
+| 2 | Claude | 2 | 3 | 0.4 | yes |
+| 2 | Claude | 3 | 3 | 0.5 | yes |
+| 2 | Codex | 1 | 1 | 0.4 | yes |
+| 2 | Codex | 2 | 1 | 0.4 | yes |
+| 2 | Codex | 3 | 2 | 0.5 | yes |
+| 3 | Claude | 1 | 2 | 0.3 | yes |
+| 3 | Claude | 2 | 0 | 0.4 | yes |
+| 3 | Claude | 3 | 3 | 0.5 | yes |
+| 3 | Codex | 1 | 1 | 0.4 | yes |
+| 3 | Codex | 2 | 1 | 0.4 | yes |
+| 3 | Codex | 3 | 1 | 0.5 | yes |
+| 4 | Claude | 1 | 3 | 0.4 | yes |
+| 4 | Claude | 2 | 1 | 0.3 | yes |
+| 4 | Claude | 3 | 2 | 0.5 | yes |
+| 4 | Codex | 1 | 1 | 0.4 | yes |
+| 4 | Codex | 2 | 1 | 0.6 | yes |
+| 4 | Codex | 3 | 1 | 0.5 | yes |
+| 5 | Claude | 1 | 2 | 0.3 | yes |
+| 5 | Claude | 2 | 1 | 0.4 | yes |
+| 5 | Claude | 3 | 2 | 0.5 | yes |
+| 5 | Codex | 1 | 2 | 0.4 | yes |
+| 5 | Codex | 2 | 4 | 0.6 | yes |
+| 5 | Codex | 3 | 2 | 0.5 | yes |
+
+Per question and model, as the mean of the three sessions:
+
+| Question | Claude files | Claude minutes | Codex files | Codex minutes |
+| --- | --- | --- | --- | --- |
+| 1 | 2.67 | 0.57 | 3.67 | 0.67 |
+| 2 | 3.0 | 0.43 | 1.33 | 0.43 |
+| 3 | 1.67 | 0.4 | 1.0 | 0.43 |
+| 4 | 2.0 | 0.4 | 1.0 | 0.5 |
+| 5 | 1.67 | 0.4 | 2.67 | 0.5 |
+
+Files opened in each session, as `navcount.py` counted them:
+
+- Q1 claude r1: `rust/crates/pp-storage/src/plan_publication.rs`, `rust/crates/pp-storage/src/plan_publication/tests.rs`
+- Q1 claude r2: `rust/crates/pp-api/src/drafts/http.rs`, `rust/crates/pp-api/src/drafts/http/tests/accept_header.rs`, `rust/crates/pp-storage/src/plan_publication.rs`, `rust/crates/pp-storage/src/plan_publication/tests.rs`, `rust/crates/pp-storage/src/working_drafts.rs`
+- Q1 claude r3: `rust/crates/pp-api/src/drafts/http/tests/accept_header.rs`
+- Q1 codex r1: `rust/crates/pp-api/src/drafts/http.rs`, `rust/crates/pp-api/src/drafts/http/lifecycle.rs`, `rust/crates/pp-storage/src/plan_publication.rs`, `rust/crates/pp-storage/src/plan_publication/tests.rs`, `web/apps/server/src/db/plan-drafts.test.ts`
+- Q1 codex r2: `docs/desktop-rebuild.md`, `rust/crates/pp-api/src/drafts/http/lifecycle.rs`, `rust/crates/pp-storage/src/plan_publication.rs`, `rust/crates/pp-storage/src/plan_publication/tests.rs`
+- Q1 codex r3: `docs/architecture.md`, `rust/crates/pp-storage/src/plan_publication/tests.rs`
+- Q2 claude r1: `rust/crates/pp-api/src/farm.rs`, `rust/crates/pp-storage/src/read_model/farm.rs`, `rust/crates/pp-storage/src/send_queue.rs`
+- Q2 claude r2: `rust/crates/pp-api/src/farm.rs`, `rust/crates/pp-storage/src/read_model/farm.rs`, `rust/crates/pp-storage/src/send_queue.rs`
+- Q2 claude r3: `rust/crates/pp-api/src/farm.rs`, `rust/crates/pp-storage/src/read_model/farm.rs`, `rust/crates/pp-storage/src/send_queue.rs`
+- Q2 codex r1: `rust/crates/pp-storage/src/send_queue.rs`
+- Q2 codex r2: `rust/crates/pp-storage/src/send_queue.rs`
+- Q2 codex r3: `docs/send-queue.md`, `rust/crates/pp-storage/src/send_queue.rs`
+- Q3 claude r1: `docs/architecture.md`, `rust/scripts/check-boundaries.py`
+- Q3 claude r2: none
+- Q3 claude r3: `docs/adr/0007-rust-crate-layout.md`, `docs/architecture.md`, `rust/scripts/check-boundaries.py`
+- Q3 codex r1: `rust/scripts/check-boundaries.py`
+- Q3 codex r2: `rust/scripts/check-boundaries.py`
+- Q3 codex r3: `rust/scripts/check-boundaries.py`
+- Q4 claude r1: `rust/crates/pp-api/src/checkoff.rs`, `rust/crates/pp-storage/src/checkoff_progress.rs`, `rust/crates/pp-storage/src/checkoff_progress/burst.rs`
+- Q4 claude r2: `rust/crates/pp-storage/src/checkoff_progress/burst.rs`
+- Q4 claude r3: `rust/crates/pp-storage/src/checkoff_progress/burst.rs`, `rust/crates/pp-storage/src/checkoff_progress/manual.rs`
+- Q4 codex r1: `rust/crates/pp-storage/src/checkoff_progress/burst.rs`
+- Q4 codex r2: `rust/crates/pp-storage/src/checkoff_progress/burst.rs`
+- Q4 codex r3: `rust/crates/pp-storage/src/checkoff_progress/burst.rs`
+- Q5 claude r1: `docs/development/ci.md`, `justfile`
+- Q5 claude r2: `docs/development/ci.md`
+- Q5 claude r3: `docs/contributing/gate-evidence.md`, `docs/development/definition-of-done.md`
+- Q5 codex r1: `docs/development/ci.md`, `docs/development/definition-of-done.md`
+- Q5 codex r2: `docs/contributing/gate-evidence.md`, `docs/development/ci.md`, `docs/development/definition-of-done.md`, `scripts/local-ci.py`
+- Q5 codex r3: `docs/contributing/gate-evidence.md`, `docs/development/definition-of-done.md`
+
+### Grading notes
+
+Two grading choices on the without arm were made after seeing the answers. They are recorded here rather than folded into the key above.
+
+- **Q1, extra tests named:** three answers named a second test next to `caller_rollback_and_token_exhaustion_leave_publication_unwritten`. Codex session 1 added the Node test "rolls back every publication write and retries cleanly". Claude sessions 2 and 3 led with the HTTP test `gre_1120_accept_failing_inside_its_transaction_leaves_no_partial_acceptance`. Every answer also named the Rust storage test, so all three are marked correct.
+- **Q4, the `pp-api` fact:** no answer said in so many words that `pp-api` doesn't check the key. Every answer placed every check in `pp-storage`, and none said `pp-api` checks it. That is counted as meeting the fact.
+
+### Measurement limits
+
+- **Search output isn't counted:** both models mostly navigate with `rg` and `grep`, often with line numbers or context. Search output is not counted as opening a file, so a session can read code through search hits and score 0 or 1 files. Q3 Claude session 2 did this.
+- **Floor effect:** the without arm averages 1.0 to 3.7 files per question and model, and every answer was correct. For the pass rule (fewer files with the signposts, for both models), a 1.0 baseline leaves almost no room to improve. That holds for Codex on Q3 and Q4.
+- **Root `AGENTS.md`:** each session started in the coordinator's checkout of a newer `main`, then worked in the arm's worktree by absolute path. The runner may load that checkout's root `AGENTS.md` into context. It is the same file for both arms.
+
+### With arm (not run)
+
+The with arm takes its signpost files from the PR heads of A3 (GRE-1315), A5 (GRE-1316) and A8 (GRE-1317). None of those PRs or branches existed on 2026-11-09, so this arm has not run, and the per-question comparison isn't recorded yet. It will use the same commit, questions, models, prompt and counting script.

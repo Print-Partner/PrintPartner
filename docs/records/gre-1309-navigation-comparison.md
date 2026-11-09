@@ -48,6 +48,17 @@ Each session gets one question. The prompt names the worktree, says to answer fr
   - The gate is met when at least three of the five questions with headroom pass.
 - **Q4 key.** The required fact "`pp-api` doesn't check the key itself; it passes the body to storage" is withdrawn, because it was stricter than any answer. The amended requirement is that the check is in `pp-storage`'s `checkoff_progress::burst` (`idempotency_key` and `replayed`), and that the answer does not place a check in `pp-api`. This applies to both arms.
 
+### Adjudication of borderline grades (2026-11-09)
+
+The blind grades in `grading/grades.tsv` stand as the original record. Two rulings change the correctness count. Both apply to both arms, and both were made before the reruns.
+
+- **Q1, commit on outcome.** The key's fact that `execute` commits only on `Applied`, `Existing` or `AlreadyApplied` is ruled not required for this question. The question asks where publish happens and which test proves it atomic. An answer that names `execute`, the immediate transaction, `publish_in_transaction` and the atomicity test is correct. Changed to correct: without-arm Q1 Codex run 2; with-arm Q1 Codex runs 2 and 3.
+- **Q3, GATED.** The `GATED` step applies only to an edge that must be `desktop_rebuild`-only. The question doesn't say the edge is desktop-only, so the general add-edge steps are the requirement. Changed to correct: with-arm Q3 Codex run 3.
+- **Not changed.** With-arm Q1 Claude run 3 places publish in the working-draft save path. With-arm Q3 Claude runs 1 and 2, and without-arm Q3 Claude run 3, do not update the crate map in `docs/architecture.md`, which the key requires.
+- **Result before reruns:** without arm 29 of 30 correct, with arm 27 of 30.
+
+**Signpost finding.** All three with-arm Claude Q1 answers (runs 1 to 3) cite the working-draft save path, `rust/crates/pp-storage/src/working_drafts/save.rs`. No without-arm answer does. The family index row for Accept (`docs/families.md`) links `plan-autosave.md` as its document, and that page describes the draft save-and-accept flow. Run 3 used that path as the publish location. The treatment is frozen, so the row is recorded as a defect to fix after the run, not changed here.
+
 ## Answer key
 
 Paths are relative to the repository root at the commit above.
@@ -189,6 +200,20 @@ Two grading choices on the without arm were made after seeing the answers. They 
 - **Search output isn't counted:** both models mostly navigate with `rg` and `grep`, often with line numbers or context. Search output is not counted as opening a file, so a session can read code through search hits and score 0 or 1 files. Q3 Claude session 2 did this.
 - **Floor effect:** the without arm averages 1.0 to 3.7 files per question and model, and every answer was correct. For the pass rule (fewer files with the signposts, for both models), a 1.0 baseline leaves almost no room to improve. That holds for Codex on Q3 and Q4.
 - **Root `AGENTS.md`:** each session started in the coordinator's checkout of a newer `main`, then worked in the arm's worktree by absolute path. The runner may load that checkout's root `AGENTS.md` into context. It is the same file for both arms.
+
+### Reruns (2026-11-09)
+
+Under the Scoring rule, each cell with a wrong answer earned one rerun. The reruns ran on the same frozen checkouts with the same prompt and settings. They are correctness checks, so their answers are not in the three-session medians.
+
+| Cell | Wrong runs in the 30 | Rerun correct | Cell passes |
+| --- | --- | --- | --- |
+| With arm, Q1 Claude | run 3 | no: names a generic transaction and omits the immediate writer mode | no |
+| With arm, Q3 Claude | runs 1 and 2 | no: names only the ADR 0007 table, not the crate map in `docs/architecture.md` | no |
+| Without arm, Q3 Claude | run 3 | yes | yes |
+
+The 30 session grades above are unchanged by the reruns. Grades are in `grading/rerun-grades.tsv`, graded blind by a fresh agent under the key and the rulings in `grading/key-rulings.md`.
+
+**Limitation.** The rerun answers were taken from the completion notices, not from the raw thread logs. They were condensed for layout, and the required facts were kept. Their verbatim text is not yet in the archive.
 
 ### With arm (complete, 2026-11-09)
 

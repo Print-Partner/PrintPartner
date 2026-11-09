@@ -43,7 +43,7 @@ Any agent or person can take over Print Partner Desktop work: Capy, Factory Droi
 | Plan | Notion "Print Partner: execution plan v17.1". Phases P1 to P7, in order. |
 | Live status | Notion "Execution status (live)". One row per lane with its PRs, tickets, and next step, plus a Landed list with shas and a "Needs Chad" list. |
 | Execution record | Linear, team GRE, project "Print Partner Desktop (Rust core)". The newest **Handoff** comment on a ticket says where its work stands. |
-| Code | GitHub `poitee/printpartner`. All work in progress is on a pushed branch or an open PR. |
+| Code | GitHub `Print-Partner/PrintPartner`. All work in progress is on a pushed branch or an open PR. |
 
 The Notion page [Agent handoff: how to take over any lane](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5) holds the operating rules and Chad's decisions, newest first. Read it before you take over. [Sources of truth](contributing.md#sources-of-truth) says which page wins when they disagree. If it disagrees with this page or the code, stop and ask, as for a [task brief](#start-from-a-task-brief).
 

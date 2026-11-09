@@ -91,7 +91,7 @@ Checkoff is not a Plan change, so it does not pass the Accept gate. It is undoab
 
 Every Plan change, including rename, order, customer and due date, lands in a draft and goes through the Accept gate. The gate previews old against new, names printed units affected, plate changes, stock impact and duplicate orders, and states that a snapshot is saved before accepting.
 
-One order is one Build, enforced transactionally. A duplicate creates a detached experiment that records its parent, and promoting an alternative retires the previous authority atomically. Existing duplicate records are displayed, never silently merged.
+One order is one Build, enforced transactionally (Accept refuses `duplicate_order`; see [Order authority](../draft-headers.md#order-authority-gre-1095)). A duplicate creates a detached experiment that records its parent, and promoting an alternative retires the previous authority atomically. Existing duplicate records are displayed, never silently merged.
 
 History shows accepted revisions, snapshots, checkoff bursts and sends. Restore as draft (`R`) opens the gate. Restoring a plan never rewinds printed evidence or a printer command.
 
@@ -134,7 +134,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 
 | Need | Contract | Status |
 | --- | --- | --- |
-| Builds list, detail, layers | `GET /api/v1/plans`, `/plans/{id}`, `/layers`, `/kit-manifest` | Exists. Under `desktop_rebuild` each summary also carries the header's `customer` and `due_date` from `build_profile_details` (GRE-1100). With the Orders module on, the Builds list sorts by due date (earliest first, none last), filters to overdue (unarchived, due before today and not fully printed; today is rechecked each minute) or no due date, and marks each unarchived Build whose non-blank order number another unarchived Build shares, as the Accept preview counts duplicates, without merging them |
+| Builds list, detail, layers | `GET /api/v1/plans`, `/plans/{id}`, `/layers`, `/kit-manifest` | Exists. Under `desktop_rebuild` each summary also carries the header's `customer` and `due_date` from `build_profile_details` (GRE-1100). With the Orders module on, the Builds list sorts by due date (earliest first, none last), filters to overdue (unarchived, due before today and not fully printed; today is rechecked each minute) or no due date, and marks each unarchived Build whose non-blank order number another unarchived Build shares, compared after [normalization](../draft-headers.md#order-authority-gre-1095) as the Accept preview counts duplicates, without merging them |
 | Drafts | `GET/PATCH /api/v2/plans/{id}/drafts*` (drafts are mounted under `/api/v2`, not `/api/v1`) | Exists |
 | Checkoff read | `GET /plans/{id}/checkoff`, `/parts/{id}/assembled` | Exists |
 | Checkoff tab units and manual bursts | `GET /api/v2/plans/{id}/checkoff/units`, `POST /plans/{id}/checkoff/bursts` and `/bursts/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1191); see [Manual Checkoff bursts](../desktop-rebuild.md#manual-checkoff-bursts-gre-1191) |

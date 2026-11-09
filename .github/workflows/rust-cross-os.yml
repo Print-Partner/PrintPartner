@@ -10,8 +10,8 @@ name: Rust cross-OS
 # all(). On main push, merge_group, and workflow_dispatch, Linux archives
 # desktop_rebuild nextest once and runs --partition slice:m/3 across three
 # runners. Schedule keeps the in-job monolithic desktop_rebuild nextest.
-# The Linux jobs run on the pp-local fleet for main pushes, merge groups and
-# manual runs, and on ubuntu-latest for the schedule, PP_RUST_RUNNER=hosted or an
+# The Linux jobs run on the pp-local fleet for main pushes and manual runs, and on
+# ubuntu-latest for merge groups, the schedule, PP_RUST_RUNNER=hosted or an
 # unavailable fleet. Pull requests follow PP_PR_RUNNER: blacksmith (default), hosted or
 # pp-iso (scripts/ci-rust-runner.py; docs/development/ci.md).
 on:

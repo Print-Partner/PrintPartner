@@ -216,6 +216,60 @@ pub fn verify_bundle(bundle: Bundle, assets: &Path) -> Result<MeasuredBundle> {
     Ok(MeasuredBundle(bundle))
 }
 
+/// The backend inventory's key prefix for `Bundle::community_manifests_dir`,
+/// for example `data/manifests/`.
+fn community_manifests_prefix(bundle: &Bundle) -> Result<(std::path::PathBuf, String)> {
+    let directory = bundle
+        .community_manifests_dir()
+        .context("Missing backend root")?;
+    let backend = bundle.entry.parent().context("Missing backend root")?;
+    let mut prefix = inventory_key(&directory, backend)?;
+    prefix.push('/');
+    Ok((directory, prefix))
+}
+
+/// The release check for a Rust-only start, which runs no Node child. It checks
+/// the embedded identity, the served frontend (exact inventory) and the
+/// community manifests Rust reads (exact inventory, when the release has any).
+/// It does not measure the Node executable, the Node backend, the workspace
+/// packages or `node_modules`, so they may be absent: the Docker image ships
+/// none of them.
+pub fn verify_rust_only_release(bundle: &Bundle, assets: &Path) -> Result<()> {
+    verify_rust_only_with(&manifest()?, bundle, assets, &CancellationToken::new())
+}
+
+fn verify_rust_only_with(
+    release: &ReleaseManifest,
+    bundle: &Bundle,
+    assets: &Path,
+    stop: &CancellationToken,
+) -> Result<()> {
+    ensure!(
+        release.runtime_version == bundle.runtime_version && release.commit == bundle.commit,
+        "Requested release differs from embedded identity"
+    );
+    verify_files(assets, &release.frontend, true, stop)?;
+    let (directory, prefix) = community_manifests_prefix(bundle)?;
+    let manifests: BTreeMap<String, String> = release
+        .backend
+        .iter()
+        .filter_map(|(key, digest)| {
+            key.strip_prefix(prefix.as_str())
+                .map(|name| (name.to_owned(), digest.clone()))
+        })
+        .collect();
+    if manifests.is_empty() {
+        // Rust reads this directory when it exists, so an unmeasured one must be empty.
+        ensure!(
+            !directory.try_exists()? || std::fs::read_dir(&directory)?.next().is_none(),
+            "Release file inventory mismatch"
+        );
+    } else {
+        verify_files(&directory, &manifests, true, stop)?;
+    }
+    Ok(())
+}
+
 /// Returns early with an error once `stop` is cancelled; checked between files.
 pub(crate) fn verify_backend(bundle: &Bundle, stop: &CancellationToken) -> Result<()> {
     let release = manifest()?;
@@ -403,6 +457,101 @@ fn verify_dependencies(
 mod tests {
     use super::*;
     use crate::logs::test_support::{symlink_dir, symlink_file};
+
+    fn rust_only_fixture() -> (std::path::PathBuf, Bundle, ReleaseManifest) {
+        let root = std::env::temp_dir().join(format!(
+            "pp-rust-only-{}",
+            hex::encode(rand::random::<[u8; 8]>())
+        ));
+        let assets = root.join("web/apps/web/dist");
+        let bundle = Bundle {
+            node: root.join("absent/node"),
+            entry: root.join("web/apps/server/dist/current/desktop.js"),
+            web_root: root.join("web"),
+            runtime_version: "1.0.0-web".into(),
+            commit: "abc".into(),
+        };
+        let manifests = bundle.community_manifests_dir().unwrap();
+        std::fs::create_dir_all(assets.join("assets")).unwrap();
+        std::fs::create_dir_all(&manifests).unwrap();
+        std::fs::write(assets.join("index.html"), b"<!doctype html>").unwrap();
+        std::fs::write(assets.join("assets/app.js"), b"export {};").unwrap();
+        std::fs::write(manifests.join("registry-index.yaml"), b"entries: []\n").unwrap();
+        let mut release: ReleaseManifest = serde_json::from_value(serde_json::json!({
+            "schema": 1,
+            "runtime_version": "1.0.0-web",
+            "commit": "abc",
+            "node_sha256": "0".repeat(64),
+            "frontend": {
+                "index.html": measure(&assets.join("index.html")).unwrap(),
+                "assets/app.js": measure(&assets.join("assets/app.js")).unwrap(),
+            },
+            "backend": {
+                "desktop.js": "0".repeat(64),
+                "desktop-resolution.js": "0".repeat(64),
+            },
+            "contracts": {"index.js": "0".repeat(64)},
+            "domain": {"index.js": "0".repeat(64)},
+            "metadata": {"package.json": "0".repeat(64)},
+            "dependencies": {"web_path": "web", "roots": ["web/node_modules"],
+                             "files": {"web/node_modules/x.js": "0".repeat(64)}, "links": {}},
+        }))
+        .unwrap();
+        release.backend.insert(
+            format!(
+                "{}registry-index.yaml",
+                community_manifests_prefix(&bundle).unwrap().1
+            ),
+            measure(&manifests.join("registry-index.yaml")).unwrap(),
+        );
+        (root, bundle, release)
+    }
+
+    #[test]
+    fn rust_only_release_needs_no_node_files() {
+        let (root, bundle, release) = rust_only_fixture();
+        let assets = root.join("web/apps/web/dist");
+        let stop = CancellationToken::new();
+        // No Node executable, backend code, workspace packages or node_modules exist.
+        verify_rust_only_with(&release, &bundle, &assets, &stop).unwrap();
+        let refusal = |bundle: &Bundle| {
+            verify_rust_only_with(&release, bundle, &assets, &stop)
+                .unwrap_err()
+                .to_string()
+        };
+
+        let mut other = bundle.clone();
+        other.commit = "def".into();
+        assert_eq!(
+            refusal(&other),
+            "Requested release differs from embedded identity"
+        );
+        std::fs::write(assets.join("assets/app.js"), b"changed").unwrap();
+        assert_eq!(refusal(&bundle), "Release artifact content mismatch");
+        std::fs::write(assets.join("assets/app.js"), b"export {};").unwrap();
+        std::fs::write(assets.join("extra.js"), b"unmeasured").unwrap();
+        assert_eq!(refusal(&bundle), "Release file inventory mismatch");
+        std::fs::remove_file(assets.join("extra.js")).unwrap();
+
+        let manifests = bundle.community_manifests_dir().unwrap();
+        std::fs::write(manifests.join("registry-index.yaml"), b"changed").unwrap();
+        assert_eq!(refusal(&bundle), "Release artifact content mismatch");
+        std::fs::remove_dir_all(&manifests).unwrap();
+        assert_eq!(refusal(&bundle), "Release root missing");
+
+        // A release with no community manifests accepts no directory or an
+        // empty one, and refuses unmeasured files there.
+        let mut bare = release;
+        bare.backend
+            .retain(|key, _| !key.ends_with("registry-index.yaml"));
+        verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap();
+        std::fs::create_dir_all(&manifests).unwrap();
+        verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap();
+        std::fs::write(manifests.join("planted.yaml"), b"entries: []\n").unwrap();
+        let error = verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap_err();
+        assert_eq!(error.to_string(), "Release file inventory mismatch");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn cancelled_verification_stops_before_hashing() {

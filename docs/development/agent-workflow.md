@@ -84,6 +84,8 @@ python3 -m venv "${TMPDIR:-/tmp}/pp-dev-venv"
 PATH="${TMPDIR:-/tmp}/pp-dev-venv/bin:$PATH" python3 scripts/local-ci.py --only local-ci-self-test,python-lint --fail-on-skip
 ```
 
+Before you push, a normal PR runs `just ci --fast` and lists that command and its summary under Evidence. A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full `just ci`. [Run the required checks with one command](ci.md#run-the-required-checks-with-one-command) says what `--fast` leaves out.
+
 A full local CI run exits 0 even when steps print SKIP, because a tool or platform is missing. A SKIP is not a pass. List each one under Evidence. For steps that must run on your machine, add `--fail-on-skip`:
 
 ```sh

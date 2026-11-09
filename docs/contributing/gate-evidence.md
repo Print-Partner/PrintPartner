@@ -58,7 +58,8 @@ files.txt` (one path per line) to apply the screenshot and video rule locally.
 
 ## Run CI locally before you push
 
-Agents and contributors run the required CI checks before each push:
+Agents and contributors run the required CI checks before each push. A
+sensitive PR runs the full set:
 
 ```sh
 PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci
@@ -70,6 +71,12 @@ checks, and the Node parity fixture freshness checks. It continues after a
 failure and ends with one `PASS`, `FAIL` or `SKIP` line per step. Fix every
 `FAIL` before you push. A `SKIP` line names the missing tool or pinned version;
 list each skipped step under Evidence.
+
+Normal PRs run `just ci --fast` instead, which leaves out the full nextest and
+doctest passes and runs nextest with `desktop_rebuild` on for the crates the
+branch affects. Sensitive PRs, as the
+[merge gate](../development/definition-of-done.md#merge-gate) defines them, run
+the full `just ci`. Name the command you ran under Evidence.
 
 Without `just`, run `python3 scripts/local-ci.py` from the repository root with
 the same arguments.

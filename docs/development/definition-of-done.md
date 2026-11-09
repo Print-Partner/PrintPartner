@@ -155,4 +155,4 @@ The owner can also turn on **Automatically request Copilot code review** in the 
 
 ## Evidence
 
-Put verification output under `## Evidence` in the PR body. The `Lint Evidence block` CI check fails when that section is empty and the `Exemption:` line gives no reason. A PR that changes the web UI or desktop app also needs a screenshot or video under Evidence. [Gate evidence](../contributing/gate-evidence.md) describes the check and the desktop capture steps.
+Put verification output under `## Evidence` in the PR body. Before pushing, a normal PR runs `just ci --fast` and lists it under Evidence; a sensitive PR (item 6 of the [merge gate](#merge-gate)) runs the full `just ci` and lists that. List every SKIP line too. The `Lint Evidence block` CI check fails when that section is empty and the `Exemption:` line gives no reason. A PR that changes the web UI or desktop app also needs a screenshot or video under Evidence. [Gate evidence](../contributing/gate-evidence.md) describes the check and the desktop capture steps.

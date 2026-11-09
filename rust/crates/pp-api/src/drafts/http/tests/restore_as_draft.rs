@@ -697,43 +697,28 @@ UPDATE parts SET filament_color_id='red',filament_custom_hex='#ff0000',spoolman_
 }
 
 /// Part key, inclusion, role override, filament color, custom hex and
-/// Spoolman spool.
-type Curated = (
-    String,
-    i64,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
-
-/// The curated fields of each Part of `table` whose `owner` column is `id`,
-/// by key.
-fn curated(server: &ReadServer, table: &str, owner: &str, id: i64) -> Vec<Curated> {
-    rows(
+/// Spoolman spool of each Part of `table` whose `owner` column is `id`, by
+/// key.
+fn curated(server: &ReadServer, table: &str, owner: &str, id: i64) -> Value {
+    let parts: Vec<String> = rows(
         server,
         &format!(
-            "SELECT part_key,included,role_override,filament_color_id,filament_custom_hex,spoolman_spool_id FROM {table} WHERE {owner}=?1 ORDER BY part_key"
+            "SELECT json_array(part_key,included,role_override,filament_color_id,filament_custom_hex,spoolman_spool_id) FROM {table} WHERE {owner}=?1 ORDER BY part_key"
         ),
         [id],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-            ))
-        },
-    )
+        |row| row.get(0),
+    );
+    parts
+        .iter()
+        .map(|part| serde_json::from_str::<Value>(part).unwrap())
+        .collect()
 }
 
-fn revision_curated(server: &ReadServer, revision: i64) -> Vec<Curated> {
+fn revision_curated(server: &ReadServer, revision: i64) -> Value {
     curated(server, "plan_revision_parts", "revision_id", revision)
 }
 
-fn draft_curated(server: &ReadServer, draft: i64) -> Vec<Curated> {
+fn draft_curated(server: &ReadServer, draft: i64) -> Value {
     curated(server, "plan_draft_parts", "draft_id", draft)
 }
 
@@ -796,27 +781,16 @@ async fn restore_as_draft_brings_back_part_selection_and_filament_roles() {
     let workspace = resolve(&server, &workspace, "select-2").await;
     let second = accept_workspace(&server, &workspace, "accept-2", Value::Null).await;
     assert_eq!(second["revision_id"], 2);
-    let plain = |key: &str, included: i64| -> Curated {
-        (key.to_owned(), included, None, None, None, None)
-    };
-    let some = |value: &str| Some(value.to_owned());
-    let first_parts = vec![
-        plain("bracket.stl", 1),
-        plain("excluded.stl", 0),
-        plain("gear.stl", 1),
-    ];
-    let second_parts = vec![
-        plain("bracket.stl", 1),
-        plain("excluded.stl", 1),
-        (
-            "gear.stl".to_owned(),
-            1,
-            some("accent"),
-            some("red"),
-            some("#ff0000"),
-            some("7"),
-        ),
-    ];
+    let first_parts = json!([
+        ["bracket.stl", 1, null, null, null, null],
+        ["excluded.stl", 0, null, null, null, null],
+        ["gear.stl", 1, null, null, null, null]
+    ]);
+    let second_parts = json!([
+        ["bracket.stl", 1, null, null, null, null],
+        ["excluded.stl", 1, null, null, null, null],
+        ["gear.stl", 1, "accent", "red", "#ff0000", "7"]
+    ]);
     assert_eq!(revision_curated(&server, 1), first_parts);
     assert_eq!(revision_curated(&server, 2), second_parts);
 

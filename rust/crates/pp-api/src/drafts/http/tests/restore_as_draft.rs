@@ -679,3 +679,190 @@ async fn restore_as_draft_refuses_without_a_required_unit_set() {
     assert_eq!(logical_database(&server.sql()), before);
     server.close().await;
 }
+
+/// Draft 2's gear Part gets a role override and its live accepted Part a
+/// filament and spool. The draft's stored digest is resealed for the new role
+/// ([`CURATED_DIGEST`]); a PATCH answers `500` on a mismatch.
+const CURATED_SETUP: &str = "
+UPDATE plan_draft_parts SET role_override='accent' WHERE id=6;
+UPDATE plan_drafts SET snapshot_digest='734ffd8108a04378643317831807935a026f15a4a6ea9df0b5d380f92ae21f63' WHERE id=2;
+UPDATE parts SET filament_color_id='red',filament_custom_hex='#ff0000',spoolman_spool_id='7' WHERE id=3;
+";
+/// Draft 2's planning digest after [`CURATED_SETUP`], as storage recomputes it.
+const CURATED_DIGEST: &str = "734ffd8108a04378643317831807935a026f15a4a6ea9df0b5d380f92ae21f63";
+
+/// Part key, inclusion, role override, filament color, custom hex and
+/// Spoolman spool.
+type Curated = (
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// The curated fields of each Part of `table` whose `owner` column is `id`,
+/// by key.
+fn curated(server: &ReadServer, table: &str, owner: &str, id: i64) -> Vec<Curated> {
+    rows(
+        server,
+        &format!(
+            "SELECT part_key,included,role_override,filament_color_id,filament_custom_hex,spoolman_spool_id FROM {table} WHERE {owner}=?1 ORDER BY part_key"
+        ),
+        [id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        },
+    )
+}
+
+fn revision_curated(server: &ReadServer, revision: i64) -> Vec<Curated> {
+    curated(server, "plan_revision_parts", "revision_id", revision)
+}
+
+fn draft_curated(server: &ReadServer, draft: i64) -> Vec<Curated> {
+    curated(server, "plan_draft_parts", "draft_id", draft)
+}
+
+/// Selects Required units for the workspace's draft when it is unresolved,
+/// replacing the units of each Part whose predecessor is unsafe, and answers
+/// the ready workspace.
+async fn resolve(server: &ReadServer, workspace: &Value, key: &str) -> Value {
+    if workspace["reconciliation"]["kind"] == "ready" {
+        return workspace.clone();
+    }
+    let draft = &workspace["draft"];
+    let decisions: Vec<Value> = workspace["reconciliation"]["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|conflict| {
+            assert_eq!(conflict["kind"], "unsafe_predecessor", "{conflict}");
+            json!({"kind": "replace", "target_draft_part_id": conflict["target_draft_part_id"]})
+        })
+        .collect();
+    let selected = json_reply(
+        reconcile_request(
+            server,
+            &format!(
+                "/api/v2/plans/1/drafts/{}/reconciliation",
+                draft["draft_id"]
+            ),
+            Some(key),
+        )
+        .json(
+            &json!({"expected_snapshot_digest": draft["snapshot_digest"], "decisions": decisions}),
+        ),
+        200,
+    )
+    .await;
+    assert_eq!(selected["reconciliation"]["kind"], "ready", "{selected}");
+    selected
+}
+
+/// GRE-479: a snapshot keeps each Part's inclusion, role override and
+/// filament, and restoring it brings them back into the draft and, through
+/// Accept, into the Accepted Plan.
+#[tokio::test]
+async fn restore_as_draft_brings_back_part_selection_and_filament_roles() {
+    let server = ReadServer::start_limited(8 * 1024 * 1024, CURATED_SETUP).await;
+    // Revision 2 includes the excluded Part, makes gear an accent Part and
+    // publishes its live red filament on spool 7. Accept first saves
+    // snapshot 1 of revision 1.
+    let edit = json!({"expected_snapshot_digest": CURATED_DIGEST,
+        "decision": {"kind": "set_included", "draft_part_ids": [5], "value": true}});
+    let workspace = json_reply(
+        server
+            .request(Method::PATCH, "/api/v2/plans/1/drafts/2/parts")
+            .json(&edit),
+        200,
+    )
+    .await;
+    let workspace = resolve(&server, &workspace, "select-2").await;
+    let second = accept_workspace(&server, &workspace, "accept-2", Value::Null).await;
+    assert_eq!(second["revision_id"], 2);
+    let plain = |key: &str, included: i64| -> Curated {
+        (key.to_owned(), included, None, None, None, None)
+    };
+    let some = |value: &str| Some(value.to_owned());
+    let first_parts = vec![
+        plain("bracket.stl", 1),
+        plain("excluded.stl", 0),
+        plain("gear.stl", 1),
+    ];
+    let second_parts = vec![
+        plain("bracket.stl", 1),
+        plain("excluded.stl", 1),
+        (
+            "gear.stl".to_owned(),
+            1,
+            some("accent"),
+            some("red"),
+            some("#ff0000"),
+            some("7"),
+        ),
+    ];
+    assert_eq!(revision_curated(&server, 1), first_parts);
+    assert_eq!(revision_curated(&server, 2), second_parts);
+
+    // Restoring snapshot 1 drafts revision 1's selection and roles, and Accept
+    // publishes them as revision 3, saving snapshot 2 of revision 2 first.
+    let workspace = json_reply(
+        restore(&server, 1, 1, Some("r-1")).json(&restore_body(json!(2), 2, Value::Null)),
+        200,
+    )
+    .await;
+    assert_eq!(workspace["draft"]["draft_id"], 3);
+    assert_eq!(draft_curated(&server, 3), first_parts);
+    let workspace = resolve(&server, &workspace, "select-3").await;
+    let third = accept_workspace(&server, &workspace, "accept-3", json!(1)).await;
+    assert_eq!(third["revision_id"], 3);
+    assert_eq!(revision_curated(&server, 3), first_parts);
+    assert_eq!(revision_parts(&server, 3), revision_parts(&server, 1));
+    let recorded: i64 = server
+        .sql()
+        .query_row(
+            "SELECT json_extract(payload_json,'$.accepted_plan_revision_id') FROM plan_snapshots WHERE id=2 AND profile_id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 2);
+
+    // The current gear Part moves to blue on spool 9. Restored gear has no
+    // predecessor (its revision 2 tokens were replaced), so it keeps the
+    // snapshot's filament instead of taking the live one.
+    let moved = server
+        .sql()
+        .execute(
+            "UPDATE parts SET filament_color_id='blue',filament_custom_hex=NULL,spoolman_spool_id='9' WHERE id=(SELECT projection_part_id FROM plan_revision_parts WHERE revision_id=3 AND part_key='gear.stl')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(moved, 1);
+
+    // Restoring snapshot 2 brings back the included Part, the accent role and
+    // the red filament on spool 7, in the draft and in revision 4.
+    let workspace = json_reply(
+        restore(&server, 1, 2, Some("r-2")).json(&restore_body(json!(3), 3, Value::Null)),
+        200,
+    )
+    .await;
+    assert_eq!(workspace["draft"]["draft_id"], 4);
+    assert_eq!(draft_curated(&server, 4), second_parts);
+    let workspace = resolve(&server, &workspace, "select-4").await;
+    let fourth = accept_workspace(&server, &workspace, "accept-4", json!(1)).await;
+    assert_eq!(fourth["revision_id"], 4);
+    assert_eq!(revision_curated(&server, 4), second_parts);
+    assert_eq!(revision_parts(&server, 4), revision_parts(&server, 2));
+    assert_eq!(fourth["revision_digest"], second["revision_digest"]);
+    server.close().await;
+}

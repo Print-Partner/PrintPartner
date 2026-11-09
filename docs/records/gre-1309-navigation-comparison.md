@@ -38,6 +38,16 @@ Each session gets one question. The prompt names the worktree, says to answer fr
 - **Reruns:** a wrong answer earns that question one rerun for that model, and it fails only if wrong again. An inconclusive question (two passes and a tie) gets one rerun.
 - **Pass rule:** a question passes when both models answered correctly and both opened fewer files with the signposts than without. Minutes are reported but don't gate.
 
+### Amendments (2026-11-09)
+
+- **Pass rule, plan revision 22.** The original rule above stays on the record, and is also reported in the results. For the navigation gate, the revision 22 rule compares medians:
+  - Count: content-bearing tool calls per session, measured as distinct repository files with content, including search output (`distinct_files_with_content`).
+  - Per question and model, take the median of the three sessions per arm.
+  - A question passes when both models have a lower with-arm median.
+  - Headroom: a question has headroom when its without-arm median is 2 or more for each model. Revision 22 does not define it; this is the definition used here. A question without headroom is "cannot decide", not "fail".
+  - The gate is met when at least three of the five questions with headroom pass.
+- **Q4 key.** The required fact "`pp-api` doesn't check the key itself; it passes the body to storage" is withdrawn, because it was stricter than any answer. The amended requirement is that the check is in `pp-storage`'s `checkoff_progress::burst` (`idempotency_key` and `replayed`), and that the answer does not place a check in `pp-api`. This applies to both arms.
+
 ## Answer key
 
 Paths are relative to the repository root at the commit above.
@@ -180,6 +190,45 @@ Two grading choices on the without arm were made after seeing the answers. They 
 - **Floor effect:** the without arm averages 1.0 to 3.7 files per question and model, and every answer was correct. For the pass rule (fewer files with the signposts, for both models), a 1.0 baseline leaves almost no room to improve. That holds for Codex on Q3 and Q4.
 - **Root `AGENTS.md`:** each session started in the coordinator's checkout of a newer `main`, then worked in the arm's worktree by absolute path. The runner may load that checkout's root `AGENTS.md` into context. It is the same file for both arms.
 
-### With arm (not run)
+### With arm (complete, 2026-11-09)
+
+**Treatment.** Commit `6deb5b542` on `lynchdc39987/gre-1309-with-arm-astra-3`: `7908c7036` plus the signposts. A3 is the family index (`docs/families.md`). A5 is the nested `AGENTS.md` files. A8 is the receipt move: nine records moved verbatim into `docs/records/`, with link-target repairs, 2,258 lines. The sessions ran in a detached checkout of that commit. The prompt names that checkout's path; the without arm's path differs, and nothing else in the prompt changed.
+
+**Sessions.** 30 sessions, same models, settings and prompt as the without arm. Logs are in `docs/records/gre-1309/logs.tar.gz` (sha256 `834b83ff3d7e6f64e4724893da62a48edb18db7fa5e7cd5572c5bc85b00cf4d9`), with `logs/with/` for these sessions, `logs/without/` and `logs/without/reruns/` for the without arm, and the file lists in `counts/`. Counts are in `docs/records/gre-1309/counts/sessions-with.csv`.
+
+**Counts.** Medians of three sessions per cell. "Content" is the revision 22 count. "Files read" is the corrected files-opened count from the original rule.
+
+| Question | Model | Content, without | Content, with | Fewer | Files read, without | Files read, with | Fewer |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Claude | 37 | 34 | yes | 5 | 5 | no |
+| 1 | Codex | 765 | 405 | yes | 4 | 4 | no |
+| 2 | Claude | 6 | 7 | no | 3 | 3 | no |
+| 2 | Codex | 140 | 138 | yes | 4 | 3 | yes |
+| 3 | Claude | 17 | 16 | yes | 2 | 2 | no |
+| 3 | Codex | 35 | 39 | no | 3 | 4 | no |
+| 4 | Claude | 9 | 10 | no | 2 | 2 | no |
+| 4 | Codex | 274 | 448 | no | 2 | 1 | yes |
+| 5 | Claude | 9 | 5 | yes | 2 | 1 | yes |
+| 5 | Codex | 50 | 49 | yes | 4 | 5 | no |
+
+**Gate result.**
+- Revision 22 rule: 2 of 5 questions pass (Q1 and Q5). The gate needs 3. **Not met.**
+- Sensitivity, counting without files found only in outputs over 50 KB: 1 of 5 pass (Q1). **Not met.**
+- Original rule (both models correct and both open fewer files): 0 of 5 pass.
+- No question is "cannot decide": every without-arm median is 6 or more.
+- The codex Q1 and Q4 medians depend on very large search outputs, so the sensitivity result matters. Each cell is three sessions, so differences of a few files are within noise.
+
+**Correctness.** Blind grading by a fresh agent against `grading/key.md`, including the Q4 amendment. The grader saw 60 answers with arm, seat and session names removed (`grading/answers-blind.md`). The map is in `grading/blind-map.json`, committed after grading.
+- Correct: without arm 28 of 30, with arm 24 of 30.
+- Wrong answers, without arm (2 of 30): Q1 Codex run 2 (no commit-on-outcome condition, a borderline call); Q3 Claude run 3 (ADR 0007 table only; `docs/architecture.md` crate map not updated).
+- Wrong answers, with arm (6 of 30): Q1 Claude run 3 (publish placed in the working-draft save; `execute` and `begin_immediate` not named); Q1 Codex runs 2 and 3 (no commit-on-outcome condition, a borderline call); Q3 Claude runs 1 and 2 (ADR table only); Q3 Codex run 3 (no `GATED` update, which the key requires only for a desktop-rebuild-only edge, a borderline call).
+- Two categories are borderline: the commit-on-outcome condition for Q1, and the `GATED` step for Q3. The grader counted both as required. They are not adjudicated; see open items.
+
+**Open items.**
+- **Reruns.** The rule in Scoring gives one rerun per model per question that has a wrong answer. Six cells qualify: with Q1 Claude, with Q1 Codex, with Q3 Claude, with Q3 Codex, without Q1 Codex, and without Q3 Claude. These reruns are not run. They cost six sessions, and they need the owner's go-ahead.
+- **Borderline adjudication.** A second blind grader should decide the commit-on-outcome and `GATED` items before the correctness numbers are final.
+- **Missing paths.** Eleven paths named in with-arm search commands are absent from the with checkout. None was opened.
+- **Logs.** The raw logs are packed into one archive so the diff stays reviewable. They contain local paths, including the username, because the counts depend on those paths. Extract with `tar -xzf logs.tar.gz` in `docs/records/gre-1309/`.
+
 
 The with arm takes its signpost files from the PR heads of A3 (GRE-1315), A5 (GRE-1316) and A8 (GRE-1317). None of those PRs or branches existed on 2026-11-09, so this arm has not run, and the per-question comparison isn't recorded yet. It will use the same commit, questions, models, prompt and counting script.

@@ -4,12 +4,13 @@
 //! the watcher sent.
 use pp_drivers::{
     bambu::{CERTIFICATE_CHANGED, Config, Fingerprint, status_from_print},
-    moonraker::{Host, HostKind, PrinterHostState, PrinterObservations, Watchers},
+    moonraker::{Host, HostKind, PrinterHostState, PrinterObservations, Transition, Watchers},
 };
 use pp_net::outbound::{HttpGuard, SystemResolver};
 use pp_testkit::bambu::{Broker, Identity, Reply, Script};
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
+use tokio::sync::broadcast;
 
 const CODE: &str = "synthetic-code";
 const SERIAL: &str = "FIXTURE01";
@@ -92,6 +93,22 @@ fn status_only(broker: &Broker) {
             "the printer saw {line}"
         );
     }
+}
+
+/// Watches `broker`'s printer as `x1c`, pinned to `identity`, with its
+/// transitions subscribed before the first report.
+async fn watching(
+    watchers: &mut Watchers,
+    broker: &Broker,
+    identity: &Identity,
+) -> (PrinterObservations, broadcast::Receiver<Transition>) {
+    let observations = watchers.observations();
+    let changes = observations.transitions();
+    watchers
+        .replace(vec![bambu("x1c", broker, Ok(identity.fingerprint), true)])
+        .await
+        .unwrap();
+    (observations, changes)
 }
 
 fn full_report() -> Value {
@@ -180,12 +197,7 @@ async fn ticket_t_25_bambu_reconnect_awaits_a_fresh_report_without_a_second_push
     // A slower cadence keeps the reconnect well after the offline report.
     let mut watchers =
         Watchers::with_guard(guard, Duration::from_millis(300)).without_node_fallback();
-    let observations = watchers.observations();
-    let mut changes = observations.transitions();
-    watchers
-        .replace(vec![bambu("x1c", &broker, Ok(identity.fingerprint), true)])
-        .await
-        .unwrap();
+    let (observations, mut changes) = watching(&mut watchers, &broker, &identity).await;
 
     // Printing, offline when the printer closes the session, then awaiting a
     // fresh report once the watcher reconnects: the held one may be stale.
@@ -269,12 +281,7 @@ async fn ticket_t_25_bambu_suspend_ends_the_session_and_resume_starts_one() {
 async fn ticket_t_25_bambu_session_outlives_its_keep_alive_on_pings() {
     let (broker, identity) = printer(Vec::new()).await;
     let mut watchers = watchers();
-    let observations = watchers.observations();
-    let mut changes = observations.transitions();
-    watchers
-        .replace(vec![bambu("x1c", &broker, Ok(identity.fingerprint), true)])
-        .await
-        .unwrap();
+    let (observations, mut changes) = watching(&mut watchers, &broker, &identity).await;
     until("the printer reports", || {
         observations.last_heard("x1c").is_some()
     })

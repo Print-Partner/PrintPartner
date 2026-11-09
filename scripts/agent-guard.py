@@ -168,7 +168,7 @@ class Unclear(Exception):
     pass
 
 
-def protected_path(raw):
+def protected_path(raw, cwd=None):
     # Collapse "dir/../" so an alias such as .claude/agents/../settings.json is checked as its target.
     path = PurePosixPath(posixpath.normpath(raw.replace("\\", "/")) if raw else raw)
     name = path.name
@@ -180,21 +180,24 @@ def protected_path(raw):
         return "This file is generated. Run its generator instead of editing it."
     if any(a == ".claude" and b in CLAUDE_HOOK_CONFIG for a, b in zip(path.parts, path.parts[1:])):
         return "Claude Code settings and hooks run the safety guard; ask the maintainer to change them."
-    if gh_config_path(path):
+    if gh_config_path(path, cwd):
         return GH_CONFIG
     return None
 
 
-def gh_config_path(path):
+def gh_config_path(path, cwd=None):
     """Whether path lies in a gh config directory: $GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, or $HOME/.config/gh.
 
-    Relative paths, and a relative GH_CONFIG_DIR, resolve against the hook's working directory, which is the
-    directory the agent's tool runs in. A folder elsewhere that only looks like .config/gh is not the config.
+    Relative paths, and a relative GH_CONFIG_DIR, resolve against cwd: the cwd in the hook payload, which
+    is the directory the agent's tool runs in. A caller that has no cwd falls back to the hook process's working
+    directory. A folder elsewhere that only looks like .config/gh is not the config.
     """
-    try:
-        here = os.getcwd()
-    except OSError:
-        here = "/"
+    here = cwd if cwd and os.path.isabs(cwd) else None
+    if here is None:
+        try:
+            here = os.getcwd()
+        except OSError:
+            here = "/"
 
     def absolute(raw):
         return posixpath.normpath(posixpath.join(here, os.path.expanduser(raw)))
@@ -1157,13 +1160,14 @@ def skip_gh_options(args, j):
     return j
 
 
-def merge_tokens(args, api=False):
+def merge_tokens(args, api=False, first_only=False):
     """Whether the words hold gh, then pr and merge, with only gh options between them.
 
-    With api, a gh api call that names a merge endpoint or mutation counts too. A word of data that only
-    contains the text, such as a comment body or a commit message, is one word and never matches.
+    With api, a gh api call that names a merge endpoint or mutation counts too. With first_only, gh must be the
+    first word. A word of data that only contains the text, such as a comment body or a commit message, is one
+    word and never matches.
     """
-    for i, word in enumerate(args):
+    for i, word in enumerate(args[:1] if first_only else args):
         if PurePosixPath(word).name != "gh":
             continue
         j = skip_gh_options(args, i + 1)
@@ -1210,14 +1214,19 @@ def hidden_merge(args, depth=0, strict=False):
     An expansion or substitution in program position followed by pr merge, as in $(echo gh) pr merge, counts:
     the guard cannot tell which program it names. strict is set inside a runner or an alias value, where the
     guard's own gh checks never run, so a gh api merge counts there too.
+
+    The guard looks for gh pr merge only where a program runs: in program position after the wrappers
+    program() unwraps, in the arguments of a runner, in -c or -e code, and in alias values. The arguments of an
+    ordinary program, as in echo gh pr merge 12, are data. Help is decided for each simple command, as main's
+    gh_reason does: gh pr merge followed only by --help or -h is help.
     """
-    if merge_tokens(args, api=strict):
-        return True
     name, rest, *_ = program(args)
     if name is None:
         return False
     if EXPANDED in name:
         return pr_merge_after(rest)
+    if name == "gh":
+        return not merge_help(["gh", *rest]) and merge_tokens(["gh", *rest], api=strict, first_only=True)
     if name in INTERPRETERS:
         return any(names_merge(arg) or code_merge(arg) for arg in rest)
     strings = command_strings(name, rest)
@@ -1361,8 +1370,7 @@ def check_command(command, cwd, outer=None):
         # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
         # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
         # alone stays allowed.
-        help_only = len(parsed) == 1 and merge_help(parsed[0][0])
-        if not help_only and any(hidden_merge(args) for args, *_ in parsed):
+        if any(hidden_merge(args) for args, *_ in parsed):
             return MERGE
     except Unclear as error:
         return str(error) or UNCLEAR
@@ -1371,10 +1379,10 @@ def check_command(command, cwd, outer=None):
     return None
 
 
-def check_paths(paths):
-    """Return why editing one of paths is refused, or None to allow every edit."""
+def check_paths(paths, cwd=None):
+    """Return why editing one of paths is refused, or None to allow every edit. cwd is the hook payload's."""
     for path in paths:
-        reason = protected_path(path.strip())
+        reason = protected_path(path.strip(), cwd)
         if reason:
             return f"{path}: {reason}"
     return None

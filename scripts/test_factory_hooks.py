@@ -1226,6 +1226,8 @@ class HiddenMergeTests(unittest.TestCase):
                "{ clientMutationId } }'\"",
                "alias m='gh api -X PUT repos/o/r/pulls/1620/merge'",
                "G=gh; flock /tmp/pp-lock $G pr merge 1620", "G=gh; watch -n 1 $G pr merge 1620",
+               # Help is decided per simple command, so a merge next to a help request is still refused.
+               "gh pr merge 12 && gh pr merge --help", "gh pr merge --help; gh pr merge 12",
                "G=/usr/bin/gh; \"$G\" api -X PUT repos/o/r/pulls/12/merge", "declare G='gh pr'; $G view 12",
                # gh aliases and extensions run commands the guard never sees.
                "gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'", "gh alias import aliases.yml",
@@ -1247,6 +1249,9 @@ class HiddenMergeTests(unittest.TestCase):
                "echo $(date)", "$EDITOR notes.md", "$(which gh) pr view 12",
                # Help on the normalized words is help, as on main (Sol P3), and code that never runs gh pr merge.
                "gh pr --repo=o/r merge --help", "gh -R o/r pr merge -h", "python3 -c 'print(\"merge sort\")'",
+               # Help in a compound line or behind a wrapper, and an ordinary program's data arguments (cd78c5f3).
+               "gh pr merge --help && echo ok", "gh pr merge --help; echo done", "gh pr --repo=o/r merge --help | less",
+               "command gh pr merge --help", "echo gh pr merge 12", "grep -e gh -e pr -e merge docs/x.md",
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
                "sh -c 'gh api repos/o/r/pulls/12/merge'",
                "gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",
@@ -1318,6 +1323,14 @@ class HiddenMergeTests(unittest.TestCase):
             lookalike = hook(CLAUDE, claude_call("Write", file_path="docs/.config/gh/example.md", content="x"), None,
                              home, cwd=repo)
             self.assertEqual(lookalike.returncode, 0, lookalike.stderr)
+            # The Factory adapter passes the payload's cwd, which wins over the hook process's own directory.
+            for tool, data in (("Create", {"file_path": "../.config/gh/config.yml"}),
+                               ("ApplyPatch", "*** Begin Patch\n*** Update File: ../.config/gh/hosts.yml\n*** End Patch")):
+                payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "cwd": str(repo), "tool_input": data}
+                result = hook(GUARD, payload, None, home, cwd="/")
+                with self.subTest(tool=tool):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config", result.stderr)
             # A repository folder that only looks like the config path is not the gh config.
             for path in (str(Path(folder, "notes/config.yml")), str(Path(folder, "repo/docs/.config/gh/example.md"))):
                 allowed = hook(CLAUDE, claude_call("Write", file_path=path, content="x"), None, env)

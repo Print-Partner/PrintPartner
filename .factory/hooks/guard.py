@@ -33,11 +33,13 @@ def decide(payload):
         return "Expected object tool input, or a patch string for ApplyPatch."
     if tool == "Execute":
         return policy.check_command(str(data.get("command", "")), str(payload.get("cwd") or os.getcwd()))
+    # File paths resolve against the payload's cwd, the directory the tool runs in.
+    cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
     if tool in ("Create", "Edit"):
-        return policy.check_paths([str(data.get("file_path", ""))])
+        return policy.check_paths([str(data.get("file_path", ""))], cwd)
     if tool == "ApplyPatch":
         text = data if isinstance(data, str) else str(data.get("input") or data.get("patch") or "")
-        return policy.check_paths(policy.patch_paths(text))
+        return policy.check_paths(policy.patch_paths(text), cwd)
     return None
 
 

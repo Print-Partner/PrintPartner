@@ -1243,7 +1243,7 @@ class HiddenMergeTests(unittest.TestCase):
                # Nested shells (Sol at 7a96c572); past the nesting limit the guard fails closed.
                "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
-               "xargs " + nested_shells("gh pr merge 1", 10),
+               "xargs " + nested_shells("gh pr merge 1", 8),
                # Accepted edge: under an argv runner each later word is tried as the program it runs.
                "find docs -exec grep -e gh -e pr -e merge {} +",
                # Quotes and backslashes are removed before interpreter code is matched.
@@ -1275,7 +1275,7 @@ class HiddenMergeTests(unittest.TestCase):
                "command gh pr merge --help", "echo gh pr merge 12", "grep -e gh -e pr -e merge docs/x.md",
                # An argv runner's program arguments are data (r4518829993).
                "find docs -name '*.md' -exec grep -l 'gh pr merge' {} +", "printf 'a.md\\n' | xargs grep -n 'gh pr merge'",
-               "xargs echo 'gh pr merge 1'", "entr -s 'make test'", "xargs " + nested_shells("echo hi", 10),
+               "xargs echo 'gh pr merge 1'", "entr -s 'make test'", "xargs " + nested_shells("echo hi", 8),
                # entr runs its arguments as a shell command line only with -s.
                "entr echo 'gh pr merge 1'",
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
@@ -1326,6 +1326,34 @@ class HiddenMergeTests(unittest.TestCase):
         with patch.object(guard, "CHECK_SECONDS", 0):
             self.assertIn("too complex", guard.check_command("xargs echo find find", self.lane))
         self.assertIsNone(guard.check_command("xargs echo find find", self.lane))
+
+    def test_whole_line_limits(self):
+        # Sol at f7f4141d: nested sh -c scripts each started fresh limits, so a 112 KB line ran past the hook's
+        # 10-second limit, and a 5 MB python3 -c took 3.6 s.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        inner = "xargs echo " + " ".join(['watch " "'] * 700)
+        sol = "; ".join("sh -c " + shlex.quote(inner) for _ in range(16))
+        for command in (sol + "; xargs gh pr merge 1", sol, "python3 -c '" + "pass;" * 1_000_000 + "'"):
+            started = time.monotonic()
+            reason = guard.check_command(command, self.lane)
+            with self.subTest(size=len(command)):
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertIn("too long", reason)
+        # An ordinary long line under the cap stays allowed.
+        self.assertIsNone(guard.check_command("xargs echo " + " ".join(f"file{i}" for i in range(2000)), self.lane))
+        # Thousands of nested substitutions are refused near the deadline, not after the hook's limit.
+        started = time.monotonic()
+        self.assertIn("too complex", guard.check_command("echo " + "$(" * 3000 + "x" + ")" * 3000, self.lane))
+        self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_nested_scripts_share_one_line_state(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        made = []
+        real = guard.merge_state
+        with patch.object(guard, "merge_state", lambda: made.append(1) or real()):
+            self.assertIsNone(guard.check_command("sh -c 'echo a'; bash -c 'sh -c \"echo b\"'", self.lane))
+        self.assertEqual(len(made), 1)
+        self.assertIsNone(guard.LINE_DEADLINE)
 
     def test_split_variables_name_the_reason(self):
         for command, results in self.run_all(("G=gh; P=pr; M=merge; $G $P $M 12", "G=gh; $G pr view 12"),

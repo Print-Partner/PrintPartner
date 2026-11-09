@@ -229,6 +229,7 @@ ANSI_C_QUOTE = re.compile(r"\$'((?:\\.|[^'\\])*)'", re.S)
 
 def closing_double_quote(source, i):
     while i < len(source):
+        tick()
         char = source[i]
         if char == "\\":
             i += 2
@@ -247,6 +248,7 @@ def heredoc_body(source, i, delimiter, tabs, expands):
     """Return the body lines of a heredoc that starts at i and the index after its delimiter."""
     body = []
     while i < len(source):
+        tick()
         end = source.find("\n", i)
         end = len(source) if end < 0 else end
         line = source[i:end].rstrip("\r")
@@ -278,6 +280,7 @@ def closing_paren(source, i):
     # cases holds the paren depth at each open case; a ")" at that depth ends a pattern.
     depth, pending, start, cases = 1, [], i, []
     while i < len(source):
+        tick()
         char = source[i]
         if char in "ce":
             keyword = re.match(r"(case|esac)(?=[\s;&|)]|$)", source[i:i + 5])
@@ -338,6 +341,7 @@ def closing_paren(source, i):
 
 def closing_backtick(source, i):
     while i < len(source):
+        tick()
         if source[i] == "\\":
             i += 2
         elif source[i] == "`":
@@ -351,6 +355,7 @@ def substitutions(text):
     """Return command substitutions in text where quotes are literal, such as a heredoc body."""
     found, i = [], 0
     while i < len(text):
+        tick()
         if text[i] == "\\":
             i += 2
         elif text.startswith("$(", i):
@@ -387,6 +392,7 @@ def shell_commands(source):  # noqa: C901
 
     i = 0
     while i < len(source):
+        tick()
         char = source[i]
         if char == "\\" and i + 1 < len(source):
             if source[i + 1] == "\n":
@@ -1226,13 +1232,38 @@ TOO_COMPLEX = ("This command line is too complex for the guard to check in time;
                "commands.")
 
 
+# Longer command lines are refused before any parsing; agents never need one this long.
+MAX_COMMAND_BYTES = 64 * 1024
+TOO_LONG = "This command line is too long for the guard to check; split it into shorter commands."
+# The deadline of the command line being checked, read by the parser's loops; None outside check_command.
+LINE_DEADLINE = None
+
+
 class TooComplex(Exception):
     pass
 
 
 def merge_state():
-    """Return the per-line state hidden_merge shares: its memo, its visit count, and its deadline."""
+    """Return the per-line state every check of one command line shares: the memo, the visit count, and the
+    deadline. check_command makes it once for the top-level line and passes it to every nested script."""
     return {"memo": {}, "steps": 0, "deadline": time.monotonic() + CHECK_SECONDS}
+
+
+PARSER_TICKS = 0
+
+
+def tick():
+    """Count one parser loop step and check the line's deadline every 256 steps."""
+    global PARSER_TICKS
+    PARSER_TICKS += 1
+    if PARSER_TICKS % 256 == 0:
+        check_deadline()
+
+
+def check_deadline():
+    """Raise TooComplex once the deadline of the command line being checked has passed."""
+    if LINE_DEADLINE is not None and time.monotonic() > LINE_DEADLINE:
+        raise TooComplex(TOO_COMPLEX)
 
 
 def hidden_merge(args, depth=0, strict=False, state=None, scan=True):
@@ -1345,13 +1376,32 @@ def assigns_gh(words):
     return False
 
 
-def check_command(command, cwd, outer=None):
+def check_command(command, cwd, outer=None, state=None):
     """Return why a shell command run in cwd is refused, or None to allow it.
 
     outer is (head_moves, config_unknown, env_config) from the line that runs this command as a
     sh -c script. The script inherits them: an assignment, env option, or branch change on the
-    outer line applies to every git command inside it.
+    outer line applies to every git command inside it. state is the top-level line's merge_state(),
+    so the step budget and the deadline cover the whole line, nested scripts included.
     """
+    global LINE_DEADLINE
+    if len(command.encode("utf-8", "surrogatepass")) > MAX_COMMAND_BYTES:
+        return TOO_LONG
+    if state is not None:
+        return check_line(command, cwd, outer, state)
+    state = merge_state()
+    LINE_DEADLINE = state["deadline"]
+    try:
+        return check_line(command, cwd, outer, state)
+    except RecursionError:
+        # Thousands of nested substitutions exhaust the parser's recursion; refuse with the same reason.
+        return TOO_COMPLEX
+    finally:
+        LINE_DEADLINE = None
+
+
+def check_line(command, cwd, outer, state):
+    """The body of check_command for one line or nested script, sharing the top-level line's state."""
     # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
     # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
     if cwd and ".." in PurePosixPath(cwd).parts:
@@ -1403,7 +1453,7 @@ def check_command(command, cwd, outer=None):
                 if script is not None:
                     # The script's own substitutions were already classified as nested commands.
                     reason = check_command(script.replace(EXPANDED, ""), here,
-                                           (head_moves, config_unknown, env_config))
+                                           (head_moves, config_unknown, env_config), state)
                     if reason:
                         return reason
                     continue
@@ -1424,7 +1474,6 @@ def check_command(command, cwd, outer=None):
         # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
         # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
         # alone stays allowed.
-        state = merge_state()
         if any(hidden_merge(args, state=state) for args, *_ in parsed):
             return MERGE
     except TooComplex:

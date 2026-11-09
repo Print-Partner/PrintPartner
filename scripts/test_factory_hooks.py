@@ -1207,6 +1207,25 @@ class HiddenMergeTests(unittest.TestCase):
                # Split variables: the line sets a variable to gh and expands variables.
                "G=gh; P=pr; M=merge; $G $P $M 12", "G=gh P=pr; $G $P view 12", "export G=gh && $G pr view 12",
                "G=gh; xargs $G pr merge 12", "G=gh; find . -exec $G pr view 12 \\;",
+               # Runners whose options and operands come before the program (Crouton at c6f8a958).
+               "G=gh; flock /tmp/x $G pr merge 12", "G=gh; watch -n 1 $G pr view 12", "G=gh; xargs -n 1 $G pr view 12",
+               "G=gh; ssh host $G pr merge 12",
+               # A shell -c script inside an alias value, a git alias value, or a runner.
+               "alias m='sh -c \"gh pr merge 12\"'", "alias m='env X=1 bash -c \"gh pr merge 12\"'",
+               "git config alias.m '!sh -c \"gh pr merge 12\"'", "git -c alias.m='!sh -c \"gh pr merge 12\"' m",
+               "xargs env bash -c 'gh pr merge 12'",
+               # An expansion or substitution in program position, followed by pr merge.
+               "$(echo gh) pr merge 12", "`echo gh` pr merge 12", "$X pr merge 12", "$X -R o/r pr merge 12",
+               # Interpreter code with gh options between pr and merge (Sol at c6f8a958).
+               "python3 -c 'import os; os.system(\"gh pr --repo=o/r merge 1620 --squash\")'",
+               "node -e 'require(\"child_process\").execSync(\"gh pr --help=false merge 1620 --squash\")'",
+               "python3 -c 'import subprocess; subprocess.run([\"gh\", \"pr\", \"-R\", \"o/r\", \"merge\", \"1620\"])'",
+               # Nested shell strings under a runner, and gh api merges inside them.
+               "xargs sh -c 'sh -c \"gh pr merge 1620\"'", "xargs sh -c 'gh api -X PUT repos/o/r/pulls/1620/merge'",
+               "xargs sh -c \"gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) "
+               "{ clientMutationId } }'\"",
+               "alias m='gh api -X PUT repos/o/r/pulls/1620/merge'",
+               "G=gh; flock /tmp/pp-lock $G pr merge 1620", "G=gh; watch -n 1 $G pr merge 1620",
                "G=/usr/bin/gh; \"$G\" api -X PUT repos/o/r/pulls/12/merge", "declare G='gh pr'; $G view 12",
                # gh aliases and extensions run commands the guard never sees.
                "gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'", "gh alias import aliases.yml",
@@ -1225,6 +1244,11 @@ class HiddenMergeTests(unittest.TestCase):
                "echo 'gh pr merge 12 --squash' > notes.md",
                # An expansion used as data, not as the program, on a line that sets a variable to gh.
                "G=gh; echo $HOME", "G=gh; git status; echo $X", "G=gh; X=$HOME",
+               "echo $(date)", "$EDITOR notes.md", "$(which gh) pr view 12",
+               # Help on the normalized words is help, as on main (Sol P3), and code that never runs gh pr merge.
+               "gh pr --repo=o/r merge --help", "gh -R o/r pr merge -h", "python3 -c 'print(\"merge sort\")'",
+               "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
+               "sh -c 'gh api repos/o/r/pulls/12/merge'",
                "gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",
                "find . -name '*.md' -exec grep -l merge {} \\;", "setsid gh pr checks 12", "N=12; gh pr view $N",
                "X=1; echo $X", "gh pr merge --help", "gh pr comment 12 -b 'Ready to merge once CI is green.'",

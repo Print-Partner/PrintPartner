@@ -98,7 +98,9 @@ SPLIT_GH = "Cannot classify a gh command built from variables; write gh and its 
 # Interpreter code (python3 -c, node -e) cannot be parsed as shell, so its text is matched after quote
 # characters and backslashes are removed.
 NAMED_MERGE = re.compile(r"\bpr\s*merge\b")
-MERGE_WORD = re.compile(r"\bmerge\b|mergepullrequest", re.I)
+MERGE_WORD = re.compile(r"\bmerge\b|mergepullrequest|enablepullrequestautomerge", re.I)
+# Interpreter code splits into words at whitespace, quotes, and the punctuation around string literals and calls.
+CODE_WORD = re.compile(r"[^\s'\"`(),;\[\]{}+]+")
 INTERPRETERS = {"python", "python3", "node", "perl", "ruby", "php", "deno", "bun"}
 # gh options that take a value, before or between gh, pr, and the subcommand.
 GH_VALUE_FLAGS = {"-R", "--repo"}
@@ -1187,44 +1189,88 @@ def command_strings(name, rest):
     return []
 
 
-def hidden_merge(args, depth=0):
+def pr_merge_after(args):
+    """Whether args, the words after an unknown program, read as gh's pr merge or a gh api merge."""
+    j = skip_gh_options(args, 0)
+    if j < len(args) and args[j] == "pr":
+        k = skip_gh_options(args, j + 1)
+        return k < len(args) and args[k] == "merge"
+    return j < len(args) and args[j] == "api" and any(MERGE_WORD.search(arg) for arg in args[j + 1:])
+
+
+def code_merge(code):
+    """Whether interpreter code holds gh, pr and merge as words in that order, with only gh options between."""
+    return merge_tokens(CODE_WORD.findall(code.replace(EXPANDED, " ")), api=True)
+
+
+def hidden_merge(args, depth=0, strict=False):
     """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
-    or as the command line inside an alias value or a runner's command string."""
-    if merge_tokens(args):
+    as a shell's -c script, or as the command line inside an alias value or a runner's command string.
+
+    An expansion or substitution in program position followed by pr merge, as in $(echo gh) pr merge, counts:
+    the guard cannot tell which program it names. strict is set inside a runner or an alias value, where the
+    guard's own gh checks never run, so a gh api merge counts there too.
+    """
+    if merge_tokens(args, api=strict):
         return True
     name, rest, *_ = program(args)
+    if name is None:
+        return False
+    if EXPANDED in name:
+        return pr_merge_after(rest)
     if name in INTERPRETERS:
-        return any(names_merge(arg) for arg in rest)
+        return any(names_merge(arg) or code_merge(arg) for arg in rest)
+    strings = command_strings(name, rest)
+    # Alias and git alias values and runner strings are commands no gh check sees.
+    inner_strict = strict or bool(strings)
+    if name in SHELLS:
+        script, unclear = shell_script(rest)
+        if unclear:
+            return names_merge(" ".join(rest))
+        strings = [script] if script is not None else []
     if name in UNWRAPPED_RUNNERS:
         raw = " ".join(rest)
         # The parser marks every expansion and substitution; a literal $ or backtick in single quotes is data.
         if merge_tokens(rest, api=True) or (EXPANDED in raw and re.search(r"\bgh\b", unquoted(raw))):
             return True
+        # The runner's own arguments may start another wrapper, shell, or runner.
+        if depth < 3 and any(hidden_merge(rest[i:], depth + 1, True) for i in range(len(rest))
+                             if not rest[i].startswith("-")):
+            return True
     if depth < 3:
-        for text in command_strings(name, rest):
+        for text in strings:
             try:
                 inner = shell_commands(text)
             except (Unclear, ValueError):
                 return names_merge(text)
-            if any(hidden_merge(words, depth + 1) for words, *_ in inner):
+            if any(hidden_merge(words, depth + 1, inner_strict) for words, *_ in inner):
                 return True
     return False
 
 
 def expanded_program(args):
-    """Whether the program this command runs, or the program a runner runs, comes from an expansion."""
+    """Whether the program this command runs comes from an expansion, or a runner gets an expanded argument.
+
+    A runner such as flock FILE, watch -n 1, xargs -n 1, or ssh host takes options and operands before the
+    program it runs, so any expanded argument of a runner counts.
+    """
     name, rest, *_ = program(args)
     if name is None:
         return False
     if EXPANDED in name:
         return True
-    if name in UNWRAPPED_RUNNERS:
-        if name == "find":
-            rest = [rest[i + 1] for i, arg in enumerate(rest[:-1]) if arg in ("-exec", "-execdir", "-ok", "-okdir")]
-        else:
-            rest = [arg for arg in rest if not arg.startswith("-")][:1]
-        return any(EXPANDED in arg for arg in rest)
-    return False
+    return name in UNWRAPPED_RUNNERS and any(EXPANDED in arg for arg in rest)
+
+
+def merge_help(args):
+    """Whether args is gh pr merge asking only for help, after gh_command removes the options in its path."""
+    if args[:1] != ["gh"]:
+        return False
+    try:
+        words = gh_command(args[1:])
+    except Unclear:
+        return False
+    return words[:2] == ["pr", "merge"] and bool(words[2:]) and all(arg in ("--help", "-h") for arg in words[2:])
 
 
 def assigns_gh(words):
@@ -1315,8 +1361,7 @@ def check_command(command, cwd, outer=None):
         # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
         # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
         # alone stays allowed.
-        help_only = len(parsed) == 1 and parsed[0][0][:3] == ["gh", "pr", "merge"] and parsed[0][0][3:] \
-            and all(arg in ("--help", "-h") for arg in parsed[0][0][3:])
+        help_only = len(parsed) == 1 and merge_help(parsed[0][0])
         if not help_only and any(hidden_merge(args) for args, *_ in parsed):
             return MERGE
     except Unclear as error:

@@ -284,15 +284,25 @@ Each job declares its runner in `runs-on`, its package scope in `CARGO_SCOPE`, a
 
 ## Run the required checks with one command
 
-Run this command from the repository before you push:
+A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full set before each push:
 
 ```sh
 PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci
 ```
 
-`just ci` passes its arguments to `python3 scripts/local-ci.py`, which holds the only list of steps. Without [just](https://github.com/casey/just), run `python3 scripts/local-ci.py` from the repository root with the same arguments. Agents run this command before they push, as [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) says.
+`just ci` passes its arguments to `python3 scripts/local-ci.py`, which holds the only list of steps. Without [just](https://github.com/casey/just), run `python3 scripts/local-ci.py` from the repository root with the same arguments. Agents run it, or `just ci --fast` for a normal PR, before they push, as [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) says.
 
 It runs the steps below in the order that `just ci --list` prints, and continues after a failure, so one run reports every failure. At the end it prints one `PASS`, `FAIL` or `SKIP` line for each step and exits 1 if any step failed. To see the step ids, use `just ci --list`. To select steps, use `just ci --only fmt,clippy-off` or `just ci --skip nextest-on`.
+
+Normal PRs run the fast set instead, and sensitive PRs, as the [merge gate](definition-of-done.md#merge-gate) defines them, run the full `just ci`:
+
+```sh
+PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci --fast
+```
+
+`--fast` runs every step except `nextest-off`, `nextest-on`, `doc-off` and `doc-on`. In place of `nextest-on` it runs `nextest-affected`: the same `nextest` command with `desktop_rebuild` on, filtered to the crates this branch changes and their reverse dependents. The filter comes from the rules in `scripts/ci-affected-nextest-filter.py`, applied to the diff from `git merge-base origin/main HEAD` to the working tree plus untracked files, so uncommitted edits count. Shared inputs such as `rust/Cargo.lock`, `web/`, `fixtures/` and the filter script force `all()`, as in CI, and so does a branch that changes no crate. Without `origin/main` or a merge base, or if the filter script fails, the filter is `all()`. Fetch `origin` first so the merge base is current. `just ci --fast --list` prints the fast step ids, and `--only` and `--skip` take them.
+
+If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full and the fast run set `RUSTC_WRAPPER` to it and `CARGO_INCREMENTAL=0`, unless `RUSTC_WRAPPER` is already in the environment. Set it empty (`RUSTC_WRAPPER= just ci`) to build without a wrapper. The command prints the wrapper it sets. Without sccache, it sets neither.
 
 | Step | What it runs | CI source |
 |------|--------------|-----------|

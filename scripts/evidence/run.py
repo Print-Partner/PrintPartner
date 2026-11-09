@@ -399,7 +399,11 @@ def main(argv=None):
     if args.self_test:
         # The redaction tests (no cookie in a failed request) and the setup step tests.
         run(node, "--test", HERE / "safety.test.mjs", HERE / "steps.test.mjs")
-    binary = build(node, args.rebuild)
+    try:
+        binary = build(node, args.rebuild)
+    except (KeyboardInterrupt, Stopped) as stop_reason:
+        say(f"FAIL: stopped by {stop_label(stop_reason)} while building")
+        return 1
     if args.out is None:
         out_dir = Path(tempfile.mkdtemp(prefix=f"pp-evidence-{args.seed}-"))
     else:

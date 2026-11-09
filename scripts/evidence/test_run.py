@@ -118,6 +118,15 @@ class MainStops(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("FAIL: stopped by SIGINT\n", printed)
 
+    def test_a_stop_while_building_reports_it_without_a_traceback(self):
+        signals = {signum: signal.getsignal(signum) for signum in run.STOP_SIGNALS}
+        self.addCleanup(lambda: [signal.signal(n, h) for n, h in signals.items()])
+        for error, name in ((KeyboardInterrupt(), "SIGINT"), (run.Stopped("SIGTERM"), "SIGTERM")):
+            with self.subTest(name), mock.patch.object(run, "build", side_effect=error), \
+                    contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(run.main(["--shot", "/builds"]), 1)
+            self.assertIn(f"FAIL: stopped by {name} while building\n", printed.getvalue())
+
     def test_sigterm_reports_its_name(self):
         status, printed = self.run_main_raising(run.Stopped("SIGTERM"))
         self.assertEqual(status, 1)

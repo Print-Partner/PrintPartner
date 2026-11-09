@@ -5,7 +5,7 @@ import { dirname, extname, join, normalize, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const canonicalRepository = "poitee/PrintPartner";
+const canonicalRepository = "Print-Partner/PrintPartner";
 const selfPath = "scripts/audit-public-release.mjs";
 
 const requiredFiles = [

@@ -78,7 +78,7 @@ export type ServerConfig = {
   smtpConfigured: boolean;
   /** When true and SMTP is off, API may return reset URL in dev/non-prod responses. */
   passwordResetDevExpose: boolean;
-  /** GitHub owner/repo for release lookup (e.g. poitee/PrintPartner) */
+  /** GitHub owner/repo for release lookup (e.g. Print-Partner/PrintPartner) */
   githubRepo: string;
   /** Air-gapped override: treat this as the latest published version */
   latestVersionOverride: string | null;
@@ -358,7 +358,7 @@ export function loadConfig(): ServerConfig {
     integrationApiKey:
       process.env.INTEGRATION_API_KEY?.trim() || process.env.PRINT_PARTNER_API_KEY?.trim() || null,
     updateCheckEnabled: process.env.PRINT_PARTNER_UPDATE_CHECK !== "0",
-    githubRepo: process.env.GITHUB_REPO?.trim() || "poitee/PrintPartner",
+    githubRepo: process.env.GITHUB_REPO?.trim() || "Print-Partner/PrintPartner",
     latestVersionOverride: process.env.PRINT_PARTNER_LATEST_VERSION?.trim() || null,
     updateCheckCacheHours: Number(process.env.PRINT_PARTNER_UPDATE_CHECK_CACHE_HOURS ?? 12),
     appPublicUrl: process.env.APP_PUBLIC_URL?.trim() || null,

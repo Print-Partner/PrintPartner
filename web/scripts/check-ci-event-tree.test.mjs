@@ -24,7 +24,7 @@ function fixture(t, mutate = () => {}) {
   copyFileSync(join(root, stateCLI), join(directory, stateCLI));
   mkdirSync(join(directory, 'bin'));
   writeFileSync(join(directory, 'bin/gh'), `#!/usr/bin/env node
-if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(['api', '--hostname', 'github.com', 'repos/poitee/PrintPartner/actions/workflows/desktop-contracts.yml'])) process.exit(9);
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(['api', '--hostname', 'github.com', 'repos/Print-Partner/PrintPartner/actions/workflows/desktop-contracts.yml'])) process.exit(9);
 console.log(JSON.stringify({ path: '.github/workflows/desktop-contracts.yml', state: process.env.TEST_WORKFLOW_STATE ?? 'active' }));
 `);
   chmodSync(join(directory, 'bin/gh'), 0o755);
@@ -292,7 +292,7 @@ for (const job of ['web', 'web-build']) {
         if (step.run === 'npm rebuild' || step.name === 'Check Action SHAs and CI installer tool pins') break;
       }
       const result = spawnSync('bash', ['-e', '-c', commands.join('\n')], {
-        cwd: web, encoding: 'utf8', env: { ...process.env, EVENT_SHA: f.sha, GITHUB_SHA: f.sha, GITHUB_REPOSITORY: 'poitee/PrintPartner',
+        cwd: web, encoding: 'utf8', env: { ...process.env, EVENT_SHA: f.sha, GITHUB_SHA: f.sha, GITHUB_REPOSITORY: 'Print-Partner/PrintPartner',
           GH_TOKEN: 'fixture-token', TEST_WORKFLOW_STATE: state, PATH: `${join(f.directory, 'bin')}:${process.env.PATH}` },
       });
       assert.equal(existsSync(join(web, 'lifecycle-ran')), valid, result.stdout + result.stderr);

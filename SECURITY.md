@@ -4,7 +4,7 @@ Print Partner is designed for self-hosting on a trusted network. The default Com
 
 ## Report a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Use [GitHub private vulnerability reporting](https://github.com/poitee/PrintPartner/security/advisories/new). Include the affected version, deployment mode, reproduction steps, and likely impact. Do not include live credentials or user data.
+Do not open a public issue for a suspected vulnerability. Use [GitHub private vulnerability reporting](https://github.com/Print-Partner/PrintPartner/security/advisories/new). Include the affected version, deployment mode, reproduction steps, and likely impact. Do not include live credentials or user data.
 
 ## Deployment boundary
 

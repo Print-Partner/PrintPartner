@@ -12,7 +12,7 @@ const baseConfig: UpdateCheckConfig = {
   version: "0.1.0-web",
   deployMode: "self-host",
   updateCheckEnabled: true,
-  githubRepo: "poitee/PrintPartner",
+  githubRepo: "Print-Partner/PrintPartner",
   latestVersionOverride: null,
   updateCheckCacheHours: 12,
 };
@@ -61,14 +61,14 @@ describe("checkAppUpdate", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(result.update_available).toBe(true);
     expect(result.latest_version).toBe("0.3.0");
-    expect(result.release_notes_url).toContain("github.com/poitee/PrintPartner/releases");
+    expect(result.release_notes_url).toContain("github.com/Print-Partner/PrintPartner/releases");
   });
 
   it("reports update when GitHub latest is newer", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         tag_name: "v0.2.0",
-        html_url: "https://github.com/poitee/PrintPartner/releases/tag/v0.2.0",
+        html_url: "https://github.com/Print-Partner/PrintPartner/releases/tag/v0.2.0",
       }), { status: 200 }),
     );
     const result = await checkAppUpdate(baseConfig, { fetchImpl });

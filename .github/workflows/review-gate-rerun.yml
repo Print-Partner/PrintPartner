@@ -67,7 +67,8 @@ jobs:
               exit 0
             fi
             # Only main's gate for this PR: a run for another PR on the same head into another
-            # branch ran that branch's copy of the file. Runs are listed newest first.
+            # branch ran that branch's copy of the file. Runs are listed newest first. A fork PR's
+            # runs list no PR, so they are never picked; rerun those from the Checks tab.
             run=$(gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?event=pull_request_target&head_sha=$head&per_page=100" \
               --jq "[.workflow_runs[] | select(any(.pull_requests[]?; .number == $pr and .base.ref == \"main\"))][0] // empty | \"\\(.id) \\(.status)\"")
             if [ -z "$run" ]; then

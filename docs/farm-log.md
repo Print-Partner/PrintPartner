@@ -33,7 +33,7 @@ screen says so and never reads the log.
 | `kind` | Source | Undo |
 | --- | --- | --- |
 | `checkoff_burst` | An entry storage appends to the `printer.farm_log` setting in the same transaction as a new `POST /printer-checkoff/verify-batch` burst | Allowed while the burst's undo checks pass |
-| `checkoff_burst_undo` | An entry appended in the same transaction as a successful burst undo, through either undo route | Never (no redo) |
+| `checkoff_burst_undo` | An entry appended in the same transaction as a successful burst undo, through any undo route: `POST /printer-checkoff/verify-batch/undo`, this log's, or Build history's (GRE-1259, [Build history](build-history.md)) | Never (no redo) |
 | `send` | The existing items of the `printer.send_queue` setting, read as the farm reads parse them; items without `created_at` are skipped | Never: dispatch and cancel are printer commands |
 
 The log copies nothing it can reuse. A burst entry stores its sequence

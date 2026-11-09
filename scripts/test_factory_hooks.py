@@ -678,7 +678,7 @@ CLAUDE = ROOT / ".claude/hooks/guard.py"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 MERGE_FORM = f"gh pr merge 12 --squash --match-head-commit {SHA}"
 # The command the retired lane-rules.yaml merge_gate told lanes to run.
-OLD_MERGE_GATE = f"gh pr merge 12 -R poitee/PrintPartner --squash --match-head-commit {SHA}"
+OLD_MERGE_GATE = f"gh pr merge 12 -R Print-Partner/PrintPartner --squash --match-head-commit {SHA}"
 CLAUDE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 

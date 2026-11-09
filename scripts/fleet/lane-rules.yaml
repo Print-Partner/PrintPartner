@@ -14,7 +14,7 @@ updated: "2026-11-03T00:00:00-05:00"
 source:
   team: {key: GRE, name: Personal, id: 5f575c20-8e60-499a-9b9f-eb0da5fd0011}
   project: "Print Partner Desktop (Rust core)"
-  repo: poitee/PrintPartner
+  repo: Print-Partner/PrintPartner
 
 caps:
   tickets_per_pr: 1

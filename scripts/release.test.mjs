@@ -42,7 +42,7 @@ function fixture(context) {
   write(
     root,
     "docker-compose.hosted.yml",
-    "image: example:${PRINT_PARTNER_VERSION:-3.1.0}\n",
+    "image: ghcr.io/poitee/print-partner:${PRINT_PARTNER_VERSION:-3.1.0}\n",
   );
   const versioned = (text) =>
     `<!-- release-version:start -->\n${text}\n<!-- release-version:end -->\n`;
@@ -52,7 +52,11 @@ function fixture(context) {
     "web/DEPLOY.md",
     `${versioned("Deploy 3.1.0 with PP_VERSION=3.1.0-web.")}Historical v3.1.0 incident.\n`,
   );
-  write(root, "OPERATIONS.md", versioned("Version: 3.1.0"));
+  write(
+    root,
+    "OPERATIONS.md",
+    `${versioned("Version: 3.1.0")}cosign verify "ghcr.io/poitee/print-partner@$DIGEST"\n`,
+  );
   write(
     root,
     "CHANGELOG.md",
@@ -112,6 +116,14 @@ test("applying a release plan preserves private dependency versions and changelo
     readFileSync(join(root, "docker-compose.yml"), "utf8"),
     /historical example: 3\.1\.0/,
   );
+  assert.equal(
+    readFileSync(join(root, "docker-compose.hosted.yml"), "utf8"),
+    "image: ghcr.io/print-partner/print-partner:${PRINT_PARTNER_VERSION:-3.2.0}\n",
+  );
+  assert.match(
+    readFileSync(join(root, "OPERATIONS.md"), "utf8"),
+    /cosign verify "ghcr\.io\/print-partner\/print-partner@\$DIGEST"\n$/,
+  );
 
   const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
   assert.match(changelog, /## \[Unreleased\]\n\n## \[3\.2\.0\] - 2026-08-20/);
@@ -142,14 +154,14 @@ test("release identity output is deterministic and binds the digest to the peele
     tag: "v3.2.0",
     commit: "a".repeat(40),
     image: {
-      repository: "ghcr.io/poitee/print-partner",
+      repository: "ghcr.io/print-partner/print-partner",
       digest: `sha256:${"b".repeat(64)}`,
       expected_aliases: ["3.2.0"],
       mutable_aliases: ["latest"],
     },
     supported_deployment_modes: ["self-host"],
     github_release_url:
-      "https://github.com/poitee/PrintPartner/releases/tag/v3.2.0",
+      "https://github.com/Print-Partner/PrintPartner/releases/tag/v3.2.0",
   });
 });
 

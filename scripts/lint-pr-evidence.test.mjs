@@ -55,10 +55,10 @@ test("UI and desktop changes need a screenshot or video in Evidence", () => {
   for (const media of [
     "![Builds page](https://github.com/user-attachments/assets/0b6c3f7e-4d1a-4c2b-9f00-1a2b3c4d5e6f)",
     "https://github.com/user-attachments/assets/0b6c3f7e-4d1a-4c2b-9f00-1a2b3c4d5e6f",
-    "<img width=\"600\" src=\"https://raw.githubusercontent.com/poitee/PrintPartner/evidence/x/window.png\">",
+    "<img width=\"600\" src=\"https://raw.githubusercontent.com/Print-Partner/PrintPartner/evidence/x/window.png\">",
     "<video src=\"https://example.com/demo.webm\"></video>",
     "Recording: https://example.com/demo.mp4",
-    "[tray](https://github.com/poitee/PrintPartner/blob/evidence/x/tray.png?raw=true)",
+    "[tray](https://github.com/Print-Partner/PrintPartner/blob/evidence/x/tray.png?raw=true)",
   ]) {
     assert.equal(lintPrEvidence(`## Evidence\n${media}\nExemption: none`, { changedFiles: ui }).ok, true, media);
   }

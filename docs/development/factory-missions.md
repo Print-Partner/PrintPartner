@@ -21,7 +21,7 @@ After this setup script is on the selected repository branch:
    intend to share it with the organization. Do not change organization defaults.
 3. Use Factory managed / Factory default. Grant both the personal source-control
    connection and the Factory organization GitHub app access to PrintPartner.
-4. Add `poitee/PrintPartner`. In its **repository setup script**, enter
+4. Add `Print-Partner/PrintPartner`. In its **repository setup script**, enter
    `bash scripts/factory-environment/setup.sh`. Leave global setup empty.
 5. Create the Environment, inspect the build log, and wait for Ready.
 6. Select that Environment when creating a Mission. Validate a fresh instance

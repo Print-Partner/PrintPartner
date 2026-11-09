@@ -34,6 +34,8 @@ CODEOWNERS assigns these paths to `@poitee`:
 - `rust/ast-grep-baseline.json`, `rust/clippy-limits-baseline.json`,
   `scripts/workaround-baseline.json`, and Rust snapshot directories under `rust/crates/`.
 
+CODEOWNERS requests Chad's review on all of these; who merges is decided by the [merge gate](definition-of-done.md#merge-gate). Chad merges the CI controls, the files that judge PRs: the `.github/` paths, the two CI selector scripts and their tests, the PR evidence checker, `scripts/linear/`, the ruleset snapshot and the merge-group map. The coordinator merges the other owned paths as sensitive PRs after two scorer seats score the exact head 9 or more, without waiting for Chad's review (decided 2026-11-09).
+
 The workflow `.github/workflows/actionlint.yml` starts on every `pull_request`, on pushes to `main` and `master`, on merge groups and on manual dispatch.
 Its `changes` job selects the `actionlint` and `zizmor` jobs.
 On PRs, both jobs run when `.github/workflows/**`, `.github/actions/**`, either linter's configuration, or the CI filter script and its tests change.

@@ -235,7 +235,13 @@ fn ticket_t_8_restore_a_new_stage_replaces_the_earlier_one_and_a_refused_stage_k
     let first = stage(&client, &backup).unwrap();
     let second = stage(&client, &backup).unwrap();
     assert_ne!(first.restore_id, second.restore_id);
-    let kept = [format!("{STAGED_PREFIX}{}", second.restore_id)];
+    // A name this build does not create is never removed by a new stage.
+    std::fs::create_dir(root.join(WORK_DIR).join("staged-other")).unwrap();
+    let third = stage(&client, &backup).unwrap();
+    let kept = [
+        format!("{STAGED_PREFIX}{}", third.restore_id),
+        "staged-other".to_owned(),
+    ];
     assert_eq!(work_entries(&root), kept);
     let newer = archive_with(scratch.path(), schema::CURRENT_VERSION + 1, "full", &[]);
     stage(&client, &newer).unwrap_err();
@@ -329,8 +335,16 @@ fn ticket_t_8_restore_unmarked_installations_and_oversized_uploads_refuse_before
     let error = upload.write(b"5").unwrap_err();
     assert_eq!(refusal(&error), Some(&Refusal::TooLarge(4)));
     assert_eq!(std::fs::metadata(&upload.path).unwrap().len(), 4);
-    drop(upload);
+    let error = client.stage(upload).unwrap_err();
+    assert!(
+        matches!(refusal(&error), Some(Refusal::InvalidArchive(detail)) if detail.contains("did not complete")),
+        "{error:#}"
+    );
     assert!(work_entries(&root).is_empty());
+    assert_eq!(
+        client.begin_upload(u64::MAX).unwrap().limit,
+        MAX_UPLOAD_BYTES
+    );
     owner.shutdown().unwrap();
 }
 

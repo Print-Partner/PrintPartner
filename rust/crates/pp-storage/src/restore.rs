@@ -7,7 +7,7 @@
 //! is not part of this module yet.
 
 use crate::{WriterOwner, archive, ownership_marker, schema};
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use std::{
     fmt,
     fs::File,
@@ -19,6 +19,9 @@ use std::{
 const WORK_DIR: &str = ".pp-restore";
 const INCOMING_PREFIX: &str = "incoming-";
 const INCOMING_SUFFIX: &str = ".tar.gz";
+/// The most any upload may hold, whatever limit the caller asks for. It
+/// matches the default decompressed limit in [`archive::Limits`].
+pub const MAX_UPLOAD_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const STAGED_PREFIX: &str = "staged-";
 
 /// Serializes staging in this process, so one stage never removes the
@@ -86,16 +89,21 @@ pub struct Upload {
     path: PathBuf,
     written: u64,
     limit: u64,
+    /// Set when a write failed; [`InstallationClient::stage`] refuses it.
+    failed: bool,
 }
 
 impl Upload {
     /// Appends `bytes`, refusing with [`Refusal::TooLarge`] once the total
-    /// would pass the limit. Nothing past the limit is written.
+    /// would pass the limit. Nothing past the limit is written. After any
+    /// failed write the upload can no longer be staged.
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
         let written = self.written.saturating_add(bytes.len() as u64);
+        self.failed = true;
         ensure!(written <= self.limit, Refusal::TooLarge(self.limit));
         self.file.write_all(bytes)?;
         self.written = written;
+        self.failed = false;
         Ok(())
     }
 }
@@ -107,7 +115,8 @@ impl Drop for Upload {
 }
 
 impl InstallationClient {
-    /// Starts an upload of at most `limit` bytes.
+    /// Starts an upload of at most `limit` bytes, capped at
+    /// [`MAX_UPLOAD_BYTES`].
     pub fn begin_upload(&self, limit: u64) -> Result<Upload> {
         require_marker(&self.data_dir)?;
         let work = work_dir(&self.data_dir)?;
@@ -120,7 +129,8 @@ impl InstallationClient {
             file,
             path,
             written: 0,
-            limit,
+            limit: limit.min(MAX_UPLOAD_BYTES),
+            failed: false,
         })
     }
 
@@ -130,6 +140,10 @@ impl InstallationClient {
     pub fn stage(&self, upload: Upload) -> Result<Staged> {
         let _gate = gate()?;
         require_marker(&self.data_dir)?;
+        ensure!(
+            !upload.failed,
+            Refusal::InvalidArchive("the upload did not complete".into())
+        );
         upload.file.sync_all()?;
         let work = work_dir(&self.data_dir)?;
         let restore_id = random_id();
@@ -153,7 +167,7 @@ impl InstallationClient {
         drop(upload);
         match &result {
             Ok(_) => remove_entries(&work, |name| {
-                name.starts_with(STAGED_PREFIX) && Some(name) != staged_name(&staged)
+                is_staged(name) && Some(name) != staged_name(&staged)
             })?,
             Err(_) => {
                 let _ = std::fs::remove_dir_all(&staged);
@@ -166,6 +180,11 @@ impl InstallationClient {
 
 fn gate() -> Result<MutexGuard<'static, ()>> {
     GATE.lock().map_err(|_| anyhow!("Restore gate poisoned"))
+}
+
+/// `staged-<32 hex>`, the only stage name this build creates or removes.
+fn is_staged(name: &str) -> bool {
+    name.strip_prefix(STAGED_PREFIX).is_some_and(is_id)
 }
 
 fn staged_name(staged: &Path) -> Option<&str> {
@@ -261,10 +280,11 @@ pub(crate) fn recover(data_dir: &Path) -> Result<()> {
         work.display()
     );
     let leftover = |name: &str| {
-        name.strip_prefix(INCOMING_PREFIX)
-            .and_then(|rest| rest.strip_suffix(INCOMING_SUFFIX))
-            .or_else(|| name.strip_prefix(STAGED_PREFIX))
-            .is_some_and(is_id)
+        is_staged(name)
+            || name
+                .strip_prefix(INCOMING_PREFIX)
+                .and_then(|rest| rest.strip_suffix(INCOMING_SUFFIX))
+                .is_some_and(is_id)
     };
     for entry in std::fs::read_dir(&work)? {
         let name = entry?.file_name();
@@ -275,9 +295,14 @@ pub(crate) fn recover(data_dir: &Path) -> Result<()> {
             name.to_string_lossy()
         );
     }
-    remove_entries(&work, leftover)?;
-    std::fs::remove_dir(&work)?;
-    Ok(())
+    remove_entries(&work, leftover)
+        .and_then(|()| Ok(std::fs::remove_dir(&work)?))
+        .with_context(|| {
+            format!(
+                "Clear the interrupted restore in {}; move it aside to open",
+                work.display()
+            )
+        })
 }
 
 #[cfg(all(test, unix))]

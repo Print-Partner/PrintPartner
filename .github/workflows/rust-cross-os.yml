@@ -4,8 +4,8 @@ name: Rust cross-OS
 # runs, and on a PR only when the Windows tier selects it (ci:windows or ci:full label, or a
 # Windows-relevant path). Ready PRs with the macos or ci:full label also test macOS. PR gate keeps clippy + doctests for both feature states (macOS PRs
 # still skip desktop_rebuild=on as before). Linux and Windows PRs run nextest with
-# desktop_rebuild on; macOS PRs skip it. The off pass runs only packages whose code can differ
-# with the feature off (scripts/ci-desktop-rebuild-off-filter.py); macOS PRs run all of it.
+# desktop_rebuild on; macOS PRs skip it. The off pass skips packages that cannot reach the
+# feature (scripts/ci-desktop-rebuild-off-filter.py); macOS PRs run all of it.
 # On PRs, nextest uses rdeps(=crate) for changed rust/crates/* (see
 # scripts/ci-affected-nextest-filter.py); shared inputs and non-PR events keep
 # all(). On main push, merge_group, and workflow_dispatch, Linux archives
@@ -244,8 +244,8 @@ jobs:
         id: nextest-off
         if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
         timeout-minutes: 45
-        # Only packages whose code can differ with the feature off, and their reverse
-        # dependencies; the on pass runs the rest (scripts/ci-desktop-rebuild-off-filter.py).
+        # Leaves out only packages whose dependency closure declares no desktop_rebuild
+        # feature; the on pass runs everything (scripts/ci-desktop-rebuild-off-filter.py).
         run: |
           off_filter=$(python3 -B scripts/ci-desktop-rebuild-off-filter.py)
           cargo nextest run --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --no-tests=warn -E "($NEXTEST_FILTER) & ($off_filter)"

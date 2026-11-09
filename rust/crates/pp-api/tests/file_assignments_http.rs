@@ -155,6 +155,14 @@ impl PrinterHostPort for Host {
     fn test(&self, _: String) -> Answer<Value> {
         Box::pin(async { HostAnswer::Unsupported })
     }
+
+    fn tls_pin(&self, _: String) -> Answer<Value> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
+
+    fn reset_tls_pin(&self, _: String) -> Answer<Value> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
 }
 
 fn open(

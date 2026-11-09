@@ -16,6 +16,8 @@ use axum::body::{Body, Bytes};
 use http_body::Frame;
 pub use pp_drivers::moonraker_driver::UploadResult;
 use pp_drivers::{
+    bambu,
+    moonraker::PrinterHostState,
     moonraker_driver::{self, StorageEntry},
     prusalink,
 };
@@ -146,6 +148,27 @@ fn opened(reply: StreamReply) -> Opened {
     }
 }
 
+/// A Bambu certificate pin: the printer address it was taken at and the
+/// SHA-256 of the certificate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BambuPin {
+    pub host: String,
+    pub port: u16,
+    pub sha256: [u8; 32],
+}
+
+/// A Bambu connection test's `{ok, message}`, and the pin to store when the
+/// test ran without one and reached the printer's status.
+#[derive(Debug)]
+pub struct BambuTest {
+    pub result: Value,
+    pub pin: Option<BambuPin>,
+}
+
+pub use bambu::CERTIFICATE_CHANGED as BAMBU_CERTIFICATE_CHANGED;
+pub const BAMBU_ADDRESS_CHANGED: &str =
+    "Printer address changed since its certificate was pinned. Reset its certificate in Settings.";
+
 #[derive(Clone)]
 pub struct HostReads {
     guard: HttpGuard,
@@ -192,6 +215,48 @@ impl HostReads {
             Driver::PrusaLink(driver) => driver.test_connection().await,
         };
         serde_json::to_value(result).unwrap_or(Value::Null)
+    }
+
+    /// Node's Bambu `testConnection` over pinned TLS (`pp_drivers::bambu`):
+    /// with `pin`, only that certificate at that address; without one, the
+    /// certificate the printer presents, which the result then carries for
+    /// the caller to store. Only the user's Test connection calls this.
+    pub async fn bambu_test(&self, config: &Value, pin: Option<&BambuPin>) -> BambuTest {
+        let failed = |message: &str| BambuTest {
+            result: serde_json::json!({ "ok": false, "message": message }),
+            pin: None,
+        };
+        let config = match bambu::Config::from_stored(config) {
+            Ok(config) => config,
+            Err(message) => return failed(&message),
+        };
+        let trust = match pin {
+            None => bambu::Trust::FirstUse,
+            Some(pin) if pin.host == config.host && pin.port == config.port => {
+                bambu::Trust::Pinned(pin.sha256)
+            }
+            Some(_) => return failed(BAMBU_ADDRESS_CHANGED),
+        };
+        let (host, port) = (config.host.clone(), config.port);
+        let read = bambu::Driver::new(self.guard.clone(), config)
+            .status(trust)
+            .await;
+        let status = read.status;
+        if status.state == PrinterHostState::Offline {
+            return failed(status.message.as_deref().unwrap_or("Bambu MQTT offline"));
+        }
+        let state = serde_json::to_value(&status.state).unwrap_or(Value::Null);
+        let shown = status
+            .message
+            .clone()
+            .unwrap_or_else(|| state.as_str().unwrap_or_default().to_owned());
+        BambuTest {
+            result: serde_json::json!({ "ok": true, "message": format!("Connected (LAN MQTT · {shown})") }),
+            pin: match (trust, read.certificate) {
+                (bambu::Trust::FirstUse, Some(sha256)) => Some(BambuPin { host, port, sha256 }),
+                _ => None,
+            },
+        }
     }
 
     /// One directory as Node's `StorageListing`.
@@ -437,5 +502,47 @@ mod tests {
         );
         let error = axum::body::to_bytes(body, usize::MAX).await.unwrap_err();
         assert!(error.to_string().contains("deadline"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn ticket_t_23_a_pin_counts_only_for_its_host_and_port() {
+        let (broker, printer) = pp_testkit::bambu::idle_printer("synthetic-code", "FIXTURE01")
+            .await
+            .unwrap();
+        let port = broker.addr.port();
+        let config = serde_json::json!({
+            "host": "127.0.0.1", "port": port, "serial": "FIXTURE01", "access_code": "synthetic-code",
+        });
+        let reads = HostReads::new().unwrap();
+        let pin = |host: &str, port: u16| BambuPin {
+            host: host.into(),
+            port,
+            sha256: printer.fingerprint,
+        };
+        for moved in [
+            pin("127.0.0.2", port),
+            pin("127.0.0.1", port.wrapping_add(1)),
+        ] {
+            let test = reads.bambu_test(&config, Some(&moved)).await;
+            assert_eq!(
+                (test.result, test.pin.is_none()),
+                (
+                    serde_json::json!({"ok": false, "message": BAMBU_ADDRESS_CHANGED}),
+                    true
+                )
+            );
+        }
+        assert!(broker.log().is_empty(), "{:?}", broker.log());
+
+        let test = reads
+            .bambu_test(&config, Some(&pin("127.0.0.1", port)))
+            .await;
+        assert_eq!(
+            test.result["ok"],
+            serde_json::json!(true),
+            "{}",
+            test.result
+        );
+        assert!(test.pin.is_none(), "a matching pin is never taken again");
     }
 }

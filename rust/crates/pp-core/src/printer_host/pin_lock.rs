@@ -107,11 +107,11 @@ impl Drop for PinGuard {
 
 /// Runs `submit` on the blocking pool and, when it queued a write, waits for
 /// the writer's answer and then runs `after`, all while `guard` holds the
-/// lock. A detached task owns the guard, so the request may answer Busy after
-/// [`ANSWER_WAIT`] (`None`) or be dropped without freeing the lock. A writer
-/// that died without answering keeps the lock held: later Test connections
-/// and resets for that integration answer Busy rather than trust a
-/// certificate.
+/// lock. A detached task owns the guard, so the request may answer Busy
+/// [`ANSWER_WAIT`] after this starts (`None`) or be dropped without freeing
+/// the lock. A writer that stops answering while the write is still queued
+/// keeps the lock held: later Test connections and resets for that
+/// integration answer Busy rather than trust a certificate.
 pub(super) async fn under_lock<R: Send + 'static>(
     guard: PinGuard,
     submit: impl FnOnce() -> Result<Option<WriteReply>> + Send + 'static,
@@ -182,6 +182,25 @@ mod tests {
             assert!(matches!(next, Ok(Some(_))), "the writer answered");
         }
         assert!(locks.slots().is_empty());
+    }
+
+    /// No elapsed time frees a queued write's lock: an hour later it is
+    /// still held, and the writer's answer frees it.
+    #[tokio::test(start_paused = true)]
+    async fn ticket_t_23_no_elapsed_time_frees_a_queued_write() {
+        let locks = private();
+        let (writer, reply) = mpsc::channel::<Result<bool>>();
+        let guard = locks.lock("a").await.unwrap();
+        let request = under_lock(guard, move || Ok(Some(reply)), Ok);
+        assert!(tokio::time::timeout(SHORT, request).await.is_err());
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        assert!(
+            tokio::time::timeout(SHORT, locks.lock("a")).await.is_err(),
+            "an hour freed the lock while a pin write could still land"
+        );
+        writer.send(Ok(true)).unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(1), locks.lock("a")).await;
+        assert!(matches!(next, Ok(Some(_))), "the writer answered");
     }
 
     /// A command that queued nothing releases the lock as soon as `after`

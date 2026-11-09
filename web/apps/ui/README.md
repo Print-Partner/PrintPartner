@@ -64,7 +64,13 @@ WCAG 2.2 AA in WebKitGTK on every frame page, state and dialog in all three
 themes, and fails on sideways scrolling at 200% text and 400% zoom. With
 `PP_UI_EVIDENCE_DIR=<dir>` it saves a screenshot of each load there. Its themes
 come from `THEMES` in `src/theme/tokenGate.ts`. `test/browser/harness.mjs` holds
-the loopback server and WebKitGTK launcher that both browser checks use.
+the loopback server and WebKitGTK launcher that the browser checks use.
+
+`test/browser/csp.browser.mjs` loads the build under the Rust-only gateway's
+Content-Security-Policy in Chromium and WebKitGTK and checks that the UI, the
+printer stream and the palette work while planted scripts and an external fetch are
+blocked. `src/csp.ts`, imported first by `src/main.tsx`, makes the bundle fit that
+policy; see [Content security policy](../../../docs/network-sharing.md#content-security-policy).
 
 ## Talking to the Rust core
 

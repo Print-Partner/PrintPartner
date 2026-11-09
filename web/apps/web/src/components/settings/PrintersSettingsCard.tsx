@@ -42,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../ui/select";
+import BambuCertificatePin from "./BambuCertificatePin";
 import PrinterProfileAssignmentSection from "./PrinterProfileAssignmentSection";
 import SlotFilamentPicker from "./SlotFilamentPicker";
 import PrinterDetailsEditor, {
@@ -76,6 +77,7 @@ import {
 import { printerStatusTone } from "../../lib/printerLiveStrip";
 import { statusTone } from "../../lib/statusTone";
 import { useEngineHealth } from "../../hooks/useEngineHealth";
+import { desktopRebuildEnabled } from "../../lib/desktopRebuild";
 import { usePrinterStatuses } from "../../queries/printerStatuses";
 import {
   invalidatePrinterFleet,
@@ -116,6 +118,7 @@ function removePrinterConsequence(printer: PrinterMachine): ReactNode {
 export default function PrintersSettingsCard({ engineReady }: Props) {
   const { health } = useEngineHealth();
   const hostedPlanning = isHostedPlanning(health);
+  const desktopRebuild = desktopRebuildEnabled(health?.capabilities);
   const queryClient = useQueryClient();
   const printersQuery = usePrintersQuery(engineReady);
   const integrationsQuery = useIntegrationsQuery(engineReady);
@@ -370,6 +373,7 @@ export default function PrintersSettingsCard({ engineReady }: Props) {
       const result = await testIntegration(integrationId);
       setMessage(result.ok ? result.message ?? "Connected." : result.message ?? "Test failed.");
       void refreshStatus(integrationId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tlsPin(integrationId) });
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -762,6 +766,15 @@ export default function PrintersSettingsCard({ engineReady }: Props) {
                     {enabled ? statusPillLabel(status) : "Connection off"}
                   </span>
                 </div>
+
+                {desktopRebuild && !hostedPlanning && host?.type === "bambu" && linkedId ? (
+                  <BambuCertificatePin
+                    integrationId={linkedId}
+                    disabled={!engineReady || busy || testingId === linkedId}
+                    onMessage={setMessage}
+                    onError={setLoadError}
+                  />
+                ) : null}
 
                 <div className="flex flex-wrap items-center gap-2">
                   {hostedPlanning ? null : (

@@ -453,6 +453,12 @@ body {
   color: var(--text-muted);
 }
 
+.pp-settings-section {
+  margin: 0 0 32px;
+  /* Room above the heading when an in-page link scrolls to it. */
+  scroll-margin-top: 16px;
+}
+
 .pp-reasons {
   margin: 4px 0 0;
   padding-left: 20px;

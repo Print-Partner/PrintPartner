@@ -1364,6 +1364,29 @@ class HiddenMergeTests(unittest.TestCase):
         nested = "sh -c " + shlex.quote("echo " + "$(" * 3000 + "x" + ")" * 3000)
         self.assertIn("too complex", guard.check_command(nested, self.lane))
 
+    def test_git_lookups_are_cached_and_bounded_per_line(self):
+        # Sol at f45f9f5c: each git push ran git config again, so 1,000 pushes took 20 s and both adapters timed
+        # out at 10 s with no decision.
+        pushes = "; ".join(["git push origin HEAD:review-topic"] * 1000)
+        for command, expect in ((pushes + "; gh pr merge 1", 2), (pushes, 0)):
+            started = time.monotonic()
+            for result in self.results(command, self.lane, None):
+                with self.subTest(merge=bool(expect)):
+                    self.assertEqual(result.returncode, expect, result.stderr)
+            self.assertLess(time.monotonic() - started, 2.5)
+        # One line runs each distinct git lookup once.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        real, calls = guard.subprocess.run, []
+        with patch.object(guard.subprocess, "run", lambda *a, **k: calls.append(a[0]) or real(*a, **k)):
+            self.assertIsNone(guard.check_command(pushes, self.lane))
+        self.assertLessEqual(len(calls), 3, calls)
+        self.assertIsNone(guard.LINE_GIT)
+        # Lookups the cache cannot share still stop at the line's deadline.
+        distinct = "; ".join(f"git -c pp.k{k}=1 push origin HEAD:review-topic" for k in range(1000))
+        started = time.monotonic()
+        self.assertIn("too complex", guard.check_command(distinct, self.lane))
+        self.assertLess(time.monotonic() - started, 2.5)
+
     def test_nested_scripts_share_one_line_state(self):
         guard = in_process(ROOT / "scripts/agent-guard.py")
         made = []

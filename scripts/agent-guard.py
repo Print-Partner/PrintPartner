@@ -587,8 +587,7 @@ def current_branch(cwd, location):
     if cwd is None or any(EXPANDED in arg for arg in location):
         return None
     try:
-        result = subprocess.run(["git", *location, "symbolic-ref", "--quiet", "--short", "HEAD"],
-                                cwd=cwd, capture_output=True, text=True, timeout=5, check=False)
+        result = run_git([*location, "symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
@@ -606,8 +605,7 @@ def push_config(cwd, location):
     # git config exits 1 when the key is unset; --type=bool applies Git's own boolean rules.
     for query in (["--get-regexp", r"^remote\..*\.push$"], ["--type=bool", "--get", "push.followTags"]):
         try:
-            result = subprocess.run(["git", *location, "config", *query],
-                                    cwd=cwd, capture_output=True, text=True, timeout=5, check=False)
+            result = run_git([*location, "config", *query], cwd)
         except (OSError, subprocess.SubprocessError):
             return None
         if result.returncode == 1 and not result.stdout:
@@ -1102,8 +1100,7 @@ def coordinator_worktree(cwd):
     if cwd is None or not os.path.isabs(root):
         return False
     try:
-        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
-                             text=True, timeout=5, check=True).stdout.strip()
+        top = run_git(["rev-parse", "--show-toplevel"], cwd, check=True).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return False
     root, lanes = os.path.realpath(root), os.path.realpath(LANE_WORKTREES)
@@ -1238,6 +1235,11 @@ MAX_COMMAND_BYTES = 64 * 1024
 TOO_LONG = "This command line is too long for the guard to check; split it into shorter commands."
 # The deadline of the command line being checked, read by the parser's loops; None outside check_command.
 LINE_DEADLINE = None
+# git results for the command line being checked, keyed by (cwd, git arguments, environment override); None
+# outside check_command. A git config write or a branch change on the line already makes the guard treat config
+# and HEAD as unknown, so a cached answer is never used after the line could have changed it.
+LINE_GIT = None
+GIT_SECONDS = 5
 
 
 class TooComplex(Exception):
@@ -1259,6 +1261,35 @@ def tick():
     PARSER_TICKS += 1
     if PARSER_TICKS % 256 == 0:
         check_deadline()
+
+
+def run_git(args, cwd, env=None, check=False):
+    """Run git with args in cwd like subprocess.run, cached for the line and bounded by its deadline.
+
+    The timeout is GIT_SECONDS or the time left on the line, whichever is shorter. Past the deadline, or when git
+    runs out the line's time, it raises TooComplex.
+    """
+    key = (cwd, tuple(args), None if env is None else tuple(sorted(env.items())))
+    if LINE_GIT is not None and key in LINE_GIT:
+        result = LINE_GIT[key]
+    else:
+        timeout = GIT_SECONDS
+        if LINE_DEADLINE is not None:
+            timeout = min(timeout, LINE_DEADLINE - time.monotonic())
+            if timeout <= 0:
+                raise TooComplex(TOO_COMPLEX)
+        try:
+            result = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True,
+                                    timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            if LINE_DEADLINE is not None and time.monotonic() >= LINE_DEADLINE:
+                raise TooComplex(TOO_COMPLEX) from None
+            raise
+        if LINE_GIT is not None:
+            LINE_GIT[key] = result
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, ["git", *args], result.stdout, result.stderr)
+    return result
 
 
 def check_deadline():
@@ -1396,20 +1427,20 @@ def check_command(command, cwd, outer=None, state=None):
     outer line applies to every git command inside it. state is the top-level line's merge_state(),
     so the step budget and the deadline cover the whole line, nested scripts included.
     """
-    global LINE_DEADLINE
+    global LINE_DEADLINE, LINE_GIT
     if len(command.encode("utf-8", "surrogatepass")) > MAX_COMMAND_BYTES:
         return TOO_LONG
     if state is not None:
         return check_line(command, cwd, outer, state)
     state = merge_state()
-    LINE_DEADLINE = state["deadline"]
+    LINE_DEADLINE, LINE_GIT = state["deadline"], {}
     try:
         return check_line(command, cwd, outer, state)
     except RecursionError:
         # Thousands of nested substitutions exhaust the parser's recursion; refuse with the same reason.
         return TOO_COMPLEX
     finally:
-        LINE_DEADLINE = None
+        LINE_DEADLINE = LINE_GIT = None
 
 
 def check_line(command, cwd, outer, state):
@@ -1443,6 +1474,7 @@ def check_line(command, cwd, outer, state):
                                                       env_config or outer[2])
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
+            check_deadline()
             # Prefixes such as "{" or "!" can come before a control keyword.
             leading = list(itertools.takewhile(lambda word: word in SHELL_PREFIXES | {"for", "case", "select"}, args))
             control += sum(word in ("if", "while", "until", "for", "case", "select") for word in leading)

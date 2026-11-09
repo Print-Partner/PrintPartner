@@ -5,7 +5,10 @@
 //!   `/printers/{id}/cameras`, at the root and under `/api/v1`, where Node's
 //!   core routes are registered
 //! - `GET /printers/{id}/files/content?path=` and `/printers/{id}/cameras/view?id=`
-//!   (GRE-1174), which stream the printer's reply through at the same mounts
+//!   (GRE-1174), which stream the printer's reply through at the same mounts.
+//!   With `profile_id`, files/content also captures the bytes the client
+//!   pulls into the [`SnapshotStore`] the print-file assignment route redeems
+//!   from (GRE-1214)
 //! - `POST /api/v1/integrations/{id}/test`, under `/api/v1` only, as in Node
 //! - `GET /api/v1/integrations/{id}/tls-pin` and
 //!   `POST /api/v1/integrations/{id}/tls-pin/reset` (GRE-1245, Rust-only): the
@@ -31,7 +34,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use pp_storage::read_model::ReadClient;
+use pp_storage::{
+    checkoff_progress::print_file::{Capture, Scope, SnapshotStore},
+    read_model::ReadClient,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -91,6 +97,16 @@ pub struct HostStream {
     pub body: Body,
 }
 
+/// A print file the host listed, with the printer's reply for it.
+pub struct HostFile {
+    pub stream: HostStream,
+    /// The listing's file name.
+    pub name: String,
+    /// Node's `printerStoredFileIdentity`: the listing's `size_bytes` and
+    /// `modified_at` when the host gives them.
+    pub identity: Value,
+}
+
 pub trait PrinterHostPort: Send + Sync + 'static {
     fn capabilities(&self, printer: String) -> Answer<Capabilities>;
     /// `path` is already a safe storage path, or empty for the root.
@@ -98,7 +114,12 @@ pub trait PrinterHostPort: Send + Sync + 'static {
     fn cameras(&self, printer: String) -> Answer<Value>;
     /// The printer's reply for a print file at `path`, a safe storage path;
     /// `Ok(None)` when the host does not list that file.
-    fn file(&self, printer: String, path: String) -> Answer<Option<HostStream>>;
+    fn file(&self, printer: String, path: String) -> Answer<Option<HostFile>>;
+    /// Node's `printerFileSnapshotSource`: the fingerprint of `printer`'s
+    /// available linked host, or `None`.
+    fn snapshot_source(&self, printer: String) -> Answer<Option<String>>;
+    /// Whether Build `profile_id` exists (Node's `getProfileHeader`).
+    fn build_exists(&self, profile_id: i64) -> Answer<bool>;
     /// The printer's reply for one camera's view; `Ok(None)` when the host
     /// lists no camera with that id.
     fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>>;
@@ -148,6 +169,7 @@ impl Windows {
 struct App {
     port: Arc<dyn PrinterHostPort>,
     windows: Arc<Windows>,
+    snapshots: Arc<SnapshotStore>,
 }
 
 /// Mounts the printer-host reads when `PP_DESKTOP_REBUILD` was exactly `1`
@@ -156,17 +178,18 @@ pub fn printer_host_router(
     config: AdminHttpConfig,
     client: ReadClient,
     port: Arc<dyn PrinterHostPort>,
+    snapshots: Arc<SnapshotStore>,
 ) -> Router {
     let Some(gate) = Gate::new(config, client) else {
         return Router::new();
     };
-    gate.guard(routes(port))
+    gate.guard(routes(port, snapshots))
 }
 
 /// Node registers the core routes at the root and again in the `/api/v1`
 /// plugin, and each registration gets its own rate-limit store, so each
 /// mount keeps its own windows.
-fn routes(port: Arc<dyn PrinterHostPort>) -> Router {
+fn routes(port: Arc<dyn PrinterHostPort>, snapshots: Arc<SnapshotStore>) -> Router {
     let printers = Router::new()
         .route("/printers/{id}/capabilities", get(capabilities))
         .route("/printers/{id}/files", get(files))
@@ -177,6 +200,7 @@ fn routes(port: Arc<dyn PrinterHostPort>) -> Router {
         routes.with_state(App {
             port,
             windows: Arc::default(),
+            snapshots: snapshots.clone(),
         })
     };
     let v1 = printers
@@ -408,14 +432,27 @@ async fn file_content(
     if let Some(after) = app.windows.consume("files_content", FILE_CONTENT_LIMIT) {
         return throttled(after);
     }
-    // Node captures a Build's inspection snapshot here; its only redeemer,
-    // the print-file assignment route, is not served by this runtime yet.
-    if query.profile_id.is_some() {
-        return failure(
-            StatusCode::NOT_IMPLEMENTED,
-            "Print-file inspection for a Build is not available in this runtime yet",
-        );
-    }
+    let build_required = || {
+        failure(
+            StatusCode::BAD_REQUEST,
+            "Choose an existing Build before opening a print file",
+        )
+    };
+    let profile = match query.profile_id.as_deref() {
+        None => None,
+        Some(raw) => {
+            let Some(profile) = crate::accepted::node_id(raw) else {
+                return build_required();
+            };
+            // Only a Build that is not stored is the caller's mistake: a
+            // storage that cannot answer gets the usual 503.
+            match app.port.build_exists(profile).await {
+                HostAnswer::Ok(true) => Some(profile),
+                HostAnswer::Ok(false) => return build_required(),
+                other => return refusal(other, build_required),
+            }
+        }
+    };
     let requested = query.path.unwrap_or_default();
     let requested = requested.trim();
     if requested.is_empty() {
@@ -427,8 +464,37 @@ async fn file_content(
             "path is not a valid printer storage path",
         );
     };
-    match app.port.file(id, path).await {
-        HostAnswer::Ok(Some(stream)) => proxied(stream, Served::File),
+    let source = match profile {
+        Some(_) => match app.port.snapshot_source(id.clone()).await {
+            HostAnswer::Ok(source) => source,
+            _ => None,
+        },
+        None => None,
+    };
+    match app.port.file(id.clone(), path.clone()).await {
+        HostAnswer::Ok(Some(file)) => match profile {
+            Some(profile_id) if (200..300).contains(&file.stream.status) => {
+                let scope = Scope {
+                    profile_id,
+                    printer_id: id.clone(),
+                    remote_path: path,
+                    filename: file.name,
+                };
+                let current = match app.port.snapshot_source(id).await {
+                    HostAnswer::Ok(current) => current,
+                    _ => None,
+                };
+                captured(
+                    &app.snapshots,
+                    scope,
+                    file.identity,
+                    source,
+                    current,
+                    file.stream,
+                )
+            }
+            _ => proxied(file.stream, Served::File),
+        },
         HostAnswer::Ok(None) => failure(StatusCode::NOT_FOUND, "Printer file not found"),
         other => refusal(other, || {
             failure(
@@ -436,6 +502,85 @@ async fn file_content(
                 "Printer host does not support file browsing",
             )
         }),
+    }
+}
+
+/// Node's `capturePrinterFile`: the client gets the token before the bytes,
+/// and it redeems only once the whole file arrived and classified. A refused
+/// capture answers 502 with Node's message, without the body.
+fn captured(
+    snapshots: &Arc<SnapshotStore>,
+    scope: Scope,
+    identity: Value,
+    source: Option<String>,
+    current: Option<String>,
+    mut stream: HostStream,
+) -> Response {
+    let capture = match snapshots.begin(scope, identity, source, current.as_deref()) {
+        Ok(capture) => capture,
+        Err(message) => return failure(StatusCode::BAD_GATEWAY, message),
+    };
+    let token = HeaderValue::from_str(capture.token()).ok();
+    stream.body = Body::new(Captured {
+        body: stream.body,
+        capture: Some(capture),
+    });
+    // The client must wait for the end of the body, not a length, before
+    // it redeems the token.
+    stream.content_length = None;
+    let mut response = proxied(stream, Served::File);
+    let headers = response.headers_mut();
+    if let Some(token) = token {
+        headers.insert("x-printpartner-snapshot", token);
+        headers.insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            HeaderValue::from_static("X-PrintPartner-Snapshot"),
+        );
+    }
+    response
+}
+
+/// A file body that keeps each chunk the client takes in its capture and
+/// finishes the capture at the end. A capture that fails ends the body with
+/// an error, as Node's stream does; a client that stops reading drops it.
+struct Captured {
+    body: Body,
+    capture: Option<Capture>,
+}
+
+impl http_body::Body for Captured {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = &mut *self;
+        let polled = Pin::new(&mut this.body).poll_frame(cx);
+        let std::task::Poll::Ready(next) = polled else {
+            return std::task::Poll::Pending;
+        };
+        let failed = |message: &str| Some(Err(axum::Error::new(message.to_owned())));
+        std::task::Poll::Ready(match (next, this.capture.as_mut()) {
+            (Some(Ok(frame)), Some(capture)) => {
+                match frame.data_ref().map(|data| capture.push(data)) {
+                    Some(Err(message)) => {
+                        this.capture = None;
+                        failed(message)
+                    }
+                    _ => Some(Ok(frame)),
+                }
+            }
+            (None, Some(_)) => match this.capture.take().map(Capture::finish) {
+                Some(Err(message)) => failed(message),
+                _ => None,
+            },
+            (next, _) => {
+                this.capture = None;
+                next
+            }
+        })
     }
 }
 

@@ -1,14 +1,18 @@
 use super::*;
+use pp_storage::checkoff_progress::print_file::CAPTURE_UNAVAILABLE;
 
 /// Answers from fixed values and records every port call.
 #[derive(Default)]
 struct Fake {
     calls: Mutex<Vec<String>>,
+    /// Snapshot-source reads so far; printer `moved` answers a new
+    /// fingerprint on each.
+    sources: Mutex<usize>,
 }
 
 fn answer(printer: &str) -> HostAnswer<Value> {
     match printer {
-        "moon" => HostAnswer::Ok(json!({"path": "", "entries": []})),
+        "moon" | "moved" => HostAnswer::Ok(json!({"path": "", "entries": []})),
         "gone" => HostAnswer::NotFound,
         "manual" => HostAnswer::NotLinked,
         "off" => HostAnswer::Unavailable,
@@ -58,19 +62,44 @@ impl PrinterHostPort for Fake {
         });
         Box::pin(async move { answer })
     }
-    fn file(&self, printer: String, path: String) -> Answer<Option<HostStream>> {
+    fn file(&self, printer: String, path: String) -> Answer<Option<HostFile>> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("file {printer} {path}"));
-        let answer = answer_with(&printer, || match path.as_str() {
+        let stream = match path.as_str() {
             "plates/plate.gcode" => Some(reply(200, "application/octet-stream")),
             "plates/removed.gcode" => Some(reply(404, "application/json")),
             "plates/page.html" => Some(reply(200, "text/html")),
             "plates/broken.gcode" => Some(reply(500, "application/json")),
             _ => None,
+        };
+        let answer = answer_with(&printer, || {
+            stream.map(|stream| HostFile {
+                stream,
+                name: path.rsplit('/').next().unwrap_or_default().to_owned(),
+                identity: json!({"size_bytes": 5, "modified_at": "2026-11-07T00:00:00.000Z"}),
+            })
         });
         Box::pin(async move { answer })
+    }
+    fn snapshot_source(&self, printer: String) -> Answer<Option<String>> {
+        let mut reads = self.sources.lock().unwrap();
+        *reads += 1;
+        let source = match printer.as_str() {
+            "moved" => format!("source-{reads}"),
+            _ => "source".to_owned(),
+        };
+        Box::pin(async move { HostAnswer::Ok(Some(source)) })
+    }
+    fn build_exists(&self, profile_id: i64) -> Answer<bool> {
+        Box::pin(async move {
+            match profile_id {
+                // Storage that cannot answer within its reader wait.
+                3 => HostAnswer::Busy,
+                _ => HostAnswer::Ok(profile_id == 1),
+            }
+        })
     }
     fn camera_view(&self, printer: String, camera: String) -> Answer<Option<HostStream>> {
         self.calls
@@ -145,6 +174,7 @@ fn app() -> (App, Arc<Fake>) {
         App {
             port: fake.clone(),
             windows: Arc::default(),
+            snapshots: Arc::default(),
         },
         fake,
     )
@@ -300,7 +330,7 @@ async fn ticket_t_21_connection_test_keeps_nodes_five_per_minute_budget() {
 async fn ticket_t_21_root_and_api_v1_mounts_keep_separate_budgets() {
     use tower::ServiceExt;
     let fake = Arc::new(Fake::default());
-    let router = routes(fake.clone());
+    let router = routes(fake.clone(), Arc::default());
     let get = |uri: &str| {
         axum::extract::Request::get(uri)
             .body(axum::body::Body::empty())
@@ -394,9 +424,25 @@ async fn ticket_t_21_file_content_streams_a_listed_file_like_node() {
             "path is not a valid printer storage path",
         ),
         (
-            content(Some("plates/plate.gcode"), Some("1")),
-            501,
-            "Print-file inspection for a Build is not available in this runtime yet",
+            content(Some("plates/plate.gcode"), Some("Build")),
+            400,
+            "Choose an existing Build before opening a print file",
+        ),
+        (
+            content(Some("plates/plate.gcode"), Some("0")),
+            400,
+            "Choose an existing Build before opening a print file",
+        ),
+        (
+            content(Some("plates/plate.gcode"), Some("2")),
+            400,
+            "Choose an existing Build before opening a print file",
+        ),
+        (content(None, Some("1")), 400, "path is required"),
+        (
+            content(Some("plates/plate.gcode"), Some("3")),
+            503,
+            "Printer settings are unavailable",
         ),
     ];
     for (query, status, detail) in refused {
@@ -565,6 +611,113 @@ async fn ticket_t_21_streamed_replies_never_run_as_pages_of_the_app() {
             "{camera}"
         );
     }
+}
+
+#[tokio::test]
+async fn gre_1214_file_content_captures_a_build_snapshot_like_node() {
+    use sha2::{Digest, Sha256};
+    let (app, fake) = app();
+    let open = |id: &str, query| file_content(State(app.clone()), Path(id.into()), query);
+    let scope = |printer: &str| Scope {
+        profile_id: 1,
+        printer_id: printer.into(),
+        remote_path: "plates/plate.gcode".into(),
+        filename: "plate.gcode".into(),
+    };
+    let response = open("moon", content(Some("plates/plate.gcode"), Some(" 0x1 "))).await;
+    let headers = response.headers().clone();
+    let token = headers["x-printpartner-snapshot"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_EXPOSE_HEADERS],
+        "X-PrintPartner-Snapshot"
+    );
+    assert!(
+        app.snapshots
+            .read(&token, &scope("moon"), Some("source"))
+            .is_none(),
+        "the token redeems only after the whole file"
+    );
+    assert_eq!(
+        streamed(response).await,
+        (
+            200,
+            [
+                Some("application/octet-stream".into()),
+                None,
+                Some("private, no-store".into())
+            ],
+            "G28
+
+"
+            .into()
+        )
+    );
+    let inspected = app
+        .snapshots
+        .read(&token, &scope("moon"), Some("source"))
+        .unwrap();
+    assert_eq!(
+        inspected.identity,
+        json!({
+            "size_bytes": 5,
+            "modified_at": "2026-11-07T00:00:00.000Z",
+            "sha256": hex::encode(Sha256::digest(b"G28
+
+")),
+        })
+    );
+    assert!(
+        app.snapshots
+            .read(&token, &scope("moon"), Some("changed"))
+            .is_none()
+    );
+
+    // One capture at a time: an unread body holds the store, and dropping it
+    // releases the store without a redeemable token.
+    let held = open("moon", content(Some("plates/plate.gcode"), Some("1"))).await;
+    let dropped = held.headers()["x-printpartner-snapshot"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let (status, problem) =
+        body(open("moon", content(Some("plates/plate.gcode"), Some("1"))).await).await;
+    assert_eq!(
+        (status, &problem["detail"]),
+        (502, &json!(CAPTURE_UNAVAILABLE))
+    );
+    drop(held);
+    assert!(
+        app.snapshots
+            .read(&dropped, &scope("moon"), Some("source"))
+            .is_none()
+    );
+    let reopened = open("moon", content(Some("plates/plate.gcode"), Some("1"))).await;
+    assert_eq!(reopened.status(), 200);
+    drop(reopened);
+
+    // A host that changed while the file opened is not captured.
+    let (status, problem) =
+        body(open("moved", content(Some("plates/plate.gcode"), Some("1"))).await).await;
+    assert_eq!(
+        (status, &problem["detail"]),
+        (502, &json!(CAPTURE_UNAVAILABLE))
+    );
+    // A printer error is answered as without a Build, and nothing is captured.
+    let broken = open("moon", content(Some("plates/broken.gcode"), Some("1"))).await;
+    assert!(broken.headers().get("x-printpartner-snapshot").is_none());
+    let (status, problem) = body(broken).await;
+    assert_eq!(
+        (status, &problem["detail"]),
+        (502, &json!("Printer host returned HTTP 500"))
+    );
+    assert_eq!(
+        fake.calls.lock().unwrap().len(),
+        6,
+        "every request with a Build opened the file once"
+    );
 }
 
 #[tokio::test]

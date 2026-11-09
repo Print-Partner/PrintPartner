@@ -101,6 +101,10 @@ LANE_MERGE = "Report readiness to the coordinator instead of merging: "
 LANE_PROTECTED = (".github/", ".claude/", ".factory/", ".cursor/", "scripts/", "rust/scripts/", "web/scripts/",
                   "manifests/scripts/", "desktop/packaged-smoke/", "web/apps/server/src/db/",
                   "rust/crates/pp-storage/data/historical/")
+# The documents that set the rules lanes work under. A lane never merges a change to them.
+RULE_DOCUMENTS = ("AGENTS.md", "CLAUDE.md", ".mcp.json", "justfile", "docs/development/definition-of-done.md",
+                  "docs/development/agent-workflow.md", "docs/development/ci-controls.md",
+                  "docs/development/factory-missions.md", "docs/contributing/gate-evidence.md")
 # Files a lane never merges changes to. Schema: every non-test Rust or SQL file that defines schema steps,
 # runs DDL, or includes SQL (test_factory_hooks.py LaneProtectedSyncTests keeps this in step with the code).
 # Workflow inputs: every other tracked file a workflow's run: steps name (the same tests check them).
@@ -130,7 +134,7 @@ LANE_PROTECTED_FILES = frozenset({
     "rust/tests/source-artifacts/source-path-replay.mjs", "rust/tests/source-artifacts/source-path-replay.test.mjs",
     "rust/tests/source-artifacts/verify.py", "rust/tests/test_webkit_diagnostics.py",
     "rust/tests/webkit_stl_smoke.py", "rust/tests/workflow_m0.py",
-})
+}) | frozenset(RULE_DOCUMENTS)
 SCHEMA_NAME = re.compile(r"schema|migrat", re.I)
 # A changed line that touches the schema, in any file under rust/ or any Rust or SQL file of a lane's PR.
 SCHEMA_LINE = re.compile(r"(?-i:SCHEMA_STEPS|schema_version)|\b(?:CREATE|ALTER|DROP)\s+TABLE\b"
@@ -139,7 +143,9 @@ DIFF_HEADER = re.compile(r"diff --git a/(\S+) b/(\S+)")
 # The git and gh lookups for one lane merge share this budget. Hook configs give the whole guard 10 seconds,
 # and a runner treats a killed hook as a non-blocking error, so the guard must finish and refuse first.
 LOOKUP_SECONDS = 8
-LOOKUP_TIMEOUT = f"the PR lookups ran past the guard's {LOOKUP_SECONDS}-second limit."
+# Tests shorten the budget through this variable. It can only shorten it: a longer budget could let the hook
+# runner kill the guard, and a killed hook does not block the command.
+LOOKUP_SECONDS_ENV = "PP_GUARD_LOOKUP_SECONDS"
 EXTENSION = "gh extensions run code the guard cannot read; ask the maintainer to install one."
 GH_CONFIG = "The gh config can define aliases that hide a command from the guard; ask the maintainer to change it."
 # A merge named anywhere in a command line, such as in xargs, find -exec, a variable, or an alias value.
@@ -1086,6 +1092,19 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     return API_WRITE
 
 
+def lookup_seconds():
+    """Return the lookup budget: LOOKUP_SECONDS, or a shorter positive value from LOOKUP_SECONDS_ENV."""
+    try:
+        value = float(os.environ.get(LOOKUP_SECONDS_ENV, LOOKUP_SECONDS))
+    except ValueError:
+        return LOOKUP_SECONDS
+    return value if 0 < value < LOOKUP_SECONDS else LOOKUP_SECONDS
+
+
+def lookup_timeout():
+    return f"the PR lookups ran past the guard's {lookup_seconds():g}-second limit."
+
+
 def time_left(deadline):
     """Return the seconds left before deadline, or raise TimeoutExpired once it has passed."""
     left = deadline - time.monotonic()
@@ -1138,7 +1157,7 @@ def lane_merge_reason(number, sha, cwd, deadline):
         base, head, count = view["baseRefName"], view["headRefOid"], view["changedFiles"]
         files = [(entry["path"], entry.get("changeType", "")) for entry in view["files"]]
     except subprocess.TimeoutExpired:
-        return LANE_MERGE + LOOKUP_TIMEOUT
+        return LANE_MERGE + lookup_timeout()
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         return LANE_MERGE + "the guard could not read the PR with gh pr view."
     if base != "main":
@@ -1166,7 +1185,7 @@ def schema_diff_reason(number, cwd, paths, deadline):
                               text=True, timeout=time_left(deadline), check=True,
                               env={**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}).stdout
     except subprocess.TimeoutExpired:
-        return LANE_MERGE + LOOKUP_TIMEOUT
+        return LANE_MERGE + lookup_timeout()
     except (OSError, subprocess.SubprocessError, ValueError):
         return LANE_MERGE + "the guard could not read the PR's diff with gh pr diff."
     seen, current, in_hunk = set(), None, False
@@ -1177,6 +1196,9 @@ def schema_diff_reason(number, cwd, paths, deadline):
                 return LANE_MERGE + "the guard could not parse a file header in the PR's diff."
             current, in_hunk = header.group(2), False
             seen.update(header.groups())
+            for path in header.groups():
+                if lane_protected(path):
+                    return LANE_MERGE + f"the PR's diff touches {path}, a protected or schema path."
         elif line.startswith("@@"):
             in_hunk = current is not None
         elif in_hunk and line[:1] in ("+", "-") and (current.startswith("rust/") or current.endswith((".rs", ".sql"))) \
@@ -1303,7 +1325,7 @@ def check_command(command, cwd, outer=None):
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
         alone = outer is None and len(parsed) == 1 and not any(parsed[0][1:])
-        deadline = time.monotonic() + LOOKUP_SECONDS
+        deadline = time.monotonic() + lookup_seconds()
         target = gated_merge(parsed[0][0], cwd, deadline) if alone else None
         if target:
             return None if coordinator_worktree(cwd) else lane_merge_reason(*target, cwd, deadline)

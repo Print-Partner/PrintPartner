@@ -738,7 +738,8 @@ mod codegen {
         )
     }
 
-    /// One entry of each type, with each undo state History reports.
+    /// One entry of each type, with each undo state History reports and a
+    /// restorable snapshot.
     fn build_history() -> BuildHistoryPage {
         let refused = |reason| {
             Some(Undo {
@@ -763,14 +764,16 @@ mod codegen {
         ]
         .into_iter()
         .map(|(kind, actor, undo)| {
-            history::contract_entry(
+            let mut entry = history::contract_entry(
                 kind,
                 "9007199254740991",
                 "2026-11-05T01:00:00.000Z",
                 actor,
                 UNICODE,
                 undo,
-            )
+            );
+            entry.restorable = (kind == EntryType::Snapshot).then_some(true);
+            entry
         })
         .collect();
         BuildHistoryPage {

@@ -30,12 +30,12 @@ This page covers what the Rust jobs run and how to reproduce them. [Change a CI 
 
 ## Agent guidance check
 
-The `agent-guidance` job in `actionlint.yml` checks the root `AGENTS.md` and the
-repo skills in `.factory/skills/`. It checks local file links (not heading
-anchors), each skill's `name` and `description`, and that Git does not ignore
-these files. It also tests the staged-Rust snapshot in the opt-in pre-commit
-hook, including sparse worktrees. It makes no network requests. Run it locally
-with `just guidance`.
+The `agent-guidance` job in `actionlint.yml` runs `scripts/check-agent-guidance.py`. It makes no network requests.
+
+- **Links in every page:** for every tracked Markdown page (`git ls-files '*.md'`), each local link (inline, image or reference definition) must point to a file or directory inside the checkout, and each `#anchor` into a Markdown page must match a heading anchor as GitHub generates it or an explicit HTML `id` or `name` anchor. Links in fenced code blocks and inline code are examples and are skipped. External links are not fetched.
+- **Guidance rules:** only for the shared guidance (the root `AGENTS.md`, `docs/development/agent-workflow.md`, `docs/development/factory-missions.md` and the repo skills in `.factory/skills/`): a `# ` title (skills excepted), each skill's `name` and `description`, and that Git does not ignore these files.
+
+The job also tests the agent safety guard, the staged-Rust snapshot in the opt-in pre-commit hook (including sparse worktrees) and the Factory environment. Run it locally with `just guidance`; the `agent-guidance` step of `just ci` runs the link check and its tests. Renaming a heading or moving a page fails this check until every link to it is updated.
 
 ## Large-file and pre-commit checks
 
@@ -245,7 +245,7 @@ The workflow has one job per OS. Each job uses the toolchain pinned in `rust-too
 | Check name | Runner | Packages | Tests |
 |------------|--------|----------|-------|
 | `rust (linux)` | Aggregate over `rust (linux) build` plus rebuild partitions when selected | The whole workspace | All |
-| `rust (macos)` | `macos-26` | The whole workspace | All except [macOS exclusions](#macos-exclusions) |
+| `rust (macos)` | `macos-26` | The whole workspace | All; see [macOS test filter](#macos-test-filter) |
 | `rust (windows)` | `windows-latest` | The whole workspace | All |
 
 `rust (linux) build`, its rebuild partitions and the `rust (linux)` aggregate run on the pp-local fleet or `ubuntu-latest` for non-PR events; on pull requests only the build and the aggregate run (the rebuild partitions do not), on `blacksmith-4vcpu-ubuntu-2404` (default), `ubuntu-latest` (`hosted`) or pp-iso ([the switch](#pull-request-runner-switch)); see [Linux Rust runner](#linux-rust-runner).
@@ -310,6 +310,7 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | `selector-tests` | The path-filter and macOS-alert unit tests | `rust-cross-os.yml` `changes` |
 | `perf-baseline-tests` | The unit tests of the Node-versus-Rust baseline harness in `scripts/perf-baseline` | None yet. A local-only line; see [Performance](performance.md). |
 | `actionlint` | `actionlint -color` | `actionlint` (required) |
+| `agent-guidance` | `test_agent_guidance.py` and `check-agent-guidance.py`: local links and anchors in every tracked Markdown page, and the guidance title and skill rules | `agent-guidance` in `actionlint.yml` |
 | `zizmor` | `zizmor --min-severity informational --config .github/zizmor.yml .` | `zizmor` (required) |
 | `ast-grep` | `ast-grep test`, `test_ast_grep.py` and `check-ast-grep.py` against `origin/main` | `ast-grep ratchet` |
 | `boundaries` | `check-boundaries.py --self-test` and `check-domain-deps.py --self-test` | `chain-tip-gate.yml` |
@@ -339,6 +340,23 @@ The command does not cover these checks:
 - `Lint Evidence block`. It reads the pull request body. The command reports it as `SKIP`.
 - `cargo deny check` (`desktop-deny.yml`). It runs on changes to `rust/**`. To run it locally, use `cargo deny --manifest-path rust/Cargo.toml --all-features check`. CI also runs `cargo deny --manifest-path rust/fuzz/Cargo.toml --all-features --locked check`.
 - The Linux rebuild partitions, the Desktop runtime, Native macOS bundle and Docker workflows, the `web-ci.yml` steps other than the workaround ratchet, and the `contracts:verify` and `test:desktop-parity` steps of `desktop-contracts.yml`.
+
+## Maintainability report
+
+`just report` prints the measures of the maintainability plan (GRE-1306) as a Markdown table: crate and file sizes, the pp-storage writer seam, `desktop_rebuild` gates, ticket-named tests and docs, cross-crate `#[path]` includes, and the other rows of the plan's Evidence and Measures tables. It is a report, not a check. It exits 0 whatever the numbers are, `just ci` does not run it, and no workflow runs it. Quote its output in a PR or a gate comment when a measure moves.
+
+```sh
+just report                        # origin/main
+just report --rev 044e7706d        # the plan's pinned commit
+just report --ci 1626 1622         # add workflow wall times and push-to-green for PRs
+```
+
+`just report` runs `python3 -I scripts/maintainability-report.py` with your arguments. It reads every file of the revision through `git cat-file`, never the working tree, so uncommitted edits do not move a number. Each history row (commits on `lib.rs` in 30 days, variant headers added in 7 days, `lib.rs` lines per family-touching commit) uses `git log --since/--until` ending at that revision's commit date, so a pinned revision gives the same numbers on any day. Fetch `origin` first, because the default revision is `origin/main`.
+
+Two parts need `gh` and change with every CI run, so each prints a "sample taken" row with the UTC time:
+
+- `--ci` samples the wall times of the successful runs among the last 10 completed `rust-cross-os.yml` and `web-ci.yml` runs, for pull requests and for `main`. A run under 6 minutes is excluded as too short to have run a job's suites.
+- PR numbers print one row per PR head: its changed paths, whether the diff touches only `web/apps/ui`, the minutes from the first check run's start until every required check was green, the span of all completed check runs, and any check not green. The required set defaults to `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block` and `review-gate`. `--required a,b,c` replaces it, for example once `ui-package` becomes required.
 
 ## Replacement UI package
 

@@ -14,8 +14,13 @@
 //! evenly over its `units` and gives each Part the grams of the units checked
 //! off for it under that link.
 
+use crate::{Envelope, Shared};
 use anyhow::{Result, ensure};
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    time::{Duration, SystemTime},
+};
 
 /// The schema step that installs the table.
 pub(crate) const SCHEMA_STEP: u64 = 46;
@@ -39,6 +44,8 @@ pub enum Measurement {
     NoFactor,
     /// The send recorded no estimate, so there is nothing to convert with.
     NoEstimate,
+    /// The link already has a measured length; the first measurement stays.
+    AlreadyMeasured,
 }
 
 /// Records the slicer's estimate of `grams` for the `units` the send of
@@ -80,7 +87,7 @@ pub fn record_estimate(
 
 /// Records the filament length, in millimetres, the printer reported using
 /// for the send of `link_id`, and converts it with the send's grams per
-/// millimetre.
+/// millimetre. A link is measured once: a later length for it is ignored.
 pub fn record_measured(
     tx: &Transaction<'_>,
     tenant: &str,
@@ -91,16 +98,19 @@ pub fn record_measured(
         positive(measured_mm),
         "A measured length must be a positive number"
     );
-    let factor: Option<Option<f64>> = tx
+    let row: Option<(Option<f64>, Option<f64>)> = tx
         .query_row(
-            "SELECT grams_per_mm FROM print_link_grams WHERE tenant_id=?1 AND link_id=?2",
+            "SELECT grams_per_mm,measured_mm FROM print_link_grams WHERE tenant_id=?1 AND link_id=?2",
             params![tenant, link_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let Some(factor) = factor else {
+    let Some((factor, measured)) = row else {
         return Ok(Measurement::NoEstimate);
     };
+    if measured.is_some() {
+        return Ok(Measurement::AlreadyMeasured);
+    }
     let at = crate::auth::timestamp(0);
     let Some(grams_per_mm) = factor else {
         tx.execute(
@@ -116,6 +126,89 @@ pub fn record_measured(
         params![tenant, link_id, grams, measured_mm, at],
     )?;
     Ok(Measurement::Recorded)
+}
+
+/// Records the lengths the status watcher reads when a print finishes. The
+/// watcher writes nothing else: Checkoff state is never touched here.
+#[derive(Clone)]
+pub struct PrintGramsClient {
+    shared: Arc<Shared>,
+    tenant: String,
+}
+
+impl crate::WriterOwner {
+    pub fn print_grams(&self, tenant: &str) -> PrintGramsClient {
+        PrintGramsClient {
+            shared: self.client.shared.clone(),
+            tenant: tenant.to_owned(),
+        }
+    }
+}
+
+pub(crate) struct Command {
+    tenant: String,
+    integration_id: String,
+    filename: String,
+    measured_mm: f64,
+    finished_at: String,
+}
+
+impl PrintGramsClient {
+    /// Records `measured_mm` for the newest `watching`, `awaiting_verify` or
+    /// `verified` Checkoff link of host
+    /// `integration_id` whose file is `filename` and that existed at
+    /// `finished_at`, when the watcher saw the print finish. A link created
+    /// later is a newer send of the same file name and never gets this
+    /// length. `None` when no such link matches.
+    pub fn measured(
+        &self,
+        integration_id: &str,
+        filename: &str,
+        measured_mm: f64,
+        finished_at: SystemTime,
+        wait: Duration,
+    ) -> Result<Option<Measurement>> {
+        crate::read_model::submit(
+            &self.shared,
+            &AtomicBool::new(false),
+            wait,
+            "Storage stopped without a print grams result",
+            |reply| Envelope::PrintGrams {
+                command: Command {
+                    tenant: self.tenant.clone(),
+                    integration_id: integration_id.to_owned(),
+                    filename: filename.to_owned(),
+                    measured_mm,
+                    finished_at: crate::auth::timestamp_at(finished_at.into()),
+                },
+                reply,
+            },
+        )
+    }
+}
+
+pub(crate) fn execute(
+    connection: &mut Connection,
+    command: Command,
+    admission: crate::writer_admission::Deadline,
+) -> Result<Option<Measurement>> {
+    let tx = crate::writer_admission::begin_immediate(connection, admission)?;
+    let candidates = crate::checkoff_progress::finished_links(
+        &tx,
+        &command.tenant,
+        &command.integration_id,
+        &command.filename,
+        &command.finished_at,
+    )?;
+    // The newest send of that file by creation time, never by list position
+    // (ties broken by link ID). When it is already measured, the finish is a
+    // reprint and records nothing; an older link is never filled instead.
+    let Some((_, link)) = candidates.into_iter().max() else {
+        return Ok(None);
+    };
+    let measured = record_measured(&tx, &command.tenant, &link, command.measured_mm)?;
+    tx.commit()?;
+    Ok(Some(measured))
 }
 
 fn positive(value: f64) -> bool {

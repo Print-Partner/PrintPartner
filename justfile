@@ -5,12 +5,19 @@ set positional-arguments
 ci *args:
     python3 scripts/local-ci.py "$@"
 
+# Print the maintainability measures read from one revision (default origin/main).
+# A report, never a check. See docs/development/ci.md#maintainability-report.
+# Example: just report --rev 044e7706d --ci 1626
+report *args:
+    python3 -I scripts/maintainability-report.py "$@"
+
 # Offline checks for agent guidance, the agent safety guard, and staged Rust snapshots.
 guidance:
     python3 -B -m unittest discover -s scripts -p test_agent_guidance.py -v
     python3 -B scripts/check-agent-guidance.py
     python3 -B -m unittest discover -s scripts -p test_factory_hooks.py -v
     python3 -B -m unittest discover -s scripts -p test_pre_commit_sparse_snapshot.py -v
+    python3 -B -m unittest discover -s scripts -p test_factory_environment.py -v
 
 # Opt in to the staged-change checks in .githooks/pre-commit.
 hooks:

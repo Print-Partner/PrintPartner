@@ -677,6 +677,50 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
     Ok(Op::Unit { target, change })
 }
 
+/// Every link of host `integration_id` that is `watching`, `awaiting_verify`
+/// or `verified`, created at or before `created_by`, whose filename or remote
+/// path names `filename`, matched like Node's `printerFilenamesMatch`: the
+/// trimmed base name, case-insensitively. Each comes as `(created_at, id)`, in
+/// no particular order: list position is not creation order, because a save
+/// moves a patched link to the end and writes terminal links after active
+/// ones. The later two states count because Node's checkoff reconcile, and
+/// then a fast verify, can move a link on between the finish and the
+/// measured write. Nothing here changes a link.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn finished_links(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    integration_id: &str,
+    filename: &str,
+    created_by: &str,
+) -> Result<Vec<(String, String)>> {
+    let base = |name: &str| {
+        let name = name.trim().replace('\\', "/");
+        name.rsplit('/').next().unwrap_or_default().to_lowercase()
+    };
+    let wanted = base(filename);
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let links = links::load(tx, tenant, &links::now())?;
+    Ok(links
+        .iter()
+        .filter(|link| {
+            matches!(
+                link["state"].as_str(),
+                Some("watching" | "awaiting_verify" | "verified")
+            ) && link["integration_id"] == integration_id
+                && [&link["filename"], &link["remote_path"]]
+                    .into_iter()
+                    .any(|name| name.as_str().is_some_and(|name| base(name) == wanted))
+        })
+        .filter_map(|link| {
+            let at = link["created_at"].as_str().filter(|at| *at <= created_by)?;
+            Some((at.to_owned(), link["id"].as_str()?.to_owned()))
+        })
+        .collect())
+}
+
 /// Node's `createPrinterCheckoffLink` for a successful printer upload: a
 /// watching link for the Build named in `raw`, appended to the tenant's links.
 /// `None` when Node creates none: no file name, integration or printer.

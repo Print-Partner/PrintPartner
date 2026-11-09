@@ -93,7 +93,7 @@ python3 scripts/local-ci.py --list
 python3 scripts/local-ci.py --only <step-ids> --fail-on-skip
 ```
 
-`just guidance` checks links, heading anchors, skill metadata, and Git trackability in AGENTS.md, this page, and the repo skills, and runs the safety guard tests. The [CI guide](ci.md) maps each hosted check to a local command.
+`just guidance` checks local links and heading anchors in every tracked Markdown page; checks titles, skill metadata and Git trackability in AGENTS.md, this page, factory-missions.md and the repo skills; and runs the safety guard tests. The [CI guide](ci.md) maps each hosted check to a local command.
 
 ## Safety guard
 

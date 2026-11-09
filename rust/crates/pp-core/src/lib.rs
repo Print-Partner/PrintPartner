@@ -555,7 +555,7 @@ async fn start_rust_resources(
         listener,
         assets,
         // `pp-server` and `pp-desktop` still ship the old `apps/web` build;
-        // GRE-1109 passes `ServedUi::Replacement` when this runtime serves `apps/ui`.
+        // GRE-1294 passes `ServedUi::Replacement` when this runtime serves `apps/ui`.
         pp_gateway::ServedUi::Legacy,
         move |status| product.merge(status_routes.mount(status)),
         receiver,

@@ -306,6 +306,9 @@ pub struct WriterOwner {
     lease: Option<lease::StorageLease>,
     #[cfg(feature = "desktop_rebuild")]
     restore: Arc<restore::Activity>,
+    /// How long shutdown waits, in total, for reader checkouts and restore
+    /// work after it closes admission.
+    drain: Duration,
 }
 
 fn snapshot(connection: &Connection, tenant: &str, key: &str) -> Result<SettingSnapshot> {
@@ -992,6 +995,7 @@ impl WriterOwner {
                 lease: Some(lease),
                 #[cfg(feature = "desktop_rebuild")]
                 restore: Arc::default(),
+                drain: READER_DRAIN,
             },
             ready,
         ))
@@ -1108,9 +1112,11 @@ impl WriterOwner {
         }
         #[cfg(feature = "desktop_rebuild")]
         self.client.shared.job_subscriptions.stop_owner();
-        // Restore work runs in `.pp-restore`, which the next owner clears.
+        // Close restore, writer and reader admission before waiting on any
+        // of them, then wait for all of them against one deadline. Restore
+        // work runs in `.pp-restore`, which the next owner clears.
         #[cfg(feature = "desktop_rebuild")]
-        let restore_active = self.restore.close(READER_DRAIN);
+        self.restore.refuse_new();
         {
             let mut queue = self
                 .client
@@ -1121,6 +1127,7 @@ impl WriterOwner {
             queue.closed = true;
             self.client.shared.changed.notify_all();
         }
+        let deadline = Instant::now() + self.drain;
         let remaining_readers = {
             let mut readers = self
                 .client
@@ -1131,7 +1138,6 @@ impl WriterOwner {
             readers.closed = true;
             readers.idle.clear();
             self.client.readers.changed.notify_all();
-            let deadline = Instant::now() + READER_DRAIN;
             while readers.active > 0 && Instant::now() < deadline {
                 readers = self
                     .client
@@ -1143,19 +1149,21 @@ impl WriterOwner {
             }
             readers.active
         };
+        #[cfg(feature = "desktop_rebuild")]
+        let restore_active = self.restore.wait_until(deadline);
         if let Some(join) = self.join.take() {
             join.join().map_err(|_| anyhow!("Writer join failed"))?;
         }
         ensure!(
             remaining_readers == 0,
             "Reader checkouts still active after {}s: {remaining_readers}; ownership retained until process exit",
-            READER_DRAIN.as_secs()
+            self.drain.as_secs()
         );
         #[cfg(feature = "desktop_rebuild")]
         ensure!(
             restore_active == 0,
             "Restore work still active after {}s: {restore_active}; ownership retained until process exit",
-            READER_DRAIN.as_secs()
+            self.drain.as_secs()
         );
         if let Some(lease) = self.lease.take() {
             let released = lease.release();
@@ -1171,6 +1179,11 @@ impl WriterOwner {
     #[cfg(feature = "desktop_rebuild")]
     pub fn lease(&self) -> Option<&lease::StorageLease> {
         self.lease.as_ref()
+    }
+    /// Shortens the shutdown drain so tests need no real 5 s waits.
+    #[cfg(all(test, unix, feature = "desktop_rebuild"))]
+    pub(crate) fn set_drain(&mut self, drain: Duration) {
+        self.drain = drain;
     }
     pub fn shutdown(mut self) -> Result<()> {
         let result = self.close();

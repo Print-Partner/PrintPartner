@@ -2,10 +2,11 @@
 //! Node schema 34 database and a valid ownership marker.
 
 use super::*;
-use crate::{Limits, ownership_marker::WriterGate};
+use crate::{Limits, Setting, SettingCommand, ownership_marker::WriterGate};
 use pp_testkit::{Installation, MarkerState as KitMarker, Spec};
 use rusqlite::{Connection, OpenFlags};
 use std::{collections::BTreeMap, sync::mpsc, thread};
+use std::{sync::atomic::AtomicBool, time::Duration};
 use tar::{EntryType, Header};
 
 type Hook = Box<dyn FnOnce() + Send>;
@@ -600,4 +601,47 @@ fn ticket_t_8_restore_shutdown_keeps_the_lease_while_restore_work_runs_on() {
     release.send(()).unwrap();
     let upload = upload.join().unwrap().unwrap();
     assert!(upload.path.exists());
+}
+
+/// Shutdown closes writer, reader and restore admission before it waits,
+/// then waits for reader checkouts and restore work against one deadline.
+#[test]
+fn ticket_t_8_restore_shutdown_refuses_new_work_at_once_and_drains_against_one_deadline() {
+    let mut held = held_upload();
+    let drain = Duration::from_millis(1500);
+    held.owner.set_drain(drain);
+    let settings = held.owner.client();
+    let checkout = settings.reader(Duration::from_secs(1)).unwrap();
+    let owner = held.owner;
+    let started = Instant::now();
+    let shutdown = thread::spawn(move || owner.shutdown());
+    thread::sleep(Duration::from_millis(200));
+    assert!(!shutdown.is_finished(), "shutdown is still draining");
+    let setting = Setting {
+        tenant: "default".into(),
+        key: "restore.test".into(),
+        value: "during shutdown".into(),
+    };
+    let write = settings.submit(
+        SettingCommand::Set(setting),
+        &AtomicBool::new(false),
+        Duration::ZERO,
+    );
+    assert!(
+        write.is_err(),
+        "a write during the drain is refused at once"
+    );
+    assert!(settings.reader(Duration::ZERO).is_err());
+    assert!(held.client.begin_upload(16).is_err());
+    let error = shutdown.join().unwrap().unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(error.to_string().contains("still active"), "{error:#}");
+    // Two waits of `drain` each would take 3 s; one shared deadline takes 1.5 s.
+    assert!(
+        elapsed >= drain && elapsed < drain * 3 / 2,
+        "shutdown took {elapsed:?} for a {drain:?} drain"
+    );
+    drop(checkout);
+    held.release.send(()).unwrap();
+    held.upload.join().unwrap().unwrap();
 }

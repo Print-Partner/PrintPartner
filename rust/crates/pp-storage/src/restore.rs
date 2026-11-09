@@ -19,7 +19,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 const WORK_DIR: &str = ".pp-restore";
@@ -107,12 +107,15 @@ impl Activity {
         Ok(Active(self))
     }
 
-    /// Refuses new restore work and waits up to `limit` for work in flight.
-    /// Returns how many operations are still running.
-    pub(crate) fn close(&self, limit: Duration) -> usize {
+    /// Refuses new restore work. Work already running goes on.
+    pub(crate) fn refuse_new(&self) {
+        self.lock().closed = true;
+    }
+
+    /// Waits until no restore work runs or `deadline` passes. Returns how
+    /// many operations are still running.
+    pub(crate) fn wait_until(&self, deadline: Instant) -> usize {
         let mut state = self.lock();
-        state.closed = true;
-        let deadline = Instant::now() + limit;
         while state.active > 0 && Instant::now() < deadline {
             state = self
                 .idle

@@ -71,6 +71,10 @@ STEPS = [
          ("python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'",
           "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py"),
          (CROSS_OS + "Select changed inputs",), requires=(("python3", None),)),
+    # No hosted job runs these yet, so the line is local-only.
+    Step("perf-baseline-tests", "Node-versus-Rust baseline harness tests",
+         setup=("python3 -B -m unittest discover -s scripts/perf-baseline -p 'test_*.py' -v",),
+         requires=(("python3", None),)),
     Step("actionlint", "actionlint (required check)", setup=("actionlint -color",),
          requires=(("actionlint", "1.7.12"),)),
     Step("large-files", "tracked file size limit",

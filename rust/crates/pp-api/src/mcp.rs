@@ -6,7 +6,8 @@
 //! to that tenant (unknown, revoked or expired). Host and Origin must match
 //! the listener exactly. Write tools only propose; `confirm_apply` applies.
 //! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
-//! (GRE-1170, `mcp/checkoff.rs`).
+//! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
+//! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`).
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -22,7 +23,7 @@ use axum::{
 };
 use checkoff::CheckoffDomain;
 use pp_services::mcp_domain::{McpSession, ToolResult, server_info};
-use pp_storage::build_graph::PositiveId;
+use pp_storage::build_graph::{BuildGraphClient, PositiveId};
 use pp_storage::checkoff_progress::ProgressClient;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
@@ -86,9 +87,11 @@ struct Guard {
 /// The clients ported tools use: `get_build_workflow` reads the same client as
 /// `GET /plans/{id}/workflow`, and Plan Accept uses the draft routes' client
 /// and checks the Build planning brief with the planning routes' client.
-/// `progress` applies confirmed Checkoff proposals.
+/// `progress` applies confirmed Checkoff proposals. `builds` lists Builds and
+/// `planning` also reads decisions and snapshots for the read tools.
 #[derive(Clone)]
 struct Reads {
+    builds: BuildGraphClient,
     workflow: WorkflowClient,
     drafts: WorkingDraftClient,
     planning: PlanningClient,
@@ -99,10 +102,12 @@ struct Reads {
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
 /// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
 /// `workflow` and Plan Accept uses `drafts` and `planning`, each with the
-/// request's API key. Checkoff proposals apply through `progress`.
+/// request's API key. Checkoff proposals apply through `progress`; `builds`
+/// serves `list_plans`.
 pub fn mcp_router(
     config: McpHttpConfig,
     auth: RebuildAuthClient,
+    builds: BuildGraphClient,
     workflow: WorkflowClient,
     drafts: WorkingDraftClient,
     planning: PlanningClient,
@@ -117,6 +122,7 @@ pub fn mcp_router(
         .with_allowed_hosts([config.host.clone()])
         .with_allowed_origins([config.origin.clone()]);
     let reads = Reads {
+        builds,
         workflow,
         drafts,
         planning,
@@ -166,7 +172,22 @@ pub(crate) fn test_router(
         .build_planning(policy, owner.source_reads().unwrap())
         .unwrap();
     let progress = owner.checkoff_progress().unwrap();
-    let router = mcp_router(config, auth.clone(), workflow, drafts, planning, progress);
+    let builds = owner
+        .build_graph_with_observations(
+            policy,
+            Arc::new(owner.source_reads().unwrap()),
+            Default::default(),
+        )
+        .unwrap();
+    let router = mcp_router(
+        config,
+        auth.clone(),
+        builds,
+        workflow,
+        drafts,
+        planning,
+        progress,
+    );
     (router, auth)
 }
 
@@ -396,6 +417,9 @@ impl ServerHandler for ProductMcp {
             Some(presented) if request.name == "get_build_workflow" => {
                 self.build_workflow(&arguments, presented).await
             }
+            Some(presented) if reads::TOOLS.contains(&request.name.as_ref()) => {
+                self.read_tool(&request.name, &arguments, presented).await
+            }
             Some(presented) if request.name == plan_accept::PROPOSE => {
                 self.propose_accept(&arguments, presented).await
             }
@@ -423,6 +447,8 @@ impl ServerHandler for ProductMcp {
 mod checkoff;
 #[path = "mcp/plan_accept.rs"]
 mod plan_accept;
+#[path = "mcp/reads.rs"]
+mod reads;
 
 #[cfg(test)]
 #[path = "mcp/tests.rs"]

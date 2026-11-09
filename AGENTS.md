@@ -23,7 +23,8 @@ npm --prefix web ci
 npm --prefix web run lint
 npm --prefix web run typecheck
 cargo fmt --manifest-path rust/Cargo.toml --all -- --check
-just ci            # canonical local CI; same as python3 scripts/local-ci.py
+just ci --fast     # local CI for a normal PR: affected nextest, no full test or doc passes
+just ci            # full local CI for a sensitive PR; same as python3 scripts/local-ci.py
 just ci --list     # step ids for --only / --skip
 just guidance      # checks this file, the repo skills, and the safety guard
 ```

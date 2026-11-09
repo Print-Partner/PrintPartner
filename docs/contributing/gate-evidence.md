@@ -39,8 +39,9 @@ scripts/evidence/run.sh --seed 1138 --shot /builds --shot /builds/2/history
 ```
 
 `--step snapshot:2` and `--step settle-reconciliation:2` reach a state through
-the Rust API first, `--module farm` turns a Module on in the seed, and
-`--publish <pr>` runs `evidence publish` for the PNGs.
+the Rust API first, and `--module farm` turns a Module on in the seed. A capture
+run never publishes. Open each PNG it lists, then publish with
+`python3 scripts/evidence/publisher.py <pr> <files...>`.
 See [the harness README](../../scripts/evidence/README.md).
 
 Apart from this rule, the lint does not require Steps/Result fields or

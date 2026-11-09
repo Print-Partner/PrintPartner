@@ -15,7 +15,7 @@ One run:
 5. Opens the one-use bootstrap link in Playwright's Chromium, registers a throwaway account with a random password, runs each `--step` through the Rust API, and saves one PNG per `--shot`. A shot waits until the screen has an `h1`, no `aria-busy` region and no "Loading" text, and fails on the "Not found" screen.
 6. Stops the UI server and the core (SIGTERM, then the launcher's shutdown checks must print `STOP: exit=0`), deletes the seed, the data directory and the credential directory, and checks nothing was left behind. Step 6 runs on failure and on SIGINT, SIGTERM or SIGHUP too.
 
-It prints each PNG path at the end and exits 1 on any failure, including an unclean stop.
+It prints each PNG path and the command to publish them at the end, and exits 1 on any failure, including an unclean stop. It never publishes: see [Publishing](#publishing).
 
 ## Options
 
@@ -25,11 +25,10 @@ It prints each PNG path at the end and exits 1 on any failure, including an uncl
 | `--shot PATH` | App path to screenshot, such as `/builds/2/history`. Repeat for more. The file is the path with `/` as `-`: `builds-2-history.png`. |
 | `--step NAME:BUILD` | Setup step before the shots, run in the order given. See below. |
 | `--module NAME` | Turn a Module on (`farm`, `orders`, `bambu` or `spoolman`) before the core starts. Repeat for more. All four start off, so `/farm/...` paths need `--module farm`. |
-| `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. Only this run's files are listed and published. |
+| `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. Only this run's files are listed. |
 | `--full-page` | Capture the whole scrolled page, not only the 1440x900 viewport. |
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |
-| `--publish PR --note TEXT` | After a clean run, publish this run's PNGs as a comment on that `Print-Partner/PrintPartner` PR. See [Publishing](#publishing) for the checks. |
 | `--self-test` | Runs `node --test scripts/evidence/safety.test.mjs scripts/evidence/steps.test.mjs`, captures `/builds`, and checks the PNG, the clean stop and the removed data directory. |
 
 ## Setup steps
@@ -59,11 +58,13 @@ scripts/evidence/run.sh --step snapshot:2 --shot /builds/2/history
 
 ## Publishing
 
-`--publish PR` publishes the run's PNGs as a PR comment through the root-owned `/opt/agent-fleet/bin/evidence`, which pushes them to the `evidence/<pr-branch>` branch. To publish PNGs you already have, with the same checks:
+A capture run never publishes. The repository is public, and with `--display` the capture is the whole X display, so a person opens each PNG first. Then they publish it on purpose with the command the run prints:
 
 ```sh
 python3 scripts/evidence/publisher.py <pr> <files...> [--note "..."]
 ```
+
+It posts the PNGs as a PR comment through the root-owned `/opt/agent-fleet/bin/evidence`, which pushes them to the `evidence/<pr-branch>` branch.
 
 ### Threat model
 

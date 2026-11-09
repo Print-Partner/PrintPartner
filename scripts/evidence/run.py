@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
-from publisher import EVIDENCE_BIN, EVIDENCE_REPO, publish
+from publisher import EVIDENCE_BIN
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -244,20 +244,15 @@ def parse_args(argv):
     parser.add_argument("--display", nargs="?", const=os.environ.get("EVIDENCE_DISPLAY", ":99"),
                         help="show the browser on this X display (default :99) and capture with the "
                              "evidence tool instead of headless screenshots")
-    parser.add_argument("--publish", type=int, metavar="PR",
-                        help=f"after a clean run, publish the PNGs to this {EVIDENCE_REPO} PR with evidence publish")
-    parser.add_argument("--note", default="", help="note for --publish")
     parser.add_argument("--self-test", action="store_true",
                         help="run safety.test.mjs and steps.test.mjs, capture /builds once, and check the PNG and the cleanup")
     args = parser.parse_args(argv)
     if args.self_test:
-        if args.shot or args.step or args.publish:
-            parser.error("--self-test takes no --shot, --step or --publish")
+        if args.shot or args.step:
+            parser.error("--self-test takes no --shot or --step")
         args.shot = ["/builds"]
     if not args.shot:
         parser.error("give at least one --shot")
-    if args.note and args.publish is None:
-        parser.error("--note needs --publish")
     return args
 
 
@@ -438,8 +433,10 @@ def main(argv=None):
     if args.self_test:
         check_png(out_dir / "builds.png")
         say("self-test: PASS (PNG written, core stopped cleanly, data directory removed)")
-    if args.publish is not None:
-        publish(args.publish, shots, args.note)
+    # A capture run never publishes: the repository is public, so a person opens each PNG
+    # first and then publishes on purpose.
+    files = " ".join(str(shot) for shot in shots)
+    say(f"open each PNG, then publish with: python3 scripts/evidence/publisher.py <pr> {files}")
     return 0
 
 

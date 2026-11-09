@@ -56,10 +56,10 @@ class ParseArgs(unittest.TestCase):
         self.assertEqual(run.shot_name("/builds/2/history"), "builds-2-history.png")
         self.assertEqual(run.shot_name("/"), "root.png")
 
-    def test_note_needs_publish(self):
-        with self.assertRaises(SystemExit):
-            parse("--shot", "/builds", "--note", "x")
-        self.assertEqual(parse("--shot", "/builds", "--publish", "7", "--note", "x").publish, 7)
+    def test_publishing_is_not_a_capture_option(self):
+        for argv in (("--publish", "7"), ("--note", "x")):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                parse("--shot", "/builds", *argv)
 
 
 class Stop(Exception):
@@ -93,6 +93,33 @@ class Spawn(unittest.TestCase):
                           stdout=subprocess.PIPE, text=True)
         out, _ = child.communicate(timeout=30)
         self.assertEqual(out.strip(), "[]")
+
+
+class CaptureNeverPublishes(unittest.TestCase):
+    def test_a_clean_capture_run_prints_the_next_step_and_never_publishes(self):
+        import publisher
+        signals = {signum: signal.getsignal(signum) for signum in run.STOP_SIGNALS}
+        self.addCleanup(lambda: [signal.signal(n, h) for n, h in signals.items()])
+
+        def capture(args, work, out_dir, node, binary):
+            for name in ("builds.png", "farm-log.png"):
+                (out_dir / name).write_bytes(b"png")
+            return []
+
+        with tempfile.TemporaryDirectory() as out, \
+                mock.patch.object(run, "build", return_value=Path("pp-server")), \
+                mock.patch.object(run, "session", side_effect=capture), \
+                mock.patch.object(publisher, "publish") as publish, \
+                mock.patch.object(publisher.subprocess, "run") as subprocess_run, \
+                contextlib.redirect_stdout(io.StringIO()) as printed:
+            status = run.main(["--shot", "/builds", "--shot", "/farm/log", "--out", out])
+            out = Path(out).resolve()
+        self.assertEqual(status, 0)
+        publish.assert_not_called()
+        subprocess_run.assert_not_called()
+        self.assertFalse(hasattr(run, "publish"))
+        self.assertIn(f"evidence-run: open each PNG, then publish with: python3 scripts/evidence/publisher.py "
+                      f"<pr> {out / 'builds.png'} {out / 'farm-log.png'}\n", printed.getvalue())
 
 
 class StopLabel(unittest.TestCase):

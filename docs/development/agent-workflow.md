@@ -365,7 +365,7 @@ A browser screenshot is never native evidence. With no native display, report de
 ### Check and attach evidence
 
 1. Open every file. Confirm it shows the change itself, not just a page loading, and only the app: no terminals, other windows, tokens, or customer data. The repository is public.
-2. Drag the files into the PR description on GitHub, or use `evidence publish <pr-number> <files...>` where that tool exists.
+2. Drag the files into the PR description on GitHub, or publish them with `python3 scripts/evidence/publisher.py <pr-number> <files...>`, which runs the installed `evidence publish` with isolated git and a checked cache.
 3. Under `## Evidence`, give the head SHA and one line per file saying what it shows. When a UI path changed with no visible effect, such as a type-only refactor, give the reason on the `Exemption:` line. [Gate evidence](../contributing/gate-evidence.md) has the lint rules.
 
 ### Report and clean up

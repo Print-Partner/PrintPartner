@@ -673,7 +673,11 @@ pub(super) enum Command {
     },
 }
 pub(crate) fn timestamp(after_seconds: i64) -> String {
-    let now = time::OffsetDateTime::now_utc() + time::Duration::seconds(after_seconds);
+    timestamp_at(time::OffsetDateTime::now_utc() + time::Duration::seconds(after_seconds))
+}
+
+/// `at` in Node's `toISOString` form, the form Checkoff link times use.
+pub(crate) fn timestamp_at(now: time::OffsetDateTime) -> String {
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         now.year(),

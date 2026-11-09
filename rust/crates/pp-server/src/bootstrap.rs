@@ -27,6 +27,7 @@ const URL_PREFIX: &str = "url ";
 const REFUSED: &[u8] = b"refused\n";
 const UNAVAILABLE: &[u8] = b"unavailable\n";
 const TIMEOUT: Duration = Duration::from_secs(5);
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 fn effective_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and touches no memory.
@@ -36,16 +37,21 @@ fn effective_uid() -> u32 {
 /// Mints one URL; fails once the runtime is stopping.
 pub(crate) type Mint = Arc<dyn Fn() -> Result<String> + Send + Sync>;
 
-/// The listening socket. [`Listener::close`] stops answering and removes it.
+/// The listening socket. Dropping it stops answering and removes the socket,
+/// on every exit path including an early return or a panic.
 pub(crate) struct Listener {
     path: PathBuf,
     task: tokio::task::JoinHandle<()>,
 }
 
-impl Listener {
-    pub(crate) fn close(self) {
+impl Drop for Listener {
+    fn drop(&mut self) {
         self.task.abort();
-        let _ = std::fs::remove_file(&self.path);
+        if std::fs::symlink_metadata(&self.path)
+            .is_ok_and(|metadata| metadata.file_type().is_socket())
+        {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -73,11 +79,18 @@ fn listen_for(data_dir: &Path, mint: Mint, owner: u32) -> Result<Listener> {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .context("Restrict the sign-in socket")?;
     let task = tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let mint = mint.clone();
-            tokio::spawn(async move {
-                let _ = tokio::time::timeout(TIMEOUT, answer(stream, owner, mint)).await;
-            });
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let mint = mint.clone();
+                    tokio::spawn(async move {
+                        let _ = tokio::time::timeout(TIMEOUT, answer(stream, owner, mint)).await;
+                    });
+                }
+                // A failed accept, such as running out of descriptors, is
+                // transient: keep the socket and try again shortly.
+                Err(_) => tokio::time::sleep(ACCEPT_RETRY).await,
+            }
         }
     });
     Ok(Listener { path, task })
@@ -102,6 +115,53 @@ async fn answer(mut stream: tokio::net::UnixStream, owner: u32, mint: Mint) -> s
         }
         Err(_) => stream.write_all(UNAVAILABLE).await,
     }
+}
+
+/// The process on the other end must run as `uid`, as pp-server does.
+fn check_peer(stream: &std::os::unix::net::UnixStream, uid: u32) -> Result<()> {
+    ensure!(
+        peer_uid(stream).context("Cannot identify the process on the socket")? == uid,
+        "The socket belongs to a process of another account; refusing to use it"
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn peer_uid(stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `credentials` and `length` are valid for writes of the sizes
+    // passed, and the descriptor stays open for the call.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &raw mut length,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(credentials.uid)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn peer_uid(stream: &std::os::unix::net::UnixStream) -> std::io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: `uid` and `gid` are valid for writes, and the descriptor stays
+    // open for the call.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(uid)
 }
 
 pub(crate) enum Command {
@@ -139,6 +199,13 @@ fn request_as(data: &Path, uid: u32) -> Result<String> {
         "{} belongs to another account; run this as the account that runs pp-server",
         data.display()
     );
+    // pp-server's storage lease refuses such a directory, so no server of
+    // this account listens there.
+    ensure!(
+        metadata.mode() & 0o022 == 0,
+        "{} is writable by other accounts; refusing to use it",
+        data.display()
+    );
     let path = data.join(SOCKET);
     let socket = match std::fs::symlink_metadata(&path) {
         Ok(socket) => socket,
@@ -155,6 +222,7 @@ fn request_as(data: &Path, uid: u32) -> Result<String> {
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => bail!(not_running()),
         Err(error) => return Err(error).context("Cannot reach pp-server"),
     };
+    check_peer(&stream, uid)?;
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
     stream.write_all(REQUEST)?;
@@ -182,9 +250,11 @@ mod tests {
     use std::os::unix::fs::DirBuilderExt;
 
     fn directory() -> tempfile::TempDir {
+        // Under /tmp: a socket path must fit in about 100 bytes, which macOS's
+        // per-user temporary directory leaves no room for.
         let directory = tempfile::Builder::new()
             .prefix("pp-bootstrap-")
-            .tempdir()
+            .tempdir_in("/tmp")
             .unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         directory
@@ -222,7 +292,7 @@ mod tests {
         assert_eq!(first, "http://127.0.0.1:1/__desktop/bootstrap?token=t0");
         assert_eq!(second, "http://127.0.0.1:1/__desktop/bootstrap?token=t1");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-        listener.close();
+        drop(listener);
         assert!(!directory.path().join(SOCKET).exists());
     }
 
@@ -238,7 +308,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.to_string(), "pp-server refused this account");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        listener.close();
+        drop(listener);
     }
 
     #[tokio::test]
@@ -258,7 +328,7 @@ mod tests {
         .unwrap();
         assert_eq!(answer, "refused\n");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        listener.close();
+        drop(listener);
     }
 
     #[tokio::test]
@@ -273,7 +343,7 @@ mod tests {
             error.to_string(),
             "pp-server is stopping; start it again and retry"
         );
-        listener.close();
+        drop(listener);
     }
 
     #[tokio::test]
@@ -282,7 +352,7 @@ mod tests {
         let path = directory.path().join(SOCKET);
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         let (mint, _) = counting_mint();
-        listen(directory.path(), mint.clone()).unwrap().close();
+        drop(listen(directory.path(), mint.clone()).unwrap());
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&path)
@@ -343,7 +413,28 @@ mod tests {
                 .contains("is not an owner-only pp-server socket")
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        listener.close();
+        drop(listener);
+    }
+
+    #[test]
+    fn a_peer_of_another_account_is_not_trusted() {
+        let (ours, _theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        check_peer(&ours, effective_uid()).unwrap();
+        let error = check_peer(&ours, effective_uid() + 1).unwrap_err();
+        assert!(error.to_string().contains("another account"), "{error}");
+    }
+
+    #[test]
+    fn a_directory_others_can_write_is_refused() {
+        let directory = directory();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+        let error = request_as(directory.path(), effective_uid()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .ends_with("is writable by other accounts; refusing to use it"),
+            "{error}"
+        );
     }
 
     #[test]

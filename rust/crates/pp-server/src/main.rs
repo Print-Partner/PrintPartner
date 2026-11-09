@@ -147,15 +147,20 @@ async fn serve(args: Vec<String>) -> Result<()> {
     }
     // `pp-server bootstrap-url` reaches the runtime through this socket. Without
     // it the server still serves; only headless sign-in is unavailable.
+    // Rust-only starts only: the Node-backed runtime keeps its existing data
+    // directory contents.
     #[cfg(unix)]
-    let bootstrap = {
-        let handle = runtime.handle();
-        let mint: bootstrap::Mint =
-            std::sync::Arc::new(move || Ok(handle.browser_launch_target()?.into_url()));
-        bootstrap::listen(&data, mint)
-            .inspect_err(|error| eprintln!("pp-server bootstrap-url is unavailable: {error:#}"))
-            .ok()
-    };
+    let bootstrap = runtime
+        .rust_only()
+        .then(|| {
+            let handle = runtime.handle();
+            let mint: bootstrap::Mint =
+                std::sync::Arc::new(move || Ok(handle.browser_launch_target()?.into_url()));
+            bootstrap::listen(&data, mint)
+                .inspect_err(|error| eprintln!("pp-server bootstrap-url is unavailable: {error:#}"))
+                .ok()
+        })
+        .flatten();
     // Register signal streams before announcing the origin: a signal sent right after
     // the origin line is queued here instead of taking the default action.
     let stop_signal = platform::stop_signal()?;
@@ -164,9 +169,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         .map(|status| status.publish(health::State::Ready, Some(runtime.origin())))
     {
         #[cfg(unix)]
-        if let Some(bootstrap) = bootstrap {
-            bootstrap.close();
-        }
+        drop(bootstrap);
         let receipt = runtime.shutdown().await;
         anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");
         return Err(error);
@@ -178,9 +181,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         _ = shutdown_requested => {}
     }
     #[cfg(unix)]
-    if let Some(bootstrap) = bootstrap {
-        bootstrap.close();
-    }
+    drop(bootstrap);
     // Readiness fails from here on. A failed write still finishes the shutdown.
     if let Some(Err(error)) = status
         .as_ref()

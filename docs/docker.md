@@ -70,9 +70,9 @@ docker exec print-partner pp-server bootstrap-url --data /data
 The command prints `http://127.0.0.1:<port>/__desktop/bootstrap?token=<64 hex digits>`. Open it in a browser on the same host within 60 seconds. It works once, then sets the session cookie. Run the command again for a new URL; at most four unused URLs stay valid at a time, and a fifth replaces the oldest.
 
 - **Where the URL goes.** Only to the terminal that ran the command. `pp-server` does not print or log it, and it is not in `docker logs` or the status file.
-- **Who can get one.** Only the account that owns `/data`, UID 1000 in this image. `docker exec` runs as that user by default. `pp-server` hands the URL over a Unix socket, `/data/.pp-server-bootstrap.sock`, with mode 0600, and it also checks the connecting process's UID. Another UID, root included (`docker exec -u 0`), is refused. So is a directory the caller does not own.
-- **No server running.** The command exits 1 with `No pp-server is running on /data` and changes nothing.
-- **The socket.** `pp-server` creates it after startup and removes it on shutdown. A socket left by a crashed server is replaced at the next start. If something else exists at that name, `pp-server` leaves it, prints `pp-server bootstrap-url is unavailable` to stderr, and serves without headless sign-in. The same happens when the data directory path is too long for a Unix socket name (about 100 bytes).
+- **Who can get one.** Only the account that owns `/data`, UID 1000 in this image. `docker exec` runs as that user by default. `pp-server` hands the URL over a Unix socket, `/data/.pp-server-bootstrap.sock`, with mode 0600, and it also checks the connecting process's UID. Another UID, root included (`docker exec -u 0`), is refused. The command also refuses a directory the caller does not own or that other accounts can write, and a socket whose server runs as another account.
+- **No server running.** The command exits 1, prints `bootstrap-url: No pp-server is running on /data` to stderr, and changes nothing.
+- **The socket.** Only a Rust-only start (`PP_DESKTOP_REBUILD=1`, as in this image) creates it, after startup, and removes it on shutdown. A socket left by a crashed server is replaced at the next start. If something else exists at that name, `pp-server` leaves it, prints `pp-server bootstrap-url is unavailable` to stderr, and serves without headless sign-in. The same happens when the socket path is too long for a Unix socket name: 107 bytes on Linux, 103 on macOS. `/data` is far below either.
 
 ## Volumes and the data directory
 

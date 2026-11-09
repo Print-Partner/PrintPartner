@@ -8,8 +8,6 @@
 mod child_process;
 #[path = "../../pp-core/tests/support/release.rs"]
 mod release;
-#[path = "../../pp-storage/tests/common/scratch.rs"]
-mod scratch;
 
 use std::{
     io::{Read, Write},
@@ -99,7 +97,13 @@ fn listing(directory: &Path) -> Vec<std::ffi::OsString> {
 
 #[test]
 fn bootstrap_url_signs_in_once_expires_and_never_reaches_server_output() {
-    let root = scratch::Scratch::new("pp-bootstrap-url-");
+    // Under /tmp: the socket path must fit in about 100 bytes, which macOS's
+    // per-user temporary directory leaves no room for.
+    let root = tempfile::Builder::new()
+        .prefix("ppb-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let root = root.path();
     let data = root.join("data");
     let status = root.join("status.json");
     let bundle = release::launch(data.clone()).bundle;

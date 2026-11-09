@@ -21,14 +21,12 @@ import sys
 import tempfile
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
+
+from publisher import EVIDENCE_BIN, EVIDENCE_REPO, publish
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-EVIDENCE_BIN = os.environ.get("PP_EVIDENCE_BIN", "/opt/agent-fleet/bin/evidence")
-# The installed tool still defaults to the old repository; always pass this one.
-EVIDENCE_REPO = "Print-Partner/PrintPartner"
 STEP_NAMES = ("settle-reconciliation", "snapshot")
 MODULES = ("farm", "orders", "bambu", "spoolman")
 SHOT_PATH = re.compile(r"^/(?!/)[A-Za-z0-9/_.~-]*$")
@@ -44,7 +42,6 @@ BUILD_INPUTS = ("web/apps", "web/packages", "web/package.json", "web/package-loc
 READY_SECS = 300
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 CAPTURE_SECS = 900
-CLONE_SECS = 300
 
 
 class Stopped(Exception):
@@ -322,110 +319,6 @@ def session(args, work, out_dir, node, binary):
         if leftovers:
             failures.append(f"launcher left data behind: {leftovers}")
     return failures
-
-
-GITHUB_REPO_PATH = re.compile(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
-SCP_REMOTE = re.compile(r"(?:[^@/:]+@)?([^/:]+):(.*)")
-
-
-def normalize_remote(url):
-    """github.com/<owner>/<repo> for a GitHub remote, or None.
-
-    Drops userinfo, one trailing "/" and one trailing ".git", and maps
-    git@github.com:<owner>/<repo> to the same form. Anything else, including another
-    host, a port, a query or a deeper path, is None, so normalizing never makes a
-    different repository match."""
-    try:
-        # urlsplit, hostname and port raise ValueError quoting the netloc, userinfo
-        # included, for example on NFKC-unsafe characters; such a URL never matches.
-        parts = urllib.parse.urlsplit(url)
-        url_form = parts.scheme in ("https", "ssh") and not parts.query and not parts.fragment
-        if url_form and parts.port is not None:
-            return None
-        host = parts.hostname if url_form else None
-    except ValueError:
-        return None
-    if url_form:
-        path = parts.path
-    elif not parts.scheme or "://" not in url:
-        match = SCP_REMOTE.fullmatch(url)
-        if not match or match.group(2).startswith("/"):
-            return None
-        host, path = match.group(1).lower(), "/" + match.group(2)
-    else:
-        return None
-    if host != "github.com":
-        return None
-    path = path.removesuffix("/").removesuffix(".git")
-    match = GITHUB_REPO_PATH.fullmatch(path)
-    if not match or ".." in path:
-        return None
-    return f"github.com/{match.group(1)}/{match.group(2)}"
-
-
-def remote_urls(cache):
-    """Every fetch URL and every effective push URL of the cache's origin, or None."""
-    urls = []
-    for extra in ([], ["--push"]):
-        result = subprocess.run(["git", "-C", str(cache), "remote", "get-url", *extra, "--all", "origin"],
-                                capture_output=True, text=True)
-        if result.returncode != 0:
-            return None
-        urls += result.stdout.split()
-    return urls or None
-
-
-def evidence_cache():
-    """A publisher clone for EVIDENCE_REPO only, checked before every publish. The tool
-    pushes to its cache clone's origin, so a cache whose origin fetches or pushes
-    elsewhere is refused. A missing cache is cloned here first, so the first publish is
-    checked too: a global insteadOf or pushInsteadOf rule shows in the effective URLs.
-    No refusal prints a URL or git's output, which can quote a URL and its token."""
-    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    cache = base / f"evidence-repo-{EVIDENCE_REPO.replace('/', '-')}"
-    fresh = not cache.exists()
-    if fresh and not clone_cache(cache):
-        shutil.rmtree(cache, ignore_errors=True)
-        raise SystemExit(f"refusing to publish: cloning {EVIDENCE_REPO} into {cache} failed")
-    if not cache_remote_ok(cache):
-        if fresh:
-            shutil.rmtree(cache, ignore_errors=True)
-            # Raised outside any except block, so no exception that saw a URL is chained.
-            raise SystemExit(f"refusing to publish: evidence cache remote is not {EVIDENCE_REPO} "
-                             f"(a git insteadOf or pushInsteadOf rule rewrites it); removed {cache}")
-        raise SystemExit(f"refusing to publish: evidence cache remote is not {EVIDENCE_REPO}; "
-                         f"move {cache} aside and run again")
-    return cache
-
-
-def clone_cache(cache):
-    """Clones EVIDENCE_REPO into cache the way the publisher does. Output is discarded."""
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        result = subprocess.run(
-            ["git", "clone", "--quiet", "--no-checkout", "--filter=blob:none",
-             f"https://github.com/{EVIDENCE_REPO}", str(cache)],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=CLONE_SECS,
-            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def cache_remote_ok(cache):
-    """Whether every fetch and push URL of the cache's origin is EVIDENCE_REPO. Any error
-    counts as no, and is dropped, because its message can quote a URL and its token."""
-    try:
-        urls = remote_urls(cache)
-        expected = f"github.com/{EVIDENCE_REPO}"
-        return urls is not None and all(normalize_remote(url) == expected for url in urls)
-    except Exception:
-        return False
-
-
-def publish(pr, shots, note):
-    env = dict(os.environ, EVIDENCE_REPO=EVIDENCE_REPO, EVIDENCE_CACHE=str(evidence_cache()))
-    run(EVIDENCE_BIN, "publish", pr, *shots, *(["--note", note] if note else []), env=env)
 
 
 def stop_label(error):

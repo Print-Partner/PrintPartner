@@ -29,7 +29,7 @@ It prints each PNG path at the end and exits 1 on any failure, including an uncl
 | `--full-page` | Capture the whole scrolled page, not only the 1440x900 viewport. |
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |
-| `--publish PR --note TEXT` | After a clean run, run `evidence publish` for the PNGs with `EVIDENCE_REPO=Print-Partner/PrintPartner`. |
+| `--publish PR --note TEXT` | After a clean run, publish this run's PNGs as a comment on that `Print-Partner/PrintPartner` PR. See [Publishing](#publishing) for the checks. |
 | `--self-test` | Runs `node --test scripts/evidence/safety.test.mjs scripts/evidence/steps.test.mjs`, captures `/builds`, and checks the PNG, the clean stop and the removed data directory. |
 
 ## Setup steps
@@ -59,9 +59,27 @@ scripts/evidence/run.sh --step snapshot:2 --shot /builds/2/history
 
 ## Publishing
 
-`/opt/agent-fleet/bin/evidence` still defaults to `poitee/PrintPartner`, and it pushes to the `origin` of its cache clone, whichever repository that clone came from. `--publish` passes `EVIDENCE_REPO=Print-Partner/PrintPartner` and its own cache, `~/.cache/evidence-repo-Print-Partner-PrintPartner`, and refuses to publish unless every fetch URL and every push URL of that clone's `origin` (`git remote get-url [--push] --all origin`) is `github.com/Print-Partner/PrintPartner` after dropping userinfo, one trailing `/` and `.git`, and mapping `git@github.com:` to the same form. The refusal names the cache path, never the remote, because a remote URL can carry a token. Any error while reading or parsing the remote, such as Python's `ValueError` for an NFKC-unsafe character in the host, which quotes the whole netloc, counts as a refusal and is dropped. When the cache does not exist yet, the harness clones it first (`git clone --quiet --no-checkout --filter=blob:none`, output discarded) and runs the same check, so a global `insteadOf` or `pushInsteadOf` rule that redirects the first publish is refused before `evidence publish` runs, and the clone is removed. A failed clone is refused with a fixed message, never git's output. To publish by hand:
+`--publish PR` publishes the run's PNGs as a PR comment through the root-owned `/opt/agent-fleet/bin/evidence`, which pushes them to the `evidence/<pr-branch>` branch. To publish PNGs you already have, with the same checks:
 
 ```sh
-EVIDENCE_REPO=Print-Partner/PrintPartner EVIDENCE_CACHE=~/.cache/evidence-repo-Print-Partner-PrintPartner \
-  evidence publish <pr> <files...> --note "..."
+python3 scripts/evidence/publisher.py <pr> <files...> [--note "..."]
 ```
+
+### Threat model
+
+What it defends: whatever the user's git config or environment says, the harness prints no token, and the PNGs go only to `Print-Partner/PrintPartner`. The user's global and system git config, `includeIf` rules, `insteadOf` and `pushInsteadOf` rewrites, `GIT_TRACE*`, `GIT_CURL_VERBOSE`, `GIT_SSH_COMMAND` and `git -c` settings passed down through `GIT_CONFIG_PARAMETERS` all count as untrusted input.
+
+What it does not defend: a local user who edits the root-owned publisher, this harness, or the cache's hooks. Such a user can already push anything with their own credentials.
+
+How (`scripts/evidence/publisher.py`, tests in `test_publisher.py`):
+
+- **Isolated git.** The clone, every check and the publisher run with no `GIT_*` variable from the caller. Instead they get `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `credential.helper=!gh auth git-credential` (through `GIT_CONFIG_COUNT`) and `GIT_TERMINAL_PROMPT=0`. No system or global rule, including one that applies only on a branch, can rewrite a URL or turn on tracing. The publisher sets its own commit identity with `git -c`.
+- **A clean cache.** The cache is `~/.cache/evidence-repo-Print-Partner-PrintPartner`, used by its real path. Publishing is refused when any of these holds:
+  - the cache or its parent directory is a symlink;
+  - `.git` is not a real directory;
+  - the cache's own config has an `include`, `includeIf` or `url.*` key;
+  - any fetch or push URL of `origin` (`git remote get-url [--push] --all origin`) is not `github.com/Print-Partner/PrintPartner`.
+
+  Before comparing, one trailing `/` and one trailing `.git` are dropped, and `git@github.com:` and `ssh://git@github.com/` map to the same form. A URL with any other userinfo is refused, so no URL the harness accepts carries a token.
+- **A checked first publish.** A missing cache is cloned first (`git clone --quiet --no-checkout --filter=blob:none`) and checked the same way. A clone that fails or fails the check is removed.
+- **No output from git or the publisher.** Refusals name the cache path, never a URL. Any error while reading or parsing a remote counts as a refusal and is dropped, for example Python's `ValueError` for an NFKC-unsafe character in a host, which quotes the whole netloc. The publisher's stdout and stderr are captured. On success the harness prints only the evidence URLs it reports, matched against `https://github.com/Print-Partner/PrintPartner/...`. On failure it prints `publish failed (exit N)` and nothing else.

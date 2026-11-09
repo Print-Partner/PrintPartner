@@ -92,6 +92,14 @@ UNREAD_BODY = ("The guard must read a comment body literally to check it for a p
                "of its own; no variables, substitutions, or stdin.")
 VARIABLE = "GitHub Actions variables are owner-maintained; ask the maintainer to change them."
 ALIAS = "A gh alias hides the command from the guard; run the full gh command instead."
+LANE_MERGE = "Report readiness to the coordinator instead of merging: "
+# Paths a lane never merges: CI and review controls, the guard and its tests, agent configs, and the
+# database schema with its migrations and historical fixtures. See definition-of-done.md, Lane merges.
+LANE_PROTECTED = (".github/", ".claude/", ".factory/", ".cursor/", "scripts/agent-guard.py",
+                  "scripts/test_factory_hooks.py", "web/apps/server/src/db/", "rust/crates/pp-storage/data/schema.json",
+                  "rust/crates/pp-storage/data/historical/")
+SCHEMA_NAME = re.compile(r"schema|migrat", re.I)
+PR_LOOKUP_SECONDS = 8
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -1006,14 +1014,13 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
 
 
 def gated_merge(args, cwd):
-    """Whether args is the one merge form the guard allows.
+    """Return (number, sha) when args is the one merge form the guard allows, else None.
 
     The form is gh pr merge <number> --squash --match-head-commit <full sha>, with no other option,
-    run from a Git checkout. Lanes and the coordinator use the same form. The guard cannot tell a
-    sensitive PR from a normal one, so the merge gate in definition-of-done.md decides who runs it.
+    run from a Git checkout. Outside the coordinator worktree, lane_merge_reason also checks the PR.
     """
     if args[:3] != ["gh", "pr", "merge"] or cwd is None:
-        return False
+        return None
     number, squash, sha, rest = None, False, None, args[3:]
     while rest:
         arg = rest.pop(0)
@@ -1026,8 +1033,44 @@ def gated_merge(args, cwd):
         elif re.fullmatch(r"[1-9][0-9]*", arg) and number is None:
             number = arg
         else:
-            return False
-    return bool(number and squash and sha and FULL_SHA.match(sha)) and git_checkout(cwd)
+            return None
+    if number and squash and sha and FULL_SHA.match(sha) and git_checkout(cwd):
+        return number, sha
+    return None
+
+
+def lane_protected(path):
+    """Whether a lane may not merge a PR that changes path."""
+    if path.startswith(LANE_PROTECTED):
+        return True
+    # Schema steps, SQL schema files, migrations, and their tests and fetch scripts under rust/.
+    return path.startswith("rust/") and (path.endswith(".sql") or bool(SCHEMA_NAME.search(posixpath.basename(path))))
+
+
+def lane_merge_reason(number, sha, cwd):
+    """Return why a lane may not merge PR number at sha, or None. Any lookup failure refuses."""
+    try:
+        result = subprocess.run(["gh", "pr", "view", number, "--json", "files,baseRefName,headRefOid,changedFiles"],
+                                cwd=cwd, capture_output=True, text=True, timeout=PR_LOOKUP_SECONDS, check=True,
+                                env={**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"})
+        view = json.loads(result.stdout)
+        base, head, count = view["baseRefName"], view["headRefOid"], view["changedFiles"]
+        files = [(entry["path"], entry.get("changeType", "")) for entry in view["files"]]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        return LANE_MERGE + "the guard could not read the PR with gh pr view."
+    if base != "main":
+        return LANE_MERGE + "the PR's base is not main."
+    if head != sha:
+        return LANE_MERGE + "the PR's head is not the --match-head-commit SHA."
+    if not isinstance(count, int) or len(files) < count:
+        return LANE_MERGE + "the PR's file list is incomplete."
+    for path, change in files:
+        if not isinstance(path, str) or lane_protected(path):
+            return LANE_MERGE + f"the PR changes {path}, a protected or schema path."
+        # gh names only the new path of a rename or copy, so the old path cannot be checked.
+        if change in ("RENAMED", "COPIED"):
+            return LANE_MERGE + f"the PR renames or copies {path}, and gh does not name the old path."
+    return None
 
 
 def git_checkout(cwd):
@@ -1122,8 +1165,9 @@ def check_command(command, cwd, outer=None):
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
-        if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) and gated_merge(parsed[0][0], cwd):
-            return None
+        target = gated_merge(parsed[0][0], cwd) if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) else None
+        if target:
+            return None if coordinator_worktree(cwd) else lane_merge_reason(*target, cwd)
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.

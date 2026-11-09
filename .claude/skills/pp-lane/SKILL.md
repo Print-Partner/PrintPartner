@@ -39,7 +39,7 @@ Commit before computing the filter; it reads committed changes only. **Sensitive
 
 ## Sensitive PRs
 
-A PR is sensitive when it touches schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths: `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, and `.claude/`. When unsure, it is sensitive. Say so in the PR body. The coordinator scores its exact head with two seats (Crouton Alpha and DeepSeek V4.1 Flash on OpenCode free) and needs 9 or more from each; see [Merge gate](../../../docs/development/definition-of-done.md#merge-gate). Sensitive PRs and marker-only heads merge only from the coordinator worktree, and the owner merges changes to the safety guard, its hook adapters, and CI controls.
+A PR is sensitive when it touches schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths: `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, and `.claude/`. When unsure, it is sensitive. Say so in the PR body. The coordinator scores its exact head with two of the [scorer seats](../../../docs/development/definition-of-done.md#scorer-seats) and needs 9 or more from each. The guard refuses a lane merge that touches protected or schema paths; auth, backup and restore, Accept and publication, and secrets are your call, so treat any doubt as sensitive. Sensitive PRs and marker-only heads merge only from the coordinator worktree, and the owner merges changes to the safety guard, its hook adapters, and CI controls.
 
 ## Review
 

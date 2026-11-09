@@ -681,8 +681,28 @@ OLD_MERGE_GATE = f"gh pr merge 12 -R poitee/PrintPartner --squash --match-head-c
 CLAUDE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 
-def hook(adapter, payload, coordinator=None):
+# Stands in for gh in lane-merge tests: logs its arguments and prints PP_TEST_GH_VIEW.
+GH_STUB = """#!{python}
+import json, os, sys, time
+with open(os.environ["PP_TEST_GH_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+mode = os.environ["PP_TEST_GH_MODE"]
+if mode == "fail":
+    sys.exit("gh: could not resolve to a PullRequest")
+if mode == "sleep":
+    time.sleep(30)
+if mode == "garbage":
+    print("not json")
+elif mode == "missing-key":
+    print(json.dumps({{"baseRefName": "main"}}))
+else:
+    print(open(os.environ["PP_TEST_GH_VIEW"]).read())
+"""
+
+
+def hook(adapter, payload, coordinator=None, extra=None):
     env = {key: value for key, value in os.environ.items() if key != "PP_COORDINATOR_WORKTREE"}
+    env.update(extra or {})
     if coordinator is not None:
         env["PP_COORDINATOR_WORKTREE"] = coordinator
     text = payload if isinstance(payload, str) else json.dumps(payload)
@@ -820,10 +840,29 @@ class CoordinatorMergeTests(unittest.TestCase):
         self.coordinator = git_repo(Path(folder.name, "coordinator"))
         self.lane = git_repo(Path(folder.name, "lane"))
         Path(self.coordinator, "sub").mkdir()
+        # A stub gh answers the guard's gh pr view lookup for lane merges.
+        stub = Path(folder.name, "bin")
+        stub.mkdir()
+        Path(stub, "gh").write_text(GH_STUB.format(python=sys.executable))
+        Path(stub, "gh").chmod(0o755)
+        self.view = Path(folder.name, "view.json")
+        self.log = Path(folder.name, "gh.log")
+        self.gh_env = {"PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}", "PP_TEST_GH_VIEW": str(self.view),
+                       "PP_TEST_GH_LOG": str(self.log), "PP_TEST_GH_MODE": "view"}
+        # Other test classes borrow this setUp, so call set_view through the class.
+        CoordinatorMergeTests.set_view(self)
 
-    def results(self, command, cwd, coordinator):
-        return (hook(GUARD, droid_command(command, cwd), coordinator),
-                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator))
+    def set_view(self, **changes):
+        view = {"baseRefName": "main", "headRefOid": SHA, "changedFiles": 2,
+                "files": [{"path": "rust/crates/pp-core/src/lib.rs", "changeType": "MODIFIED"},
+                          {"path": "docs/guide.md", "changeType": "ADDED"}]}
+        view.update(changes)
+        self.view.write_text(json.dumps(view))
+
+    def results(self, command, cwd, coordinator, mode="view"):
+        extra = {**self.gh_env, "PP_TEST_GH_MODE": mode}
+        return (hook(GUARD, droid_command(command, cwd), coordinator, extra),
+                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator, extra))
 
     def test_lane_and_coordinator_run_the_gated_merge(self):
         # Lanes merge their own normal PRs with the same form the coordinator uses (GRE-1280).
@@ -886,6 +925,58 @@ class CoordinatorMergeTests(unittest.TestCase):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_lane_merge_reads_the_pr_literally(self):
+        for result in self.results(MERGE_FORM, self.lane, None):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(calls, [["pr", "view", "12", "--json", "files,baseRefName,headRefOid,changedFiles"]] * 2)
+
+    def test_coordinator_merge_skips_the_pr_lookup(self):
+        self.set_view(baseRefName="release", files=[{"path": ".github/workflows/ci.yml", "changeType": "MODIFIED"}])
+        for result in self.results(MERGE_FORM, self.coordinator, self.coordinator, mode="fail"):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_lane_merge_refuses_protected_and_schema_paths(self):
+        for path in (".github/workflows/ci.yml", ".github/zizmor.yml", ".github/CODEOWNERS", "scripts/agent-guard.py",
+                     "scripts/test_factory_hooks.py", ".claude/hooks/guard.py", ".claude/skills/pp-lane/SKILL.md",
+                     ".factory/hooks.json", ".cursor/rules/x.mdc", "rust/crates/pp-storage/src/schema.rs",
+                     "rust/crates/pp-storage/src/jobs/schema.sql", "rust/crates/pp-storage/src/remote_sources/columns38.sql",
+                     "rust/crates/pp-storage/data/schema.json", "rust/crates/pp-storage/data/historical/schema-34.ts",
+                     "rust/crates/pp-storage/tests/schema40_failure.rs", "rust/crates/pp-domain/src/schema.rs",
+                     "rust/scripts/migrate-claimed-attempt.py", "rust/scripts/fetch-historical-schema-commits.sh",
+                     "web/apps/server/src/db/migrations-sqlite.ts"):
+            self.set_view(changedFiles=2, files=[{"path": "docs/guide.md", "changeType": "MODIFIED"},
+                                                 {"path": path, "changeType": "DELETED"}])
+            for result in self.results(MERGE_FORM, self.lane, None):
+                with self.subTest(path=path):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(f"the PR changes {path}", result.stderr)
+
+    def test_lane_merge_refuses_other_pr_states(self):
+        file = {"path": "docs/guide.md", "changeType": "MODIFIED"}
+        cases = (({"baseRefName": "release"}, "base is not main"),
+                 ({"headRefOid": "f" * 40}, "head is not the --match-head-commit SHA"),
+                 ({"changedFiles": 3001, "files": [file] * 3000}, "file list is incomplete"),
+                 ({"changedFiles": 3}, "file list is incomplete"),
+                 ({"changedFiles": "2"}, "file list is incomplete"),
+                 ({"files": [{"path": "docs/new.md", "changeType": "RENAMED"}, file]}, "renames or copies docs/new.md"),
+                 ({"headRefOid": None}, "head is not"),
+                 ({"files": None}, "could not read the PR"))
+        for changes, reason in cases:
+            self.set_view(**changes)
+            for result in self.results(MERGE_FORM, self.lane, None):
+                with self.subTest(changes=changes):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(reason, result.stderr)
+
+    def test_lane_merge_fails_closed_when_the_lookup_fails(self):
+        for mode in ("fail", "garbage", "sleep", "missing-key"):
+            for result in self.results(MERGE_FORM, self.lane, None, mode=mode):
+                with self.subTest(mode=mode):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("could not read the PR", result.stderr)
 
     def test_merge_outside_a_git_checkout_is_refused(self):
         with tempfile.TemporaryDirectory() as folder:

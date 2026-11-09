@@ -42,8 +42,8 @@ A lane merges its own normal PR. The coordinator merges sensitive PRs (item 6) a
 2. **Required checks** are green, including `review-gate`.
 3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)`, which is advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list. Windows work is deferred until after cutover (re-scope, 2026-11-08); once the owner removes `rust (windows)` from the required checks it joins the advisory list.
 4. **All review threads** are resolved.
-5. **Scorer, sensitive PRs and marker-only heads.** For a PR that item 6 names, and for any head whose `review-gate` passed only through the coordinator record, the coordinator runs its own scorer on that head from a seat whose vendor differs from the PR's author. A marker-only head passes with a score strictly above 8; a sensitive PR needs item 6. Other PRs, whose gate passed on a Claude or Droid review, need no scorer run (re-scope, 2026-11-08).
-6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths (CI workflows, `.github/zizmor.yml`, the safety guard, `.factory/` and `.claude/`; see [Code review](#code-review)) need a score of 9 or more from each of two seats.
+5. **Scorer, sensitive PRs and marker-only heads.** For a PR that item 6 names, and for any head whose `review-gate` passed only through the coordinator record, the coordinator runs its own scorer on that head from a [scorer seat](#scorer-seats) whose vendor differs from the PR's author. A marker-only head passes with a score strictly above 8; a sensitive PR needs item 6. Other PRs, whose gate passed on a Claude or Droid review, need no scorer run (re-scope, 2026-11-08).
+6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths (CI workflows, `.github/zizmor.yml`, the safety guard, `.factory/` and `.claude/`; see [Code review](#code-review)) need a score of 9 or more from each of two [scorer seats](#scorer-seats).
 7. **Command.** `gh pr merge <number> --squash --match-head-commit <sha>`, with the full 40-character head SHA, run on its own. Never `--admin`, `--auto`, or `--delete-branch`. The safety guard allows only this form; see [Merges](agent-workflow.md#merges).
 
 ### Lane merges
@@ -56,13 +56,19 @@ A lane may merge its own PR only when, on the exact head:
 - every review thread is resolved;
 - the PR's base is `main`.
 
-Otherwise the lane reports readiness to the coordinator and stops. The safety guard cannot classify sensitivity, so it allows the merge form from any checkout; the rule above is the lane's to keep. The coordinator audits merges at least daily: it lists the PRs merged since its last audit (`gh pr list --state merged --base main`), checks each against this list and item 6, and opens a revert PR plus a note on the ticket for any merge that broke it.
+Otherwise the lane reports readiness to the coordinator and stops.
 
-Scorer seats, in order. Use the first available seat whose vendor differs from the author's:
+Outside the coordinator worktree, the safety guard enforces part of this list before it allows the merge. It reads `gh pr view <number> --json files,baseRefName,headRefOid,changedFiles` and refuses when the base is not `main`, the head is not the `--match-head-commit` SHA, the file list is shorter than `changedFiles`, a file was renamed or copied (gh does not name the old path), or any changed path is protected or schema: `.github/`, `.claude/`, `.factory/`, `.cursor/`, `scripts/agent-guard.py` and its tests in `scripts/test_factory_hooks.py`, `web/apps/server/src/db/`, `rust/crates/pp-storage/data/schema.json`, `rust/crates/pp-storage/data/historical/`, and any file under `rust/` that ends in `.sql` or whose name contains `schema` or `migrat`. A failed or slow lookup refuses too. The other item 6 areas (auth and sessions, backup and restore, Accept and publication, secret handling) have no fixed paths, so they rely on the lane's judgement and the coordinator's audit. The coordinator audits merges at least daily: it lists the PRs merged since its last audit (`gh pr list --state merged --base main`), checks each against this list and item 6, and opens a revert PR plus a note on the ticket for any merge that broke it.
 
-1. OpenCode `opencode/pulse-alpha-free`, falling back to `opencode/deepseek-v4.1-flash-free`.
-2. Cursor `grok-4.7`.
-3. Pi `halo/qwen38-flash`.
+### Scorer seats
+
+The owner's choice (2026-11-08). A seat counts only when its model's vendor differs from the PR author's.
+
+1. OpenCode `opencode/crouton-alpha-free`, variant `max` (OpenCode free).
+2. OpenCode `opencode/deepseek-v4.1-flash-free`, variant `max` (OpenCode free).
+3. Fallback: Cursor `grok-4.7`, when the OpenCode free quota runs out or a seat's vendor matches the author's.
+
+A sensitive PR needs two seats; a marker-only head needs one. Take them in this order.
 
 `post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR or a marker-only head, the gate is the coordinator's own scorer run on the exact head.
 
@@ -109,7 +115,7 @@ Mention `@droid` in a PR or issue comment to ask Droid a question or request ano
 When no automatic review passes the gate, for example while Droid is out of usage on a PR the Claude jobs skip, the coordinator records its own review:
 
 1. Check out the PR head at its exact SHA in a separate worktree, for example `git fetch origin pull/<n>/head` and then `git worktree add --detach <path> <sha>`.
-2. Run an independent model review on that checkout. The reviewer comes from a different vendor than the PR's author; use the scorer seat order under [Merge gate](#merge-gate). Post its findings as PR review threads.
+2. Run an independent model review on that checkout. The reviewer comes from a different vendor than the PR's author; use the [scorer seat](#scorer-seats) order. Post its findings as PR review threads.
 3. Wait until every finding is fixed or answered and its thread resolved. A fix is a new push, so start again at step 1 for the new head.
 4. From the coordinator worktree, post the marker as a PR comment:
 

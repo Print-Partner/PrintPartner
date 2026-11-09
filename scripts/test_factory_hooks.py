@@ -1341,18 +1341,23 @@ class HiddenMergeTests(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 1.0)
                 self.assertIn("too long", reason)
         # An ordinary long line under the cap stays allowed.
-        self.assertIsNone(guard.check_command("xargs echo " + " ".join(f"file{i}" for i in range(2000)), self.lane))
-        # Thousands of nested substitutions are refused near the deadline, not after the hook's limit.
+        with patch.object(guard, "CHECK_SECONDS", 60):  # the step budget, not the clock, decides this line
+            self.assertIsNone(guard.check_command("xargs echo " + " ".join(f"file{i}" for i in range(2000)),
+                                                  self.lane))
+        # Thousands of nested substitutions are refused at the deadline, not after the hook's limit. A 0.2 s
+        # deadline makes the deadline, not the machine's speed, end the parse.
         started = time.monotonic()
-        self.assertIn("too complex", guard.check_command("echo " + "$(" * 3000 + "x" + ")" * 3000, self.lane))
-        self.assertLess(time.monotonic() - started, 2.5)
+        with patch.object(guard, "CHECK_SECONDS", 0.2):
+            self.assertIn("too complex", guard.check_command("echo " + "$(" * 3000 + "x" + ")" * 3000, self.lane))
+        self.assertLess(time.monotonic() - started, 1.0)
 
     def test_memory_stays_small_on_a_long_line(self):
         # r4519290573 at f45f9f5c: the memo copied every suffix it visited; 32K one-letter words peaked at 535 MB.
         guard = in_process(ROOT / "scripts/agent-guard.py")
         tracemalloc.start()
         try:
-            reason = guard.check_command("xargs echo " + " ".join(["a"] * 32000), self.lane)
+            with patch.object(guard, "CHECK_SECONDS", 60):  # the step budget, not the clock, ends this line
+                reason = guard.check_command("xargs echo " + " ".join(["a"] * 32000), self.lane)
             peak = tracemalloc.get_traced_memory()[1]
         finally:
             tracemalloc.stop()
@@ -1361,8 +1366,15 @@ class HiddenMergeTests(unittest.TestCase):
 
     def test_deep_recursion_in_a_nested_script_is_too_complex(self):
         guard = in_process(ROOT / "scripts/agent-guard.py")
-        nested = "sh -c " + shlex.quote("echo " + "$(" * 3000 + "x" + ")" * 3000)
-        self.assertIn("too complex", guard.check_command(nested, self.lane))
+        nested = "sh -c " + shlex.quote("echo " + "$(" * 600 + "x" + ")" * 600)
+        # A low recursion limit and a long deadline make the parser's RecursionError, not the clock, end the check.
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(400)
+        try:
+            with patch.object(guard, "CHECK_SECONDS", 60):
+                self.assertIn("too complex", guard.check_command(nested, self.lane))
+        finally:
+            sys.setrecursionlimit(limit)
 
     def test_git_lookups_are_cached_and_bounded_per_line(self):
         # Sol at f45f9f5c: each git push ran git config again, so 1,000 pushes took 20 s and both adapters timed
@@ -1381,11 +1393,34 @@ class HiddenMergeTests(unittest.TestCase):
             self.assertIsNone(guard.check_command(pushes, self.lane))
         self.assertLessEqual(len(calls), 3, calls)
         self.assertIsNone(guard.LINE_GIT)
-        # Lookups the cache cannot share still stop at the line's deadline.
+        # Lookups the cache cannot share still stop at the line's deadline. git is stubbed to take 10 ms and the
+        # deadline set to 0.2 s, so the timeout path runs on any machine; each git call gets at most the time left.
         distinct = "; ".join(f"git -c pp.k{k}=1 push origin HEAD:review-topic" for k in range(1000))
-        started = time.monotonic()
-        self.assertIn("too complex", guard.check_command(distinct, self.lane))
-        self.assertLess(time.monotonic() - started, 2.5)
+        timeouts = []
+
+        def slow_git(args, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            time.sleep(0.01)
+            return subprocess.CompletedProcess(args, 1, "", "")
+
+        with patch.object(guard, "CHECK_SECONDS", 0.2), patch.object(guard.subprocess, "run", slow_git):
+            self.assertIn("too complex", guard.check_command(distinct, self.lane))
+        self.assertTrue(timeouts and max(timeouts) <= 0.2, timeouts[:3])
+
+    def test_a_marker_line_that_runs_out_of_time_is_too_complex(self):
+        # r4519380166 at 25d70ecf: coordinator_worktree runs git through run_git, which can raise TooComplex; the
+        # marker check now sits inside check_command's handler, so the result is a refusal, not an exception.
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        marker = "pp-review" + "-gate"
+        with patch.dict(os.environ, {"PP_COORDINATOR_WORKTREE": self.coordinator}), \
+                patch.object(guard, "CHECK_SECONDS", 0):
+            self.assertIn("too complex", guard.check_command(f"echo '{marker}'", self.coordinator))
+        # When git only times out before the line's deadline, the coordinator check is false and the marker rule
+        # refuses as before.
+        with patch.dict(os.environ, {"PP_COORDINATOR_WORKTREE": self.coordinator}), \
+                patch.object(guard.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+                    subprocess.TimeoutExpired(a[0], 1))):
+            self.assertIn("Only the coordinator worktree posts", guard.check_command(f"echo '{marker}'", self.coordinator))
 
     def test_nested_scripts_share_one_line_state(self):
         guard = in_process(ROOT / "scripts/agent-guard.py")

@@ -1436,8 +1436,9 @@ def check_command(command, cwd, outer=None, state=None):
     LINE_DEADLINE, LINE_GIT = state["deadline"], {}
     try:
         return check_line(command, cwd, outer, state)
-    except RecursionError:
-        # Thousands of nested substitutions exhaust the parser's recursion; refuse with the same reason.
+    except (RecursionError, TooComplex):
+        # Thousands of nested substitutions exhaust the parser's recursion, and any check can run out the line's
+        # time; both refuse with the same reason, whichever path raised them.
         return TOO_COMPLEX
     finally:
         LINE_DEADLINE = LINE_GIT = None
@@ -1449,11 +1450,12 @@ def check_line(command, cwd, outer, state):
     # collapse it wrongly. Other paths stay as given, matching the shell's logical $PWD.
     if cwd and ".." in PurePosixPath(cwd).parts:
         cwd = os.path.realpath(cwd)
-    # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
-    # written now and posted later, so any mention of the word is refused outside the coordinator.
-    if names_marker(command) and not coordinator_worktree(cwd):
-        return MARKER
     try:
+        # Defence in depth: a marker can reach GitHub through a wrapper, an interpreter, or a file
+        # written now and posted later, so any mention of the word is refused outside the coordinator.
+        # coordinator_worktree runs git, which can run out the line's time, so this sits inside the handler.
+        if names_marker(command) and not coordinator_worktree(cwd):
+            return MARKER
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.

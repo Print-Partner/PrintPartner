@@ -8,7 +8,7 @@ scripts/evidence/run.sh --seed 1138 --module farm --shot /builds --shot /builds/
 
 One run:
 
-1. Builds `pp-server` with `--features desktop_rebuild`, the web bundle and its `rust/bundle-manifest.json`, and the replacement UI. When the checkout (HEAD plus uncommitted and untracked changes under `web/` and `rust/`) is unchanged since the last harness build, it reuses that build; `--rebuild` forces one. Run `npm --prefix web ci` first.
+1. Builds `pp-server` with `--features desktop_rebuild`, the web bundle and its `rust/bundle-manifest.json`, and the replacement UI. When the checkout (HEAD plus uncommitted and untracked changes under `web/` and `rust/`) is unchanged since the last harness build, it reuses that build, kept as `rust/target/evidence-harness/pp-server` with hashes of it, the bundle manifest and the UI build, so another `cargo build -p pp-server` cannot swap in a binary without the feature. `--rebuild` forces a build. Run `npm --prefix web ci` first.
 2. Generates the [synthetic dataset](../../docs/storage.md#synthetic-installations) for `--seed` (default 1138) into a private temporary directory.
 3. Starts the core with `PP_DESKTOP_REBUILD=1` through `scripts/verify-rust-gateway/verify.py launch --binary --seed`, which copies the dataset into its own temporary data directory, adds the Rust ownership marker and binds a loopback port. No Node child runs.
 4. Serves the built replacement UI with `vite preview` on a free loopback port, forwarding `/api`, `/ws` and `/health` to the core.
@@ -25,7 +25,7 @@ It prints each PNG path at the end and exits 1 on any failure, including an uncl
 | `--shot PATH` | App path to screenshot, such as `/builds/2/history`. Repeat for more. The file is the path with `/` as `-`: `builds-2-history.png`. |
 | `--step NAME:BUILD` | Setup step before the shots, run in the order given. See below. |
 | `--module NAME` | Turn a Module on (`farm`, `orders`, `bambu` or `spoolman`) before the core starts. Repeat for more. All four start off, so `/farm/...` paths need `--module farm`. |
-| `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. |
+| `--out DIR` | Where the PNGs go. Default: a new temporary directory. Keep it out of the checkout. Only this run's files are listed and published. |
 | `--full-page` | Capture the whole scrolled page, not only the 1440x900 viewport. |
 | `--rebuild` | Build even when the checkout is unchanged. |
 | `--display [:N]` | Show Chromium on the X display (default `$EVIDENCE_DISPLAY` or `:99`) and capture it with `evidence shot` instead of headless screenshots. |
@@ -53,7 +53,7 @@ scripts/evidence/run.sh --step snapshot:2 --shot /builds/2/history
 
 - Only synthetic data: the seed is generated each run, and `verify.py --seed` refuses a directory without `SYNTHETIC-DATASET.json`. Its printers have no host link (`*.invalid` names), so the core contacts no printer and nothing can send a print.
 - Loopback only: the core, the UI server and every request use `127.0.0.1`.
-- Secrets: the bootstrap link stays in a `0700` directory, the capture program deletes it after reading it, and the account password is random and never printed. The launcher log (server stderr, no bootstrap link) is kept only when the core did not stop cleanly, next to the PNGs as `launcher.log`.
+- Secrets: the bootstrap link stays in a `0700` directory, the capture program deletes it after reading it, the account password is random and never printed, and Chromium's profile lives in the work directory that cleanup removes. A failed navigation to the bootstrap link reports a fixed message, not the URL. The launcher log (server stderr, no bootstrap link) is kept only when the core did not stop cleanly, next to the PNGs as `launcher.log`.
 - Open every PNG before you attach it. The repository is public.
 
 ## Publishing

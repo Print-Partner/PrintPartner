@@ -31,11 +31,17 @@ EVIDENCE_REPO = "Print-Partner/PrintPartner"
 STEP_NAMES = ("settle-reconciliation", "snapshot")
 MODULES = ("farm", "orders", "bambu", "spoolman")
 SHOT_PATH = re.compile(r"^/(?!/)[A-Za-z0-9/_.~-]*$")
-STAMP = ROOT / "rust/target/evidence-harness/stamp.json"
+HARNESS_DIR = ROOT / "rust/target/evidence-harness"
+STAMP = HARNESS_DIR / "stamp.json"
+# Other builds (verify.py, cargo build -p pp-server) overwrite target/debug/pp-server
+# without desktop_rebuild, so the harness keeps its own copy and hashes what it reuses.
+BINARY = HARNESS_DIR / "pp-server"
+BUILT_FILES = (BINARY, ROOT / "rust/bundle-manifest.json", ROOT / "web/apps/ui/dist/index.html")
 # Inputs whose changes need a rebuild of the server, its bundle or the replacement UI.
 BUILD_INPUTS = ("web/apps", "web/packages", "web/package.json", "web/package-lock.json",
                 "rust/crates", "rust/Cargo.toml", "rust/Cargo.lock", "rust/scripts")
 READY_SECS = 300
+CAPTURE_SECS = 900
 
 
 class Stopped(Exception):
@@ -59,9 +65,15 @@ def fingerprint():
     return digest.hexdigest()
 
 
-def run(*args, env=None, cwd=ROOT, stdout=None):
+def run(*args, env=None, cwd=ROOT, stdout=None, timeout=None):
     say("$ " + " ".join(str(a) for a in args))
-    return subprocess.run([str(a) for a in args], cwd=cwd, env=env, check=True, stdout=stdout, text=True)
+    return subprocess.run([str(a) for a in args], cwd=cwd, env=env, check=True, stdout=stdout, text=True,
+                          timeout=timeout)
+
+
+def file_hashes():
+    return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+            for path in BUILT_FILES}
 
 
 def build(node, rebuild):
@@ -69,12 +81,9 @@ def build(node, rebuild):
     current = fingerprint()
     if not rebuild and STAMP.is_file():
         stamp = json.loads(STAMP.read_text())
-        binary = Path(stamp["binary"])
-        if (stamp["fingerprint"] == current and binary.is_file()
-                and (ROOT / "web/apps/ui/dist/index.html").is_file()
-                and (ROOT / "rust/bundle-manifest.json").is_file()):
-            say(f"reusing {binary} (checkout unchanged since its build)")
-            return binary
+        if stamp.get("fingerprint") == current and stamp.get("files") == file_hashes():
+            say(f"reusing {BINARY} (checkout and build outputs unchanged since its build)")
+            return BINARY
     if not (ROOT / "web/node_modules").is_dir():
         raise SystemExit("web/node_modules is missing; run npm --prefix web ci first")
     commit = git("rev-parse", "HEAD").decode().strip()
@@ -93,9 +102,10 @@ def build(node, rebuild):
             binary = Path(artifact["executable"])
     if binary is None:
         raise SystemExit("cargo did not report a pp-server executable")
-    STAMP.parent.mkdir(parents=True, exist_ok=True)
-    STAMP.write_text(json.dumps({"fingerprint": current, "binary": str(binary), "commit": commit}))
-    return binary
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(binary, BINARY)
+    STAMP.write_text(json.dumps({"fingerprint": current, "files": file_hashes(), "commit": commit}))
+    return BINARY
 
 
 def free_port():
@@ -148,6 +158,11 @@ def stop(process, name, grace):
                 pass
             process.wait()
     return process.returncode
+
+
+def shot_name(path):
+    """File name for a shot: /builds/2/history -> builds-2-history.png."""
+    return (re.sub(r"[^A-Za-z0-9]+", "-", path).strip("-") or "root") + ".png"
 
 
 def parse_step(text):
@@ -222,13 +237,15 @@ def display_geometry(name):
     return int(width), int(height)
 
 
-def capture(args, origin, ui_origin, credential, out_dir, node):
-    config = {"root": str(ROOT), "coreOrigin": origin, "uiOrigin": ui_origin, "shots": args.shot,
+def capture(args, origin, ui_origin, credential, out_dir, node, browser_tmp):
+    config = {"root": str(ROOT), "coreOrigin": origin, "uiOrigin": ui_origin, "shots": [{"path": path, "file": shot_name(path)} for path in args.shot],
               "steps": args.step, "outDir": str(out_dir), "fullPage": args.full_page, "display": None}
     if args.display:
         width, height = display_geometry(args.display)
         config["display"] = {"name": args.display, "width": width, "height": height, "evidenceBin": EVIDENCE_BIN}
-    run(node, HERE / "capture.mjs", json.dumps(config), env=dict(os.environ, CREDENTIAL_FILE=str(credential)))
+    # Chromium's profile, cookies included, goes under browser_tmp, which cleanup removes.
+    env = dict(os.environ, CREDENTIAL_FILE=str(credential), TMPDIR=str(browser_tmp))
+    run(node, HERE / "capture.mjs", json.dumps(config), env=env, timeout=CAPTURE_SECS)
 
 
 def session(args, work, out_dir, node, binary):
@@ -236,6 +253,7 @@ def session(args, work, out_dir, node, binary):
     seed, launch_tmp, private = work / "seed", work / "tmp", work / "private"
     launch_tmp.mkdir()
     private.mkdir(mode=0o700)
+    (private / "browser").mkdir(mode=0o700)
     log = work / "launcher.log"
     launcher = preview = None
     failures = []
@@ -256,13 +274,14 @@ def session(args, work, out_dir, node, binary):
         say(f"core ready at {origin} (PP_DESKTOP_REBUILD=1)")
         port = free_port()
         preview = subprocess.Popen(
-            ["npx", "vite", "preview", "--host", "127.0.0.1", "--port", str(port), "--strictPort"],
+            [str(ROOT / "web/node_modules/.bin/vite"), "preview", "--host", "127.0.0.1", "--port", str(port), "--strictPort"],
             cwd=ROOT / "web/apps/ui", env=dict(os.environ, PP_UI_CORE_URL=origin),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         ui_origin = f"http://127.0.0.1:{port}"
         wait_for(lambda: answers(ui_origin + "/"), "replacement UI server", preview, 60)
-        capture(args, origin, ui_origin, private / "credential.json", out_dir, node)
-    except (subprocess.CalledProcessError, RuntimeError) as error:
+        capture(args, origin, ui_origin, private / "credential.json", out_dir, node,
+                private / "browser")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
         failures.append(str(error))
     finally:
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -324,12 +343,16 @@ def main(argv=None):
         if work.exists():
             failures.append(f"could not remove {work}")
         else:
-            say(f"removed {work} (seed, data directory and credentials)")
+            say(f"removed {work} (seed, data directory, credentials and browser profile)")
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.default_int_handler)
     if failures:
         for failure in failures:
             say(f"FAIL: {failure}")
         return 1
-    shots = [out_dir / name for name in sorted(os.listdir(out_dir)) if name.endswith(".png")]
+    # Only this run's files: --out may hold PNGs from earlier runs.
+    shots = list(dict.fromkeys(out_dir / shot_name(path) for path in args.shot))
     for shot in shots:
         say(f"saved {shot}")
     if args.self_test:

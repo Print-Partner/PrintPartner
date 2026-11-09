@@ -43,6 +43,10 @@ class ParseArgs(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse("--shot", "/farm", "--module", "telemetry")
 
+    def test_shot_names(self):
+        self.assertEqual(run.shot_name("/builds/2/history"), "builds-2-history.png")
+        self.assertEqual(run.shot_name("/"), "root.png")
+
     def test_note_needs_publish(self):
         with self.assertRaises(SystemExit):
             parse("--shot", "/builds", "--note", "x")

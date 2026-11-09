@@ -20,16 +20,13 @@ const { browserExecutable } = await import(resolver.href);
 const credentialFile = process.env.CREDENTIAL_FILE;
 const { bootstrap_url: bootstrapUrl } = JSON.parse(readFileSync(credentialFile, "utf8"));
 rmSync(credentialFile);
-if (new URL(bootstrapUrl).origin !== coreOrigin) throw new Error("bootstrap origin is not the core origin");
+// An invalid URL's error carries the input, so compare without printing it.
+if (!URL.canParse(bootstrapUrl) || new URL(bootstrapUrl).origin !== coreOrigin) {
+  throw new Error("the bootstrap link is not on the core origin");
+}
 
 const VIEWPORT = { width: 1440, height: 900 };
 const READY_MS = 20_000;
-
-/** File name for a shot path: /builds/2/history -> builds-2-history.png. */
-function shotName(path) {
-  const slug = path.replace(/^\/+/, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  return `${slug || "root"}.png`;
-}
 
 function log(message) {
   console.log(`capture: ${message}`);
@@ -166,7 +163,12 @@ async function main() {
     const context = await browser.newContext({ viewport: display ? null : VIEWPORT });
     const page = await context.newPage();
 
-    await page.goto(bootstrapUrl);
+    try {
+      await page.goto(bootstrapUrl);
+    } catch {
+      // Playwright's message would include the URL, which is a sign-in secret.
+      throw new Error("opening the bootstrap link failed");
+    }
     if (new URL(page.url()).pathname === "/__desktop/bootstrap") throw new Error("bootstrap did not redirect");
     await page.goto("about:blank");
 
@@ -184,13 +186,13 @@ async function main() {
       log(`step ${step.name}:${step.arg} ${await STEPS[step.name](api, step.arg)}`);
     }
 
-    for (const path of shots) {
+    for (const { path, file: name } of shots) {
       await page.goto(new URL(path, uiOrigin).href);
       await settle(page, path);
-      const file = join(outDir, shotName(path));
+      const file = join(outDir, name);
       if (display) {
         // The installed evidence tool captures the display; move its file into outDir.
-        const written = execFileSync(display.evidenceBin, ["shot", shotName(path).replace(/\.png$/, "")], {
+        const written = execFileSync(display.evidenceBin, ["shot", name.replace(/\.png$/, "")], {
           cwd: outDir,
           env: { ...process.env, EVIDENCE_DISPLAY: display.name },
           encoding: "utf8",
@@ -198,7 +200,7 @@ async function main() {
           .trim()
           .split("\n")
           .pop();
-        if (resolve(written) !== resolve(file)) renameSync(written, file);
+        if (resolve(outDir, written) !== resolve(file)) renameSync(resolve(outDir, written), file);
       } else {
         await page.screenshot({ path: file, fullPage });
       }

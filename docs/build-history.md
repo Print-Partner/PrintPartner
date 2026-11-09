@@ -180,7 +180,7 @@ One immediate transaction (`pp_storage::working_drafts::restore`):
    otherwise unchanged. A Part the current Plan no longer has is new, and
    Accept gives it new tokens; a retired token is never reused. Each Part
    keeps the revision's `included` flag, role override, filament color,
-   custom hex and Spoolman spool. Accept publishes them as restored, except
+   custom hex and Spoolman spool. Accept publishes the revision's values, except
    that a Part with a predecessor takes that Part's live filament, as every
    Accept does (GRE-479).
 8. A current Part with printed (completed) units must keep at least that many

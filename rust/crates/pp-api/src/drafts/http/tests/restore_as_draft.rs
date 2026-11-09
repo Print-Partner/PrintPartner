@@ -680,16 +680,21 @@ async fn restore_as_draft_refuses_without_a_required_unit_set() {
     server.close().await;
 }
 
-/// Draft 2's gear Part gets a role override and its live accepted Part a
-/// filament and spool. The draft's stored digest is resealed for the new role
-/// ([`CURATED_DIGEST`]); a PATCH answers `500` on a mismatch.
-const CURATED_SETUP: &str = "
-UPDATE plan_draft_parts SET role_override='accent' WHERE id=6;
-UPDATE plan_drafts SET snapshot_digest='734ffd8108a04378643317831807935a026f15a4a6ea9df0b5d380f92ae21f63' WHERE id=2;
-UPDATE parts SET filament_color_id='red',filament_custom_hex='#ff0000',spoolman_spool_id='7' WHERE id=3;
-";
-/// Draft 2's planning digest after [`CURATED_SETUP`], as storage recomputes it.
+/// Draft 2's planning digest with gear's role override, pinned; a wrong value
+/// fails the setup's PATCH with `500`.
 const CURATED_DIGEST: &str = "734ffd8108a04378643317831807935a026f15a4a6ea9df0b5d380f92ae21f63";
+
+/// Draft 2's gear Part gets a role override, resealed with
+/// [`CURATED_DIGEST`], and its live accepted Part a filament and spool.
+fn curated_setup() -> String {
+    format!(
+        "
+UPDATE plan_draft_parts SET role_override='accent' WHERE id=6;
+UPDATE plan_drafts SET snapshot_digest='{CURATED_DIGEST}' WHERE id=2;
+UPDATE parts SET filament_color_id='red',filament_custom_hex='#ff0000',spoolman_spool_id='7' WHERE id=3;
+"
+    )
+}
 
 /// Part key, inclusion, role override, filament color, custom hex and
 /// Spoolman spool.
@@ -773,10 +778,12 @@ async fn resolve(server: &ReadServer, workspace: &Value, key: &str) -> Value {
 /// Accept, into the Accepted Plan.
 #[tokio::test]
 async fn restore_as_draft_brings_back_part_selection_and_filament_roles() {
-    let server = ReadServer::start_limited(8 * 1024 * 1024, CURATED_SETUP).await;
+    let server = ReadServer::start_limited(8 * 1024 * 1024, &curated_setup()).await;
     // Revision 2 includes the excluded Part, makes gear an accent Part and
-    // publishes its live red filament on spool 7. Accept first saves
-    // snapshot 1 of revision 1.
+    // publishes its live red filament on spool 7: after the `replace`
+    // decision, draft 2's gear still has revision 1's gear as its base, so
+    // Accept takes that Part's live filament. Accept first saves snapshot 1
+    // of revision 1.
     let edit = json!({"expected_snapshot_digest": CURATED_DIGEST,
         "decision": {"kind": "set_included", "draft_part_ids": [5], "value": true}});
     let workspace = json_reply(
@@ -837,9 +844,10 @@ async fn restore_as_draft_brings_back_part_selection_and_filament_roles() {
         .unwrap();
     assert_eq!(recorded, 2);
 
-    // The current gear Part moves to blue on spool 9. Restored gear has no
-    // predecessor (its revision 2 tokens were replaced), so it keeps the
-    // snapshot's filament instead of taking the live one.
+    // The current gear Part moves to blue on spool 9. Revision 3's gear had no
+    // base and got new tokens, so no current Part holds revision 2's gear
+    // tokens: restored gear has no predecessor and keeps the snapshot's
+    // filament instead of taking the live one.
     let moved = server
         .sql()
         .execute(
@@ -858,6 +866,15 @@ async fn restore_as_draft_brings_back_part_selection_and_filament_roles() {
     .await;
     assert_eq!(workspace["draft"]["draft_id"], 4);
     assert_eq!(draft_curated(&server, 4), second_parts);
+    let gear_base: Option<i64> = server
+        .sql()
+        .query_row(
+            "SELECT base_revision_part_id FROM plan_draft_parts WHERE draft_id=4 AND part_key='gear.stl'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(gear_base, None);
     let workspace = resolve(&server, &workspace, "select-4").await;
     let fourth = accept_workspace(&server, &workspace, "accept-4", json!(1)).await;
     assert_eq!(fourth["revision_id"], 4);

@@ -418,8 +418,8 @@ mod codegen {
     use pp_storage::{
         features::modules::{Module, ModuleOffReason},
         read_model::stock::{
-            FilamentNeed, FilamentShortfalls, GramsAvailable, GramsNeeded, InventoryUnknown,
-            NeedUnknown, PartNeed, Sufficiency,
+            EstimateKept, FilamentNeed, FilamentShortfalls, GramsAvailable, GramsNeeded,
+            InventoryUnknown, NeedUnknown, PartNeed, Sufficiency,
         },
     };
     use serde::{Serialize, de::DeserializeOwned};
@@ -1550,6 +1550,13 @@ mod codegen {
         let estimated = GramsNeeded::Estimated {
             grams: 12,
             job_count: 1,
+            reason: None,
+        };
+        filaments.push(need(estimated, stock(12), Sufficiency::Sufficient));
+        let estimated = GramsNeeded::Estimated {
+            grams: 12,
+            job_count: 1,
+            reason: Some(EstimateKept::MeasuredLengthNotConvertible),
         };
         filaments.push(need(estimated, stock(12), Sufficiency::Sufficient));
         for reason in [NeedUnknown::GramsNotRecorded, NeedUnknown::PartNotPrinted] {

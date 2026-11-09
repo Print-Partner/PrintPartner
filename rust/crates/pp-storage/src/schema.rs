@@ -288,7 +288,7 @@ pub(crate) fn backup(conn: &Connection, path: &Path, replace: bool) -> Result<()
         hex::encode(rand::random::<[u8; 16]>())
     ));
     let result = (|| -> Result<()> {
-        conn.backup("main", &temp, None)?;
+        conn.backup("main", &temp, rusqlite::backup::NO_PROGRESS)?;
         let check = Connection::open_with_flags(&temp, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let integrity: String = check.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
         ensure!(integrity == "ok", "Backup integrity failed");

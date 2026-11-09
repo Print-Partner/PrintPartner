@@ -31,8 +31,12 @@ fn with_owner(tenant: &str, test: impl FnOnce(&WriterOwner, &Connection, &Value)
     c.execute("INSERT INTO users(id,display_name,is_admin,created_at) VALUES(?1,'Publication owner',1,'2026-09-06T00:00:00.000Z')", [ACCOUNT]).unwrap();
     c.execute("INSERT INTO sessions(id,user_id,expires_at,provider) VALUES(?1,?2,'2099-01-01T00:00:00.000Z','email')", params![hex::encode(Sha256::digest(SESSION)), ACCOUNT]).unwrap();
     let dir = crate::tests::directory("publication-policy");
-    c.backup("main", dir.join("print-partner.db"), None)
-        .unwrap();
+    c.backup(
+        "main",
+        dir.join("print-partner.db"),
+        rusqlite::backup::NO_PROGRESS,
+    )
+    .unwrap();
     drop(c);
     let (owner, _) = WriterOwner::open(&dir, crate::Limits::default()).unwrap();
     let c = Connection::open(dir.join("print-partner.db")).unwrap();

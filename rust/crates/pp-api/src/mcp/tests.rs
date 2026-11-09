@@ -223,6 +223,8 @@ async fn ticket_t_16_mcp_accepts_a_ppk_key_until_it_is_revoked() {
         let result = &rpc(&body)["result"];
         assert!(result["capabilities"]["tools"].is_object(), "{body}");
         assert_eq!(result["serverInfo"], server_info()["serverInfo"]);
+        // The negotiated revision is the one the client asked for (GRE-1303).
+        assert_eq!(result["protocolVersion"], "2025-06-18", "{body}");
     }
     server.revoke(key_id).await;
     let (status, body, session) = server

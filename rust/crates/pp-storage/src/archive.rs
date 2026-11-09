@@ -689,12 +689,24 @@ fn validate_into(
     // gzip member, so any byte in the file after it, including a second
     // member, refuses the archive: a second member could carry entries that
     // tar iteration never saw.
+    // After the tar end only zero padding may follow: Rust's `tar` crate and
+    // Node's `tar` both end with zero blocks.
     let mut decoder = reader.into_inner();
-    let trailing = std::io::copy(
-        &mut (&mut decoder).take(MAX_TRAILING_BYTES + 1),
-        &mut std::io::sink(),
-    )
-    .context("Backup archive gzip stream is corrupt")?;
+    let mut rest = (&mut decoder).take(MAX_TRAILING_BYTES + 1);
+    let (mut trailing, mut block) = (0u64, [0u8; 8192]);
+    loop {
+        let read = rest
+            .read(&mut block)
+            .context("Backup archive gzip stream is corrupt")?;
+        if read == 0 {
+            break;
+        }
+        trailing += read as u64;
+        ensure!(
+            block[..read].iter().all(|byte| *byte == 0),
+            "Backup archive has non-zero data after the tar end"
+        );
+    }
     ensure!(
         trailing <= MAX_TRAILING_BYTES,
         "Backup archive has more than {MAX_TRAILING_BYTES} bytes after the tar end"

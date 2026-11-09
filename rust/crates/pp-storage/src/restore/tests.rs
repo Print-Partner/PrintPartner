@@ -709,9 +709,10 @@ fn gzip_member(bytes: &[u8]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
-/// Both exporters write one gzip member. Anything after it is refused:
-/// padding, a second member (corrupt or not), or the rest of a tar split
-/// across members, which tar iteration over the first member never sees.
+/// Both exporters write one gzip member that ends in zero padding after the
+/// tar end. Refused: non-zero data after the tar end, and anything after the
+/// member (padding, a second member, or the rest of a tar split across
+/// members, which tar iteration over the first member never sees).
 #[test]
 fn ticket_t_8_restore_data_after_the_gzip_member_refuses_and_keeps_the_earlier_stage() {
     let scratch = tempfile::tempdir().unwrap();
@@ -732,7 +733,15 @@ fn ticket_t_8_restore_data_after_the_gzip_member_refuses_and_keeps_the_earlier_s
     let mut corrupt_member = gzip_member(b"second member");
     let crc = corrupt_member.len() - 8;
     corrupt_member[crc] ^= 0xff;
+    let mut good_tar = Vec::new();
+    flate2::read::GzDecoder::new(good.as_slice())
+        .read_to_end(&mut good_tar)
+        .unwrap();
     let cases = [
+        (
+            "non-zero bytes after the tar end, inside the member",
+            gzip_member(&[good_tar, b"not padding".to_vec()].concat()),
+        ),
         (
             "2 MiB after the gzip stream",
             [good.clone(), vec![0; 2 << 20]].concat(),

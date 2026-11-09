@@ -464,8 +464,8 @@ describe("UI2-03 Builds list states", () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Show Builds" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Turn it on in Settings" }).getAttribute("href")).toBe(
-      "/settings",
+    expect(screen.getByRole("link", { name: "See Modules in Settings" }).getAttribute("href")).toBe(
+      "/settings#modules",
     );
     expect(within(table()).queryByRole("columnheader", { name: "Order" })).toBeNull();
     expect(screen.queryByText("SO-1001")).toBeNull();

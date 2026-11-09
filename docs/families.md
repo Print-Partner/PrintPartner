@@ -2,9 +2,9 @@
 
 Use this table to find existing entry points for the families in
 [Architecture](architecture.md#operation-families-and-write-ownership).
-Architecture owns target scope and runtime ownership. These paths do not claim
-that a whole family ships. Package filters cover existing tests, including
-partial implementations; they do not prove deferred work.
+Architecture defines target scope and runtime ownership. A path here does not
+mean that a whole family ships. Package filters cover existing tests, including
+tests of partial implementations; they prove nothing about deferred work.
 
 Run checks from the repository root. For a row marked **Rust**, use its filter:
 
@@ -13,7 +13,7 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml --workspace --feature
 ```
 
 For **Index**, run `python3 scripts/check-family-index.py`; this checks paths,
-not behaviour. No Rust family coverage is claimed for those rows.
+not behaviour. Those rows have no Rust coverage.
 
 | Family | Module or handle | Route module | Nextest filter | Doc page | Check |
 | --- | --- | --- | --- | --- | --- |

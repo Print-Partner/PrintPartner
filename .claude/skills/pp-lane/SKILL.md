@@ -38,9 +38,10 @@ Before pushing, have a fresh-context reviewer read the diff: correctness and AGE
 ## Push and open the PR
 
 1. Push once: `git push --no-follow-tags origin HEAD:<branch>`. Never force-push.
-2. Open the PR against `main`. The body starts with `Fixes GRE-<n>`, says what changed and why, says whether the PR is sensitive, and has `## Evidence` with each command and its result (screenshot or video for UI or desktop changes; see [Gate evidence](../../../docs/contributing/gate-evidence.md)). Unmet acceptance items go to a child ticket that quotes them verbatim, never `Refs`.
-3. Don't edit the PR body after CI starts; every edit reruns the gate.
-4. Delete the worktree's `rust/target` to free disk.
+2. Open the PR against `main`. The body starts with `Fixes GRE-<n>`, says what changed and why, says whether the PR is sensitive, and has `## Evidence` with each command and its result. Unmet acceptance items go to a child ticket that quotes them verbatim, never `Refs`.
+3. UI or desktop changes also need screenshots or video under Evidence; see [Gate evidence](../../../docs/contributing/gate-evidence.md). For the replacement UI on a Rust-only core, use the harness in two steps. First capture with `scripts/evidence/run.sh --shot <path>` (add `--step` or `--module` as needed); it never publishes. Then open each PNG it lists and check that it shows the change and nothing private. Only then publish with `python3 scripts/evidence/publisher.py <pr-number> <files...>`, the only publish path. The [harness README](../../../scripts/evidence/README.md) has the options.
+4. Don't edit the PR body after CI starts; every edit reruns the gate.
+5. Delete the worktree's `rust/target` to free disk.
 
 ## While CI runs
 

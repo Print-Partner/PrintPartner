@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
+#[path = "tests/reads.rs"]
+mod reads;
 use mcp_rpc::{policy, rpc};
 
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";
@@ -38,12 +40,26 @@ impl McpServer {
     }
 
     async fn routed(flag: Option<&str>, tenant: &str) -> Self {
+        Self::open(flag, tenant, "").await
+    }
+
+    /// The flag on for `default`, with `seed` run on the fixture first.
+    async fn seeded(seed: &str) -> Self {
+        Self::open(Some("1"), "default", seed).await
+    }
+
+    async fn open(flag: Option<&str>, tenant: &str, seed: &str) -> Self {
         let directory = crate::scratch::Scratch::new("pp-mcp-http-");
+        let database = directory.join("print-partner.db");
         std::fs::write(
-            directory.join("print-partner.db"),
+            &database,
             include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db"),
         )
         .unwrap();
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute_batch(seed)
+            .unwrap();
         let owner = pp_storage::WriterOwner::open(&directory, pp_storage::Limits::default())
             .unwrap()
             .0;

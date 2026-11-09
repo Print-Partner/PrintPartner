@@ -29,7 +29,7 @@ A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lane
 
 ## Sensitive PRs
 
-A PR is sensitive when it touches schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, or the protected-files paths: `.github/workflows/`, `.github/zizmor.yml`, `scripts/agent-guard.py`, `.factory/`, and `.claude/`. When unsure, it is sensitive. Say so in the PR body and in your readiness report. The coordinator scores its exact head with two of the [scorer seats](../../../docs/development/definition-of-done.md#scorer-seats) and needs 9 or more from each. The owner merges changes to the safety guard, its hook adapters, and CI controls.
+A PR is sensitive when it touches any area or path that item 6 of the [merge gate](../../../docs/development/definition-of-done.md#merge-gate) lists. Read the list there; this skill doesn't copy it, so the two can't drift apart. When unsure, it is sensitive. Say so in the PR body and in your readiness report. The coordinator scores its exact head with two of the [scorer seats](../../../docs/development/definition-of-done.md#scorer-seats) and needs 9 or more from each. Who merges which PR, including the CI controls the owner merges, is also set by the merge gate.
 
 ## Review
 

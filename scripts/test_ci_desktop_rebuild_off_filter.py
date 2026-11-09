@@ -23,30 +23,39 @@ class FixtureWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "Cargo.toml").write_text(
-                '[workspace]\nresolver = "2"\nmembers = ["feature", "dependent", "dev-dependent", "unrelated"]\n')
-            # The crate that declares the feature, one that depends on it, one that only
-            # tests against it, and one that never reaches it.
-            crate(root, "feature", "\n[features]\ndesktop_rebuild = []\n")
+                '[workspace]\nresolver = "2"\nmembers = ["feature", "toggled", "dependent", "dev-dependent", '
+                '"unrelated", "steady"]\n')
+            # feature declares desktop_rebuild, which turns on toggled/x; toggled never declares
+            # it. dependent and dev-dependent reach feature; unrelated and steady never do, and
+            # steady's default feature is the same in both passes.
+            crate(root, "feature", '\n[dependencies]\ntoggled = { path = "../toggled" }\n'
+                                   '\n[features]\ndesktop_rebuild = ["toggled/x"]\n')
+            crate(root, "toggled", "\n[features]\nx = []\n")
             crate(root, "dependent", '\n[dependencies]\nfeature = { path = "../feature" }\n')
             crate(root, "dev-dependent", '\n[dev-dependencies]\nfeature = { path = "../feature" }\n')
             crate(root, "unrelated")
+            crate(root, "steady", '\n[features]\ndefault = ["y"]\ny = []\n')
             subprocess.run(["cargo", "generate-lockfile", "--offline", "--manifest-path", str(root / "Cargo.toml")],
                            check=True, capture_output=True)
-            metadata = off.cargo_metadata(root / "Cargo.toml")
-            self.assertEqual(off.skipped_packages(metadata), ["unrelated"])
-            self.assertEqual(off.main(root / "Cargo.toml", env={}),
-                             ("not (package(=unrelated))", "desktop_rebuild-off nextest filter: not (package(=unrelated))"))
+            off_metadata = off.cargo_metadata(root / "Cargo.toml")
+            on_metadata = off.cargo_metadata(root / "Cargo.toml", "--features", "desktop_rebuild")
+            self.assertEqual(off.skipped_packages(off_metadata, on_metadata), ["steady", "unrelated"])
+            # Declarations alone miss toggled; only the feature-set comparison catches it.
+            self.assertIn("toggled", off.skipped_packages(off_metadata))
+            self.assertEqual(off.main(root / "Cargo.toml", env={})[0], "not (package(=steady) + package(=unrelated))")
 
     def test_the_current_workspace(self):
         """A package that moves between the passes shows up here for review."""
-        metadata = off.cargo_metadata(ROOT / "rust/Cargo.toml")
-        self.assertEqual(off.skipped_packages(metadata), ["pp-net", "pp-os", "pp-perf", "pp-testkit"])
+        manifest = ROOT / "rust/Cargo.toml"
+        on = off.cargo_metadata(manifest, "--features", "desktop_rebuild")
+        self.assertEqual(off.skipped_packages(off.cargo_metadata(manifest), on),
+                         ["pp-net", "pp-os", "pp-perf", "pp-testkit"])
 
 
-def metadata(*packages, deps=None, external=None):
+def metadata(*packages, deps=None, external=None, features=None):
     """A minimal cargo metadata document: packages as (name, declares the feature)."""
-    deps = deps or {}
-    nodes = [{"id": name, "features": [], "deps": [{"pkg": dep} for dep in deps.get(name, ())]}
+    deps, features = deps or {}, features or {}
+    nodes = [{"id": name, "features": sorted(features.get(name, ())), "deps": [{"pkg": dep} for dep in deps.get(name, ())]}
              for name, _ in packages]
     listed = [{"id": name, "name": name, "features": {"desktop_rebuild": []} if declares else {}}
               for name, declares in packages]
@@ -124,6 +133,37 @@ class FailSafeTests(unittest.TestCase):
         self.assertEqual(off.off_filter(workspace, workspace), "not (package(=alone))")
         everyone = metadata(("feature", True), ("top", False), deps={"top": ["feature"]})
         self.assertEqual(off.off_filter(everyone, everyone), "all()")
+
+
+class MemberFeatureTests(unittest.TestCase):
+    def test_a_member_enabled_only_through_another_members_feature_keeps_its_off_pass(self):
+        packages = (("core", True), ("net", False), ("app", False), ("alone", False))
+        before = metadata(*packages, deps={"core": ["net"], "app": ["net"]}, features={"net": ["default"]})
+        after = metadata(*packages, deps={"core": ["net"], "app": ["net"]},
+                         features={"core": ["desktop_rebuild"], "net": ["default", "x"]})
+        # net never declares the feature, but core's desktop_rebuild turns on net/x, so net and
+        # app, which depends on it, keep the off pass.
+        self.assertEqual(off.skipped_packages(before, after), ["alone"])
+        self.assertEqual(off.off_filter(before, after), "not (package(=alone))")
+
+    def test_a_member_whose_features_match_in_both_passes_still_skips(self):
+        packages = (("core", True), ("net", False))
+        before = metadata(*packages, features={"net": ["default", "x"]})
+        after = metadata(*packages, features={"core": ["desktop_rebuild"], "net": ["default", "x"]})
+        self.assertEqual(off.skipped_packages(before, after), ["net"])
+
+    def test_an_optional_member_edge_that_only_the_on_pass_has_counts(self):
+        packages = (("core", True), ("app", False), ("alone", False))
+        before = metadata(*packages)
+        after = metadata(*packages, deps={"app": ["core"]})
+        self.assertEqual(off.skipped_packages(before, after), ["alone"])
+
+    def test_different_members_in_the_two_passes_keep_the_full_off_pass(self):
+        before = metadata(("core", True), ("net", False))
+        after = metadata(("core", True), ("net", False), ("extra", False))
+        with self.assertRaises(off.Unsafe):
+            off.skipped_packages(before, after)
+        self.assertEqual(FailSafeTests.run_main(self, [before, after])[0], "all()")
 
 
 class WorkflowTests(unittest.TestCase):

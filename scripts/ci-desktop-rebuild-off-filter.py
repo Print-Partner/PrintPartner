@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Select the tests the desktop_rebuild-off nextest pass must run, from `cargo metadata` only.
 
-The on pass runs every test. A workspace package leaves the off pass only when
-neither it nor any workspace package in its transitive dependency closure (every
-dependency kind: normal, dev and build) declares a `desktop_rebuild` feature.
-Such a package cannot see the feature at all, so its off and on builds compile
-the same source. Every other package keeps the full off pass. The script reads
-no Rust source.
+The on pass runs every test. A workspace package sees the feature when it
+declares a `desktop_rebuild` feature, or when its resolved feature set differs
+between `cargo metadata` without and with `--features desktop_rebuild` (another
+member's `desktop_rebuild` turns on one of its features). A package leaves the
+off pass only when nothing in its transitive workspace dependency closure (every
+dependency kind: normal, dev and build, off and on edges) sees the feature. Its
+off and on builds then compile the same source with the same cfg. Every other
+package keeps the full off pass. The script reads no Rust source.
 
 With the feature on, Cargo also unifies more features of external crates into
 the build, so a left-out package's on-pass tests link those crates with extra
@@ -58,18 +60,34 @@ def cargo_metadata(manifest, *features):
         raise Unsafe(f"{' '.join(command)} printed no JSON: {error}") from error
 
 
-def skipped_packages(metadata):
-    """Workspace packages whose dependency closure, themselves included, declares no desktop_rebuild."""
+def member_nodes(metadata):
+    """Map each workspace member id to (enabled features, workspace members it depends on)."""
     members = set(metadata["workspace_members"])
+    nodes = {node["id"]: (set(node["features"]), {dep["pkg"] for dep in node["deps"] if dep["pkg"] in members})
+             for node in metadata["resolve"]["nodes"] if node["id"] in members}
+    if set(nodes) != members:
+        raise Unsafe("cargo metadata did not resolve every workspace member.")
+    return nodes
+
+
+def skipped_packages(metadata, on_metadata=None):
+    """Workspace packages whose dependency closure, themselves included, never sees desktop_rebuild.
+
+    on_metadata is `cargo metadata --features desktop_rebuild`; without it only declarations count.
+    """
+    on_metadata = metadata if on_metadata is None else on_metadata
+    members = set(metadata["workspace_members"])
+    if set(on_metadata["workspace_members"]) != members:
+        raise Unsafe("The off and on metadata list different workspace members.")
     names = {package["id"]: package["name"] for package in metadata["packages"] if package["id"] in members}
+    off_nodes, on_nodes = member_nodes(metadata), member_nodes(on_metadata)
     declares = {package["id"] for package in metadata["packages"]
                 if package["id"] in members and FEATURE in package.get("features", {})}
     if not declares:
         raise Unsafe(f"No workspace package declares {FEATURE}; the metadata looks wrong.")
-    deps = {node["id"]: {dep["pkg"] for dep in node["deps"] if dep["pkg"] in members}
-            for node in metadata["resolve"]["nodes"] if node["id"] in members}
-    if set(deps) != members:
-        raise Unsafe("cargo metadata resolved a different set of workspace members.")
+    # A member whose resolved features change with the feature on compiles different cfg.
+    sees = declares | {member for member in members if off_nodes[member][0] != on_nodes[member][0]}
+    deps = {member: off_nodes[member][1] | on_nodes[member][1] for member in members}
     skipped = []
     for member in members:
         closure, todo = {member}, [member]
@@ -77,7 +95,7 @@ def skipped_packages(metadata):
             for dep in deps[todo.pop()] - closure:
                 closure.add(dep)
                 todo.append(dep)
-        if not closure & declares:
+        if not closure & sees:
             skipped.append(names[member])
     return sorted(skipped)
 
@@ -102,7 +120,7 @@ def off_filter(off_metadata, on_metadata):
     if unreviewed:
         raise Unsafe(f"{FEATURE} adds external features {', '.join(unreviewed)}; list each in "
                      "ADDITIVE_FEATURES once it is checked to only add API.")
-    skipped = skipped_packages(off_metadata)
+    skipped = skipped_packages(off_metadata, on_metadata)
     if not skipped:
         return FULL
     return "not (" + " + ".join(f"package(={name})" for name in skipped) + ")"

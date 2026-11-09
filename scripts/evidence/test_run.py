@@ -1,6 +1,8 @@
 """Argument checks for run.py. The end-to-end check is `scripts/evidence/run.sh --self-test`."""
 import contextlib
+import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import signal
@@ -120,6 +122,117 @@ class MainStops(unittest.TestCase):
         status, printed = self.run_main_raising(run.Stopped("SIGTERM"))
         self.assertEqual(status, 1)
         self.assertIn("FAIL: stopped by SIGTERM\n", printed)
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+class ReleaseMatches(unittest.TestCase):
+    """The reuse check mirrors the core's start-up release check (pp-compat verify_bundle)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.web = Path(directory.name) / "web"
+        self.node = Path(directory.name) / "node"
+        self.node.write_bytes(b"node")
+        manifest = {"node_sha256": sha(b"node"), "metadata": {"package.json": sha(b"{}")}}
+        (self.web).mkdir()
+        (self.web / "package.json").write_bytes(b"{}")
+        for key, path in run.RELEASE_DIRS.items():
+            if path.endswith("/current"):
+                # As in the real tree, dist/current links to a versioned directory.
+                versioned = self.web / path.removesuffix("current") / "v1"
+                versioned.mkdir(parents=True)
+                (self.web / path).symlink_to("v1")
+            else:
+                (self.web / path).mkdir(parents=True)
+            (self.web / path / "index.js").write_bytes(key.encode())
+            manifest[key] = {"index.js": sha(key.encode())}
+        self.manifest = Path(directory.name) / "bundle-manifest.json"
+        self.manifest.write_text(json.dumps(manifest))
+
+    def matches(self):
+        return run.release_matches(self.manifest, self.web, str(self.node))
+
+    def test_matches_the_build_it_was_made_from(self):
+        self.assertTrue(self.matches())
+
+    def test_a_rebuilt_web_dist_does_not_match(self):
+        (self.web / "apps/web/dist/index.js").write_bytes(b"a plain npm run build")
+        self.assertFalse(self.matches())
+
+    def test_an_extra_or_missing_file_does_not_match(self):
+        (self.web / "apps/web/dist/extra.js").write_bytes(b"x")
+        self.assertFalse(self.matches())
+        (self.web / "apps/web/dist/extra.js").unlink()
+        (self.web / "apps/server/dist/current/index.js").unlink()
+        self.assertFalse(self.matches())
+
+    def test_a_symlink_inside_a_build_does_not_match(self):
+        (self.web / "apps/web/dist/link.js").symlink_to(self.web / "package.json")
+        self.assertFalse(self.matches())
+
+    def test_changed_metadata_or_node_does_not_match(self):
+        (self.web / "package.json").write_bytes(b"{ }")
+        self.assertFalse(self.matches())
+        (self.web / "package.json").write_bytes(b"{}")
+        self.node.write_bytes(b"another node")
+        self.assertFalse(self.matches())
+
+    def test_a_missing_or_broken_manifest_does_not_match(self):
+        self.manifest.write_text("not json")
+        self.assertFalse(self.matches())
+        self.manifest.unlink()
+        self.assertFalse(self.matches())
+
+    def test_the_directories_are_the_manifest_generators(self):
+        sys.path.insert(0, str(run.ROOT / "rust/scripts"))
+        self.addCleanup(sys.path.remove, str(run.ROOT / "rust/scripts"))
+        from desktop_workspaces import ARTIFACTS
+        self.assertEqual(run.RELEASE_DIRS, ARTIFACTS)
+
+
+class Reuse(unittest.TestCase):
+    class Rebuilt(Exception):
+        pass
+
+    def decide(self, release_matches):
+        with tempfile.TemporaryDirectory() as directory:
+            stamp = Path(directory) / "stamp.json"
+            stamp.write_text(json.dumps({"fingerprint": "fp", "files": {"f": "h"}}))
+            with mock.patch.object(run, "STAMP", stamp), \
+                    mock.patch.object(run, "fingerprint", return_value="fp"), \
+                    mock.patch.object(run, "file_hashes", return_value={"f": "h"}), \
+                    mock.patch.object(run, "release_matches", return_value=release_matches), \
+                    mock.patch.object(run, "run", side_effect=self.Rebuilt), \
+                    contextlib.redirect_stdout(io.StringIO()) as printed:
+                try:
+                    return run.build("node", rebuild=False), printed.getvalue()
+                except self.Rebuilt:
+                    return "rebuilt", printed.getvalue()
+
+    def test_reuses_when_the_web_build_still_matches(self):
+        self.assertEqual(self.decide(True)[0], run.BINARY)
+
+    def test_rebuilds_when_the_web_build_changed(self):
+        result, printed = self.decide(False)
+        self.assertEqual(result, "rebuilt")
+        self.assertIn("rebuilding: the web build or Node no longer matches", printed)
+
+
+class CoreStartFailure(unittest.TestCase):
+    def test_a_core_that_exits_at_start_suggests_rebuild(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "launcher.log"
+            log.write_text("Release file inventory mismatch\n")
+            exited = subprocess.Popen([sys.executable, "-c", "raise SystemExit(1)"])
+            exited.wait()
+            with self.assertRaises(RuntimeError) as failure:
+                run.wait_for_core(log, exited)
+        self.assertEqual(str(failure.exception),
+                         "Rust-only core: process exited with 1; see launcher.log, and run again with --rebuild")
 
 
 if __name__ == "__main__":

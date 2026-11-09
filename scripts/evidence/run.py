@@ -39,6 +39,12 @@ BUILT_FILES = (BINARY, ROOT / "rust/bundle-manifest.json", ROOT / "web/apps/ui/d
 # Inputs whose changes need a rebuild of the server, its bundle or the replacement UI.
 BUILD_INPUTS = ("web/apps", "web/packages", "web/package.json", "web/package-lock.json",
                 "rust/crates", "rust/Cargo.toml", "rust/Cargo.lock", "rust/scripts")
+# What the core verifies at start (pp-compat release.rs, verify_bundle) against the manifest
+# embedded in pp-server: these build directories under web/ file by file, by name and
+# sha256, plus the metadata files and the Node executable. Same map as
+# rust/scripts/desktop_workspaces.py ARTIFACTS; test_run.py checks they agree.
+RELEASE_DIRS = {"frontend": "apps/web/dist", "backend": "apps/server/dist/current",
+                "contracts": "packages/contracts/dist/current", "domain": "packages/domain/dist/current"}
 READY_SECS = 300
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 CAPTURE_SECS = 900
@@ -76,14 +82,47 @@ def file_hashes():
             for path in BUILT_FILES}
 
 
+def sha256(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def release_matches(manifest_path, web, node):
+    """Whether the web build and Node still match the manifest pp-server embedded, so the
+    core's start-up release check will pass. A plain `npm run build` rewrites them."""
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        for key, directory in RELEASE_DIRS.items():
+            # The core canonicalizes each root (dist/current links to a versioned directory)
+            # and refuses a symlink inside it.
+            root = (web / directory).resolve(strict=True)
+            if not root.is_dir() or not manifest.get(key):
+                return False
+            actual = {}
+            for path in root.rglob("*"):
+                if path.is_symlink():
+                    return False
+                if path.is_file():
+                    actual[path.relative_to(root).as_posix()] = sha256(path)
+            if actual != manifest[key]:
+                return False
+        if any(sha256(web / name) != digest for name, digest in manifest["metadata"].items()):
+            return False
+        return sha256(Path(node)) == manifest["node_sha256"]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def build(node, rebuild):
     """Returns a pp-server built with desktop_rebuild against the current checkout."""
     current = fingerprint()
     if not rebuild and STAMP.is_file():
         stamp = json.loads(STAMP.read_text())
         if stamp.get("fingerprint") == current and stamp.get("files") == file_hashes():
-            say(f"reusing {BINARY} (checkout and build outputs unchanged since its build)")
-            return BINARY
+            if release_matches(ROOT / "rust/bundle-manifest.json", ROOT / "web", node):
+                say(f"reusing {BINARY} (checkout, build outputs and web build unchanged since its build)")
+                return BINARY
+            say("rebuilding: the web build or Node no longer matches the manifest pp-server was built with")
     if not (ROOT / "web/node_modules").is_dir():
         raise SystemExit("web/node_modules is missing; run npm --prefix web ci first")
     commit = git("rev-parse", "HEAD").decode().strip()
@@ -124,6 +163,15 @@ def wait_for(predicate, what, process, seconds):
             return value
         time.sleep(0.5)
     raise RuntimeError(f"{what}: not ready after {seconds}s")
+
+
+def wait_for_core(log, launcher):
+    """The core's origin once it is ready. A core that exits at start often found a web
+    build that no longer matches its manifest ("Release file inventory mismatch")."""
+    try:
+        return wait_for(lambda: server_origin(log), "Rust-only core", launcher, READY_SECS)
+    except RuntimeError as error:
+        raise RuntimeError(f"{error}; see launcher.log, and run again with --rebuild") from None
 
 
 def server_origin(log):
@@ -286,7 +334,7 @@ def session(args, work, out_dir, node, binary):
                  "--repo", str(ROOT), "--binary", str(binary), "--seed", str(seed),
                  "--credential-file", str(private / "credential.json")],
                 cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT)
-        origin = wait_for(lambda: server_origin(log), "Rust-only core", launcher, READY_SECS)
+        origin = wait_for_core(log, launcher)
         say(f"core ready at {origin} (PP_DESKTOP_REBUILD=1)")
         port = free_port()
         preview = spawn(

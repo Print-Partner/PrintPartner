@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import subprocess
 import sys
@@ -84,8 +85,8 @@ class GuardHookTests(unittest.TestCase):
 
     def test_command_literals_and_heredoc_data_are_allowed(self):
         for command in ("rg -- '--no-verify' .factory",
-                        "printf '%s\\n' 'gh pr merge 12 --squash'",
-                        "git log --grep 'gh pr merge'",
+                        "printf '%s\\n' 'gh pr view 12'",
+                        "git log --grep 'pr merge'",
                         "gh pr list --search '--no-verify'",
                         "git log --grep --no-verify",
                         "git log --format='%h %s'",
@@ -691,7 +692,11 @@ if mode == "fail":
     sys.exit("gh: could not resolve to a PullRequest")
 if mode == "sleep":
     time.sleep(30)
-if mode == "garbage":
+if sys.argv[1:3] == ["pr", "diff"]:
+    if mode == "diff-fail":
+        sys.exit("HTTP 406: Sorry, the diff exceeded the maximum number of files")
+    print(open(os.environ["PP_TEST_GH_DIFF"]).read(), end="")
+elif mode == "garbage":
     print("not json")
 elif mode == "missing-key":
     print(json.dumps({{"baseRefName": "main"}}))
@@ -846,8 +851,10 @@ class CoordinatorMergeTests(unittest.TestCase):
         Path(stub, "gh").write_text(GH_STUB.format(python=sys.executable))
         Path(stub, "gh").chmod(0o755)
         self.view = Path(folder.name, "view.json")
+        self.diff = Path(folder.name, "pr.diff")
         self.log = Path(folder.name, "gh.log")
         self.gh_env = {"PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}", "PP_TEST_GH_VIEW": str(self.view),
+                       "PP_TEST_GH_DIFF": str(self.diff),
                        "PP_TEST_GH_LOG": str(self.log), "PP_TEST_GH_MODE": "view"}
         # Other test classes borrow this setUp, so call set_view through the class.
         CoordinatorMergeTests.set_view(self)
@@ -858,6 +865,16 @@ class CoordinatorMergeTests(unittest.TestCase):
                           {"path": "docs/guide.md", "changeType": "ADDED"}]}
         view.update(changes)
         self.view.write_text(json.dumps(view))
+        # By default the diff covers every listed file with a harmless one-line change.
+        if isinstance(view["files"], list):
+            CoordinatorMergeTests.set_diff(self, {entry["path"]: ["+// note"] for entry in view["files"] if isinstance(entry, dict)})
+
+    def set_diff(self, changes, header=None):
+        text = ""
+        for path, lines in changes.items():
+            text += (header or f"diff --git a/{path} b/{path}") + f"\nindex 1..2 100644\n--- a/{path}\n+++ b/{path}\n"
+            text += "@@ -1,1 +1,1 @@\n" + "".join(line + "\n" for line in lines)
+        self.diff.write_text(text)
 
     def results(self, command, cwd, coordinator, mode="view"):
         extra = {**self.gh_env, "PP_TEST_GH_MODE": mode}
@@ -908,7 +925,7 @@ class CoordinatorMergeTests(unittest.TestCase):
                         self.assertEqual(result.returncode, 2, result.stderr)
 
     def test_gh_alias_writes_are_refused(self):
-        for command in ("gh alias set m 'pr merge 12 --admin'", "gh alias set --shell m 'gh pr merge 12 --admin'",
+        for command in ("gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'",
                         "gh alias import aliases.yml", "gh alias import -"):
             for result in self.results(command, self.lane, None):
                 with self.subTest(command=command):
@@ -930,7 +947,8 @@ class CoordinatorMergeTests(unittest.TestCase):
         for result in self.results(MERGE_FORM, self.lane, None):
             self.assertEqual(result.returncode, 0, result.stderr)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual(calls, [["pr", "view", "12", "--json", "files,baseRefName,headRefOid,changedFiles"]] * 2)
+        view = ["pr", "view", "12", "--json", "files,baseRefName,headRefOid,changedFiles"]
+        self.assertEqual(calls, [view, ["pr", "diff", "12", "--color", "never"]] * 2)
 
     def test_coordinator_merge_skips_the_pr_lookup(self):
         self.set_view(baseRefName="release", files=[{"path": ".github/workflows/ci.yml", "changeType": "MODIFIED"}])
@@ -939,7 +957,11 @@ class CoordinatorMergeTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
     def test_lane_merge_refuses_protected_and_schema_paths(self):
-        for path in (".github/workflows/ci.yml", ".github/zizmor.yml", ".github/CODEOWNERS", "scripts/agent-guard.py",
+        for path in ("rust/crates/pp-storage/src/uploads.rs", "scripts/linear/pr_status_sync.py", "scripts/release.mjs",
+                     "scripts/alert-macos-main.py", "rust/scripts/build-desktop-manifest.py", "web/scripts/workflow-smoke.sh",
+                     "desktop/packaged-smoke/smoke.py", "rust/tests/gateway_product.py", "rust/Cargo.lock",
+                     ".github/actions/setup/action.yml",
+                     ".github/workflows/ci.yml", ".github/zizmor.yml", ".github/CODEOWNERS", "scripts/agent-guard.py",
                      "scripts/test_factory_hooks.py", ".claude/hooks/guard.py", ".claude/skills/pp-lane/SKILL.md",
                      ".factory/hooks.json", ".cursor/rules/x.mdc", "rust/crates/pp-storage/src/schema.rs",
                      "rust/crates/pp-storage/src/jobs/schema.sql", "rust/crates/pp-storage/src/remote_sources/columns38.sql",
@@ -977,6 +999,109 @@ class CoordinatorMergeTests(unittest.TestCase):
                 with self.subTest(mode=mode):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("could not read the PR", result.stderr)
+
+    # Seat 2's probes at d505dfcb: each ran a merge the guard used to allow.
+    SHA_ARG = f"--squash --match-head-commit {SHA}"
+    NAMED_MERGES = (f"printf '%s\\n' --admin | xargs gh pr merge 12 {SHA_ARG}",
+                    f"find . -maxdepth 0 -exec gh pr merge 12 {SHA_ARG} --admin \\;",
+                    f"alias m='gh pr merge 12 {SHA_ARG} --admin'", "m",
+                    f"alias m='gh pr merge 12 {SHA_ARG} --admin'; m",
+                    f"C='gh pr merge 12 {SHA_ARG} --admin'; $C",
+                    f"git -c alias.m='!gh pr merge 12 {SHA_ARG} --admin' m",
+                    f"git config alias.m '!gh pr merge 12 {SHA_ARG}'",
+                    f"setsid gh pr merge 12 {SHA_ARG}", f"flock /tmp/x gh pr merge 12 {SHA_ARG}",
+                    f"watch -n 1 gh pr merge 12 {SHA_ARG}", f"script -c 'gh pr merge 12 {SHA_ARG}' /dev/null",
+                    f"timeout 5 gh pr merge 12 {SHA_ARG}", f"nice gh pr merge 12 {SHA_ARG}",
+                    f"python3 -c 'import os; os.system(\"gh pr merge 12 {SHA_ARG} --admin\")'",
+                    f"echo 'gh pr merge 12 {SHA_ARG} --admin' > merge.sh", "gh pr  'merge' 12",
+                    f"gh alias set m 'pr merge 12 {SHA_ARG}'")
+
+    def test_named_merges_are_refused(self):
+        for command in self.NAMED_MERGES:
+            # "m" alone runs whatever an alias says; the guard cannot see it, so only the definitions are refused.
+            if command == "m":
+                continue
+            for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+                for result in self.results(command, cwd, coordinator):
+                    with self.subTest(command=command, cwd=cwd):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_gh_extension_installs_are_refused(self):
+        for command in ("gh extension install owner/repo", "gh extensions install owner/repo",
+                        "gh ext install ./local", "gh extension upgrade --all"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh extensions run code", result.stderr)
+        for command in ("gh extension list", "gh extension install --help", "gh pr merge --help", "gh pr view 12",
+                        "gh pr comment 12 -b 'Ready to merge once CI is green.'"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gated_merge_is_refused_with_git_location_env(self):
+        with tempfile.TemporaryDirectory() as outside:
+            for name, value in (("GIT_DIR", str(Path(self.lane, ".git"))), ("GIT_WORK_TREE", self.lane)):
+                for cwd in (outside, self.lane):
+                    extra = {**self.gh_env, name: value}
+                    for result in (hook(GUARD, droid_command(MERGE_FORM, cwd), None, extra),
+                                   hook(CLAUDE, claude_call("Bash", cwd, command=MERGE_FORM), None, extra)):
+                        with self.subTest(name=name, cwd=cwd):
+                            self.assertEqual(result.returncode, 2, result.stderr)
+                            self.assertIn("Merge only with a standalone", result.stderr)
+
+    def test_gh_config_files_are_protected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            custom = str(Path(folder, "ghconf"))
+            env = {"GH_CONFIG_DIR": custom, "XDG_CONFIG_HOME": str(Path(folder, "xdg"))}
+            for path in (str(Path.home() / ".config/gh/config.yml"), str(Path.home() / ".config/gh/hosts.yml"),
+                         f"{custom}/config.yml", str(Path(folder, "xdg/gh/config.yml")), "~/.config/gh/config.yml"):
+                for result in (hook(CLAUDE, claude_call("Write", file_path=path, content="aliases: {}"), None, env),
+                               hook(CLAUDE, claude_call("Edit", file_path=path, old_string="a", new_string="b"),
+                                    None, env)):
+                    with self.subTest(path=path):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn("gh config", result.stderr)
+            allowed = hook(CLAUDE, claude_call("Write", file_path=str(Path(folder, "notes/config.yml")), content="x"),
+                           None, env)
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+
+    def test_lane_merge_refuses_schema_lines_in_the_diff(self):
+        path = "rust/crates/pp-core/src/store.rs"
+        self.set_view(changedFiles=1, files=[{"path": path, "changeType": "MODIFIED"}])
+        for line in ('+    conn.execute("ALTER TABLE uploads ADD COLUMN size INTEGER")?;',
+                     '-const SCHEMA_STEPS: &[Step] = &[];', "+create table x (id integer);",
+                     "+CREATE UNIQUE INDEX i ON t (a);", "+DROP  TABLE old;", "+let v = schema_version(&conn)?;"):
+            self.set_diff({path: [line]})
+            for result in self.results(MERGE_FORM, self.lane, None):
+                with self.subTest(line=line):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(f"diff of {path} adds or removes a schema line", result.stderr)
+        sql = "rust/crates/pp-core/src/extra.sql"
+        self.set_view(changedFiles=1, files=[{"path": sql, "changeType": "ADDED"}])
+        self.set_diff({sql: ["+CREATE TABLE t (id INTEGER);"]})
+        for result in self.results(MERGE_FORM, self.lane, None):
+            self.assertEqual(result.returncode, 2, result.stderr)
+        # Docs may talk about tables, and unchanged context lines are not changes.
+        self.set_view(changedFiles=2, files=[{"path": "docs/guide.md", "changeType": "MODIFIED"},
+                                             {"path": path, "changeType": "MODIFIED"}])
+        self.set_diff({"docs/guide.md": ["+Run CREATE TABLE in the fixture."],
+                       path: [" // ALTER TABLE happens in schema.rs", "+let n = 1;", "--- a SQL comment removed",
+                              "+pub const SCHEMA_VERSION: u32 = 2;"]})
+        for result in self.results(MERGE_FORM, self.lane, None):
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_lane_merge_refuses_an_incomplete_or_unreadable_diff(self):
+        self.set_view(changedFiles=2, files=[{"path": "docs/a.md", "changeType": "MODIFIED"},
+                                             {"path": "docs/b.md", "changeType": "MODIFIED"}])
+        self.set_diff({"docs/a.md": ["+x"]})
+        for result in self.results(MERGE_FORM, self.lane, None):
+            self.assertIn("does not cover every changed file", result.stderr)
+        self.set_diff({"docs/a.md": ["+x"]}, header='diff --git "a/docs/a b.md" "b/docs/a b.md"')
+        for result in self.results(MERGE_FORM, self.lane, None):
+            self.assertIn("could not parse a file header", result.stderr)
+        for result in self.results(MERGE_FORM, self.lane, None, mode="diff-fail"):
+            self.assertIn("could not read the PR's diff", result.stderr)
 
     def test_merge_outside_a_git_checkout_is_refused(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1262,6 +1387,56 @@ class UnreadableCommentBodyTests(unittest.TestCase):
             for result in self.results(command, self.coordinator, self.coordinator):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class LaneProtectedSyncTests(unittest.TestCase):
+    """Keep the guard's lane-merge protection in step with the schema code and the workflows."""
+
+    SCHEMA_CODE = re.compile(r"(?-i:SCHEMA_STEPS|schema_version)|\b(?:CREATE|ALTER|DROP)\s+TABLE\b"
+                             r"|\bCREATE\s+(?:UNIQUE\s+)?INDEX\b|include_str!\([^)]*\.sql\"", re.I)
+
+    def setUp(self):
+        self.guard = load(CLI, "agent_guard_sync")
+        self.tracked = set(subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True,
+                                          check=True).stdout.split("\0")) - {""}
+
+    def test_every_schema_file_is_lane_protected(self):
+        def is_test(path):
+            name = posixpath.basename(path)
+            return "/tests/" in path or re.search(r"(?:^|_)tests?\.rs$|^test_", name)
+        found = [path for path in sorted(self.tracked)
+                 if path.startswith("rust/") and path.endswith((".rs", ".sql")) and not is_test(path)
+                 and self.SCHEMA_CODE.search((ROOT / path).read_text(encoding="utf-8", errors="replace"))]
+        self.assertIn("rust/crates/pp-storage/src/uploads.rs", found)
+        self.assertEqual([path for path in found if not self.guard.lane_protected(path)], [])
+
+    def test_every_workflow_input_is_lane_protected(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed; see requirements-dev.txt")
+        referenced = set()
+
+        def walk(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "run" and isinstance(value, str):
+                        for token in re.findall(r"[\w./@+-]+", value):
+                            token = token[2:] if token.startswith("./") else token
+                            if token.rstrip(".") in self.tracked:
+                                referenced.add(token.rstrip("."))
+                    elif key == "uses" and isinstance(value, str) and value.startswith("./"):
+                        referenced.add(value[2:].rstrip("/") + "/")
+                    else:
+                        walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        for workflow in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+            walk(yaml.safe_load(workflow.read_text(encoding="utf-8")))
+        self.assertIn("scripts/linear/pr_status_sync.py", referenced)
+        self.assertEqual(sorted(path for path in referenced if not self.guard.lane_protected(path)), [])
 
 
 class RetiredFleetIntakeTests(unittest.TestCase):

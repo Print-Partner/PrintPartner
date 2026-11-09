@@ -28,7 +28,7 @@ Every other decision goes to the owner in one daily list: scope, cutover, defaul
 
 Every PR starts its description with `Fixes GRE-xxx` and closes its ticket when it merges. Don't write `Refs GRE-xxx`.
 
-When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. The coordinator checks that the quotes match the parent's unmet items before it merges; when the scorer runs on that head, it checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
+When some acceptance items stay unmet, split them out before the merge: create a child ticket of the PR's ticket whose description quotes each unmet item verbatim, then merge with `Fixes` on the parent. Whoever merges, lane or coordinator, checks that the quotes match the parent's unmet items before merging; when the scorer runs on that head, it checks them too. Create other tickets only for bugs on main, P0/P1 findings, or splits the parent ticket already calls for.
 
 ## Ticket states
 
@@ -58,7 +58,15 @@ A lane may merge its own PR only when, on the exact head:
 
 Otherwise the lane reports readiness to the coordinator and stops.
 
-Outside the coordinator worktree, the safety guard enforces part of this list before it allows the merge. It reads `gh pr view <number> --json files,baseRefName,headRefOid,changedFiles` and refuses when the base is not `main`, the head is not the `--match-head-commit` SHA, the file list is shorter than `changedFiles`, a file was renamed or copied (gh does not name the old path), or any changed path is protected or schema: `.github/`, `.claude/`, `.factory/`, `.cursor/`, `scripts/agent-guard.py` and its tests in `scripts/test_factory_hooks.py`, `web/apps/server/src/db/`, `rust/crates/pp-storage/data/schema.json`, `rust/crates/pp-storage/data/historical/`, and any file under `rust/` that ends in `.sql` or whose name contains `schema` or `migrat`. A failed or slow lookup refuses too. The other item 6 areas (auth and sessions, backup and restore, Accept and publication, secret handling) have no fixed paths, so they rely on the lane's judgement and the coordinator's audit. The coordinator audits merges at least daily: it lists the PRs merged since its last audit (`gh pr list --state merged --base main`), checks each against this list and item 6, and opens a revert PR plus a note on the ticket for any merge that broke it.
+Outside the coordinator worktree, the safety guard enforces part of this list before it allows the merge: it refuses a lane merge whose base is not `main`, whose head is not the given SHA, whose file list or diff is incomplete, that renames or copies a file, that changes a lane-protected path (CI and agent configs, every script directory and file a workflow runs, and every schema file), or whose diff adds or removes a schema line in Rust or SQL. A failed or slow lookup refuses too. [Merges](agent-workflow.md#merges) lists exactly what it checks and what it cannot see. The other item 6 areas (auth and sessions, backup and restore, Accept and publication, secret handling) have no fixed paths, so they rely on the lane's judgement and the coordinator's audit.
+
+The coordinator audits merges at least daily. It lists every PR merged since the start of its last audit, on any base, and checks each one's base, files, and merger against this list and item 6:
+
+```sh
+gh pr list -R Print-Partner/PrintPartner --state merged --search "merged:>=<last audit date>" --limit 200 --json number,mergedAt,baseRefName,files,mergedBy
+```
+
+When the list returns 200 PRs, it narrows the date range and lists again until a range returns fewer. For any merge that broke a rule, it opens a revert PR and notes it on the ticket.
 
 ### Scorer seats
 

@@ -95,11 +95,53 @@ ALIAS = "A gh alias hides the command from the guard; run the full gh command in
 LANE_MERGE = "Report readiness to the coordinator instead of merging: "
 # Paths a lane never merges: CI and review controls, the guard and its tests, agent configs, and the
 # database schema with its migrations and historical fixtures. See definition-of-done.md, Lane merges.
-LANE_PROTECTED = (".github/", ".claude/", ".factory/", ".cursor/", "scripts/agent-guard.py",
-                  "scripts/test_factory_hooks.py", "web/apps/server/src/db/", "rust/crates/pp-storage/data/schema.json",
+# Directories a lane never merges changes to: CI and review controls, every script directory a workflow runs
+# from, agent configs, the Node database layer, and the historical-schema fixtures.
+LANE_PROTECTED = (".github/", ".claude/", ".factory/", ".cursor/", "scripts/", "rust/scripts/", "web/scripts/",
+                  "manifests/scripts/", "desktop/packaged-smoke/", "web/apps/server/src/db/",
                   "rust/crates/pp-storage/data/historical/")
+# Files a lane never merges changes to. Schema: every non-test Rust or SQL file that defines schema steps,
+# runs DDL, or includes SQL (test_factory_hooks.py LaneProtectedSyncTests keeps this in step with the code).
+# Workflow inputs: every other tracked file a workflow's run: steps name (the same tests check them).
+LANE_PROTECTED_FILES = frozenset({
+    "rust/crates/pp-domain/src/schema.rs",
+    "rust/crates/pp-storage/data/schema.json",
+    "rust/crates/pp-storage/src/domain_events.rs",
+    "rust/crates/pp-storage/src/jobs.rs",
+    "rust/crates/pp-storage/src/native_secrets.rs",
+    "rust/crates/pp-storage/src/plan_publication.rs",
+    "rust/crates/pp-storage/src/plan_publication/preview.rs",
+    "rust/crates/pp-storage/src/schema.rs",
+    "rust/crates/pp-storage/src/source_scan.rs",
+    "rust/crates/pp-storage/src/source_sync.rs",
+    "rust/crates/pp-storage/src/sqlite_uri.rs",
+    "rust/crates/pp-storage/src/uploads.rs",
+    "rust/crates/pp-storage/src/writer_admission.rs",
+    "rust/crates/pp-testkit/src/node_schema.rs",
+    "cosign.pub", "docker-compose.yml", "docker-compose.hosted.yml", "docker-compose.saas.yml", "pp-compose.yml",
+    "docs/index.html", "docs/logo.png", "manifests/requirements.txt", "requirements-dev.txt",
+    "rust/Cargo.toml", "rust/Cargo.lock", "rust/sgconfig.yml", "rust/crates/pp-gateway/operations.json",
+    "web/package-lock.json",
+    "rust/tests/built_backend_lifecycle.py", "rust/tests/built_backend_listeners.py",
+    "rust/tests/built_backend_upload.py", "rust/tests/gateway_effects.py", "rust/tests/gateway_product.py",
+    "rust/tests/lifecycle_m0.py", "rust/tests/source-archive/verify.py",
+    "rust/tests/source-artifacts/source-path-replay.mjs", "rust/tests/source-artifacts/source-path-replay.test.mjs",
+    "rust/tests/source-artifacts/verify.py", "rust/tests/test_webkit_diagnostics.py",
+    "rust/tests/webkit_stl_smoke.py", "rust/tests/workflow_m0.py",
+})
 SCHEMA_NAME = re.compile(r"schema|migrat", re.I)
-PR_LOOKUP_SECONDS = 8
+# A changed line that touches the schema, in any Rust or SQL file of a lane's PR.
+SCHEMA_LINE = re.compile(r"(?-i:SCHEMA_STEPS|schema_version)|\b(?:CREATE|ALTER|DROP)\s+TABLE\b"
+                         r"|\bCREATE\s+(?:UNIQUE\s+)?INDEX\b", re.I)
+DIFF_HEADER = re.compile(r"diff --git a/(\S+) b/(\S+)")
+# Each gh lookup gets this long; hook configs give the whole guard 10 seconds.
+PR_LOOKUP_SECONDS = 4
+EXTENSION = "gh extensions run code the guard cannot read; ask the maintainer to install one."
+GH_CONFIG = "The gh config can define aliases that hide a command from the guard; ask the maintainer to change it."
+# A merge named anywhere in a command line, such as in xargs, find -exec, a variable, or an alias value.
+NAMED_MERGE = re.compile(r"\bpr\b[\s'\"\\]*merge\b")
+# These point git, and so gh's repository lookup, somewhere other than the command's directory.
+GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE")
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -170,7 +212,24 @@ def protected_path(raw):
         return "This file is generated. Run its generator instead of editing it."
     if any(a == ".claude" and b in CLAUDE_HOOK_CONFIG for a, b in zip(path.parts, path.parts[1:])):
         return "Claude Code settings and hooks run the safety guard; ask the maintainer to change them."
+    if gh_config_path(path):
+        return GH_CONFIG
     return None
+
+
+def gh_config_path(path):
+    """Whether path lies in a gh config directory: $GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, or ~/.config/gh."""
+    roots = [os.environ.get("GH_CONFIG_DIR", ""), os.path.join(os.environ.get("XDG_CONFIG_HOME", ""), "gh"),
+             os.path.expanduser("~/.config/gh")]
+    text = path.as_posix()
+    if text.startswith("~/.config/gh/") or text == "~/.config/gh" or "/.config/gh/" in text + "/":
+        return True
+    for root in roots:
+        if os.path.isabs(root):
+            root = posixpath.normpath(root)
+            if text == root or text.startswith(root + "/"):
+                return True
+    return False
 
 
 SEPARATORS = ";&|\n()"
@@ -917,6 +976,8 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
         if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]):
             return None
         return MERGE if args[0] == "pr" else RELEASE
+    if args[:1] in (["extension"], ["extensions"], ["ext"]) and args[1:2] and args[1] in ("install", "upgrade"):
+        return None if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]) else EXTENSION
     # An alias could expand to any command, including a merge the guard refuses.
     if args[:1] == ["alias"] and args[1:2] and args[1] in ("set", "import"):
         return None if all(arg in ("--help", "-h") for arg in args[2:]) and args[2:] else ALIAS
@@ -1019,7 +1080,7 @@ def gated_merge(args, cwd):
     The form is gh pr merge <number> --squash --match-head-commit <full sha>, with no other option,
     run from a Git checkout. Outside the coordinator worktree, lane_merge_reason also checks the PR.
     """
-    if args[:3] != ["gh", "pr", "merge"] or cwd is None:
+    if args[:3] != ["gh", "pr", "merge"] or cwd is None or any(os.environ.get(name) for name in GIT_LOCATION_ENV):
         return None
     number, squash, sha, rest = None, False, None, args[3:]
     while rest:
@@ -1041,7 +1102,7 @@ def gated_merge(args, cwd):
 
 def lane_protected(path):
     """Whether a lane may not merge a PR that changes path."""
-    if path.startswith(LANE_PROTECTED):
+    if path.startswith(LANE_PROTECTED) or path in LANE_PROTECTED_FILES:
         return True
     # Schema steps, SQL schema files, migrations, and their tests and fetch scripts under rust/.
     return path.startswith("rust/") and (path.endswith(".sql") or bool(SCHEMA_NAME.search(posixpath.basename(path))))
@@ -1070,14 +1131,43 @@ def lane_merge_reason(number, sha, cwd):
         # gh names only the new path of a rename or copy, so the old path cannot be checked.
         if change in ("RENAMED", "COPIED"):
             return LANE_MERGE + f"the PR renames or copies {path}, and gh does not name the old path."
+    return schema_diff_reason(number, cwd, {path for path, _ in files})
+
+
+def schema_diff_reason(number, cwd, paths):
+    """Return why a lane may not merge PR number because its diff touches the schema, or None.
+
+    The diff must name every path in paths; a missing, unreadable, or unparsable diff refuses.
+    """
+    try:
+        diff = subprocess.run(["gh", "pr", "diff", number, "--color", "never"], cwd=cwd, capture_output=True,
+                              text=True, timeout=PR_LOOKUP_SECONDS, check=True,
+                              env={**os.environ, "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1"}).stdout
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return LANE_MERGE + "the guard could not read the PR's diff with gh pr diff."
+    seen, current, in_hunk = set(), None, False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            header = DIFF_HEADER.fullmatch(line)
+            if not header:
+                return LANE_MERGE + "the guard could not parse a file header in the PR's diff."
+            current, in_hunk = header.group(2), False
+            seen.update(header.groups())
+        elif line.startswith("@@"):
+            in_hunk = current is not None
+        elif in_hunk and line[:1] in ("+", "-") and current.endswith((".rs", ".sql")) and SCHEMA_LINE.search(line[1:]):
+            return LANE_MERGE + f"the PR's diff of {current} adds or removes a schema line."
+    if paths - seen:
+        return LANE_MERGE + "the PR's diff does not cover every changed file."
     return None
 
 
 def git_checkout(cwd):
     """Whether cwd lies inside a Git work tree, so gh resolves the PR against that checkout's remote."""
     try:
+        env = {key: value for key, value in os.environ.items() if key not in GIT_LOCATION_ENV}
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
-                             text=True, timeout=5, check=True).stdout.strip()
+                             text=True, timeout=5, check=True, env=env).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return False
     return bool(top)
@@ -1165,9 +1255,12 @@ def check_command(command, cwd, outer=None):
         parsed = shell_commands(command)
         # Only a lone command with nothing around it qualifies; a wrapper, cd, or substitution could change the target.
         # A script run by a wrapper never qualifies, since the wrapper's line could change the target.
-        target = gated_merge(parsed[0][0], cwd) if outer is None and len(parsed) == 1 and not any(parsed[0][1:]) else None
+        alone = outer is None and len(parsed) == 1 and not any(parsed[0][1:])
+        target = gated_merge(parsed[0][0], cwd) if alone else None
         if target:
             return None if coordinator_worktree(cwd) else lane_merge_reason(*target, cwd)
+        help_only = alone and parsed[0][0][:3] == ["gh", "pr", "merge"] and parsed[0][0][3:] \
+            and all(arg in ("--help", "-h") for arg in parsed[0][0][3:])
         commands = [(*program(args), scoped, conditional) for args, scoped, conditional in parsed]
         assigned = [word for _, _, _, words, *_ in commands for word in words]
         # Substitutions run out of source order, so any branch change makes HEAD unknown.
@@ -1218,6 +1311,10 @@ def check_command(command, cwd, outer=None):
             reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker, "$'" in command) if name == "gh" else None
             if reason:
                 return reason
+        # Outside the one gated form, a command line that names gh and a PR merge is refused, wherever the
+        # words appear: xargs or find -exec arguments, a variable, or a shell or git alias value.
+        if re.search(r"\bgh\b", command) and NAMED_MERGE.search(command) and not help_only:
+            return MERGE
     except Unclear as error:
         return str(error) or UNCLEAR
     except ValueError:

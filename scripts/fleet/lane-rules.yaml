@@ -1,5 +1,6 @@
 # lane-rules.yaml: retired as a self-driving intake.
-# Lanes no longer pick, claim, score, merge, or close out tickets on their own. The coordinator-run
+# Lanes no longer pick, claim, score, or close out tickets on their own, and merge only their own normal
+# PRs under the merge gate's Lane merges rule (GRE-1280). The coordinator-run
 # plan replaces that loop: Notion "Print Partner: execution plan v17.1 (council-agreed)". The repository
 # rules are in docs/development/definition-of-done.md (merge gate, scorer seats, Fixes-only close-out)
 # and docs/development/agent-workflow.md (safety guard, coordinator worktree).
@@ -20,5 +21,5 @@ caps:
   max_pr_lines: 1500             # about 1,500; Mission PRs about 600
   one_writer_per_crate: true
 
-never: [merging from a lane worktree, force-push, --admin, --auto, ruleset changes, branch-protection changes,
+never: [merging a sensitive PR or marker-only head from a lane worktree, force-push, --admin, --auto, --delete-branch, ruleset changes, branch-protection changes,
         repo-settings changes, YNAB, "Chad's real plans", cloud agents, printing or asking for secrets]

@@ -3,6 +3,7 @@ export const queryKeys = {
   printers: ["printers"] as const,
   slicerProfileOptions: ["slicerProfileOptions"] as const,
   integrations: ["integrations"] as const,
+  tlsPin: (integrationId: string) => ["tlsPin", integrationId] as const,
   profiles: ["profiles"] as const,
   profile: (id: number) => ["profiles", id] as const,
   sources: ["sources"] as const,

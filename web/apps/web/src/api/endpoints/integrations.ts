@@ -3,7 +3,7 @@ import type {
   IntegrationTestResult,
   PrinterHostStatus,
 } from "@print-partner/contracts";
-import { engineFetch } from "../engineTransport";
+import { EngineHttpError, engineFetch } from "../engineTransport";
 
 // Wire types belong to the contract. A hand-copied duplicate here drifts the
 // moment the server adds a field, which is how the capability matrix ended up
@@ -47,6 +47,26 @@ export async function deleteIntegration(id: string): Promise<void> {
 
 export async function testIntegration(id: string): Promise<IntegrationTestResult> {
   return engineFetch<IntegrationTestResult>(v1Path(`/integrations/${encodeURIComponent(id)}/test`), {
+    method: "POST",
+  });
+}
+
+export type TlsPin =
+  | { pinned: false }
+  | { pinned: true; sha256_prefix: string; pinned_at: string };
+
+/** `null` when this runtime serves no pin route: Node answers 404 here. */
+export async function fetchTlsPin(id: string): Promise<TlsPin | null> {
+  try {
+    return await engineFetch<TlsPin>(v1Path(`/integrations/${encodeURIComponent(id)}/tls-pin`));
+  } catch (error) {
+    if (error instanceof EngineHttpError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+export async function resetTlsPin(id: string): Promise<void> {
+  await engineFetch(v1Path(`/integrations/${encodeURIComponent(id)}/tls-pin/reset`), {
     method: "POST",
   });
 }

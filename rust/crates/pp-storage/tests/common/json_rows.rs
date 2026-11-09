@@ -7,11 +7,7 @@ pub fn query_rows(connection: &Connection, queries: &Map<String, Value>) -> Valu
     let mut rows = Map::new();
     for (name, sql) in queries {
         let mut statement = connection.prepare(sql.as_str().unwrap()).unwrap();
-        let columns: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let columns: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let table: Vec<Value> = statement
             .query_map([], |row| {
                 let mut object = Map::new();

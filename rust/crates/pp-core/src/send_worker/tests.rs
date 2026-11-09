@@ -445,16 +445,39 @@ impl Farm {
     }
 }
 
+fn measured() -> Value {
+    json!([10.0, 1, "measured", 0.0025, 4000.0])
+}
+
+impl Farm {
+    /// A farm whose item `q1` was sent to a Moonraker printer that now
+    /// reports `a.gcode` complete with 4000 mm used.
+    async fn finished_on_moonraker() -> (RoutedPrinter, Self) {
+        let stats = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"a.gcode","filament_used":4000.0}}}}"#;
+        let printer = RoutedPrinter::start(vec![
+            (UPLOAD.into(), 201, b"{}".to_vec()),
+            (PRINT_STATS.into(), 200, stats.to_vec()),
+        ])
+        .unwrap();
+        let farm = Self::sent(&printer).await;
+        (printer, farm)
+    }
+
+    /// Moves the sent link to `state`, as Node's reconcile or a verify would.
+    fn set_link_state(&self, state: &str) {
+        self.database()
+            .execute(
+                "UPDATE app_settings SET value=json_set(value,'$[0].state',?1) WHERE tenant_id='default' AND key='printer.checkoff_links'",
+                [state],
+            )
+            .unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
     use pp_storage::print_grams::Measurement;
-    let stats = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"a.gcode","filament_used":4000.0}}}}"#;
-    let printer = RoutedPrinter::start(vec![
-        (UPLOAD.into(), 201, b"{}".to_vec()),
-        (PRINT_STATS.into(), 200, stats.to_vec()),
-    ])
-    .unwrap();
-    let farm = Farm::sent(&printer).await;
+    let (printer, farm) = Farm::finished_on_moonraker().await;
     assert_eq!(farm.finish("other.gcode").await, None, "no link prints it");
     assert_eq!(farm.grams(), estimate());
     let before_send = std::time::SystemTime::UNIX_EPOCH;
@@ -469,13 +492,13 @@ async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
         Some(Measurement::Recorded),
         "matched like Node: trimmed base name, any case"
     );
-    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
+    assert_eq!(farm.grams(), measured());
     assert_eq!(
         farm.finish("a.gcode").await,
         Some(Measurement::AlreadyMeasured),
         "a reprint of the same file name never replaces the measurement"
     );
-    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
+    assert_eq!(farm.grams(), measured());
     let reads = printer
         .request_lines()
         .iter()
@@ -489,71 +512,27 @@ async fn gre_1165_a_finished_print_replaces_the_estimate_with_measured_grams() {
 #[tokio::test(flavor = "multi_thread")]
 async fn gre_1165_a_link_reconciled_or_verified_before_the_write_is_still_measured() {
     use pp_storage::print_grams::Measurement;
-    let stats = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"a.gcode","filament_used":4000.0}}}}"#;
-    let printer = RoutedPrinter::start(vec![
-        (UPLOAD.into(), 201, b"{}".to_vec()),
-        (PRINT_STATS.into(), 200, stats.to_vec()),
-    ])
-    .unwrap();
-    let farm = Farm::sent(&printer).await;
-    let set_state = |state: &str| {
-        farm.database()
-            .execute(
-                "UPDATE app_settings SET value=json_set(value,'$[0].state',?1) WHERE tenant_id='default' AND key='printer.checkoff_links'",
-                [state],
-            )
-            .unwrap();
-    };
-    set_state("dismissed");
-    assert_eq!(
-        farm.finish("a.gcode").await,
-        None,
-        "a dismissed link is not measured"
-    );
+    let (_printer, farm) = Farm::finished_on_moonraker().await;
+    farm.set_link_state("dismissed");
+    assert_eq!(farm.finish("a.gcode").await, None, "a dismissed link");
     assert_eq!(farm.grams(), estimate());
-    set_state("awaiting_verify");
-    let before_send = std::time::SystemTime::UNIX_EPOCH;
-    assert_eq!(
-        farm.finish_at(Some("a.gcode"), before_send).await,
-        None,
-        "a link created after the finish never takes its length"
-    );
-    assert_eq!(farm.grams(), estimate());
-    assert_eq!(farm.finish("a.gcode").await, Some(Measurement::Recorded));
-    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
-    assert_eq!(
-        farm.links()[0]["state"],
-        "awaiting_verify",
-        "Checkoff is untouched"
-    );
-    assert_eq!(
-        farm.finish("a.gcode").await,
-        Some(Measurement::AlreadyMeasured)
-    );
-
-    let printer = RoutedPrinter::start(vec![
-        (UPLOAD.into(), 201, b"{}".to_vec()),
-        (PRINT_STATS.into(), 200, stats.to_vec()),
-    ])
-    .unwrap();
-    let farm = Farm::sent(&printer).await;
-    farm.database()
-        .execute(
-            "UPDATE app_settings SET value=json_set(value,'$[0].state','verified') WHERE tenant_id='default' AND key='printer.checkoff_links'",
-            [],
-        )
-        .unwrap();
-    assert_eq!(farm.finish("a.gcode").await, Some(Measurement::Recorded));
-    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
-    assert_eq!(
-        farm.links()[0]["state"],
-        "verified",
-        "Checkoff is untouched"
-    );
-    assert_eq!(
-        farm.finish("a.gcode").await,
-        Some(Measurement::AlreadyMeasured)
-    );
+    for state in ["awaiting_verify", "verified"] {
+        let (_printer, farm) = Farm::finished_on_moonraker().await;
+        farm.set_link_state(state);
+        let before_send = std::time::SystemTime::UNIX_EPOCH;
+        assert_eq!(
+            farm.finish_at(Some("a.gcode"), before_send).await,
+            None,
+            "{state}: a link created after the finish never takes its length"
+        );
+        assert_eq!(farm.grams(), estimate(), "{state}");
+        let recorded = farm.finish("a.gcode").await;
+        assert_eq!(recorded, Some(Measurement::Recorded), "{state}");
+        assert_eq!(farm.grams(), measured(), "{state}");
+        assert_eq!(farm.links()[0]["state"], state, "Checkoff is untouched");
+        let again = farm.finish("a.gcode").await;
+        assert_eq!(again, Some(Measurement::AlreadyMeasured), "{state}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -635,7 +614,7 @@ async fn gre_1165_a_prusalink_finish_without_a_status_file_name_records_from_the
         Some(Measurement::Recorded),
         "the finished job names the file when the status did not"
     );
-    assert_eq!(farm.grams(), json!([10.0, 1, "measured", 0.0025, 4000.0]));
+    assert_eq!(farm.grams(), measured());
     assert_eq!(
         farm.finish_at(None, std::time::SystemTime::now()).await,
         Some(Measurement::AlreadyMeasured)

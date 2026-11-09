@@ -274,8 +274,7 @@ pub(crate) fn check(probe: Probe, status_file: &Path, timeout: Duration) -> Resu
     };
     match (probe, state) {
         (Probe::Liveness, "starting" | "stopping") => {}
-        (Probe::Liveness, "ready") => probe_ready()?,
-        (Probe::Readiness, "ready") => probe_ready()?,
+        (_, "ready") => probe_ready()?,
         (Probe::Readiness, "starting" | "stopping") => bail!("Server is {state}"),
         _ => bail!("Status file malformed"),
     }
@@ -292,6 +291,10 @@ pub(crate) fn check(probe: Probe, status_file: &Path, timeout: Duration) -> Resu
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    /// Above `pid_t::MAX`, so `process_alive` reports it dead.
+    #[cfg(unix)]
+    const DEAD_PID: u32 = 4_000_000_000;
 
     fn parse_args(args: &[&str]) -> Result<Command> {
         parse(args.iter().map(|arg| (*arg).to_owned()))
@@ -437,19 +440,20 @@ mod tests {
     fn a_live_servers_status_file_is_left_alone() {
         let root = scratch();
         let path = root.join("status.json");
-        let mut other = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let foreign = serde_json::json!({"pid": other.id(), "state": "ready", "origin": "http://127.0.0.1:1"});
+        // pid 1 is always alive and is never this test.
+        let foreign =
+            serde_json::json!({"pid": 1, "state": "ready", "origin": "http://127.0.0.1:1"});
         record(&path, foreign.clone());
         let error = StatusFile::create(path.clone()).err().unwrap().to_string();
         assert_eq!(error, "Status file belongs to a running server");
         let kept: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(kept, foreign);
-        other.kill().unwrap();
-        other.wait().unwrap();
+        // A pid past every platform's limit is never alive.
+        record(
+            &path,
+            serde_json::json!({"pid": DEAD_PID, "state": "ready"}),
+        );
         // A dead process's file is replaced, and a planted temporary symlink
         // is removed rather than followed.
         let target = root.join("target.txt");
@@ -528,10 +532,10 @@ mod tests {
         );
         #[cfg(unix)]
         {
-            let mut child = std::process::Command::new("true").spawn().unwrap();
-            let pid = child.id();
-            child.wait().unwrap();
-            record(&path, serde_json::json!({"pid": pid, "state": "starting"}));
+            record(
+                &path,
+                serde_json::json!({"pid": DEAD_PID, "state": "starting"}),
+            );
             assert_eq!(
                 check(Probe::Liveness, &path, timeout)
                     .unwrap_err()

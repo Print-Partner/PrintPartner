@@ -216,9 +216,17 @@ pub fn verify_bundle(bundle: Bundle, assets: &Path) -> Result<MeasuredBundle> {
     Ok(MeasuredBundle(bundle))
 }
 
-/// The backend subdirectory the Rust-only runtime reads: Node's shipped
-/// community manifests (`Bundle::community_manifests_dir`).
-const COMMUNITY_MANIFESTS: &str = "data/manifests/";
+/// The backend inventory's key prefix for `Bundle::community_manifests_dir`,
+/// for example `data/manifests/`.
+fn community_manifests_prefix(bundle: &Bundle) -> Result<(std::path::PathBuf, String)> {
+    let directory = bundle
+        .community_manifests_dir()
+        .context("Missing backend root")?;
+    let backend = bundle.entry.parent().context("Missing backend root")?;
+    let mut prefix = inventory_key(&directory, backend)?;
+    prefix.push('/');
+    Ok((directory, prefix))
+}
 
 /// The release check for a Rust-only start, which runs no Node child. It checks
 /// the embedded identity, the served frontend (exact inventory) and the
@@ -241,17 +249,15 @@ fn verify_rust_only_with(
         "Requested release differs from embedded identity"
     );
     verify_files(assets, &release.frontend, true, stop)?;
+    let (directory, prefix) = community_manifests_prefix(bundle)?;
     let manifests: BTreeMap<String, String> = release
         .backend
         .iter()
         .filter_map(|(key, digest)| {
-            key.strip_prefix(COMMUNITY_MANIFESTS)
+            key.strip_prefix(prefix.as_str())
                 .map(|name| (name.to_owned(), digest.clone()))
         })
         .collect();
-    let directory = bundle
-        .community_manifests_dir()
-        .context("Missing backend root")?;
     if manifests.is_empty() {
         // Rust reads this directory when it exists, so an unmeasured one must be empty.
         ensure!(
@@ -458,12 +464,6 @@ mod tests {
             hex::encode(rand::random::<[u8; 8]>())
         ));
         let assets = root.join("web/apps/web/dist");
-        let manifests = root.join("web/apps/server/dist/current/data/manifests");
-        std::fs::create_dir_all(assets.join("assets")).unwrap();
-        std::fs::create_dir_all(&manifests).unwrap();
-        std::fs::write(assets.join("index.html"), b"<!doctype html>").unwrap();
-        std::fs::write(assets.join("assets/app.js"), b"export {};").unwrap();
-        std::fs::write(manifests.join("registry-index.yaml"), b"entries: []\n").unwrap();
         let bundle = Bundle {
             node: root.join("absent/node"),
             entry: root.join("web/apps/server/dist/current/desktop.js"),
@@ -471,7 +471,13 @@ mod tests {
             runtime_version: "1.0.0-web".into(),
             commit: "abc".into(),
         };
-        let release: ReleaseManifest = serde_json::from_value(serde_json::json!({
+        let manifests = bundle.community_manifests_dir().unwrap();
+        std::fs::create_dir_all(assets.join("assets")).unwrap();
+        std::fs::create_dir_all(&manifests).unwrap();
+        std::fs::write(assets.join("index.html"), b"<!doctype html>").unwrap();
+        std::fs::write(assets.join("assets/app.js"), b"export {};").unwrap();
+        std::fs::write(manifests.join("registry-index.yaml"), b"entries: []\n").unwrap();
+        let mut release: ReleaseManifest = serde_json::from_value(serde_json::json!({
             "schema": 1,
             "runtime_version": "1.0.0-web",
             "commit": "abc",
@@ -483,8 +489,6 @@ mod tests {
             "backend": {
                 "desktop.js": "0".repeat(64),
                 "desktop-resolution.js": "0".repeat(64),
-                "data/manifests/registry-index.yaml":
-                    measure(&manifests.join("registry-index.yaml")).unwrap(),
             },
             "contracts": {"index.js": "0".repeat(64)},
             "domain": {"index.js": "0".repeat(64)},
@@ -493,6 +497,13 @@ mod tests {
                              "files": {"web/node_modules/x.js": "0".repeat(64)}, "links": {}},
         }))
         .unwrap();
+        release.backend.insert(
+            format!(
+                "{}registry-index.yaml",
+                community_manifests_prefix(&bundle).unwrap().1
+            ),
+            measure(&manifests.join("registry-index.yaml")).unwrap(),
+        );
         (root, bundle, release)
     }
 
@@ -534,7 +545,7 @@ mod tests {
         // empty one, and refuses unmeasured files there.
         let mut bare = release;
         bare.backend
-            .retain(|key, _| !key.starts_with(COMMUNITY_MANIFESTS));
+            .retain(|key, _| !key.ends_with("registry-index.yaml"));
         verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap();
         std::fs::create_dir_all(&manifests).unwrap();
         verify_rust_only_with(&bare, &bundle, &assets, &stop).unwrap();

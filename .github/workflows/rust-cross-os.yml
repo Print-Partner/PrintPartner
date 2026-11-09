@@ -4,7 +4,8 @@ name: Rust cross-OS
 # runs, and on a PR only when the Windows tier selects it (ci:windows or ci:full label, or a
 # Windows-relevant path). Ready PRs with the macos or ci:full label also test macOS. PR gate keeps clippy + doctests for both feature states (macOS PRs
 # still skip desktop_rebuild=on as before). Linux and Windows PRs run nextest with
-# desktop_rebuild on; macOS PRs skip it.
+# desktop_rebuild on; macOS PRs skip it. The off pass runs only packages whose code can differ
+# with the feature off (scripts/ci-desktop-rebuild-off-filter.py); macOS PRs run all of it.
 # On PRs, nextest uses rdeps(=crate) for changed rust/crates/* (see
 # scripts/ci-affected-nextest-filter.py); shared inputs and non-PR events keep
 # all(). On main push, merge_group, and workflow_dispatch, Linux archives
@@ -74,6 +75,7 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'
           python3 -B -m unittest discover -s scripts -p 'test_*affected_nextest_filter.py'
+          python3 -B -m unittest discover -s scripts -p test_ci_desktop_rebuild_off_filter.py
           python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py
           python3 scripts/ci-path-filter.py rust
           python3 scripts/ci-affected-nextest-filter.py
@@ -242,7 +244,11 @@ jobs:
         id: nextest-off
         if: ${{ !cancelled() && steps.assets.outcome == 'success' }}
         timeout-minutes: 45
-        run: cargo nextest run --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"
+        # Only packages whose code can differ with the feature off, and their reverse
+        # dependencies; the on pass runs the rest (scripts/ci-desktop-rebuild-off-filter.py).
+        run: |
+          off_filter=$(python3 -B scripts/ci-desktop-rebuild-off-filter.py)
+          cargo nextest run --manifest-path rust/Cargo.toml --locked ${{ env.CARGO_SCOPE }} --no-fail-fast --no-tests=warn -E "($NEXTEST_FILTER) & ($off_filter)"
       - name: Disk after nextest (desktop_rebuild off)
         # Also runs after a failed nextest, so a disk failure shows how close it came.
         if: ${{ !cancelled() && steps.nextest-off.outcome != 'skipped' && runner.environment == 'github-hosted' && runner.os == 'Linux' }}
@@ -503,6 +509,8 @@ jobs:
       RUST_OS: macos
       CARGO_SCOPE: --workspace
       NEXTEST_FILTER: ${{ needs.changes.outputs.nextest_filter || 'all()' }}
+      # macOS PRs skip the on pass, so their off pass keeps every test.
+      PP_NEXTEST_OFF_ALL: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 90
     steps: *rust-steps
 

@@ -69,7 +69,8 @@ STEPS = [
          requires=(("python3", None),)),
     Step("selector-tests", "CI input-selection tests",
          ("python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'",
-          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py"),
+          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py",
+          "python3 -B -m unittest discover -s scripts -p test_ci_desktop_rebuild_off_filter.py"),
          (CROSS_OS + "Select changed inputs",), requires=(("python3", None),)),
     # No hosted job runs these yet, so the line is local-only.
     Step("perf-baseline-tests", "Node-versus-Rust baseline harness tests",
@@ -161,8 +162,11 @@ STEPS = [
          setup=("git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'",),
          requires=(("git", None), ("cargo", None), ("python3", None)),
          host_only="" if sys.platform == "linux" else "needs Linux for the Clippy baseline"),
-    cargo("nextest-off", "nextest, desktop_rebuild off", "nextest (desktop_rebuild off)",
-          CARGO.format("nextest run") + ' --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER"', NEXTEST),
+    Step("nextest-off", "nextest, desktop_rebuild off", (
+        "off_filter=$(python3 -B scripts/ci-desktop-rebuild-off-filter.py)",
+        CARGO.format("nextest run") + ' --no-fail-fast --no-tests=warn -E "($NEXTEST_FILTER) & ($off_filter)"'),
+         (CROSS_OS + "nextest (desktop_rebuild off)",), requires=NEXTEST + (("python3", None),),
+         env={"NEXTEST_FILTER": "all()", "INSTA_UPDATE": "no"}),
     cargo("nextest-on", "nextest, desktop_rebuild on", "nextest (desktop_rebuild on)",
           CARGO.format("nextest run") + ' --no-fail-fast --no-tests=warn -E "$NEXTEST_FILTER" --features desktop_rebuild', NEXTEST),
     cargo("doc-off", "doctests, desktop_rebuild off", "doctests (desktop_rebuild off)",
@@ -284,6 +288,8 @@ def main(argv=None, env=None, run=run_bash):
     env = base_env(env)
     Path(env["RUNNER_TEMP"]).mkdir(parents=True, exist_ok=True)
     results = []
+    # nextest-off leaves out tests that only nextest-on covers; without that step it runs them all.
+    on_pass = any(step.id == "nextest-on" and not unmet(step, env) for step in plan)
     for step in plan:
         reason = unmet(step, env)
         if reason:
@@ -292,7 +298,11 @@ def main(argv=None, env=None, run=run_bash):
             continue
         print(f"\n== RUN {step.id}: {step.title}", flush=True)
         started = time.monotonic()
-        code = run(step.id, "\n".join(step.setup + step.commands), ROOT / step.cwd, step_env(step, env))
+        step_vars = step_env(step, env)
+        if step.id == "nextest-off" and not on_pass:
+            print("nextest-on does not run, so nextest-off runs every test.", flush=True)
+            step_vars["PP_NEXTEST_OFF_ALL"] = "true"
+        code = run(step.id, "\n".join(step.setup + step.commands), ROOT / step.cwd, step_vars)
         detail = f"{time.monotonic() - started:.0f}s"
         if code == 0:
             status = "PASS"

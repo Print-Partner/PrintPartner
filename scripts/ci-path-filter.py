@@ -13,7 +13,9 @@ def relevant(path, kind):
     # A filter change must test its own consumers.
     if path in {"scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py",
                 "scripts/ci-affected-nextest-filter.py",
-                "scripts/test_ci_affected_nextest_filter.py"}:
+                "scripts/test_ci_affected_nextest_filter.py",
+                "scripts/ci-desktop-rebuild-off-filter.py",
+                "scripts/test_ci_desktop_rebuild_off_filter.py"}:
         return True
     if kind == "native" and (path.startswith("scripts/verify-rust-gateway/")
                              or path in {".github/workflows/desktop-native-macos.yml",
@@ -50,7 +52,8 @@ WINDOWS_FILES = {".gitattributes", "rust/Cargo.lock", "web/package.json", "web/p
                  "rust/scripts/build-desktop-manifest.py", "rust/scripts/desktop_workspaces.py",
                  "rust/crates/pp-desktop/tauri.conf.json",
                  "rust/scripts/fetch-historical-schema-commits.sh", "rust-toolchain.toml", ".github/actionlint.yaml",
-                 "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py"}
+                 "scripts/ci-path-filter.py", "scripts/test_ci_path_filter.py",
+                 "scripts/ci-desktop-rebuild-off-filter.py"}
 
 
 def windows_relevant(path, base, head):

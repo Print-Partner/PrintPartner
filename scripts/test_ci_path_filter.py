@@ -22,6 +22,8 @@ class CiPathFilterTests(unittest.TestCase):
                      ".github/workflows/rust-cross-os.yml", "scripts/ci-path-filter.py",
                      "scripts/ci-affected-nextest-filter.py",
                      "scripts/test_ci_affected_nextest_filter.py",
+                     "scripts/ci-desktop-rebuild-off-filter.py",
+                     "scripts/test_ci_desktop_rebuild_off_filter.py",
                      "web/tsconfig.base.json", "web/scripts/atomic-package-build.mjs",
                      "web/scripts/storage-fixtures/prepare.mts",
                      "fixtures/parity/jobs-model/jobs-model.json",

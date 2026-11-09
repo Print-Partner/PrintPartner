@@ -91,6 +91,17 @@ class LocalCiTests(unittest.TestCase):
             self.assertEqual(ci.envs[step].get("INSTA_UPDATE"), "no", step)
         self.assertNotIn("INSTA_UPDATE", ci.envs["node-fixtures"])
 
+    def test_nextest_off_runs_every_test_when_nextest_on_does_not_run(self):
+        ci = LocalCi(self)
+        self.assertEqual(ci(), 0)
+        self.assertNotIn("PP_NEXTEST_OFF_ALL", ci.envs["nextest-off"])
+        for argv in (["--skip", "nextest-on"], ["--only", "nextest-off"]):
+            with self.subTest(argv=argv):
+                ci = LocalCi(self)
+                self.assertEqual(ci(*argv), 0)
+                self.assertEqual(ci.envs["nextest-off"]["PP_NEXTEST_OFF_ALL"], "true")
+                self.assertIn("nextest-on does not run, so nextest-off runs every test.", ci.output)
+
     def test_a_failed_step_does_not_stop_later_steps_and_fails_the_run(self):
         ci = LocalCi(self, fail={"fmt"})
         self.assertEqual(ci(), 1)

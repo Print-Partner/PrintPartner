@@ -331,21 +331,22 @@ impl PrinterHostPort for StoredPrinterHosts {
         Box::pin(async move {
             // Waits out a Test connection in flight, so a first-use pin it
             // is about to store cannot outlive this reset.
-            let _pin = PIN_LOCKS.lock(&integration).await;
-            let reset = tokio::task::spawn_blocking(move || {
+            let guard = PIN_LOCKS.lock(&integration).await;
+            let reset = settled(move || {
+                let _pin = guard;
                 let Some(_) = printer_hosts::integration(&settings, READER_WAIT, &integration)?
                 else {
                     return anyhow::Ok(None);
                 };
                 let reply =
                     settings.reset_tls_pin(&integration, &AtomicBool::new(false), WRITE_WAIT)?;
-                Ok(Some(reply.recv_timeout(WRITE_WAIT)??))
+                Ok(Some(reply.recv_timeout(SETTLE_WAIT)??))
             })
             .await;
             match reset {
-                Ok(Ok(Some(reset))) => HostAnswer::Ok(json!({ "reset": reset })),
-                Ok(Ok(None)) => HostAnswer::NotFound,
-                Ok(Err(_)) | Err(_) => HostAnswer::Busy,
+                Some(Ok(Some(reset))) => HostAnswer::Ok(json!({ "reset": reset })),
+                Some(Ok(None)) => HostAnswer::NotFound,
+                Some(Err(_)) | None => HostAnswer::Busy,
             }
         })
     }
@@ -353,15 +354,36 @@ impl PrinterHostPort for StoredPrinterHosts {
 
 /// How long a pin write may wait for the writer.
 const WRITE_WAIT: Duration = Duration::from_secs(5);
+/// How long a queued pin write or reset keeps the pin lock while waiting for
+/// the writer's answer. Far past a normal write (one 5-second busy wait), and
+/// finite, so a writer thread that died without answering frees the lock.
+const SETTLE_WAIT: Duration = Duration::from_secs(60);
+
+/// Runs a pin write that owns its [`PinGuard`] on the blocking pool and waits
+/// for the writer's answer. The request answers Busy after [`WRITE_WAIT`] plus
+/// a reader wait, or `None` if the task failed, but the guard drops only when
+/// the write has settled or [`SETTLE_WAIT`] ran out: neither the request's
+/// timeout nor a dropped request frees the lock while a queued pin write or
+/// reset can still land.
+async fn settled<T: Send + 'static>(
+    write: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> Option<anyhow::Result<T>> {
+    let task = tokio::task::spawn_blocking(write);
+    match tokio::time::timeout(WRITE_WAIT * 2 + READER_WAIT, task).await {
+        Ok(Ok(result)) => Some(result),
+        Ok(Err(_)) | Err(_) => None,
+    }
+}
 
 /// The user's Bambu Test connection (GRE-1245). Node's tenant-wide Bambu
 /// admission first. With no pin stored, the test trusts the certificate the
 /// printer presents and, once it has read the printer's status, stores that
 /// certificate's pin; only this route ever writes one. A pin taken at another
 /// address, or a different certificate, fails without trusting anything.
-/// Holds the integration's [`PIN_LOCKS`] entry throughout.
+/// Holds the integration's [`PIN_LOCKS`] entry throughout, and through the
+/// pin write until it settles.
 async fn bambu_test(settings: &SettingsClient, reads: &HostReads, id: String) -> HostAnswer<Value> {
-    let _pin = PIN_LOCKS.lock(&id).await;
+    let guard = PIN_LOCKS.lock(&id).await;
     let client = settings.clone();
     let lookup = id.clone();
     let stored = tokio::task::spawn_blocking(move || {
@@ -389,7 +411,8 @@ async fn bambu_test(settings: &SettingsClient, reads: &HostReads, id: String) ->
     };
     let client = settings.clone();
     let sha256 = taken.sha256;
-    let stored = tokio::task::spawn_blocking(move || {
+    let stored = settled(move || {
+        let _pin = guard;
         let pin = Pin {
             host: taken.host,
             port: taken.port,
@@ -397,18 +420,18 @@ async fn bambu_test(settings: &SettingsClient, reads: &HostReads, id: String) ->
             pinned_at: String::new(),
         };
         let reply = client.pin_tls(&id, pin, &AtomicBool::new(false), WRITE_WAIT)?;
-        reply.recv_timeout(WRITE_WAIT)??;
+        reply.recv_timeout(SETTLE_WAIT)??;
         tls_pins::read(&client, READER_WAIT, &id)
     })
     .await;
     match stored {
         // Another Test connection may have pinned first; only its pin counts.
-        Ok(Ok(Some(stored))) if stored.sha256 == sha256 => HostAnswer::Ok(test.result),
-        Ok(Ok(_)) => HostAnswer::Ok(json!({
+        Some(Ok(Some(stored))) if stored.sha256 == sha256 => HostAnswer::Ok(test.result),
+        Some(Ok(_)) => HostAnswer::Ok(json!({
             "ok": false,
             "message": pp_gateway::printer_host::BAMBU_CERTIFICATE_CHANGED,
         })),
-        Ok(Err(_)) | Err(_) => HostAnswer::Busy,
+        Some(Err(_)) | None => HostAnswer::Busy,
     }
 }
 

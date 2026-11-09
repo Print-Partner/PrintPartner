@@ -45,57 +45,43 @@ fn open(root: &Path) -> Result<WriterOwner> {
     Ok(WriterOwner::open_with_gate(root, Limits::default(), WriterGate::SwitchOn)?.0)
 }
 
-/// Every table's rows, sorted, and every file under the backup roots of
+/// Every table's rows, sorted, and every entry under the backup roots of
 /// `root`, which holds a database and roots laid out like a data directory.
 fn state(root: &Path) -> BTreeMap<String, String> {
-    let mut state = BTreeMap::new();
     let db = Connection::open_with_flags(
         root.join(archive::DATABASE_FILE),
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    let tables: Vec<String> = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
+    let mut state = BTreeMap::new();
+    let mut names = db
+        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table'")
         .unwrap();
-    for table in tables {
-        let mut statement = db.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
-        let columns = statement.column_count();
-        let mut rows: Vec<String> = statement
-            .query_map([], |row| {
-                (0..columns)
-                    .map(|index| row.get::<_, rusqlite::types::Value>(index))
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .map(|values| format!("{values:?}"))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        rows.sort();
-        state.insert(format!("table {table}"), rows.join("\n"));
-    }
-    let mut pending: Vec<PathBuf> = archive::FULL_ROOTS
-        .iter()
-        .map(|(name, _)| root.join(name))
-        .collect();
-    while let Some(path) = pending.pop() {
-        let Ok(metadata) = path.symlink_metadata() else {
-            continue;
-        };
-        let name = path.strip_prefix(root).unwrap().display().to_string();
-        if metadata.is_dir() {
-            state.insert(format!("dir {name}"), String::new());
-            pending.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
-        } else {
-            let bytes = std::fs::read(&path).unwrap();
-            state.insert(
-                format!("file {name}"),
-                String::from_utf8_lossy(&bytes).into(),
-            );
+    let mut tables = names.query([]).unwrap();
+    while let Some(table) = tables.next().unwrap() {
+        let name: String = table.get(0).unwrap();
+        let mut select = db.prepare(&format!("SELECT * FROM \"{name}\"")).unwrap();
+        let width = select.column_count();
+        let mut found = Vec::new();
+        let mut rows = select.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            let values: Vec<_> = (0..width).map(|i| row.get_ref(i).unwrap()).collect();
+            found.push(format!("{values:?}"));
         }
+        found.sort();
+        state.insert(format!("table {name}"), found.join("\n"));
+    }
+    for (name, _) in archive::FULL_ROOTS {
+        let path = root.join(name);
+        if path.symlink_metadata().is_err() {
+            continue;
+        }
+        let entries = if path.is_dir() {
+            pp_testkit::snapshot(&path).unwrap()
+        } else {
+            [(PathBuf::new(), Some(std::fs::read(&path).unwrap()))].into()
+        };
+        state.insert(format!("root {name}"), format!("{entries:?}"));
     }
     state
 }
@@ -168,13 +154,13 @@ fn archive_with(
     ));
     let mut append = |name: &[u8], kind: EntryType, data: &[u8]| {
         let mut header = Header::new_old();
-        header.as_old_mut().name[..name.len()].copy_from_slice(name);
-        header.set_entry_type(kind);
-        header.set_mode(0o644);
         header.set_size(data.len() as u64);
-        if kind == EntryType::Symlink || kind == EntryType::Link {
+        if matches!(kind, EntryType::Symlink | EntryType::Link) {
             header.set_link_name("/etc/passwd").unwrap();
         }
+        header.set_entry_type(kind);
+        header.as_old_mut().name[..name.len()].copy_from_slice(name);
+        header.set_mode(0o644);
         header.set_cksum();
         builder.append(&header, data).unwrap();
     };
@@ -249,8 +235,10 @@ fn ticket_t_8_restore_a_new_stage_replaces_the_earlier_one_and_a_refused_stage_k
     owner.shutdown().unwrap();
 }
 
+/// Unsupported schemas and scopes, and entries that would leave the stage,
+/// are refused with the live installation, marker and parent untouched.
 #[test]
-fn ticket_t_8_restore_unsupported_schemas_and_scopes_refuse_and_leave_the_original_unchanged() {
+fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
     let (installation, root) = installation();
     let owner = open(&root).unwrap();
     let entries = installation.entries().unwrap();
@@ -258,61 +246,51 @@ fn ticket_t_8_restore_unsupported_schemas_and_scopes_refuse_and_leave_the_origin
     let marker = std::fs::read(installation.marker_path()).unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let client = owner.installation().unwrap();
-    for (version, scope, expected) in [
-        (schema::CURRENT_VERSION + 1, "full", "newer than supported"),
-        (30, "full", "Cannot upgrade database schema version 30"),
-        (0, "full", "no schema version"),
-    ] {
-        let archive = archive_with(scratch.path(), version, scope, &[]);
+    let refuse = |version: u64, scope: &str, extra: &[(&[u8], EntryType)]| {
+        let archive = archive_with(scratch.path(), version, scope, extra);
         let error = stage(&client, &archive).unwrap_err();
+        assert!(!root.join(WORK_DIR).exists());
+        assert!(!root.parent().unwrap().join("escape").exists());
+        refusal(&error)
+            .cloned()
+            .unwrap_or_else(|| panic!("{error:#}"))
+    };
+    for (version, expected) in [
+        (schema::CURRENT_VERSION + 1, "newer than supported"),
+        (30, "Cannot upgrade database schema version 30"),
+        (0, "no schema version"),
+    ] {
+        let refused = refuse(version, "full", &[]);
         assert!(
-            matches!(refusal(&error), Some(Refusal::UnsupportedSchema(detail)) if detail.contains(expected)),
-            "schema {version}: {error:#}"
+            matches!(&refused, Refusal::UnsupportedSchema(detail) if detail.contains(expected)),
+            "schema {version}: {refused}"
         );
     }
-    let database_only = archive_with(scratch.path(), 34, "database-only", &[]);
-    let error = stage(&client, &database_only).unwrap_err();
+    let refused = refuse(34, "database-only", &[]);
     assert!(
-        matches!(refusal(&error), Some(Refusal::InvalidArchive(detail)) if detail.contains("full backup")),
-        "{error:#}"
+        matches!(&refused, Refusal::InvalidArchive(detail) if detail.contains("full backup")),
+        "{refused}"
     );
-    assert_eq!(installation.entries().unwrap(), entries);
-    assert_eq!(state(&root), before);
-    assert_eq!(std::fs::read(installation.marker_path()).unwrap(), marker);
-    owner.shutdown().unwrap();
-}
-
-#[test]
-fn ticket_t_8_restore_hostile_entries_refuse_without_writing_outside_the_stage() {
-    let (installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let entries = installation.entries().unwrap();
-    let before = state(&root);
-    let scratch = tempfile::tempdir().unwrap();
-    let client = owner.installation().unwrap();
-    let hostile: [(&[u8], EntryType); 7] = [
-        (b"../escape", EntryType::Regular),
+    for (name, kind) in [
+        (&b"../escape"[..], EntryType::Regular),
         (b"repos/../../escape", EntryType::Regular),
         (b"/tmp/escape", EntryType::Regular),
         (b"repos/link", EntryType::Symlink),
         (b"repos/hard", EntryType::Link),
         (b".pp-rust-owned.json", EntryType::Regular),
         (b"backups/escape", EntryType::Regular),
-    ];
-    for (name, kind) in hostile {
-        let archive = archive_with(scratch.path(), 34, "full", &[(name, kind)]);
-        let error = stage(&client, &archive).unwrap_err();
+    ] {
+        let refused = refuse(34, "full", &[(name, kind)]);
         assert!(
-            matches!(refusal(&error), Some(Refusal::InvalidArchive(_))),
-            "{}: {error:#}",
+            matches!(refused, Refusal::InvalidArchive(_)),
+            "{}: {refused}",
             String::from_utf8_lossy(name)
         );
-        assert!(!root.join(WORK_DIR).exists());
-        assert!(!root.parent().unwrap().join("escape").exists());
     }
     assert!(!Path::new("/tmp/escape").exists());
     assert_eq!(installation.entries().unwrap(), entries);
     assert_eq!(state(&root), before);
+    assert_eq!(std::fs::read(installation.marker_path()).unwrap(), marker);
     owner.shutdown().unwrap();
 }
 

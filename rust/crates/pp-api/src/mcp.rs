@@ -67,6 +67,8 @@ pub struct McpHttpConfig {
     window: Duration,
     #[cfg(test)]
     confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
+    #[cfg(test)]
+    clock: Option<Arc<rate_limit::ManualClock>>,
 }
 
 impl McpHttpConfig {
@@ -83,14 +85,23 @@ impl McpHttpConfig {
             window: rate_limit::WINDOW,
             #[cfg(test)]
             confirm_gate: None,
+            #[cfg(test)]
+            clock: None,
         })
     }
 
-    /// A smaller budget, so a test can exhaust and reset it.
+    /// A smaller budget on a clock the test advances, so a test can exhaust
+    /// and reset it without waiting.
     #[cfg(test)]
-    pub(crate) fn with_budget(mut self, limit: u32, window: Duration) -> Self {
+    pub(crate) fn with_budget(
+        mut self,
+        limit: u32,
+        window: Duration,
+        clock: Arc<rate_limit::ManualClock>,
+    ) -> Self {
         self.limit = limit;
         self.window = window;
+        self.clock = Some(clock);
         self
     }
 
@@ -159,6 +170,9 @@ pub fn mcp_router(
         #[cfg(test)]
         confirm_gate: config.confirm_gate.clone(),
     };
+    let budget = rate_limit::Budget::new(config.limit, config.window);
+    #[cfg(test)]
+    let budget = budget.with_clock(config.clock.clone());
     let service = StreamableHttpService::new(
         move || Ok(ProductMcp::new(reads.clone())),
         Arc::new(LocalSessionManager::default()),
@@ -169,7 +183,7 @@ pub fn mcp_router(
         .route_service("/api/v1/mcp", service)
         .layer(middleware::from_fn_with_state(
             Guard {
-                budget: Arc::new(rate_limit::Budget::new(config.limit, config.window)),
+                budget: Arc::new(budget),
                 config,
                 auth,
                 admission: Arc::new(Semaphore::new(ADMISSION_PERMITS)),
@@ -474,6 +488,10 @@ impl ServerHandler for ProductMcp {
                 self.propose_accept(&arguments, presented).await
             }
             Some(presented) if confirming.is_some() => {
+                #[cfg(test)]
+                if let Some(gate) = &self.reads.confirm_gate {
+                    gate.watch(context.ct.clone().cancelled_owned());
+                }
                 // Taken before Accept so a concurrent confirm cannot apply it twice.
                 match confirming.and_then(|action| self.session.take_pending(&action.id)) {
                     Some(action) => self.confirm_accept(action, presented).await,

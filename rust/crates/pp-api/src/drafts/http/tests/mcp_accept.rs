@@ -10,7 +10,8 @@ pub(super) struct Mcp {
     origin: String,
     client: Client,
     headers: Vec<(&'static str, String)>,
-    task: tokio::task::JoinHandle<()>,
+    /// The listener's task; only the first session on a listener owns it.
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Mcp {
@@ -55,26 +56,43 @@ impl Mcp {
         let pp_storage::auth::Outcome::KeyCreated { key, .. } = created else {
             panic!("API key creation");
         };
-        let mut mcp = Self {
+        let mcp = Self {
             origin,
             client: Client::builder().no_proxy().build().unwrap(),
             headers: vec![("authorization", format!("Bearer {}", key.expose()))],
-            task,
+            task: Some(task),
         };
+        mcp.session().await
+    }
+
+    /// Another MCP session on this listener with the same key.
+    async fn another_session(&self) -> Self {
+        Self {
+            origin: self.origin.clone(),
+            client: self.client.clone(),
+            headers: self.headers[..1].to_vec(),
+            task: None,
+        }
+        .session()
+        .await
+    }
+
+    /// Initializes a session with this key and keeps its id.
+    async fn session(mut self) -> Self {
         let initialize = json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
             "protocolVersion":"2025-06-18","capabilities":{},
             "clientInfo":{"name":"gre-1236","version":"0.0.1"}}});
-        let response = mcp.send(&initialize).await;
+        let response = self.send(&initialize).await;
         let session = response.headers()["mcp-session-id"]
             .to_str()
             .unwrap()
             .to_owned();
-        mcp.headers.push(("mcp-session-id", session));
-        mcp.headers
+        self.headers.push(("mcp-session-id", session));
+        self.headers
             .push(("mcp-protocol-version", "2025-06-18".into()));
         let initialized = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
-        assert_eq!(mcp.send(&initialized).await.status(), 202);
-        mcp
+        assert_eq!(self.send(&initialized).await.status(), 202);
+        self
     }
 
     async fn send(&self, body: &Value) -> reqwest::Response {
@@ -127,7 +145,9 @@ impl Mcp {
 
 impl Drop for Mcp {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
@@ -416,14 +436,18 @@ async fn gre_1236_mcp_confirm_selects_the_automatic_reconciliation_propose_write
 }
 
 /// GRE-1039: a key admits the call, but a write tool still only proposes.
-/// The proposal writes nothing, another authenticated session can neither see
-/// nor confirm it, and only `confirm_apply` in the proposing session applies.
-/// The GRE-1236 tests above cover the Accept outcomes themselves.
+/// The proposal writes nothing; a second session on the same listener with
+/// the same key can neither see nor confirm it; only `confirm_apply` in the
+/// proposing session applies. The GRE-1236 tests above cover the Accept
+/// outcomes themselves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confirm_apply() {
     let server = proposed_header().await;
     let mcp = Mcp::start(&server).await;
-    let other = Mcp::start(&server).await;
+    let other = mcp.another_session().await;
+    assert_eq!(other.origin, mcp.origin);
+    assert_eq!(other.headers[0], mcp.headers[0], "same key");
+    assert_ne!(other.headers[1], mcp.headers[1], "another session id");
     let before = plan_rows(&server);
     let (failed, proposed) = mcp.propose().await;
     assert!(!failed, "{proposed}");
@@ -440,7 +464,7 @@ async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confir
     assert!(!failed, "{confirmed}");
     assert_eq!(build_name(&server), "Renamed by MCP");
     assert_eq!(snapshot_headers(&server), 1);
-    drop((mcp, other));
+    drop((other, mcp));
     server.close().await;
 }
 
@@ -448,7 +472,8 @@ async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confir
 /// cancellation, so a `confirm_apply` that the client cancels while it runs,
 /// and whose reply it stops reading, still finishes: Accept applies once and
 /// the session serves the next call. The gate holds the confirm after it took
-/// its proposal and before Accept, so the cancel lands mid-call.
+/// its proposal and before Accept, and is released only after rmcp has
+/// processed the cancel and fired the request's cancellation token.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_a_cancelled_confirm_still_applies_once() {
     let server = proposed_header().await;
@@ -466,6 +491,9 @@ async fn ticket_t_16_mcp_a_cancelled_confirm_still_applies_once() {
     let cancel = json!({"jsonrpc":"2.0","method":"notifications/cancelled",
         "params":{"requestId":7,"reason":"client cancelled"}});
     assert_eq!(mcp.send(&cancel).await.status(), 202);
+    tokio::time::timeout(Duration::from_secs(10), gate.cancelled.notified())
+        .await
+        .expect("rmcp cancels the confirm's request token");
     drop(reply);
     assert_ne!(build_name(&server), "Renamed by MCP", "held before Accept");
     gate.release.add_permits(1);

@@ -526,7 +526,9 @@ async fn start_rust_resources(
             )
             .map(|(writer, _)| writer)
         },
-        move || pp_compat::verify_bundle(bundle, &verified_assets),
+        // Rust-only mode runs no Node child, so only what Rust serves or reads is
+        // measured: the frontend and the community manifests.
+        move || pp_compat::verify_rust_only_release(&bundle, &verified_assets).map(|()| bundle),
     )
     .await?;
     let community_manifests = bundle.community_manifests_dir();
@@ -552,6 +554,9 @@ async fn start_rust_resources(
     let gateway = Gateway::start_rust_only(
         listener,
         assets,
+        // `pp-server` and `pp-desktop` still ship the old `apps/web` build;
+        // GRE-1294 passes `ServedUi::Replacement` when this runtime serves `apps/ui`.
+        pp_gateway::ServedUi::Legacy,
         move |status| product.merge(status_routes.mount(status)),
         receiver,
         hosts,

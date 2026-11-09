@@ -1,0 +1,1 @@
+default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{nonce}'; font-src 'self'; img-src 'self'; connect-src 'self' {ws_origin}/ws/printers; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'

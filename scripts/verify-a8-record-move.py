@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify GRE-1309's exact receipt move against its fixed parent commit."""
+"""Verify GRE-1309's receipt move and exact link repairs against its fixed parent."""
 
 from pathlib import Path
 import re
@@ -28,6 +28,45 @@ COPIED = (
 )
 
 
+# Only these destinations may differ from the fixed snapshots. Labels, titles,
+# whitespace and every byte outside the destination remain part of the comparison.
+LINK_REWRITES = {
+    "docs/records/d9-build-graph.md": {
+        b"desktop-rebuild-d9-audit.md": b"../desktop-rebuild-d9-audit.md",
+    },
+    "docs/records/d11-required-units.md": {
+        b"#d24-drafts-http-gre-619": b"d19-publication-client.md#d24-drafts-http-gre-619",
+    },
+    "docs/records/d19-publication-client.md": {
+        b"domain-events.md": b"../domain-events.md",
+        b"domain-events.md#http-stream": b"../domain-events.md#http-stream",
+        b"draft-headers.md": b"../draft-headers.md",
+        b"draft-headers.md#accept": b"../draft-headers.md#accept",
+        b"draft-headers.md#order-authority-gre-1095": b"../draft-headers.md#order-authority-gre-1095",
+        b"plan-autosave.md": b"../plan-autosave.md",
+        b"problem-responses.md": b"../problem-responses.md",
+    },
+    "docs/records/filament-grams-per-send.md": {
+        b"send-queue.md": b"../send-queue.md",
+    },
+    "docs/families.md": {
+        b"desktop-rebuild.md#production-setup-in-rust-gre-1209":
+            b"records/d19-publication-client.md#production-setup-in-rust-gre-1209",
+    },
+}
+# The repaired links all use bare destinations without titles or parentheses.
+LINK_TARGET = re.compile(rb"(\[[^\]\n]*\]\()([^\s()]+)(\))")
+
+
+def verify_bytes(path, original, actual):
+    """Require the fixed original bytes with exactly the listed destination repairs."""
+    rewrites = LINK_REWRITES.get(path, {})
+    expected = LINK_TARGET.sub(
+        lambda match: match[1] + rewrites.get(match[2], match[2]) + match[3], original)
+    if actual != expected:
+        raise ValueError(f"Bytes differ beyond the allowed link-target repairs: {path}")
+
+
 def git_bytes(*args):
     return subprocess.check_output(["git", *args], cwd=ROOT)
 
@@ -54,11 +93,10 @@ def main():
     for title, slug, start, end, section in sorted(sections, key=lambda item: item[2], reverse=True):
         path = ROOT / "docs" / "records" / f"{slug}.md"
         record = path.read_bytes()
-        heading, separator, body = record.partition(b"\n")
+        heading, separator, _ = record.partition(b"\n")
         if not separator or heading != b"# " + title.encode():
             raise ValueError(f"Wrong record heading: {path}")
-        if body != section.partition(b"\n")[2] or record != section[1:]:
-            raise ValueError(f"Record differs from parent bytes: {path}")
+        verify_bytes(path.relative_to(ROOT).as_posix(), section[1:], record)
         pointer = f"See [{title}](records/{slug}.md).\n".encode()
         expected = expected[:start] + pointer + expected[end:]
         total += section.count(b"\n")
@@ -66,9 +104,9 @@ def main():
     if actual != expected:
         raise ValueError("Source differs beyond the nine exact pointer substitutions")
     for path in COPIED:
-        if (ROOT / path).read_bytes() != git_bytes("show", f"6be50eae5:{path}"):
-            raise ValueError(f"Copied file differs from 6be50eae5: {path}")
-        delta = git_bytes("diff", "--numstat", PARENT, "--", path).decode().split()
+        verify_bytes(path, git_bytes("show", f"6be50eae5:{path}"), (ROOT / path).read_bytes())
+        # Check that the fixed copy only added lines before the allowed repairs.
+        delta = git_bytes("diff", "--numstat", PARENT, "6be50eae5", "--", path).decode().split()
         if delta and delta[1] != "0":
             raise ValueError(f"Copied file removes parent lines: {path}")
     for title, slug, _, _, section in sections:
@@ -76,9 +114,9 @@ def main():
     print(f"Moved lines (including headings and trailing blank lines): {total}")
     print(f"Plan expected 2189: {'MATCH' if total == 2189 else 'MISMATCH'}")
     print(f"{SOURCE}: {original.count(b'\n')} -> {actual.count(b'\n')} lines")
-    print("PASS: nine record bodies match parent bytes; only heading levels changed.")
+    print("PASS: nine records match parent bytes except heading levels and listed link-target repairs.")
     print("PASS: nine pointer targets exist; all other source bytes are unchanged.")
-    print("PASS: eight copied files match 6be50eae5 and only add parent lines.")
+    print("PASS: eight copied files match 6be50eae5 except listed link-target repairs; original copies only add parent lines.")
 
 
 if __name__ == "__main__":

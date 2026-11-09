@@ -32,7 +32,7 @@ The 64 KiB stored-row text cap remains an integrity check. Accepted reads also
 propagate resource exhaustion instead of embedding it in context errors. The
 feature-off reader retains its existing error classification.
 
-D9 is complete with the [final coverage and integration audit](desktop-rebuild-d9-audit.md).
+D9 is complete with the [final coverage and integration audit](../desktop-rebuild-d9-audit.md).
 Required-unit planning integration belongs to GRE-606 D11. Manifest option observation is
 GRE-604 D10b, described below.
 No runtime caller is added. Future user-visible callers must also check

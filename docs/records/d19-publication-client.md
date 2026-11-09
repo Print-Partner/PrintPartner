@@ -300,7 +300,7 @@ The 41 to 42 step installs `domain_events` and its index. Checkoff
 writes, including GRE-420 verify, bursts and burst undo, and Accept append an
 event in their own transaction when they change a row. The step writes no
 step copy of its own; the copy taken at open covers it. See
-[Domain events](domain-events.md).
+[Domain events](../domain-events.md).
 
 ### Domain event stream, GRE-1162
 
@@ -311,7 +311,7 @@ stops feeding a client whose bounded queue stays full for 10 seconds; that
 connection closes at the server's next write, or after 30 seconds in which the
 client accepts no bytes. Shutdown draining ends open streams and does not wait
 for them. See
-[Domain events](domain-events.md#http-stream).
+[Domain events](../domain-events.md#http-stream).
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-api --features desktop_rebuild --lib events::
@@ -570,7 +570,7 @@ route at these paths, so the gateway manifests do not list them.
   another Build's path, or an unknown one, is 404.
 
 Each Part a burst or undo changes appends one `checkoff.progress_changed` event
-in the same transaction ([Domain events](domain-events.md)). Neither write
+in the same transaction ([Domain events](../domain-events.md)). Neither write
 touches a draft, a Required-unit ID, a printer Checkoff link, a print job, the
 send queue or Spoolman, so Checkoff never passes the Accept gate and never
 deducts or reserves stock. The generated client names the three routes
@@ -1493,7 +1493,7 @@ transaction on the single writer and nothing is sent to Node.
 
 - 200 returns the draft workspace with its `reconciliation` summary. The
   selection commits with one `plan.draft_changed` domain event
-  ([Domain events](domain-events.md)).
+  ([Domain events](../domain-events.md)).
 - A retry with the same actor, key and payload returns the stored selection and
   writes nothing, before the snapshot digest is checked. The one exception is
   Node's repair: an open v1 draft whose selection was detached gets that
@@ -1549,10 +1549,10 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
   which Node has no counterpart for, is 409 `{ code, operations }`, and so is
   `duplicate_build_name` (`{ code, name }`), a draft header naming another
-  Build ([Draft header fields](draft-headers.md#accept)), and
+  Build ([Draft header fields](../draft-headers.md#accept)), and
   `duplicate_order` (`{ code, order_number, builds }`), a draft header giving
   the Build an order number another unarchived Build holds
-  ([Order authority](draft-headers.md#order-authority-gre-1095)). A missing Plan
+  ([Order authority](../draft-headers.md#order-authority-gre-1095)). A missing Plan
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
@@ -1576,13 +1576,13 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   every refusal save none either. Beside the snapshot, Accept saves the Build's
   header as it stood in `plan_snapshot_headers` (schema step 45), and a draft
   header row is copied to the Build
-  ([Draft header fields](draft-headers.md#accept)).
+  ([Draft header fields](../draft-headers.md#accept)).
 
 Contention past the writer's admission deadline is 503
 `transaction_unavailable`. Any other storage failure is 500
 `Plan draft update failed`, as it is for edit. Every draft write in these
 operations appends `plan.draft_changed` in its own transaction
-([Domain events](domain-events.md)).
+([Domain events](../domain-events.md)).
 
 `POST /plans/{id}/progress/import` (Node's accepted Progress import) is mounted
 on the Checkoff router (`pp_api::checkoff`). It takes `{ expected, rows }` and sets
@@ -1608,7 +1608,7 @@ draft, or into a new final-state draft when none is open, with one
 Required-unit reconciliation whose row is the durable receipt, all in one
 immediate transaction. It needs an `Idempotency-Key` like the routes above,
 replays before the stale-base check, refuses a changed payload under a reused
-key, and never publishes. [Plan autosave](plan-autosave.md) has the contract.
+key, and never publishes. [Plan autosave](../plan-autosave.md) has the contract.
 
 This is a separate operation from Node's `POST /plans/:id/save`, which
 publishes. That path stays on Node with its publishing semantics until UI
@@ -1623,7 +1623,7 @@ and due date into the observed open draft, or into a new draft when none is
 open, in one immediate transaction. It needs an `Idempotency-Key`, writes
 nothing to the Build, and Accept publishes it.
 `GET /plans/{id}/drafts/{draft_id}/header` reads the draft's header beside the
-Build's current one. [Draft header fields](draft-headers.md) has the contract,
+Build's current one. [Draft header fields](../draft-headers.md) has the contract,
 schema steps 43 and 45, the draft paths that carry the header forward, and the
 Accept copy.
 
@@ -1668,7 +1668,7 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   schema v18 and holds `legacy:<id>` layers, which Node's restore would turn
   into addons with no base.
 - A refusal is the one Accept would return, as an RFC 9457 problem
-  ([Problem responses](problem-responses.md)): 404 `draft_not_found` for a
+  ([Problem responses](../problem-responses.md)): 404 `draft_not_found` for a
   missing draft, otherwise 409 with no `detail`, Accept's outcome kind as
   `code`, and its fields as extension members, for example
   `{ code: "already_applied", receipt }` for a draft Accept already consumed,

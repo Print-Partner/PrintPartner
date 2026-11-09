@@ -24,7 +24,7 @@ factor is kept at send (Alfala, 2026-11-07):
   with no estimate is left alone (`NoEstimate`).
 
 The send queue's upload worker calls `record_estimate` when an upload with
-Checkoff units succeeds (GRE-1238, see [send-queue.md](send-queue.md)).
+Checkoff units succeeds (GRE-1238, see [send-queue.md](../send-queue.md)).
 
 The measured value (GRE-1165, part c) comes from `pp_core::measured_grams`, an
 observer on the Moonraker and PrusaLink status watchers' ordered transitions. When a host

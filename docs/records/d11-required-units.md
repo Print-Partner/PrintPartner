@@ -66,7 +66,7 @@ checked before the cap.
   with a different payload returns `idempotency_conflict`.
 
 GRE-416 mounts the operation as `PUT /plans/{id}/drafts/{draft_id}/reconciliation`
-on the draft router (see [D24 drafts HTTP](#d24-drafts-http-gre-619)). The local
+on the draft router (see [D24 drafts HTTP](d19-publication-client.md#d24-drafts-http-gre-619)). The local
 `Decision` and request types exist because `pp-storage` has no dependency on
 `pp-contracts`.
 

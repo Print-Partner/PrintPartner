@@ -93,6 +93,35 @@ class Spawn(unittest.TestCase):
         self.assertEqual(out.strip(), "[]")
 
 
+class StopLabel(unittest.TestCase):
+    def test_names_the_signal(self):
+        self.assertEqual(run.stop_label(KeyboardInterrupt()), "SIGINT")
+        self.assertEqual(run.stop_label(run.Stopped("SIGTERM")), "SIGTERM")
+        self.assertEqual(run.stop_label(run.Stopped("SIGHUP")), "SIGHUP")
+
+
+class MainStops(unittest.TestCase):
+    def run_main_raising(self, error):
+        signals = {signum: signal.getsignal(signum) for signum in run.STOP_SIGNALS}
+        self.addCleanup(lambda: [signal.signal(n, h) for n, h in signals.items()])
+        with tempfile.TemporaryDirectory() as out, \
+                mock.patch.object(run, "build", return_value=Path("pp-server")), \
+                mock.patch.object(run, "session", side_effect=error), \
+                contextlib.redirect_stdout(io.StringIO()) as printed:
+            status = run.main(["--shot", "/builds", "--out", out])
+        return status, printed.getvalue()
+
+    def test_ctrl_c_reports_sigint(self):
+        status, printed = self.run_main_raising(KeyboardInterrupt())
+        self.assertEqual(status, 1)
+        self.assertIn("FAIL: stopped by SIGINT\n", printed)
+
+    def test_sigterm_reports_its_name(self):
+        status, printed = self.run_main_raising(run.Stopped("SIGTERM"))
+        self.assertEqual(status, 1)
+        self.assertIn("FAIL: stopped by SIGTERM\n", printed)
+
+
 class EvidenceCache(unittest.TestCase):
     def test_uses_a_cache_for_this_repository_and_refuses_another_origin(self):
         with tempfile.TemporaryDirectory() as base, mock.patch.dict(os.environ, {"XDG_CACHE_HOME": base}):

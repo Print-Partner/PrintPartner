@@ -342,6 +342,12 @@ def publish(pr, shots, note):
     run(EVIDENCE_BIN, "publish", pr, *shots, *(["--note", note] if note else []), env=env)
 
 
+def stop_label(error):
+    """The signal that stopped the run. Stopped carries its signal name; Ctrl-C raises a
+    KeyboardInterrupt with no message, and an exception instance is always truthy."""
+    return str(error) or "SIGINT"
+
+
 def check_png(path):
     with path.open("rb") as handle:
         if handle.read(8) != b"\x89PNG\r\n\x1a\n":
@@ -377,7 +383,7 @@ def main(argv=None):
     try:
         failures = session(args, work, out_dir, node, binary)
     except (KeyboardInterrupt, Stopped) as stop_reason:
-        failures = [f"stopped by {stop_reason or 'SIGINT'}"]
+        failures = [f"stopped by {stop_label(stop_reason)}"]
     finally:
         # Cleanup must finish even if a second signal arrives.
         for signum in STOP_SIGNALS:

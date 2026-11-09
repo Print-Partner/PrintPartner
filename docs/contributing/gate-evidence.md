@@ -58,7 +58,8 @@ files.txt` (one path per line) to apply the screenshot and video rule locally.
 
 ## Run CI locally before you push
 
-Agents and contributors run the required CI checks before each push:
+Agents and contributors run the required CI checks before each push. A
+sensitive PR runs the full set:
 
 ```sh
 PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci

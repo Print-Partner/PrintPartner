@@ -284,13 +284,13 @@ Each job declares its runner in `runs-on`, its package scope in `CARGO_SCOPE`, a
 
 ## Run the required checks with one command
 
-Run this command from the repository before you push:
+A sensitive PR, as the [merge gate](definition-of-done.md#merge-gate) defines it, runs the full set before each push:
 
 ```sh
 PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci
 ```
 
-`just ci` passes its arguments to `python3 scripts/local-ci.py`, which holds the only list of steps. Without [just](https://github.com/casey/just), run `python3 scripts/local-ci.py` from the repository root with the same arguments. Agents run this command before they push, as [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) says.
+`just ci` passes its arguments to `python3 scripts/local-ci.py`, which holds the only list of steps. Without [just](https://github.com/casey/just), run `python3 scripts/local-ci.py` from the repository root with the same arguments. Agents run it, or `just ci --fast` for a normal PR, before they push, as [Gate evidence](../contributing/gate-evidence.md#run-ci-locally-before-you-push) says.
 
 It runs the steps below in the order that `just ci --list` prints, and continues after a failure, so one run reports every failure. At the end it prints one `PASS`, `FAIL` or `SKIP` line for each step and exits 1 if any step failed. To see the step ids, use `just ci --list`. To select steps, use `just ci --only fmt,clippy-off` or `just ci --skip nextest-on`.
 

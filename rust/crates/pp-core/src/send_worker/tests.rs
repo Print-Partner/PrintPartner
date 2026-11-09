@@ -141,12 +141,19 @@ impl Farm {
     /// `[grams, units, basis, grams_per_mm, measured_mm]`.
     fn grams(&self) -> Value {
         let links = self.links();
-        let link = links.as_array().unwrap().last().unwrap()["id"].clone();
+        self.grams_of(
+            links.as_array().unwrap().last().unwrap()["id"]
+                .as_str()
+                .unwrap(),
+        )
+    }
+
+    fn grams_of(&self, link: &str) -> Value {
         let row: String = self
             .database()
             .query_row(
                 "SELECT json_array(grams,units,basis,grams_per_mm,measured_mm) FROM print_link_grams WHERE tenant_id='default' AND link_id=?1",
-                [link.as_str().unwrap()],
+                [link],
                 |row| row.get(0),
             )
             .unwrap();
@@ -532,6 +539,96 @@ async fn gre_1165_a_link_reconciled_or_verified_before_the_write_is_still_measur
         assert_eq!(farm.links()[0]["state"], state, "Checkoff is untouched");
         let again = farm.finish("a.gcode").await;
         assert_eq!(again, Some(Measurement::AlreadyMeasured), "{state}");
+    }
+}
+
+/// Two sends of `a.gcode`: an older `verified` L1 stored after a newer
+/// `watching` L2, as a save leaves terminal links after active ones.
+async fn two_sends_of_one_file(printer: &RoutedPrinter) -> (Farm, String, String) {
+    let farm = Farm::open(printer.url(), &[("q1", false, true), ("q2", false, true)]);
+    for id in ["q1", "q2"] {
+        farm.send(id);
+        assert_eq!(farm.worker().run_next().await.unwrap(), Some(Sent::Done));
+    }
+    let mut links = farm.links();
+    let list = links.as_array_mut().unwrap();
+    let id = |link: &Value| link["id"].as_str().unwrap().to_owned();
+    let (l1, l2) = (id(&list[0]), id(&list[1]));
+    list[0]["state"] = json!("verified");
+    list[0]["created_at"] = json!("2026-11-01T00:00:00.000Z");
+    list[1]["created_at"] = json!("2026-11-02T00:00:00.000Z");
+    list.reverse();
+    farm.database()
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='printer.checkoff_links'",
+            [links.to_string()],
+        )
+        .unwrap();
+    (farm, l1, l2)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gre_1165_the_newest_send_of_a_file_takes_the_length_whatever_the_list_order() {
+    use pp_storage::print_grams::Measurement;
+    let stats = br#"{"result":{"status":{"print_stats":{"state":"complete","filename":"a.gcode","filament_used":4000.0}}}}"#;
+    let routes = || {
+        vec![
+            (UPLOAD.to_owned(), 201, b"{}".to_vec()),
+            (PRINT_STATS.to_owned(), 200, stats.to_vec()),
+        ]
+    };
+    for l1_measured in [true, false] {
+        let printer = RoutedPrinter::start(routes()).unwrap();
+        let (farm, l1, l2) = two_sends_of_one_file(&printer).await;
+        if l1_measured {
+            farm.database()
+                .execute(
+                    "UPDATE print_link_grams SET grams=9.0,basis='measured',measured_mm=3600.0 WHERE link_id=?1",
+                    [&l1],
+                )
+                .unwrap();
+        }
+        let l1_before = farm.grams_of(&l1);
+        let before_l2 = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_793_534_400);
+        assert_eq!(
+            farm.finish_at(Some("a.gcode"), before_l2).await,
+            Some(if l1_measured {
+                Measurement::AlreadyMeasured
+            } else {
+                Measurement::Recorded
+            }),
+            "only L1 existed at a finish on 2026-11-01T12:00Z"
+        );
+        let l1_after_old_finish = farm.grams_of(&l1);
+        if l1_measured {
+            assert_eq!(l1_after_old_finish, l1_before);
+        }
+        assert_eq!(
+            farm.grams_of(&l2),
+            estimate(),
+            "L2 was created after that finish"
+        );
+        if !l1_measured {
+            farm.database()
+                .execute(
+                    "UPDATE print_link_grams SET grams=12.5,basis='estimated',measured_mm=NULL WHERE link_id=?1",
+                    [&l1],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            farm.finish("a.gcode").await,
+            Some(Measurement::Recorded),
+            "L1 measured: {l1_measured}"
+        );
+        assert_eq!(farm.grams_of(&l2), measured(), "L1 measured: {l1_measured}");
+        let l1_expected = if l1_measured { l1_before } else { estimate() };
+        assert_eq!(farm.grams_of(&l1), l1_expected, "L1 is unchanged");
+        assert_eq!(
+            farm.links()[0]["id"],
+            l2.as_str(),
+            "L2 is still listed first"
+        );
     }
 }
 

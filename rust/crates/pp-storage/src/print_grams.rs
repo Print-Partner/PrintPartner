@@ -193,19 +193,42 @@ pub(crate) fn execute(
     admission: crate::writer_admission::Deadline,
 ) -> Result<Option<Measurement>> {
     let tx = crate::writer_admission::begin_immediate(connection, admission)?;
-    let link = crate::checkoff_progress::finished_link(
+    let candidates = crate::checkoff_progress::finished_links(
         &tx,
         &command.tenant,
         &command.integration_id,
         &command.filename,
         &command.finished_at,
     )?;
-    let Some(link) = link else {
+    let Some(link) = newest_unmeasured_first(&tx, &command.tenant, candidates)? else {
         return Ok(None);
     };
     let measured = record_measured(&tx, &command.tenant, &link, command.measured_mm)?;
     tx.commit()?;
     Ok(Some(measured))
+}
+
+/// The link a finish belongs to: the newest by `created_at` (ties broken by
+/// link ID) among those without a measured length, else the newest measured
+/// one, so an older measured link never shadows a newer unmeasured one.
+fn newest_unmeasured_first(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    candidates: Vec<(String, String)>,
+) -> Result<Option<String>> {
+    let mut keyed = Vec::with_capacity(candidates.len());
+    for (created_at, link) in candidates {
+        let measured: bool = tx
+            .query_row(
+                "SELECT measured_mm IS NOT NULL FROM print_link_grams WHERE tenant_id=?1 AND link_id=?2",
+                params![tenant, link],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        keyed.push((!measured, created_at, link));
+    }
+    Ok(keyed.into_iter().max().map(|(_, _, link)| link))
 }
 
 fn positive(value: f64) -> bool {

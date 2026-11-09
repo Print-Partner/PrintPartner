@@ -677,46 +677,48 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
     Ok(Op::Unit { target, change })
 }
 
-/// The newest link of host `integration_id` that is `watching`,
-/// `awaiting_verify` or `verified`, created at or before `created_by`, whose
-/// filename or remote path names `filename`, matched like Node's
-/// `printerFilenamesMatch`: the trimmed base name, case-insensitively. The
-/// later two count because Node's checkoff reconcile, and then a fast
-/// verify, can move the link on between the finish and the measured write.
-/// Only the measurement is written; the link's state is never changed here.
+/// Every link of host `integration_id` that is `watching`, `awaiting_verify`
+/// or `verified`, created at or before `created_by`, whose filename or remote
+/// path names `filename`, matched like Node's `printerFilenamesMatch`: the
+/// trimmed base name, case-insensitively. Each comes as `(created_at, id)`, in
+/// no particular order: list position is not creation order, because a save
+/// moves a patched link to the end and writes terminal links after active
+/// ones. The later two states count because Node's checkoff reconcile, and
+/// then a fast verify, can move a link on between the finish and the
+/// measured write. Nothing here changes a link.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) fn finished_link(
+pub(crate) fn finished_links(
     tx: &Transaction<'_>,
     tenant: &str,
     integration_id: &str,
     filename: &str,
     created_by: &str,
-) -> Result<Option<String>> {
+) -> Result<Vec<(String, String)>> {
     let base = |name: &str| {
         let name = name.trim().replace('\\', "/");
         name.rsplit('/').next().unwrap_or_default().to_lowercase()
     };
     let wanted = base(filename);
     if wanted.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let links = links::load(tx, tenant, &links::now())?;
     Ok(links
         .iter()
-        .rev()
-        .find(|link| {
+        .filter(|link| {
             matches!(
                 link["state"].as_str(),
                 Some("watching" | "awaiting_verify" | "verified")
             ) && link["integration_id"] == integration_id
-                && link["created_at"]
-                    .as_str()
-                    .is_some_and(|at| at <= created_by)
                 && [&link["filename"], &link["remote_path"]]
                     .into_iter()
                     .any(|name| name.as_str().is_some_and(|name| base(name) == wanted))
         })
-        .and_then(|link| link["id"].as_str().map(str::to_owned)))
+        .filter_map(|link| {
+            let at = link["created_at"].as_str().filter(|at| *at <= created_by)?;
+            Some((at.to_owned(), link["id"].as_str()?.to_owned()))
+        })
+        .collect())
 }
 
 /// Node's `createPrinterCheckoffLink` for a successful printer upload: a

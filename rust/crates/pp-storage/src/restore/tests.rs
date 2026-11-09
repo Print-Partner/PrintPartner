@@ -19,6 +19,16 @@ fn take_hook<T>(hooks: &Mutex<Vec<(PathBuf, T)>>, data_dir: &Path) -> Option<T> 
     Some(hooks.remove(index).1)
 }
 
+static BEFORE_WORK_DIR_CREATE: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+/// Called by `work_dir` after it found `.pp-restore` missing, before it
+/// creates it: another caller can create it in between.
+pub(super) fn before_work_dir_create(data_dir: &Path) {
+    if let Some(hook) = take_hook(&BEFORE_WORK_DIR_CREATE, data_dir) {
+        hook();
+    }
+}
+
 /// Called by `begin_upload` between creating `.pp-restore` and its file.
 pub(super) fn after_work_dir(data_dir: &Path) {
     if let Some(hook) = take_hook(&AFTER_WORK_DIR, data_dir) {
@@ -785,5 +795,36 @@ fn ticket_t_8_restore_data_after_the_gzip_member_refuses_and_keeps_the_earlier_s
         .join(WORK_DIR)
         .join(format!("{STAGED_PREFIX}{}", whole.restore_id));
     assert!(stage_dir.join("repos/keep.stl").is_file());
+    owner.shutdown().unwrap();
+}
+
+/// Two callers can both find `.pp-restore` missing. The one whose create
+/// loses still succeeds when the winner made a real directory, and refuses
+/// when a link appeared instead.
+#[test]
+fn ticket_t_8_restore_a_concurrently_created_work_directory_is_accepted_but_a_link_is_not() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let work = root.join(WORK_DIR);
+    let winner = work.clone();
+    BEFORE_WORK_DIR_CREATE.lock().unwrap().push((
+        root.clone(),
+        Box::new(move || std::fs::create_dir(winner).unwrap()),
+    ));
+    let mut upload = client.begin_upload(16).unwrap();
+    upload.write(b"started").unwrap();
+    drop(upload);
+    std::fs::remove_dir(&work).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let (link, target) = (work.clone(), outside.path().to_owned());
+    BEFORE_WORK_DIR_CREATE.lock().unwrap().push((
+        root.clone(),
+        Box::new(move || std::os::unix::fs::symlink(target, link).unwrap()),
+    ));
+    let error = client.begin_upload(16).err().unwrap();
+    assert!(error.to_string().contains("not a directory"), "{error:#}");
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    std::fs::remove_file(&work).unwrap();
     owner.shutdown().unwrap();
 }

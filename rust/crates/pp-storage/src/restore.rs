@@ -312,11 +312,22 @@ fn require_marker(data_dir: &Path) -> Result<()> {
 fn work_dir(data_dir: &Path) -> Result<PathBuf> {
     let work = data_dir.join(WORK_DIR);
     if work.symlink_metadata().is_err() {
-        pp_os::create_private_dir(&work)?;
+        #[cfg(all(test, unix))]
+        tests::before_work_dir_create(data_dir);
+        // An upload and a stage can both find it missing; the loser of the
+        // create sees `AlreadyExists`, and the check below decides.
+        match pp_os::create_private_dir(&work) {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            result => result?,
+        }
     }
+    let status = pp_os::status_nofollow(&work)?;
     ensure!(
-        work.symlink_metadata()?.file_type().is_dir(),
-        "Restore work directory {} is not a directory",
+        status.is_dir()
+            && status
+                .posix_access()
+                .is_none_or(|access| access.owned_by_current_user()),
+        "Restore work directory {} is not a directory owned by this user",
         work.display()
     );
     Ok(work)

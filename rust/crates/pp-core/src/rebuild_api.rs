@@ -742,6 +742,25 @@ mod tests {
         }
     }
 
+    /// The sample bodies name no stored draft, snapshot, link, burst, History entry or
+    /// print, so those handlers answer their own 404 with a code or detail.
+    fn handler_not_found(status: u16, body: &Value) -> bool {
+        const CODES: [&str; 3] = [
+            "draft_not_found",
+            "snapshot_not_found",
+            "farm_log_entry_not_found",
+        ];
+        const DETAILS: [&str; 4] = [
+            "beds[0]: Checkoff link not found",
+            "Checkoff burst not found",
+            "History entry not found",
+            "Unattributed print not found",
+        ];
+        status == 404
+            && (CODES.iter().any(|code| body["code"] == *code)
+                || DETAILS.iter().any(|detail| body["detail"] == *detail))
+    }
+
     #[tokio::test]
     async fn client_routes_match_registrations() {
         use pp_api::client_contract::{CLIENT_ROUTES, ClientAuth};
@@ -826,16 +845,7 @@ mod tests {
                 .unwrap();
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            // The sample bodies name no stored draft, snapshot, link, burst, History entry or
-            // print, so those handlers answer their own 404 with a detail.
-            let handler_not_found = status == 404
-                && (body["code"] == "draft_not_found"
-                    || body["code"] == "snapshot_not_found"
-                    || body["code"] == "farm_log_entry_not_found"
-                    || body["detail"] == "beds[0]: Checkoff link not found"
-                    || body["detail"] == "Checkoff burst not found"
-                    || body["detail"] == "History entry not found"
-                    || body["detail"] == "Unattributed print not found");
+            let handler_not_found = handler_not_found(status, &body);
             // A manual burst names an Accepted Plan basis no stored Build has.
             let handler_stale =
                 status == 409 && body["detail"] == "Accepted Plan changed; reload and retry";

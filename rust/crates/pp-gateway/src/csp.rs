@@ -5,6 +5,7 @@
 //! and ancestor rules.
 use super::*;
 use crate::scratch::Scratch;
+use crate::slice0_mount::{NoHosts, get};
 
 const LEGACY: &str = "frame-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 const INDEX: &str = "<!doctype html><html><head><title>PP</title></head><body></body></html>";
@@ -66,21 +67,14 @@ impl Fixture {
     }
 
     async fn get(&self, method: &str, path: &str, accept_encoding: Option<&str>) -> Response<Body> {
-        let mut request = Request::builder()
-            .method(method)
-            .uri(path)
-            .header("host", &self.gateway.state.host)
-            .header("origin", self.gateway.origin())
-            .header("cookie", &self.cookie)
-            .header("accept", "text/html");
+        let mut request = get(&self.gateway, path, Some(&self.cookie), None);
+        *request.method_mut() = method.parse().unwrap();
+        let headers = request.headers_mut();
+        headers.insert("accept", HeaderValue::from_static("text/html"));
         if let Some(value) = accept_encoding {
-            request = request.header("accept-encoding", value);
+            headers.insert("accept-encoding", HeaderValue::from_str(value).unwrap());
         }
-        handle(
-            State(self.gateway.state.clone()),
-            request.body(Body::empty()).unwrap(),
-        )
-        .await
+        handle(State(self.gateway.state.clone()), request).await
     }
 
     /// The policy this gateway must send, built by hand from the gateway's port.
@@ -96,17 +90,6 @@ impl Fixture {
              manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; \
              form-action 'self'; frame-ancestors 'none'"
         )
-    }
-}
-
-struct NoHosts;
-impl MoonrakerHosts for NoHosts {
-    fn read(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<MoonrakerHost>, HostReadError>> + Send>,
-    > {
-        Box::pin(async { Ok(Vec::new()) })
     }
 }
 

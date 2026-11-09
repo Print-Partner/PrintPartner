@@ -12,14 +12,16 @@ use tar::{EntryType, Header};
 type Hook = Box<dyn FnOnce() + Send>;
 static AFTER_WORK_DIR: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
 
+/// Takes the hook registered for `data_dir`, if any.
+fn take_hook<T>(hooks: &Mutex<Vec<(PathBuf, T)>>, data_dir: &Path) -> Option<T> {
+    let mut hooks = hooks.lock().unwrap();
+    let index = hooks.iter().position(|(dir, _)| dir == data_dir)?;
+    Some(hooks.remove(index).1)
+}
+
 /// Called by `begin_upload` between creating `.pp-restore` and its file.
 pub(super) fn after_work_dir(data_dir: &Path) {
-    let hook = {
-        let mut hooks = AFTER_WORK_DIR.lock().unwrap();
-        let index = hooks.iter().position(|(dir, _)| dir == data_dir);
-        index.map(|index| hooks.remove(index).1)
-    };
-    if let Some(hook) = hook {
+    if let Some(hook) = take_hook(&AFTER_WORK_DIR, data_dir) {
         hook();
     }
 }
@@ -44,12 +46,7 @@ static ADMISSION_CLOSED: Mutex<Vec<(PathBuf, DeadlineHook)>> = Mutex::new(Vec::n
 
 /// Called by shutdown once admission is closed, with the drain deadline.
 pub(super) fn admission_closed(data_dir: &Path, deadline: Instant) {
-    let hook = {
-        let mut hooks = ADMISSION_CLOSED.lock().unwrap();
-        let index = hooks.iter().position(|(dir, _)| dir == data_dir);
-        index.map(|index| hooks.remove(index).1)
-    };
-    if let Some(hook) = hook {
+    if let Some(hook) = take_hook(&ADMISSION_CLOSED, data_dir) {
         hook(deadline);
     }
 }
@@ -397,21 +394,27 @@ fn ticket_t_8_restore_a_linked_work_directory_refuses_staging() {
     owner.shutdown().unwrap();
 }
 
+/// Stages are ephemeral until activation: the next open removes a completed
+/// stage as well as an interrupted upload, and leaves live files alone.
 #[test]
-fn ticket_t_8_restore_reopen_clears_an_interrupted_stage() {
+fn ticket_t_8_restore_reopen_removes_completed_stages_and_interrupted_uploads() {
     let (_installation, root) = installation();
     let scratch = tempfile::tempdir().unwrap();
     let owner = open(&root).unwrap();
     let (backup, _) = backup_then_change(&owner, &root, scratch.path());
     let client = owner.installation().unwrap();
-    stage(&client, &backup).unwrap();
+    let staged = stage(&client, &backup).unwrap();
     let mut upload = client.begin_upload(1 << 20).unwrap();
     upload.write(b"partial").unwrap();
-    // A crash leaves the upload and the stage behind.
+    // A crash leaves the upload behind.
     std::mem::forget(upload);
     assert_eq!(work_entries(&root).len(), 2);
     let live = state(&root);
     owner.shutdown().unwrap();
+    let staged_dir = root
+        .join(WORK_DIR)
+        .join(format!("{STAGED_PREFIX}{}", staged.restore_id));
+    assert!(staged_dir.is_dir(), "shutdown itself leaves the stage");
     open(&root).unwrap().shutdown().unwrap();
     assert!(!root.join(WORK_DIR).exists());
     assert_eq!(state(&root), live);
@@ -671,11 +674,11 @@ fn ticket_t_8_restore_shutdown_refuses_new_work_at_once_and_drains_against_one_d
 /// stream to its end catches a damaged CRC or length trailer.
 #[test]
 fn ticket_t_8_restore_a_corrupt_gzip_trailer_refuses_and_keeps_the_earlier_stage() {
+    let scratch = tempfile::tempdir().unwrap();
+    let good = archive_with(scratch.path(), 34, "full", &[]);
     let (_installation, root) = installation();
     let owner = open(&root).unwrap();
     let client = owner.installation().unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let good = archive_with(scratch.path(), 34, "full", &[]);
     let earlier = stage(&client, &good).unwrap();
     for trailer_byte in [8, 1] {
         // The trailer is the CRC-32 (8 to 5 bytes from the end), then the length.

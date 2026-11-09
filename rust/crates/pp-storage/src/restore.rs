@@ -57,6 +57,10 @@ impl fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 /// A validated archive extracted beside the live installation.
+///
+/// A stage lasts only as long as the [`WriterOwner`] that made it. The next
+/// open removes every stage, complete or not, because schema admission holds
+/// only for the build that ran it. After a restart the client uploads again.
 #[derive(Debug, Clone)]
 pub struct Staged {
     /// 32 lowercase hex digits; the stage lives in `.pp-restore/staged-<id>`.

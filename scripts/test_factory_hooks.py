@@ -1,22 +1,61 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / ".factory/hooks/guard.py"
+IN_PROCESS = {}
+
+
+def in_process(target):
+    """Return the module for a guard entry point, loaded once. The adapters share one copy of the policy."""
+    if not IN_PROCESS:
+        policy = load(ROOT / "scripts/agent-guard.py", "agent_guard_in_process")
+        IN_PROCESS[ROOT / "scripts/agent-guard.py"] = policy
+        for path, name in ((GUARD, "factory_adapter_in_process"), (ROOT / ".claude/hooks/guard.py", "claude_adapter")):
+            adapter = load(path, name)
+            adapter.load_policy = lambda policy=policy: policy
+            IN_PROCESS[path] = adapter
+    return IN_PROCESS.get(target)
+
+
+def spawn(cmd, input=None, env=None, cwd=None, **kwargs):
+    """Run a command like subprocess.run, but run the two hook adapters and the guard CLI in this process.
+
+    Spawning Python and recompiling the guard for each of about a thousand calls made the suite outrun the
+    CI job. The entry point still reads stdin, the environment, its arguments and the working directory,
+    and its exit code and stderr come back as a CompletedProcess. Any other command, such as an adapter
+    copied elsewhere, still runs as a real process.
+    """
+    target = Path(cmd[2]) if len(cmd) >= 3 and cmd[:2] == [sys.executable, "-B"] else None
+    module = in_process(target) if target else None
+    if module is None or (target.name != "agent-guard.py" and len(cmd) != 3):
+        return subprocess.run(cmd, input=input, env=env, cwd=cwd, **kwargs)
+    out, err = io.StringIO(), io.StringIO()
+    with patch.dict(os.environ, dict(os.environ) if env is None else env, clear=True), \
+            patch.object(sys, "stdin", io.StringIO(input or "")), patch.object(sys, "argv", [str(target), *cmd[3:]]), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), contextlib.chdir(cwd or os.getcwd()):
+        try:
+            code = module.main()
+        except SystemExit as error:
+            if isinstance(error.code, str):
+                print(error.code, file=err)
+            code = error.code if isinstance(error.code, int) else int(error.code is not None)
+    return subprocess.CompletedProcess(cmd, code, out.getvalue(), err.getvalue())
 
 
 def run(tool, data):
     payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": data})
-    return subprocess.run([sys.executable, "-B", str(GUARD)], input=payload,
+    return spawn([sys.executable, "-B", str(GUARD)], input=payload,
                           capture_output=True, text=True, check=False)
 
 
@@ -85,8 +124,8 @@ class GuardHookTests(unittest.TestCase):
 
     def test_command_literals_and_heredoc_data_are_allowed(self):
         for command in ("rg -- '--no-verify' .factory",
-                        "printf '%s\\n' 'gh pr view 12'",
-                        "git log --grep 'pr merge'",
+                        "printf '%s\\n' 'gh pr merge 12 --squash'",
+                        "git log --grep 'gh pr merge'",
                         "gh pr list --search '--no-verify'",
                         "git log --grep --no-verify",
                         "git log --format='%h %s'",
@@ -184,11 +223,11 @@ class GuardHookTests(unittest.TestCase):
             payload = {"tool_name": "Execute", "cwd": folder, "tool_input": {"command": "git push origin HEAD"}}
             for branch, code in (("main", 2), ("topic", 0)):
                 subprocess.run(["git", "-C", folder, "symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=True)
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+                result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                         capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode, code, result.stderr)
             payload["tool_input"]["command"] = f"cd / && git -C {folder} push -u origin HEAD"
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+            result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             for command, reason in (("git -c remote.origin.push=refs/heads/topic:refs/heads/main push origin topic",
@@ -206,7 +245,7 @@ class GuardHookTests(unittest.TestCase):
                                      "git commit -m change", "GIT_CONFIG_"),
                                     ("export GIT_CONFIG_PARAMETERS=x; git commit -m change", "GIT_CONFIG_")):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+                result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                         capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode, 2, command)
                 self.assertIn(reason, result.stderr)
@@ -214,7 +253,7 @@ class GuardHookTests(unittest.TestCase):
             for command, code in (("git push origin HEAD:topic", 2), ("git push --no-follow-tags origin HEAD:topic", 0),
                                   ("git -c push.followTags=false push origin HEAD:topic", 0)):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+                result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                         capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode, code, command + result.stderr)
             subprocess.run(["git", "-C", folder, "config", "--unset", "push.followTags"], check=True)
@@ -228,7 +267,7 @@ class GuardHookTests(unittest.TestCase):
                             "git symbolic-ref --short HEAD && git push origin HEAD",
                             "git worktree list && git push origin HEAD"):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+                result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                         capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode, 0, command + result.stderr)
             for command in ("git switch main && git push origin HEAD", "gh pr checkout 12 && git push origin @",
@@ -241,7 +280,7 @@ class GuardHookTests(unittest.TestCase):
                             "git symbolic-ref HEAD refs/heads/main && git push origin HEAD",
                             "echo $(git checkout main) && git push origin HEAD"):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+                result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                         capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode, 2, command)
                 self.assertIn("destination branch", result.stderr)
@@ -254,7 +293,7 @@ class GuardHookTests(unittest.TestCase):
                                   ("{ if false; then cd sub; fi; }; git push origin HEAD", 2),
                                   ("cd -P sub && git push origin HEAD", 2)):
                 payload = {"tool_name": "Execute", "cwd": folder, "tool_input": {"command": command}}
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+                result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                         capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode, code, command + result.stderr)
 
@@ -322,16 +361,16 @@ class GuardHookTests(unittest.TestCase):
             Path(folder, "reply.graphql").write_text("mutation { addPullRequestReviewThreadReply(input: {}) { comment { url } } }")
             payload = {"tool_name": "Execute", "cwd": folder,
                        "tool_input": {"command": "gh api graphql -F query=@merge.graphql"}}
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+            result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
             payload["tool_input"]["command"] = "gh api graphql -F query=@reply.graphql"
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+            result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             payload["tool_input"]["command"] = ("printf '%s' 'mutation { mergePullRequest(input: {}) { clientMutationId } }'"
                                                 " > reply.graphql; gh api graphql -F query=@reply.graphql")
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+            result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("separate command", result.stderr)
@@ -350,13 +389,13 @@ class GuardHookTests(unittest.TestCase):
                                     ("git checkout other && gh api graphql -F query=@reply.graphql", "separate command"),
                                     ("cd -P sub && gh api graphql -F query=@merge.graphql", "separate command")):
                 payload["tool_input"]["command"] = command
-                result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+                result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                         capture_output=True, text=True, check=False)
                 self.assertEqual(result.returncode, 2, command)
                 self.assertIn(reason, result.stderr)
             payload.update(cwd=str(Path(folder, "sub")))
             payload["tool_input"]["command"] = "gh api graphql --input body.json"
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+            result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("maintainer", result.stderr)
@@ -367,7 +406,7 @@ class GuardHookTests(unittest.TestCase):
             Path(folder, "body.json").write_text(body)
             payload = {"tool_name": "Execute", "cwd": folder,
                        "tool_input": {"command": "gh api graphql --input body.json"}}
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
+            result = spawn([sys.executable, "-B", str(GUARD)], input=json.dumps(payload),
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, result.stderr)
         mutation = "query=mutation { mergePullRequest # note\n(input: {}) { clientMutationId } }"
@@ -504,7 +543,7 @@ class GuardHookTests(unittest.TestCase):
 
     def test_unreadable_input_fails_closed(self):
         for payload in ("not json", "[]", "null", '{"tool_name":"Execute","tool_input":[]}'):
-            result = subprocess.run([sys.executable, "-B", str(GUARD)], input=payload,
+            result = spawn([sys.executable, "-B", str(GUARD)], input=payload,
                                     capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 2, payload)
 
@@ -513,7 +552,7 @@ CLI = ROOT / "scripts/agent-guard.py"
 
 
 def neutral(*args, stdin=""):
-    return subprocess.run([sys.executable, "-B", str(CLI), *args], input=stdin,
+    return spawn([sys.executable, "-B", str(CLI), *args], input=stdin,
                           capture_output=True, text=True, check=False)
 
 
@@ -582,7 +621,7 @@ class NeutralGuardCliTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", "-b", "main", str(folder / "repo")], check=True)
             cwd, push = str(folder / "link/../repo"), "git push origin HEAD"
             self.assertPasses(neutral("command", "--cwd", cwd, push))
-            self.assertPasses(subprocess.run([sys.executable, "-B", str(CLI), "command", "--cwd", "link/../repo", push],
+            self.assertPasses(spawn([sys.executable, "-B", str(CLI), "command", "--cwd", "link/../repo", push],
                                              cwd=folder, capture_output=True, text=True, check=False))
             self.assertPasses(request({"operation": "command", "cwd": cwd, "command": push}))
             self.assertPasses(hook(GUARD, droid_command(push, cwd)))
@@ -647,7 +686,7 @@ class FactoryAdapterTests(unittest.TestCase):
             Path(folder, "merge.graphql").write_text("mutation { mergePullRequest(input: {}) { clientMutationId } }")
             for command in self.COMMANDS:
                 with self.subTest(command=command):
-                    hook = subprocess.run([sys.executable, "-B", str(GUARD)], capture_output=True, text=True, check=False,
+                    hook = spawn([sys.executable, "-B", str(GUARD)], capture_output=True, text=True, check=False,
                                           input=json.dumps({"tool_name": "Execute", "cwd": folder,
                                                             "tool_input": {"command": command}}))
                     self.assertSame(hook, request({"operation": "command", "cwd": folder, "command": command}))
@@ -668,7 +707,7 @@ class FactoryAdapterTests(unittest.TestCase):
             copy = Path(folder, ".factory/hooks/guard.py")
             copy.parent.mkdir(parents=True)
             copy.write_text(GUARD.read_text())
-            result = subprocess.run([sys.executable, "-B", str(copy)], capture_output=True, text=True, check=False,
+            result = spawn([sys.executable, "-B", str(copy)], capture_output=True, text=True, check=False,
                                     input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "/repo/a.py"}}))
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("internal error", result.stderr)
@@ -682,13 +721,13 @@ OLD_MERGE_GATE = f"gh pr merge 12 -R Print-Partner/PrintPartner --squash --match
 CLAUDE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 
-def hook(adapter, payload, coordinator=None, extra=None):
+def hook(adapter, payload, coordinator=None, extra=None, cwd=None):
     env = {key: value for key, value in os.environ.items() if key != "PP_COORDINATOR_WORKTREE"}
     env.update(extra or {})
     if coordinator is not None:
         env["PP_COORDINATOR_WORKTREE"] = coordinator
     text = payload if isinstance(payload, str) else json.dumps(payload)
-    return subprocess.run([sys.executable, "-B", str(adapter)], input=text, env=env,
+    return spawn([sys.executable, "-B", str(adapter)], input=text, env=env, cwd=cwd,
                           capture_output=True, text=True, check=False)
 
 
@@ -824,10 +863,8 @@ class CoordinatorMergeTests(unittest.TestCase):
         Path(self.coordinator, "sub").mkdir()
 
     def results(self, command, cwd, coordinator, extra=None):
-        with ThreadPoolExecutor(2) as pool:
-            droid = pool.submit(hook, GUARD, droid_command(command, cwd), coordinator, extra)
-            claude = pool.submit(hook, CLAUDE, claude_call("Bash", cwd, command=command), coordinator, extra)
-            return droid.result(), claude.result()
+        return (hook(GUARD, droid_command(command, cwd), coordinator, extra),
+                hook(CLAUDE, claude_call("Bash", cwd, command=command), coordinator, extra))
 
     def test_lane_worktree_merges_are_refused(self):
         # OLD_MERGE_GATE is exactly what a lane following the retired merge_gate would run.
@@ -1155,7 +1192,8 @@ class HiddenMergeTests(unittest.TestCase):
                f"flock /tmp/x gh pr merge 12 {SHA_ARG}", f"watch -n 1 gh pr merge 12 {SHA_ARG}",
                f"script -c 'gh pr merge 12 {SHA_ARG}' /dev/null", f"timeout 5 gh pr merge 12 {SHA_ARG}",
                f"python3 -c 'import os; os.system(\"gh pr merge 12 {SHA_ARG} --admin\")'",
-               f"echo 'gh pr merge 12 {SHA_ARG} --admin' > merge.sh", "gh pr  'merge' 12",
+               "gh pr  'merge' 12", "gh -R o/r pr merge 12", "bash -c 'gh pr merge 12'",
+               "find . -exec sh -c 'gh pr merge 12' \\;", "ssh host 'gh pr merge 12'",
                f"gh alias set m 'pr merge 12 {SHA_ARG}'",
                # Quoting and escapes the shell removes after the guard reads the line.
                "printf '%s\\n' --admin | xargs gh pr me''rge 12", "find . -maxdepth 0 -exec gh pr mer''ge 12 --admin \\;",
@@ -1168,23 +1206,38 @@ class HiddenMergeTests(unittest.TestCase):
                "xargs gh $(printf pr) view 12", "setsid gh pr `echo x` 12",
                # Split variables: the line sets a variable to gh and expands variables.
                "G=gh; P=pr; M=merge; $G $P $M 12", "G=gh P=pr; $G $P view 12", "export G=gh && $G pr view 12",
+               "G=gh; xargs $G pr merge 12", "G=gh; find . -exec $G pr view 12 \\;",
                "G=/usr/bin/gh; \"$G\" api -X PUT repos/o/r/pulls/12/merge", "declare G='gh pr'; $G view 12",
                # gh aliases and extensions run commands the guard never sees.
                "gh alias set m 'pr view 12'", "gh alias set --shell m 'gh pr view 12'", "gh alias import aliases.yml",
                "gh extension install owner/repo", "gh extensions install owner/repo", "gh ext install ./local",
-               "gh extension upgrade --all")
-    ALLOWED = ("gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",
+               "gh extension upgrade --all",
+               # Options between gh, the group, and the action (Sol at ea18d1aa).
+               'gh alias --help=false set m "api -X PUT repos/o/r/pulls/12/merge"', "gh extension --help=false install o/r",
+               "gh alias -R x set m 'pr view 12'", "gh alias --repo=x set m 'pr view 12'", "gh ext -R x install o/r",
+               "gh extension --repo=o/r upgrade --all", "gh pr --help=false merge 12", "gh --repo=x pr merge 12",
+               # A GraphQL merge under a runner, with the query's literal $id in single quotes.
+               "xargs gh api graphql -f query='mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) "
+               "{ clientMutationId } }'")
+    ALLOWED = (# A quoted argument that only mentions the command is data, not a merge (r4515518236).
+               f"gh pr comment 1650 --body \"gh pr merge 1650 {SHA_ARG}\"",
+               f"git commit -m 'Merged with gh pr merge 1650 {SHA_ARG}'", 'grep -rn "gh pr merge" docs/',
+               "echo 'gh pr merge 12 --squash' > notes.md",
+               # An expansion used as data, not as the program, on a line that sets a variable to gh.
+               "G=gh; echo $HOME", "G=gh; git status; echo $X", "G=gh; X=$HOME",
+               "gh pr view 12", "printf 12 | xargs gh pr view", "xargs gh pr view 12 --json mergeable",
                "find . -name '*.md' -exec grep -l merge {} \\;", "setsid gh pr checks 12", "N=12; gh pr view $N",
                "X=1; echo $X", "gh pr merge --help", "gh pr comment 12 -b 'Ready to merge once CI is green.'",
                "gh alias list", "gh alias set --help", "gh alias delete m", "gh extension list",
-               "gh extension install --help")
+               "gh extension install --help", "gh alias --help",
+               # A literal $ inside single quotes is data, not an expansion.
+               "xargs gh api graphql -f query='query($id: ID!) { node(id: $id) { id } }'")
 
     def setUp(self):
         self.make_worktrees()
 
     def run_all(self, commands, cwd, coordinator):
-        with ThreadPoolExecutor(8) as pool:
-            return list(zip(commands, pool.map(lambda command: self.results(command, cwd, coordinator), commands)))
+        return [(command, self.results(command, cwd, coordinator)) for command in commands]
 
     def test_hidden_merges_are_refused_everywhere(self):
         for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
@@ -1223,15 +1276,29 @@ class HiddenMergeTests(unittest.TestCase):
             calls = [claude_call(tool, file_path=path, **fields) for path in paths
                      for tool, fields in (("Write", {"content": "aliases: {}"}),
                                           ("Edit", {"old_string": "a", "new_string": "b"}))]
-            with ThreadPoolExecutor(8) as pool:
-                results = list(pool.map(lambda call: hook(CLAUDE, call, None, env), calls))
+            results = [hook(CLAUDE, call, None, env) for call in calls]
             for call, result in zip(calls, results):
                 with self.subTest(call=call["tool_input"]["file_path"]):
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertIn("gh config", result.stderr)
-            allowed = hook(CLAUDE, claude_call("Write", file_path=str(Path(folder, "notes/config.yml")), content="x"),
-                           None, env)
-            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            # Relative paths resolve against the hook's working directory, and so does a relative GH_CONFIG_DIR.
+            repo = Path(folder, "home/repo")
+            repo.mkdir(parents=True)
+            home = {"HOME": str(Path(folder, "home")), "XDG_CONFIG_HOME": "", "GH_CONFIG_DIR": ""}
+            for path, extra in (("../.config/gh/config.yml", home), ("ghconf/hosts.yml", {**home, "GH_CONFIG_DIR": "ghconf"}),
+                                ("./../.config/gh/hosts.yml", home)):
+                result = hook(CLAUDE, claude_call("Write", file_path=path, content="x"), None, extra, cwd=repo)
+                with self.subTest(path=path, extra=extra):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config", result.stderr)
+            lookalike = hook(CLAUDE, claude_call("Write", file_path="docs/.config/gh/example.md", content="x"), None,
+                             home, cwd=repo)
+            self.assertEqual(lookalike.returncode, 0, lookalike.stderr)
+            # A repository folder that only looks like the config path is not the gh config.
+            for path in (str(Path(folder, "notes/config.yml")), str(Path(folder, "repo/docs/.config/gh/example.md"))):
+                allowed = hook(CLAUDE, claude_call("Write", file_path=path, content="x"), None, env)
+                with self.subTest(path=path):
+                    self.assertEqual(allowed.returncode, 0, allowed.stderr)
 
 
 class RetiredFleetIntakeTests(unittest.TestCase):

@@ -61,7 +61,7 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
                      "--reuse-message", "--template", "--trailer"}
 GH_SHORT_BOOLEAN = set("ih")
 # gh command groups whose subcommand the guard classifies.
-GH_GROUPS = {"pr", "release", "variable"}
+GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext"}
 # gh options that may come before or between command words; none takes the next word as its value.
 GH_PATH_FLAGS = {"--help", "-h", "--version"}
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
@@ -95,10 +95,13 @@ ALIAS = "A gh alias hides the command from the guard; run the full gh command in
 EXTENSION = "gh extensions run code the guard cannot read; ask the maintainer to install one."
 GH_CONFIG = "The gh config can define aliases that hide a command from the guard; ask the maintainer to change it."
 SPLIT_GH = "Cannot classify a gh command built from variables; write gh and its arguments literally."
-# A merge named anywhere in a command line, such as in xargs, find -exec, a variable, or an alias value.
-# It is matched after quote characters and backslashes are removed, so me''rge or m\\erge still match.
+# Interpreter code (python3 -c, node -e) cannot be parsed as shell, so its text is matched after quote
+# characters and backslashes are removed.
 NAMED_MERGE = re.compile(r"\bpr\s*merge\b")
 MERGE_WORD = re.compile(r"\bmerge\b|mergepullrequest", re.I)
+INTERPRETERS = {"python", "python3", "node", "perl", "ruby", "php", "deno", "bun"}
+# gh options that take a value, before or between gh, pr, and the subcommand.
+GH_VALUE_FLAGS = {"-R", "--repo"}
 # Programs that run another command from their arguments in a way program() does not unwrap. A gh command
 # under one of them that names a merge, or that the guard cannot read literally, is refused.
 UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "parallel", "su", "runuser", "doas",
@@ -181,17 +184,27 @@ def protected_path(raw):
 
 
 def gh_config_path(path):
-    """Whether path lies in a gh config directory: $GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, or ~/.config/gh."""
-    roots = [os.environ.get("GH_CONFIG_DIR", ""), os.path.join(os.environ.get("XDG_CONFIG_HOME", ""), "gh"),
-             os.path.expanduser("~/.config/gh")]
-    text = path.as_posix()
-    if text == "~/.config/gh" or text.startswith("~/.config/gh/") or "/.config/gh/" in text + "/":
-        return True
-    for root in roots:
-        if os.path.isabs(root):
-            root = posixpath.normpath(root)
-            if text == root or text.startswith(root + "/"):
-                return True
+    """Whether path lies in a gh config directory: $GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, or $HOME/.config/gh.
+
+    Relative paths, and a relative GH_CONFIG_DIR, resolve against the hook's working directory, which is the
+    directory the agent's tool runs in. A folder elsewhere that only looks like .config/gh is not the config.
+    """
+    try:
+        here = os.getcwd()
+    except OSError:
+        here = "/"
+
+    def absolute(raw):
+        return posixpath.normpath(posixpath.join(here, os.path.expanduser(raw)))
+
+    home, xdg = os.environ.get("HOME", ""), os.environ.get("XDG_CONFIG_HOME", "")
+    roots = [os.environ.get("GH_CONFIG_DIR", ""), posixpath.join(xdg, "gh") if xdg else "",
+             posixpath.join(home, ".config/gh") if home else ""]
+    target = absolute(path.as_posix())
+    for root in filter(None, roots):
+        root = absolute(root)
+        if target == root or target.startswith(root.rstrip("/") + "/"):
+            return True
     return False
 
 
@@ -1135,15 +1148,83 @@ def names_merge(text):
     return bool(re.search(r"\bgh\b", text) and NAMED_MERGE.search(text))
 
 
-def runner_merge(args):
-    """Whether args runs gh through a runner the guard does not unwrap, with a merge or unreadable text."""
+def skip_gh_options(args, j):
+    """Return the index of the first word at or after j that is not a gh option or an option's value."""
+    while j < len(args) and args[j].startswith("-"):
+        j += 2 if args[j] in GH_VALUE_FLAGS else 1
+    return j
+
+
+def merge_tokens(args, api=False):
+    """Whether the words hold gh, then pr and merge, with only gh options between them.
+
+    With api, a gh api call that names a merge endpoint or mutation counts too. A word of data that only
+    contains the text, such as a comment body or a commit message, is one word and never matches.
+    """
+    for i, word in enumerate(args):
+        if PurePosixPath(word).name != "gh":
+            continue
+        j = skip_gh_options(args, i + 1)
+        if j < len(args) and args[j] == "pr":
+            k = skip_gh_options(args, j + 1)
+            if k < len(args) and args[k] == "merge":
+                return True
+        if api and j < len(args) and args[j] == "api" and any(MERGE_WORD.search(arg) for arg in args[j + 1:]):
+            return True
+    return False
+
+
+def command_strings(name, rest):
+    """Return the arguments of this command that another shell runs as a command line."""
+    if name == "alias":
+        return [arg.split("=", 1)[1] for arg in rest if "=" in arg]
+    if name == "git":
+        values = [arg.split("=", 1)[1] for arg in rest if re.match(r"^alias\.[^=\s]+=", arg)]
+        values += [rest[i + 1] for i, arg in enumerate(rest[:-1]) if re.fullmatch(r"alias\.\S+", arg)]
+        return [value[1:] if value.startswith("!") else value for value in values]
+    if name in UNWRAPPED_RUNNERS:
+        return [arg for arg in rest if re.search(r"\s", arg)]
+    return []
+
+
+def hidden_merge(args, depth=0):
+    """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
+    or as the command line inside an alias value or a runner's command string."""
+    if merge_tokens(args):
+        return True
     name, rest, *_ = program(args)
-    if name not in UNWRAPPED_RUNNERS:
+    if name in INTERPRETERS:
+        return any(names_merge(arg) for arg in rest)
+    if name in UNWRAPPED_RUNNERS:
+        raw = " ".join(rest)
+        # The parser marks every expansion and substitution; a literal $ or backtick in single quotes is data.
+        if merge_tokens(rest, api=True) or (EXPANDED in raw and re.search(r"\bgh\b", unquoted(raw))):
+            return True
+    if depth < 3:
+        for text in command_strings(name, rest):
+            try:
+                inner = shell_commands(text)
+            except (Unclear, ValueError):
+                return names_merge(text)
+            if any(hidden_merge(words, depth + 1) for words, *_ in inner):
+                return True
+    return False
+
+
+def expanded_program(args):
+    """Whether the program this command runs, or the program a runner runs, comes from an expansion."""
+    name, rest, *_ = program(args)
+    if name is None:
         return False
-    raw = " ".join(rest)
-    text = unquoted(raw)
-    return bool(re.search(r"\bgh\b", text)
-                and (MERGE_WORD.search(text) or any(mark in raw for mark in ("$", "`", EXPANDED, "\\x"))))
+    if EXPANDED in name:
+        return True
+    if name in UNWRAPPED_RUNNERS:
+        if name == "find":
+            rest = [rest[i + 1] for i, arg in enumerate(rest[:-1]) if arg in ("-exec", "-execdir", "-ok", "-okdir")]
+        else:
+            rest = [arg for arg in rest if not arg.startswith("-")][:1]
+        return any(EXPANDED in arg for arg in rest)
+    return False
 
 
 def assigns_gh(words):
@@ -1226,17 +1307,17 @@ def check_command(command, cwd, outer=None):
             reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker, "$'" in command) if name == "gh" else None
             if reason:
                 return reason
-        # G=gh; P=pr; M=merge; $G $P $M builds a command the guard cannot read, so a line that sets a variable
-        # to gh and expands any variable is refused.
-        if assigns_gh(assigned) and any(EXPANDED in word for args, *_ in parsed for word in args):
+        # G=gh; P=pr; M=merge; $G $P $M builds a command the guard cannot read. A line that sets a variable to gh
+        # and runs a program named by an expansion is refused; an expansion used as data, as in echo $HOME, is not.
+        if assigns_gh(assigned) and any(expanded_program(args) for args, *_ in parsed):
             return SPLIT_GH
-        # A command line that names gh and a PR merge is refused wherever the words appear: xargs or find -exec
-        # arguments, a variable, or a shell or git alias value. The guard checks the raw line and each command's
-        # unquoted words, so quoting cannot split the words. gh pr merge --help alone stays allowed.
+        # A PR merge is matched on each command's words after shell unquoting, so me''rge and $'m\\x65rge' still
+        # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
+        # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
+        # alone stays allowed.
         help_only = len(parsed) == 1 and parsed[0][0][:3] == ["gh", "pr", "merge"] and parsed[0][0][3:] \
             and all(arg in ("--help", "-h") for arg in parsed[0][0][3:])
-        texts = [command] + [" ".join(args) for args, *_ in parsed]
-        if not help_only and (any(names_merge(text) for text in texts) or any(runner_merge(args) for args, *_ in parsed)):
+        if not help_only and any(hidden_merge(args) for args, *_ in parsed):
             return MERGE
     except Unclear as error:
         return str(error) or UNCLEAR

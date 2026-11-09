@@ -3863,7 +3863,10 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
   which Node has no counterpart for, is 409 `{ code, operations }`, and so is
   `duplicate_build_name` (`{ code, name }`), a draft header naming another
-  Build ([Draft header fields](draft-headers.md#accept)). A missing Plan
+  Build ([Draft header fields](draft-headers.md#accept)), and
+  `duplicate_order` (`{ code, order_number, builds }`), a draft header giving
+  the Build an order number another unarchived Build holds
+  ([Order authority](draft-headers.md#order-authority-gre-1095)). A missing Plan
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
@@ -3990,7 +3993,8 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   `already_applied`; then the Plan (`build_archived`) before the draft
   (`draft_not_found`, `not_open`), so a missing draft on an archived Plan is
   `build_archived`; then `draft_changed`, `accepted_baseline_required`,
-  `base_changed`, `inputs_changed`, and `reconciliation_required`; then, for
+  `base_changed`, `inputs_changed`, the draft header's `duplicate_build_name`
+  and `duplicate_order`, and `reconciliation_required`; then, for
   `no_change` only, `production_active`, `checkoff_remap_unsafe` and
   `execution_conflict`. Token allocation can still fail inside Accept's
   write; a preview cannot predict that.
@@ -4125,9 +4129,11 @@ factor is kept at send (Alfala, 2026-11-07):
 - `pp_storage::print_grams::record_measured` stores `measured_mm`. With a
   `grams_per_mm`, the grams become `measured_mm × grams_per_mm` and the basis
   `measured` (`Recorded`). Without one, the estimate stays (`NoFactor`). A link
-  with no estimate is left alone (`NoEstimate`). Nothing calls it
-yet: the send path writes the estimate in GRE-1238, and the status watcher
-writes the measured value in GRE-1165's last part.
+  with no estimate is left alone (`NoEstimate`).
+
+The send queue's upload worker calls `record_estimate` when an upload with
+Checkoff units succeeds (GRE-1238, see [send-queue.md](send-queue.md)); the
+status watcher calls `record_measured` in GRE-1165's last part.
 
 The Spoolman shortfall read (`GET /plans/:id/filament-shortfalls`) now reads
 grams from this table instead of `print_jobs.filament_consumed_g`, which

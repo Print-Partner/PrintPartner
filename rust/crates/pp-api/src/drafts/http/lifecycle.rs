@@ -328,6 +328,17 @@ impl Accept {
             AcceptOutcome::DuplicateBuildName { name } => {
                 crate::problem::duplicate_build_name(&name)
             }
+            AcceptOutcome::DuplicateOrder {
+                order_number,
+                builds,
+            } => refusal(
+                StatusCode::CONFLICT,
+                "duplicate_order",
+                [
+                    ("order_number", json!(order_number)),
+                    ("builds", json!(builds)),
+                ],
+            ),
             AcceptOutcome::BuildArchived => domain_error("build_archived"),
             AcceptOutcome::TokenAllocationFailed => domain_error("token_allocation_failed"),
             AcceptOutcome::ReconciliationRequired { reason } => refusal(

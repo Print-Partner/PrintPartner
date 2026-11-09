@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://poitee.github.io/PrintPartner/">Project site</a> ·
+  <a href="https://print-partner.github.io/PrintPartner/">Project site</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/INSTALL.md">Install guide</a> ·
   <a href="docs/README.md">Documentation</a> ·
@@ -109,7 +109,7 @@ Screenshots follow your light or dark GitHub theme.
 Requirements: Docker with Compose v2.
 
 ```bash
-git clone https://github.com/poitee/PrintPartner.git
+git clone https://github.com/Print-Partner/PrintPartner.git
 cd PrintPartner
 docker compose pull
 docker compose up -d
@@ -183,7 +183,7 @@ The default self-host setup uses SQLite and local storage. Common variables are:
 | `PORT` | `18765` or `8080` in Docker | HTTP port |
 | `PRINT_PARTNER_API_KEY` | unset | Protects API and remote MCP access |
 | `PP_BIND_ADDRESS` | `0.0.0.0` (Compose) | Host interface for the published `8080` port. Set `127.0.0.1` for this computer only. |
-| `GITHUB_REPO` | `poitee/PrintPartner` | Repository used for update checks |
+| `GITHUB_REPO` | `Print-Partner/PrintPartner` | Repository used for update checks |
 | `PRINT_PARTNER_UPDATE_CHECK` | enabled | Set to `0` to disable release checks |
 
 See [deployment reference](web/DEPLOY.md) for authentication, CORS, OAuth, email, and experimental SaaS settings. The private invite host is [Invite-beta hosted planning](web/DEPLOY.md#invite-beta-hosted-planning). See [operations](OPERATIONS.md) for backups, metrics, API keys, and recovery.

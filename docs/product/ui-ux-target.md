@@ -91,7 +91,7 @@ Checkoff is not a Plan change, so it does not pass the Accept gate. It is undoab
 
 Every Plan change, including rename, order, customer and due date, lands in a draft and goes through the Accept gate. The gate previews old against new, names printed units affected, plate changes, stock impact and duplicate orders, and states that a snapshot is saved before accepting.
 
-One order is one Build, enforced transactionally. A duplicate creates a detached experiment that records its parent, and promoting an alternative retires the previous authority atomically. Existing duplicate records are displayed, never silently merged.
+One order is one Build, enforced transactionally (Accept refuses `duplicate_order`; see [Order authority](../draft-headers.md#order-authority-gre-1095)). A duplicate creates a detached experiment that records its parent, and promoting an alternative retires the previous authority atomically. Existing duplicate records are displayed, never silently merged.
 
 History shows accepted revisions, snapshots, checkoff bursts and sends. Restore as draft (`R`) opens the gate. Restoring a plan never rewinds printed evidence or a printer command.
 
@@ -134,7 +134,7 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 
 | Need | Contract | Status |
 | --- | --- | --- |
-| Builds list, detail, layers | `GET /api/v1/plans`, `/plans/{id}`, `/layers`, `/kit-manifest` | Exists. Under `desktop_rebuild` each summary also carries the header's `customer` and `due_date` from `build_profile_details` (GRE-1100). With the Orders module on, the Builds list sorts by due date (earliest first, none last), filters to overdue (unarchived, due before today and not fully printed; today is rechecked each minute) or no due date, and marks each unarchived Build whose non-blank order number another unarchived Build shares, as the Accept preview counts duplicates, without merging them |
+| Builds list, detail, layers | `GET /api/v1/plans`, `/plans/{id}`, `/layers`, `/kit-manifest` | Exists. Under `desktop_rebuild` each summary also carries the header's `customer` and `due_date` from `build_profile_details` (GRE-1100). With the Orders module on, the Builds list sorts by due date (earliest first, none last), filters to overdue (unarchived, due before today and not fully printed; today is rechecked each minute) or no due date, and marks each unarchived Build whose non-blank order number another unarchived Build shares, compared after [normalization](../draft-headers.md#order-authority-gre-1095) as the Accept preview counts duplicates, without merging them |
 | Drafts | `GET/PATCH /api/v2/plans/{id}/drafts*` (drafts are mounted under `/api/v2`, not `/api/v1`) | Exists |
 | Checkoff read | `GET /plans/{id}/checkoff`, `/parts/{id}/assembled` | Exists |
 | Checkoff tab units and manual bursts | `GET /api/v2/plans/{id}/checkoff/units`, `POST /plans/{id}/checkoff/bursts` and `/bursts/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1191); see [Manual Checkoff bursts](../desktop-rebuild.md#manual-checkoff-bursts-gre-1191) |
@@ -161,9 +161,9 @@ Rules: the UI never calls Node. A contract marked **Port** exists in Node today 
 | Verify several beds at once | `POST /printer-checkoff/verify-batch` with `undo_token` | New |
 | Farm log with undo | `GET /api/v2/farm-log`, `POST /api/v2/farm-log/{id}/undo` | Exists in Rust behind `desktop_rebuild` (GRE-1126); bursts and their undos are logged, sends never offer undo. See [Farm log](../farm-log.md). The replacement UI shows it at `/farm/log`, linked from Farm, with Undo on each entry the core reports undoable and the reason on the rest (GRE-1101) |
 | Match suggestions | `GET /api/v2/printer-checkoff/unattributed/suggestions` | Exists in Rust behind `desktop_rebuild` (GRE-1091), read-only; never confirms. See [Farm reads](../farm-reads.md#match-suggestions) |
-| Build history | `GET /plans/:id/history` | Exists in Rust behind `desktop_rebuild` (GRE-1092); the generated client names it `readBuildHistory`. The replacement History tab lists it newest first with Show older entries, and shows sends and checkoff bursts as not undoable with the reason (GRE-1101). Undo of manual and printer bursts from History is GRE-1259; keep UI ticket GRE-1023 unchanged. See [Build history](../build-history.md) |
+| Build history | `GET /plans/:id/history` | Exists in Rust behind `desktop_rebuild` (GRE-1092); the generated client names it `readBuildHistory`. The replacement History tab lists it newest first with Show older entries (GRE-1101). It lists manual and printer checkoff bursts with their live undo state and undoes one with `POST /plans/:id/history/:entry_id/undo` (`undoBuildHistoryEntry`); sends show as not undoable with the reason (GRE-1259, UI8-03 done). Keep UI ticket GRE-1023 unchanged. See [Build history](../build-history.md) |
 | Accept preview with checks | `GET /api/v2/plans/{id}/drafts/{draft_id}/accept-preview` | Exists in Rust behind `desktop_rebuild` (GRE-1207 added the header changes) |
-| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | Exists in Rust behind `desktop_rebuild` (GRE-1094), for snapshots Accept saved; see [Build history](../build-history.md#restore-a-snapshot-as-a-draft). `R` on a History snapshot is GRE-1260 |
+| Restore as draft | `POST /plans/:id/snapshots/:sid/restore` in draft mode | Exists in Rust behind `desktop_rebuild` (GRE-1094), for snapshots Accept saved; see [Build history](../build-history.md#restore-a-snapshot-as-a-draft). The History tab offers it, as a button and as `R`, on each snapshot whose history entry is `restorable`, and opens the Plan tab's Accept gate on the restored draft (GRE-1260) |
 | Printer stream | `GET /ws/printers` | Rust behind `desktop_rebuild` (GRE-1014, [Printer stream](../printer-stream.md)) |
 | Domain events | one authenticated, resumable stream | New |
 

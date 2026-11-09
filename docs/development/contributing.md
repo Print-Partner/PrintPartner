@@ -7,7 +7,7 @@ This page describes how work moves from a ticket to a merged pull request. [Buil
 - **Goals and decisions.** The Notion page "Goals and decisions (2026-10-15)" under Print Partner Roadmap holds the product goals. Where an older document disagrees, that page wins.
 - **Plan and later decisions.** The plan is the Notion page "Print Partner: execution plan v17.1" (Chad, 2026-11-04). Chad's decisions since then are dated, newest first, on the Notion page [Agent handoff](https://app.notion.com/p/4116dd30b698814c9107f5a22b58e6b5). Where two pages disagree, the newer dated decision wins. If you can't tell which is newer, ask the owner. [Handoffs](agent-workflow.md#handoffs) says where live status and work in progress live.
 - **Execution.** The Linear project "Print Partner Desktop (Rust core)". Milestones 1 to 9 are the delivery chunks. The desktop rebuild slices (D-slices) are sub-issues of GRE-595.
-- **Code and evidence.** The `main` branch of `poitee/PrintPartner`.
+- **Code and evidence.** The `main` branch of `Print-Partner/PrintPartner`.
 
 Without Notion or Linear access, work from a task brief the task owner exports for you. [Agent and contributor workflow](agent-workflow.md#start-from-a-task-brief) lists its fields and when to stop and ask. The owner moves the ticket through its states.
 

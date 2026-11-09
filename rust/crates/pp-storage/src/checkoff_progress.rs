@@ -29,6 +29,8 @@ pub mod attribution;
 mod burst;
 #[cfg(feature = "desktop_rebuild")]
 pub mod farm_log;
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) mod history_undo;
 pub(crate) mod links;
 #[cfg(feature = "desktop_rebuild")]
 mod lookup;
@@ -207,6 +209,10 @@ pub enum Request {
     /// `POST /api/v2/farm-log/{id}/undo`.
     #[cfg(feature = "desktop_rebuild")]
     UndoFarmLogEntry { id: String },
+    /// `POST /plans/{id}/history/{entry_id}/undo`: undoes the checkoff burst
+    /// a Build history entry names.
+    #[cfg(feature = "desktop_rebuild")]
+    UndoHistoryEntry { profile: i64, id: String },
     /// `POST /printer-checkoff/unattributed/{id}/claim` with its raw JSON body.
     #[cfg(feature = "desktop_rebuild")]
     ClaimUnattributed { id: String, body: Value },
@@ -275,6 +281,8 @@ pub enum Body {
     FarmLog(Box<farm_log::FarmLogPage>),
     #[cfg(feature = "desktop_rebuild")]
     FarmLogEntry(Box<farm_log::FarmLogEntry>),
+    #[cfg(feature = "desktop_rebuild")]
+    HistoryUndo(Box<crate::read_model::history::Undone>),
     /// A claimed unattributed print: its new printer Checkoff link.
     Claimed {
         link: Value,
@@ -448,6 +456,10 @@ impl Op {
     fn is_import(&self) -> bool {
         matches!(self, Self::Import(_))
     }
+    #[cfg(feature = "desktop_rebuild")]
+    fn history_undo(profile: i64, id: String) -> Self {
+        Self::Manual(manual::Op::UndoHistoryEntry { profile, id })
+    }
 }
 pub(crate) struct Command {
     credential: Credential,
@@ -593,6 +605,8 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         }
         #[cfg(feature = "desktop_rebuild")]
         Request::UndoFarmLogEntry { id } => return Ok(Op::UndoFarmLogEntry { id }),
+        #[cfg(feature = "desktop_rebuild")]
+        Request::UndoHistoryEntry { profile, id } => return Ok(Op::history_undo(profile, id)),
         #[cfg(feature = "desktop_rebuild")]
         Request::ClaimUnattributed { id, body } => {
             return unattributed::Claim::parse(id, &body).map(Op::ClaimUnattributed);

@@ -110,7 +110,7 @@ Bump a major version in a ticketed PR that updates the manifest pin, `Cargo.lock
 ## Applied main-branch ruleset
 
 The GitHub ruleset
-[main CI controls](https://github.com/poitee/PrintPartner/rules/25285698), ID `25285698`,
+[main CI controls](https://github.com/Print-Partner/PrintPartner/rules/25285698), ID `25285698`,
 is active on the default branch, currently `main`.
 The [committed ruleset JSON](main-ci-controls.ruleset.json) records its configuration.
 It omits node IDs, timestamps, API links, and the current user's bypass capability.
@@ -119,8 +119,8 @@ The ruleset has these protections:
 
 - Block branch deletion and force pushes.
 - Require a pull request and allow only squash merges.
-- Require GitHub Actions checks `actionlint`, `zizmor`, `rust (linux)`, `rust (windows)`,
-  `Lint Evidence block`, and `review-gate`.
+- Require GitHub Actions checks `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block`,
+  and `review-gate`. `rust (windows)` is advisory and not required.
 - Require every review thread to be resolved, so an open finding from any reviewer blocks the merge.
 - `review-gate` runs on `pull_request_target` from the default branch and only reads the API; see [Code review](definition-of-done.md#code-review) for what it checks and its remaining risk.
   Dependabot's weekly `github-actions` PRs change `.github/workflows/`, and their author is not the owner, so they need both a passing Droid or Claude review and the owner's marker for the head. The Claude jobs run for Dependabot PRs once the owner stores `CLAUDE_CODE_OAUTH_TOKEN` in the Dependabot secrets too, because Dependabot runs receive only those.
@@ -128,9 +128,8 @@ The ruleset has these protections:
 - Allow branches that are not up to date with `main`.
 - Keep the bypass list empty, with no standing admin or bot bypass.
 
-`rust (macos)` is absent, consistent with its advisory status in [Continuous integration](ci.md).
+`rust (macos)` and `rust (windows)` are absent, consistent with their advisory status in [Continuous integration](ci.md).
 `droid-review` replaced the `pp/score-verified` model-score check on 2026-10-31.
-`review-gate` replaces `droid-review` once the owner applies the committed JSON with the command below; until then the live ruleset still requires `droid-review`.
 
 No approving reviews are required. Chad authors PRs as `poitee`, and GitHub forbids
 self-approval. CODEOWNERS requests Chad's review but does not make it a merge requirement.
@@ -139,18 +138,53 @@ To apply the committed JSON to the live ruleset (admin only):
 
 ```sh
 jq 'del(.id, .source, .source_type)' docs/development/main-ci-controls.ruleset.json \
-  | gh api -X PUT repos/poitee/PrintPartner/rulesets/25285698 --input -
+  | gh api -X PUT repos/Print-Partner/PrintPartner/rulesets/25285698 --input -
 ```
 
 To compare the snapshot with the live ruleset, run this read-only check from the repository root:
 
 ```sh
-gh api repos/poitee/PrintPartner/rulesets/25285698 \
+gh api repos/Print-Partner/PrintPartner/rulesets/25285698 \
   | jq -S 'del(.node_id, .created_at, .updated_at, ._links, .current_user_can_bypass)' \
   | diff -u docs/development/main-ci-controls.ruleset.json -
 ```
 
 No diff means the normalized live response matches the snapshot. A diff needs review before updating the snapshot.
+
+<a id="turn-on-the-merge-queue"></a>
+
+## Turn on the merge queue
+
+The repository moved to the Print-Partner organization on 2026-11-07, which makes GitHub's merge queue available on this public repository at no cost. All five required checks report on `merge_group` events; [Merge queue](ci.md#merge-queue) describes what each one does there. The queue stays off until Chad adds the rule below. Agents never change the ruleset.
+
+Chad adds one `merge_queue` rule to ruleset `25285698` and changes nothing else in it:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `merge_method` | `SQUASH` | Matches `allowed_merge_methods: ["squash"]`. |
+| `grouping_strategy` | `ALLGREEN` | Only passing combinations land. A failing group ejects its PR; read the log before you queue it again. |
+| `max_entries_to_build` | `2` | Each entry builds the full Linux Rust path on hosted runners. Hosted concurrency is the limit. |
+| `min_entries_to_merge`, `max_entries_to_merge`, `min_entries_to_merge_wait_minutes` | `1`, `5`, `5` | A lone PR is not held. Merge limits only batch the final merge and save no CI. |
+| `check_response_timeout_minutes` | `150` | Covers a full Linux and Windows run with hosted queueing. |
+
+The required status checks and `strict_required_status_checks_policy: false` stay as they are; the queue replaces "branch must be up to date".
+
+In the web UI: **Settings > Rules > main CI controls > Require merge queue**, with the values above. Or, as an admin, from the repository root:
+
+```sh
+jq 'del(.id, .source, .source_type)
+    | .rules += [{"type": "merge_queue", "parameters": {
+        "check_response_timeout_minutes": 150, "grouping_strategy": "ALLGREEN",
+        "max_entries_to_build": 2, "max_entries_to_merge": 5, "merge_method": "SQUASH",
+        "min_entries_to_merge": 1, "min_entries_to_merge_wait_minutes": 5}}]' \
+  docs/development/main-ci-controls.ruleset.json \
+  | gh api -X PUT repos/Print-Partner/PrintPartner/rulesets/25285698 --input -
+```
+
+Afterwards, save the live ruleset into `docs/development/main-ci-controls.ruleset.json` with the read-only command above in a docs PR, then queue two small PRs back to back to test it.
+
+With the queue on, `gh pr merge <n> --squash --match-head-commit <sha>` adds the PR to the queue instead of merging it, so queueing a PR is merging it. Queue only a PR whose required checks already passed on its head. Removing a PR from the queue needs the web UI.
+
 
 ## Phase 2 for Chad
 

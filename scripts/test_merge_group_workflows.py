@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 EVENT = json.loads((ROOT / "scripts/fixtures/merge_group/checks_requested.json").read_text())
+EVENT_NAME = "merge_group"
 
 
 def evaluate_if(expression, contexts):
@@ -27,6 +29,31 @@ def evaluate_if(expression, contexts):
             value = value.get(key, "") if isinstance(value, dict) else ""
         result = result and ((value == right[1:-1]) == (op == " == "))
     return result
+
+
+def job_runs(condition, contexts):
+    """Whether a required job's `if` lets it run on a non-PR event.
+
+    Only the shapes the required jobs use are accepted; anything else raises.
+    """
+    assert contexts["github"]["event_name"] != "pull_request"
+    draft = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
+    if condition in ("", draft):
+        return True
+    prefix = f"({draft}) && ("
+    if not condition.startswith(prefix) or not condition.endswith(")"):
+        raise ValueError(f"unsupported job condition: {condition!r}")
+    rest = condition[len(prefix):-1]
+    known = {
+        "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.relevant != 'false')":
+            contexts["needs"]["changes"]["result"] != "success"
+            or contexts["needs"]["changes"]["outputs"]["relevant"] != "false",
+        "!cancelled() && needs.rust-linux-build.result != 'skipped'":
+            contexts["needs"]["rust-linux-build"]["result"] != "skipped",
+    }
+    if rest not in known:
+        raise ValueError(f"unsupported job condition: {condition!r}")
+    return known[rest]
 
 
 class MergeGroupWorkflowTests(unittest.TestCase):
@@ -63,12 +90,61 @@ class MergeGroupWorkflowTests(unittest.TestCase):
 
     def test_required_workflows_accept_merge_group_fixture(self):
         for filename in ("actionlint.yml", "rust-cross-os.yml", "desktop-native-macos.yml",
-                         "pr-evidence.yml"):
+                         "pr-evidence.yml", "review-gate.yml"):
             with self.subTest(workflow=filename):
                 workflow = yaml.load(
                     (ROOT / ".github/workflows" / filename).read_text(), Loader=yaml.BaseLoader
                 )
                 self.assertEqual(workflow["on"].get("merge_group"), {"types": [EVENT["action"]]})
+
+    def test_every_required_check_reports_on_merge_groups(self):
+        """Each required context comes from a job that a merge_group run starts and cannot skip."""
+        required = {"actionlint": "actionlint.yml", "zizmor": "actionlint.yml",
+                    "rust (linux)": "rust-cross-os.yml", "Lint Evidence block": "pr-evidence.yml",
+                    "review-gate": "review-gate.yml"}
+        ruleset = json.loads((ROOT / "docs/development/main-ci-controls.ruleset.json").read_text())
+        (checks,) = [rule["parameters"]["required_status_checks"] for rule in ruleset["rules"]
+                     if rule["type"] == "required_status_checks"]
+        self.assertEqual({check["context"] for check in checks}, set(required))
+        contexts = {"github": {"event_name": EVENT_NAME}, "needs": {
+            "changes": {"result": "success", "outputs": {"relevant": "true"}},
+            "rust-linux-build": {"result": "success"}}}
+        for context, filename in required.items():
+            with self.subTest(context=context):
+                workflow = yaml.load((ROOT / ".github/workflows" / filename).read_text(),
+                                     Loader=yaml.BaseLoader)
+                self.assertIn("merge_group", workflow["on"])
+                (job,) = [job for job_id, job in workflow["jobs"].items()
+                          if job.get("name", job_id) == context]
+                self.assertTrue(job_runs(job.get("if", ""), contexts), f"{context} skips merge groups")
+
+    def test_review_gate_runs_exactly_one_judging_step_per_event(self):
+        workflow = yaml.load((ROOT / ".github/workflows/review-gate.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        job = workflow["jobs"]["review-gate"]
+        self.assertNotIn("if", job)
+        for event, expected in (("pull_request_target", "Require a finished review of the head commit"),
+                                ("merge_group", "Require a passed review-gate on every pull request "
+                                                "in the merge group")):
+            with self.subTest(event=event):
+                ran = [step["name"] for step in job["steps"]
+                       if evaluate_if(step["if"], {"github": {"event_name": event}})]
+                self.assertEqual(ran, [expected])
+
+    def test_merge_groups_run_linux_rust_on_hosted_runners(self):
+        spec = importlib.util.spec_from_file_location("ci_rust_runner", ROOT / "scripts/ci-rust-runner.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+
+        def fetch(path, token):
+            raise AssertionError(f"merge groups must not query runners: {path}")
+
+        for mode in ("", "local", "hosted"):
+            with self.subTest(mode=mode):
+                runs_on, _ = runner.choose({"EVENT_NAME": EVENT_NAME, "PP_RUST_RUNNER": mode,
+                                            "PP_PR_RUNNER": "blacksmith", "REPOSITORY": "o/r",
+                                            "RUNNER_TOKEN": "admin"}, fetch, None)
+                self.assertEqual(runs_on, runner.HOSTED)
 
     def test_merge_group_evidence_runs_and_passes_without_a_pr_body(self):
         workflow = yaml.load((ROOT / ".github/workflows/pr-evidence.yml").read_text(),

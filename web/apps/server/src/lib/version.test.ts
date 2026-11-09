@@ -21,7 +21,7 @@ describe("resolveRuntimeReleaseIdentity", () => {
       tag: "v3.2.0",
       image_digest: null,
       deployment_mode: "self-host",
-      github_release_url: "https://github.com/poitee/PrintPartner/releases/tag/v3.2.0",
+      github_release_url: "https://github.com/Print-Partner/PrintPartner/releases/tag/v3.2.0",
       build_date: "2026-08-20T12:00:00Z",
     });
     expect(getBuildSemver(release)).toBe(`v3.2.0+${"a".repeat(7)}`);

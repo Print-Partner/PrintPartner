@@ -6,7 +6,7 @@ use crate::{Limits, Setting, SettingCommand, ownership_marker::WriterGate};
 use pp_testkit::{Installation, MarkerState as KitMarker, Spec};
 use rusqlite::{Connection, OpenFlags};
 use std::{collections::BTreeMap, sync::mpsc, thread};
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{io::Read, sync::atomic::AtomicBool, time::Duration};
 use tar::{EntryType, Header};
 
 type Hook = Box<dyn FnOnce() + Send>;
@@ -219,14 +219,14 @@ fn archive_with(
         EntryType::Regular,
         &metadata,
     );
-    for (name, kind) in extra {
-        append(name, *kind, &[]);
-    }
     append(
         archive::DATABASE_FILE.as_bytes(),
         EntryType::Regular,
         &std::fs::read(&database).unwrap(),
     );
+    for (name, kind) in extra {
+        append(name, *kind, &[]);
+    }
     drop(append);
     builder.into_inner().unwrap().finish().unwrap();
     path
@@ -700,5 +700,81 @@ fn ticket_t_8_restore_a_corrupt_gzip_trailer_refuses_and_keeps_the_earlier_stage
             [format!("{STAGED_PREFIX}{}", earlier.restore_id)]
         );
     }
+    owner.shutdown().unwrap();
+}
+
+fn gzip_member(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// Both exporters write one gzip member. Anything after it is refused:
+/// padding, a second member (corrupt or not), or the rest of a tar split
+/// across members, which tar iteration over the first member never sees.
+#[test]
+fn ticket_t_8_restore_data_after_the_gzip_member_refuses_and_keeps_the_earlier_stage() {
+    let scratch = tempfile::tempdir().unwrap();
+    let good = std::fs::read(archive_with(scratch.path(), 34, "full", &[])).unwrap();
+    let repos: [(&[u8], EntryType); 2] = [
+        (b"repos", EntryType::Directory),
+        (b"repos/keep.stl", EntryType::Regular),
+    ];
+    let with_repos = archive_with(scratch.path(), 34, "full", &repos);
+    let mut tar = Vec::new();
+    flate2::read::GzDecoder::new(std::fs::read(&with_repos).unwrap().as_slice())
+        .read_to_end(&mut tar)
+        .unwrap();
+    let split = (0..tar.len())
+        .step_by(512)
+        .find(|at| tar[*at..].starts_with(b"repos"))
+        .unwrap();
+    let mut corrupt_member = gzip_member(b"second member");
+    let crc = corrupt_member.len() - 8;
+    corrupt_member[crc] ^= 0xff;
+    let cases = [
+        (
+            "2 MiB after the gzip stream",
+            [good.clone(), vec![0; 2 << 20]].concat(),
+        ),
+        (
+            "a second member with a corrupt CRC",
+            [good.clone(), corrupt_member].concat(),
+        ),
+        (
+            "a tar split across two members before repos/",
+            [gzip_member(&tar[..split]), gzip_member(&tar[split..])].concat(),
+        ),
+    ];
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let client = owner.installation().unwrap();
+    let earlier_path = scratch.path().join("earlier.tar.gz");
+    std::fs::write(&earlier_path, &good).unwrap();
+    let earlier = stage(&client, &earlier_path).unwrap();
+    for (case, bytes) in cases {
+        let path = scratch.path().join(format!("{}.tar.gz", random_id()));
+        std::fs::write(&path, bytes).unwrap();
+        assert!(
+            archive::validate(&path, archive::Limits::default()).is_err(),
+            "{case}"
+        );
+        let error = stage(&client, &path).unwrap_err();
+        assert!(
+            matches!(refusal(&error), Some(Refusal::InvalidArchive(_))),
+            "{case}: {error:#}"
+        );
+        assert_eq!(
+            work_entries(&root),
+            [format!("{STAGED_PREFIX}{}", earlier.restore_id)],
+            "{case}"
+        );
+    }
+    // In one member the same tar stages, with repos/keep.stl.
+    let whole = stage(&client, &with_repos).unwrap();
+    let stage_dir = root
+        .join(WORK_DIR)
+        .join(format!("{STAGED_PREFIX}{}", whole.restore_id));
+    assert!(stage_dir.join("repos/keep.stl").is_file());
     owner.shutdown().unwrap();
 }

@@ -3,13 +3,13 @@
 //! validates the other's archives.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use flate2::{Compression, bufread::GzDecoder, write::GzEncoder};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     fs::File,
-    io::{BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 use tar::{EntryType, Header, HeaderMode};
@@ -621,7 +621,9 @@ fn validate_into(
     scratch: &Path,
     extract_all: bool,
 ) -> Result<Metadata> {
-    let mut reader = tar::Archive::new(GzDecoder::new(File::open(archive)?));
+    // `bufread::GzDecoder` reads exactly one gzip member from the `BufReader`
+    // and leaves anything after it there, so the check below can see it.
+    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
     let mut seen = BTreeSet::new();
     let (mut entries, mut total) = (0u64, 0u64);
     let mut metadata = None;
@@ -681,16 +683,25 @@ fn validate_into(
             std::io::copy(&mut entry, &mut std::io::sink())?;
         }
     }
-    // Tar iteration stops at the end-of-archive block. Read the gzip stream
-    // to its end so the decoder checks the CRC and length trailer.
+    // Tar iteration stops at the end-of-archive block. Read the gzip member
+    // to its end so the decoder checks the CRC and length trailer. Both
+    // exporters (Rust here, Node's `tar.c({ gzip: true })`) write exactly one
+    // gzip member, so any byte in the file after it, including a second
+    // member, refuses the archive: a second member could carry entries that
+    // tar iteration never saw.
+    let mut decoder = reader.into_inner();
     let trailing = std::io::copy(
-        &mut reader.into_inner().take(MAX_TRAILING_BYTES + 1),
+        &mut (&mut decoder).take(MAX_TRAILING_BYTES + 1),
         &mut std::io::sink(),
     )
     .context("Backup archive gzip stream is corrupt")?;
     ensure!(
         trailing <= MAX_TRAILING_BYTES,
         "Backup archive has more than {MAX_TRAILING_BYTES} bytes after the tar end"
+    );
+    ensure!(
+        decoder.into_inner().fill_buf()?.is_empty(),
+        "Backup archive has data after its gzip stream"
     );
     let metadata = metadata.ok_or_else(|| anyhow!("Backup archive is missing {METADATA_FILE}"))?;
     ensure!(

@@ -468,9 +468,40 @@ impl Driver {
     }
 
     async fn read(&self, verifier: Arc<Verifier>) -> Result<Status, Failure> {
+        let report = format!("device/{}/report", self.config.serial);
+        let mut stream = self.open(&verifier).await?;
+        // Like Node's message listener, a usable report that arrives before
+        // SUBACK (a retained one, say) answers the read.
+        let print = match subscribe(&mut stream, &report).await? {
+            Some(print) => print,
+            None => {
+                stream
+                    .write_all(&mqtt::pushall(&self.config.serial))
+                    .await?;
+                stream.flush().await?;
+                loop {
+                    if let mqtt::Packet::Publish { topic, payload } =
+                        mqtt::read(&mut stream).await?
+                        && topic == report
+                        && let Some(print) = usable(&payload)
+                    {
+                        break print;
+                    }
+                }
+            }
+        };
+        let _ = stream.write_all(&mqtt::disconnect()).await;
+        let _ = stream.flush().await;
+        let _ = stream.shutdown().await;
+        Ok(status_from_print(&print))
+    }
+
+    /// TCP through the guard, pinned TLS and an accepted CONNECT, within the
+    /// connect deadline.
+    async fn open(&self, verifier: &Arc<Verifier>) -> Result<Stream, Failure> {
         let config = &self.config;
         let host = config.host.trim_start_matches('[').trim_end_matches(']');
-        let mut stream = tokio::time::timeout(self.connect_timeout, async {
+        tokio::time::timeout(self.connect_timeout, async {
             let tcp = self
                 .guard
                 .connect(host, config.port)
@@ -505,44 +536,173 @@ impl Driver {
             }
         })
         .await
-        .map_err(|_| Failure::Offline(CLOSED.into()))??;
-        let report = format!("device/{}/report", config.serial);
-        stream.write_all(&mqtt::subscribe(&report)).await?;
-        stream.flush().await?;
-        // Like Node's message listener, a usable report that arrives before
-        // SUBACK (a retained one, say) answers the read.
-        let early = loop {
-            match mqtt::read(&mut stream).await? {
-                mqtt::Packet::SubAck(codes) if codes.iter().all(|code| *code < 0x80) => break None,
-                mqtt::Packet::SubAck(_) => return Err(Failure::Offline(SUBSCRIBE_FAILED.into())),
-                mqtt::Packet::Publish { topic, payload } if topic == report => {
-                    if let Some(print) = usable(&payload) {
-                        break Some(print);
-                    }
+        .map_err(|_| Failure::Offline(CLOSED.into()))?
+    }
+
+    /// One long-lived session for the status watcher (GRE-1176), pinned to
+    /// `pin` only: it never pins. It subscribes, sends pushall unless
+    /// `session` sent one less than [`PUSHALL_SPACING`] ago, and calls
+    /// `report` with the merged status after every report, until the
+    /// connection fails. The answer is the offline status that ended it.
+    /// Each session drops the report an earlier one held and, until the
+    /// printer sends a full report, reports `Awaiting status` with `false`
+    /// (nothing was heard from the printer). A session inside the spacing
+    /// sends pushall once the spacing allows.
+    pub async fn watch(
+        &self,
+        pin: Fingerprint,
+        session: &mut Session,
+        mut report: impl FnMut(Status, bool),
+    ) -> Status {
+        let verifier = Arc::new(Verifier {
+            trust: Trust::Pinned(pin),
+            seen: Mutex::new(None),
+            provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+        });
+        let message = match self.session(&verifier, session, &mut report).await {
+            Err(Failure::Refused(message) | Failure::Offline(message)) => message,
+        };
+        let mut status = Status::offline(&message);
+        status.ip_address = Some(self.config.host.clone());
+        status
+    }
+
+    async fn session(
+        &self,
+        verifier: &Arc<Verifier>,
+        session: &mut Session,
+        report: &mut impl FnMut(Status, bool),
+    ) -> Result<std::convert::Infallible, Failure> {
+        let topic = format!("device/{}/report", self.config.serial);
+        let mut stream = self.open(verifier).await?;
+        let early = tokio::time::timeout(self.status_timeout, subscribe(&mut stream, &topic))
+            .await
+            .map_err(|_| Failure::Offline(TIMED_OUT.into()))??;
+        let deferred = session
+            .pushed
+            .filter(|pushed| pushed.elapsed() < PUSHALL_SPACING)
+            .map(|pushed| pushed + PUSHALL_SPACING);
+        let located = |mut status: Status| {
+            status.ip_address = Some(self.config.host.clone());
+            status
+        };
+        // Changes made while no session was open never arrive as changes, so
+        // a report held from an earlier session is stale.
+        session.print = early;
+        match &session.print {
+            Some(print) => report(located(status_from_print(print)), true),
+            None => report(located(Status::unknown("Awaiting status")), false),
+        }
+        if deferred.is_none() {
+            stream
+                .write_all(&mqtt::pushall(&self.config.serial))
+                .await?;
+            stream.flush().await?;
+            session.pushed = Some(tokio::time::Instant::now());
+        }
+        let pushed_late = std::sync::atomic::AtomicBool::new(false);
+        let (mut reader, mut writer) = tokio::io::split(stream);
+        let idle = Duration::from_secs(KEEP_ALIVE_SECONDS.into());
+        let reading = async {
+            loop {
+                let packet = tokio::time::timeout(idle, mqtt::read(&mut reader))
+                    .await
+                    .map_err(|_| Failure::Offline(TIMED_OUT.into()))??;
+                if let mqtt::Packet::Publish {
+                    topic: from,
+                    payload,
+                } = packet
+                    && from == topic
+                    && let Some(status) = session.merge(&payload)
+                {
+                    report(located(status), true);
                 }
-                _ => {}
             }
         };
-        let print = match early {
-            Some(print) => print,
-            None => {
-                stream.write_all(&mqtt::pushall(&config.serial)).await?;
-                stream.flush().await?;
-                loop {
-                    if let mqtt::Packet::Publish { topic, payload } =
-                        mqtt::read(&mut stream).await?
-                        && topic == report
-                        && let Some(print) = usable(&payload)
-                    {
-                        break print;
+        let writing = async {
+            let mut tick =
+                tokio::time::interval_at(tokio::time::Instant::now() + idle / 2, idle / 2);
+            let mut due = deferred;
+            loop {
+                let packet = tokio::select! {
+                    _ = tick.tick() => mqtt::pingreq(),
+                    () = tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now)), if due.is_some() => {
+                        due = None;
+                        pushed_late.store(true, std::sync::atomic::Ordering::Relaxed);
+                        mqtt::pushall(&self.config.serial)
                     }
-                }
+                };
+                writer.write_all(&packet).await?;
+                writer.flush().await?;
             }
         };
-        let _ = stream.write_all(&mqtt::disconnect()).await;
-        let _ = stream.flush().await;
-        let _ = stream.shutdown().await;
-        Ok(status_from_print(&print))
+        let ended = tokio::select! {
+            ended = reading => ended,
+            ended = writing => ended,
+        };
+        if pushed_late.into_inner() {
+            session.pushed = deferred;
+        }
+        ended
+    }
+}
+
+type Stream = BufStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+
+/// SUBSCRIBE to `topic` and wait for SUBACK. A usable report that arrives
+/// first is returned.
+async fn subscribe(stream: &mut Stream, topic: &str) -> Result<Option<Value>, Failure> {
+    stream.write_all(&mqtt::subscribe(topic)).await?;
+    stream.flush().await?;
+    loop {
+        match mqtt::read(stream).await? {
+            mqtt::Packet::SubAck(codes) if codes.iter().all(|code| *code < 0x80) => {
+                return Ok(None);
+            }
+            mqtt::Packet::SubAck(_) => return Err(Failure::Offline(SUBSCRIBE_FAILED.into())),
+            mqtt::Packet::Publish {
+                topic: from,
+                payload,
+            } if from == topic => {
+                if let Some(print) = usable(&payload) {
+                    return Ok(Some(print));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A Bambu printer answers pushall with a full report and then publishes only
+/// the fields that changed. The watcher sends pushall at most this often,
+/// across reconnects, and merges the changes into the last full report.
+pub const PUSHALL_SPACING: Duration = Duration::from_secs(300);
+
+/// What one watched host's sessions carry from one connection to the next.
+#[derive(Default)]
+pub struct Session {
+    /// The last full `print` object, with every later change merged in.
+    print: Option<Value>,
+    pushed: Option<tokio::time::Instant>,
+}
+
+impl Session {
+    /// Merges one report's `print` object into the last full one. Until a
+    /// full report (one with a non-blank `gcode_state`) arrives, changes have
+    /// nothing to merge into and give no status.
+    fn merge(&mut self, payload: &[u8]) -> Option<Status> {
+        match &mut self.print {
+            None => self.print = Some(usable(payload)?),
+            Some(Value::Object(full)) => {
+                let report: Value = serde_json::from_slice(payload).ok()?;
+                let Value::Object(changed) = report.get("print")?.clone() else {
+                    return None;
+                };
+                full.extend(changed);
+            }
+            Some(_) => return None,
+        }
+        self.print.as_ref().map(status_from_print)
     }
 }
 

@@ -400,6 +400,10 @@ async fn serve<S>(
                 lock(log).push("DISCONNECT".into());
                 return;
             }
+            12 => {
+                lock(log).push("PINGREQ".into());
+                frame(0xd0, &[])
+            }
             other => {
                 lock(log).push(format!("packet {other}"));
                 Vec::new()

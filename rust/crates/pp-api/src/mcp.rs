@@ -4,8 +4,8 @@
 //! rmcp. Every request needs a valid API key for the routed tenant: a session
 //! cookie alone is refused, and so is a key the auth worker does not resolve
 //! to that tenant (unknown, revoked or expired). Host and Origin must match
-//! the listener exactly; then the request counts against Node's budget of
-//! 1000 a minute before its key is checked (`mcp/rate_limit.rs`). Write tools
+//! the listener exactly; then the request counts against MCP's budget of
+//! 1000 a minute, Node's limit, before its key is checked (`mcp/rate_limit.rs`). Write tools
 //! only propose; `confirm_apply` applies.
 //! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
 //! (GRE-1170, `mcp/checkoff.rs`).
@@ -64,6 +64,8 @@ pub struct McpHttpConfig {
     wait: Duration,
     limit: u32,
     window: Duration,
+    #[cfg(test)]
+    confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
 }
 
 impl McpHttpConfig {
@@ -78,6 +80,8 @@ impl McpHttpConfig {
             wait: Duration::from_millis(100),
             limit: rate_limit::LIMIT,
             window: rate_limit::WINDOW,
+            #[cfg(test)]
+            confirm_gate: None,
         })
     }
 
@@ -86,6 +90,13 @@ impl McpHttpConfig {
     pub(crate) fn with_budget(mut self, limit: u32, window: Duration) -> Self {
         self.limit = limit;
         self.window = window;
+        self
+    }
+
+    /// Holds each Plan Accept confirm just before it applies.
+    #[cfg(test)]
+    pub(crate) fn with_confirm_gate(mut self, gate: Arc<plan_accept::ConfirmGate>) -> Self {
+        self.confirm_gate = Some(gate);
         self
     }
 }
@@ -109,6 +120,8 @@ struct Reads {
     planning: PlanningClient,
     progress: ProgressClient,
     wait: Duration,
+    #[cfg(test)]
+    confirm_gate: Option<Arc<plan_accept::ConfirmGate>>,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
@@ -137,6 +150,8 @@ pub fn mcp_router(
         planning,
         progress,
         wait: config.wait,
+        #[cfg(test)]
+        confirm_gate: config.confirm_gate.clone(),
     };
     let service = StreamableHttpService::new(
         move || Ok(ProductMcp::new(reads.clone())),
@@ -457,7 +472,7 @@ impl ServerHandler for ProductMcp {
 #[path = "mcp/checkoff.rs"]
 mod checkoff;
 #[path = "mcp/plan_accept.rs"]
-mod plan_accept;
+pub(crate) mod plan_accept;
 #[path = "mcp/rate_limit.rs"]
 mod rate_limit;
 

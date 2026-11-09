@@ -1,5 +1,6 @@
-//! The MCP request budget (GRE-1039): Node's application bucket, 1000
-//! requests a minute, on a fixed window that starts at the first request.
+//! The MCP request budget (GRE-1039): a bucket of its own with Node's
+//! application limit, 1000 requests a minute, on a fixed window that starts
+//! at the first request. Other Rust routes do not draw on it.
 //! Every request that passes the exact Host and Origin check counts, with or
 //! without a valid key, so the budget also bounds key guessing.
 

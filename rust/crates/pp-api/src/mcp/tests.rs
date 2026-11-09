@@ -365,7 +365,7 @@ async fn ticket_t_16_mcp_refuses_a_key_from_another_tenant() {
 /// window resets. A foreign Origin is refused first and costs nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
-    let window = Duration::from_secs(5);
+    let window = Duration::from_secs(15);
     let server =
         McpServer::configured(Some("1"), "default", |config| config.with_budget(3, window)).await;
     let (_, key) = server.create_key().await;
@@ -387,7 +387,6 @@ async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
     assert_eq!(refused.status(), 403);
     assert_eq!(header(&refused, "x-ratelimit-remaining"), None);
 
-    let started = std::time::Instant::now();
     for (path, remaining) in [("/mcp", "2"), ("/api/v1/mcp", "1")] {
         let keyless = server
             .request(path, &[("origin", SELF)], &initialize())
@@ -413,6 +412,7 @@ async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
         Some("0")
     );
 
+    let mut wait = window;
     for path in ["/mcp", "/api/v1/mcp"] {
         let limited = server
             .request(path, &keyed, &initialize())
@@ -422,7 +422,8 @@ async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
         assert_eq!(limited.status(), 429, "{path}");
         assert!(header(&limited, "mcp-session-id").is_none(), "{path}");
         let reset: u64 = header(&limited, "retry-after").unwrap().parse().unwrap();
-        assert!((1..=5).contains(&reset), "{path}: retry-after {reset}");
+        assert!((1..=15).contains(&reset), "{path}: retry-after {reset}");
+        wait = Duration::from_secs(reset);
         assert_eq!(
             header(&limited, "x-ratelimit-reset"),
             Some(reset.to_string())
@@ -443,8 +444,8 @@ async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
         );
     }
 
-    tokio::time::sleep((window + Duration::from_millis(200)).saturating_sub(started.elapsed()))
-        .await;
+    // `retry-after` rounds up, so the window has reset once it has passed.
+    tokio::time::sleep(wait + Duration::from_millis(200)).await;
     let (status, body, session) = server.post("/api/v1/mcp", &keyed, &initialize()).await;
     assert_eq!(status, 200, "{body}");
     assert!(session.is_some());

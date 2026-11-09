@@ -30,9 +30,9 @@ Every MCP request needs a valid API key, from the desktop app, another process o
 
 The desktop rebuild (`PP_DESKTOP_REBUILD=1`) serves `/mcp` and `/api/v1/mcp` from Rust through rmcp on its loopback listener. It accepts an API key only: a session cookie alone gets `401 Valid API key required`, and Host and Origin must match the listener. LAN peers are not served there yet.
 
-Rust MCP allows 1000 requests a minute, the same as Node's application budget. The window starts at the first request. A request counts once Host and Origin pass, before its key is checked, so requests with a missing or wrong key use the budget too. Past the limit every request, including one with a valid key, gets `429` with Node's body (`Rate limit exceeded, retry in N seconds`) and a `retry-after` header until the window resets. Every counted response carries `x-ratelimit-limit`, `x-ratelimit-remaining` and `x-ratelimit-reset`.
+Rust MCP has its own budget of 1000 requests a minute, the limit of Node's application bucket. Other Rust routes do not count against it. The window starts at the first request. A request counts once Host and Origin pass, before its key is checked, so requests with a missing or wrong key use the budget too. Past the limit every request, including one with a valid key, gets `429` with Node's body (for example `Rate limit exceeded, retry in 12 seconds`) and a `retry-after` header until the window resets. Every counted response carries `x-ratelimit-limit`, `x-ratelimit-remaining` and `x-ratelimit-reset`.
 
-A tool call that the client cancels with `notifications/cancelled`, or stops reading, still runs to the end; the client just gets no reply. A cancelled `confirm_apply` therefore either applies once or, when Accept refuses, leaves the proposal pending. List pending actions after reconnecting rather than confirming again.
+A tool call that the client cancels with `notifications/cancelled`, or stops reading, still runs to the end; the client just gets no reply. A cancelled `confirm_apply` therefore either applies or, when Accept refuses or times out, leaves the proposal pending. List pending actions after reconnecting. Confirming the same action again never applies it twice: its action id is Accept's idempotency key.
 
 ## Choose the credential
 

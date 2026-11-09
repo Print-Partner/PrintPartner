@@ -2,7 +2,7 @@
 //! (GRE-1236): the proposal holds the previewed revision, confirm copies the
 //! draft header once, and a stale proposal is refused and stays pending.
 use super::*;
-use crate::mcp::{McpHttpConfig, test_router};
+use crate::mcp::{McpHttpConfig, plan_accept::ConfirmGate, test_router};
 
 /// A key-authenticated MCP session on its own loopback listener, served from
 /// the draft server's writer.
@@ -15,11 +15,18 @@ struct Mcp {
 
 impl Mcp {
     async fn start(server: &ReadServer) -> Self {
+        Self::configured(server, |config| config).await
+    }
+
+    async fn configured(
+        server: &ReadServer,
+        configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let (router, auth) = test_router(
             &server.owner,
-            McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap(),
+            configure(McpHttpConfig::from_startup(&origin, "default", Some("1")).unwrap()),
             policy(),
         );
         let task = tokio::spawn(async move {
@@ -438,24 +445,30 @@ async fn ticket_t_16_mcp_an_authenticated_write_tool_writes_nothing_until_confir
 }
 
 /// GRE-1039: rmcp runs each call on its own task and only signals a
-/// cancellation, so a `confirm_apply` whose request the client cancels and
-/// stops reading still finishes: Accept applies once, the proposal is gone
-/// rather than lost half way, and the session serves the next call.
+/// cancellation, so a `confirm_apply` that the client cancels while it runs,
+/// and whose reply it stops reading, still finishes: Accept applies once and
+/// the session serves the next call. The gate holds the confirm after it took
+/// its proposal and before Accept, so the cancel lands mid-call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_16_mcp_a_cancelled_confirm_still_applies_once() {
     let server = proposed_header().await;
-    let mcp = Mcp::start(&server).await;
+    let gate = ConfirmGate::closed();
+    let mcp = Mcp::configured(&server, |config| config.with_confirm_gate(gate.clone())).await;
     let (_, proposed) = mcp.propose().await;
     let id = proposed["action"]["id"].as_str().unwrap().to_owned();
     let confirm = json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
         "params":{"name":"confirm_apply","arguments":{"action_id":id}}});
-    // `send` returns at the reply's headers, before its body is read.
     let reply = mcp.send(&confirm).await;
     assert_eq!(reply.status(), 200);
+    tokio::time::timeout(Duration::from_secs(10), gate.entered.notified())
+        .await
+        .expect("the confirm reaches Accept");
     let cancel = json!({"jsonrpc":"2.0","method":"notifications/cancelled",
         "params":{"requestId":7,"reason":"client cancelled"}});
     assert_eq!(mcp.send(&cancel).await.status(), 202);
     drop(reply);
+    assert_ne!(build_name(&server), "Renamed by MCP", "held before Accept");
+    gate.release.add_permits(1);
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while build_name(&server) != "Renamed by MCP" {

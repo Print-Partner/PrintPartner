@@ -74,7 +74,7 @@ fn accepted_review(server: &ReadServer) -> Value {
     let observations = ReviewObservations {
         available_input_roots: match &snapshot.provenance {
             Provenance::Tracked { inputs, .. } => inputs.iter().map(|i| i.input_id).collect(),
-            _ => Default::default(),
+            other => panic!("expected tracked provenance: {other:?}"),
         },
         media_by_part_id: snapshot
             .parts
@@ -99,14 +99,7 @@ fn accepted_review(server: &ReadServer) -> Value {
 #[tokio::test]
 async fn gre487_held_stale_patch_arriving_last_keeps_every_edit() {
     let server = ReadServer::start(Some("true"), "default").await;
-    // The Accepted Review reads the Source revision's snapshot directory.
-    let builder = &mut std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
-    builder
-        .recursive(true)
-        .create(server.directory.join("repos/1/revisions/fixture"))
-        .unwrap();
+    with_source_revision(&server);
     let initial = json_reply(server.request(Method::GET, WORKSPACE), 200).await;
     assert_eq!(initial["draft"], open_draft());
     assert_eq!(workspace_choices(&initial), expected(3, false));
@@ -132,6 +125,9 @@ async fn gre487_held_stale_patch_arriving_last_keeps_every_edit() {
         assert_eq!(next["draft"]["lifecycle_version"], 0);
         current = next;
     }
+    // An edit equal to the current Parts answers 200 without a digest check,
+    // so the held edit must differ from the final state to reach the guard.
+    assert_ne!(workspace_choices(&current), expected(3, false));
 
     let database = logical_database(&server.sql());
     let files = managed_files(&server.directory);

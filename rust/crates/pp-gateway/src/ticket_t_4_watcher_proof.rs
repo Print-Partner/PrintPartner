@@ -84,6 +84,7 @@ async fn started(hosts: &Hosts) -> (Gateway, String, Scratch) {
     let mut gateway = Gateway::start_rust_only(
         listener,
         root.to_path_buf(),
+        ServedUi::Legacy,
         product,
         receiver,
         Arc::new(hosts.clone()),

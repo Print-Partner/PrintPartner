@@ -23,14 +23,17 @@ const MIME = {
  * extension that is not in dist gets 404. `core(pathname, request)` may answer any path
  * first with `{ status, body }`, sent as JSON. Otherwise `/api/*` gets 404, and
  * `/health` gets 404 unless `health(request)` returns a status code, which is answered
- * with an empty JSON object.
+ * with an empty JSON object. `raw(pathname, request, response)` runs before all of that
+ * and returns true when it answered. `document()` may return `{ headers, html }` for each
+ * index.html answer: extra response headers, and a function that rewrites its text.
  */
-export function serveDist({ health, core } = {}) {
+export function serveDist({ health, core, raw, document } = {}) {
   if (!existsSync(path.join(DIST, "index.html"))) {
     throw new Error(`${DIST}/index.html is missing; run the package build first`);
   }
   const server = createServer((request, response) => {
     const pathname = decodeURIComponent(new URL(request.url, "http://x").pathname);
+    if (raw?.(pathname, request, response)) return;
     const answer = core?.(pathname, request);
     if (answer) {
       response.writeHead(answer.status, { "content-type": "application/json" });
@@ -50,6 +53,12 @@ export function serveDist({ health, core } = {}) {
     }
     if (!file) return void response.writeHead(404).end();
     const type = MIME[path.extname(file)] ?? "application/octet-stream";
+    if (file === path.join(DIST, "index.html") && document) {
+      const { headers = {}, html = (text) => text } = document();
+      const body = html(readFileSync(file, "utf8"));
+      response.writeHead(200, { ...headers, "content-type": type }).end(body);
+      return;
+    }
     response.writeHead(200, { "content-type": type }).end(readFileSync(file));
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));

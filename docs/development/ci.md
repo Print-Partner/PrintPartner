@@ -340,6 +340,23 @@ The command does not cover these checks:
 - `cargo deny check` (`desktop-deny.yml`). It runs on changes to `rust/**`. To run it locally, use `cargo deny --manifest-path rust/Cargo.toml --all-features check`. CI also runs `cargo deny --manifest-path rust/fuzz/Cargo.toml --all-features --locked check`.
 - The Linux rebuild partitions, the Desktop runtime, Native macOS bundle and Docker workflows, the `web-ci.yml` steps other than the workaround ratchet, and the `contracts:verify` and `test:desktop-parity` steps of `desktop-contracts.yml`.
 
+## Maintainability report
+
+`just report` prints the measures of the maintainability plan (GRE-1306) as a Markdown table: crate and file sizes, the pp-storage writer seam, `desktop_rebuild` gates, ticket-named tests and docs, cross-crate `#[path]` includes, and the other rows of the plan's Evidence and Measures tables. It is a report, not a check. It exits 0 whatever the numbers are, `just ci` does not run it, and no workflow runs it. Quote its output in a PR or a gate comment when a measure moves.
+
+```sh
+just report                        # origin/main
+just report --rev 044e7706d        # the plan's pinned commit
+just report --ci 1626 1622         # add workflow wall times and push-to-green for PRs
+```
+
+`just report` runs `python3 -I scripts/maintainability-report.py` with your arguments. It reads every file of the revision through `git cat-file`, never the working tree, so uncommitted edits do not move a number. Each history row (commits on `lib.rs` in 30 days, variant headers added in 7 days, `lib.rs` lines per family-touching commit) uses `git log --since/--until` ending at that revision's commit date, so a pinned revision gives the same numbers on any day. Fetch `origin` first, because the default revision is `origin/main`.
+
+Two parts need `gh` and change with every CI run, so each prints a "sample taken" row with the UTC time:
+
+- `--ci` samples the wall times of the successful runs among the last 10 completed `rust-cross-os.yml` and `web-ci.yml` runs, for pull requests and for `main`. A run under 6 minutes is excluded as too short to have run a job's suites.
+- PR numbers print one row per PR head: its changed paths, whether the diff touches only `web/apps/ui`, the minutes from the first check run's start until every required check was green, the span of all completed check runs, and any check not green. The required set defaults to `actionlint`, `zizmor`, `rust (linux)`, `Lint Evidence block` and `review-gate`. `--required a,b,c` replaces it, for example once `ui-package` becomes required.
+
 ## Replacement UI package
 
 `web/apps/ui` (`@print-partner/ui`) is checked by the local `ui-package` step:

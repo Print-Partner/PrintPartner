@@ -8,7 +8,7 @@ use axum::{Router, body::Body, http::StatusCode};
 use checkoff_http::{Fixture, post, post_as};
 use pp_api::{
     file_assignments::file_assignments_router,
-    printer_host::{Answer, Capabilities, HostAnswer, HostStream, PrinterHostPort},
+    printer_host::{Answer, Capabilities, HostAnswer, HostFile, HostStream, PrinterHostPort},
 };
 use pp_storage::{
     SettingsClient,
@@ -132,18 +132,22 @@ impl PrinterHostPort for Host {
         Box::pin(async { HostAnswer::Unsupported })
     }
 
-    fn file(&self, _: String, path: String) -> Answer<Option<HostStream>> {
+    fn file(&self, _: String, path: String) -> Answer<Option<HostFile>> {
         if self.broken.load(Ordering::Relaxed) {
             return Box::pin(async { HostAnswer::Failed("listing failed".into()) });
         }
         let bytes = self.files.lock().unwrap().get(&path).cloned();
         let declared = *self.declared.lock().unwrap();
         Box::pin(async move {
-            HostAnswer::Ok(bytes.map(|bytes| HostStream {
-                status: 200,
-                content_type: None,
-                content_length: Some(declared.unwrap_or(bytes.len() as u64)),
-                body: Body::from(bytes),
+            HostAnswer::Ok(bytes.map(|bytes| HostFile {
+                stream: HostStream {
+                    status: 200,
+                    content_type: None,
+                    content_length: Some(declared.unwrap_or(bytes.len() as u64)),
+                    body: Body::from(bytes),
+                },
+                name: path.rsplit('/').next().unwrap_or_default().to_owned(),
+                identity: Value::Null,
             }))
         })
     }
@@ -161,6 +165,14 @@ impl PrinterHostPort for Host {
     }
 
     fn reset_tls_pin(&self, _: String) -> Answer<Value> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
+
+    fn snapshot_source(&self, _: String) -> Answer<Option<String>> {
+        Box::pin(async { HostAnswer::Unsupported })
+    }
+
+    fn build_exists(&self, _: i64) -> Answer<bool> {
         Box::pin(async { HostAnswer::Unsupported })
     }
 }

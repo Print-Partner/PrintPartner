@@ -30,6 +30,7 @@ fn client(capacity: usize) -> PublicationClient {
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             import_quota: Mutex::new(None),
             domain_events: crate::domain_events::Feed::new(0),
+            print_file_snapshots: Arc::default(),
         }),
         policy: policy(),
     }

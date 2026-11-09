@@ -100,8 +100,20 @@ class Revision:
         return self.text(path).count("\n")
 
 
+UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+
+
+def cell(text):
+    """One Markdown table cell. GFM splits cells on every unescaped `|`, inside code spans too."""
+    return str(text).replace("|", "\\|")
+
+
 def row(name, value, how):
-    print(f"| {name} | {value} | `{how}` |")
+    line = f"| {cell(name)} | {cell(value)} | `{cell(how)}` |"
+    # Every row must keep the header's three cells, so a stray pipe cannot shift a column.
+    if len(UNESCAPED_PIPE.findall(line)) != 4:
+        raise ValueError(f"table row does not have three cells: {line}")
+    print(line)
 
 
 def crate(path):
@@ -130,6 +142,15 @@ def storage_rows(repo, rust, by_crate):
     clients = set(re.findall(r"pub struct ([A-Za-z]+Client)\b", "\n".join(repo.text(p) for p in src)))
     row("pp-storage `*Client` handles", len(clients), "regex 'pub struct [A-Za-z]+Client' over src, unique")
     return src
+
+
+def envelope_variants(lib):
+    """Variant names of `enum Envelope` in a lib.rs text: brace and tuple variants, on one line or many."""
+    env = re.search(r"\nenum Envelope \{\n(.*?)\n\}\n", lib, re.S)
+    if not env:
+        return []
+    return re.findall(r"^    (?:#\[cfg\(feature = \"desktop_rebuild\"\)\]\n    )?([A-Z][A-Za-z]+)(?: \{|\()",
+                      env.group(1), re.M)
 
 
 def writer_loop_span(lib):
@@ -209,14 +230,16 @@ def writer_rows(repo, src):
     env = re.search(r"\nenum Envelope \{\n(.*?)\n\}\n", lib, re.S)
     env = env.group(1) if env else ""
     # Brace variants, and tuple variants such as `Publication(plan_publication::Dispatch),`.
-    variants = re.findall(r"^    (?:#\[cfg\(feature = \"desktop_rebuild\"\)\]\n    )?([A-Z][A-Za-z]+)(?: \{|\()",
-                          env, re.M)
+    variants = envelope_variants(lib)
     gated = len(re.findall(r'#\[cfg\(feature = "desktop_rebuild"\)\]\n    [A-Z][A-Za-z]+(?: \{|\()', env))
     row("`Envelope` variants (gated)", f"{len(variants)} ({gated})", "parse `enum Envelope` in lib.rs")
-    added = set(re.findall(r"^\+    ([A-Z][A-Za-z]+)(?: \{|\()$", repo.log(7, "-p", "--", LIB), re.M))
-    row("`Envelope` variant headers added in the 7 days to the revision date", len(added),
-        f"git log {repo.rev} --since=<rev date - 7d> --until=<rev date> -p -- {LIB}, "
-        "added lines matching a variant header, unique")
+    since = repo.window(7)[0]
+    before = repo.git("rev-list", "-1", since.replace("--since", "--before"), repo.sha).strip()
+    earlier = envelope_variants(repo.git("show", f"{before}:{LIB}")) if before else []
+    added = sorted(set(variants) - set(earlier))
+    row("`Envelope` variant headers added in the 7 days to the revision date",
+        f"{len(added)} ({', '.join(added)})" if added else "0",
+        f"variants of enum Envelope at {repo.rev} that the last commit before <rev date - 7d> lacks")
     span = writer_loop_span(lib)
     row("Writer thread closure lines (`thread::spawn` to `drop(connection)`)", span or "not found",
         "lines between those two anchors in lib.rs")

@@ -26,7 +26,7 @@ ARG PP_COMMIT=
 ARG PP_TAG=
 ARG PP_BUILD_DATE=unknown
 
-LABEL org.opencontainers.image.source="https://github.com/poitee/PrintPartner" \
+LABEL org.opencontainers.image.source="https://github.com/Print-Partner/PrintPartner" \
       org.opencontainers.image.version="${PP_APP_VERSION}" \
       org.opencontainers.image.revision="${PP_COMMIT}" \
       org.opencontainers.image.ref.name="${PP_TAG}" \

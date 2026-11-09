@@ -61,7 +61,7 @@ The app service has a healthcheck that polls `GET /health` every 30s using Node'
 | `OPENAPI_UI` | unset | Set to `1` to expose `/api/v1/docs` in production |
 | `REDIS_URL` | unset | Optional. When set in SaaS, enables the BullMQ job queue. See SaaS below. |
 | `PRINT_PARTNER_UPDATE_CHECK` | enabled | Set to `0` to disable in-app update checks |
-| `GITHUB_REPO` | `poitee/PrintPartner` | GitHub repo for release lookup |
+| `GITHUB_REPO` | `Print-Partner/PrintPartner` | GitHub repo for release lookup |
 | `PRINT_PARTNER_LATEST_VERSION` | unset | Air-gapped override that skips GitHub and compares against this version |
 | `PRINT_PARTNER_UPDATE_CHECK_CACHE_HOURS` | `12` | How long to cache the latest release lookup |
 | `ASSISTANT_ALLOW_URL_INGEST` | enabled | Set to `0` to disable MCP `ingest_guide_url` / `fetch_web_page` |
@@ -136,7 +136,7 @@ Requires `DEPLOY_MODE=self-host` (default).
 ### Checking for app updates
 
 
-When update checks are enabled (default), the server compares `PP_VERSION` to the latest [GitHub release](https://github.com/poitee/PrintPartner/releases) (cached ~12 hours). The web UI shows a dismissible banner when a newer version exists, and **Settings → About & updates** lists your version with a manual refresh.
+When update checks are enabled (default), the server compares `PP_VERSION` to the latest [GitHub release](https://github.com/Print-Partner/PrintPartner/releases) (cached ~12 hours). The web UI shows a dismissible banner when a newer version exists, and **Settings → About & updates** lists your version with a manual refresh.
 
 Self-host Docker upgrade:
 

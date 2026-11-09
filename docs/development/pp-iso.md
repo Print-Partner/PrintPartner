@@ -3,7 +3,7 @@
 pp-iso is a pool of self-hosted Linux runners for jobs that run code a pull request
 can change. Every job gets a fresh container that is deleted when the job ends.
 The runner label is `pp-iso`. It is separate from `pp-local`, which keeps its
-shared Cargo registry and sccache for trusted `main`, merge-group and manual runs.
+shared Cargo registry and sccache for trusted `main` and manual runs. Merge groups run on GitHub-hosted runners.
 
 Status: the kit, the proof workflow and the `PP_PR_RUNNER` switch exist
 ([ci.md](ci.md#pull-request-runner-switch)). Nothing runs on pp-iso until a host is
@@ -21,7 +21,7 @@ With `PP_PR_RUNNER=pp-iso`, only pull requests whose head repository is this rep
 
 | | pp-local | pp-iso |
 | --- | --- | --- |
-| Runs | `main`, merge groups, manual | Linux Rust PR jobs when `PP_PR_RUNNER=pp-iso`, and the manual `pp-iso-proof.yml` run |
+| Runs | `main`, manual | Linux Rust PR jobs when `PP_PR_RUNNER=pp-iso`, and the manual `pp-iso-proof.yml` run |
 | Runner | JIT, one job per container | JIT, one job per container |
 | Cargo registry, sccache | shared, host-mounted | none; `actions/cache` only |
 | Volumes from the host | yes | none |

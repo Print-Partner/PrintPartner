@@ -487,7 +487,7 @@ class SyncTest(unittest.TestCase):
 
     def test_open_pr_on_later_github_page_prevents_demotion(self):
         sync._prs = None
-        sync.REPO = "poitee/PrintPartner"
+        sync.REPO = "Print-Partner/PrintPartner"
         pages = [{"data": {"repository": {"pullRequests": {"nodes": nodes, "pageInfo": {"hasNextPage": more}}}}}
                  for nodes, more in (([pr(number=n, body="Refs GRE-99") for n in range(1, 201)], True),
                                      ([pr(number=201)], False))]

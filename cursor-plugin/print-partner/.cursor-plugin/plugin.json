@@ -5,8 +5,8 @@
   "author": {
     "name": "Print Partner"
   },
-  "homepage": "https://github.com/poitee/PrintPartner",
-  "repository": "https://github.com/poitee/PrintPartner",
+  "homepage": "https://github.com/Print-Partner/PrintPartner",
+  "repository": "https://github.com/Print-Partner/PrintPartner",
   "license": "CC-BY-NC-4.0",
   "keywords": ["print-partner", "mcp", "3d-printing", "voron"],
   "variables": {

@@ -147,7 +147,7 @@ Each release signs its image by digest and its `release-identity.json` asset wit
 
 ```bash
 TAG=v1.2.3
-gh release download "$TAG" -R poitee/PrintPartner \
+gh release download "$TAG" -R Print-Partner/PrintPartner \
   --pattern release-identity.json --pattern release-identity.json.sigstore.json --pattern cosign.pub
 ```
 

@@ -249,6 +249,21 @@ fn load_layers(tx: &Transaction<'_>, tenant: &str, plan: Option<PositiveId>) -> 
     Ok(Layers { user, plan })
 }
 
+/// Whether the single-account tenant has Bambu enabled, from its
+/// `feature_toggles` setting alone, as Node's tenant-global integration
+/// admission reads it (Plan overrides do not apply). For routes the admin gate
+/// has already authenticated. `Ok(None)` when the stored toggles are invalid.
+pub fn bambu_enabled(client: &crate::SettingsClient, wait: Duration) -> Result<Option<bool>> {
+    let toggles = match client.reader(wait)?.snapshot("default", USER_KEY)? {
+        SettingSnapshot::Missing => Toggles::default(),
+        SettingSnapshot::Stored { value } => match serde_json::from_str(&value) {
+            Ok(toggles) => toggles,
+            Err(_) => return Ok(None),
+        },
+    };
+    Ok(Some(resolve(&toggles, None).enabled(Feature::Bambu)))
+}
+
 pub(crate) fn resolve_for_tenant(
     tx: &Transaction<'_>,
     tenant: &str,

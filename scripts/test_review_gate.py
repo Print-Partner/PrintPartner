@@ -31,7 +31,13 @@ SUITES = {1: (".github/workflows/review-gate.yml", "pull_request_target"), 2: (D
           11: (DROID, "pull_request", []),
           # Stacked PR 7 into release: the runs list that base.
           12: (CLAUDE, "pull_request", [{"number": 7, "base": {"ref": "release"}}]),
-          13: (DROID, "pull_request", [{"number": 7, "base": {"ref": "release"}}])}
+          13: (DROID, "pull_request", [{"number": 7, "base": {"ref": "release"}}]),
+          # review-gate from the right file and event, but listed for a PR into another base (that
+          # base's copy of the gate), for both PRs, or for no open PR.
+          14: (".github/workflows/review-gate.yml", "pull_request_target", [{"number": 8, "base": {"ref": "release"}}]),
+          15: (".github/workflows/review-gate.yml", "pull_request_target",
+               [{"number": 7, "base": {"ref": "main"}}, {"number": 8, "base": {"ref": "release"}}]),
+          16: (".github/workflows/review-gate.yml", "pull_request_target", [])}
 DROID_RAN = "##[end-action id=__Factory-AI_droid-action.droid;outcome=success;conclusion=success;duration_ms=128764]"
 DROID_SKIPPED = "##[end-action id=__Factory-AI_droid-action.droid;outcome=skipped;conclusion=skipped;duration_ms=0]"
 SUITE_FOR = {"review-gate": 1, "droid-review": 2, "claude-code-review": 3, "claude-security-review": 3}
@@ -184,13 +190,33 @@ class ReviewGateStepTests(unittest.TestCase):
                 self.assertIn("not this PR's into main", result.stdout)
         self.assertPasses(checks=[run("droid-review", suite=7)], pages=[[marker()]])
 
-    def test_a_pr_into_another_base_never_passes_on_a_review_run(self):
+    def test_a_pr_into_another_base_never_passes(self):
+        # The trigger is limited to main; a run that still reaches another base fails on any evidence.
         stacked = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
-        for checks in (stacked, [run("droid-review", suite=13)], [run("claude-code-review"), run("claude-security-review")]):
-            result = self.assertFails(checks=checks, pr_base="release")
-            self.assertIn("not this PR's into main", result.stdout)
-        self.assertFails(checks=[], pr_base="release")
-        self.assertPasses(checks=[], pr_base="release", pages=[[marker()]])
+        for checks in (stacked, [run("droid-review", suite=13)], [run("claude-code-review"), run("claude-security-review")],
+                       []):
+            for pages in ([[]], [[marker()]]):
+                with self.subTest(checks=[item["name"] for item in checks], marker=pages != [[]]):
+                    result = self.assertFails("::error::The PR targets release, not main", checks=checks,
+                                              pr_base="release", pages=pages)
+                    self.assertNotIn("Passed", result.stdout)
+
+    def test_a_review_gate_run_for_another_base_on_the_head_blocks_the_gate(self):
+        # Another PR with this head into release runs release's copy of the gate, which could always
+        # pass. Its check run sits on the same head under the required name, so this gate must fail.
+        for suite in (14, 15):
+            spoof = run("review-gate", "success", suite=suite)
+            for evidence in ({"checks": [spoof, run("droid-review")]},
+                             {"checks": [spoof, run("claude-code-review"), run("claude-security-review")]},
+                             {"checks": [spoof], "pages": [[marker()]]}):
+                with self.subTest(suite=suite, evidence=list(evidence)):
+                    result = self.assertFails(f"::error::check run review-gate ({spoof['id']}) lists a PR into "
+                                              "release", **evidence)
+                    self.assertNotIn("Passed", result.stdout)
+        # An older run of this gate, a failed one, or one whose branch has no open PR (a fork PR's
+        # runs list none) names no other base, so it does not block.
+        for other in (run("review-gate", "failure"), run("review-gate", "success", suite=16)):
+            self.assertPasses(checks=[other, run("droid-review")])
 
     def test_the_gate_waits_for_claude_jobs_that_are_still_running(self):
         review = [run("claude-code-review", None), run("claude-security-review", None)]
@@ -234,8 +260,8 @@ class ReviewGateStepTests(unittest.TestCase):
         self.assertIn("head or base moved", result.stdout)
 
     def test_a_retarget_during_judgement_is_not_passed_on_the_old_base(self):
-        done = [run("claude-code-review", suite=12), run("claude-security-review", suite=12)]
-        result = self.gate(checks=done, pr_base="release", moved_base="main", moves_on_call=2)
+        done = [run("claude-code-review"), run("claude-security-review")]
+        result = self.gate(checks=done, pr_base="main", moved_base="release", moves_on_call=2)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("moved while judging", result.stdout)
 
@@ -649,8 +675,9 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         text = (WORKFLOWS / "review-gate.yml").read_text(encoding="utf-8")
         workflow = load("review-gate.yml")
         self.assertEqual(set(workflow["on"]), {"pull_request_target", "merge_group"})
-        self.assertEqual(workflow["on"]["pull_request_target"]["types"],
-                         ["opened", "synchronize", "reopened", "ready_for_review", "edited"])
+        self.assertEqual(workflow["on"]["pull_request_target"],
+                         {"branches": ["main"],
+                          "types": ["opened", "synchronize", "reopened", "ready_for_review", "edited"]})
         self.assertEqual(workflow["on"]["merge_group"], {"types": ["checks_requested"]})
         job = workflow["jobs"]["review-gate"]
         # A skipped required job counts as a pass, so only the steps depend on the event.
@@ -688,6 +715,49 @@ class ReviewWorkflowShapeTests(unittest.TestCase):
         self.assertIn("github.event.comment.user.login == 'poitee'", condition)
         self.assertEqual(rerun["jobs"]["rerun"]["permissions"], {"actions": "write", "pull-requests": "read"})
         self.assertIn("review-gate.yml/runs?event=pull_request_target", rerun["jobs"]["rerun"]["steps"][0]["run"])
+
+    def test_rerun_picks_only_this_prs_gate_run_into_main(self):
+        script = load("review-gate-rerun.yml")["jobs"]["rerun"]["steps"][0]["run"]
+        step = load("review-gate-rerun.yml")["jobs"]["rerun"]["steps"][0]
+        # The default branch reaches the filter through env, never through ${{ }} in run.
+        self.assertEqual(step["env"]["DEFAULT_BRANCH"], "${{ github.event.repository.default_branch }}")
+        self.assertNotIn("${{", script)
+        self.assertIn('run=$(PR="$pr" gh api ', script)
+        (line,) = [line.strip() for line in script.splitlines() if "--jq" in line and "workflow_runs" in line]
+        # The line ends the $(...) substitution. Let bash undo its quoting, then run the filter with jq.
+        jq_filter = subprocess.run(["bash", "-c", f'set -- {line.removeprefix("--jq ").removesuffix(")")}; printf %s "$1"'],
+                                   capture_output=True, text=True, check=True).stdout
+        self.assertNotIn('"main"', jq_filter)
+        into = {"main": {"number": 7, "base": {"ref": "main"}}, "release": {"number": 8, "base": {"ref": "release"}}}
+        runs = [
+            {"id": 3, "status": "completed", "pull_requests": [into["release"]]},
+            {"id": 2, "status": "completed", "pull_requests": [{"number": 7, "base": {"ref": "release"}}]},
+            # PR 7 into main and PR 8 into release open on one head: a run that lists both may be
+            # release's copy of the gate, so it is never picked.
+            {"id": 4, "status": "completed", "pull_requests": [into["main"], into["release"]]},
+            {"id": 9, "status": "completed", "pull_requests": []},
+            {"id": 1, "status": "in_progress", "pull_requests": [into["main"]]}]
+        for listed, branch, expected in ((runs, "main", "1 in_progress"), (runs[:4], "main", ""),
+                                         (runs, "trunk", "")):
+            with self.subTest(runs=[run["id"] for run in listed], branch=branch):
+                picked = subprocess.run(["jq", "-r", jq_filter], input=json.dumps({"workflow_runs": listed}),
+                                        capture_output=True, text=True, check=True,
+                                        env={**os.environ, "PR": "7", "DEFAULT_BRANCH": branch}).stdout.strip()
+                self.assertEqual(picked, expected)
+        # Head H carries PR 7 into main and PR 8 into release. release's run is newer, so it is listed
+        # first; the rerun must still pick main's run for PR 7.
+        head_h = [{"id": 20, "status": "completed", "pull_requests": [into["release"]]},
+                  {"id": 10, "status": "completed", "pull_requests": [into["main"]]}]
+        picked = subprocess.run(["jq", "-r", jq_filter], input=json.dumps({"workflow_runs": head_h}), capture_output=True,
+                                text=True, check=True, env={**os.environ, "PR": "7", "DEFAULT_BRANCH": "main"}).stdout
+        self.assertEqual(picked.strip(), "10 completed")
+        # Another default branch name works the same way.
+        trunk = [{**run, "pull_requests": [{**pr, "base": {"ref": "trunk" if pr["base"]["ref"] == "main"
+                                                            else pr["base"]["ref"]}} for pr in run["pull_requests"]]}
+                 for run in runs]
+        picked = subprocess.run(["jq", "-r", jq_filter], input=json.dumps({"workflow_runs": trunk}), capture_output=True,
+                                text=True, check=True, env={**os.environ, "PR": "7", "DEFAULT_BRANCH": "trunk"}).stdout
+        self.assertEqual(picked.strip(), "1 in_progress")
 
     def test_superseded_gate_and_rerun_runs_collapse_per_pr(self):
         gate = load("review-gate.yml")["concurrency"]

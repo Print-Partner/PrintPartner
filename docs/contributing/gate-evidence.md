@@ -29,6 +29,21 @@ do not count as UI changes. Any of these forms passes:
 Links inside fenced code blocks or HTML comments do not count. When the change
 has no visible effect, give the reason on the `Exemption:` line instead.
 
+For the replacement UI (`web/apps/ui`) on a Rust-only core, one command builds
+`pp-server` with `desktop_rebuild`, starts it with `PP_DESKTOP_REBUILD=1` on
+loopback and a seeded throwaway data directory, signs in a throwaway account,
+saves a PNG per path, and deletes the data afterwards:
+
+```sh
+scripts/evidence/run.sh --seed 1138 --shot /builds --shot /builds/2/history
+```
+
+`--step snapshot:2` and `--step settle-reconciliation:2` reach a state through
+the Rust API first, and `--module farm` turns a Module on in the seed. A capture
+run never publishes. Open each PNG it lists, then publish with
+`python3 scripts/evidence/publisher.py <pr> <files...>`.
+See [the harness README](../../scripts/evidence/README.md).
+
 Apart from this rule, the lint does not require Steps/Result fields or
 artifacts and does not check hosts. Those removed requirements are tracked in
 [GRE-583](https://linear.app/greetz/issue/GRE-583).
@@ -58,7 +73,8 @@ files.txt` (one path per line) to apply the screenshot and video rule locally.
 
 ## Run CI locally before you push
 
-Agents and contributors run the required CI checks before each push:
+Agents and contributors run the required CI checks before each push. A
+sensitive PR runs the full set:
 
 ```sh
 PP_SCHEMA_PARITY_NODE=/path/to/node-v22.23.3 just ci
@@ -70,6 +86,12 @@ checks, and the Node parity fixture freshness checks. It continues after a
 failure and ends with one `PASS`, `FAIL` or `SKIP` line per step. Fix every
 `FAIL` before you push. A `SKIP` line names the missing tool or pinned version;
 list each skipped step under Evidence.
+
+Normal PRs run `just ci --fast` instead, which leaves out the full nextest and
+doctest passes and runs nextest with `desktop_rebuild` on for the crates the
+branch affects. Sensitive PRs, as the
+[merge gate](../development/definition-of-done.md#merge-gate) defines them, run
+the full `just ci`. Name the command you ran under Evidence.
 
 Without `just`, run `python3 scripts/local-ci.py` from the repository root with
 the same arguments.

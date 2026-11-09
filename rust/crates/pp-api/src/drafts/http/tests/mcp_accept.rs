@@ -6,7 +6,7 @@ use crate::mcp::{McpHttpConfig, plan_accept::ConfirmGate, test_router};
 
 /// A key-authenticated MCP session on its own loopback listener, served from
 /// the draft server's writer.
-struct Mcp {
+pub(super) struct Mcp {
     origin: String,
     client: Client,
     headers: Vec<(&'static str, String)>,
@@ -14,7 +14,7 @@ struct Mcp {
 }
 
 impl Mcp {
-    async fn start(server: &ReadServer) -> Self {
+    pub(super) async fn start(server: &ReadServer) -> Self {
         Self::configured(server, |config| config).await
     }
 
@@ -91,7 +91,7 @@ impl Mcp {
     }
 
     /// Calls `name`; returns whether it is a tool error and its JSON text.
-    async fn call(&self, name: &str, arguments: Value) -> (bool, Value) {
+    pub(super) async fn call(&self, name: &str, arguments: Value) -> (bool, Value) {
         let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
             "params":{"name":name,"arguments":arguments}});
         let text = self.send(&body).await.text().await.unwrap();
@@ -112,7 +112,7 @@ impl Mcp {
 }
 
 impl Mcp {
-    async fn propose(&self) -> (bool, Value) {
+    pub(super) async fn propose(&self) -> (bool, Value) {
         self.call(
             "propose_apply_plan_draft",
             json!({"plan_id": 1, "draft_id": 2}),
@@ -120,7 +120,7 @@ impl Mcp {
         .await
     }
 
-    async fn confirm(&self, id: &str) -> (bool, Value) {
+    pub(super) async fn confirm(&self, id: &str) -> (bool, Value) {
         self.call("confirm_apply", json!({"action_id": id})).await
     }
 }
@@ -133,7 +133,7 @@ impl Drop for Mcp {
 
 /// Stores the Build planning brief: it selects `draft_id` and resolves
 /// `differences` with `resolutions`.
-fn brief(server: &ReadServer, draft_id: i64, differences: Value, resolutions: Value) {
+pub(super) fn brief(server: &ReadServer, draft_id: i64, differences: Value, resolutions: Value) {
     let brief = json!({
         "version": 1, "build_id": 1, "special_request": "", "requirements": [],
         "evidence": [], "contributions": [], "differences": differences,

@@ -56,6 +56,18 @@ def job_runs(condition, contexts):
     return known[rest]
 
 
+def starts(workflow, event, base):
+    """Whether a trigger starts for a PR or merge group into `base` under an exact-name `branches` filter."""
+    trigger = workflow["on"].get(event)
+    if trigger is None:
+        return False
+    branches = (trigger or {}).get("branches")
+    if branches is None:
+        return True
+    assert all(set(branch).isdisjoint("*?[!+") for branch in branches), branches
+    return base.removeprefix("refs/heads/") in branches
+
+
 class MergeGroupWorkflowTests(unittest.TestCase):
     def test_drafts_skip_every_pr_ci_job_and_ready_events_restart_them(self):
         guard = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
@@ -95,7 +107,17 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                 workflow = yaml.load(
                     (ROOT / ".github/workflows" / filename).read_text(), Loader=yaml.BaseLoader
                 )
+                # No branches filter: the merge-group step checks base_ref itself, and a filter that
+                # skipped a group would leave the required check pending.
                 self.assertEqual(workflow["on"].get("merge_group"), {"types": [EVENT["action"]]})
+
+    def test_review_gate_starts_only_for_prs_into_main(self):
+        """A PR into another base runs that base's copy of the gate; main's copy never judges it."""
+        workflow = yaml.load((ROOT / ".github/workflows/review-gate.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertTrue(starts(workflow, "pull_request_target", "main"))
+        for base in ("release", "main-old", "feature/main"):
+            self.assertFalse(starts(workflow, "pull_request_target", base), base)
+        self.assertTrue(starts(workflow, "merge_group", EVENT["merge_group"]["base_ref"]))
 
     def test_every_required_check_reports_on_merge_groups(self):
         """Each required context comes from a job that a merge_group run starts and cannot skip."""

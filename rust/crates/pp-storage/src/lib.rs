@@ -28,6 +28,8 @@ pub mod manifest_options;
 pub mod manifest_text;
 #[cfg(feature = "desktop_rebuild")]
 pub mod native_secrets;
+#[cfg(feature = "desktop_rebuild")]
+pub mod order_authority;
 pub mod ownership_marker;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plan_publication;
@@ -54,6 +56,8 @@ pub mod source_scan;
 #[cfg(feature = "desktop_rebuild")]
 pub mod source_sync;
 pub mod sqlite_uri;
+#[cfg(feature = "desktop_rebuild")]
+pub mod tls_pins;
 #[cfg(feature = "desktop_rebuild")]
 pub mod uploads;
 #[cfg(feature = "desktop_rebuild")]
@@ -115,6 +119,8 @@ enum Work {
     Setting(SettingCommand),
     Backup(PathBuf),
     Archive(Box<archive::Job>),
+    #[cfg(feature = "desktop_rebuild")]
+    TlsPin(tls_pins::Command),
 }
 enum WriterControl {
     PageCount,
@@ -353,6 +359,13 @@ fn execute(
             archive::write(&tx, &job)?;
             tx.rollback()?;
             return Ok(true);
+        }
+        #[cfg(feature = "desktop_rebuild")]
+        Work::TlsPin(command) => {
+            let tx = writer_admission::begin_immediate(connection, admission)?;
+            let changed = tls_pins::execute(&tx, command)?;
+            tx.commit()?;
+            return Ok(changed);
         }
     };
     #[cfg(test)]

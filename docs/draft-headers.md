@@ -185,15 +185,19 @@ route writes these columns in the same flow.
 Before its selection, which writes, Accept refuses a header whose name another
 Build of the tenant already has, the rule a Build rename checks: 409
 `{ code: "duplicate_build_name", name }`. The Accept preview returns the same
-refusal from the same point. Duplicate order numbers are reported, not refused
-(`duplicate_orders`; GRE-1095 owns the refusal).
+refusal from the same point. It also refuses a header that gives the Build an
+order number another unarchived Build holds: 409
+`{ code: "duplicate_order", order_number, builds }`, where `builds` lists each
+holder's `profile_id`, `name` and stored `order_number`
+([Order authority](#order-authority-gre-1095)).
 
 The preview (`GET .../accept-preview`) lists the header fields the draft
 changes in `changes.header`: `{ field, old, new }` for `name`,
 `order_number`, `customer` and `due_date`, `null` for an empty field. A
 draft whose Parts and inputs equal its base but whose header differs is
-`changed`, not `no_change`. `duplicate_orders` checks the order number the
-Build has after Accept.
+`changed`, not `no_change`. `duplicate_orders` lists the other unarchived
+Builds holding the order number the Build has after Accept. On a ready
+preview these can only be duplicates the Build already shares.
 
 A header save changes neither the snapshot digest nor the lifecycle version,
 so the preview's `revision` also carries `expected_header_version`: the
@@ -246,6 +250,46 @@ Two limits remain:
   `expected_header_version`, so its Accept of a draft that has a header row
   answers `draft_changed`. The replacement UI's Plan tab creates header rows
   and accepts them through the gate ([The Plan tab](#the-plan-tab-gre-1120)).
+
+## Order authority (GRE-1095)
+
+One order is one Build. An order number belongs to at most one unarchived
+Build of a tenant. `pp-storage/src/order_authority.rs` owns the rule:
+
+- **Normalization.** Two order numbers are the same order when they match
+  after trimming JavaScript whitespace, collapsing each inner whitespace run
+  to one space, and lowercasing. `" PO-7 "`, `"po-7"` and `"PO-7"` are one
+  order. `"#1001"` and `"1001"` are two, because punctuation is kept. A blank
+  or missing order number holds no order. The replacement UI's Builds list
+  groups duplicates with the same rule (`normalizeOrderNumber` in
+  `web/apps/ui/src/builds/BuildsList.tsx`).
+- **Enforcement.** Accept is the only Rust write of
+  `build_profiles.order_number`. It checks the draft header's order number
+  inside its immediate transaction, before anything writes, and refuses with
+  `duplicate_order` when another unarchived Build holds it. Two Accepts of
+  one order on different Builds therefore serialize, and the second is
+  refused. The preview and Rust MCP's `propose_apply_plan_draft` and
+  `confirm_apply` run the same check, so MCP proposes nothing for such a
+  draft and a stale proposal is refused at confirm and stays pending.
+  Archived Builds and other tenants hold nothing.
+- **Existing duplicates.** Copied Node data can already hold two unarchived
+  Builds with one order. Nothing merges, renumbers or blocks them. A Build
+  keeps an order it already holds, in any spelling, through Accept. The
+  Accept preview's `duplicate_orders` and the Builds list's "Duplicate order"
+  mark report them. Archive one of them to resolve it.
+
+The rule covers Rust Accept and Rust MCP under `desktop_rebuild` and
+`PP_DESKTOP_REBUILD`. Node writes order numbers without it: Node's Accept
+with the flag off, `POST /plans/:id/duplicate` (copies the order number),
+and kit import. Duplicating a Build as a detached experiment, promoting it,
+and order import are not built yet.
+
+There is no schema step: a unique index would need a normalized column and
+would refuse the existing duplicates.
+
+Tests: `order_authority_*` in `pp-storage` (normalization, `claim`) and in
+`pp-api/src/drafts/http/tests/order_authority.rs` (HTTP refusal and preview,
+the concurrent race, existing duplicates across restart, MCP).
 
 ## Schema 45
 

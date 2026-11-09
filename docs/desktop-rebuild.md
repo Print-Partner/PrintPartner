@@ -19,7 +19,7 @@ Plan feature controls on the Plan page use the same capability gate. Each featur
 
 When `PP_DESKTOP_REBUILD` is exactly `1` or `true`, Node printer queue suggestions honor each queued item's Plan overrides. Plan choices override user choices, then default to false. Profileless items inherit user choices. The global `get_farm_status` operation through MCP and the assistant stays user-scoped. Authenticated `GET` and `PATCH /plans/:id/features` are available at the root, `/api/v1`, and `/api/v2` only with these exact flag values. A patch value of `null` clears the Plan override and restores inheritance. Optional modules gain Node admission guards in separate slices.
 
-With these exact flag values, Bambu and Spoolman inspection at `GET /api/v1/integrations/:id/status`, `GET /api/v1/integrations/:id/devices`, and `POST /api/v1/integrations/:id/test` requires the current tenant's matching `bambu` or `spoolman` choice to be enabled. Default or explicit opt-out returns 403 `FEATURE_DISABLED`. Malformed stored choices return 500 `FEATURE_TOGGLES_INVALID`. Admission runs after authentication and before status execution or adapter calls, including cached status reads. These tenant-global routes ignore Plan overrides. Saved connector metadata and editing remain available. Other integration types and flag-off inspection retain their existing behavior. This admission is Node's. The Rust-only runtime has no Bambu or Spoolman adapter yet: its `POST /api/v1/integrations/:id/test` answers 501 for those types without reading feature choices or contacting the host ([Printer-host reads](printer-host-reads.md)).
+With these exact flag values, Bambu and Spoolman inspection at `GET /api/v1/integrations/:id/status`, `GET /api/v1/integrations/:id/devices`, and `POST /api/v1/integrations/:id/test` requires the current tenant's matching `bambu` or `spoolman` choice to be enabled. Default or explicit opt-out returns 403 `FEATURE_DISABLED`. Malformed stored choices return 500 `FEATURE_TOGGLES_INVALID`. Admission runs after authentication and before status execution or adapter calls, including cached status reads. These tenant-global routes ignore Plan overrides. Saved connector metadata and editing remain available. Other integration types and flag-off inspection retain their existing behavior. This admission is Node's. The Rust-only runtime applies the same tenant admission to Bambu's `POST /api/v1/integrations/:id/test` before contacting the printer, then reads its status and pins its certificate ([Bambu LAN driver](bambu-lan.md#pinning-in-settings)). It has no Spoolman adapter: that test answers 501 without reading feature choices or contacting the host ([Printer-host reads](printer-host-reads.md)).
 
 With these exact flag values, `POST /printer-send-queue` and its `/api/v1` alias check Bambu feature access when the linked host is Bambu. The selected owned Plan override takes precedence over the tenant's Bambu choice, then defaults to off. Admission follows Plan ownership and fleet-host resolution. Default or explicit off returns 403 `FEATURE_DISABLED`; corrupt tenant or selected Plan choices return 500 `FEATURE_TOGGLES_INVALID` before enqueue. Enabled Bambu retains the existing 400 unsupported-host response. This adds no Bambu transport. Moonraker, PrusaLink, and flag-off admission retain their existing behavior.
 
@@ -75,7 +75,10 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
      then opens the schema. A refused directory stops startup here, before
      release verification, recovery or admission, and stays byte-for-byte
      unchanged.
-  2. `pp_compat::verify_bundle` verifies the release.
+  2. `pp_compat::verify_rust_only_release` checks the release identity, the
+     frontend and the community manifests. It does not measure Node, the Node
+     backend or `node_modules`, so `pp-server` needs no `--node` in this mode
+     ([Docker image](docker.md#release-check-without-node)).
   3. `cutover::recover` runs without an ownership index: it removes stray
      cutover temporaries, and a cutover record refuses startup.
   4. Source-sync admission writes or reuses `source-sync-admission.json`.
@@ -97,6 +100,12 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   gateway's route-miss path: each request that no gateway, asset or Rust
   product route answered and that entered the compatibility branch. It stays
   at 0 in this mode.
+- `Gateway::start_rust_only` takes a `ServedUi`. With `ServedUi::Replacement`
+  (the `apps/ui` build), documents and assets carry the replacement UI's
+  Content-Security-Policy, with a fresh style nonce on each document.
+  `pp-core` passes `ServedUi::Legacy` until GRE-1294 serves `apps/ui`, so the
+  old `apps/web` build keeps its headers. See
+  [Content security policy](network-sharing.md#content-security-policy).
 - `POST /auth/logout` goes to the Rust routes first, which revoke the Rust
   session, then the gateway ends the desktop session and stops the runtime as
   it does today.
@@ -1565,7 +1574,7 @@ Opening a database below 39 runs in this order:
 4. Seed the starter profiles.
 
 Repairs run before the steps because the 38 step's provenance triggers refuse the
-repair's writes to `source_revisions`. Each step through 46 (`LAST_COPIED_STEP`)
+repair's writes to `source_revisions`. Each step through 47 (`LAST_COPIED_STEP`)
 writes `backups/pre-schema{N}.db`, where N is the step's target version. Before
 the first step writes, the open names its rollback copy in the run marker
 `backups/pre-schema-run`; a restart of an interrupted upgrade reads the marker
@@ -1580,7 +1589,7 @@ feature) still reuses an existing backup, because its earlier migrations do not
 commit atomically. With the feature, that backup is named
 `pre-schema{from}-to-{current}.db`, as Node names its upgrade backups, so a
 database restored at another version gets its own copy. Upgrading from 35 therefore
-writes `pre-schema35-to-46.db`, `pre-schema38.db` and later step backups, and
+writes `pre-schema35-to-47.db`, `pre-schema38.db` and later step backups, and
 `SchemaReady.backup` names the first. A
 failed backup stops the upgrade before the step writes. Backups of a WAL database no
 longer leave the temporary copy's `-wal` and `-shm` files behind.
@@ -3860,7 +3869,10 @@ header (trimmed, 1 to 160 characters). A request without a usable key gets 400
   `token_allocation_failed` are 422 `{ code }`. Rust's `execution_conflict`,
   which Node has no counterpart for, is 409 `{ code, operations }`, and so is
   `duplicate_build_name` (`{ code, name }`), a draft header naming another
-  Build ([Draft header fields](draft-headers.md#accept)). A missing Plan
+  Build ([Draft header fields](draft-headers.md#accept)), and
+  `duplicate_order` (`{ code, order_number, builds }`), a draft header giving
+  the Build an order number another unarchived Build holds
+  ([Order authority](draft-headers.md#order-authority-gre-1095)). A missing Plan
   is 404 `profile_not_found` and a missing draft is 404 `draft_not_found`.
   Only Accept publishes. Recompute, rebase and autosave never write an
   Accepted Plan.
@@ -3987,7 +3999,8 @@ Accept (`publish_in_transaction`) runs before it writes, in the same order.
   `already_applied`; then the Plan (`build_archived`) before the draft
   (`draft_not_found`, `not_open`), so a missing draft on an archived Plan is
   `build_archived`; then `draft_changed`, `accepted_baseline_required`,
-  `base_changed`, `inputs_changed`, and `reconciliation_required`; then, for
+  `base_changed`, `inputs_changed`, the draft header's `duplicate_build_name`
+  and `duplicate_order`, and `reconciliation_required`; then, for
   `no_change` only, `production_active`, `checkoff_remap_unsafe` and
   `execution_conflict`. Token allocation can still fail inside Accept's
   write; a preview cannot predict that.
@@ -4098,6 +4111,17 @@ shell markup is unchanged. This slice adds no tokens, screens or routes.
 cd web/apps/web
 npx vitest run src/lib/desktopRebuild.test.ts src/layout/AppLayout.desktopRebuild.test.tsx
 ```
+
+## Bambu certificate pins (GRE-1245)
+
+Schema step 47 adds the Rust-only table `printer_tls_pins`, one row per tenant and
+Bambu integration: the host and port the pin was taken for, the certificate's
+SHA-256 (32 bytes) and `pinned_at`. Step 47 takes a `pre-schema47.db` copy like
+every step through `LAST_COPIED_STEP`, and the table is validated against
+`tls_pins/schema.sql` like the other side tables. Node has no such table and never
+reads or writes it. Only the Rust-only Test connection inserts a row, the insert
+never replaces one, and only `POST /api/v1/integrations/{id}/tls-pin/reset`
+deletes one ([Bambu LAN driver](bambu-lan.md#pinning-in-settings)).
 
 ## Filament grams per send (GRE-1165, part a: GRE-1237)
 

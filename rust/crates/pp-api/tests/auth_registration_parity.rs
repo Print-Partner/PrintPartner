@@ -164,11 +164,7 @@ fn read_raw(db: &Connection) -> RawRows {
         let mut statement = db
             .prepare(&format!("SELECT * FROM {table} ORDER BY id"))
             .unwrap();
-        let columns: Vec<String> = statement
-            .column_names()
-            .iter()
-            .map(|s| (*s).into())
-            .collect();
+        let columns: Vec<String> = statement.column_names().map(|s| (*s).into()).collect();
         statement
             .query_map([], |row| {
                 let mut object = serde_json::Map::new();

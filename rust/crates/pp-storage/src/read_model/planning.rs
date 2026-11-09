@@ -1,5 +1,6 @@
 //! Build planning (`GET /plans/{id}/build-planning`) and assistant decisions
-//! (`GET /plans/{id}/decisions`), read as Node's `routes/plans.ts` reads them.
+//! (`GET /plans/{id}/decisions`), read as Node's `routes/plans.ts` reads them,
+//! plus the MCP `get_plan_decisions` and `list_plan_snapshots` reads (GRE-441).
 //!
 //! One deferred transaction reads, for the caller's tenant: the Build row,
 //! then either the `build_planning.v1.<id>` setting, every Source in
@@ -66,6 +67,16 @@ pub struct PlanDecisionList {
     pub decisions: Vec<PlanDecision>,
 }
 
+/// One `plan_snapshots` row as Node's `mapPlanSnapshotSummary` returns it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlanSnapshotSummary {
+    pub id: i64,
+    pub plan_id: i64,
+    pub name: String,
+    pub created_at: String,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Query {
     /// Node refuses an invalid `draft_id` after it hydrates a stored brief
@@ -74,6 +85,13 @@ pub enum Query {
         draft_id_valid: bool,
     },
     Decisions,
+    /// Node's `listPlanDecisions(planId, limit)`: the latest `limit` (at
+    /// least one), oldest first. MCP `get_plan_decisions` reads this.
+    LatestDecisions {
+        limit: i64,
+    },
+    /// Node's `listPlanSnapshots`: every snapshot summary, oldest first.
+    Snapshots,
     /// The guards Node's `propose_apply_plan_draft` runs before Accept.
     AcceptGuard {
         draft_id: PositiveId,
@@ -103,6 +121,7 @@ pub struct Request {
 pub enum Outcome {
     BuildPlanning(Box<BuildPlanningResponse>),
     Decisions(PlanDecisionList),
+    Snapshots(Vec<PlanSnapshotSummary>),
     AcceptGuard(AcceptGuard),
     /// A brief exists, hydrated, and the request's `draft_id` is invalid.
     InvalidDraftId,
@@ -120,6 +139,7 @@ pub(crate) enum Facts {
         draft: Result<Option<(String, Option<i64>)>>,
     },
     Decisions(Vec<PlanDecision>),
+    Snapshots(Vec<PlanSnapshotSummary>),
 }
 
 /// `id`, `name`, `local_path`, `last_synced_at`, `last_commit_sha`.
@@ -195,6 +215,7 @@ impl PlanningClient {
                 Outcome::BuildPlanning(Box::new(BuildPlanningResponse { planning: None }))
             }
             Facts::Decisions(decisions) => Outcome::Decisions(PlanDecisionList { decisions }),
+            Facts::Snapshots(snapshots) => Outcome::Snapshots(snapshots),
             Facts::Brief {
                 brief,
                 sources,
@@ -272,7 +293,13 @@ pub(crate) fn execute(connection: &mut Connection, command: Command) -> Result<F
     let facts = match (found, command.request.query) {
         (None, _) => Facts::MissingBuild,
         (Some((tenant, build)), Query::Decisions) => {
-            Facts::Decisions(decisions(&tx, &tenant, build)?)
+            Facts::Decisions(decisions(&tx, &tenant, build, DECISION_LIMIT)?)
+        }
+        (Some((tenant, build)), Query::LatestDecisions { limit }) => {
+            Facts::Decisions(decisions(&tx, &tenant, build, limit.max(1))?)
+        }
+        (Some((tenant, build)), Query::Snapshots) => {
+            Facts::Snapshots(snapshots(&tx, &tenant, build)?)
         }
         (Some((tenant, build)), Query::BuildPlanning { .. } | Query::AcceptGuard { .. }) => {
             planning(&tx, &tenant, build)?
@@ -328,13 +355,35 @@ fn object(raw: Option<&str>) -> Map<String, Value> {
     }
 }
 
-fn decisions(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<PlanDecision>> {
+fn snapshots(tx: &Transaction<'_>, tenant: &str, build: i64) -> Result<Vec<PlanSnapshotSummary>> {
+    let mut statement = tx.prepare(
+        "SELECT id,profile_id,name,created_at,source FROM plan_snapshots \
+         WHERE tenant_id=?1 AND profile_id=?2 ORDER BY created_at, id",
+    )?;
+    let rows = statement.query_map(params![tenant, build], |row| {
+        Ok(PlanSnapshotSummary {
+            id: row.get(0)?,
+            plan_id: row.get(1)?,
+            name: row.get(2)?,
+            created_at: row.get(3)?,
+            source: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+fn decisions(
+    tx: &Transaction<'_>,
+    tenant: &str,
+    build: i64,
+    limit: i64,
+) -> Result<Vec<PlanDecision>> {
     let mut statement = tx.prepare(
         "SELECT id,profile_id,created_at,actor,kind,action_type,params_json,label,summary,rationale,result_json \
          FROM (SELECT * FROM plan_decisions WHERE tenant_id=?1 AND profile_id=?2 \
          ORDER BY created_at DESC, id DESC LIMIT ?3) ORDER BY created_at, id",
     )?;
-    let rows = statement.query_map(params![tenant, build, DECISION_LIMIT], |row| {
+    let rows = statement.query_map(params![tenant, build, limit], |row| {
         let result: Option<String> = row.get(10)?;
         Ok(PlanDecision {
             id: row.get(0)?,

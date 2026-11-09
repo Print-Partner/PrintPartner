@@ -6,6 +6,7 @@ import { CoreError } from "../core/client";
 import { readCore, writeCore } from "../core/rust";
 import { lostSend, newKey } from "../core/writes";
 import { useConnection } from "../frame/connection";
+import { UndoOutcome, useBurstUndo } from "../screen/BurstUndo";
 import { OlderEntries, pagedScreenState } from "../screen/OlderEntries";
 import { MutationButton, ScreenTemplate } from "../screen/ScreenTemplate";
 import { NotFound } from "../screen/screens";
@@ -30,8 +31,10 @@ const ACTOR_WORDS: Record<Entry["actor"], string> = { user: "You", assistant: "A
 /** Why History cannot undo an entry, in the words docs/build-history.md uses. */
 const HISTORY_UNDO_REASONS: Record<UndoReason, string> = {
   printer_command: "A printer command cannot be undone",
-  no_undo_token:
-    "History cannot undo checkoff bursts yet. Undo a printer burst from the Farm log, or your last manual burst on the Checkoff tab",
+  no_undo_token: "No undo is kept for this burst",
+  already_undone: "Already undone",
+  state_changed: "Checkoff changed since",
+  archived: "A Build it touched is archived",
 };
 
 /** Each restore refusal in docs/build-history.md, in words. */
@@ -92,7 +95,15 @@ const historyQuery = (id: number) => ({
     !(error instanceof CoreError && error.status === 404) && failures < 3,
 });
 
-function UndoCell({ entry, onRestore }: { entry: Entry; onRestore: (entry: Entry) => void }) {
+function UndoCell({
+  entry,
+  onUndo,
+  onRestore,
+}: {
+  entry: Entry;
+  onUndo: (entry: Entry) => void;
+  onRestore: (entry: Entry) => void;
+}) {
   const { undo } = entry;
   if (entry.type === "snapshot" && entry.restorable === true) {
     return <MutationButton onClick={() => onRestore(entry)}>Restore as draft</MutationButton>;
@@ -106,21 +117,33 @@ function UndoCell({ entry, onRestore }: { entry: Entry; onRestore: (entry: Entry
     );
   }
   if (!undo) return null;
-  if (undo.undoable) return <>Undoable</>;
+  if (undo.undoable) {
+    return (
+      <>
+        <MutationButton onClick={() => onUndo(entry)}>Undo</MutationButton>
+        {undo.scope && <span className="pp-fact-detail">{undo.scope}</span>}
+      </>
+    );
+  }
   return (
     <>
       Not undoable
       {undo.reason && <span className="pp-fact-detail">{HISTORY_UNDO_REASONS[undo.reason]}</span>}
+      {undo.reason === "state_changed" && undo.detail && (
+        <span className="pp-fact-detail">{undo.detail}</span>
+      )}
     </>
   );
 }
 
 function HistoryTable({
   entries,
+  onUndo,
   onRestore,
   table,
 }: {
   entries: Entry[];
+  onUndo: (entry: Entry) => void;
   onRestore: (entry: Entry) => void;
   table: RefObject<HTMLTableElement | null>;
 }) {
@@ -163,7 +186,7 @@ function HistoryTable({
               </th>
               <td>{ACTOR_WORDS[entry.actor]}</td>
               <td>
-                <UndoCell entry={entry} onRestore={onRestore} />
+                <UndoCell entry={entry} onUndo={onUndo} onRestore={onRestore} />
               </td>
             </tr>
           ))}
@@ -246,20 +269,34 @@ function useRestore(id: number) {
 
 /**
  * The History tab: the Build's accepted revisions, snapshots, checkoff bursts, sends and
- * assistant decisions from one read, newest first, each with whether it can be undone or
- * restored as a draft.
+ * assistant decisions from one read, newest first, with Undo on each checkoff burst the
+ * core says it can undo now and Restore as draft on each restorable snapshot.
  */
 export function BuildHistory() {
   const { id } = useOutletContext<WorkspaceContext>();
   const connection = useConnection();
+  const client = useQueryClient();
   const offline = connection === "offline";
   const query = useInfiniteQuery(historyQuery(id));
   const table = useRef<HTMLTableElement>(null);
-  const message = useRef<HTMLDivElement>(null);
-  const { mutation: restore, start, closed } = useRestore(id);
+  const { undo, start, message } = useBurstUndo(
+    (entry: Entry) => writeCore("undoBuildHistoryEntry", { id, entry_id: entry.id }),
+    // An undo changes Checkoff progress on every Build a printer burst touched, so the
+    // Build headers, Checkoff, Today and the farm log reload with History.
+    () => client.invalidateQueries({ queryKey: ["core"] }),
+    // A printer burst's undo deletes its entry, so a resend after a lost answer finds none.
+    // A manual burst stays listed after its undo, so its 404 proves nothing.
+    (error, entry) =>
+      entry.type === "checkoff_burst" &&
+      !entry.id.startsWith("checkoff_burst:manual-") &&
+      error.status === 404 &&
+      error.detail === "History entry not found",
+  );
+  const restoreMessage = useRef<HTMLDivElement>(null);
+  const { mutation: restore, start: startRestore, closed } = useRestore(id);
   // A refused restore leaves the button in place, so focus moves to what happened.
   useEffect(() => {
-    if (restore.isError || closed) message.current?.focus();
+    if (restore.isError || closed) restoreMessage.current?.focus();
   }, [restore.isError, closed, restore.submittedAt]);
   const state = pagedScreenState(query, connection, (data) => data.pages[0]?.entries.length === 0);
   const missing = (error: Error | null) =>
@@ -267,6 +304,7 @@ export function BuildHistory() {
   if ((missing(query.error) && !query.data) || missing(restore.error)) {
     return <NotFound />;
   }
+  const what = undo.variables && TYPE_WORDS[undo.variables.type].toLowerCase();
   return (
     <ScreenTemplate
       title="History"
@@ -274,7 +312,14 @@ export function BuildHistory() {
       state={state}
       renderData={(data) => (
         <>
-          <div ref={message} tabIndex={-1}>
+          <UndoOutcome
+            undo={undo}
+            message={message}
+            what={what}
+            done={`Undid the ${what}: ${undo.variables?.summary}.`}
+            reloaded="History"
+          />
+          <div ref={restoreMessage} tabIndex={-1}>
             {restore.isPending && <p role="status">Restoring {restore.variables.summary}.</p>}
             {closed && (
               <p role="status">
@@ -300,7 +345,8 @@ export function BuildHistory() {
           </div>
           <HistoryTable
             entries={data.pages.flatMap((page) => page.entries)}
-            onRestore={(entry) => !offline && start(entry)}
+            onUndo={start}
+            onRestore={(entry) => !offline && startRestore(entry)}
             table={table}
           />
           <OlderEntries query={query} table={table} />

@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 
 #[path = "../../tests/support/mcp_rpc.rs"]
 mod mcp_rpc;
+#[path = "tests/reads.rs"]
+mod reads;
 use mcp_rpc::{policy, rpc};
 
 const FIXTURE_SESSION: &str = "required-unit-fixture-secret";
@@ -38,7 +40,12 @@ impl McpServer {
     }
 
     async fn routed(flag: Option<&str>, tenant: &str) -> Self {
-        Self::configured(flag, tenant, |config| config).await
+        Self::open(flag, tenant, "", |config| config).await
+    }
+
+    /// The flag on for `default`, with `seed` run on the fixture first.
+    async fn seeded(seed: &str) -> Self {
+        Self::open(Some("1"), "default", seed, |config| config).await
     }
 
     async fn configured(
@@ -46,12 +53,26 @@ impl McpServer {
         tenant: &str,
         configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
     ) -> Self {
+        Self::open(flag, tenant, "", configure).await
+    }
+
+    async fn open(
+        flag: Option<&str>,
+        tenant: &str,
+        seed: &str,
+        configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
+    ) -> Self {
         let directory = crate::scratch::Scratch::new("pp-mcp-http-");
+        let database = directory.join("print-partner.db");
         std::fs::write(
-            directory.join("print-partner.db"),
+            &database,
             include_bytes!("../../../pp-storage/tests/fixtures/required-units/unchanged.db"),
         )
         .unwrap();
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute_batch(seed)
+            .unwrap();
         let owner = pp_storage::WriterOwner::open(&directory, pp_storage::Limits::default())
             .unwrap()
             .0;
@@ -219,7 +240,21 @@ async fn ticket_t_16_mcp_accepts_a_ppk_key_until_it_is_revoked() {
         let result = &rpc(&body)["result"];
         assert!(result["capabilities"]["tools"].is_object(), "{body}");
         assert_eq!(result["serverInfo"], server_info()["serverInfo"]);
+        // The negotiated revision is the one the client asked for (GRE-1303).
+        assert_eq!(result["protocolVersion"], "2025-06-18", "{body}");
     }
+    // A revision the server does not know falls back to the one it advertises.
+    let mut unknown = initialize();
+    unknown["params"]["protocolVersion"] = json!("2099-01-01");
+    let (status, body, _) = server
+        .post("/mcp", &[("authorization", bearer.as_str())], &unknown)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        rpc(&body)["result"]["protocolVersion"],
+        "2025-11-25",
+        "{body}"
+    );
     server.revoke(key_id).await;
     let (status, body, session) = server
         .post(

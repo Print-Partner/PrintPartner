@@ -396,6 +396,26 @@ mod with_feature {
             );
         }
 
+        // Settings write and read back through the composed router (GRE-1357).
+        let format = json!({"format": "iso"});
+        assert_eq!(
+            server
+                .json(
+                    Method::PUT,
+                    "/settings/date-format",
+                    &headers,
+                    Some(&format)
+                )
+                .await,
+            (200, format.clone())
+        );
+        assert_eq!(
+            server
+                .json(Method::GET, "/api/v1/settings/date-format", &headers, None)
+                .await,
+            (200, format)
+        );
+
         // MCP is mounted on both aliases and takes API keys only, so a
         // signed-in same-origin session is refused (GRE-348).
         for path in ["/mcp", "/api/v1/mcp"] {

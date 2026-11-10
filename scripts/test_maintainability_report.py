@@ -3,9 +3,11 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 SCRIPT = Path(__file__).with_name("maintainability-report.py")
 SPEC = importlib.util.spec_from_file_location("maintainability_report", SCRIPT)
@@ -52,8 +54,14 @@ class EnvelopeArmTests(unittest.TestCase):
         self.assertEqual(len(REPORT.UNESCAPED_PIPE.findall(line)), 4)
 
 
-def git(root, *args, date=None):
-    env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date} if date else None
+# No user or system git config and no inherited GIT_* variable, so a hook or alias cannot reach
+# the fixture, and the fixture cannot reach an outer repository.
+ISOLATED = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def git(root, *args, date="2026-01-01T00:00:00Z"):
+    env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
                     "-c", "commit.gpgsign=false", *args], cwd=root, check=True, capture_output=True, env=env)
 
@@ -69,7 +77,10 @@ class CompareTests(unittest.TestCase):
 
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="pp-report-")
-        self.addCleanup(subprocess.run, ["rm", "-rf", self.root])
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        patch = unittest.mock.patch.dict(os.environ, ISOLATED, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
         git(self.root, "init", "-q")
         write(self.root, "rust/crates/pp-core/src/lib.rs", "pub fn a() {}\n")
         git(self.root, "add", "-A")
@@ -100,7 +111,7 @@ class CompareTests(unittest.TestCase):
     def test_history_windows_end_at_the_head_commit_date(self):
         write(self.root, "rust/crates/pp-storage/src/lib.rs", "pub fn b() {}\n")
         git(self.root, "add", "-A")
-        git(self.root, "commit", "-q", "-m", "lib", date="2026-01-01T00:00:00Z")
+        git(self.root, "commit", "-q", "-m", "lib", date="2026-01-02T00:00:00Z")
         write(self.root, "docs/page.md", "# Page\n")
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "docs", date="2026-03-01T00:00:00Z")
@@ -137,6 +148,14 @@ class ChangeTests(unittest.TestCase):
         self.assertEqual(REPORT.change("2.5", "1"), "-1.5")
         self.assertEqual(REPORT.change("1.0", "2.5"), "+1.5")
         self.assertEqual(REPORT.change("2,000", "500"), "-1,500")
+        self.assertEqual(REPORT.change("3.3", "1.3"), "-2")
+        self.assertEqual(REPORT.change("pp-core 9, pp-drivers 9", "pp-core 10, pp-drivers 9"),
+                         "pp-core +1, pp-drivers +0")
+
+    def test_digits_inside_names_are_not_numbers(self):
+        self.assertEqual(REPORT.change("gre_1309_x.rs 2", "gre_1309_x.rs 3"), "gre_1309_x.rs +1")
+        self.assertEqual(REPORT.change("GRE-612 receipt 40", "GRE-612 receipt 41"), "GRE-612 receipt +1")
+        self.assertEqual(REPORT.change("yes: ci-path-filter.py:30", "yes: ci-path-filter.py:31"), None)
 
     def test_other_cells_have_no_difference(self):
         self.assertIsNone(REPORT.change("none", "docs/a.md"))

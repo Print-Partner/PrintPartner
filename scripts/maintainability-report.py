@@ -105,7 +105,9 @@ class Revision:
 
 
 UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
-NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# A standalone number: not part of a name such as `gre_1309`, `GRE-612` or `filter.py:30`, and
+# a comma belongs to it only as a thousands separator, so "9, 10" is two numbers.
+NUMBER = re.compile(r"(?<![\w.:-])\d{1,3}(?:,\d{3})+(?![\w])|(?<![\w.:-])\d+(?:\.\d+)?(?![\w])")
 # measure() points this at a list; row() then records (name, value) instead of printing.
 _collected = None
 
@@ -570,6 +572,9 @@ def measure(repo):
     _collected = []
     try:
         revision_rows(repo)
+        names = [name for name, _ in _collected]
+        if len(names) != len(set(names)):
+            raise ValueError(f"duplicate row names: {sorted({n for n in names if names.count(n) > 1})}")
         return _collected
     finally:
         _collected = None
@@ -583,15 +588,15 @@ def change(base, head):
     deltas = iter(float(h.replace(",", "")) - float(b.replace(",", "")) for b, h in numbers)
 
     def signed(_):
-        delta = next(deltas)
-        return f"{delta:+,.0f}" if delta == int(delta) else f"{delta:+,.1f}"
+        delta = round(next(deltas), 6)
+        return f"{delta:+,.0f}" if delta == int(delta) else f"{delta:+,g}"
     return NUMBER.sub(signed, base)
 
 
 def compare(base, head):
     """Print only the rows whose value differs between the base and head revisions."""
     print(f"Compared `{base.sha[:9]}` (`{base.rev}`) with `{head.sha[:9]}` (`{head.rev}`), "
-          "reading those revisions, not the working tree.\n")
+          f"reading those revisions, not the working tree. History windows end {head.until.isoformat()}.\n")
     before, after = dict(measure(base)), dict(measure(head))
     names = list(after) + [name for name in before if name not in after]
     changed = [name for name in names if before.get(name) != after.get(name)]
@@ -609,11 +614,12 @@ def compare(base, head):
 def main(argv=None):
     args, parser = parse_args(argv)
     root = Path(args.root).resolve()
-    revs = [args.rev, args.base] if args.base else [args.rev]
-    try:
-        repos = [Revision(root, rev) for rev in revs]
-    except subprocess.CalledProcessError as error:
-        parser.error(f"cannot read revision: {(error.stderr or '').strip() or error}")
+    repos = []
+    for rev in [args.rev, args.base] if args.base else [args.rev]:
+        try:
+            repos.append(Revision(root, rev))
+        except subprocess.CalledProcessError as error:
+            parser.error(f"cannot read revision {rev}: {(error.stderr or '').strip() or error}")
     if args.base:
         repos[1].until = repos[0].until
         compare(repos[1], repos[0])

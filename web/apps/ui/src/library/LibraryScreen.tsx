@@ -47,23 +47,26 @@ function ActivityNotice({ query }: { query: UseQueryResult<unknown> }) {
 function ActivityCell({
   events,
   id,
+  none,
 }: {
   events: Map<number, SourceEvent> | undefined;
   id: number;
+  none: string;
 }) {
   if (!events) return <span className="pp-muted">Not loaded</span>;
   const event = events.get(id);
-  if (!event)
-    return <span className="pp-muted">{`None in the last ${ACTIVITY_LIMIT} events`}</span>;
+  if (!event) return <span className="pp-muted">{none}</span>;
   return <LineCell line={{ label: eventText(event), detail: dateText(event.at) }} />;
 }
 
 function SourcesTable({
   sources,
   events,
+  noActivity,
 }: {
   sources: Source[];
   events: Map<number, SourceEvent> | undefined;
+  noActivity: string;
 }) {
   return (
     <table className="pp-sources-table" aria-label="Sources">
@@ -92,7 +95,7 @@ function SourcesTable({
               <LineCell line={syncText(source)} />
             </td>
             <td>
-              <ActivityCell events={events} id={source.id} />
+              <ActivityCell events={events} id={source.id} none={noActivity} />
             </td>
           </tr>
         ))}
@@ -136,7 +139,16 @@ export function LibraryScreen() {
       renderData={(data) => (
         <>
           <ActivityNotice query={activity} />
-          <SourcesTable sources={data.sources} events={events && latestEvents(events)} />
+          <SourcesTable
+            sources={data.sources}
+            events={events && latestEvents(events)}
+            // Fewer events than the limit means the core returned all of them.
+            noActivity={
+              (events?.length ?? 0) < ACTIVITY_LIMIT
+                ? "None recorded"
+                : `None in the last ${ACTIVITY_LIMIT} events`
+            }
+          />
           {events && <RecentActivity events={events} />}
         </>
       )}

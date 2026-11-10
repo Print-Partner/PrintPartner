@@ -9,8 +9,8 @@ const named = { source_id: 2, source_name: "Hinge pack" };
 const other = { source_id: 9, source_name: "Other" };
 const stale = (
   reasons: Extract<Freshness, { status: "stale" }>["reasons"],
-  untracked_sources: Extract<Freshness, { status: "stale" }>["untracked_sources"] = [],
-): Freshness => ({ status: "stale", ...accepted, reasons, untracked_sources });
+  untracked: Extract<Freshness, { status: "stale" }>["untracked_sources"] = [],
+): Freshness => ({ status: "stale", ...accepted, reasons, untracked_sources: untracked });
 const text = (freshness: Freshness) => acceptedRevisionText(freshness, source);
 
 describe("acceptedRevisionText", () => {
@@ -22,10 +22,10 @@ describe("acceptedRevisionText", () => {
   });
 
   it("reads an untracked Plan per Source", () => {
-    const untracked = (source_id: number): Freshness => ({
+    const untracked = (sourceId: number): Freshness => ({
       status: "untracked",
       ...accepted,
-      reasons: [{ kind: "source_revision_untracked", source_id, source_name: "x" }],
+      reasons: [{ kind: "source_revision_untracked", source_id: sourceId, source_name: "x" }],
     });
     expect(text(untracked(2)).label).toBe("Not tracked by revision");
     // Another Source is untracked; this one was accepted at its current revision.

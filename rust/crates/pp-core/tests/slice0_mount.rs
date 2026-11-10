@@ -788,6 +788,9 @@ mod with_feature {
         let on_body = r#"{"on": true}"#;
         let (status, _) = set_module(&fixture, None, "farm", on_body).await;
         assert_eq!(status, 401);
+        let (status, _) =
+            set_module(&fixture, Some("pp_session=not-a-session"), "farm", on_body).await;
+        assert_eq!(status, 401, "storage refuses an unknown session");
         let (status, body) = set_module(&fixture, Some(&session), "printers", on_body).await;
         assert_eq!((status, &body["detail"]), (404, &json!("Module not found")));
         for bad in [
@@ -823,7 +826,8 @@ mod with_feature {
                 set_module(&fixture, Some(&session), "assembly_tracking", on_body).await;
             statuses.push(status);
         }
-        // Two changes above already used the window.
+        // Two requests above (the refused orders change and the assembly
+        // change) reached the write and used the window.
         assert_eq!(statuses.iter().filter(|status| **status == 200).count(), 28);
         assert_eq!(statuses.last(), Some(&429), "30 changes a minute");
         fixture.stop().await;

@@ -10,7 +10,7 @@
 use crate::accepted::{AcceptedHttpConfig, Gate, failure, ok_json, read_error};
 use crate::loopback::PresentedCredential;
 use crate::printer_host::{Windows, throttled};
-use crate::problem::{ProblemType, coded, typed};
+use crate::problem::{ProblemType, admission_response, coded, typed};
 use axum::{
     Extension, Router,
     body::Bytes,
@@ -26,7 +26,8 @@ use pp_storage::features::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Module changes a minute; a person flipping switches never comes close.
+/// Requests a minute that reach the write, whatever storage answers; a
+/// person flipping switches never comes close.
 const LIMIT: u32 = 30;
 const BODY_LIMIT: usize = 16 * 1024;
 
@@ -55,7 +56,8 @@ struct App {
 /// Mounts the route under `/api/v2` when `PP_DESKTOP_REBUILD` was exactly
 /// `1` or `true`; otherwise nothing. The accepted gate admits loopback
 /// requests with an exact Host and Origin and a credential; storage proves
-/// the credential in the write's own transaction (401 when it fails).
+/// the credential in the write's own transaction (401, or 403 when the
+/// account needs an owner mapping).
 pub fn modules_router(config: AcceptedHttpConfig, features: FeatureClient) -> Router {
     let Some(gate) = Gate::open(config) else {
         return Router::new();
@@ -107,6 +109,9 @@ async fn set_module(
 /// Unreadable stored toggles answer as Node's `PATCH /settings/features`
 /// does; a busy or stopping writer answers 503, since nothing was written.
 fn refused(error: &anyhow::Error) -> Response {
+    if let Some(response) = admission_response(error, "Module settings are unavailable") {
+        return response;
+    }
     if error.downcast_ref::<InvalidLayer>().is_some() {
         return coded(
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -500,7 +500,12 @@ fn load(tx: &Transaction<'_>, tenant: &str, key: &str) -> Result<Layer> {
 /// once it is empty. Node owns `PATCH /settings/features`; the Rust-only
 /// runtime writes through `PUT /api/v2/modules/{module}` (GRE-1341).
 fn store_user(tx: &Transaction<'_>, tenant: &str, layer: &Layer) -> Result<()> {
-    let raw: BTreeMap<String, Value> = serde_json::from_str(&layer.raw.text())?;
+    // A member `RawObject` keeps but `serde_json` refuses (a lone surrogate
+    // escape, a number past `f64`) is unreadable as `/health` reads it too.
+    let raw: BTreeMap<String, Value> =
+        serde_json::from_str(&layer.raw.text()).map_err(|_| InvalidLayer {
+            key: USER_KEY.to_owned(),
+        })?;
     if raw.is_empty() {
         tx.execute(
             "DELETE FROM app_settings WHERE tenant_id=?1 AND key=?2",

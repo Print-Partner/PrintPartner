@@ -563,7 +563,8 @@ fn ticket_t_61_read_model_plate_and_history_corruption_is_explicit() {
 #[test]
 fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
     // GRE-1355: Today, the Build overview, the Builds list and MCP all read this
-    // reason. Autosave writes a draft; only Accept changes the Build.
+    // reason. Autosave writes a draft; only Accept changes the Build. The wording matches
+    // web/apps/ui/src/builds/planCopy.ts (GRE-1140).
     use pp_storage::read_model::workflow::{
         self, Accepted, ActionKind, Build, Checkoff, Facts, PlateState, Production, Sources,
         Working,
@@ -598,7 +599,7 @@ fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
     assert_eq!(
         action.reason,
         "Sources are ready. Open Plan to choose files, quantities, and colors. \
-         Changes save to a draft. The Build changes only when you accept it."
+         Changes save to a draft as you make them, and the Build changes only when you accept it."
     );
     assert!(!action.reason.contains("save automatically"));
 }

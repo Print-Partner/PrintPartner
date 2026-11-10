@@ -48,8 +48,9 @@ Sources changes, first Plan) with these replacement-product changes:
 
 - **First Plan says drafts save.** With ready Sources and no Accepted Plan,
   `create_working_plan` ("Open Plan") says: "Sources are ready. Open Plan to
-  choose files, quantities, and colors. Changes save to a draft. The Build
-  changes only when you accept it." Node's copy still ends "Changes save
+  choose files, quantities, and colors. Changes save to a draft as you make
+  them, and the Build changes only when you accept it.", in the words of the
+  replacement UI's `planCopy.ts`. Node's copy still ends "Changes save
   automatically." (GRE-1355).
 - **Saved draft, not accepted.** An open draft with changes is
   `review_working_plan`: "N Plan changes are saved in a draft and not used for

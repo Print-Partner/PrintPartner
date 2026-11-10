@@ -730,7 +730,7 @@ fn next(f: &Facts) -> NextAction {
             CreateWorkingPlan,
             StageId::Plan,
             "Open Plan",
-            "Sources are ready. Open Plan to choose files, quantities, and colors. Changes save to a draft. The Build changes only when you accept it.".into(),
+            "Sources are ready. Open Plan to choose files, quantities, and colors. Changes save to a draft as you make them, and the Build changes only when you accept it.".into(),
         );
     };
     if remaining == 0 {

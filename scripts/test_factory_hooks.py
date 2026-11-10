@@ -471,10 +471,12 @@ class GuardHookTests(unittest.TestCase):
             self.assertBlocked("Execute", {"command": command}, "need the maintainer")
         self.assertBlocked("Execute", {"command": f"gh variable $ACTION {name}"}, "Cannot classify")
         for command in ("gh variable list", f"gh variable get {name}", "gh variable", "gh variable --help",
-                        "gh variable -h", "gh -R o/r variable list --json name,value", "gh help variable",
+                        "gh variable -h", "gh -R o/r variable list --json name,value",
                         f"gh api repos/o/r/actions/variables/{name}", "gh api repos/o/r/actions/variables",
                         f"gh api -X GET orgs/o/actions/variables/{name}"):
             self.assertAllowed("Execute", {"command": command})
+        # gh help could run a config alias named help (GRE-1280); gh variable --help stays allowed above.
+        self.assertBlocked("Execute", {"command": "gh help variable"}, "gh <command> --help")
 
     def test_gh_options_before_the_subcommand(self):
         name = "PP_REVIEW_FALLBACK_UNTIL"
@@ -1267,6 +1269,12 @@ class HiddenMergeTests(unittest.TestCase):
                "set -a; HOME=/tmp; gh pr view 12", "env HOME=/tmp gh pr view 12",
                # Wrapper bundles read letter by letter: an attached value does not use up the program word.
                "timeout -k1s 5 gh pr merge 12", "env -uFOOu gh pr merge 12", "env -uXC gh pr merge 12",
+               # Final round at 10689550: unknown wrapper options and long-option abbreviations, gh help, and the
+               # redirects that still count.
+               "env -a ignored gh pr merge 12", "env --argv0 x gh pr merge 12", "env --un FOO gh pr merge 12",
+               "timeout --kill-a 1 5 gh pr merge 12", "nice --adju 5 gh pr merge 12", "/usr/bin/time --fo x gh pr merge 12",
+               "env -a ignored gh pr view 12", "gh help", "gh help pr", "HOME=/tmp; gh pr view 12",
+               "GH_CONFIG_DIR=/tmp/c xargs gh pr view", "gh cs ssh", "gh agent create x",
                "sudo -nu bob gh pr merge 12", "env -xu FOO gh pr merge 12", "env -vuFOO gh pr merge 12",
                "nice -n5 gh pr merge 12", "timeout -s9 5 gh pr merge 12", "sudo -uroot gh pr merge 12",
                "time -fx gh pr merge 12", "exec -abash gh pr merge 12", "stdbuf -oL gh pr merge 12",
@@ -1308,7 +1316,7 @@ class HiddenMergeTests(unittest.TestCase):
                "find docs -name '*.md' -exec grep -l 'gh pr merge' {} +", "printf 'a.md\\n' | xargs grep -n 'gh pr merge'",
                "xargs echo 'gh pr merge 1'", "entr -s 'make test'",
                # Built-in gh commands, and a config variable on a line without gh.
-               "gh run list --limit 5", "gh api repos/o/r/pulls/12", "gh version", "gh help pr", "gh ext list",
+               "gh run list --limit 5", "gh api repos/o/r/pulls/12", "gh version", "gh ext list",
                "gh repo view", "gh auth status", "GH_CONFIG_DIR=/tmp/c echo hi", "export FOO=1; gh pr view 12",
                # Read-only and help forms of those groups, and env -u of a variable that does not move gh's config.
                "gh extension search foo", "gh extension exec --help", "gh ext", "gh codespace", "gh codespace --help",
@@ -1320,6 +1328,15 @@ class HiddenMergeTests(unittest.TestCase):
                "env -C /tmp gh pr view 12", "env -C /tmp -u PATH gh pr view 12", "env -vu FOO gh pr view 12",
                "unset FOO; gh pr view 12", "HOME=/tmp echo hi", "find . -maxdepth 0 -exec gh pr view 12 \\;",
                "timeout -k1s 5 gh pr view 12", "env -uFOO gh pr view 12", "nice -19 gh pr view 12",
+               # A redirect counts only for the command it is attached to, or after export, declare or unset, and
+               # only for a gh program; gh's own command aliases are built in.
+               "HOME=/tmp echo gh", "HOME=/tmp python3 -c 'print(\"gh pr view 12\")'", "HOME=/tmp npm test; gh pr view 12",
+               "HOME=/tmp npm test; gh pr comment 12 --body \"Verified.\"", "gh at verify artifact --owner o",
+               "gh rs list", "gh agent list", "gh agent-tasks list", "gh agents view 1", "gh extension ls", "gh skill ls",
+               "gh skill show o/r x", "gh pr --help", "gh pr view --help", "gh --help", "env --chdir=/tmp gh pr view 12",
+               "env --unset FOO gh pr view 12", "timeout --kill-after=1 5 gh pr view 12",
+               "nice --adjustment 5 gh pr view 12", "/usr/bin/time --format x gh pr view 12",
+               "sudo --preserve-env=PATH gh pr view 12", "nice --help", "env --version",
                "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
                "sudo -uroot gh pr view 12", "time -fx gh pr view 12", "stdbuf -oL gh pr view 12",
                "ionice -c2 gh pr view 12", "taskset -c0 gh pr view 12",

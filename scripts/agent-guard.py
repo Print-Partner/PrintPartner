@@ -58,6 +58,25 @@ WRAPPER_OPERANDS = {"timeout": 1}
 # that takes a value must come from here; anything else leaves the bundle unreadable.
 WRAPPER_BOOLEANS = {"command": "pvV", "env": "0iv", "exec": "cl", "nohup": "", "nice": "0123456789",
                     "sudo": "AbEeHiKklnPSsVv", "time": "apqv", "timeout": "v"}
+# Each wrapper's long options, and whether one takes the next word as its value. A long option the guard does not
+# know, including an abbreviation such as env --un, leaves the command unreadable.
+WRAPPER_LONG = {
+    "command": {},
+    "env": {"--ignore-environment": False, "--null": False, "--unset": True, "--chdir": True, "--debug": False},
+    "exec": {},
+    "nohup": {},
+    "nice": {"--adjustment": True},
+    "sudo": {"--user": True, "--group": True, "--host": True, "--prompt": True, "--close-from": True,
+             "--chdir": True, "--chroot": True, "--command-timeout": True, "--other-user": True, "--askpass": False,
+             "--background": False, "--preserve-env": False, "--edit": False, "--set-home": False,
+             "--login": False, "--reset-timestamp": False, "--list": False, "--non-interactive": False,
+             "--preserve-groups": False, "--stdin": False, "--shell": False, "--validate": False,
+             "--bell": False},
+    "time": {"--format": True, "--output": True, "--append": False, "--portability": False, "--quiet": False,
+             "--verbose": False},
+    "timeout": {"--signal": True, "--kill-after": True, "--foreground": False, "--preserve-status": False,
+                "--verbose": False},
+}
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
 HOOK_COMMANDS = {"am", "cherry-pick", "merge", "rebase", "revert"}
 MAIN_REF = re.compile(r"^(?:(?:refs/)?heads/)?main$")
@@ -66,8 +85,8 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
                      "--reuse-message", "--template", "--trailer"}
 GH_SHORT_BOOLEAN = set("ih")
 # gh command groups whose subcommand the guard classifies.
-GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext", "codespace", "skill",
-             "skills", "agent-task"}
+GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext", "codespace", "cs", "skill",
+             "skills", "agent-task", "agent-tasks", "agent", "agents"}
 # gh's built-in commands and help topics (gh help, gh 2.103). Any other subcommand is an alias or an extension,
 # which runs a command the guard never sees, wherever its config lives. co is left out: it is a default alias.
 GH_COMMANDS = frozenset({
@@ -75,19 +94,21 @@ GH_COMMANDS = frozenset({
     "completion", "config", "copilot", "discussion", "environment", "exit-codes", "ext", "extension", "extensions",
     "formatting", "gist", "gpg-key", "help", "issue", "label", "licenses", "mintty", "org", "pr", "preview",
     "project", "reference", "release", "repo", "ruleset", "run", "search", "secret", "skill", "ssh-key", "status",
-    "telemetry", "variable", "version", "workflow", "skills",
+    "telemetry", "variable", "version", "workflow", "skills", "at", "rs", "agent", "agents", "agent-tasks", "cs",
 })
 # Built-in groups whose other subcommands run or change code the guard never sees: an extension (exec, browse,
 # create, remove, install, upgrade), an agent skill (install, update, publish), or a remote agent task (create,
 # which starts an agent acting on the repo with the user's GitHub identity). Only these subcommands are allowed.
-GH_READ_ONLY = {"extension": {"list", "search"}, "extensions": {"list", "search"}, "ext": {"list", "search"},
-                "skill": {"list", "search", "preview"}, "skills": {"list", "search", "preview"},
-                "agent-task": {"list", "view"}}
+GH_READ_ONLY = {"extension": {"list", "ls", "search"}, "extensions": {"list", "ls", "search"},
+                "ext": {"list", "ls", "search"}, "skill": {"list", "ls", "search", "preview", "show"},
+                "skills": {"list", "ls", "search", "preview", "show"}, "agent-task": {"list", "view"},
+                "agent-tasks": {"list", "view"}, "agent": {"list", "view"}, "agents": {"list", "view"}}
 # Built-in commands that run code: codespace ssh, cp, code, and jupyter run it in a codespace, and copilot downloads
 # and runs the Copilot CLI. Lanes have no use for either.
-GH_RUNS_CODE = {"codespace", "copilot"}
+GH_RUNS_CODE = {"codespace", "cs", "copilot"}
 GH_CODE = ("`gh {}` runs or changes code the guard cannot see (an extension, an agent skill, a codespace, a remote "
            "agent task, or the Copilot CLI); lanes may not run it.")
+GH_HELP = "Use gh <command> --help instead of gh help; a gh alias named help could answer to it."
 UNKNOWN_GH = ("`gh {}` is not a built-in gh command, so it would run an alias or an extension; lanes may not run "
               "those. Run the built-in command it stands for.")
 # Variables that move gh's config, and with it its aliases and extensions.
@@ -551,13 +572,21 @@ def wrapper_option_words(name, option):
 
     A bundle is read letter by letter, as the wrapper does: the first letter that takes a value uses the rest of
     the bundle as that value (timeout -k1s, env -uFOO), or the next word when nothing follows (env -vu HOME).
-    Letters before it must be the wrapper's boolean flags; otherwise the guard cannot tell where the program
-    starts and raises Unclear.
+    Letters before it must be the wrapper's boolean flags. A long option must be one of the wrapper's long
+    options in full, in WRAPPER_LONG. Anything else means the guard cannot tell where the program starts, so it
+    raises Unclear.
     """
-    if option in WRAPPERS[name]:
-        return 2
-    if not re.fullmatch(r"-[A-Za-z0-9]{2,}", option):
+    if option.startswith("--"):
+        long, attached, _ = option.partition("=")
+        if long in ("--help", "--version"):
+            return 1
+        if long not in WRAPPER_LONG[name]:
+            raise Unclear
+        return 2 if WRAPPER_LONG[name][long] and not attached else 1
+    if name == "env" and option == "-":
         return 1
+    if not re.fullmatch(r"-[A-Za-z0-9]+", option):
+        raise Unclear
     for k, flag in enumerate(option[1:]):
         if "-" + flag in WRAPPERS[name]:
             return 1 if option[k + 2:] else 2
@@ -1013,7 +1042,7 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     if args[:1] and not args[0].startswith("-") and args[0] not in GH_COMMANDS:
         return UNKNOWN_GH.format(args[0])
     if args[:1] == ["help"]:
-        return None
+        return GH_HELP
     release_write = (args[:1] == ["release"] and args[1:2] and not args[1].startswith("-")
                      and args[1] not in RELEASE_READS)
     if args[:2] == ["pr", "merge"] or release_write:
@@ -1508,6 +1537,25 @@ def redirects_gh_config(args):
                for i, word in enumerate(prefix))
 
 
+def redirect_scope(args, name, persistent):
+    """Return (redirect in effect for this command, redirect in effect for the commands after it).
+
+    A prefix assignment or env option moves gh's config for its own command only. An export, declare, typeset,
+    readonly, or unset, or a bare assignment, moves it for the rest of the line, and persistent carries that, or a
+    redirect inherited from an outer line, into each later command.
+    """
+    local = redirects_gh_config(args)
+    if name is None or name in DECLARATIONS or name == "unset":
+        persistent = persistent or local
+        return persistent, persistent
+    return persistent or local, persistent
+
+
+def runs_gh(name, rest):
+    """Whether this command runs gh: as its program, or as the program a runner runs."""
+    return name == "gh" or (name in UNWRAPPED_RUNNERS and any(PurePosixPath(word).name == "gh" for word in rest))
+
+
 def env_clears_gh_config(options):
     """Whether env's options clear the whole environment (-i) or unset a gh config variable (-u VAR). -C and
     --chdir take an operand, as -u does; the options end at the first word that is not one."""
@@ -1549,10 +1597,11 @@ def assigns_gh(words):
 def check_command(command, cwd, outer=None, state=None):
     """Return why a shell command run in cwd is refused, or None to allow it.
 
-    outer is (head_moves, config_unknown, env_config) from the line that runs this command as a
-    sh -c script. The script inherits them: an assignment, env option, or branch change on the
-    outer line applies to every git command inside it. state is the top-level line's merge_state(),
-    so the step budget and the deadline cover the whole line, nested scripts included.
+    outer is (head_moves, config_unknown, env_config, gh_config_redirected) from the line that runs this
+    command as a sh -c script. The script inherits them: an assignment, env option, or branch change on the
+    outer line applies to every git command inside it, and a gh config redirect to every gh inside it. state is
+    the top-level line's merge_state(), so the step budget and the deadline cover the whole line, nested scripts
+    included. A line longer than MAX_COMMAND_BYTES is refused before any parsing.
     """
     global LINE_DEADLINE, LINE_GIT
     if len(command.encode("utf-8", "surrogatepass")) > MAX_COMMAND_BYTES:
@@ -1615,17 +1664,17 @@ def check_line(command, cwd, outer, state):
         marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
-        # A line that moves gh's config, or a script run from such a line, could point gh at aliases or
-        # extensions written anywhere, so any gh it runs, nested or not, is refused.
-        redirected = any(redirects_gh_config(args) for args, *_ in parsed)
+        persistent = False
         if outer is not None:
-            head_moves, config_unknown, env_config, redirected = (
-                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], redirected or outer[3])
-        if redirected and any(re.search(r"\bgh\b", unquoted(" ".join(args))) for args, *_ in parsed):
-            return GH_REDIRECT
+            head_moves, config_unknown, env_config, persistent = (
+                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], outer[3])
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
             check_deadline()
+            # A command that moves gh's config could point a gh it runs at aliases or extensions written anywhere.
+            redirected, persistent = redirect_scope(args, name, persistent)
+            if redirected and runs_gh(name, rest):
+                return GH_REDIRECT
             # Prefixes such as "{" or "!" can come before a control keyword.
             leading = list(itertools.takewhile(lambda word: word in SHELL_PREFIXES | {"for", "case", "select"}, args))
             control += sum(word in ("if", "while", "until", "for", "case", "select") for word in leading)

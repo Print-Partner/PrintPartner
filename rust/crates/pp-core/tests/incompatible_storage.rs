@@ -6,15 +6,20 @@
 mod release;
 
 use pp_core::{CoreRuntime, IncompatibleSchema};
-use pp_testkit::{Fixture, Installation};
+use pp_testkit::{Fixture, Installation, node_schema};
 
 #[tokio::test]
 async fn node_backed_start_refuses_unsupported_schema_before_the_child() {
-    for found in [30, 999] {
+    // The last case also fails `PRAGMA integrity_check`; the version still
+    // decides, so Node never opens it.
+    for (found, failing_integrity) in [(30, false), (999, false), (999, true)] {
         let installation = Installation::create(Fixture::NodeSchema34).unwrap();
-        pp_testkit::node_schema::restamp_schema_version(&installation.database_path(), found)
-            .unwrap();
-        let database = std::fs::read(installation.database_path()).unwrap();
+        let database = installation.database_path();
+        node_schema::restamp_schema_version(&database, found).unwrap();
+        if failing_integrity {
+            node_schema::break_check_constraint(&database).unwrap();
+        }
+        let before = node_schema::database_files(installation.path());
         let error = CoreRuntime::start(release::launch(installation.path().to_path_buf()))
             .await
             .err()
@@ -30,14 +35,11 @@ async fn node_backed_start_refuses_unsupported_schema_before_the_child() {
             }),
             "{error:#}"
         );
-        println!("schema {found}: {error}");
+        println!("schema {found} (integrity failing: {failing_integrity}): {error}");
         assert_eq!(
-            std::fs::read(installation.database_path()).unwrap(),
-            database
-        );
-        assert!(
-            !installation.path().join("print-partner.db-wal").exists(),
-            "nothing opened the database for writing"
+            node_schema::database_files(installation.path()),
+            before,
+            "schema {found}"
         );
     }
 }

@@ -138,6 +138,34 @@ pub fn restamp_schema_version(path: &Path, version: u64) -> std::io::Result<()> 
     stamp_schema_version(&connection, version).map_err(std::io::Error::other)
 }
 
+/// Inserts one `source_revisions` row that breaks its CHECK constraint, with
+/// CHECK and foreign-key enforcement off, so `PRAGMA integrity_check` on
+/// the file reports it.
+pub fn break_check_constraint(path: &Path) -> std::io::Result<()> {
+    let connection = Connection::open(path).map_err(std::io::Error::other)?;
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF; PRAGMA ignore_check_constraints=1;
+             INSERT INTO source_revisions
+               (project_id, upstream_revision_key, manifest_digest, snapshot_locator, synced_at, completeness)
+               VALUES (1, 'k', 'd', 'l', '2026-11-10T00:00:00Z', 'partial');",
+        )
+        .map_err(std::io::Error::other)
+}
+
+/// The bytes of `print-partner.db` and its `-wal`, `-shm` and `-journal`
+/// files in `directory`, `None` for each one that is absent.
+pub fn database_files(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+    ["", "-wal", "-shm", "-journal"]
+        .into_iter()
+        .map(|suffix| {
+            let name = format!("print-partner.db{suffix}");
+            let bytes = std::fs::read(directory.join(&name)).ok();
+            (name, bytes)
+        })
+        .collect()
+}
+
 /// The parsed schema 34 migration list, after checking the pinned digest.
 pub fn schema_34_statements() -> Result<Vec<Statement>, String> {
     let digest = hex::encode(Sha256::digest(SCHEMA_34_SOURCE));

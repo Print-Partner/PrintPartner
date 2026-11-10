@@ -5,7 +5,7 @@ use pp_storage::{
     Limits, WriterOwner, ownership_marker,
     versions::{self, IncompatibleSchema, NODE_SCHEMA, OLDEST_UPGRADABLE, RUST_SCHEMA},
 };
-use pp_testkit::{Fixture, Installation};
+use pp_testkit::{Fixture, Installation, node_schema::database_files};
 use std::path::Path;
 
 /// A copied Node schema 34 installation, restamped to `version`.
@@ -16,16 +16,22 @@ fn installation_at(version: u64) -> Installation {
     installation
 }
 
-/// The bytes of every SQLite file of the database.
-fn database_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
-    ["", "-wal", "-shm", "-journal"]
-        .into_iter()
-        .map(|suffix| {
-            let name = format!("print-partner.db{suffix}");
-            let bytes = std::fs::read(root.join(&name)).ok();
-            (name, bytes)
-        })
-        .collect()
+/// `installation_at(version)` plus one row that fails `PRAGMA integrity_check`.
+fn failing_integrity_at(version: u64) -> Installation {
+    let installation = installation_at(version);
+    pp_testkit::node_schema::break_check_constraint(&installation.database_path()).unwrap();
+    installation
+}
+
+/// Opens the writer, asserts the database files kept their bytes, and
+/// returns the refusal.
+fn refused_writer(installation: &Installation) -> anyhow::Error {
+    let before = database_files(installation.path());
+    let error = WriterOwner::open(installation.path(), Limits::default())
+        .err()
+        .unwrap();
+    assert_eq!(database_files(installation.path()), before, "{error:#}");
+    error
 }
 
 fn refusal(error: &anyhow::Error) -> IncompatibleSchema {
@@ -36,12 +42,13 @@ fn refusal(error: &anyhow::Error) -> IncompatibleSchema {
 
 #[test]
 fn writer_refuses_unsupported_schemas_without_changing_the_database() {
-    for found in [1, OLDEST_UPGRADABLE - 1, RUST_SCHEMA + 1, 999] {
-        let installation = installation_at(found);
-        let before = database_files(installation.path());
-        let error = WriterOwner::open(installation.path(), Limits::default())
-            .err()
-            .unwrap();
+    let cases = [1, OLDEST_UPGRADABLE - 1, RUST_SCHEMA + 1, 999]
+        .map(|found| (installation_at(found), found));
+    // The version is checked before the integrity check, so a file that also
+    // fails integrity_check still gets the typed refusal.
+    let cases = cases.into_iter().chain([(failing_integrity_at(999), 999)]);
+    for (installation, found) in cases {
+        let error = refused_writer(&installation);
         let refused = refusal(&error);
         assert_eq!(
             refused,
@@ -53,21 +60,12 @@ fn writer_refuses_unsupported_schemas_without_changing_the_database() {
         );
         println!("schema {found}: {error}");
         assert_eq!(error.to_string(), refused.to_string());
-        assert_eq!(
-            database_files(installation.path()),
-            before,
-            "schema {found}"
-        );
     }
 }
 
 #[test]
 fn writer_refusal_text_names_version_range_and_recovery() {
-    let older = refusal(
-        &WriterOwner::open(installation_at(30).path(), Limits::default())
-            .err()
-            .unwrap(),
-    );
+    let older = refusal(&refused_writer(&installation_at(30)));
     assert_eq!(
         older.to_string(),
         format!(
@@ -76,11 +74,7 @@ fn writer_refusal_text_names_version_range_and_recovery() {
              this release. The database was not changed."
         )
     );
-    let newer = refusal(
-        &WriterOwner::open(installation_at(RUST_SCHEMA + 1).path(), Limits::default())
-            .err()
-            .unwrap(),
-    );
+    let newer = refusal(&refused_writer(&installation_at(RUST_SCHEMA + 1)));
     assert_eq!(
         newer.to_string(),
         format!(
@@ -112,9 +106,7 @@ fn node_lease_refuses_schemas_node_cannot_open() {
     // the version read. The writer keeps that message; the Node check still
     // refuses version 35 instead of handing the database to Node.
     let mislabeled = installation_at(35);
-    let error = WriterOwner::open(mislabeled.path(), Limits::default())
-        .err()
-        .unwrap();
+    let error = refused_writer(&mislabeled);
     assert_eq!(error.to_string(), "Durable job schema mismatch");
 
     let cases = [
@@ -122,6 +114,7 @@ fn node_lease_refuses_schemas_node_cannot_open() {
         (mislabeled, 35),
         (upgraded, RUST_SCHEMA),
         (installation_at(999), 999),
+        (failing_integrity_at(999), 999),
         (installation_at(u64::MAX), u64::MAX),
     ];
     for (installation, found) in cases {

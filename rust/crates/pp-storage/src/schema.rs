@@ -187,11 +187,6 @@ pub(crate) fn preflight(
     );
     validate_directory()?;
     let conn = Connection::open(copy.0.join("print-partner.db"))?;
-    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    ensure!(
-        integrity == "ok",
-        "SQLite integrity_check failed: {integrity}"
-    );
     let has_settings: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings')",
         [],
@@ -220,6 +215,13 @@ pub(crate) fn preflight(
     };
     crate::versions::record_preflight_version(Some(version));
     crate::versions::classify(version, CURRENT_VERSION)?;
+    // After the version check, so an unsupported version is refused as such
+    // whatever the integrity of the rest of the file.
+    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    ensure!(
+        integrity == "ok",
+        "SQLite integrity_check failed: {integrity}"
+    );
     crate::jobs::validate_schema(&conn, version)?;
     #[cfg(feature = "desktop_rebuild")]
     crate::plan_publication::validate_schema(&conn, version)?;

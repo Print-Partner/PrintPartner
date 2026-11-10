@@ -55,6 +55,25 @@ pub fn desktop_data_dir(
     Ok(home.join(".print-partner"))
 }
 
+/// The startup error dialog's title and text. An incompatible-storage refusal
+/// anywhere in the cause chain shows its own message; nothing else does,
+/// because other messages can hold private paths.
+pub fn startup_error_text(error: &anyhow::Error) -> (&'static str, String) {
+    match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<pp_core::IncompatibleSchema>())
+    {
+        Some(refusal) => (
+            "Print Partner cannot open this data folder",
+            refusal.to_string(),
+        ),
+        None => (
+            "Print Partner could not start",
+            "The desktop runtime or its verified resources could not start. Check that this installation is complete and that another Print Partner instance is not using its data directory.".to_owned(),
+        ),
+    }
+}
+
 /// Only emit known diagnostic categories and OS error numbers. Arbitrary error
 /// messages can include private paths, bootstrap URLs or backend payloads.
 pub fn startup_diagnostic(error: &anyhow::Error) -> String {
@@ -690,6 +709,30 @@ mod tests {
             startup_diagnostic(&error),
             "desktop_startup_failed: core_startup -> incompatible_storage: found=48 supported=31..=47 direction=newer"
         );
+    }
+
+    #[test]
+    fn startup_dialog_shows_a_wrapped_incompatible_storage_refusal() {
+        let refusal = pp_core::IncompatibleSchema {
+            found: 48,
+            oldest: 31,
+            newest: 47,
+        };
+        let wrapped = anyhow::Error::from(refusal)
+            .context("Core owner startup failed")
+            .context("Desktop core startup failed");
+        assert_eq!(
+            startup_error_text(&wrapped),
+            (
+                "Print Partner cannot open this data folder",
+                refusal.to_string()
+            )
+        );
+        let other = anyhow::anyhow!("private/path?bootstrap=secret-token")
+            .context("Desktop core startup failed");
+        let (title, text) = startup_error_text(&other);
+        assert_eq!(title, "Print Partner could not start");
+        assert!(!text.contains("secret-token"));
     }
 
     #[test]

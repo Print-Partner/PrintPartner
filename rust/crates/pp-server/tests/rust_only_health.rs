@@ -154,7 +154,7 @@ fn healthcheck_help_exits_zero() {
 fn rust_only_server_exits_78_on_incompatible_storage() {
     let installation = pp_testkit::Installation::create(pp_testkit::Fixture::NodeSchema34).unwrap();
     pp_testkit::node_schema::restamp_schema_version(&installation.database_path(), 999).unwrap();
-    let database = std::fs::read(installation.database_path()).unwrap();
+    let before = pp_testkit::node_schema::database_files(installation.path());
     let root = scratch::Scratch::new("pp-rust-only-incompatible-");
     let bundle = release::launch(installation.path().to_path_buf()).bundle;
     let output = child_process::command(server_binary())
@@ -188,7 +188,7 @@ fn rust_only_server_exits_78_on_incompatible_storage() {
     );
     assert!(output.stdout.is_empty(), "no origin was announced");
     assert_eq!(
-        std::fs::read(installation.database_path()).unwrap(),
-        database
+        pp_testkit::node_schema::database_files(installation.path()),
+        before
     );
 }

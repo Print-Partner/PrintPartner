@@ -1,7 +1,7 @@
 # .github/workflows/lane-dispatch.yml
 # Disabled until the owner re-approves it. It started the next Linear ticket on an idle VM through the
 # self-driving fleet intake, which is retired (see scripts/fleet/lane-rules.yaml). The coordinator now
-# starts work.
+# starts work. scripts/test_merge_group_workflows.py fails if a push, schedule, or any other trigger comes back.
 name: lane-dispatch
 on:
   workflow_dispatch:

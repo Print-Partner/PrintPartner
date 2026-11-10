@@ -44,6 +44,8 @@ pub mod mcp;
 #[cfg(feature = "desktop_rebuild")]
 pub mod modules;
 #[cfg(feature = "desktop_rebuild")]
+mod multipart_form;
+#[cfg(feature = "desktop_rebuild")]
 pub mod planning;
 #[cfg(feature = "desktop_rebuild")]
 pub mod plates;
@@ -55,6 +57,8 @@ pub mod printer_status;
 pub mod printer_stream;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
+#[cfg(feature = "desktop_rebuild")]
+pub mod settings;
 #[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 

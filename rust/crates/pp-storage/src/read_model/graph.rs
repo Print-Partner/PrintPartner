@@ -66,10 +66,13 @@ pub(super) fn budget_check(ok: bool, resource: crate::build_graph::BudgetResourc
     );
     Ok(())
 }
+/// Rows and text bytes one read has loaded, plus each table's column names,
+/// so `rows` runs `PRAGMA table_info` once per table per read.
 #[derive(Default)]
 pub(crate) struct Budget {
     rows: usize,
     bytes: usize,
+    columns: HashMap<String, Vec<String>>,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,11 +270,14 @@ pub(super) fn rows(
     code: &'static str,
     budget: &mut Budget,
 ) -> Result<Vec<Row>> {
-    let mut metadata = tx.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = metadata
-        .query_map([], |r| r.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let expression = columns
+    if !budget.columns.contains_key(table) {
+        let mut metadata = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = metadata
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        budget.columns.insert(table.to_owned(), columns);
+    }
+    let expression = budget.columns[table]
         .iter()
         .map(|c| {
             #[cfg(feature = "desktop_rebuild")]
@@ -284,33 +290,33 @@ pub(super) fn rows(
         })
         .collect::<Vec<_>>()
         .join("+");
-    let (count,total,max):(i64,i64,i64)=tx.query_row(&format!("SELECT count(*),coalesce(sum({expression}),0),coalesce(max({expression}),0) FROM {table} WHERE {condition}"),args,|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-    check(
-        max <= 65536,
-        code,
-        "Accepted Plan stored row text is corrupt",
-    )?;
-    budget.rows = budget.rows.saturating_add(count as usize);
-    budget.bytes = budget.bytes.saturating_add(total as usize);
-    #[cfg(feature = "desktop_rebuild")]
-    {
-        use crate::build_graph::BudgetResource;
-        budget_check(budget.rows <= 200_000, BudgetResource::GraphRows)?;
-        budget_check(budget.bytes <= 64 * 1024 * 1024, BudgetResource::GraphBytes)?;
-    }
-    #[cfg(not(feature = "desktop_rebuild"))]
-    check(
-        budget.rows <= 200_000 && budget.bytes <= 64 * 1024 * 1024,
-        code,
-        "Accepted Plan batch read budget exceeded",
-    )?;
-    let mut stmt = tx.prepare(&format!("SELECT * FROM {table} WHERE {condition}"))?;
-    let names = stmt
+    // One scan: the last column is the row's text bytes. Each row is checked
+    // against the text limit before it is read and charged to the budget
+    // right after, so a corrupt or oversized table fails as it did when a
+    // separate aggregate query checked it first.
+    let mut stmt = tx.prepare_cached(&format!(
+        "SELECT *,({expression}) FROM {table} WHERE {condition}"
+    ))?;
+    let mut names = stmt
         .column_names()
         .map(|v| v.to_string())
         .collect::<Vec<_>>();
+    let text_bytes = names.len() - 1;
+    names.truncate(text_bytes);
+    // A read that has already spent its budget fails here even when this
+    // call finds no rows.
+    charge(budget, 0, 0, code)?;
     let result = stmt
         .query_map(args, |r| {
+            let bytes: i64 = r.get(text_bytes)?;
+            if bytes > 65536 {
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                    Integrity {
+                        code,
+                        message: "Accepted Plan stored row text is corrupt".into(),
+                    },
+                )));
+            }
             let mut values = BTreeMap::new();
             #[cfg(feature = "desktop_rebuild")]
             let mut manifest = PartManifestMetadata::default();
@@ -389,22 +395,49 @@ pub(super) fn rows(
                     .and_then(Value::as_str)
                     .map(str::to_owned);
             }
-            Ok(Row(
+            let row = Row(
                 values,
                 code,
                 #[cfg(feature = "desktop_rebuild")]
                 manifest,
-            ))
+            );
+            Ok((bytes, row))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| match error {
-            rusqlite::Error::ToSqlConversionFailure(inner) => match inner.downcast::<Integrity>() {
-                Ok(integrity) => anyhow!(*integrity),
-                Err(inner) => anyhow!(rusqlite::Error::ToSqlConversionFailure(inner)),
-            },
-            error => anyhow!(error),
-        })?;
+        .map(|found| {
+            let (bytes, row) = found.map_err(|error| match error {
+                rusqlite::Error::ToSqlConversionFailure(inner) => {
+                    match inner.downcast::<Integrity>() {
+                        Ok(integrity) => anyhow!(*integrity),
+                        Err(inner) => anyhow!(rusqlite::Error::ToSqlConversionFailure(inner)),
+                    }
+                }
+                error => anyhow!(error),
+            })?;
+            charge(budget, 1, bytes as usize, code)?;
+            Ok(row)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(result)
+}
+/// Adds rows and text bytes to the read's budget and fails once it is spent.
+#[cfg(feature = "desktop_rebuild")]
+fn charge(budget: &mut Budget, rows: usize, bytes: usize, _code: &'static str) -> Result<()> {
+    use crate::build_graph::BudgetResource;
+    budget.rows = budget.rows.saturating_add(rows);
+    budget.bytes = budget.bytes.saturating_add(bytes);
+    budget_check(budget.rows <= 200_000, BudgetResource::GraphRows)?;
+    budget_check(budget.bytes <= 64 * 1024 * 1024, BudgetResource::GraphBytes)
+}
+/// Adds rows and text bytes to the read's budget and fails once it is spent.
+#[cfg(not(feature = "desktop_rebuild"))]
+fn charge(budget: &mut Budget, rows: usize, bytes: usize, code: &'static str) -> Result<()> {
+    budget.rows = budget.rows.saturating_add(rows);
+    budget.bytes = budget.bytes.saturating_add(bytes);
+    check(
+        budget.rows <= 200_000 && budget.bytes <= 64 * 1024 * 1024,
+        code,
+        "Accepted Plan batch read budget exceeded",
+    )
 }
 pub(super) fn one(
     tx: &Transaction<'_>,
@@ -418,7 +451,7 @@ pub(super) fn one(
     check(r.len() <= 1, code, "Duplicate accepted Plan identity")?;
     Ok(r.pop())
 }
-pub(super) fn required(row: Option<Row>, code: &'static str) -> Result<Row> {
+pub(super) fn required<T>(row: Option<T>, code: &'static str) -> Result<T> {
     row.ok_or_else(|| {
         Integrity {
             code,
@@ -1136,6 +1169,24 @@ pub(crate) fn read(
             r.n("unit_index").unwrap_or(-1),
         )
     });
+    // One read of the mapped units and their creation revisions instead of
+    // two lookups per unit; the checks below still run per mapping. The
+    // tenant filter lets the subquery use the mappings' unique index: a
+    // mapping of another tenant fails `owned` before its unit is looked up.
+    let units: HashMap<String, Row> = rows(
+        tx,
+        "required_units",
+        "token IN (SELECT required_unit_token FROM plan_revision_required_units WHERE tenant_id=?2 AND revision_id=?1)",
+        &[&revision_id, &tenant],
+        "required_unit_map",
+        b,
+    )?
+    .into_iter()
+    .map(|u| Ok((u.s("token")?.to_owned(), u)))
+    .collect::<Result<_>>()?;
+    // Each creation revision with the rows and bytes its lookup cost, charged
+    // again on every reuse so the budget counts what one lookup per unit did.
+    let mut creations: HashMap<i64, (Option<Row>, usize, usize)> = HashMap::new();
     let (mut tokens, mut names) = (HashSet::new(), HashSet::new());
     let mut canonical = Vec::new();
     for m in mappings {
@@ -1150,31 +1201,25 @@ pub(crate) fn read(
                 code: "required_unit_map",
                 message: "Accepted Plan Required-unit ownership is corrupt".into(),
             })?;
-        let u = required(
-            one(
-                tx,
-                "required_units",
-                "token=?1",
-                &[&token],
-                "required_unit_map",
-                b,
-            )?,
-            "required_unit_map",
-        )?;
-        owned(&u, tenant, Some(id), "required_unit_map")?;
+        let u = required(units.get(token), "required_unit_map")?;
+        owned(u, tenant, Some(id), "required_unit_map")?;
         let creation = u.n("created_in_revision_id")?;
-        let cr = required(
-            one(
+        if let Some((_, rows, bytes)) = creations.get(&creation) {
+            charge(b, *rows, *bytes, "required_unit_map")?;
+        } else {
+            let (rows, bytes) = (b.rows, b.bytes);
+            let row = one(
                 tx,
                 "plan_revisions",
                 "id=?1",
                 &[&creation],
                 "required_unit_map",
                 b,
-            )?,
-            "required_unit_map",
-        )?;
-        owned(&cr, tenant, Some(id), "required_unit_map")?;
+            )?;
+            creations.insert(creation, (row, b.rows - rows, b.bytes - bytes));
+        }
+        let cr = required(creations[&creation].0.as_ref(), "required_unit_map")?;
+        owned(cr, tenant, Some(id), "required_unit_map")?;
         let name = u.s("object_name")?;
         check(
             index == p.units.len() as i64

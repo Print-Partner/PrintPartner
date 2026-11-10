@@ -414,7 +414,7 @@ pub(crate) fn plan_features(
     })))
 }
 
-fn owned(tx: &Transaction<'_>, tenant: &str, plan: PositiveId) -> Result<bool> {
+pub(crate) fn owned(tx: &Transaction<'_>, tenant: &str, plan: PositiveId) -> Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE id=?1 AND tenant_id=?2)",
         params![i64::try_from(plan.get())?, tenant],

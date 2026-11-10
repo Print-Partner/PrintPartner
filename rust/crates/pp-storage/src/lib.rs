@@ -3,6 +3,8 @@ pub mod production;
 
 #[cfg(feature = "desktop_rebuild")]
 pub mod admin;
+#[cfg(feature = "desktop_rebuild")]
+pub mod app_settings;
 
 pub mod archive;
 #[cfg(feature = "desktop_rebuild")]
@@ -148,6 +150,11 @@ enum Envelope {
     Features {
         command: features::Command,
         reply: mpsc::Sender<Result<features::Reply>>,
+    },
+    #[cfg(feature = "desktop_rebuild")]
+    AppSettings {
+        command: app_settings::Command,
+        reply: app_settings::Reply,
     },
     #[cfg(feature = "desktop_rebuild")]
     Publication {
@@ -400,6 +407,34 @@ fn execute(
     tx.commit()?;
     Ok(true)
 }
+impl Shared {
+    /// Waits up to `wait` for room in the writer queue, then queues `envelope`.
+    fn admit(&self, envelope: Envelope, cancelled: &AtomicBool, wait: Duration) -> Result<()> {
+        let deadline = Instant::now() + wait;
+        let mut queue = self
+            .queue
+            .lock()
+            .map_err(|_| anyhow!("Writer admission poisoned"))?;
+        loop {
+            ensure!(!queue.closed, "Storage stopped");
+            ensure!(
+                !cancelled.load(Ordering::Acquire),
+                "Cancelled before admission"
+            );
+            if queue.pending.len() < self.capacity {
+                queue.pending.push_back(envelope);
+                self.changed.notify_all();
+                return Ok(());
+            }
+            ensure!(Instant::now() < deadline, "Writer queue full");
+            queue = self
+                .changed
+                .wait_timeout(queue, Duration::from_millis(5))
+                .map_err(|_| anyhow!("Writer admission poisoned"))?
+                .0;
+        }
+    }
+}
 impl SettingsClient {
     #[cfg(feature = "desktop_rebuild")]
     pub(crate) fn enqueue_auth(&self, work: auth::rebuild::WriterWork) {
@@ -415,32 +450,10 @@ impl SettingsClient {
     }
 
     fn enqueue(&self, work: Work, cancelled: &AtomicBool, wait: Duration) -> Result<WriteReply> {
-        let deadline = Instant::now() + wait;
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
-        loop {
-            ensure!(!queue.closed, "Storage stopped");
-            ensure!(
-                !cancelled.load(Ordering::Acquire),
-                "Cancelled before admission"
-            );
-            if queue.pending.len() < self.shared.capacity {
-                let (reply, receiver) = mpsc::channel();
-                queue.pending.push_back(Envelope::Setting { work, reply });
-                self.shared.changed.notify_all();
-                return Ok(receiver);
-            }
-            ensure!(Instant::now() < deadline, "Writer queue full");
-            queue = self
-                .shared
-                .changed
-                .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
-                .0;
-        }
+        let (reply, receiver) = mpsc::channel();
+        self.shared
+            .admit(Envelope::Setting { work, reply }, cancelled, wait)?;
+        Ok(receiver)
     }
     pub fn submit(
         &self,
@@ -793,6 +806,10 @@ impl WriterOwner {
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::Features { command, reply } => {
                         let _ = reply.send(features::execute(&mut connection, command, admission));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::AppSettings { command, reply } => {
+                        reply.send(app_settings::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::BuildGraph { command, reply } => {

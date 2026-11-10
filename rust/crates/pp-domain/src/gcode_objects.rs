@@ -416,10 +416,10 @@ fn exact_outcome<'a>(rows: Vec<&'a str>) -> Option<SlicedObjectNameMatch<'a>> {
     }
 }
 
-fn exact_rows<'a>(
-    indexed: &'a [IndexedFilename],
+fn exact_rows(
+    indexed: &[IndexedFilename],
     key: impl Fn(&InterpretedSlicedObjectName) -> bool,
-) -> Vec<&'a str> {
+) -> Vec<&str> {
     indexed
         .iter()
         .filter(|row| key(&row.interpreted))

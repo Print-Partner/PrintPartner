@@ -11,7 +11,7 @@
 
 `web/apps/server/src/routes/admin-routes.oracle.test.ts` checks that Node still
 produces `node-oracle.json`. Web CI runs it when `web/` or `fixtures/` change.
-`rust/crates/pp-api/tests/ticket_t_62_admin_http.rs` replays the same cases
+`rust/crates/pp-api/tests/admin_http.rs` replays the same cases
 through the Rust routes. To rewrite the oracle after a deliberate Node change:
 
 ```sh

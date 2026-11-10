@@ -69,7 +69,7 @@ Cargo features:
 - `tests/auth_http.rs`: auth router behavior.
 - `src/problem/tests.rs` and, with `desktop_rebuild`, `src/problem/tests/canary.rs` (`-E 'test(problem_response)'`): problem envelope, extractor rejections, field-error bounds, and the leak canary.
 - `tests/builds_http.rs`, `catalog_http.rs`, `jobs_http.rs`, `manifest_options_http.rs`: mostly `desktop_rebuild`-gated tests against `fixtures/parity/*-http` and related directories.
-- `tests/ticket_t_10_fixtures.rs`, `ticket_t_61_read_model_http.rs`, `ticket_t_62_admin_http.rs`: gated parity suites.
+- `tests/node_fixture_replay.rs`, `accepted_plan_checkoff_http.rs`, `admin_http.rs`: gated parity suites.
 - Unit tests: `src/auth/tests/` (provider and SMTP, with `tests/fixtures/loopback-*.der`), `src/drafts/http/tests.rs`, `src/mcp/tests.rs`. Lib tests share scratch helpers from `pp-storage/tests/common`.
 - Dev-dependencies: `tokio-rustls`, `rusqlite`, `tempfile`.
 

@@ -3520,7 +3520,7 @@ copied dimension name and text option, aliases included, is charged to it), is 5
 
 `fixtures/parity/variants-http/node.json` is Node's answer for 78 requests on
 one database. `variants_flat_v1_v2_match_node_responses_and_changed_tables`
-in `ticket_t_10_fixtures` replays every case through `build_router` over the
+in `node_fixture_replay` replays every case through `build_router` over the
 production `SourceReads`: 74 match Node's status, body and changed tables, and
 four bodies Fastify's parser refuses (poisoned, not JSON, or empty under
 `application/json`, including on a missing or non-numeric Plan) are declared
@@ -3614,7 +3614,7 @@ as on the other Rust Build routes.
 `fixtures/parity/plan-features-decisions/node.json` is Node's answer for 114
 requests on one database, run with `PP_DESKTOP_REBUILD=1` except four with it
 unset. `plan_features_decisions_flat_v1_v2_match_node_responses_and_changed_tables`
-in `ticket_t_10_fixtures` replays them through `build_router` merged with
+in `node_fixture_replay` replays them through `build_router` merged with
 `planning_router`, as `pp-core` composes them. 102 match Node's status, body
 and changed tables. Eight bodies Fastify's parser refuses are declared
 corrections (400 `Request is invalid` without Fastify's codes). The four

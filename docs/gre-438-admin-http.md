@@ -40,7 +40,7 @@ declares `rust_writes: "none"`.
 One known difference: Rust's JSON parser stops at 128 levels of nesting and
 then treats the store as unparsable (`{"filaments":[]}`), while Node serves
 the nested value. Node writes flat entries, so only a hand-edited store nests
-that deep. `ticket_t_62_admin_http` pins this case.
+that deep. `admin_http` pins this case.
 
 ```sh
 cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-storage -p pp-core \

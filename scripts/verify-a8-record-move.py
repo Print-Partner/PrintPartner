@@ -58,9 +58,33 @@ LINK_REWRITES = {
 LINK_TARGET = re.compile(rb"(\[[^\]\n]*\]\()([^\s()]+)(\))")
 
 
+# Post-freeze corrections to two family rows (PR #1650). Each replaces one link on the row
+# that starts with the prefix; the same destination on other rows is left alone.
+FAMILY_ROW_FIXES = [
+    (b"| Product Module choices and settings |",
+     b"[rust/crates/pp-api/src/admin.rs](../rust/crates/pp-api/src/admin.rs)",
+     b"[rust/crates/pp-api/src/builds/features.rs](../rust/crates/pp-api/src/builds/features.rs)"),
+    (b"| Stock and Spoolman shortfalls |",
+     b"[rust/crates/pp-api/src/planning.rs](../rust/crates/pp-api/src/planning.rs)",
+     b"[rust/crates/pp-api/src/accepted.rs](../rust/crates/pp-api/src/accepted.rs)"),
+]
+
+
+def apply_family_row_fixes(original):
+    lines = original.split(b"\n")
+    for prefix, old_link, new_link in FAMILY_ROW_FIXES:
+        hits = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+        assert len(hits) == 1, prefix
+        assert lines[hits[0]].count(old_link) == 1, prefix
+        lines[hits[0]] = lines[hits[0]].replace(old_link, new_link)
+    return b"\n".join(lines)
+
+
 def verify_bytes(path, original, actual):
     """Require the fixed original bytes with exactly the listed destination repairs."""
     rewrites = LINK_REWRITES.get(path, {})
+    if path == "docs/families.md":
+        original = apply_family_row_fixes(original)
     expected = LINK_TARGET.sub(
         lambda match: match[1] + rewrites.get(match[2], match[2]) + match[3], original)
     if actual != expected:

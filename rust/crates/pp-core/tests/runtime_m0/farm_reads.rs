@@ -3,7 +3,7 @@
 //! distinct not-set-up, manual and unreachable reasons and no writes. Since
 //! GRE-1175 a PrusaLink printer is watched too, so one with no reachable host
 //! reads as unreachable instead of manual.
-use super::ticket_t_4_watcher_proof::{
+use super::watcher_proof::{
     SUCCESS, production_rows, proof_data, run_in_child, seed_settings, shut_down, signed_in,
     start_rust_only,
 };

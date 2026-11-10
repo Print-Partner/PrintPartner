@@ -32,6 +32,9 @@ use std::{
 
 #[path = "support/checkoff_http.rs"]
 mod checkoff_http;
+#[path = "support/multipart.rs"]
+mod multipart;
+use multipart::multipart;
 #[path = "../../pp-storage/tests/common/js_json.rs"]
 mod js_json;
 
@@ -710,22 +713,6 @@ async fn the_assignment_transaction_refuses_a_host_changed_since_redemption() {
 
 const UPLOAD: &str = "/printer-checkoff/file-assignments/upload";
 const GONE: &str = "That upload is no longer available; upload the print file again";
-
-/// A multipart body of `(field, file name, bytes)` parts.
-fn multipart(parts: &[(&str, Option<&str>, &[u8])]) -> (String, Vec<u8>) {
-    let mut body = Vec::new();
-    for (name, file_name, bytes) in parts {
-        let file = file_name.map_or(String::new(), |file| format!("; filename=\"{file}\""));
-        body.extend_from_slice(
-            format!("--pp\r\nContent-Disposition: form-data; name=\"{name}\"{file}\r\n\r\n")
-                .as_bytes(),
-        );
-        body.extend_from_slice(bytes);
-        body.extend_from_slice(b"\r\n");
-    }
-    body.extend_from_slice(b"--pp--\r\n");
-    ("multipart/form-data; boundary=pp".to_owned(), body)
-}
 
 async fn upload(router: &Router, parts: &[(&str, Option<&str>, &[u8])]) -> (StatusCode, Value) {
     let (content_type, body) = multipart(parts);

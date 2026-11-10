@@ -4,7 +4,7 @@ Every pull request meets this bar before it merges. The [pull request template](
 
 ## The bar
 
-1. **One job per PR.** Aim for 300 to 600 changed lines. About 1,500 is the hard ceiling, or about 600 for a Mission PR. Split larger work into sequential PRs: each one starts from `main` after the previous one merges, never stacked on an open PR's branch. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
+1. **One job per PR.** Keep the diff under about 1,500 lines, or about 600 for a Mission PR. If you find work that belongs to another ticket, note it on that ticket and leave it out of this PR.
 2. **Unslopped.** Run the unslop pass on code, comments and docs before review. Remove filler comments, dead code and speculative abstractions.
 3. **Reviewed.** The required `review-gate` check passes on the exact head commit (see [Code review](#code-review)), every review thread is resolved, and required CI is green on that commit. A sensitive PR, or a head whose `review-gate` passed only through the coordinator record, also passes the coordinator's scorer run under the [merge gate](#merge-gate).
 4. **Docs in the same PR.** When the PR changes behavior, setup or an interface, update the matching page under `docs/` in the same PR.
@@ -17,12 +17,6 @@ Every pull request meets this bar before it merges. The [pull request template](
 - Every other P2 and all P3s go on the post-parity polish list (GRE-974) or in a PR comment. Do not create a ticket for them.
 - After the first review, a PR gets at most two fix rounds. If new P0/P1 findings still appear, stop. Post an escalation comment on the ticket with the findings and two or three options (split the PR, replace custom code with a maintained library or standard tool, or defer), then pick other work.
 - Prefer maintained libraries and standard platform mechanisms over custom hardening. Examples are OS file locks, CODEOWNERS, actionlint and zizmor.
-
-## Design calls
-
-Design decisions that stay inside the approved plan, the AGENTS.md rules, and the data invariants (SQLite formats and history, immutable Plan, Plate and Required-unit IDs, autosave, restart recovery, and one runtime per operation) are pre-approved. The coordinator makes them and logs each one on the ticket with its reason; lanes ask the coordinator rather than wait for the owner.
-
-Every other decision goes to the owner in one daily list: scope, cutover, defaults, data formats, and security posture. When in doubt, it goes on the list. Work that depends on an open item waits for the owner's answer.
 
 ## Fixes only
 
@@ -44,13 +38,15 @@ The coordinator merges a PR only when all of these hold on the same head commit:
 2. **Required checks** are green, including `review-gate`.
 3. **Every other reported check** passes or is skipped. Only these checks may fail: `rust (macos)` and `rust (windows)`, which are advisory, and `droid-review`, `claude-code-review`, and `claude-security-review`, only when `review-gate` passed on the same head through another path (for example while Droid or the Claude subscription is out of usage). The owner extends that list. Windows work is deferred until after cutover (re-scope, 2026-11-08), and the owner removed `rust (windows)` from the required checks on 2026-11-08.
 4. **All review threads** are resolved.
-5. **Scorer, sensitive PRs and marker-only heads.** For a PR that item 6 names, and for any head whose `review-gate` passed only through the coordinator record, the coordinator runs its own scorer on that head from a [scorer seat](#scorer-seats) whose vendor differs from the PR's author. A marker-only head passes with a score strictly above 8; a sensitive PR needs item 6. Other PRs, whose gate passed on a Claude or Droid review, need no scorer run (re-scope, 2026-11-08).
-6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, the protected-files paths (CI workflows, `.github/zizmor.yml`, the safety guard, `.factory/` and `.claude/`; see [Code review](#code-review)), or any other path the merge gate paragraph above names (every path `.github/CODEOWNERS` assigns to the owner, `rust/rules/`, the ruleset snapshot and the merge-group map) need a score of 9 or more from each of two [scorer seats](#scorer-seats).
+5. **Scorer, sensitive PRs and marker-only heads.** For a PR that item 6 names, and for any head whose `review-gate` passed only through the coordinator record, the coordinator runs its own scorer on that head from a seat whose vendor differs from the PR's author. A marker-only head passes with a score strictly above 8; a sensitive PR needs item 6. Other PRs, whose gate passed on a Claude or Droid review, need no scorer run (re-scope, 2026-11-08).
+6. **Sensitive PRs** that touch schema or migrations, auth and sessions, backup and restore, Accept and publication, secret handling, the protected-files paths (CI workflows, `.github/zizmor.yml`, the safety guard, `.factory/` and `.claude/`; see [Code review](#code-review)), or any other path the merge gate paragraph above names (every path `.github/CODEOWNERS` assigns to the owner, `rust/rules/`, the ruleset snapshot and the merge-group map) need a score of 9 or more from each of two seats.
 7. **Command.** `gh pr merge <number> --squash --match-head-commit <sha>`, with the full 40-character head SHA. Never `--admin` or `--auto`.
 
-### Scorer seats
+Scorer seats, in order. Use the first available seat whose vendor differs from the author's:
 
-Two scorer seats from different vendors, named by the owner on Execution status. Which models fill them is the owner's decision, so this page names none. A seat counts only when its model's vendor differs from the PR author's. A sensitive PR needs both seats; a marker-only head needs one.
+1. OpenCode `opencode/pulse-alpha-free`, falling back to `opencode/deepseek-v4.1-flash-free`.
+2. Cursor `grok-4.7`.
+3. Pi `halo/qwen38-flash`.
 
 `post-score.sh` posts a score as a PR comment. That comment is a record only. A posted score from a lane or an earlier head does not count; for a sensitive PR or a marker-only head, the gate is the coordinator's own scorer run on the exact head.
 
@@ -98,7 +94,7 @@ Mention `@droid` in a PR or issue comment to ask Droid a question or request ano
 When no automatic review passes the gate, for example while Droid is out of usage on a PR the Claude jobs skip, the coordinator records its own review:
 
 1. Check out the PR head at its exact SHA in a separate worktree, for example `git fetch origin pull/<n>/head` and then `git worktree add --detach <path> <sha>`.
-2. Run an independent model review on that checkout. The reviewer comes from a different vendor than the PR's author; use one of the [scorer seats](#scorer-seats). Post its findings as PR review threads.
+2. Run an independent model review on that checkout. The reviewer comes from a different vendor than the PR's author; use the scorer seat order under [Merge gate](#merge-gate). Post its findings as PR review threads.
 3. Wait until every finding is fixed or answered and its thread resolved. A fix is a new push, so start again at step 1 for the new head.
 4. From the coordinator worktree, post the marker as a PR comment:
 
@@ -126,7 +122,7 @@ The owner can also turn on **Automatically request Copilot code review** in the 
 ## Work in progress
 
 - At most 2 tickets in flight per agent. If about 10 are already In Review across the project, help land those before opening new PRs.
-- Fold small fixes into the next PR that touches the same code. Aim for 300 to 600 changed lines, with about 1,500 as the hard ceiling. Mission PRs stay under about 600.
+- Fold small fixes into the next PR that touches the same code. Aim for 300 to 1,500 changed lines. Mission PRs stay under about 600.
 
 ## Evidence
 

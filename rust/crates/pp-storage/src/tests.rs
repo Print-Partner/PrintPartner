@@ -404,7 +404,12 @@ fn ahead_and_old_versions_reject_before_side_effects() {
             WriterOwner::open_at(&path, Limits::default(), "2026-10-02T00:00:00.000Z").is_err()
         );
         assert_eq!(std::fs::read(&database).unwrap(), before);
-        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 2);
+        // GRE-1159: the refused open removes the printpartner.lock it created.
+        let entries: Vec<_> = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["print-partner.db"]);
     }
 }
 

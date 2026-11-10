@@ -1,7 +1,10 @@
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 SCRIPT = Path(__file__).with_name("maintainability-report.py")
@@ -47,6 +50,98 @@ class EnvelopeArmTests(unittest.TestCase):
         line = output.getvalue().strip()
         self.assertEqual(line, "| a \\| b | 1 \\| 2 | `grep x \\| wc -l` |")
         self.assertEqual(len(REPORT.UNESCAPED_PIPE.findall(line)), 4)
+
+
+def git(root, *args, date=None):
+    env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date} if date else None
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                    "-c", "commit.gpgsign=false", *args], cwd=root, check=True, capture_output=True, env=env)
+
+
+def write(root, path, text):
+    target = Path(root, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+
+
+class CompareTests(unittest.TestCase):
+    """`--base` on a throwaway repository: one commit, then one ticket-named test file."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="pp-report-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", self.root])
+        git(self.root, "init", "-q")
+        write(self.root, "rust/crates/pp-core/src/lib.rs", "pub fn a() {}\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "base")
+
+    def report(self, *args):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            REPORT.main(["--root", self.root, *args])
+        return output.getvalue()
+
+    def test_prints_only_the_rows_a_ticket_named_file_changes(self):
+        write(self.root, "rust/crates/pp-core/tests/ticket_t_9_flow.rs", "#[test]\nfn flow() {}\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "head")
+        lines = self.report("--base", "HEAD~1").splitlines()
+        self.assertTrue(lines[0].startswith("Compared `"), lines[0])
+        self.assertIn("(`HEAD~1`) with", lines[0])
+        self.assertEqual(lines[2:4], ["| Measure | Base | Head | Change |", "| --- | --- | --- | --- |"])
+        self.assertEqual(lines[4:], [
+            "| Rust lines, tracked | 1 | 3 | +2 |",
+            "| Rust files named after tickets (in src/); in retiring crates; per crate "
+            "| 0 (0); 0;  | 1 (0); 0; pp-core 1 | values differ |",
+            "| Rust files named after tickets in crates that stay | 0 | 1 | +1 |",
+            "| Largest Rust files | src/lib.rs 1 | ticket_t_9_flow.rs 2; src/lib.rs 1 | values differ |",
+        ])
+
+    def test_history_windows_end_at_the_head_commit_date(self):
+        write(self.root, "rust/crates/pp-storage/src/lib.rs", "pub fn b() {}\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "lib", date="2026-01-01T00:00:00Z")
+        write(self.root, "docs/page.md", "# Page\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "docs", date="2026-03-01T00:00:00Z")
+        # Each revision's own window would count the January lib.rs commit for the base only.
+        rows = [line.split(" | ")[0] for line in self.report("--base", "HEAD~1").splitlines()[4:]]
+        self.assertEqual(rows, ["| Tracked Markdown pages / docs pages / docs named after tickets outside docs/records"])
+
+    def test_an_unchanged_revision_prints_no_table(self):
+        output = self.report("--rev", "HEAD", "--base", "HEAD")
+        self.assertTrue(output.endswith("\n\nNo measure changed.\n"), output)
+        self.assertNotIn("| Measure", output)
+
+    def test_without_base_the_report_keeps_its_value_table(self):
+        lines = self.report("--rev", "HEAD").splitlines()
+        self.assertTrue(lines[0].startswith("Measured at `"), lines[0])
+        self.assertEqual(lines[2], "| Measure | Value | How |")
+        self.assertIn("| Rust lines, tracked | 1 | `all rust/crates/**/*.rs at the revision, newline-counted` |",
+                      lines)
+
+    def test_base_refuses_live_samples(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            REPORT.parse_args(["--base", "origin/main", "--ci"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            REPORT.parse_args(["--base", "origin/main", "1626"])
+        self.assertEqual(REPORT.parse_args(["--base", "x"])[0].rev, "HEAD")
+        self.assertEqual(REPORT.parse_args([])[0].rev, "origin/main")
+
+
+class ChangeTests(unittest.TestCase):
+    def test_numbers_in_the_same_text_get_signed_differences(self):
+        self.assertEqual(REPORT.change("1,176", "1,177"), "+1")
+        self.assertEqual(REPORT.change("103,098 / 41,146 / 236", "103,299 / 41,307 / 238"), "+201 / +161 / +2")
+        self.assertEqual(REPORT.change("784 to 894", "785 to 893"), "+1 to -1")
+        self.assertEqual(REPORT.change("2.5", "1"), "-1.5")
+        self.assertEqual(REPORT.change("1.0", "2.5"), "+1.5")
+        self.assertEqual(REPORT.change("2,000", "500"), "-1,500")
+
+    def test_other_cells_have_no_difference(self):
+        self.assertIsNone(REPORT.change("none", "docs/a.md"))
+        self.assertIsNone(REPORT.change("not found", "not found"))
+        self.assertIsNone(REPORT.change("3 (a)", "4 (a, b)"))
 
 
 if __name__ == "__main__":

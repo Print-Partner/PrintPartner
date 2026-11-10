@@ -8,6 +8,8 @@ revision pins them too.
 
 Usage: python3 scripts/maintainability-report.py [--root DIR] [--rev REV] [--ci]
            [--required a,b,c] [PR ...]
+       python3 scripts/maintainability-report.py [--root DIR] [--rev REV] --base REV
+`--base` measures both revisions (`--rev` defaults to HEAD then) and prints only the rows that differ.
 `--ci` samples whole-workflow wall times and PR numbers add one push-to-green row per head; both
 need `gh`. See docs/development/ci.md#maintainability-report.
 """
@@ -54,6 +56,8 @@ class Revision:
         self.rev = rev
         self.sha = self.git("rev-parse", "--verify", f"{rev}^{{commit}}").strip()
         self.date = dt.datetime.fromisoformat(self.git("show", "-s", "--format=%cI", self.sha).strip())
+        # History windows end here; a --base comparison ends both at the head's commit date.
+        self.until = self.date
         self.paths = [p for p in self.git("ls-tree", "-r", "-z", "--name-only", self.sha).split("\0") if p]
         self._blobs = {}
 
@@ -61,9 +65,9 @@ class Revision:
         return run(["git", *args], self.root, text=True)
 
     def window(self, days):
-        """`git log` arguments for the `days` days ending at the revision's commit date."""
-        since = self.date - dt.timedelta(days=days)
-        return (f"--since={since.isoformat()}", f"--until={self.date.isoformat()}")
+        """`git log` arguments for the `days` days ending at `until`, the revision's commit date by default."""
+        since = self.until - dt.timedelta(days=days)
+        return (f"--since={since.isoformat()}", f"--until={self.until.isoformat()}")
 
     def log(self, days, *args):
         return self.git("log", self.sha, *self.window(days), *args)
@@ -101,6 +105,9 @@ class Revision:
 
 
 UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# measure() points this at a list; row() then records (name, value) instead of printing.
+_collected = None
 
 
 def cell(text):
@@ -113,6 +120,9 @@ def row(name, value, how):
     # Every row must keep the header's three cells, so a stray pipe cannot shift a column.
     if len(UNESCAPED_PIPE.findall(line)) != 4:
         raise ValueError(f"table row does not have three cells: {line}")
+    if _collected is not None:
+        _collected.append((str(name), str(value)))
+        return
     print(line)
 
 
@@ -519,11 +529,15 @@ def parse_args(argv=None):
         description="Print the maintainability measures of one revision. A report, never a check.")
     parser.add_argument("prs", nargs="*", metavar="PR", help="pull request numbers to time (needs gh)")
     parser.add_argument("--root", default=".", help="repository root (default: the current directory)")
-    parser.add_argument("--rev", default="origin/main", help="revision to measure (default: origin/main)")
+    parser.add_argument("--rev", help="revision to measure (default: origin/main, or HEAD with --base)")
+    parser.add_argument("--base", help="compare --rev with this revision and print only the rows that differ")
     parser.add_argument("--ci", action="store_true", help="sample workflow wall times (needs gh)")
     parser.add_argument("--required", default=",".join(REQUIRED_CHECKS),
                         help="comma-separated checks the push-to-green row times")
     args = parser.parse_intermixed_args(argv)
+    if args.base and (args.ci or args.prs):
+        parser.error("--base compares revision measures only; run --ci and PR numbers without it")
+    args.rev = args.rev or ("HEAD" if args.base else "origin/main")
     bad = [p for p in args.prs if not p.isdigit()]
     if bad:
         parser.error(f"not a PR number: {', '.join(bad)}")
@@ -533,22 +547,12 @@ def parse_args(argv=None):
     return args, parser
 
 
-def main(argv=None):
-    args, parser = parse_args(argv)
-    root = Path(args.root).resolve()
-    try:
-        repo = Revision(root, args.rev)
-    except subprocess.CalledProcessError as error:
-        parser.error(f"cannot read revision {args.rev}: {(error.stderr or '').strip() or error}")
+def revision_rows(repo):
     rust = repo.tracked("rust/crates", (".rs",))
     repo.load(rust)
     by_crate = defaultdict(list)
     for path in rust:
         by_crate[crate(path)].append(path)
-    print(f"Measured at `{repo.sha[:9]}` (`{args.rev}`, committed {repo.date.isoformat()}), "
-          "reading that revision, not the working tree.\n")
-    print("| Measure | Value | How |")
-    print("| --- | --- | --- |")
     src = storage_rows(repo, rust, by_crate)
     writer_rows(repo, src)
     gate_rows(repo, by_crate)
@@ -558,6 +562,68 @@ def main(argv=None):
     word_rows(repo)
     include_rows(repo, rust, by_crate)
     tooling_rows(repo)
+
+
+def measure(repo):
+    """The revision's rows as (name, value) pairs, in report order."""
+    global _collected
+    _collected = []
+    try:
+        revision_rows(repo)
+        return _collected
+    finally:
+        _collected = None
+
+
+def change(base, head):
+    """Signed differences when both cells hold numbers in the same text; otherwise None."""
+    if NUMBER.sub("#", base) != NUMBER.sub("#", head) or not NUMBER.search(base):
+        return None
+    numbers = zip(NUMBER.findall(base), NUMBER.findall(head))
+    deltas = iter(float(h.replace(",", "")) - float(b.replace(",", "")) for b, h in numbers)
+
+    def signed(_):
+        delta = next(deltas)
+        return f"{delta:+,.0f}" if delta == int(delta) else f"{delta:+,.1f}"
+    return NUMBER.sub(signed, base)
+
+
+def compare(base, head):
+    """Print only the rows whose value differs between the base and head revisions."""
+    print(f"Compared `{base.sha[:9]}` (`{base.rev}`) with `{head.sha[:9]}` (`{head.rev}`), "
+          "reading those revisions, not the working tree.\n")
+    before, after = dict(measure(base)), dict(measure(head))
+    names = list(after) + [name for name in before if name not in after]
+    changed = [name for name in names if before.get(name) != after.get(name)]
+    if not changed:
+        print("No measure changed.")
+        return
+    print("| Measure | Base | Head | Change |")
+    print("| --- | --- | --- | --- |")
+    for name in changed:
+        old, new = before.get(name, "absent"), after.get(name, "absent")
+        delta = change(old, new) or "values differ"
+        print(f"| {cell(name)} | {cell(old)} | {cell(new)} | {cell(delta)} |")
+
+
+def main(argv=None):
+    args, parser = parse_args(argv)
+    root = Path(args.root).resolve()
+    revs = [args.rev, args.base] if args.base else [args.rev]
+    try:
+        repos = [Revision(root, rev) for rev in revs]
+    except subprocess.CalledProcessError as error:
+        parser.error(f"cannot read revision: {(error.stderr or '').strip() or error}")
+    if args.base:
+        repos[1].until = repos[0].until
+        compare(repos[1], repos[0])
+        return
+    repo = repos[0]
+    print(f"Measured at `{repo.sha[:9]}` (`{args.rev}`, committed {repo.date.isoformat()}), "
+          "reading that revision, not the working tree.\n")
+    print("| Measure | Value | How |")
+    print("| --- | --- | --- |")
+    revision_rows(repo)
     if args.ci:
         ci_rows(root)
     if args.prs:

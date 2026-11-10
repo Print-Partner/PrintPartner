@@ -1,0 +1,61 @@
+blind_id	question	grade	reason
+B01	2	1	all required facts present
+B02	2	1	all required facts present
+B03	2	1	all required facts present
+B04	2	1	all required facts present
+B05	3	0	add-edge steps omit GATED update for desktop_rebuild-only edge
+B06	3	1	all required facts present
+B07	4	1	all required facts present
+B08	2	1	all required facts present
+B09	5	1	all required facts present
+B10	5	1	all required facts present
+B11	3	1	all required facts present
+B12	2	1	all required facts present
+B13	2	1	all required facts present
+B14	1	1	all required facts present
+B15	2	1	all required facts present
+B16	3	1	all required facts present
+B17	5	1	all required facts present
+B18	2	1	all required facts present
+B19	3	0	names only ADR 0007 edge table; docs/architecture.md crate map not updated
+B20	5	1	all required facts present
+B21	1	0	publish path omits commit-only-on-outcome condition (borderline)
+B22	1	0	publish placed in working-draft save; execute and begin_immediate not named
+B23	3	1	all required facts present
+B24	1	1	all required facts present
+B25	4	1	all required facts present
+B26	3	1	all required facts present
+B27	5	1	all required facts present
+B28	5	1	all required facts present
+B29	1	1	all required facts present
+B30	4	1	all required facts present
+B31	1	1	all required facts present
+B32	4	1	all required facts present
+B33	3	1	all required facts present
+B34	1	1	all required facts present; Node test cited as extra proof (borderline)
+B35	5	1	all required facts present
+B36	5	1	all required facts present
+B37	2	1	all required facts present
+B38	4	1	all required facts present
+B39	2	1	all required facts present
+B40	4	1	all required facts present
+B41	4	1	all required facts present
+B42	5	1	all required facts present
+B43	5	1	all required facts present
+B44	4	1	all required facts present; pp-api status query check noted (borderline)
+B45	3	0	names only ADR 0007 edge table; docs/architecture.md crate map not updated
+B46	4	1	all required facts present
+B47	3	1	all required facts present
+B48	2	1	all required facts present
+B49	5	1	all required facts present
+B50	1	0	publish path omits commit-only-on-outcome condition (borderline)
+B51	4	1	all required facts present; pp-api status query check noted (borderline)
+B52	1	0	publish path omits commit-only-on-outcome condition (borderline)
+B53	1	1	all required facts present
+B54	1	1	all required facts present
+B55	3	0	names only ADR 0007 edge table; docs/architecture.md crate map not updated
+B56	4	1	all required facts present
+B57	4	1	all required facts present; pp-api status query check noted (borderline)
+B58	3	1	all required facts present
+B59	5	1	all required facts present
+B60	1	1	all required facts present

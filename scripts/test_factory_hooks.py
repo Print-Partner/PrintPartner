@@ -1245,6 +1245,13 @@ class HiddenMergeTests(unittest.TestCase):
                "GH_CONFIG_DIR=/tmp/c gh m", "XDG_CONFIG_HOME=/tmp gh m", "gh m", "gh co 12", "sh -c 'gh m'",
                "export GH_CONFIG_DIR=/tmp/c; gh pr view 12", "env XDG_CONFIG_HOME=/tmp gh pr view 12",
                "env -u GH_CONFIG_DIR gh pr view 12", "env -i gh pr view 12", "HOME=/tmp gh pr view 12",
+               "sh -c 'GH_CONFIG_DIR=/tmp/c gh m'", "env --unset=HOME gh pr view 12",
+               # gh subcommands that run or change an extension, an agent skill, a codespace, or the Copilot CLI
+               # (r4519498648 at edac4614).
+               "gh extension exec x", "gh ext exec x", "gh extensions exec x", "gh -R o/r extension exec x",
+               "gh extension --help=false exec x", "gh ext browse", "gh ext create foo", "gh ext remove foo",
+               "gh codespace ssh", "gh codespace cp a b", "gh copilot", "gh copilot -p hi", "gh skill install o/r",
+               "gh skills update", "gh skill publish",
                # Nested shells (Sol at 7a96c572); past the nesting limit the guard fails closed.
                "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
@@ -1283,7 +1290,11 @@ class HiddenMergeTests(unittest.TestCase):
                "xargs echo 'gh pr merge 1'", "entr -s 'make test'",
                # Built-in gh commands, and a config variable on a line without gh.
                "gh run list --limit 5", "gh api repos/o/r/pulls/12", "gh version", "gh help pr", "gh ext list",
-               "gh repo view", "gh auth status", "GH_CONFIG_DIR=/tmp/c echo hi", "export FOO=1; gh pr view 12", "xargs " + nested_shells("echo hi", 8),
+               "gh repo view", "gh auth status", "GH_CONFIG_DIR=/tmp/c echo hi", "export FOO=1; gh pr view 12",
+               # Read-only and help forms of those groups, and env -u of a variable that does not move gh's config.
+               "gh extension search foo", "gh extension exec --help", "gh ext", "gh codespace", "gh codespace --help",
+               "gh copilot --help", "gh skill list", "gh skill preview o/r x", "gh alias list", "gh alias delete m",
+               "gh attestation verify f --owner o", "env -u PATH gh pr view 12", "env --unset=FOO gh pr view 12", "xargs " + nested_shells("echo hi", 8),
                # entr runs its arguments as a shell command line only with -s.
                "entr echo 'gh pr merge 1'",
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
@@ -1443,6 +1454,9 @@ class HiddenMergeTests(unittest.TestCase):
         for command in ("GH_CONFIG_DIR=/tmp/c gh m", "XDG_CONFIG_HOME=/tmp gh m", "env -i gh pr view 12"):
             with self.subTest(command=command):
                 self.assertIn("gh config redirected", guard.check_command(command, self.lane))
+        for command, name in (("gh extension exec x", "extension exec"), ("gh copilot", "copilot")):
+            with self.subTest(command=command):
+                self.assertIn(f"`gh {name}` runs or changes code", guard.check_command(command, self.lane))
         for command, name in (("gh m", "m"), ("gh co 12", "co"), ("gh -R o/r my-ext run", "my-ext")):
             with self.subTest(command=command):
                 reason = guard.check_command(command, self.lane)

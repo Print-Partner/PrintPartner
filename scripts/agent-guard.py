@@ -62,7 +62,8 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
                      "--reuse-message", "--template", "--trailer"}
 GH_SHORT_BOOLEAN = set("ih")
 # gh command groups whose subcommand the guard classifies.
-GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext"}
+GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext", "codespace", "skill",
+             "skills"}
 # gh's built-in commands and help topics (gh help, gh 2.103). Any other subcommand is an alias or an extension,
 # which runs a command the guard never sees, wherever its config lives. co is left out: it is a default alias.
 GH_COMMANDS = frozenset({
@@ -70,8 +71,17 @@ GH_COMMANDS = frozenset({
     "completion", "config", "copilot", "discussion", "environment", "exit-codes", "ext", "extension", "extensions",
     "formatting", "gist", "gpg-key", "help", "issue", "label", "licenses", "mintty", "org", "pr", "preview",
     "project", "reference", "release", "repo", "ruleset", "run", "search", "secret", "skill", "ssh-key", "status",
-    "telemetry", "variable", "version", "workflow",
+    "telemetry", "variable", "version", "workflow", "skills",
 })
+# Built-in groups whose other subcommands run or change code the guard never sees: an extension (exec, browse,
+# create, remove, install, upgrade) or an agent skill (install, update, publish). Only these subcommands are allowed.
+GH_READ_ONLY = {"extension": {"list", "search"}, "extensions": {"list", "search"}, "ext": {"list", "search"},
+                "skill": {"list", "search", "preview"}, "skills": {"list", "search", "preview"}}
+# Built-in commands that run code: codespace ssh, cp, code, and jupyter run it in a codespace, and copilot downloads
+# and runs the Copilot CLI. Lanes have no use for either.
+GH_RUNS_CODE = {"codespace", "copilot"}
+GH_CODE = ("`gh {}` runs or changes code the guard cannot see (an extension, an agent skill, a codespace, or the "
+           "Copilot CLI); lanes may not run it.")
 UNKNOWN_GH = ("`gh {}` is not a built-in gh command, so it would run an alias or an extension; lanes may not run "
               "those. Run the built-in command it stands for.")
 # Variables that move gh's config, and with it its aliases and extensions.
@@ -108,7 +118,6 @@ UNREAD_BODY = ("The guard must read a comment body literally to check it for a p
                "of its own; no variables, substitutions, or stdin.")
 VARIABLE = "GitHub Actions variables are owner-maintained; ask the maintainer to change them."
 ALIAS = "A gh alias hides the command from the guard; run the full gh command instead."
-EXTENSION = "gh extensions run code the guard cannot read; ask the maintainer to install one."
 GH_CONFIG = "The gh config can define aliases that hide a command from the guard; ask the maintainer to change it."
 SPLIT_GH = "Cannot classify a gh command built from variables; write gh and its arguments literally."
 # Interpreter code (python3 -c, node -e) cannot be parsed as shell, so its text is matched after quote
@@ -985,8 +994,14 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
         if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]):
             return None
         return MERGE if args[0] == "pr" else RELEASE
-    if args[:1] in (["extension"], ["extensions"], ["ext"]) and args[1:2] and args[1] in ("install", "upgrade"):
-        return None if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]) else EXTENSION
+    group = args[0] if args else None
+    if group in GH_RUNS_CODE or (group in GH_READ_ONLY and args[1:2] and args[1] not in GH_READ_ONLY[group]):
+        # Help is allowed: the group alone (gh codespace prints its help), or only --help or -h after the action.
+        # gh copilot alone runs the Copilot CLI, so it is never help.
+        tail = args[2:] if group in GH_GROUPS else args[1:]
+        if (len(args) == 1 and group in GH_GROUPS) or (tail and all(arg in ("--help", "-h") for arg in tail)):
+            return None
+        return GH_CODE.format(" ".join(args[:2]) if group in GH_GROUPS and args[1:2] else group)
     # An alias could expand to any command, including a merge the guard refuses.
     if args[:1] == ["alias"] and args[1:2] and args[1] in ("set", "import"):
         return None if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]) else ALIAS
@@ -1429,19 +1444,37 @@ def merge_help(args):
 
 def redirects_gh_config(parsed):
     """Whether a command on the line sets or clears a variable that moves gh's config: an assignment, export,
-    env VAR=..., env -u VAR, or env -i, which clears them all."""
+    env VAR=..., env -u VAR for one of them, or env -i, which clears them all."""
     for args, *_ in parsed:
         for i, word in enumerate(args):
             if word.split("=", 1)[0] in GH_CONFIG_VARIABLES and "=" in word:
                 return True
-            if PurePosixPath(word).name == "env":
-                for option in args[i + 1:]:
-                    if not option.startswith("-"):
-                        break
-                    if option in ("-i", "-", "--ignore-environment") or re.fullmatch(r"-[^-]*i[^-]*", option):
-                        return True
-                    if option.startswith(("-u", "--unset")):
-                        return True
+            if PurePosixPath(word).name == "env" and env_clears_gh_config(args[i + 1:]):
+                return True
+    return False
+
+
+def env_clears_gh_config(options):
+    """Whether env's leading options clear the whole environment (-i) or unset a gh config variable (-u VAR)."""
+    j = 0
+    while j < len(options) and options[j].startswith("-") and options[j] != "--":
+        option = options[j]
+        if option in ("-i", "-", "--ignore-environment") or re.fullmatch(r"-[^-u]*i[^-]*", option):
+            return True
+        if option in ("-u", "--unset"):
+            if options[j + 1:j + 2] and options[j + 1] in GH_CONFIG_VARIABLES:
+                return True
+            j += 2
+            continue
+        if option.startswith("--unset="):
+            unset = option.split("=", 1)[1]
+        elif re.fullmatch(r"-[^-]*u.+", option):
+            unset = option[option.index("u") + 1:]
+        else:
+            unset = None
+        if unset in GH_CONFIG_VARIABLES:
+            return True
+        j += 1
     return False
 
 

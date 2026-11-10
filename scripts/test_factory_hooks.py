@@ -1275,6 +1275,9 @@ class HiddenMergeTests(unittest.TestCase):
                "timeout --kill-a 1 5 gh pr merge 12", "nice --adju 5 gh pr merge 12", "/usr/bin/time --fo x gh pr merge 12",
                "env -a ignored gh pr view 12", "gh help", "gh help pr", "HOME=/tmp; gh pr view 12",
                "GH_CONFIG_DIR=/tmp/c xargs gh pr view", "gh cs ssh", "gh agent create x",
+               # gh's own aliases resolve to their canonical commands before any check (19ad103f threads).
+               "gh agents create x", "gh agent-tasks create x", "gh cs ls --help=false ssh", "gh skills install o/r",
+               "gh extensions exec x", "xargs sh -c 'gh m'",
                "sudo -nu bob gh pr merge 12", "env -xu FOO gh pr merge 12", "env -vuFOO gh pr merge 12",
                "nice -n5 gh pr merge 12", "timeout -s9 5 gh pr merge 12", "sudo -uroot gh pr merge 12",
                "time -fx gh pr merge 12", "exec -abash gh pr merge 12", "stdbuf -oL gh pr merge 12",
@@ -1337,6 +1340,8 @@ class HiddenMergeTests(unittest.TestCase):
                "env --unset FOO gh pr view 12", "timeout --kill-after=1 5 gh pr view 12",
                "nice --adjustment 5 gh pr view 12", "/usr/bin/time --format x gh pr view 12",
                "sudo --preserve-env=PATH gh pr view 12", "nice --help", "env --version",
+               "gh at download artifact", "gh rs ls", "gh rs view 1", "gh rs check main", "gh agent view 1",
+               "gh extensions ls",
                "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
                "sudo -uroot gh pr view 12", "time -fx gh pr view 12", "stdbuf -oL gh pr view 12",
                "ionice -c2 gh pr view 12", "taskset -c0 gh pr view 12",
@@ -1494,6 +1499,16 @@ class HiddenMergeTests(unittest.TestCase):
             self.assertIsNone(guard.check_command("sh -c 'echo a'; bash -c 'sh -c \"echo b\"'", self.lane))
         self.assertEqual(len(made), 1)
         self.assertIsNone(guard.LINE_DEADLINE)
+
+    def test_top_level_shell_scripts_keep_their_own_cwd_and_input_rules(self):
+        # 19ad103f thread: a top-level sh -c script is checked by check_command with its own cwd and alone, so a
+        # body or query file read by the script's only command is allowed, as on main.
+        Path(self.lane, "body.md").write_text("Verified.\n")
+        Path(self.lane, "q.graphql").write_text("query { viewer { login } }\n")
+        for command in ("bash -c 'gh pr comment 12 --body-file body.md'", "sh -c 'gh api graphql -F query=@q.graphql'"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_gh_aliases_and_config_redirects_name_the_reason(self):
         guard = in_process(ROOT / "scripts/agent-guard.py")

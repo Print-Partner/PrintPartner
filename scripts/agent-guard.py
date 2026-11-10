@@ -86,7 +86,7 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
 GH_SHORT_BOOLEAN = set("ih")
 # gh command groups whose subcommand the guard classifies.
 GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext", "codespace", "cs", "skill",
-             "skills", "agent-task", "agent-tasks", "agent", "agents"}
+             "skills", "agent-task", "agent-tasks", "agent", "agents", "attestation", "at", "ruleset", "rs"}
 # gh's built-in commands and help topics (gh help, gh 2.103). Any other subcommand is an alias or an extension,
 # which runs a command the guard never sees, wherever its config lives. co is left out: it is a default alias.
 GH_COMMANDS = frozenset({
@@ -99,13 +99,18 @@ GH_COMMANDS = frozenset({
 # Built-in groups whose other subcommands run or change code the guard never sees: an extension (exec, browse,
 # create, remove, install, upgrade), an agent skill (install, update, publish), or a remote agent task (create,
 # which starts an agent acting on the repo with the user's GitHub identity). Only these subcommands are allowed.
-GH_READ_ONLY = {"extension": {"list", "ls", "search"}, "extensions": {"list", "ls", "search"},
-                "ext": {"list", "ls", "search"}, "skill": {"list", "ls", "search", "preview", "show"},
-                "skills": {"list", "ls", "search", "preview", "show"}, "agent-task": {"list", "view"},
-                "agent-tasks": {"list", "view"}, "agent": {"list", "view"}, "agents": {"list", "view"}}
+GH_READ_ONLY = {"extension": {"list", "search"}, "skill": {"list", "search", "preview"},
+                "agent-task": {"list", "view"}}
+# gh's own aliases (gh 2.103 help): each command alias and, per group, each subcommand alias names its canonical
+# form, so one canonical table decides every check.
+GH_ALIASES = {"at": "attestation", "rs": "ruleset", "cs": "codespace", "agent": "agent-task",
+              "agents": "agent-task", "agent-tasks": "agent-task", "ext": "extension", "extensions": "extension",
+              "skills": "skill"}
+GH_SUBCOMMAND_ALIASES = {"extension": {"ls": "list"}, "skill": {"ls": "list", "show": "preview"},
+                         "ruleset": {"ls": "list"}, "codespace": {"ls": "list"}}
 # Built-in commands that run code: codespace ssh, cp, code, and jupyter run it in a codespace, and copilot downloads
 # and runs the Copilot CLI. Lanes have no use for either.
-GH_RUNS_CODE = {"codespace", "cs", "copilot"}
+GH_RUNS_CODE = {"codespace", "copilot"}
 GH_CODE = ("`gh {}` runs or changes code the guard cannot see (an extension, an agent skill, a codespace, a remote "
            "agent task, or the Copilot CLI); lanes may not run it.")
 GH_HELP = "Use gh <command> --help instead of gh help; a gh alias named help could answer to it."
@@ -1049,7 +1054,11 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
         if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]):
             return None
         return MERGE if args[0] == "pr" else RELEASE
-    group = args[0] if args else None
+    group = GH_ALIASES.get(args[0], args[0]) if args else None
+    if args and group in GH_GROUPS and args[1:2]:
+        args = [group, GH_SUBCOMMAND_ALIASES.get(group, {}).get(args[1], args[1]), *args[2:]]
+    elif args:
+        args = [group, *args[1:]]
     if group in GH_RUNS_CODE or (group in GH_READ_ONLY and args[1:2] and args[1] not in GH_READ_ONLY[group]):
         # Help is allowed: the group alone (gh codespace prints its help), or only --help or -h after the action.
         # gh copilot alone runs the Copilot CLI, so it is never help.
@@ -1465,6 +1474,9 @@ def merge_in(args, depth, strict, state, scan):
     # Alias and git alias values and runner strings are commands no gh check sees.
     inner_strict = strict or bool(strings)
     if name in SHELLS:
+        if depth == 0:
+            # check_line runs this script through check_command, with the script's own cwd and alone.
+            return False
         script, unclear = shell_script(rest)
         if unclear:
             return names_merge(" ".join(rest))

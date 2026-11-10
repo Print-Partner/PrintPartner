@@ -102,9 +102,9 @@ The test-only Cargo feature `pp-storage/test-unmarked-writer` turns the decision
 | --- | --- |
 | No database, an empty file, or no `schema_version` row | `Fresh`: install the full schema. |
 | 31 to 34 (Node; 31 shipped in Print Partner v3.3.0) | `NodeUpgrade`: replay Node's migrations, then the Rust steps. |
-| 35 up to the build's newest (35 without `desktop_rebuild`, 47 with it) | `RustUpgrade`: run only the later Rust steps. |
-| The build's newest | `Current`: nothing to migrate. |
-| 1 to 30, or above the newest | Refused with `IncompatibleSchema`. |
+| 35 to 46, `desktop_rebuild` builds only | `RustUpgrade`: run only the later Rust steps. |
+| The build's newest: 35 without `desktop_rebuild`, 47 with it | `Current`: nothing to migrate. |
+| 1 to 30, or above the newest (a value above `u64::MAX` counts as `u64::MAX`) | Refused with `IncompatibleSchema`. |
 
 `ticket_t_7_migrations` opens a fresh directory and Node-built schema 31, 32, 33 and 34 databases through the writer and checks each against its named path.
 
@@ -115,9 +115,9 @@ The refusal is terminal. The version is read from the preflight copy in the temp
 
 Each runtime stops on it instead of reopening the database:
 
-- **Node-backed start.** Node opens 31 to 34. Right after `lease_unmarked`, and before cutover recovery or the Node child, `pp-core` runs the same preflight (`versions::node_refusal`) and refuses any other version against the range 31 to 34. The child never starts, so the supervisor never backs off and restarts it. A preflight failure that is not a version refusal, such as a failed integrity check, logs `node_schema_preflight_unchecked` and leaves the decision to Node, as before. The check copies the database to the temporary directory once per start.
+- **Node-backed start.** Node opens 31 to 34. Right after `lease_unmarked`, and before cutover recovery or the Node child, `pp-core` runs the same preflight (`versions::node_refusal`) and refuses any other version against the range 31 to 34. A Rust validation that fails after the version was read carries that version (`AfterVersionRead`, which keeps the failure's own message), so a schema 35 or newer database is refused here even when it does not match the Rust schema. The child never starts, so the supervisor never backs off and restarts it. A failure before the version is read, such as a failed integrity check or a non-numeric version, logs `node_schema_preflight_unchecked` and leaves the decision to Node, as before. The check copies the database to the temporary directory and runs `PRAGMA integrity_check` once per start.
 - **Rust-only start.** `WriterOwner::open` refuses during its preflight, and startup returns the error once; nothing retries it.
-- **Desktop.** The startup dialog is titled "Print Partner cannot open this data folder" and shows the message. The log line is `desktop_startup_failed: core_startup -> incompatible_storage: found=48 supported=31..=47 direction=newer`.
+- **Desktop.** The startup dialog is titled "Print Partner cannot open this data folder" and shows the message. Stderr gets `desktop_startup_failed: core_startup -> incompatible_storage: found=48 supported=31..=47 direction=newer`. `core.log` does not: it attaches only after core startup admits the data directory.
 - **Headless `pp-server`.** It writes `incompatible_storage: found=<n> supported=<oldest>..=<newest> direction=<older|newer>` and the message to stderr and exits with code 78 (`EX_CONFIG`). Other start failures exit with 1. Docker restart policies restart on any non-zero code, so a container with a restart policy starts again, and each start refuses again without writing. Stop the container before you recover the data folder.
 
 Restoring the database and the last recovery archive on a downgrade is GRE-1363.

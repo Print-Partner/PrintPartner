@@ -94,7 +94,8 @@ fn writer_refusal_text_names_version_range_and_recovery() {
 
 /// The Node-backed runtime checks its lease before starting the Node child:
 /// Node opens 31 to 34, so a Rust-upgraded, newer or older database is refused
-/// there, and the refusal leaves the database unchanged.
+/// there, even when a later Rust validation fails, and the refusal leaves the
+/// database unchanged.
 #[test]
 fn node_lease_refuses_schemas_node_cannot_open() {
     let node = Installation::create(Fixture::NodeSchema34).unwrap();
@@ -107,10 +108,21 @@ fn node_lease_refuses_schemas_node_cannot_open() {
     assert_eq!(ready.version, RUST_SCHEMA);
     writer.shutdown().unwrap();
 
+    // A schema 34 shape stamped 35 fails the Rust durable-job check after
+    // the version read. The writer keeps that message; the Node check still
+    // refuses version 35 instead of handing the database to Node.
+    let mislabeled = installation_at(35);
+    let error = WriterOwner::open(mislabeled.path(), Limits::default())
+        .err()
+        .unwrap();
+    assert_eq!(error.to_string(), "Durable job schema mismatch");
+
     let cases = [
         (installation_at(30), 30),
+        (mislabeled, 35),
         (upgraded, RUST_SCHEMA),
         (installation_at(999), 999),
+        (installation_at(u64::MAX), u64::MAX),
     ];
     for (installation, found) in cases {
         let before = database_files(installation.path());

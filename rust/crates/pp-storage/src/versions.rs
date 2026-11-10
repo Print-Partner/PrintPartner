@@ -94,19 +94,53 @@ pub fn classify(version: u64, newest: u64) -> Result<SchemaPath, IncompatibleSch
     }
 }
 
+/// A preflight failure after the stored version was read. It displays as the
+/// failure it wraps and keeps that failure's causes, so messages stay the
+/// same; [`node_refusal`] reads the version from it.
+#[derive(Debug)]
+pub(crate) struct AfterVersionRead {
+    version: u64,
+    error: anyhow::Error,
+}
+
+impl AfterVersionRead {
+    pub(crate) fn wrap(version: u64, error: anyhow::Error) -> anyhow::Error {
+        Self { version, error }.into()
+    }
+}
+
+impl std::fmt::Display for AfterVersionRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, f)
+    }
+}
+
+impl std::error::Error for AfterVersionRead {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.chain().nth(1)
+    }
+}
+
 /// The Node-backed runtime's schema check, run on its lease before the Node
-/// child starts. `Ok(Some(_))` refuses the start. `Err` is a preflight failure
-/// that is not a version refusal, such as a failed integrity check; Node runs
-/// its own checks on that database, so the caller lets it start.
+/// child starts. `Ok(Some(_))` refuses the start. A Rust validation that fails
+/// after the version was read still refuses a version Node cannot open. `Err`
+/// is a failure before the version was read, such as a failed integrity
+/// check; Node runs its own checks on that database, so the caller lets it
+/// start.
 pub fn node_refusal(
     lease: &crate::lease::StorageLease,
 ) -> anyhow::Result<Option<IncompatibleSchema>> {
     let version = match lease.preflight() {
         Ok(version) => version,
-        Err(error) => match error.downcast_ref::<IncompatibleSchema>() {
-            Some(refusal) => refusal.found,
-            None => return Err(error),
-        },
+        Err(error) => {
+            if let Some(refusal) = error.downcast_ref::<IncompatibleSchema>() {
+                refusal.found
+            } else if let Some(read) = error.downcast_ref::<AfterVersionRead>() {
+                read.version
+            } else {
+                return Err(error);
+            }
+        }
     };
     Ok(classify(version, NODE_SCHEMA).err())
 }
@@ -132,6 +166,18 @@ mod tests {
         }
         assert_eq!(classify(RUST_SCHEMA, RUST_SCHEMA), Ok(SchemaPath::Current));
         assert_eq!(classify(34, NODE_SCHEMA), Ok(SchemaPath::Current));
+    }
+
+    #[test]
+    fn a_failure_after_the_version_read_keeps_its_message_and_causes() {
+        let inner = anyhow::anyhow!("root cause").context("validation failed");
+        let wrapped = AfterVersionRead::wrap(40, inner);
+        assert_eq!(wrapped.to_string(), "validation failed");
+        assert_eq!(format!("{wrapped:#}"), "validation failed: root cause");
+        assert_eq!(
+            wrapped.downcast_ref::<AfterVersionRead>().unwrap().version,
+            40
+        );
     }
 
     #[test]

@@ -213,24 +213,29 @@ pub(crate) fn preflight(
                 !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()),
                 "Invalid database schema version"
             );
-            value
-                .parse::<u64>()
-                .map_err(|_| anyhow::anyhow!("Database schema version exceeds supported range"))?
+            // All digits, so the only parse failure is a version above u64::MAX.
+            value.parse::<u64>().unwrap_or(u64::MAX)
         }
     };
     crate::versions::classify(version, CURRENT_VERSION)?;
-    crate::jobs::validate_schema(&conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::plan_publication::validate_schema(&conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::uploads::validate_schema(&conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::source_scan::validate_schema(&conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::source_sync::validate_schema(&conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    validate_side_schemas(&conn, version)?;
+    validate_stored(&conn, version)
+        .map_err(|error| crate::versions::AfterVersionRead::wrap(version, error))?;
     Ok(version)
+}
+
+fn validate_stored(conn: &Connection, version: u64) -> Result<()> {
+    crate::jobs::validate_schema(conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::plan_publication::validate_schema(conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::uploads::validate_schema(conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::source_scan::validate_schema(conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::source_sync::validate_schema(conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    validate_side_schemas(conn, version)?;
+    Ok(())
 }
 
 pub(crate) fn configure(conn: &Connection, read_only: bool) -> Result<()> {

@@ -11,9 +11,14 @@ build/
 .cursor/
 .vscode/
 .idea/
-# Keep personal nested instructions local, but version the shared root guide.
+# Keep personal nested instructions local. The root guide and the shared nested guides listed below are versioned.
 AGENTS.md
 !/AGENTS.md
+!/rust/AGENTS.md
+!/rust/crates/pp-compat/AGENTS.md
+!/web/apps/server/AGENTS.md
+!/web/apps/ui/AGENTS.md
+!/web/apps/web/AGENTS.md
 *.db
 .env
 .env.*

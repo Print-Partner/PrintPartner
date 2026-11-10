@@ -236,12 +236,19 @@ pub(crate) fn preflight(
     Ok(version)
 }
 
+/// Prepared statements each connection keeps. `read_model::graph::rows`
+/// prepares two statements per table and condition, and one Build's read uses
+/// a few dozen; rusqlite's default of 16 would evict them before their next
+/// use.
+const STATEMENT_CACHE: usize = 256;
+
 pub(crate) fn configure(conn: &Connection, read_only: bool) -> Result<()> {
     if !read_only {
         conn.pragma_update(None, "journal_mode", "WAL")?;
     }
     conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
     conn.pragma_update(None, "query_only", i64::from(read_only))?;
     let journal: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
     ensure!(journal == "wal", "WAL required");

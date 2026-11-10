@@ -1,6 +1,10 @@
-//! Send queue writes (GRE-365, GRE-1215) over
+//! Send queue writes (GRE-365, GRE-1215, GRE-1227) over
 //! `pp_storage::send_queue::writes`. Each is an explicit user action:
 //!
+//! - `POST /api/v2/printer-send-queue` (Add to queue): a `multipart/form-data`
+//!   upload of one sliced file for a Moonraker or PrusaLink printer. The file
+//!   is staged under `exports/printer-uploads/` and the item is `queued`;
+//!   nothing is sent until Send now or Send ready.
 //! - `POST /api/v2/printer-send-queue/{id}/dispatch` (Send now): sends one
 //!   `queued` or `error` item. With `wait_for_idle` the printer must be
 //!   idle unless the body says `{"force": true}`.
@@ -20,16 +24,21 @@
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, failure, internal, ok_json, read_error},
     loopback::PresentedCredential,
+    multipart_form::{self, Limits},
+    printer_host::{Windows, throttled},
 };
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::Response,
     routing::{delete, post},
 };
-use pp_storage::send_queue::writes::{Reply, Request, SendQueueClient};
+use pp_storage::{
+    checkoff_progress::print_file::MAX_UPLOAD_BYTES,
+    send_queue::writes::{NewItem, Reply, Request, SendQueueClient, may_have_written},
+};
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashSet,
@@ -43,6 +52,13 @@ pub trait SendTargets: Send + Sync + 'static {
     /// The host name to label the send with, or why it cannot be sent.
     /// `idle` asks for an idle printer. Called on a blocking thread.
     fn prepare(&self, item: &Value, idle: bool) -> Prepared;
+    /// The host name to label a new item for `printer_id` with, or why that
+    /// printer cannot take queued sends. Called on a blocking thread.
+    fn host(&self, printer_id: &str) -> Result<String, (StatusCode, String)>;
+    /// Writes a new item's file as `name` in its own directory under
+    /// `exports/printer-uploads/` and returns its path. Called on a blocking
+    /// thread.
+    fn stage(&self, name: &str, file: &[u8]) -> std::io::Result<String>;
     /// A dispatch committed: wake the send worker.
     fn dispatched(&self);
     /// Deletes a removed item's staged file directory.
@@ -67,7 +83,21 @@ struct App {
     gate: Gate,
     client: SendQueueClient,
     targets: Arc<dyn SendTargets>,
+    windows: Arc<Windows>,
 }
+
+/// Node's `rateLimit` for Add to queue, and its upload form: one file part
+/// named `file` or `gcode` of up to 64 MiB, and eight fields cut at 64 KiB.
+const ADD_LIMIT: u32 = 10;
+const ADD_FORM: Limits = Limits {
+    fields: 8,
+    field_bytes: 64 * 1024,
+    file_bytes: MAX_UPLOAD_BYTES,
+    file_names: &["file", "gcode"],
+    second_file: "Only one G-code file is allowed",
+    too_large: "Print file exceeds the 64 MiB upload limit",
+    unreadable: "That upload could not be read",
+};
 
 /// Mounts the send queue writes under `/api/v2` when `PP_DESKTOP_REBUILD`
 /// was exactly `1` or `true`; otherwise nothing.
@@ -80,6 +110,10 @@ pub fn send_queue_router(
         return Router::new();
     };
     let routes = Router::new()
+        .route(
+            "/printer-send-queue",
+            post(add).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + 1024 * 1024)),
+        )
         .route("/printer-send-queue/drain", post(drain))
         .route("/printer-send-queue/{id}/dispatch", post(dispatch))
         .route("/printer-send-queue/{id}/reconcile", post(reconcile))
@@ -89,6 +123,7 @@ pub fn send_queue_router(
             gate,
             client,
             targets,
+            windows: Arc::default(),
         })
 }
 
@@ -215,6 +250,58 @@ fn present(reply: Option<anyhow::Result<Reply>>) -> Response {
 fn refused(status: u16, detail: &str, code: Option<&str>) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     crate::problem::build(crate::problem::problem(status, detail, code), Map::new())
+}
+
+/// Add to queue, in Node's order: the credential before a byte of the body,
+/// the rate window, the form, the printer's host, then the staged file and
+/// the item. The staged file is deleted again unless the item was written or
+/// storage's outcome is unknown, since the item may then exist.
+async fn add(
+    State(app): State<App>,
+    Extension(presented): Extension<PresentedCredential>,
+    request: axum::extract::Request,
+) -> Response {
+    let admitted = writes(&app, presented.clone(), |writes, _| {
+        writes.apply(Request::Admit)
+    })
+    .await;
+    if !matches!(admitted, Some(Ok(Reply::Items(_)))) {
+        return present(admitted);
+    }
+    if let Some(after) = app.windows.consume("add", ADD_LIMIT) {
+        return throttled(after);
+    }
+    let form = match multipart_form::read(request, &ADD_FORM).await {
+        Ok(form) => form,
+        Err(response) => return *response,
+    };
+    let name = form.file.as_ref().map(|(name, _)| name.as_deref());
+    let item = match NewItem::parse(&form.fields, name) {
+        Ok(item) => item,
+        Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
+    };
+    let file = form.file.map(|(_, bytes)| bytes).unwrap_or_default();
+    let added = writes(&app, presented, move |writes, targets| {
+        let host_name = targets
+            .host(&item.printer_id)
+            .map_err(|(status, detail)| Refusal(status, detail))?;
+        let artifact_path = targets.stage(&item.staged_name(), &file)?;
+        let reply = writes.apply(Request::Add {
+            item,
+            artifact_path: artifact_path.clone(),
+            host_name,
+        });
+        let kept = match &reply {
+            Ok(reply) => matches!(reply, Reply::Item(_)),
+            Err(error) => may_have_written(error),
+        };
+        if !kept {
+            targets.discard(&json!({ "artifact_path": artifact_path }));
+        }
+        reply
+    })
+    .await;
+    present(added)
 }
 
 async fn dispatch(

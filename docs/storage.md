@@ -205,12 +205,37 @@ Set `PP_STORAGE_FIXTURE_BIN` to run the Rust check too. It opens a copy with `pp
 
 The generator does not produce open drafts, Checkoff progress, printer sends, exports or historical schema versions. Tests that need those build them separately.
 
+## Whole-installation restore: staging
+
+With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Activation, which swaps the staged copy into place, and the HTTP routes are not built yet (GRE-404, GRE-1161). Build snapshot restore is a separate Plan operation.
+
+Staging (`WriterOwner::installation`, then `InstallationClient::begin_upload` and `stage`) takes no filesystem path from the caller:
+
+1. Both steps need a valid `.pp-rust-owned.json`; an unmarked data directory refuses with `Refusal::Unmarked` before writing anything.
+2. The upload is written to `<data>/.pp-restore/incoming-<32 hex>.tar.gz`, opened with `create_new`. A write that would pass the caller's byte limit, capped at `restore::MAX_UPLOAD_BYTES` (20 GiB), refuses with `Refusal::TooLarge` and writes nothing past the limit. The first failed write fails the upload for good: later writes and `stage` refuse it. A `.pp-restore` that is a symlink or not a directory refuses.
+3. `archive::extract` runs the same entry, scope, size, ratio and `integrity_check` validation as `archive::validate` and writes every entry under `<data>/.pp-restore/staged-<32 hex>/`. The entry guard admits only regular files and directories under the core files and declared roots, with no absolute, `.` or `..` component, so a hostile entry cannot write outside the stage or create a link. After the tar end-of-archive block, validation reads the gzip stream to its end, so a damaged CRC or length trailer refuses the archive, and so does anything after the tar end other than zero padding, or more than 1 MiB of padding. Both exporters (Rust's `archive::write` and Node's `tar.c({ gzip: true })`) write exactly one gzip member, so the file must end where that member ends. Any byte after it is refused, including padding, a second member, and the rest of a tar split across members, whose entries tar iteration would never see. `archive::validate` shares this code, so it refuses the same archives. Only a `full` scope is accepted.
+4. `schema::preflight` admits the staged database as startup admits a live one: a schema newer than this build, older than 31, missing (version 0), or failing a job-table check refuses with `Refusal::UnsupportedSchema`.
+
+The upload file is removed whether staging succeeds or not. A refusal removes only its own staged copy and keeps an earlier successful stage. Earlier `staged-<32 hex>` directories are removed only after the new stage is complete, and nothing else is removed. If that removal fails, `stage` still returns the new stage, with `Staged::cleanup_error` describing the failure, and the next open removes the leftover. Staging never removes `.pp-restore` itself, so an upload starting at the same time keeps its directory; the next open removes it. Stages for one owner run one at a time. While a stage runs, the data volume can hold the upload, the new extraction (up to 20 GiB) and the earlier stage at once; staging does not yet check free space first.
+
+Restore work belongs to the `WriterOwner` that created the client. Shutdown first closes all admission at once: new storage writes, reader checkouts, uploads, upload writes and stages are refused from then on. It then waits for reader checkouts and restore work against one shared 5 s deadline, so the drain takes at most 5 s in total before the writer thread is joined. If a checkout or restore work is still running at the deadline, shutdown fails and the owner keeps its lease until the process exits, so no other owner can clear `.pp-restore` under it.
+
+Stages are ephemeral until activation. A stage lasts only as long as the `WriterOwner` that made it. The next open removes every stage, complete or not, and the client has to upload the backup again. Schema admission holds only for the build that ran it, and a restart can be an upgrade or a downgrade. Without a completion marker, `recover` also can't tell a complete stage from a half-extracted one, and a forgotten stage of up to 20 GiB would otherwise stay on the data volume. Activation (GRE-1285) runs in the same process as its stage.
+
+A `full` archive need not contain every root in `includedRoots`. Both the Rust (`archive::plan`) and Node (`backup-restore.ts`) exporters declare all eleven roots and skip a root that was missing when the backup was taken. Three roots are files, which have no directory entry. A declared root with no entries therefore means it was absent at backup time, and an archive holding only the metadata and the database is a valid backup of an installation with no files. Validation still refuses any entry outside the declared roots. Telling an absent root apart from a stripped archive needs a format change, tracked in GRE-1348.
+
+`WriterOwner::open` runs `restore::recover` under the directory lock, after the ownership marker decision and before preflight. It checks every entry before it removes any: `incoming-<id>.tar.gz` must be a regular file and `staged-<id>` a real directory, both read with `symlink_metadata`. It then removes them and `.pp-restore` itself. Any other entry, a link or a wrong type under one of those names, or a `.pp-restore` that is not a real directory, refuses the open and removes nothing, because this build cannot tell whether it holds the only copy of an installation.
+
+Threat model for `.pp-restore`: staging checks the work directory with `symlink_metadata` and then uses its pathname for the upload, the extraction, schema admission and cleanup. A process that can replace `.pp-restore` between that check and that use could redirect those writes or removals. Only the effective user or root can do that, because store admission requires the data directory to belong to the effective user and to deny group and other write (see [Desktop rebuild](desktop-rebuild.md)). Print Partner is single-user, so this is in scope only for a hostile process running as that user, which could already change the data directory directly. A `.pp-restore`, `staged-*` or `incoming-*` that is already a link or has the wrong type is refused. Moving every restore path onto `O_NOFOLLOW` directory handles is tracked in GRE-1347.
+
+Tests: `pp-storage/src/restore/tests.rs` (`ticket_t_8_restore_*`, on pp-testkit installations with a copied schema-34 database).
+
 ## To be written
 
 The storage milestone fills in these sections:
 
 - Schema versions and how migrations run on startup.
-- Backup, restore and downgrade blocking.
+- Restore activation, and downgrade blocking.
 - Durable jobs and recovery after an interrupted external effect. An interrupted printer send is never retried automatically.
 
 [Operations](../OPERATIONS.md) describes backups for the current Node server.

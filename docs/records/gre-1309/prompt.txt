@@ -1,0 +1,15 @@
+You're answering one question about the Print Partner repository.
+
+**Where to work:** only the checkout at
+/persist/tmp/claude-1000/-persist-home-code-PrintPartner/6c7d6e89-1800-4793-8afa-7450e022e749/scratchpad/WORKTREE
+
+Treat that directory as the repository root. Don't read files outside it. The checkout you started in is a different commit.
+
+**Rules:**
+- Read-only: don't modify files, run builds, run tests or run git commands.
+- No web search or network access.
+- Answer from the repository's code and docs only.
+
+**Question:** QUESTION
+
+**Your reply:** a short answer, about 10 lines, naming the exact file paths and the function, test, route or command names that answer the question.

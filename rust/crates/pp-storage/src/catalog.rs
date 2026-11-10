@@ -173,6 +173,7 @@ pub use naming::{
 #[cfg(feature = "desktop_rebuild")]
 pub use naming::{NamingOverride, NamingPreview, QuantityOverride, RoleOverride, SlugOverride};
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct SourceSummary {
     pub id: i64,
     pub name: String,

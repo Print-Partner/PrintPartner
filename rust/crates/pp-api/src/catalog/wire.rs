@@ -5,8 +5,18 @@ use pp_storage::catalog::{
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
-pub(super) fn sources(rows: Vec<SourceSummary>) -> Value {
-    json!({ "sources": rows })
+/// `GET /sources` body. The generated client's `SourceList`.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct SourceList {
+    pub sources: Vec<SourceSummary>,
+}
+
+/// `GET /sources/activity` body, newest first. The generated client's `SourceActivity`.
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+pub(crate) struct SourceActivity {
+    pub events: Vec<SourceActivityEvent>,
 }
 
 pub(super) fn source(row: SourceSummary) -> Result<Value, serde_json::Error> {
@@ -83,9 +93,6 @@ pub(super) fn import_rules_save(body: &Value) -> Option<Vec<String>> {
 }
 
 /// Storage returns a bare activity array; HTTP wraps `{ "events": [...] }`.
-pub(super) fn activity(events: Vec<SourceActivityEvent>) -> Result<Value, serde_json::Error> {
-    Ok(json!({ "events": events }))
-}
 
 /// Node: `Number(query.limit ?? 20)`; non-finite → `20`; then trunc + clamp `1..=100`.
 pub(super) fn activity_limit(raw: Option<&str>) -> u8 {

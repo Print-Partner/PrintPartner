@@ -1,9 +1,12 @@
 use super::*;
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
 pub struct SourceActivityEvent {
     pub id: i64,
     pub at: String,
     pub kind: String,
+    /// Node writes an integer Source ID; the client schema says so.
+    #[cfg_attr(feature = "codegen", schemars(with = "Option<i64>"))]
     pub source_id: Option<serde_json::Number>,
     pub source_name: String,
     pub detail: Option<String>,

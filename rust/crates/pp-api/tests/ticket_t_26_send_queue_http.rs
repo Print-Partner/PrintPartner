@@ -598,63 +598,39 @@ async fn add_to_queue_stages_the_file_and_queues_an_item_without_sending() {
     );
 }
 
+const PRINTER: Part = ("printer_id", None, b"p-a");
+const PLAN: Part = ("profile_id", None, b"1");
+const FILE: Part = ("file", Some("a.gcode"), GCODE);
+
 #[tokio::test]
-async fn add_to_queue_refuses_before_staging_or_deletes_what_it_staged() {
+async fn add_to_queue_refuses_a_bad_form_or_printer_before_staging() {
     let queue = Queue::open("1", Targets::default(), &[]);
-    let plan = ("profile_id", None, b"1".as_slice());
+    let bad = StatusCode::BAD_REQUEST;
     let cases: [(&[Part], StatusCode, &str); 7] = [
+        (&[PLAN, FILE], bad, "printer_id is required"),
+        (&[PRINTER, PLAN], bad, "G-code file required"),
         (
-            &[plan, ("file", Some("a.gcode"), GCODE)],
-            StatusCode::BAD_REQUEST,
-            "printer_id is required",
-        ),
-        (
-            &[("printer_id", None, b"p-a"), plan],
-            StatusCode::BAD_REQUEST,
-            "G-code file required",
-        ),
-        (
-            &[
-                ("printer_id", None, b"p-a"),
-                plan,
-                ("file", Some("a.stl"), GCODE),
-            ],
-            StatusCode::BAD_REQUEST,
+            &[PRINTER, PLAN, ("file", Some("a.stl"), GCODE)],
+            bad,
             "Only .gcode / .bgcode / .gco files can be sent to a printer",
         ),
         (
-            &[
-                ("printer_id", None, b"p-a"),
-                ("file", Some("a.gcode"), GCODE),
-            ],
-            StatusCode::BAD_REQUEST,
+            &[PRINTER, FILE],
+            bad,
             "Pick a plan to bind this send (profile_id required)",
         ),
         (
-            &[
-                ("printer_id", None, b"p-a"),
-                plan,
-                ("file", Some("a.gcode"), GCODE),
-                ("gcode", Some("b.gcode"), GCODE),
-            ],
-            StatusCode::BAD_REQUEST,
+            &[PRINTER, PLAN, FILE, ("gcode", Some("b.gcode"), GCODE)],
+            bad,
             "Only one G-code file is allowed",
         ),
         (
-            &[
-                ("printer_id", None, b"p-bambu"),
-                plan,
-                ("file", Some("a.gcode"), GCODE),
-            ],
-            StatusCode::BAD_REQUEST,
+            &[("printer_id", None, b"p-bambu"), PLAN, FILE],
+            bad,
             "Queue is not supported for bambu",
         ),
         (
-            &[
-                ("printer_id", None, b"p-none"),
-                plan,
-                ("file", Some("a.gcode"), GCODE),
-            ],
+            &[("printer_id", None, b"p-none"), PLAN, FILE],
             StatusCode::NOT_FOUND,
             "Fleet printer not found",
         ),
@@ -667,14 +643,13 @@ async fn add_to_queue_refuses_before_staging_or_deletes_what_it_staged() {
         queue.targets.staged.lock().unwrap().is_empty(),
         "nothing was staged"
     );
+    assert_eq!(queue.counts().0, 0);
+}
 
-    let (status, body) = queue
-        .add(&[
-            ("printer_id", None, b"p-a"),
-            ("plan_id", None, b"99"),
-            ("file", Some("a.gcode"), GCODE),
-        ])
-        .await;
+#[tokio::test]
+async fn add_to_queue_deletes_the_staged_file_when_storage_refuses_the_item() {
+    let queue = Queue::open("1", Targets::default(), &[]);
+    let (status, body) = queue.add(&[PRINTER, ("plan_id", None, b"99"), FILE]).await;
     assert_eq!(
         (status, detail(&body)),
         (StatusCode::NOT_FOUND, "Profile not found")
@@ -685,13 +660,7 @@ async fn add_to_queue_refuses_before_staging_or_deletes_what_it_staged() {
         [],
     )
     .unwrap();
-    let (status, body) = queue
-        .add(&[
-            ("printer_id", None, b"p-a"),
-            plan,
-            ("file", Some("a.gcode"), GCODE),
-        ])
-        .await;
+    let (status, body) = queue.add(&[PRINTER, PLAN, FILE]).await;
     assert_eq!(
         (status, &body["code"]),
         (StatusCode::FORBIDDEN, &json!("FEATURE_DISABLED"))

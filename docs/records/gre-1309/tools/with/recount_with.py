@@ -3,7 +3,7 @@
 (Adapted from recount_rerun.py: threads are selected by thread_id from manifest.tsv;
 the repo root is the frozen with-arm worktree.)
 
-usage: recount.py LOG_DIR REPO COMMIT NAVCOUNT_ORIG > sessions.csv
+usage: recount_with.py LOG_DIR REPO COMMIT NAVCOUNT_ORIG MANIFEST > sessions.csv
 
 Rules
 - Old rule (distinct_files_read): files under the worktree that a reader

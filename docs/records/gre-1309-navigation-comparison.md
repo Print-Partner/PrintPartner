@@ -130,7 +130,7 @@ All 30 sessions ran on `7908c703` between 21:23 and 21:40 UTC. The as-recorded c
 | 2 | Codex | 3 | 2 | 5 | 0.49 | yes |
 | 3 | Claude | 1 | 2 | 3 | 0.37 | yes |
 | 3 | Claude | 2 | 0 | 2 | 0.36 | yes |
-| 3 | Claude | 3 | 3 | 2 | 0.36 | no (first re-run); yes (second re-run) |
+| 3 | Claude | 3 | 3 | 2 | 0.36 | no (its re-run is also no, so the cell fails) |
 | 3 | Codex | 1 | 1 | 2 | 0.44 | yes |
 | 3 | Codex | 2 | 1 | 3 | 0.44 | yes |
 | 3 | Codex | 3 | 1 | 3 | 0.46 | yes |
@@ -202,18 +202,18 @@ Two grading choices on the without arm were made after seeing the answers. They 
 ### Measurement limits
 
 - **Search output isn't counted:** both models mostly navigate with `rg` and `grep`, often with line numbers or context. Search output is not counted as opening a file, so a session can read code through search hits and score 0 or 1 files. Q3 Claude session 2 did this.
-- **Floor effect:** the corrected without-arm medians run from 2 to 5 files per question and model. 29 of 30 without-arm answers were correct after adjudication. The one that was not (Q3 Claude run 3) failed its first re-run and passed the second. For the pass rule (fewer files with the signposts, for both models), a 2-file baseline leaves little room to improve.
+- **Floor effect:** the corrected without-arm medians run from 2 to 5 files per question and model. 29 of 30 without-arm answers were correct after adjudication. The one that was not (Q3 Claude run 3) failed its re-run, so under the rule the cell fails. An extra second re-run, outside the rule, passed; it is disclosed and not counted. For the pass rule (fewer files with the signposts, for both models), a 2-file baseline leaves little room to improve.
 - **Root `AGENTS.md`:** each session started in the coordinator's checkout of a newer `main`, then worked in the arm's worktree by absolute path. The runner may load that checkout's root `AGENTS.md` into context. It is the same file for both arms.
 
 ### Reruns (2026-11-09)
 
-Under the Scoring rule, each cell with a wrong answer earned one rerun. The reruns ran on the same frozen checkouts with the same prompt and settings. They are correctness checks, so their answers are not in the three-session medians.
+Under the Scoring rule, each cell with a wrong answer earned one rerun, and the cell fails if that rerun is also wrong. The reruns ran on the same frozen checkouts with the same prompt and settings. They are correctness checks, so their answers are not in the three-session medians.
 
 | Cell | Wrong runs in the 30 | Rerun correct | Cell passes |
 | --- | --- | --- | --- |
 | With arm, Q1 Claude | run 3 | no: names a generic transaction and omits the immediate writer mode | no |
 | With arm, Q3 Claude | runs 1 and 2 | no: names only the ADR 0007 table, not the crate map in `docs/architecture.md` | no |
-| Without arm, Q3 Claude | run 3 | first re-run no (no architecture crate map); second re-run yes | yes |
+| Without arm, Q3 Claude | run 3 | no (no architecture crate map). An extra second re-run, outside the rule, passed; not counted | no |
 
 The 30 session grades above are unchanged by the reruns. Grades are in `grading/rerun-grades.tsv`, graded blind by a fresh agent under the key and the rulings in `grading/key-rulings.md`.
 
@@ -254,7 +254,7 @@ The 30 session grades above are unchanged by the reruns. Grades are in `grading/
 - Two categories are borderline: the commit-on-outcome condition for Q1, and the `GATED` step for Q3. The grader counted both as required. They were adjudicated on 2026-11-09 (see the Adjudication section), and the original grades are kept.
 
 **Open items.**
-- **Re-runs.** Done (see the Re-runs section). With-arm Q1 Claude and Q3 Claude fail again. Without-arm Q3 Claude passed on its second re-run.
+- **Re-runs.** Done (see the Re-runs section). Under the rule, three cells fail: with-arm Q1 Claude, with-arm Q3 Claude, and without-arm Q3 Claude. An extra second re-run for the without-arm Q3 Claude cell passed; it was run outside the rule and is not counted.
 - **Borderline adjudication.** Done (see the Adjudication section, 2026-11-09). The original grades are kept.
 - **Missing paths.** Eleven paths named in with-arm search commands are absent from the with checkout. None was opened.
 - **Logs.** The raw logs are in one archive, `logs.tar.gz`, in PR #1646. That PR is blocked by the repository large-file limit, so the archive is not yet on main. The logs contain local paths, including the username.

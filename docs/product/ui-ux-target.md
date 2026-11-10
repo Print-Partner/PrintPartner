@@ -41,7 +41,7 @@ Five destinations in a left rail, plus a command palette.
 | Library | `G L` | Library Sources, import, sync, revisions |
 | Settings | `G ,` | Modules, integrations, sharing, devices, backups |
 
-The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens the palette; `?` shows shortcuts.
+The pulse line (printer counts by state) is on every screen. `Cmd/Ctrl+K` opens the palette; `?` opens Help, which explains how Plan changes save and lists the shortcuts.
 
 A Build workspace has tabs: **Overview, Sources, Plan, Production, Checkoff, History**. The Machine tab is parked with STEP conversion and is not part of this delivery.
 
@@ -95,7 +95,9 @@ Before the gate can preview, the draft's Required-unit reconciliation must be se
 
 One order is one Build, enforced transactionally (Accept refuses `duplicate_order`; see [Order authority](../draft-headers.md#order-authority-gre-1095)). A duplicate creates a detached experiment that records its parent, and promoting an alternative retires the previous authority atomically. Existing duplicate records are displayed, never silently merged.
 
-History shows accepted revisions, snapshots, checkoff bursts and sends. Restore as draft (`R`) opens the gate. Restoring a plan never rewinds printed evidence or a printer command.
+History shows accepted revisions, snapshots, checkoff bursts and sends. Restore as draft (`R`) opens the gate.
+
+The replacement UI says the same thing everywhere it explains a Plan change: Help's **Plan changes** section, the Plan tab's draft line, and History's empty state (GRE-1140). A draft saves itself as it changes and survives a restart. Only Accept changes the Build. Accept first saves a snapshot of the accepted Plan it replaces, when there is one, and History can restore that snapshot as a draft. The wording lives in `web/apps/ui/src/builds/planCopy.ts`, and `planCopy.test.ts` fails if any replacement UI source says changes save automatically or that there is no acceptance step. Restoring a plan never rewinds printed evidence or a printer command.
 
 ### Handle prints the app could not match
 
@@ -203,7 +205,7 @@ Machine and STEP conversion are parked. GRE-1007 stays untouched and outside thi
 
 ### A live contradiction to fix
 
-`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged.
+`web/apps/server/src/routes/workflow-guide.ts` tells users, under Plan: "There is no separate acceptance or publishing step. Changes save automatically." That describes the current Node behavior, not the replacement Accept gate. Add accurate copy to a new replacement-UI help issue; leave GRE-1012 and all other protected screen tickets unchanged. GRE-1140 added that copy to the replacement UI ([Change a Build safely](#change-a-build-safely)). The old Node guide is unchanged unless the owner asks. The Rust workflow projection's Open Plan action still ends "Changes save automatically."; it is shared with Today and MCP and is not changed here.
 
 ## Open questions
 

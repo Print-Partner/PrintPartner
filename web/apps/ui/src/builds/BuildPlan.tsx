@@ -25,6 +25,7 @@ import { ModuleOff, MutationButton, ScreenTemplate } from "../screen/ScreenTempl
 import { plural } from "../today/beds";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
 import { planKey, useMatchStep } from "./PlanReconcile";
+import { DRAFT_OPEN, NO_DRAFT } from "./planCopy";
 import {
   acceptBody,
   fieldName,
@@ -682,17 +683,7 @@ function PlanBody({ id, data }: { id: number; data: PlanData }) {
   return (
     <>
       <div className="pp-plan-status">
-        {draft ? (
-          <p>
-            A draft is open. Changes save to it as you make them, and the Build changes only when
-            you accept.
-          </p>
-        ) : (
-          <p>
-            No draft is open, so this shows the accepted Plan. Changing a field below starts a
-            draft.
-          </p>
-        )}
+        <p>{draft ? DRAFT_OPEN : NO_DRAFT}</p>
         {accepted && (
           <p role="status">
             Accepted. The Plan is now version <span className="num">{accepted.plan_version}</span>.

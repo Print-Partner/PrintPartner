@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, createQueryClient } from "../App";
 import { OFFLINE_REASON } from "../frame/connection";
 import { routes } from "../routes";
+import { DRAFT_OPEN, NO_DRAFT } from "./planCopy";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -591,10 +592,18 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(writes(fetchMock)).toHaveLength(0);
   });
 
+  it("says an open draft saves as it changes and Accept snapshots the accepted Plan first", async () => {
+    renderAt(core());
+    expect(await screen.findByText(DRAFT_OPEN)).toBeTruthy();
+    expect(DRAFT_OPEN).toMatch(/Changes save to it as you make them/);
+    expect(DRAFT_OPEN).toMatch(/the Build changes only when you accept/);
+    expect(DRAFT_OPEN).toMatch(/Accept first saves a snapshot of the accepted Plan when it can/);
+  });
+
   it("shows the accepted header with no draft, and Start a draft saves it unchanged", async () => {
     const fetchMock = core({ open: false });
     renderAt(fetchMock);
-    expect(await screen.findByText(/No draft is open/)).toBeTruthy();
+    expect(await screen.findByText(NO_DRAFT)).toBeTruthy();
     expect(field("Name").value).toBe("Bracket kit");
     expect(screen.queryByRole("table", { name: /Parts/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Start a draft" }));

@@ -303,114 +303,120 @@ pub(super) fn rows(
         .collect::<Vec<_>>();
     let text_bytes = names.len() - 1;
     names.truncate(text_bytes);
-    let mut result = Vec::new();
-    let found = stmt.query_map(args, |r| {
-        let bytes: i64 = r.get(text_bytes)?;
-        if bytes > 65536 {
-            return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
-                Integrity {
-                    code,
-                    message: "Accepted Plan stored row text is corrupt".into(),
-                },
-            )));
-        }
-        let mut values = BTreeMap::new();
-        #[cfg(feature = "desktop_rebuild")]
-        let mut manifest = PartManifestMetadata::default();
-        for (i, name) in names.iter().enumerate() {
-            #[cfg(feature = "desktop_rebuild")]
-            if matches!(table, "parts" | "plan_revision_parts" | "plan_draft_parts") {
-                match name.as_str() {
-                    "requirement" => {
-                        manifest.requirement = read_manifest_text(r.get_ref(i)?)
-                            .map_err(|error| {
-                                rusqlite::Error::ToSqlConversionFailure(Box::new(Integrity {
-                                    code: "manifest_text",
-                                    message: error.to_string(),
-                                }))
-                            })?
-                            .map(ManifestText);
-                        values.insert(
-                            name.clone(),
-                            Value::from(
-                                manifest.requirement.as_ref().and_then(|v| v.0.as_scalar()),
-                            ),
-                        );
-                        continue;
-                    }
-                    "option_group_id" => {
-                        manifest.option_group_id = read_manifest_text(r.get_ref(i)?)
-                            .map_err(|error| {
-                                rusqlite::Error::ToSqlConversionFailure(Box::new(Integrity {
-                                    code: "manifest_text",
-                                    message: error.to_string(),
-                                }))
-                            })?
-                            .map(OptionGroupId);
-                        values.insert(
-                            name.clone(),
-                            Value::from(
-                                manifest
-                                    .option_group_id
-                                    .as_ref()
-                                    .and_then(|v| v.0.as_scalar()),
-                            ),
-                        );
-                        continue;
-                    }
-                    _ => {}
-                }
+    // A read that has already spent its budget fails here even when this
+    // call finds no rows.
+    charge(budget, 0, 0, code)?;
+    let result = stmt
+        .query_map(args, |r| {
+            let bytes: i64 = r.get(text_bytes)?;
+            if bytes > 65536 {
+                return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                    Integrity {
+                        code,
+                        message: "Accepted Plan stored row text is corrupt".into(),
+                    },
+                )));
             }
-
-            let value = match r.get_ref(i)? {
-                ValueRef::Null => Value::Null,
-                ValueRef::Integer(v) => json!(v),
-                ValueRef::Real(v) => json!(v),
-                ValueRef::Text(v) => Value::String(String::from_utf8(v.to_vec()).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        i,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?),
-                ValueRef::Blob(_) => {
-                    return Err(rusqlite::Error::InvalidColumnType(
-                        i,
-                        name.clone(),
-                        rusqlite::types::Type::Blob,
-                    ));
+            let mut values = BTreeMap::new();
+            #[cfg(feature = "desktop_rebuild")]
+            let mut manifest = PartManifestMetadata::default();
+            for (i, name) in names.iter().enumerate() {
+                #[cfg(feature = "desktop_rebuild")]
+                if matches!(table, "parts" | "plan_revision_parts" | "plan_draft_parts") {
+                    match name.as_str() {
+                        "requirement" => {
+                            manifest.requirement = read_manifest_text(r.get_ref(i)?)
+                                .map_err(|error| {
+                                    rusqlite::Error::ToSqlConversionFailure(Box::new(Integrity {
+                                        code: "manifest_text",
+                                        message: error.to_string(),
+                                    }))
+                                })?
+                                .map(ManifestText);
+                            values.insert(
+                                name.clone(),
+                                Value::from(
+                                    manifest.requirement.as_ref().and_then(|v| v.0.as_scalar()),
+                                ),
+                            );
+                            continue;
+                        }
+                        "option_group_id" => {
+                            manifest.option_group_id = read_manifest_text(r.get_ref(i)?)
+                                .map_err(|error| {
+                                    rusqlite::Error::ToSqlConversionFailure(Box::new(Integrity {
+                                        code: "manifest_text",
+                                        message: error.to_string(),
+                                    }))
+                                })?
+                                .map(OptionGroupId);
+                            values.insert(
+                                name.clone(),
+                                Value::from(
+                                    manifest
+                                        .option_group_id
+                                        .as_ref()
+                                        .and_then(|v| v.0.as_scalar()),
+                                ),
+                            );
+                            continue;
+                        }
+                        _ => {}
+                    }
                 }
-            };
-            values.insert(name.clone(), value);
-        }
-        #[cfg(feature = "desktop_rebuild")]
-        {
-            manifest.manifest_source = values
-                .get("manifest_source")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-        }
-        Ok((
-            bytes,
-            Row(
+
+                let value = match r.get_ref(i)? {
+                    ValueRef::Null => Value::Null,
+                    ValueRef::Integer(v) => json!(v),
+                    ValueRef::Real(v) => json!(v),
+                    ValueRef::Text(v) => {
+                        Value::String(String::from_utf8(v.to_vec()).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                i,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?)
+                    }
+                    ValueRef::Blob(_) => {
+                        return Err(rusqlite::Error::InvalidColumnType(
+                            i,
+                            name.clone(),
+                            rusqlite::types::Type::Blob,
+                        ));
+                    }
+                };
+                values.insert(name.clone(), value);
+            }
+            #[cfg(feature = "desktop_rebuild")]
+            {
+                manifest.manifest_source = values
+                    .get("manifest_source")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
+            let row = Row(
                 values,
                 code,
                 #[cfg(feature = "desktop_rebuild")]
                 manifest,
-            ),
-        ))
-    })?;
-    for row in found {
-        let (bytes, row) = row.map_err(|error| match error {
-            rusqlite::Error::ToSqlConversionFailure(inner) => match inner.downcast::<Integrity>() {
-                Ok(integrity) => anyhow!(*integrity),
-                Err(inner) => anyhow!(rusqlite::Error::ToSqlConversionFailure(inner)),
-            },
-            error => anyhow!(error),
-        })?;
-        charge(budget, 1, bytes as usize, code)?;
-        result.push(row);
-    }
+            );
+            Ok((bytes, row))
+        })?
+        .map(|found| {
+            let (bytes, row) = found.map_err(|error| match error {
+                rusqlite::Error::ToSqlConversionFailure(inner) => {
+                    match inner.downcast::<Integrity>() {
+                        Ok(integrity) => anyhow!(*integrity),
+                        Err(inner) => anyhow!(rusqlite::Error::ToSqlConversionFailure(inner)),
+                    }
+                }
+                error => anyhow!(error),
+            })?;
+            charge(budget, 1, bytes as usize, code)?;
+            Ok(row)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(result)
 }
 /// Adds rows and text bytes to the read's budget and fails once it is spent.

@@ -47,16 +47,15 @@ fn ticket_t_53_capture_times_readiness_and_stops_the_app() {
     );
 }
 
-/// A busy child must raise the tree's CPU well above an idle shell's over the
-/// same window. The floor is a margin over the idle reading, not a share of a
-/// core, so it holds when other work takes most of the CPU: a loaded CI runner
-/// gave the spinning child 40% of a core. If capture counted only the ready
-/// shell, both runs would read near 0%.
+/// The busy tree must read at least 10 points above an idle shell over the
+/// same window. A loaded CI runner gave the spinning child 40% of a core, so a
+/// fixed 50% floor failed; 10 points still fails if capture counted only the
+/// ready shell, since both runs would then read near 0%.
 #[test]
 fn capture_counts_a_busy_child_in_the_process_tree() {
     const MARGIN_PERCENT: f64 = 10.0;
     let idle = capture_run(&options("echo $$; exec sleep 30", 1_000)).unwrap();
-    // The ready shell stays idle; its child spins one core.
+    // The ready shell stays idle; its child spins.
     let script = "(while :; do :; done) & echo $!; wait";
     let sample = capture_run(&options(script, 1_000)).unwrap();
     assert!(

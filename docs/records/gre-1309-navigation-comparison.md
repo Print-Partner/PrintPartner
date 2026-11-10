@@ -33,7 +33,7 @@ Each session gets one question. The prompt names the worktree, says to answer fr
 
 ## Scoring
 
-- **Files opened** (counted by [`navcount.py`](gre-1309/navcount.py); prompt in [`prompt.txt`](gre-1309/prompt.txt)): distinct repository files whose contents the session read, counted from the thread's tool log. Shell commands that print file contents (`cat`, `sed -n`, `head`, `tail`, `nl`, `less`) count. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened. The counter reads only shell commands, and it stops with an error on any other tool item type, so a Read-tool call cannot be missed silently. None of the session logs contains a Read-tool item; every file access in them is a shell command.
+- **Files opened** (as recorded, counted by [`navcount.py`](gre-1309/navcount.py); corrected, counted by `recount.py` in the tools PR #1644; prompt in [`prompt.txt`](gre-1309/prompt.txt)): distinct repository files whose contents the session read, counted from the thread's tool log. Shell commands that print file contents (`cat`, `sed -n`, `head`, `tail`, `nl`, `less`) count. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened. The counter reads only shell commands, and it stops with an error on any other tool item type, so a Read-tool call cannot be missed silently. None of the session logs contains a Read-tool item; every file access in them is a shell command.
 - **Minutes:** from the run's start to its completion timestamp in the thread log.
 - **Correctness:** the coordinator marks the final answer against the key below. The answer is correct only when it contains every required fact, and incorrect if it names a listed wrong answer as the answer.
 - **Sessions:** three per model, per question, per arm, so 60 in all.
@@ -112,7 +112,7 @@ Wrong answers: `cargo test` or `cargo nextest run` alone; the hand-run list in `
 
 ### Without arm (complete, 2026-11-09)
 
-All 30 sessions ran on `7908c703` between 21:23 and 21:40 UTC. Files are counted by `navcount.py`, which reads each session's tool log and applies the rule in Scoring. "Correct" is the coordinator's mark against the key.
+All 30 sessions ran on `7908c703` between 21:23 and 21:40 UTC. The as-recorded counts come from `navcount.py`, which reads each session's tool log and applies the rule in Scoring. The corrected counts and the minutes in the table come from `recount.py` (tools PR #1644), which also expands shell variables, parses multi-line Codex scripts, and reports minutes to two decimals. `navcount.py` reports minutes to one decimal, as recorded. "Correct" is the coordinator's mark against the key.
 
 | Question | Model | Session | Files opened, as recorded | Files opened, corrected | Minutes | Correct |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -159,7 +159,7 @@ Per question and model, the median of the three corrected file counts:
 
 The as-recorded table above and these medians differ because the counts were corrected: shell variables are now expanded, and multi-line Codex scripts are parsed in full. Ten sessions changed. The as-recorded column keeps the original values. Q3 Claude runs 1 and 3 and all Q3 Codex runs were blocked in the original sessions, so their corrected values come from the re-runs.
 
-Files opened in each session, as `navcount.py` counted them:
+Files opened in each session, as recorded before the counting correction (`navcount.py` output). These are not the corrected counts; the corrected values are in the table above.
 
 - Q1 claude r1: `rust/crates/pp-storage/src/plan_publication.rs`, `rust/crates/pp-storage/src/plan_publication/tests.rs`
 - Q1 claude r2: `rust/crates/pp-api/src/drafts/http.rs`, `rust/crates/pp-api/src/drafts/http/tests/accept_header.rs`, `rust/crates/pp-storage/src/plan_publication.rs`, `rust/crates/pp-storage/src/plan_publication/tests.rs`, `rust/crates/pp-storage/src/working_drafts.rs`
@@ -251,7 +251,7 @@ The 30 session grades above are unchanged by the reruns. Grades are in `grading/
 - Correct: without arm 28 of 30, with arm 24 of 30.
 - Wrong answers, without arm (2 of 30): Q1 Codex run 2 (no commit-on-outcome condition, a borderline call); Q3 Claude run 3 (ADR 0007 table only; `docs/architecture.md` crate map not updated).
 - Wrong answers, with arm (6 of 30): Q1 Claude run 3 (publish placed in the working-draft save; `execute` and `begin_immediate` not named); Q1 Codex runs 2 and 3 (no commit-on-outcome condition, a borderline call); Q3 Claude runs 1 and 2 (ADR table only); Q3 Codex run 3 (no `GATED` update, which the key requires only for a desktop-rebuild-only edge, a borderline call).
-- Two categories are borderline: the commit-on-outcome condition for Q1, and the `GATED` step for Q3. The grader counted both as required. They are not adjudicated; see open items.
+- Two categories are borderline: the commit-on-outcome condition for Q1, and the `GATED` step for Q3. The grader counted both as required. They were adjudicated on 2026-11-09 (see the Adjudication section), and the original grades are kept.
 
 **Open items.**
 - **Re-runs.** Done (see the Re-runs section). With-arm Q1 Claude and Q3 Claude fail again. Without-arm Q3 Claude passed on its second re-run.

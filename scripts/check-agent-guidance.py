@@ -18,6 +18,8 @@ DOCUMENTS = (
     ".factory/skills/pp-readiness/SKILL.md",
     ".factory/skills/pp-verify/SKILL.md",
     ".factory/skills/pp-mission-qa/SKILL.md",
+    ".factory/skills/pp-lane/SKILL.md",
+    ".claude/skills/pp-lane/SKILL.md",
     "docs/development/factory-missions.md",
     "docs/development/agent-workflow.md",
 )

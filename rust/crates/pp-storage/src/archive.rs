@@ -614,6 +614,41 @@ pub(crate) fn extract(archive: &Path, limits: Limits, destination: &Path) -> Res
     validate_into(archive, compressed, limits, destination, true)
 }
 
+/// Checks what follows the tar end-of-archive block. Tar iteration stops at
+/// that block, so this reads the gzip member to its end, which makes the
+/// decoder check the CRC and length trailer. Only zero padding (at most
+/// [`MAX_TRAILING_BYTES`]) may follow the tar end: Rust's `tar` crate and
+/// Node's `tar` both end with zero blocks. Both exporters (Rust here, Node's
+/// `tar.c({ gzip: true })`) write exactly one gzip member, so any byte in
+/// the file after it, including a second member, refuses the archive: a
+/// second member could carry entries that tar iteration never saw.
+fn check_stream_end(mut decoder: GzDecoder<BufReader<File>>) -> Result<()> {
+    let mut rest = (&mut decoder).take(MAX_TRAILING_BYTES + 1);
+    let (mut trailing, mut block) = (0u64, [0u8; 8192]);
+    loop {
+        let read = rest
+            .read(&mut block)
+            .context("Backup archive gzip stream is corrupt")?;
+        if read == 0 {
+            break;
+        }
+        trailing += read as u64;
+        ensure!(
+            block[..read].iter().all(|byte| *byte == 0),
+            "Backup archive has non-zero data after the tar end"
+        );
+    }
+    ensure!(
+        trailing <= MAX_TRAILING_BYTES,
+        "Backup archive has more than {MAX_TRAILING_BYTES} bytes after the tar end"
+    );
+    ensure!(
+        decoder.into_inner().fill_buf()?.is_empty(),
+        "Backup archive has data after its gzip stream"
+    );
+    Ok(())
+}
+
 fn validate_into(
     archive: &Path,
     compressed: u64,
@@ -622,7 +657,7 @@ fn validate_into(
     extract_all: bool,
 ) -> Result<Metadata> {
     // `bufread::GzDecoder` reads exactly one gzip member from the `BufReader`
-    // and leaves anything after it there, so the check below can see it.
+    // and leaves anything after it there, so `check_stream_end` can see it.
     let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
     let mut seen = BTreeSet::new();
     let (mut entries, mut total) = (0u64, 0u64);
@@ -683,38 +718,7 @@ fn validate_into(
             std::io::copy(&mut entry, &mut std::io::sink())?;
         }
     }
-    // Tar iteration stops at the end-of-archive block. Read the gzip member
-    // to its end so the decoder checks the CRC and length trailer. Both
-    // exporters (Rust here, Node's `tar.c({ gzip: true })`) write exactly one
-    // gzip member, so any byte in the file after it, including a second
-    // member, refuses the archive: a second member could carry entries that
-    // tar iteration never saw.
-    // After the tar end only zero padding may follow: Rust's `tar` crate and
-    // Node's `tar` both end with zero blocks.
-    let mut decoder = reader.into_inner();
-    let mut rest = (&mut decoder).take(MAX_TRAILING_BYTES + 1);
-    let (mut trailing, mut block) = (0u64, [0u8; 8192]);
-    loop {
-        let read = rest
-            .read(&mut block)
-            .context("Backup archive gzip stream is corrupt")?;
-        if read == 0 {
-            break;
-        }
-        trailing += read as u64;
-        ensure!(
-            block[..read].iter().all(|byte| *byte == 0),
-            "Backup archive has non-zero data after the tar end"
-        );
-    }
-    ensure!(
-        trailing <= MAX_TRAILING_BYTES,
-        "Backup archive has more than {MAX_TRAILING_BYTES} bytes after the tar end"
-    );
-    ensure!(
-        decoder.into_inner().fill_buf()?.is_empty(),
-        "Backup archive has data after its gzip stream"
-    );
+    check_stream_end(reader.into_inner())?;
     let metadata = metadata.ok_or_else(|| anyhow!("Backup archive is missing {METADATA_FILE}"))?;
     ensure!(
         seen.contains(DATABASE_FILE),

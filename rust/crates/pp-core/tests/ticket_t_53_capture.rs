@@ -47,12 +47,21 @@ fn ticket_t_53_capture_times_readiness_and_stops_the_app() {
     );
 }
 
+/// The busy tree must read at least 10 points above an idle shell over the
+/// same window. A loaded CI runner gave the spinning child 40% of a core, so a
+/// fixed 50% floor failed; 10 points still fails if capture counted only the
+/// ready shell, since both runs would then read near 0%.
 #[test]
-fn ticket_t_53_capture_counts_a_busy_child_in_the_process_tree() {
-    // The ready shell stays idle; its child spins one core.
+fn capture_counts_a_busy_child_in_the_process_tree() {
+    const MARGIN_PERCENT: f64 = 10.0;
+    let idle = capture_run(&options("echo $$; exec sleep 30", 1_000)).unwrap();
+    // The ready shell stays idle; its child spins.
     let script = "(while :; do :; done) & echo $!; wait";
     let sample = capture_run(&options(script, 1_000)).unwrap();
-    assert!(sample.idle_cpu_percent > 50.0, "{sample:?}");
+    assert!(
+        sample.idle_cpu_percent > idle.idle_cpu_percent + MARGIN_PERCENT,
+        "busy {sample:?}, idle {idle:?}"
+    );
     assert!(
         gone(&sample.ready_line),
         "busy child {} survived",

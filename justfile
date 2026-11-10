@@ -8,6 +8,7 @@ ci *args:
 # Print the maintainability measures read from one revision (default origin/main).
 # A report, never a check. See docs/development/ci.md#maintainability-report.
 # Example: just report --rev 044e7706d --ci 1626
+# PR evidence: just report --rev HEAD --base origin/main   (only the rows the branch changes)
 report *args:
     python3 -I scripts/maintainability-report.py "$@"
 

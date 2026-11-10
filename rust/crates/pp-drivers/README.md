@@ -1,13 +1,13 @@
 # pp-drivers
 
-Printer protocol adapters for Moonraker and PrusaLink, plus HTTP Digest auth and farm filament verdicts. Every printer request goes through `pp-net`'s `HttpGuard`. It is not send authority: printer sends need an explicit user action, decided outside this crate.
+Printer protocol adapters for Moonraker, PrusaLink and Bambu LAN (status only), plus HTTP Digest auth and farm filament verdicts. Every printer request goes through `pp-net`'s `HttpGuard`. It is not send authority: printer sends need an explicit user action, decided outside this crate.
 
 Current ownership and allowed dependencies: [Architecture](../../../docs/architecture.md#crates-and-allowed-edges) and [ADR 0009](../../../docs/adr/0009-keep-crates-and-deepen-modules.md). [ADR 0007](../../../docs/adr/0007-rust-crate-layout.md) is historical dependency evidence only.
 
 ## Purpose
 
 - Speaks the Moonraker and PrusaLink HTTP protocols: connection test, status, filament used, `object_list`, cameras, storage browse, and upload with an optional start flag. Ported from the Node adapters.
-- Runs bounded, cancellable, status-only Moonraker pollers for the gateway (`moonraker::Watchers`).
+- Runs bounded, cancellable, status-only watchers for the gateway (`moonraker::Watchers`): Moonraker and PrusaLink pollers, and one pinned MQTT session per Bambu host ([Bambu status watcher](../../../docs/bambu-lan.md#status-watcher)).
 - Derives filament slot states and swap verdicts from slot inventory and host status (`farm_filament`, `desktop_rebuild` only).
 
 ## Not responsible for
@@ -17,7 +17,8 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 - Watcher lifetime and snapshot intake: `pp-gateway` holds `Watchers` and answers `/api/v1/integrations/:id/status` today; the target owner is `pp-core`, which also runs workers.
 - DNS, address policy, deadlines and body limits: `pp-net`.
 - Status DTOs: `pp-api-types::printer_status`.
-- Bambu, Spoolman, Home Assistant, webhooks and Discord: no adapter here yet.
+- Bambu uploads and print control: `bambu` is status only.
+- Spoolman, Home Assistant, webhooks and Discord: no adapter here yet.
 
 ## Interface
 
@@ -25,7 +26,8 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 | --- | --- |
 | `moonraker_driver` | `Driver::new(guard, base_url, api_key)`; `test_connection`, `status`, `filament_used`, `object_list`, `cameras`, `browse`, `upload_file(source, filename, start)`. `UploadSource`, `UploadResult`, `TestResult`, `StorageListing`, `Camera`. |
 | `prusalink` | `Driver::new(guard, base_url, username, password, storage)` with the same methods, plus `open_file(path)` (streams the same-origin `refs.download`, 120 s idle deadline) and `open_camera(id)` (streams `/snap` within a 30 s total deadline), both returning `pp_net::outbound::StreamReply`. Listings may be 8 MiB. Uploads go to the pinned storage, default `usb`; `start` sets the `print-after-upload` header. |
-| `moonraker` | `Watchers` (`new`, `with_guard`, `without_node_fallback`, `observations`, `replace`, `status`, `route`, `stop`), `Host`, `Route`, `recorded_status`, limits `MAX_HOSTS` and `MAX_SNAPSHOT_BYTES`. `PrinterObservations` is the read-only port over the latest status per host (`latest`, `all`, `changed`, and `last_heard`: the last successful poll, kept while offline), backed by a `watch` channel so a slow reader never blocks a poller; a stopped host leaves it. `without_node_fallback` (Rust-only runtime) reports HTTPS and redirecting hosts offline (`HTTPS_UNAVAILABLE`, `REDIRECT_UNAVAILABLE`) instead of routing them to Node. No storage or send APIs. |
+| `moonraker` | `Watchers` (`new`, `with_guard`, `without_node_fallback`, `observations`, `replace`, `status`, `route`, `stop`), `Host`, `Route`, `recorded_status`, limits `MAX_HOSTS` and `MAX_SNAPSHOT_BYTES`. `PrinterObservations` is the read-only port over the latest status per host (`latest`, `all`, `changed`, and `last_heard`: the last successful poll or Bambu report, kept while offline), backed by a `watch` channel so a slow reader never blocks a poller; a stopped host leaves it. `without_node_fallback` (Rust-only runtime) reports HTTPS and redirecting hosts offline (`HTTPS_UNAVAILABLE`, `REDIRECT_UNAVAILABLE`) instead of routing them to Node. No storage or send APIs. |
+| `bambu` | `Config::from_stored`, `Driver::new(guard, config)`; `status(trust)` (one read, for Test connection), `watch(pin, session, report)` (a long-lived pinned session for the watchers), `Session`, `Trust`, `status_from_print`, `PUSHALL_SPACING`. Never pins on its own; never publishes anything but pushall. |
 | `digest` | `parse_www_authenticate`, `authorization`, `cnonce`: RFC 7616 MD5 and MD5-sess, `qop=auth`. |
 | `farm_filament` (`desktop_rebuild`) | `printer_filament_status`, `slot_filament_status`, `host_reports_filament_runout`, `SlotState`, `LOW_FILAMENT_THRESHOLD_G`. Pure; inventory comes through a `SpoolLookup` closure. |
 

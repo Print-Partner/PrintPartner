@@ -1,3 +1,4 @@
+//! GRE-456 (T-44): profile and bundle discovery, and native app versions and config dirs.
 use pp_services::discovery::SlicerKind;
 use pp_services::native_slicers::{NativeDiscovery, NativeRoots, discover_macos};
 use std::{fs, path::Path};

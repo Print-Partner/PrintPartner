@@ -66,7 +66,7 @@ Focus is best effort: any failure keeps the normal startup error.
 
 ## Tests
 
-`tests/ticket_t_29_tray.rs` (tray status and badge) and `tests/ticket_t_31_autostart.rs` (LaunchAgent in a temporary home). Unit tests live in `src`. Every test runs on Linux, macOS and Windows except the focus endpoint tests: `unix::tests` checks the socket's mode and stale-socket replacement, and `windows::tests` checks the pipe's private DACL and refuses a planted pipe. On Windows, symbolic-link cases use `symlink_file` and `symlink_dir`, which need the symlink privilege the hosted runner has. `lib.rs` borrows `pp-storage`'s `tests/common` scratch and cleanup helpers. The only dev-dependency is `tempfile`. Native verifiers are described in the sections below.
+`tests/tray_status_badge.rs` (tray status and badge) and `tests/launch_agent.rs` (LaunchAgent in a temporary home). Unit tests live in `src`. Every test runs on Linux, macOS and Windows except the focus endpoint tests: `unix::tests` checks the socket's mode and stale-socket replacement, and `windows::tests` checks the pipe's private DACL and refuses a planted pipe. On Windows, symbolic-link cases use `symlink_file` and `symlink_dir`, which need the symlink privilege the hosted runner has. `lib.rs` borrows `pp-storage`'s `tests/common` scratch and cleanup helpers. The only dev-dependency is `tempfile`. Native verifiers are described in the sections below.
 
 ```sh
 PP_DESKTOP_RELEASE_MANIFEST=/absolute/path/to/stage/bundle-manifest.json \

@@ -41,7 +41,7 @@ Cargo features: none.
 
 - `tests/canonical_target.rs`: `proptest` properties for `CanonicalTarget`.
 - Unit tests in `src/target.rs` and `src/outbound.rs`. The `outbound` tests run local HTTP servers on loopback to check deadlines, body limits, redirect refusal and DNS policy.
-- `tests/ticket_t_22_stream.rs`: streamed replies past the buffered limit, the idle and total body deadlines, `prefix`, and the 8 MiB listing limit, on loopback.
+- `tests/streamed_replies.rs`: streamed replies past the buffered limit, the idle and total body deadlines, `prefix`, and the 8 MiB listing limit, on loopback.
 
 ```sh
 cargo nextest run --manifest-path rust/Cargo.toml -p pp-net

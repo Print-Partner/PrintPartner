@@ -1,3 +1,4 @@
+//! T-53 (GRE-388): CPU ticks, package size and UTC timestamps for the perf harness.
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};

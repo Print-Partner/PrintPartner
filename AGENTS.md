@@ -41,6 +41,7 @@ just guidance      # checks links in every .md, this file, the repo skills, and 
 - No product analytics, default-on telemetry, multi-user, SaaS, or Postgres work. Sentry stays opt-in.
 - Use disposable data and loopback ports for testing. Keep tokens, cookies, pairing secrets, and customer files out of commits, logs, screenshots, and PRs.
 - Don't hand-edit generated manifests or schema fixtures; run their generators.
+- Give times to the maintainer in US Eastern time (EST or EDT as in effect), not UTC, in replies and reports. UTC stays in commands, file contents, and commit or PR text.
 
 ## Pull requests
 

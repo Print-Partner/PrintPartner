@@ -173,19 +173,18 @@ async fn put_spoolman_default(
 /// and leaves the body `undefined` without a content type; the handler then
 /// throws on a `null` or `undefined` body.
 fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Response>> {
-    let media = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .map(str::trim);
-    let parsed = match media {
-        Some(media) if media.eq_ignore_ascii_case("application/json") => {
+    let media = headers.get(header::CONTENT_TYPE).map(|value| {
+        let essence = value.to_str().unwrap_or_default().split(';').next();
+        essence.unwrap_or_default().trim().to_ascii_lowercase()
+    });
+    let parsed = match media.as_deref() {
+        Some("application/json") => {
             if body.is_empty() || json_body_refused(body) {
                 return Err(Box::new(unreadable()));
             }
             serde_json::from_slice(body).map_err(|_| Box::new(unreadable()))?
         }
-        Some(media) if media.eq_ignore_ascii_case("text/plain") => Value::String(String::new()),
+        Some("text/plain") => Value::String(String::new()),
         None if body.is_empty() => Value::Null,
         _ => {
             return Err(Box::new(failure(
@@ -212,15 +211,13 @@ fn unreadable() -> Response {
     )
 }
 
-/// JavaScript truthiness of a parsed JSON value.
+/// JavaScript truthiness of a parsed JSON value: false only for `null`,
+/// `false`, `0` and `""`.
 fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(text) => !text.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
+    !(value.is_null()
+        || value == &Value::Bool(false)
+        || value.as_f64() == Some(0.0)
+        || value.as_str() == Some(""))
 }
 
 /// `String.prototype.trim`: Unicode white space and line terminators, plus

@@ -6,16 +6,12 @@
 //! fixed keys, so this client cannot read or write any other setting.
 
 use crate::{Envelope, SettingSnapshot, Shared, WriterOwner, auth, read_model::Credential};
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Result, anyhow};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    time::{Duration, Instant},
+    sync::{Arc, atomic::AtomicBool, mpsc},
+    time::Duration,
 };
 
 /// Node's setting key for the integration list.
@@ -122,40 +118,17 @@ impl AppSettingsClient {
         cancelled: &AtomicBool,
         wait: Duration,
     ) -> Result<Outcome> {
-        let deadline = Instant::now() + wait;
-        let mut queue = self
-            .shared
-            .queue
-            .lock()
-            .map_err(|_| anyhow!("Writer admission poisoned"))?;
-        loop {
-            ensure!(!queue.closed, "Storage stopped");
-            ensure!(
-                !cancelled.load(Ordering::Acquire),
-                "Cancelled before admission"
-            );
-            if queue.pending.len() < self.shared.capacity {
-                break;
-            }
-            ensure!(Instant::now() < deadline, "Writer queue full");
-            queue = self
-                .shared
-                .changed
-                .wait_timeout(queue, Duration::from_millis(5))
-                .map_err(|_| anyhow!("Writer admission poisoned"))?
-                .0;
-        }
         let (reply, receiver) = mpsc::channel();
-        queue.pending.push_back(Envelope::AppSettings {
-            command: Command {
-                credential,
-                policy: self.policy,
-                request,
-            },
+        let command = Command {
+            credential,
+            policy: self.policy,
+            request,
+        };
+        let envelope = Envelope::AppSettings {
+            command,
             reply: Reply(reply),
-        });
-        self.shared.changed.notify_all();
-        drop(queue);
+        };
+        self.shared.admit(envelope, cancelled, wait)?;
         receiver.recv().map_err(|_| anyhow!("Storage stopped"))?
     }
 }

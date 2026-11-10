@@ -1,10 +1,10 @@
 //! GRE-1357: date format, build tracking and default Spoolman settings over
 //! HTTP, replaying `fixtures/admin/settings-cases.json` and checking each reply
 //! and the stored rows against `fixtures/admin/settings-oracle.json`, which
-//! `web/apps/server/src/routes/settings-routes.oracle.test.ts` records from Node.
+//! `web/apps/server/src/routes/admin-routes.oracle.test.ts` records from Node.
 #![cfg(feature = "desktop_rebuild")]
 
-use pp_api::{admin::AdminHttpConfig, settings::settings_router};
+use pp_api::{admin::AdminHttpConfig, serving::Serving, settings::settings_router};
 use pp_storage::{
     Limits, SettingSnapshot, WriterOwner,
     auth::{
@@ -14,16 +14,13 @@ use pp_storage::{
 };
 use reqwest::{Client, Method};
 use serde_json::{Value, json};
-use std::{
-    path::Path,
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
-const SESSION: &str = "pp_session=read-fixture-secret";
+const COOKIE: (&str, &str) = ("cookie", "pp_session=read-fixture-secret");
 const CASES: &str = include_str!("../../../../fixtures/admin/settings-cases.json");
 const ORACLE: &str = include_str!("../../../../fixtures/admin/settings-oracle.json");
 const PROBLEM: &str = "application/problem+json";
+const WAIT: Duration = Duration::from_secs(5);
 
 fn policy() -> AuthPolicy {
     AuthPolicy {
@@ -33,12 +30,25 @@ fn policy() -> AuthPolicy {
     }
 }
 
+struct Reply {
+    status: u16,
+    content_type: Option<String>,
+    cache_control: Option<String>,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap()
+    }
+}
+
 struct Server {
     owner: WriterOwner,
     origin: String,
     client: Client,
-    shutdown: tokio::sync::oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<()>,
+    serving: Serving,
+    keys: Value,
 }
 
 impl Server {
@@ -46,94 +56,71 @@ impl Server {
         let owner = WriterOwner::open(directory, Limits::default()).unwrap().0;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let router = settings_router(
-            AdminHttpConfig::from_startup(&origin, "default", flag).unwrap(),
-            owner.accepted_reads().unwrap(),
-            owner.app_settings_with_policy(policy()).unwrap(),
-        );
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-            .unwrap();
-        });
+        let config = AdminHttpConfig::from_startup(&origin, "default", flag).unwrap();
+        let settings = owner.app_settings_with_policy(policy()).unwrap();
+        let router = settings_router(config, owner.accepted_reads().unwrap(), settings);
+        let cases: Value = serde_json::from_str(CASES).unwrap();
         Self {
             owner,
             origin,
             client: Client::builder().no_proxy().build().unwrap(),
-            shutdown,
-            task,
+            serving: Serving::start(listener, router),
+            keys: cases["keys"].clone(),
         }
     }
 
-    async fn send(
-        &self,
-        step: &Value,
-        cookie: Option<&str>,
-    ) -> (u16, Option<String>, Option<String>, Vec<u8>) {
+    /// Sends `step` with `headers`, plus this listener's `Origin` unless the
+    /// step is `cross_site`, as a browser would.
+    async fn send(&self, step: &Value, headers: &[(&str, &str)]) -> Reply {
         let method = Method::from_bytes(step["method"].as_str().unwrap().as_bytes()).unwrap();
-        let path = step["path"].as_str().unwrap();
-        let mut request = self
-            .client
-            .request(method, format!("{}{path}", self.origin));
-        if let Some(cookie) = cookie {
-            request = request.header("cookie", cookie);
+        let url = format!("{}{}", self.origin, step["path"].as_str().unwrap());
+        let mut request = self.client.request(method, url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
         }
-        // A browser sends its own origin; a cookie write without it is refused.
         if step["cross_site"] != Value::Bool(true) {
             request = request.header("origin", &self.origin);
         }
         if let Some(body) = step["body"].as_str() {
+            let content_type = step["content_type"].as_str().unwrap();
             request = request
-                .header("content-type", step["content_type"].as_str().unwrap())
+                .header("content-type", content_type)
                 .body(body.to_owned());
         }
         let response = request.send().await.unwrap();
-        let header = |name: &str| {
-            response
-                .headers()
-                .get(name)
-                .map(|value| value.to_str().unwrap().to_owned())
-        };
-        let (content_type, cache_control) = (header("content-type"), header("cache-control"));
-        let status = response.status().as_u16();
-        (
-            status,
-            content_type,
-            cache_control,
-            response.bytes().await.unwrap().to_vec(),
-        )
+        let header = |name: &str| Some(response.headers().get(name)?.to_str().ok()?.to_owned());
+        Reply {
+            status: response.status().as_u16(),
+            content_type: header("content-type"),
+            cache_control: header("cache-control"),
+            body: response.bytes().await.unwrap().to_vec(),
+        }
     }
 
-    fn stored(&self, keys: &Value) -> Value {
-        let reader = self.owner.client().reader(Duration::from_secs(5)).unwrap();
-        let mut stored = serde_json::Map::new();
-        for key in keys.as_array().unwrap() {
+    /// The three rows as Node's oracle records them: the stored text, or `null`.
+    fn stored(&self) -> Value {
+        let reader = self.owner.client().reader(WAIT).unwrap();
+        let rows = self.keys.as_array().unwrap().iter().map(|key| {
             let key = key.as_str().unwrap();
             let value = match reader.snapshot("default", key).unwrap() {
-                SettingSnapshot::Stored { value } => json!(value),
+                SettingSnapshot::Stored { value } => Value::String(value),
                 SettingSnapshot::Missing => Value::Null,
             };
-            stored.insert(key.to_owned(), value);
-        }
-        Value::Object(stored)
+            (key.to_owned(), value)
+        });
+        Value::Object(rows.collect())
     }
 
-    async fn stop(self) {
-        let _ = self.shutdown.send(());
-        self.task.await.unwrap();
+    async fn stop(mut self) {
+        self.serving.stop().await.unwrap();
         self.owner.shutdown().unwrap();
     }
 }
 
-/// A copy of the Node fixture database with the cases' `integrations` row.
-fn seeded(cases: &Value) -> tempfile::TempDir {
+/// A copy of the Node fixture database with the cases' `integrations` row,
+/// served with the rebuild flag on.
+async fn seeded() -> (tempfile::TempDir, Server) {
+    let cases: Value = serde_json::from_str(CASES).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("print-partner.db");
     std::fs::write(
@@ -148,15 +135,15 @@ fn seeded(cases: &Value) -> tempfile::TempDir {
             [cases["integrations"].as_str().unwrap()],
         )
         .unwrap();
-    directory
+    let server = Server::start(directory.path(), Some("1")).await;
+    (directory, server)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn settings_routes_match_the_node_oracle_and_survive_restart() {
     let cases: Value = serde_json::from_str(CASES).unwrap();
     let oracle: Value = serde_json::from_str(ORACLE).unwrap();
-    let directory = seeded(&cases);
-    let server = Server::start(directory.path(), Some("1")).await;
+    let (directory, server) = seeded().await;
 
     let steps = cases["steps"].as_array().unwrap();
     let replies = oracle["replies"].as_array().unwrap();
@@ -164,44 +151,40 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
     let mut exact = 0;
     for (index, (step, node)) in steps.iter().zip(replies).enumerate() {
         let context = format!("step {index}: {step}");
-        let (status, content_type, cache_control, body) = server.send(step, Some(SESSION)).await;
-        assert_eq!(json!(status), node["status"], "{context}");
+        let reply = server.send(step, &[COOKIE]).await;
+        assert_eq!(json!(reply.status), node["status"], "{context}");
         assert_eq!(
-            cache_control.as_deref(),
+            reply.cache_control.as_deref(),
             Some("private, no-store"),
             "{context}"
         );
-        assert_eq!(server.stored(&cases["keys"]), node["stored"], "{context}");
-        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(server.stored(), node["stored"], "{context}");
         let fastify_refusal = node["body"]["code"]
             .as_str()
             .is_some_and(|code| code.starts_with("FST_"));
-        if status == 200 {
-            assert_eq!(json!(content_type), node["content_type"], "{context}");
-            assert_eq!(body, node["body"], "{context}");
+        if reply.status == 200 {
+            assert_eq!(json!(reply.content_type), node["content_type"], "{context}");
+            assert_eq!(reply.json(), node["body"], "{context}");
             exact += 1;
-        } else if status >= 500 || fastify_refusal {
-            // Rust answers a problem with its own text instead of Fastify's
-            // error code or Node's TypeError.
-            assert_eq!(content_type.as_deref(), Some(PROBLEM), "{context}");
-        } else {
-            assert_eq!(content_type.as_deref(), Some(PROBLEM), "{context}");
-            assert_eq!(
-                pp_api::problem::without_envelope(body),
-                node["body"],
-                "{context}"
-            );
+            continue;
+        }
+        assert_eq!(reply.content_type.as_deref(), Some(PROBLEM), "{context}");
+        // Rust answers its own problem text instead of Fastify's error code or
+        // Node's TypeError; every other refusal keeps Node's `detail`.
+        if reply.status < 500 && !fastify_refusal {
+            let body = pp_api::problem::without_envelope(reply.json());
+            assert_eq!(body, node["body"], "{context}");
             exact += 1;
         }
     }
     assert_eq!(exact, 43, "replies matched exactly");
-    let saved = server.stored(&cases["keys"]);
+    let saved = server.stored();
     assert_eq!(saved, replies.last().unwrap()["stored"]);
     server.stop().await;
 
     let server = Server::start(directory.path(), Some("1")).await;
-    assert_eq!(server.stored(&cases["keys"]), saved);
-    for (path, body) in [
+    assert_eq!(server.stored(), saved);
+    let read_back = [
         ("/settings/date-format", json!({"format": "dmy_short"})),
         (
             "/settings/build-tracking",
@@ -211,115 +194,83 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
             "/api/v1/settings/spoolman-default",
             json!({"integration_id": "sp1"}),
         ),
-    ] {
-        let (status, _, _, reply) = server
-            .send(&json!({"method": "GET", "path": path}), Some(SESSION))
+    ];
+    for (path, body) in read_back {
+        let reply = server
+            .send(&json!({"method": "GET", "path": path}), &[COOKIE])
             .await;
-        assert_eq!(status, 200, "{path}");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&reply).unwrap(),
-            body,
-            "{path}"
-        );
+        assert_eq!((reply.status, reply.json()), (200, body), "{path}");
     }
     server.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn settings_routes_refuse_bad_credentials_and_cross_site_writes_without_writing() {
-    let cases: Value = serde_json::from_str(CASES).unwrap();
-    let directory = seeded(&cases);
-    let server = Server::start(directory.path(), Some("1")).await;
-    let before = server.stored(&cases["keys"]);
-    for path in [
+    let (_directory, server) = seeded().await;
+    let before = server.stored();
+    let paths = [
         "/settings/date-format",
         "/api/v1/settings/build-tracking",
         "/settings/spoolman-default",
-    ] {
-        for cookie in [None, Some("pp_session=not-a-session")] {
+    ];
+    let wrong = [("cookie", "pp_session=not-a-session")];
+    for path in paths {
+        for headers in [&[][..], &wrong[..]] {
             for step in [
                 json!({"method": "GET", "path": path}),
                 json!({"method": "PUT", "path": path, "content_type": "application/json",
                        "body": r#"{"format":"iso","assembly_tracking":true,"integration_id":"sp1"}"#}),
             ] {
-                let (status, content_type, _, _) = server.send(&step, cookie).await;
-                assert_eq!(status, 401, "{step} {cookie:?}");
-                assert_eq!(content_type.as_deref(), Some(PROBLEM));
+                let reply = server.send(&step, headers).await;
+                assert_eq!(reply.status, 401, "{step} {headers:?}");
+                assert_eq!(reply.content_type.as_deref(), Some(PROBLEM));
             }
         }
     }
     let write = json!({"method": "PUT", "path": "/settings/date-format", "cross_site": true,
                        "content_type": "application/json", "body": r#"{"format":"iso"}"#});
-    assert_eq!(server.send(&write, Some(SESSION)).await.0, 403);
-    assert_eq!(server.stored(&cases["keys"]), before);
+    assert_eq!(server.send(&write, &[COOKIE]).await.status, 403);
+    assert_eq!(server.stored(), before);
     server.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn settings_routes_stay_unmounted_without_the_rebuild_flag() {
-    let cases: Value = serde_json::from_str(CASES).unwrap();
-    let directory = seeded(&cases);
+    let (directory, server) = seeded().await;
+    server.stop().await;
     let server = Server::start(directory.path(), None).await;
     let step = json!({"method": "GET", "path": "/settings/date-format"});
-    assert_eq!(server.send(&step, Some(SESSION)).await.0, 404);
+    assert_eq!(server.send(&step, &[COOKIE]).await.status, 404);
     server.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn settings_routes_take_an_api_key_without_origin_and_answer_head() {
-    let cases: Value = serde_json::from_str(CASES).unwrap();
-    let directory = seeded(&cases);
-    let server = Server::start(directory.path(), Some("1")).await;
-    let auth::Outcome::KeyCreated { key, .. } = server
+    let (_directory, server) = seeded().await;
+    let auth = server
         .owner
         .rebuild_auth_with_policy(policy(), AuthLifetimes::default())
-        .unwrap()
-        .submit(
-            auth::Request::CreateKey {
-                session: Secret::new("read-fixture-secret".into()),
-            },
-            Arc::new(AtomicBool::new(false)),
-            Duration::from_secs(5),
-        )
-        .unwrap()
-        .recv()
-        .unwrap()
-        .unwrap()
-    else {
+        .unwrap();
+    let create = auth::Request::CreateKey {
+        session: Secret::new("read-fixture-secret".into()),
+    };
+    let created = auth.submit(create, Arc::default(), WAIT).unwrap().recv();
+    let Ok(Ok(auth::Outcome::KeyCreated { key, .. })) = created else {
         panic!("key expected");
     };
     let bearer = format!("Bearer {}", key.expose());
-    let url = format!("{}/api/v1/settings/build-tracking", server.origin);
-    let written = server
-        .client
-        .put(&url)
-        .header("authorization", &bearer)
-        .header("content-type", "application/json")
-        .body(r#"{"assembly_tracking":true}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(written.status().as_u16(), 200);
+    let path = "/api/v1/settings/build-tracking";
+    let put = json!({"method": "PUT", "path": path, "cross_site": true,
+                     "content_type": "application/json", "body": r#"{"assembly_tracking":true}"#});
+    let written = server.send(&put, &[("authorization", &bearer)]).await;
     assert_eq!(
-        written.json::<Value>().await.unwrap(),
-        json!({"assembly_tracking": true})
+        (written.status, written.json()),
+        (200, json!({"assembly_tracking": true}))
     );
-    assert_eq!(
-        server.stored(&cases["keys"])["build_tracking_assembly"],
-        json!("1")
-    );
-    let head = server
-        .client
-        .head(&url)
-        .header("authorization", &bearer)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(head.status().as_u16(), 200);
-    assert_eq!(
-        head.headers()["content-length"],
-        r#"{"assembly_tracking":true}"#.len().to_string().as_str()
-    );
-    assert!(head.bytes().await.unwrap().is_empty());
+    assert_eq!(server.stored()["build_tracking_assembly"], json!("1"));
+    let head = json!({"method": "HEAD", "path": path, "cross_site": true});
+    let head = server.send(&head, &[("authorization", &bearer)]).await;
+    assert_eq!(head.status, 200);
+    assert!(head.body.is_empty());
     server.stop().await;
 }

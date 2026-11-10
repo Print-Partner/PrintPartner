@@ -1,4 +1,5 @@
 use super::*;
+use crate::versions::SchemaPath;
 use pp_testkit::node_schema::{
     self, Statement as HistoricalStatement, execute as execute_historical, parse_schema_migrations,
 };
@@ -1726,6 +1727,21 @@ fn ticket_t_7_migrations() {
                 "{name} had no copied database"
             );
         }
+        let named = match name.as_str() {
+            "fresh" => Some(SchemaPath::Fresh),
+            "schema-31" => Some(SchemaPath::NodeUpgrade(31)),
+            "schema-32" => Some(SchemaPath::NodeUpgrade(32)),
+            "schema-33" => Some(SchemaPath::NodeUpgrade(33)),
+            "schema-34" => Some(SchemaPath::NodeUpgrade(34)),
+            _ => None,
+        };
+        if let Some(path) = named {
+            assert_eq!(
+                crate::versions::classify(initial, schema::CURRENT_VERSION),
+                Ok(path),
+                "{name}"
+            );
+        }
         let (owner, ready) = open_parity(&work, &clock);
         assert_eq!(ready.version, schema::CURRENT_VERSION, "{name}");
         assert_eq!(ready.previous_version, initial, "{name}");
@@ -1852,7 +1868,7 @@ fn assert_refused(path: &Path, message: &str) {
 fn ticket_t_7_migrations_preserves_refused_inputs() {
     assert_refused(
         &refused_wal_input("30"),
-        "Cannot upgrade database schema version 30",
+        "Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to",
     );
     let newer = if cfg!(feature = "desktop_rebuild") {
         "48"
@@ -1862,6 +1878,10 @@ fn ticket_t_7_migrations_preserves_refused_inputs() {
     assert_refused(
         &refused_wal_input(newer),
         &format!("newer than supported version {}", schema::CURRENT_VERSION),
+    );
+    assert_refused(
+        &refused_wal_input("99999999999999999999"),
+        "schema version 18446744073709551615 is newer than supported version",
     );
     assert_refused(&refused_wal_input("abc"), "Invalid database schema version");
     let corrupt = directory("refuse-corrupt");

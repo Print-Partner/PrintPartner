@@ -41,17 +41,15 @@ fn main() -> std::process::ExitCode {
             {
                 return std::process::ExitCode::FAILURE;
             }
-            show_startup_error();
+            show_startup_error(&error);
             std::process::ExitCode::FAILURE
         }
     }
 }
 
-fn show_startup_error() {
-    pp_desktop::platform::startup_error(
-        "Print Partner could not start",
-        "The desktop runtime or its verified resources could not start. Check that this installation is complete and that another Print Partner instance is not using its data directory.",
-    );
+fn show_startup_error(error: &anyhow::Error) {
+    let (title, description) = pp_desktop::startup_error_text(error);
+    pp_desktop::platform::startup_error(title, &description);
 }
 
 fn run(core_log: &pp_core::CoreLog) -> Result<u8> {

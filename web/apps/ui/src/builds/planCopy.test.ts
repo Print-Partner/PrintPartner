@@ -16,6 +16,10 @@ describe("GRE-1140 Plan copy separates draft autosave from Accept", () => {
   it("says drafts save on their own, Accept applies them, and Accept snapshots first", () => {
     const help = PLAN_HELP.join(" ");
     expect(help).toMatch(/save to a draft as you make them/);
+    expect(help).toMatch(/a checkbox saves at once/);
+    expect(help).toMatch(
+      /a typed field, such as a name or a quantity, saves when you leave it or press Enter/,
+    );
     expect(help).toMatch(/does not change until you accept the draft/);
     expect(help).toMatch(
       /Accept first saves a snapshot of the accepted Plan it replaces, when it can/,

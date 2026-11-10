@@ -8,7 +8,7 @@
 
 /** Help's "Plan changes" section, one sentence group per item. */
 export const PLAN_HELP: readonly string[] = [
-  "Changes to a Plan save to a draft as you make them: a Part change at once, a name or order field when you leave it. A saved draft is kept if the app closes.",
+  "Changes to a Plan save to a draft as you make them: a checkbox saves at once, and a typed field, such as a name or a quantity, saves when you leave it or press Enter. A saved draft is kept if the app closes.",
   "The Build does not change until you accept the draft. Review and accept shows what would change first.",
   "Accept first saves a snapshot of the accepted Plan it replaces, when it can; the Accept preview says whether it will. History lists each snapshot, and Restore as draft can bring one back as a new draft.",
 ];

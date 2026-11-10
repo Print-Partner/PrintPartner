@@ -181,6 +181,15 @@ fn work_entries(root: &Path) -> Vec<String> {
     names
 }
 
+/// An upload refused because the work directory is a link, with nothing
+/// written where the link points.
+#[track_caller]
+fn refused_link(error: &anyhow::Error, outside: &Path) {
+    assert!(error.to_string().contains("not a directory"), "{error:#}");
+    let written = std::fs::read_dir(outside).unwrap().count();
+    assert_eq!(written, 0, "nothing is written through the link");
+}
+
 fn refusal(error: &anyhow::Error) -> Option<&Refusal> {
     error.downcast_ref::<Refusal>()
 }
@@ -399,8 +408,7 @@ fn ticket_t_8_restore_a_linked_work_directory_refuses_staging() {
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(outside.path(), root.join(WORK_DIR)).unwrap();
     let error = owner.installation().unwrap().begin_upload(4).err().unwrap();
-    assert!(error.to_string().contains("not a directory"), "{error:#}");
-    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    refused_link(&error, outside.path());
     owner.shutdown().unwrap();
 }
 
@@ -823,8 +831,7 @@ fn ticket_t_8_restore_a_concurrently_created_work_directory_is_accepted_but_a_li
         Box::new(move || std::os::unix::fs::symlink(target, link).unwrap()),
     ));
     let error = client.begin_upload(16).err().unwrap();
-    assert!(error.to_string().contains("not a directory"), "{error:#}");
-    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    refused_link(&error, outside.path());
     std::fs::remove_file(&work).unwrap();
     owner.shutdown().unwrap();
 }

@@ -1,8 +1,9 @@
 /**
  * How a Plan change saves and lands, in the words Help, the Plan tab and History share
  * (GRE-1140). A draft saves itself as it changes; only Accept changes the Build, and
- * Accept first saves a snapshot of the Plan it replaces when the core can restore one. The old app's guide says changes
- * save with no acceptance step; that is the old behavior and is not copied here.
+ * Accept first saves a snapshot of the Plan it replaces when the core can restore one.
+ * The old app's guide says changes save with no acceptance step; that is the old
+ * behavior and is not copied here.
  */
 
 /** Help's "Plan changes" section, one sentence group per item. */

@@ -154,7 +154,7 @@ enum Envelope {
     #[cfg(feature = "desktop_rebuild")]
     AppSettings {
         command: app_settings::Command,
-        reply: mpsc::Sender<Result<app_settings::Outcome>>,
+        reply: app_settings::Reply,
     },
     #[cfg(feature = "desktop_rebuild")]
     Publication {
@@ -803,8 +803,7 @@ impl WriterOwner {
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::AppSettings { command, reply } => {
-                        let _ =
-                            reply.send(app_settings::execute(&mut connection, command, admission));
+                        reply.send(app_settings::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::BuildGraph { command, reply } => {

@@ -273,12 +273,34 @@ async fn write(
     settled(outcome)
 }
 
+/// A full queue or stopped writer, or a write lock past its admission
+/// deadline, answers 503; credential failures keep `read_error`'s mapping.
 fn settled(
     outcome: Result<anyhow::Result<Outcome>, tokio::task::JoinError>,
 ) -> Result<Outcome, Box<Response>> {
+    const BUSY: &str = "Service temporarily unavailable";
     match outcome {
         Ok(Ok(outcome)) => Ok(outcome),
-        Ok(Err(error)) => Err(Box::new(read_error(&error))),
+        Ok(Err(error)) => {
+            if let Some(refused) = crate::problem::admission_response(&error, BUSY) {
+                return Err(Box::new(refused));
+            }
+            let locked = error.chain().any(|cause| {
+                matches!(
+                    cause.to_string().as_str(),
+                    "Writer transaction admission deadline expired" | "database is locked"
+                )
+            });
+            Err(Box::new(if locked {
+                crate::problem::coded(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    BUSY,
+                    "transaction_unavailable",
+                )
+            } else {
+                read_error(&error)
+            }))
+        }
         Err(_) => Err(Box::new(failure(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Internal Server Error",
@@ -296,8 +318,23 @@ fn ok(body: &Value) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{js_trim, truthy};
+    use super::{js_trim, settled, truthy};
     use serde_json::json;
+
+    #[test]
+    fn settings_writer_refusals_answer_503() {
+        for message in [
+            "Writer transaction admission deadline expired",
+            "database is locked",
+            "Storage stopped",
+            "Writer queue full",
+        ] {
+            let refused = settled(Ok(Err(anyhow::anyhow!(message)))).unwrap_err();
+            assert_eq!(refused.status().as_u16(), 503, "{message}");
+        }
+        let refused = settled(Ok(Err(anyhow::anyhow!("Authentication required")))).unwrap_err();
+        assert_eq!(refused.status().as_u16(), 401);
+    }
 
     #[test]
     fn settings_body_values_follow_javascript() {

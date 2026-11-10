@@ -65,20 +65,27 @@ names only these three keys.
 
 A cookie-authenticated `PUT` needs the listener's own `Origin`, as on the
 other rebuild routes; without it the request answers `403` before any write.
+A full writer queue, a stopped writer, or a write lock past its admission
+deadline answers `503`.
 
 The Spoolman check reads only the matched integration's `type`, never its
 `config`. Rust writes these rows only in the Rust-only runtime; Node keeps its
 own routes and there is no dual write or fallback.
 
-`fixtures/admin/settings-cases.json` lists 48 requests;
+`fixtures/admin/settings-cases.json` lists 52 requests;
 `fixtures/admin/settings-oracle.json` records Node's reply and the three stored
 rows after each one. `settings_routes_http` replays them and matches status,
-cache header and stored rows on all 48, and the body on every `200` and on
+cache header and stored rows on all 52, and the body on every `200` and on
 each `400` with a `detail`. These differ by design:
 
 - Errors are `application/problem+json`; the `detail` matches Node's.
 - An empty or unparsable JSON body answers `400` `Request is invalid` instead
   of Fastify's `FST_ERR_CTP_*` body; an unsupported content type answers `415`.
+- Rust also answers `400` for JSON that Fastify accepts but `serde_json`
+  refuses: a leading byte order mark, invalid UTF-8, a number out of `f64`
+  range such as `1e400`, or nesting past 128 levels.
+- A chunked empty body with no content type answers `500`; Fastify answers
+  `415`.
 - A `null` body, or a `PUT` with no body and no content type, answers `500`
   `Internal Server Error`, where Node answers its `TypeError`.
 - A stored `integrations` value with an unpaired UTF-16 surrogate escape holds
@@ -86,8 +93,8 @@ each `400` with a `detail`. These differ by design:
   would accept it.
 
 ```sh
-cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-storage \
-  --features pp-api/desktop_rebuild,pp-storage/desktop_rebuild \
-  --no-tests=fail -E 'binary(settings_routes_http) | test(spoolman_lookup) | test(settings_body_values)'
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-storage -p pp-core \
+  --features pp-api/desktop_rebuild,pp-storage/desktop_rebuild,pp-core/desktop_rebuild \
+  --no-tests=fail -E 'binary(settings_routes_http) | binary(rebuild_read_http) | test(spoolman_lookup) | test(/^settings::/)'
 (cd web && UPDATE_ADMIN_ORACLE=1 npm run test -w @print-partner/server -- src/routes/settings-routes.oracle.test.ts)
 ```

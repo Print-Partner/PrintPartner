@@ -1,6 +1,6 @@
 # Admin route fixtures (T-62-admin, GRE-438)
 
-- `settings-cases.json` lists the seeded `integrations` setting and 48
+- `settings-cases.json` lists the seeded `integrations` setting and 52
   requests to the date format, build tracking and default Spoolman routes.
   `settings-oracle.json` records Node's reply and stored rows after each one.
   `web/apps/server/src/routes/settings-routes.oracle.test.ts` checks Node

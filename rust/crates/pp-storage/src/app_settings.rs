@@ -65,6 +65,14 @@ pub struct AppSettingsClient {
     policy: auth::AuthPolicy,
 }
 
+pub(super) struct Reply(mpsc::Sender<Result<Outcome>>);
+
+impl Reply {
+    pub(super) fn send(self, outcome: Result<Outcome>) {
+        let _ = self.0.send(outcome);
+    }
+}
+
 pub(super) struct Command {
     credential: Credential,
     policy: auth::AuthPolicy,
@@ -144,13 +152,11 @@ impl AppSettingsClient {
                 policy: self.policy,
                 request,
             },
-            reply,
+            reply: Reply(reply),
         });
         self.shared.changed.notify_all();
         drop(queue);
-        receiver
-            .recv()
-            .map_err(|_| anyhow!("Storage stopped without settings result"))?
+        receiver.recv().map_err(|_| anyhow!("Storage stopped"))?
     }
 }
 

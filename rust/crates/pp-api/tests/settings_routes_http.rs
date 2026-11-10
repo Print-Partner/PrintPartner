@@ -7,16 +7,31 @@
 use pp_api::{admin::AdminHttpConfig, settings::settings_router};
 use pp_storage::{
     Limits, SettingSnapshot, WriterOwner,
-    auth::{AuthPolicy, FirstUserTenant, RegistrationPolicy, SessionTenantPolicy},
+    auth::{
+        self, AuthPolicy, FirstUserTenant, RegistrationPolicy, Secret, SessionTenantPolicy,
+        rebuild::AuthLifetimes,
+    },
 };
 use reqwest::{Client, Method};
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 const SESSION: &str = "pp_session=read-fixture-secret";
 const CASES: &str = include_str!("../../../../fixtures/admin/settings-cases.json");
 const ORACLE: &str = include_str!("../../../../fixtures/admin/settings-oracle.json");
 const PROBLEM: &str = "application/problem+json";
+
+fn policy() -> AuthPolicy {
+    AuthPolicy {
+        registration: RegistrationPolicy::Open,
+        session_tenant: SessionTenantPolicy::AccountTenant,
+        first_user: FirstUserTenant::NewUser,
+    }
+}
 
 struct Server {
     owner: WriterOwner,
@@ -34,13 +49,7 @@ impl Server {
         let router = settings_router(
             AdminHttpConfig::from_startup(&origin, "default", flag).unwrap(),
             owner.accepted_reads().unwrap(),
-            owner
-                .app_settings_with_policy(AuthPolicy {
-                    registration: RegistrationPolicy::Open,
-                    session_tenant: SessionTenantPolicy::AccountTenant,
-                    first_user: FirstUserTenant::NewUser,
-                })
-                .unwrap(),
+            owner.app_settings_with_policy(policy()).unwrap(),
         );
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -185,7 +194,7 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
             exact += 1;
         }
     }
-    assert!(exact >= 35, "{exact} exact replies");
+    assert_eq!(exact, 43, "replies matched exactly");
     let saved = server.stored(&cases["keys"]);
     assert_eq!(saved, replies.last().unwrap()["stored"]);
     server.stop().await;
@@ -253,5 +262,64 @@ async fn settings_routes_stay_unmounted_without_the_rebuild_flag() {
     let server = Server::start(directory.path(), None).await;
     let step = json!({"method": "GET", "path": "/settings/date-format"});
     assert_eq!(server.send(&step, Some(SESSION)).await.0, 404);
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_routes_take_an_api_key_without_origin_and_answer_head() {
+    let cases: Value = serde_json::from_str(CASES).unwrap();
+    let directory = seeded(&cases);
+    let server = Server::start(directory.path(), Some("1")).await;
+    let auth::Outcome::KeyCreated { key, .. } = server
+        .owner
+        .rebuild_auth_with_policy(policy(), AuthLifetimes::default())
+        .unwrap()
+        .submit(
+            auth::Request::CreateKey {
+                session: Secret::new("read-fixture-secret".into()),
+            },
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("key expected");
+    };
+    let bearer = format!("Bearer {}", key.expose());
+    let url = format!("{}/api/v1/settings/build-tracking", server.origin);
+    let written = server
+        .client
+        .put(&url)
+        .header("authorization", &bearer)
+        .header("content-type", "application/json")
+        .body(r#"{"assembly_tracking":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(written.status().as_u16(), 200);
+    assert_eq!(
+        written.json::<Value>().await.unwrap(),
+        json!({"assembly_tracking": true})
+    );
+    assert_eq!(
+        server.stored(&cases["keys"])["build_tracking_assembly"],
+        json!("1")
+    );
+    let head = server
+        .client
+        .head(&url)
+        .header("authorization", &bearer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.status().as_u16(), 200);
+    assert_eq!(
+        head.headers()["content-length"],
+        r#"{"assembly_tracking":true}"#.len().to_string().as_str()
+    );
+    assert!(head.bytes().await.unwrap().is_empty());
     server.stop().await;
 }

@@ -93,7 +93,7 @@ class CompareTests(unittest.TestCase):
         return output.getvalue()
 
     def test_prints_only_the_rows_a_ticket_named_file_changes(self):
-        write(self.root, "rust/crates/pp-core/tests/ticket_t_9_flow.rs", "#[test]\nfn flow() {}\n")
+        write(self.root, "rust/crates/pp-core/tests/slice9_flow.rs", "#[test]\nfn flow() {}\n")
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "head")
         lines = self.report("--base", "HEAD~1").splitlines()
@@ -105,7 +105,7 @@ class CompareTests(unittest.TestCase):
             "| Rust files named after tickets (in src/); in retiring crates; per crate "
             "| 0 (0); 0;  | 1 (0); 0; pp-core 1 | values differ |",
             "| Rust files named after tickets in crates that stay | 0 | 1 | +1 |",
-            "| Largest Rust files | src/lib.rs 1 | ticket_t_9_flow.rs 2; src/lib.rs 1 | values differ |",
+            "| Largest Rust files | src/lib.rs 1 | slice9_flow.rs 2; src/lib.rs 1 | values differ |",
         ])
 
     def test_history_windows_end_at_the_head_commit_date(self):
@@ -153,7 +153,7 @@ class ChangeTests(unittest.TestCase):
                          "pp-core +1, pp-drivers +0")
 
     def test_digits_inside_names_are_not_numbers(self):
-        self.assertEqual(REPORT.change("gre_1309_x.rs 2", "gre_1309_x.rs 3"), "gre_1309_x.rs +1")
+        self.assertEqual(REPORT.change("part_1309_x.rs 2", "part_1309_x.rs 3"), "part_1309_x.rs +1")
         self.assertEqual(REPORT.change("GRE-612 receipt 40", "GRE-612 receipt 41"), "GRE-612 receipt +1")
         self.assertEqual(REPORT.change("yes: ci-path-filter.py:30", "yes: ci-path-filter.py:31"), None)
 

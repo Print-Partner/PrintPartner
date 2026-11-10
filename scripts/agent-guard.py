@@ -63,6 +63,21 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
 GH_SHORT_BOOLEAN = set("ih")
 # gh command groups whose subcommand the guard classifies.
 GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext"}
+# gh's built-in commands and help topics (gh help, gh 2.103). Any other subcommand is an alias or an extension,
+# which runs a command the guard never sees, wherever its config lives. co is left out: it is a default alias.
+GH_COMMANDS = frozenset({
+    "accessibility", "actions", "agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "codespace",
+    "completion", "config", "copilot", "discussion", "environment", "exit-codes", "ext", "extension", "extensions",
+    "formatting", "gist", "gpg-key", "help", "issue", "label", "licenses", "mintty", "org", "pr", "preview",
+    "project", "reference", "release", "repo", "ruleset", "run", "search", "secret", "skill", "ssh-key", "status",
+    "telemetry", "variable", "version", "workflow",
+})
+UNKNOWN_GH = ("`gh {}` is not a built-in gh command, so it would run an alias or an extension; lanes may not run "
+              "those. Run the built-in command it stands for.")
+# Variables that move gh's config, and with it its aliases and extensions.
+GH_CONFIG_VARIABLES = ("GH_CONFIG_DIR", "XDG_CONFIG_HOME", "HOME")
+GH_REDIRECT = ("gh config redirected: this line sets or clears GH_CONFIG_DIR, XDG_CONFIG_HOME, or HOME for gh; "
+               "run gh with its normal config.")
 # gh options that may come before or between command words; none takes the next word as its value.
 GH_PATH_FLAGS = {"--help", "-h", "--version"}
 RELEASE_READS = {"download", "list", "verify", "verify-asset", "view"}
@@ -960,6 +975,8 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     args = gh_command(args)
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)
+    if args[:1] and not args[0].startswith("-") and args[0] not in GH_COMMANDS:
+        return UNKNOWN_GH.format(args[0])
     if args[:1] == ["help"]:
         return None
     release_write = (args[:1] == ["release"] and args[1:2] and not args[1].startswith("-")
@@ -1410,6 +1427,24 @@ def merge_help(args):
     return words[:2] == ["pr", "merge"] and bool(words[2:]) and all(arg in ("--help", "-h") for arg in words[2:])
 
 
+def redirects_gh_config(parsed):
+    """Whether a command on the line sets or clears a variable that moves gh's config: an assignment, export,
+    env VAR=..., env -u VAR, or env -i, which clears them all."""
+    for args, *_ in parsed:
+        for i, word in enumerate(args):
+            if word.split("=", 1)[0] in GH_CONFIG_VARIABLES and "=" in word:
+                return True
+            if PurePosixPath(word).name == "env":
+                for option in args[i + 1:]:
+                    if not option.startswith("-"):
+                        break
+                    if option in ("-i", "-", "--ignore-environment") or re.fullmatch(r"-[^-]*i[^-]*", option):
+                        return True
+                    if option.startswith(("-u", "--unset")):
+                        return True
+    return False
+
+
 def assigns_gh(words):
     """Whether one of the assignment words gives a variable a value whose first word is gh."""
     for word in words:
@@ -1444,6 +1479,22 @@ def check_command(command, cwd, outer=None, state=None):
         LINE_DEADLINE = LINE_GIT = None
 
 
+def hidden_reason(parsed, assigned, state):
+    """Return why the line's commands hide a merge, or None: a gh command built from variables, or a PR merge
+    found by hidden_merge."""
+    # G=gh; P=pr; M=merge; $G $P $M builds a command the guard cannot read. A line that sets a variable to gh
+    # and runs a program named by an expansion is refused; an expansion used as data, as in echo $HOME, is not.
+    if assigns_gh(assigned) and any(expanded_program(args) for args, *_ in parsed):
+        return SPLIT_GH
+    # A PR merge is matched on each command's words after shell unquoting, so me''rge and $'m\\x65rge' still
+    # count, while a quoted argument that only mentions the command (a comment body, a commit message, a grep
+    # pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help alone stays
+    # allowed.
+    if any(hidden_merge(args, state) for args, *_ in parsed):
+        return MERGE
+    return None
+
+
 def check_line(command, cwd, outer, state):
     """The body of check_command for one line or nested script, sharing the top-level line's state."""
     # The kernel follows a symlink before applying the ".." after it, so a lexical cd below would
@@ -1474,6 +1525,9 @@ def check_line(command, cwd, outer, state):
         if outer is not None:
             head_moves, config_unknown, env_config = (head_moves or outer[0], config_unknown or outer[1],
                                                       env_config or outer[2])
+        # A line that moves gh's config could point it at aliases or extensions written anywhere.
+        if any(name == "gh" for name, *_ in commands) and redirects_gh_config(parsed):
+            return GH_REDIRECT
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
             check_deadline()
@@ -1516,16 +1570,9 @@ def check_line(command, cwd, outer, state):
             reason = git_reason(rest, here, head_moves, config_unknown, env_config) if name == "git" else gh_reason(rest, here, len(parsed) == 1, marker, "$'" in command) if name == "gh" else None
             if reason:
                 return reason
-        # G=gh; P=pr; M=merge; $G $P $M builds a command the guard cannot read. A line that sets a variable to gh
-        # and runs a program named by an expansion is refused; an expansion used as data, as in echo $HOME, is not.
-        if assigns_gh(assigned) and any(expanded_program(args) for args, *_ in parsed):
-            return SPLIT_GH
-        # A PR merge is matched on each command's words after shell unquoting, so me''rge and $'m\\x65rge' still
-        # count, while a quoted argument that only mentions the command (a comment body, a commit message, a
-        # grep pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help
-        # alone stays allowed.
-        if any(hidden_merge(args, state) for args, *_ in parsed):
-            return MERGE
+        reason = hidden_reason(parsed, assigned, state)
+        if reason:
+            return reason
     except TooComplex:
         return TOO_COMPLEX
     except Unclear as error:

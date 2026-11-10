@@ -1241,6 +1241,10 @@ class HiddenMergeTests(unittest.TestCase):
                # A shell's -c under an argv runner, and a command string under a runner that runs one.
                "xargs sh -c 'gh pr merge 1'", "find . -exec sh -c 'gh pr merge 1' \\;", "watch 'gh pr merge 1'",
                "flock /tmp/x -c 'gh pr merge 1'", "entr -s 'gh pr merge 1'",
+               # A gh alias or extension, and a line that moves gh's config to one (r4519428620).
+               "GH_CONFIG_DIR=/tmp/c gh m", "XDG_CONFIG_HOME=/tmp gh m", "gh m", "gh co 12", "sh -c 'gh m'",
+               "export GH_CONFIG_DIR=/tmp/c; gh pr view 12", "env XDG_CONFIG_HOME=/tmp gh pr view 12",
+               "env -u GH_CONFIG_DIR gh pr view 12", "env -i gh pr view 12", "HOME=/tmp gh pr view 12",
                # Nested shells (Sol at 7a96c572); past the nesting limit the guard fails closed.
                "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
@@ -1276,7 +1280,10 @@ class HiddenMergeTests(unittest.TestCase):
                "command gh pr merge --help", "echo gh pr merge 12", "grep -e gh -e pr -e merge docs/x.md",
                # An argv runner's program arguments are data (r4518829993).
                "find docs -name '*.md' -exec grep -l 'gh pr merge' {} +", "printf 'a.md\\n' | xargs grep -n 'gh pr merge'",
-               "xargs echo 'gh pr merge 1'", "entr -s 'make test'", "xargs " + nested_shells("echo hi", 8),
+               "xargs echo 'gh pr merge 1'", "entr -s 'make test'",
+               # Built-in gh commands, and a config variable on a line without gh.
+               "gh run list --limit 5", "gh api repos/o/r/pulls/12", "gh version", "gh help pr", "gh ext list",
+               "gh repo view", "gh auth status", "GH_CONFIG_DIR=/tmp/c echo hi", "export FOO=1; gh pr view 12", "xargs " + nested_shells("echo hi", 8),
                # entr runs its arguments as a shell command line only with -s.
                "entr echo 'gh pr merge 1'",
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",
@@ -1430,6 +1437,17 @@ class HiddenMergeTests(unittest.TestCase):
             self.assertIsNone(guard.check_command("sh -c 'echo a'; bash -c 'sh -c \"echo b\"'", self.lane))
         self.assertEqual(len(made), 1)
         self.assertIsNone(guard.LINE_DEADLINE)
+
+    def test_gh_aliases_and_config_redirects_name_the_reason(self):
+        guard = in_process(ROOT / "scripts/agent-guard.py")
+        for command in ("GH_CONFIG_DIR=/tmp/c gh m", "XDG_CONFIG_HOME=/tmp gh m", "env -i gh pr view 12"):
+            with self.subTest(command=command):
+                self.assertIn("gh config redirected", guard.check_command(command, self.lane))
+        for command, name in (("gh m", "m"), ("gh co 12", "co"), ("gh -R o/r my-ext run", "my-ext")):
+            with self.subTest(command=command):
+                reason = guard.check_command(command, self.lane)
+                self.assertIn(f"`gh {name}` is not a built-in gh command", reason)
+                self.assertIn("alias or an extension", reason)
 
     def test_split_variables_name_the_reason(self):
         for command, results in self.run_all(("G=gh; P=pr; M=merge; $G $P $M 12", "G=gh; $G pr view 12"),

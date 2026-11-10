@@ -691,7 +691,11 @@ impl Farm {
                     let enabled = item["config"]["enabled"] != Value::Bool(false);
                     let watched = matches!(
                         kind,
-                        Some(IntegrationKind::Moonraker | IntegrationKind::Prusalink)
+                        Some(
+                            IntegrationKind::Moonraker
+                                | IntegrationKind::Prusalink
+                                | IntegrationKind::Bambu
+                        )
                     );
                     let monitorable = !watched
                         || polled

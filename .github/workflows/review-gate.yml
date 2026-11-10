@@ -19,7 +19,7 @@ name: Review gate
 # comes from any other workflow file or event, or when GitHub's file list for
 # the PR is incomplete (the files API stops at 3000). When a PR author other
 # than the owner changes a workflow, .github/zizmor.yml, scripts/agent-guard.py
-# or .claude/ (the hook configs that load the guard),
+# or .claude/ and .factory/ (agent hook and project configs that run commands),
 # as Dependabot's action bumps do, it needs both path 2 (the owner's marker for
 # that head) and path 1.
 # Every push or edit waits up to 30 minutes for the head's Claude jobs, then fails unless one
@@ -71,9 +71,9 @@ jobs:
           REPO, PR, HEAD = os.environ["REPO"], os.environ["PR_NUMBER"], os.environ["HEAD_SHA"]
           AUTHOR, OWNER, DEFAULT = os.environ["AUTHOR"], os.environ["OWNER"], os.environ["DEFAULT_BRANCH"]
           ACTIONS_APP = 15368
-          # Workflows, zizmor config, the safety guard, and the hook configs that load it.
+          # Workflows, zizmor config, the safety guard, and the agent configs that load it or run commands.
           PROTECTED = re.compile(r"^(?:\.github/workflows/|\.github/zizmor\.yml$|scripts/agent-guard\.py$"
-                                 r"|\.claude/)")
+                                 r"|\.claude/|\.factory/)")
           # Each job check the gate reads, and the only workflow file and event that may produce it.
           ORIGINS = {
               "review-gate": (".github/workflows/review-gate.yml", "pull_request_target"),

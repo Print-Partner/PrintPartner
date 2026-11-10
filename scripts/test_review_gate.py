@@ -298,7 +298,8 @@ class ReviewGateStepTests(unittest.TestCase):
 
     def test_non_owner_protected_changes_need_the_marker_and_an_automated_review(self):
         for name in (".github/workflows/review-gate.yml", ".github/workflows/new.yml", ".github/zizmor.yml",
-                     "scripts/agent-guard.py", ".claude/hooks/guard.py", ".claude/settings.json"):
+                     "scripts/agent-guard.py", ".claude/hooks/guard.py", ".claude/settings.json",
+                     ".factory/hooks.json"):
             with self.subTest(name=name):
                 files = [name, "docs/a.md"]
                 self.assertFails("::error::lane-bot is not the repository owner and changes", files=files,

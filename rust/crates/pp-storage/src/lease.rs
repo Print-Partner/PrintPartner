@@ -515,6 +515,8 @@ impl StorageLease {
             locked.abandon();
             return Err(error);
         }
+        #[cfg(all(test, unix))]
+        tests::record_runtime_dir(&runtime_dir);
         let LockedDirectory {
             admitted,
             lock,
@@ -1076,6 +1078,12 @@ mod tests {
 
     thread_local! {
         static FAIL_OWNED_PREFLIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static RUNTIME_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Remembers, per thread, the runtime directory the last acquired lease created.
+    pub(super) fn record_runtime_dir(path: &Path) {
+        RUNTIME_DIR.set(Some(path.to_path_buf()));
     }
 
     /// Fails `StorageLease::preflight` once when armed, after the lease is held.
@@ -1107,17 +1115,7 @@ mod tests {
     /// recursively and byte for byte, is as it was before, and that no lock is held.
     fn assert_refused_open_leaves_listing(path: &Path, owned: bool, expected: &str) {
         let before = listing(path);
-        let runtime_dirs = || {
-            let prefix = format!("pp-{}-", std::process::id());
-            std::fs::read_dir(std::env::temp_dir())
-                .unwrap()
-                .filter(|entry| {
-                    let name = entry.as_ref().unwrap().file_name();
-                    name.to_string_lossy().starts_with(&prefix)
-                })
-                .count()
-        };
-        let runtime_before = runtime_dirs();
+        RUNTIME_DIR.take();
         // A reservation this call created must go while the advisory lock is still held.
         let created = !path.join(".desktop-lease").exists();
         if created {
@@ -1132,8 +1130,15 @@ mod tests {
             assert!(CHECK_LOCK_DURING_RESERVATION_RELEASE.take().is_none());
         }
         assert_eq!(listing(path), before);
-        // The second preflight runs after StorageLease created its runtime directory.
-        assert_eq!(runtime_dirs(), runtime_before);
+        // Only the second preflight runs after this lease created its runtime directory, which
+        // abandon removes. The path is this thread's lease, so parallel tests cannot disturb it.
+        match RUNTIME_DIR.take() {
+            Some(runtime_dir) => {
+                assert!(owned, "the first preflight runs before the lease exists");
+                assert!(!runtime_dir.exists(), "{}", runtime_dir.display());
+            }
+            None => assert!(!owned, "the lease recorded no runtime directory"),
+        }
         for name in ["printpartner.lock", ".desktop-lease"] {
             if let Ok(file) = File::open(path.join(name)) {
                 pp_os::try_lock(&file).unwrap();

@@ -147,3 +147,48 @@ fn healthcheck_help_exits_zero() {
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).starts_with("Usage: pp-server healthcheck"));
 }
+
+/// A database newer than this build stops the headless start once, with exit
+/// code 78 and the incompatible-storage lines, and stays byte for byte as it was.
+#[test]
+fn rust_only_server_exits_78_on_incompatible_storage() {
+    let installation = pp_testkit::Installation::create(pp_testkit::Fixture::NodeSchema34).unwrap();
+    pp_testkit::node_schema::restamp_schema_version(&installation.database_path(), 999).unwrap();
+    let database = std::fs::read(installation.database_path()).unwrap();
+    let root = scratch::Scratch::new("pp-rust-only-incompatible-");
+    let bundle = release::launch(installation.path().to_path_buf()).bundle;
+    let output = child_process::command(server_binary())
+        .env("PP_DESKTOP_REBUILD", "1")
+        .args(["--data".as_ref(), installation.path().as_os_str()])
+        .args(["--web".as_ref(), bundle.web_root.as_os_str()])
+        .args(["--commit", &bundle.commit])
+        .args([
+            "--status-file".as_ref(),
+            root.join("status.json").as_os_str(),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!("{stderr}");
+    assert_eq!(output.status.code(), Some(78), "{stderr}");
+    let mut lines = stderr
+        .lines()
+        .skip_while(|line| !line.starts_with("incompatible_storage: "));
+    assert!(
+        lines.next().is_some_and(|line| line
+            .starts_with("incompatible_storage: found=999 supported=31..=")
+            && line.ends_with(" direction=newer")),
+        "{stderr}"
+    );
+    assert!(
+        lines.next().is_some_and(|line| line.starts_with(
+            "Incompatible storage: database schema version 999 is newer than supported version"
+        )),
+        "{stderr}"
+    );
+    assert!(output.stdout.is_empty(), "no origin was announced");
+    assert_eq!(
+        std::fs::read(installation.database_path()).unwrap(),
+        database
+    );
+}

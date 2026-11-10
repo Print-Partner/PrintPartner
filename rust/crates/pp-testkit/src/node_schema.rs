@@ -131,6 +131,13 @@ pub fn stamp_schema_version(connection: &Connection, version: u64) -> rusqlite::
     Ok(())
 }
 
+/// Opens the database at `path` and sets its `schema_version` row, for tests
+/// of versions no fixture writes.
+pub fn restamp_schema_version(path: &Path, version: u64) -> std::io::Result<()> {
+    let connection = Connection::open(path).map_err(std::io::Error::other)?;
+    stamp_schema_version(&connection, version).map_err(std::io::Error::other)
+}
+
 /// The parsed schema 34 migration list, after checking the pinned digest.
 pub fn schema_34_statements() -> Result<Vec<Statement>, String> {
     let digest = hex::encode(Sha256::digest(SCHEMA_34_SOURCE));

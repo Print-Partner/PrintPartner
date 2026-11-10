@@ -91,6 +91,9 @@ pub fn startup_diagnostic(error: &anyhow::Error) -> String {
         if let Some(code) = code {
             codes.push(code.to_owned());
         }
+        if let Some(refusal) = cause.downcast_ref::<pp_core::IncompatibleSchema>() {
+            codes.push(refusal.diagnostic());
+        }
         if let Some(errno) = cause
             .downcast_ref::<std::io::Error>()
             .and_then(std::io::Error::raw_os_error)
@@ -673,6 +676,20 @@ mod tests {
         ] {
             assert!(startup_diagnostic(&anyhow::anyhow!(cause)).ends_with(code));
         }
+    }
+
+    #[test]
+    fn startup_diagnostic_names_incompatible_storage_versions() {
+        let refusal = pp_core::IncompatibleSchema {
+            found: 48,
+            oldest: 31,
+            newest: 47,
+        };
+        let error = anyhow::Error::from(refusal).context("Desktop core startup failed");
+        assert_eq!(
+            startup_diagnostic(&error),
+            "desktop_startup_failed: core_startup -> incompatible_storage: found=48 supported=31..=47 direction=newer"
+        );
     }
 
     #[test]

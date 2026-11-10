@@ -218,14 +218,7 @@ pub(crate) fn preflight(
                 .map_err(|_| anyhow::anyhow!("Database schema version exceeds supported range"))?
         }
     };
-    ensure!(
-        version <= CURRENT_VERSION,
-        "Database schema version {version} is newer than supported version {CURRENT_VERSION}"
-    );
-    ensure!(
-        version == 0 || version >= 31,
-        "Cannot upgrade database schema version {version}; install Print Partner v3.3.0 first"
-    );
+    crate::versions::classify(version, CURRENT_VERSION)?;
     crate::jobs::validate_schema(&conn, version)?;
     #[cfg(feature = "desktop_rebuild")]
     crate::plan_publication::validate_schema(&conn, version)?;

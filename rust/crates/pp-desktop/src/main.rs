@@ -41,13 +41,20 @@ fn main() -> std::process::ExitCode {
             {
                 return std::process::ExitCode::FAILURE;
             }
-            show_startup_error();
+            show_startup_error(&error);
             std::process::ExitCode::FAILURE
         }
     }
 }
 
-fn show_startup_error() {
+fn show_startup_error(error: &anyhow::Error) {
+    if let Some(refusal) = error.downcast_ref::<pp_core::IncompatibleSchema>() {
+        pp_desktop::platform::startup_error(
+            "Print Partner cannot open this data folder",
+            &refusal.to_string(),
+        );
+        return;
+    }
     pp_desktop::platform::startup_error(
         "Print Partner could not start",
         "The desktop runtime or its verified resources could not start. Check that this installation is complete and that another Print Partner instance is not using its data directory.",

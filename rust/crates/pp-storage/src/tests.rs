@@ -1721,6 +1721,16 @@ fn ticket_t_7_migrations() {
                 "{name} had no copied database"
             );
         }
+        let expected_path = match name.as_str() {
+            "fresh" => crate::versions::SchemaPath::Fresh,
+            _ if (31..=34).contains(&initial) => crate::versions::SchemaPath::NodeUpgrade(initial),
+            _ => crate::versions::classify(initial, schema::CURRENT_VERSION).unwrap(),
+        };
+        assert_eq!(
+            crate::versions::classify(initial, schema::CURRENT_VERSION),
+            Ok(expected_path),
+            "{name}"
+        );
         let (owner, ready) = open_parity(&work, &clock);
         assert_eq!(ready.version, schema::CURRENT_VERSION, "{name}");
         assert_eq!(ready.previous_version, initial, "{name}");
@@ -1847,7 +1857,7 @@ fn assert_refused(path: &Path, message: &str) {
 fn ticket_t_7_migrations_preserves_refused_inputs() {
     assert_refused(
         &refused_wal_input("30"),
-        "Cannot upgrade database schema version 30",
+        "Incompatible storage: cannot upgrade database schema version 30 (this release opens schema 31 to",
     );
     let newer = if cfg!(feature = "desktop_rebuild") {
         "48"

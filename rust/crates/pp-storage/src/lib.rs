@@ -60,6 +60,7 @@ pub mod sqlite_uri;
 pub mod tls_pins;
 #[cfg(feature = "desktop_rebuild")]
 pub mod uploads;
+pub mod versions;
 #[cfg(feature = "desktop_rebuild")]
 pub mod working_drafts;
 mod writer_admission;

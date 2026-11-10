@@ -24,13 +24,14 @@
 use crate::{
     accepted::{AcceptedHttpConfig, Gate, failure, ok_json},
     loopback::PresentedCredential,
+    multipart_form::{self, Limits},
     printer_host::{HostAnswer, PrinterHostPort, Windows, safe_storage_path, throttled},
 };
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, FromRequest, Multipart, State, multipart::Field},
-    http::{StatusCode, header::CONTENT_TYPE},
+    extract::{DefaultBodyLimit, State},
+    http::StatusCode,
     response::Response,
     routing::post,
 };
@@ -58,22 +59,6 @@ const UPLOAD_TOO_LARGE: &str =
     "That print file is larger than the 64 MB PrintPartner will take as an upload";
 const UPLOAD_UNREADABLE: &str = "That upload could not be read";
 const UPLOADS_FULL: &str = "PrintPartner is holding as many uploaded print files as it will; record one of them, then try again";
-/// Field names `@fastify/multipart` refuses because they are
-/// `Object.prototype` members.
-const PROTOTYPE: [&str; 12] = [
-    "__proto__",
-    "__defineGetter__",
-    "__defineSetter__",
-    "__lookupGetter__",
-    "__lookupSetter__",
-    "constructor",
-    "hasOwnProperty",
-    "isPrototypeOf",
-    "propertyIsEnumerable",
-    "toLocaleString",
-    "toString",
-    "valueOf",
-];
 
 #[derive(Clone)]
 struct App {
@@ -479,125 +464,16 @@ async fn assign(
     }
 }
 
-/// The upload form's fields and file part.
-#[derive(Default)]
-struct Form {
-    profile_id: String,
-    object_names: String,
-    name: String,
-    file: Option<Vec<u8>>,
-}
-
-/// One part's bytes, or `Err(true)` past `cap` or the body limit and
-/// `Err(false)` when the body cannot be read. A
-/// `truncate` part keeps its first `cap` bytes instead, as busboy cuts a
-/// field at `fieldSize`.
-async fn part_bytes(part: &mut Field<'_>, cap: usize, truncate: bool) -> Result<Vec<u8>, bool> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = part
-        .chunk()
-        .await
-        .map_err(|error| error.status() == StatusCode::PAYLOAD_TOO_LARGE)?
-    {
-        if bytes.len() + chunk.len() > cap && !truncate {
-            return Err(true);
-        }
-        let room = cap - bytes.len();
-        bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
-    }
-    Ok(bytes)
-}
-
-/// The multipart form under Node's limits. A part is a file when it has a
-/// file name or an `application/octet-stream` type, as busboy decides, and a
-/// part named after an `Object.prototype` member is refused as
-/// `@fastify/multipart` refuses it, when the form ends. One file part of up to 64 MB (a
-/// file part not named `file` is read and ignored), and four fields cut at
-/// 64 KiB, of which `profile_id` and `object_names` are kept.
-async fn read_form(request: axum::extract::Request) -> Result<Form, Box<Response>> {
-    let multipart = request
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .trim_start()
-                .to_ascii_lowercase()
-                .starts_with("multipart/form-data")
-        });
-    if !multipart {
-        return Err(Box::new(failure(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "Send the print file as multipart/form-data",
-        )));
-    }
-    let bad = |detail: &str| Box::new(failure(StatusCode::BAD_REQUEST, detail));
-    let refused = |too_large: bool| {
-        if too_large {
-            Box::new(failure(StatusCode::PAYLOAD_TOO_LARGE, UPLOAD_TOO_LARGE))
-        } else {
-            bad(UPLOAD_UNREADABLE)
-        }
-    };
-    let mut parts = Multipart::from_request(request, &())
-        .await
-        .map_err(|_| bad(UPLOAD_UNREADABLE))?;
-    let mut form = Form::default();
-    let (mut files, mut fields) = (0, 0);
-    let mut prototype = false;
-    loop {
-        let mut part = match parts.next_field().await {
-            Ok(Some(part)) => part,
-            Ok(None) if prototype => return Err(bad(UPLOAD_UNREADABLE)),
-            Ok(None) => return Ok(form),
-            Err(_) => return Err(bad(UPLOAD_UNREADABLE)),
-        };
-        let name = part.name().map(str::to_owned);
-        // @fastify/multipart records this refusal and raises it when the
-        // stream ends, so a limit hit later still answers first.
-        let proto = name
-            .as_deref()
-            .is_some_and(|name| PROTOTYPE.contains(&name));
-        prototype |= proto;
-        let octets = part.content_type().is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .eq_ignore_ascii_case("application/octet-stream")
-        });
-        let file_name = part.file_name().map(str::to_owned);
-        if file_name.is_none() && !octets {
-            fields += 1;
-            let value = part_bytes(&mut part, UPLOAD_FIELD_BYTES, true)
-                .await
-                .map_err(|_| bad(UPLOAD_UNREADABLE))?;
-            if fields > UPLOAD_FIELDS {
-                return Err(bad(UPLOAD_UNREADABLE));
-            }
-            let value = String::from_utf8_lossy(&value).into_owned();
-            match name.as_deref() {
-                Some("profile_id") => form.profile_id = value,
-                Some("object_names") => form.object_names = value,
-                _ => {}
-            }
-            continue;
-        }
-        files += 1;
-        if files > 1 {
-            return Err(bad("Upload one print file at a time"));
-        }
-        // Node drains a refused part without its size limit.
-        let bytes = part_bytes(&mut part, MAX_UPLOAD_BYTES, proto)
-            .await
-            .map_err(|too_large| refused(too_large && !proto))?;
-        if name.as_deref() == Some("file") {
-            form.name = file_name.unwrap_or_default();
-            form.file = Some(bytes);
-        }
-    }
-}
+/// One file part named `file` of up to 64 MB, and four fields cut at 64 KiB.
+const UPLOAD_FORM: Limits = Limits {
+    fields: UPLOAD_FIELDS,
+    field_bytes: UPLOAD_FIELD_BYTES,
+    file_bytes: MAX_UPLOAD_BYTES,
+    file_names: &["file"],
+    second_file: "Upload one print file at a time",
+    too_large: UPLOAD_TOO_LARGE,
+    unreadable: UPLOAD_UNREADABLE,
+};
 
 /// Node's upload route: the credential, then the form fields in its order, then the Build's
 /// Accepted Plan, then the bytes, which are classified off the async workers
@@ -619,16 +495,22 @@ async fn upload(
     if let Some(after) = app.windows.consume("upload", UPLOAD_LIMIT) {
         return throttled(after);
     }
-    let form = match read_form(request).await {
+    let form = match multipart_form::read(request, &UPLOAD_FORM).await {
         Ok(form) => form,
         Err(response) => return *response,
     };
-    let (profile_id, filename) =
-        match upload_form(&form.profile_id, form.file.is_some(), &form.name) {
-            Ok(fields) => fields,
-            Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
-        };
-    let body = json!({ "profile_id": profile_id, "filename": filename, "object_names": form.object_names });
+    let name = form
+        .file
+        .as_ref()
+        .and_then(|(name, _)| name.clone())
+        .unwrap_or_default();
+    let field = |name| form.field(name).unwrap_or_default().to_owned();
+    let (profile_id, filename) = match upload_form(&field("profile_id"), form.file.is_some(), &name)
+    {
+        Ok(fields) => fields,
+        Err(detail) => return failure(StatusCode::BAD_REQUEST, detail),
+    };
+    let body = json!({ "profile_id": profile_id, "filename": filename, "object_names": field("object_names") });
     let route = FileRoute::Upload;
     let response = match storage(&app, presented, Request::FileRequest { body, route }, None).await
     {
@@ -648,7 +530,7 @@ async fn upload(
         }
     };
     let uploads = app.uploads.clone();
-    let bytes = form.file.unwrap_or_default();
+    let bytes = form.file.map(|(_, bytes)| bytes).unwrap_or_default();
     let held = tokio::task::spawn_blocking(move || uploads.hold(profile_id, &bytes)).await;
     let (token, inspected) = match held {
         Ok(Ok(held)) => held,

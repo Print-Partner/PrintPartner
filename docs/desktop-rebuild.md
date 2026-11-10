@@ -147,8 +147,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   execution and bed-clear facts, last-heard time and distinct not-set-up,
   manual and unreachable reasons. They write nothing. See
   [Farm reads](farm-reads.md).
-- Send queue actions (GRE-365): Send now, Send ready, Reconcile and Remove
-  under `/api/v2/printer-send-queue`, and the printer-upload worker, which is
+- Send queue actions (GRE-365): Add to queue, Send now, Send ready, Reconcile
+  and Remove under `/api/v2/printer-send-queue`, and the printer-upload worker, which is
   the only Rust code that uploads to a printer. Every upload follows a user's
   dispatch; nothing is retried. See [Send queue](send-queue.md).
 - Match suggestions (GRE-1091):

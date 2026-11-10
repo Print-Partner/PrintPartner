@@ -16,7 +16,7 @@
 use super::{CheckoffResult, Farm, OpenPrint, QueuedSend, instant, iso_time, normalized_filename};
 use anyhow::Result;
 use pp_domain::gcode_objects::{
-    group_objects_by_part, interpret_sliced_object_name, match_objects_to_filenames,
+    FilenameIndex, group_objects_by_part, interpret_sliced_object_name, match_objects_to_index,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
@@ -157,7 +157,8 @@ struct Plate {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MatchLibrary {
     builds: BTreeMap<i64, String>,
-    part_files: BTreeMap<i64, Vec<String>>,
+    /// Each open Build's included Part file names, interpreted once per read.
+    part_files: BTreeMap<i64, FilenameIndex>,
     /// Token to owning open Build, only for tokens the open prints carry.
     units: BTreeMap<String, i64>,
     plates: BTreeMap<i64, Vec<Plate>>,
@@ -177,6 +178,7 @@ impl MatchLibrary {
         )?
         .into_iter()
         .collect();
+        let mut part_files: BTreeMap<i64, Vec<String>> = BTreeMap::new();
         for (build, filename) in id_text(
             tx,
             &format!(
@@ -184,8 +186,12 @@ impl MatchLibrary {
             ),
             tenant,
         )? {
-            library.part_files.entry(build).or_default().push(filename);
+            part_files.entry(build).or_default().push(filename);
         }
+        library.part_files = part_files
+            .into_iter()
+            .map(|(build, files)| (build, FilenameIndex::new(&files)))
+            .collect();
         for (build, filename) in id_text(
             tx,
             &format!(
@@ -413,7 +419,7 @@ fn leads<'a>(open: &'a OpenPrint, sent: &[Sent<'_>], library: &MatchLibrary) -> 
             .part_files
             .iter()
             .filter(|(_, files)| {
-                match_objects_to_filenames(&groups, files)
+                match_objects_to_index(&groups, files)
                     .iter()
                     .all(|(_, matched)| !matched.is_empty())
             })

@@ -85,6 +85,7 @@ pub(crate) fn preflight(
 ) -> Result<u64> {
     #[cfg(test)]
     PREFLIGHT_CALLS.update(|calls| calls + 1);
+    crate::versions::record_preflight_version(None);
     validate_directory()?;
     #[cfg(test)]
     if owned {
@@ -217,25 +218,20 @@ pub(crate) fn preflight(
             value.parse::<u64>().unwrap_or(u64::MAX)
         }
     };
+    crate::versions::record_preflight_version(Some(version));
     crate::versions::classify(version, CURRENT_VERSION)?;
-    validate_stored(&conn, version)
-        .map_err(|error| crate::versions::AfterVersionRead::wrap(version, error))?;
+    crate::jobs::validate_schema(&conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::plan_publication::validate_schema(&conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::uploads::validate_schema(&conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::source_scan::validate_schema(&conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    crate::source_sync::validate_schema(&conn, version)?;
+    #[cfg(feature = "desktop_rebuild")]
+    validate_side_schemas(&conn, version)?;
     Ok(version)
-}
-
-fn validate_stored(conn: &Connection, version: u64) -> Result<()> {
-    crate::jobs::validate_schema(conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::plan_publication::validate_schema(conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::uploads::validate_schema(conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::source_scan::validate_schema(conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    crate::source_sync::validate_schema(conn, version)?;
-    #[cfg(feature = "desktop_rebuild")]
-    validate_side_schemas(conn, version)?;
-    Ok(())
 }
 
 pub(crate) fn configure(conn: &Connection, read_only: bool) -> Result<()> {

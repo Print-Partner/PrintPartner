@@ -94,31 +94,15 @@ pub fn classify(version: u64, newest: u64) -> Result<SchemaPath, IncompatibleSch
     }
 }
 
-/// A preflight failure after the stored version was read. It displays as the
-/// failure it wraps and keeps that failure's causes, so messages stay the
-/// same; [`node_refusal`] reads the version from it.
-#[derive(Debug)]
-pub(crate) struct AfterVersionRead {
-    version: u64,
-    error: anyhow::Error,
+thread_local! {
+    /// The stored version the last `schema::preflight` on this thread read,
+    /// or `None` when it stopped before reading one. Preflight runs on the
+    /// caller's thread, so [`node_refusal`] reads it right after its call.
+    static PREFLIGHT_VERSION: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
-impl AfterVersionRead {
-    pub(crate) fn wrap(version: u64, error: anyhow::Error) -> anyhow::Error {
-        Self { version, error }.into()
-    }
-}
-
-impl std::fmt::Display for AfterVersionRead {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.error, f)
-    }
-}
-
-impl std::error::Error for AfterVersionRead {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.error.chain().nth(1)
-    }
+pub(crate) fn record_preflight_version(version: Option<u64>) {
+    PREFLIGHT_VERSION.set(version);
 }
 
 /// The Node-backed runtime's schema check, run on its lease before the Node
@@ -130,17 +114,13 @@ impl std::error::Error for AfterVersionRead {
 pub fn node_refusal(
     lease: &crate::lease::StorageLease,
 ) -> anyhow::Result<Option<IncompatibleSchema>> {
+    record_preflight_version(None);
     let version = match lease.preflight() {
         Ok(version) => version,
-        Err(error) => {
-            if let Some(refusal) = error.downcast_ref::<IncompatibleSchema>() {
-                refusal.found
-            } else if let Some(read) = error.downcast_ref::<AfterVersionRead>() {
-                read.version
-            } else {
-                return Err(error);
-            }
-        }
+        Err(error) => match PREFLIGHT_VERSION.get() {
+            Some(version) => version,
+            None => return Err(error),
+        },
     };
     Ok(classify(version, NODE_SCHEMA).err())
 }
@@ -158,26 +138,15 @@ mod tests {
                 Ok(SchemaPath::NodeUpgrade(version))
             );
         }
-        for version in 35..RUST_SCHEMA {
-            assert_eq!(
-                classify(version, RUST_SCHEMA),
-                Ok(SchemaPath::RustUpgrade(version))
-            );
+        for version in NODE_SCHEMA + 1..=RUST_SCHEMA {
+            let path = if version == RUST_SCHEMA {
+                SchemaPath::Current
+            } else {
+                SchemaPath::RustUpgrade(version)
+            };
+            assert_eq!(classify(version, RUST_SCHEMA), Ok(path));
         }
-        assert_eq!(classify(RUST_SCHEMA, RUST_SCHEMA), Ok(SchemaPath::Current));
         assert_eq!(classify(34, NODE_SCHEMA), Ok(SchemaPath::Current));
-    }
-
-    #[test]
-    fn a_failure_after_the_version_read_keeps_its_message_and_causes() {
-        let inner = anyhow::anyhow!("root cause").context("validation failed");
-        let wrapped = AfterVersionRead::wrap(40, inner);
-        assert_eq!(wrapped.to_string(), "validation failed");
-        assert_eq!(format!("{wrapped:#}"), "validation failed: root cause");
-        assert_eq!(
-            wrapped.downcast_ref::<AfterVersionRead>().unwrap().version,
-            40
-        );
     }
 
     #[test]

@@ -561,6 +561,49 @@ fn ticket_t_61_read_model_plate_and_history_corruption_is_explicit() {
 }
 
 #[test]
+fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
+    // GRE-1355: Today, the Build overview, the Builds list and MCP all read this
+    // reason. Autosave writes a draft; only Accept changes the Build.
+    use pp_storage::read_model::workflow::{
+        self, Accepted, ActionKind, Build, Checkoff, Facts, PlateState, Production, Sources,
+        Working,
+    };
+    let facts = Facts {
+        build: Build {
+            id: 1,
+            name: "Build".into(),
+        },
+        sources: Sources::Ready { attached_count: 1 },
+        accepted_plan: Accepted::None,
+        working_plan: Working::None,
+        production: Production {
+            plate_state: PlateState::NotStarted,
+            queued_jobs: 0,
+            sending_jobs: 0,
+            printing_jobs: 0,
+            failed_jobs: 0,
+        },
+        checkoff: Checkoff {
+            awaiting_verification: 0,
+            failed_verifications: 0,
+            printer_links: 0,
+            beds_to_clear: 0,
+            match_suggestions: 0,
+        },
+        stock: Default::default(),
+    };
+    let action = workflow::resolve(&facts).unwrap().next_action;
+    assert_eq!(action.kind, ActionKind::CreateWorkingPlan);
+    assert_eq!(action.label, "Open Plan");
+    assert_eq!(
+        action.reason,
+        "Sources are ready. Open Plan to choose files, quantities, and colors. \
+         Changes save to a draft. The Build changes only when you accept it."
+    );
+    assert!(!action.reason.contains("save automatically"));
+}
+
+#[test]
 fn ticket_t_61_read_model_workflow_rejects_unsafe_numbers() {
     use pp_storage::read_model::workflow::{
         self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Working,

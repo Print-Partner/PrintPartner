@@ -6,12 +6,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-    time::{Duration, Instant},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use zip::{ZipWriter, write::SimpleFileOptions};
 #[path = "../../pp-storage/tests/common/scratch.rs"]
@@ -304,34 +299,32 @@ fn cancelled_live_conversion_cleans_derived_files_and_retries() {
     let f = Fixture::new();
     f.model(20000);
     let mut source = f.tenant().source(42).unwrap();
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let signal = cancelled.clone();
+    let cancelled = AtomicBool::new(false);
     let output = f.candidate().join("_3mf/model/part.stl");
-    let watcher = thread::spawn(move || {
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(20) {
-            if fs::metadata(&output).is_ok_and(|m| m.len() > 100) {
-                signal.store(true, Ordering::Relaxed);
-                return true;
-            }
-            thread::sleep(Duration::from_millis(1));
-        }
-        false
-    });
-    let result = source.prepare_media(
+    // Cancel once the first facet is on disk; the write that follows sees it.
+    let mut cancelled_at = None;
+    let result = source.prepare_media_on_write(
         &f.local(),
         &[path("model.3mf")],
         &[],
         MediaLimits::default(),
         &cancelled,
+        |written: u64| {
+            if written > 100 && cancelled_at.is_none() {
+                assert_eq!(fs::metadata(&output).unwrap().len(), written);
+                cancelled.store(true, Ordering::Relaxed);
+                cancelled_at = Some(written);
+            }
+        },
     );
-    assert!(watcher.join().unwrap());
     assert!(matches!(
         result,
         Err(MediaError::Archive(
             pp_source::archive::ArchiveError::Cancelled
         ))
     ));
+    // One header and one facet: well short of 20,000 facets.
+    assert!(cancelled_at.is_some_and(|written| written < 1_000));
     assert!(!f.candidate().exists());
     cancelled.store(false, Ordering::Relaxed);
     source

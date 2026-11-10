@@ -3,13 +3,13 @@
 //! validates the other's archives.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use flate2::{Compression, bufread::GzDecoder, write::GzEncoder};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     fs::File,
-    io::{BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 use tar::{EntryType, Header, HeaderMode};
@@ -20,6 +20,9 @@ pub const DATABASE_FILE: &str = "print-partner.db";
 pub const WAL_FILE: &str = "print-partner.db-wal";
 const CORE_FILES: [&str; 3] = [METADATA_FILE, DATABASE_FILE, WAL_FILE];
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
+/// Zero padding allowed after the tar end-of-archive block, before the gzip
+/// trailer. Tar writers pad to a record (10 KiB by default).
+const MAX_TRAILING_BYTES: u64 = 1024 * 1024;
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -592,9 +595,58 @@ pub fn validate(archive: &Path, limits: Limits) -> Result<Metadata> {
         .len();
     let scratch = std::env::temp_dir().join(random_name("pp-backup-validate-"));
     pp_os::create_private_dir(&scratch)?;
-    let result = validate_into(archive, compressed, limits, &scratch);
+    let result = validate_into(archive, compressed, limits, &scratch, false);
     let _ = std::fs::remove_dir_all(&scratch);
     result
+}
+
+/// Validates like [`validate`] and writes every entry under `destination`,
+/// a new empty directory, for a whole-installation restore to stage. The
+/// entry guard admits only regular files and directories under the core
+/// files and declared roots, so nothing is written outside `destination`
+/// and no link is created.
+#[cfg(feature = "desktop_rebuild")]
+pub(crate) fn extract(archive: &Path, limits: Limits, destination: &Path) -> Result<Metadata> {
+    let compressed = archive
+        .metadata()
+        .with_context(|| format!("Open backup archive {}", archive.display()))?
+        .len();
+    validate_into(archive, compressed, limits, destination, true)
+}
+
+/// Checks what follows the tar end-of-archive block. Tar iteration stops at
+/// that block, so this reads the gzip member to its end, which makes the
+/// decoder check the CRC and length trailer. Only zero padding (at most
+/// [`MAX_TRAILING_BYTES`]) may follow the tar end: Rust's `tar` crate and
+/// Node's `tar` both end with zero blocks. Both exporters (Rust here, Node's
+/// `tar.c({ gzip: true })`) write exactly one gzip member, so any byte in
+/// the file after it, including a second member, refuses the archive: a
+/// second member could carry entries that tar iteration never saw.
+fn check_stream_end(mut decoder: GzDecoder<BufReader<File>>) -> Result<()> {
+    let mut rest = (&mut decoder).take(MAX_TRAILING_BYTES + 1);
+    let (mut trailing, mut block) = (0u64, [0u8; 8192]);
+    loop {
+        let read = rest
+            .read(&mut block)
+            .context("Backup archive gzip stream is corrupt")?;
+        if read == 0 {
+            break;
+        }
+        trailing += read as u64;
+        ensure!(
+            block[..read].iter().all(|byte| *byte == 0),
+            "Backup archive has non-zero data after the tar end"
+        );
+    }
+    ensure!(
+        trailing <= MAX_TRAILING_BYTES,
+        "Backup archive has more than {MAX_TRAILING_BYTES} bytes after the tar end"
+    );
+    ensure!(
+        decoder.into_inner().fill_buf()?.is_empty(),
+        "Backup archive has data after its gzip stream"
+    );
+    Ok(())
 }
 
 fn validate_into(
@@ -602,8 +654,11 @@ fn validate_into(
     compressed: u64,
     limits: Limits,
     scratch: &Path,
+    extract_all: bool,
 ) -> Result<Metadata> {
-    let mut reader = tar::Archive::new(GzDecoder::new(File::open(archive)?));
+    // `bufread::GzDecoder` reads exactly one gzip member from the `BufReader`
+    // and leaves anything after it there, so `check_stream_end` can see it.
+    let mut reader = tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive)?)));
     let mut seen = BTreeSet::new();
     let (mut entries, mut total) = (0u64, 0u64);
     let mut metadata = None;
@@ -647,16 +702,23 @@ fn validate_into(
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes)?;
             metadata = Some(bytes);
-        } else if path == DATABASE_FILE || path == WAL_FILE {
+        } else if entry_type == EntryType::Directory && extract_all {
+            std::fs::create_dir_all(scratch.join(&path))?;
+        } else if path == DATABASE_FILE || path == WAL_FILE || extract_all {
+            let target = scratch.join(&path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             let mut output = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(scratch.join(&path))?;
+                .open(target)?;
             std::io::copy(&mut entry, &mut output)?;
         } else {
             std::io::copy(&mut entry, &mut std::io::sink())?;
         }
     }
+    check_stream_end(reader.into_inner())?;
     let metadata = metadata.ok_or_else(|| anyhow!("Backup archive is missing {METADATA_FILE}"))?;
     ensure!(
         seen.contains(DATABASE_FILE),

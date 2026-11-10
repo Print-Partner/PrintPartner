@@ -14,6 +14,7 @@ import { planKey, planQuery, type RestoredState } from "./BuildPlan";
 import { BuildTabs, type WorkspaceContext } from "./BuildWorkspace";
 import { dateText } from "./format";
 import { identityOf } from "./plan";
+import { HISTORY_EMPTY } from "./planCopy";
 
 type Entry = BuildHistoryPage["entries"][number];
 type UndoReason = NonNullable<NonNullable<Entry["undo"]>["reason"]>;
@@ -352,7 +353,7 @@ export function BuildHistory() {
           <OlderEntries query={query} table={table} />
         </>
       )}
-      empty={{ message: "Nothing has happened to this Build yet." }}
+      empty={{ message: HISTORY_EMPTY }}
     />
   );
 }

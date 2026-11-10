@@ -826,9 +826,9 @@ mod with_feature {
                 set_module(&fixture, Some(&session), "assembly_tracking", on_body).await;
             statuses.push(status);
         }
-        // Two requests above (the refused orders change and the assembly
-        // change) reached the write and used the window.
-        assert_eq!(statuses.iter().filter(|status| **status == 200).count(), 28);
+        // Three requests above reached the write and used the window: the
+        // unknown session, the refused orders change and the assembly change.
+        assert_eq!(statuses.iter().filter(|status| **status == 200).count(), 27);
         assert_eq!(statuses.last(), Some(&429), "30 changes a minute");
         fixture.stop().await;
     }

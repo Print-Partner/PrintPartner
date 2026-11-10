@@ -85,6 +85,7 @@ pub(crate) fn preflight(
 ) -> Result<u64> {
     #[cfg(test)]
     PREFLIGHT_CALLS.update(|calls| calls + 1);
+    crate::versions::record_preflight_version(None);
     validate_directory()?;
     #[cfg(test)]
     if owned {
@@ -186,11 +187,6 @@ pub(crate) fn preflight(
     );
     validate_directory()?;
     let conn = Connection::open(copy.0.join("print-partner.db"))?;
-    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    ensure!(
-        integrity == "ok",
-        "SQLite integrity_check failed: {integrity}"
-    );
     let has_settings: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_settings')",
         [],
@@ -213,18 +209,18 @@ pub(crate) fn preflight(
                 !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()),
                 "Invalid database schema version"
             );
-            value
-                .parse::<u64>()
-                .map_err(|_| anyhow::anyhow!("Database schema version exceeds supported range"))?
+            // All digits, so the only parse failure is a version above u64::MAX.
+            value.parse::<u64>().unwrap_or(u64::MAX)
         }
     };
+    crate::versions::record_preflight_version(Some(version));
+    crate::versions::classify(version, CURRENT_VERSION)?;
+    // After the version check, so an unsupported version is refused as such
+    // whatever the integrity of the rest of the file.
+    let integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     ensure!(
-        version <= CURRENT_VERSION,
-        "Database schema version {version} is newer than supported version {CURRENT_VERSION}"
-    );
-    ensure!(
-        version == 0 || version >= 31,
-        "Cannot upgrade database schema version {version}; install Print Partner v3.3.0 first"
+        integrity == "ok",
+        "SQLite integrity_check failed: {integrity}"
     );
     crate::jobs::validate_schema(&conn, version)?;
     #[cfg(feature = "desktop_rebuild")]

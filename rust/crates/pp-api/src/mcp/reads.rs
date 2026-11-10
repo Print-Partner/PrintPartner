@@ -24,7 +24,7 @@ const PLAN_REQUIRED: &str = "plan_id required";
 
 /// Node's `asInt`: a finite number, or a non-blank string `Number()` reads
 /// as finite, truncated toward zero. Saturates outside the `i64` range.
-fn as_int(raw: Option<&Value>) -> Option<i64> {
+pub(super) fn as_int(raw: Option<&Value>) -> Option<i64> {
     let value = match raw? {
         Value::Number(number) => number.as_f64()?,
         Value::String(text) => {

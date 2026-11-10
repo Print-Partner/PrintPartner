@@ -1,3 +1,4 @@
+//! T-53 (GRE-388): perf record round trip, the compare gate and its mismatches.
 use std::fs;
 use std::path::Path;
 

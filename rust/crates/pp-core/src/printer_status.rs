@@ -16,7 +16,7 @@ use pp_api::{
     printer_stream::{HEARTBEAT, PrinterStream, printer_stream_router},
     send_queue::send_queue_router,
 };
-use pp_gateway::printer_host::HostReads;
+use pp_gateway::printer_host::{BambuPin, HostReads, bambu_watch};
 use pp_gateway::{
     HTTPS_UNAVAILABLE, HostKind, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
     PrinterHostState, PrinterHostStatus, PrinterObservations, REDIRECT_UNAVAILABLE,
@@ -67,8 +67,10 @@ impl MoonrakerHosts for StoredMoonrakerHosts {
     }
 }
 
-/// The Moonraker snapshot, then the PrusaLink hosts storage selected for the
-/// watchers (`printer_hosts::WatchedHosts` applies the cap and id rules).
+/// The Moonraker snapshot, then the PrusaLink and Bambu hosts storage
+/// selected for the watchers (`printer_hosts::WatchedHosts` applies the cap
+/// and id rules). A Bambu host carries its stored pin, which the watchers
+/// need before they connect.
 fn watched_hosts(hosts: printer_hosts::WatchedHosts) -> Vec<MoonrakerHost> {
     let mut watched: Vec<MoonrakerHost> = hosts
         .moonraker
@@ -93,6 +95,20 @@ fn watched_hosts(hosts: printer_hosts::WatchedHosts) -> Vec<MoonrakerHost> {
             },
         });
     }
+    for row in hosts.bambu {
+        let pin = row.pin.as_ref().map(|pin| BambuPin {
+            host: pin.host.clone(),
+            port: pin.port,
+            sha256: pin.sha256,
+        });
+        watched.push(MoonrakerHost {
+            id: row.id.clone(),
+            base_url: row.address().unwrap_or_default().to_owned(),
+            api_key: None,
+            enabled: row.enabled,
+            kind: bambu_watch(&row.config, pin.as_ref()),
+        });
+    }
     watched
 }
 
@@ -112,9 +128,9 @@ impl PrinterStatusPort for WatchedStatus {
     }
 }
 
-/// Farm reads answer from the watchers' observation port. Moonraker and
-/// PrusaLink have Rust watchers; HTTPS and redirecting Moonraker hosts cannot
-/// be monitored here.
+/// Farm reads answer from the watchers' observation port. Moonraker,
+/// PrusaLink and Bambu have Rust watchers; HTTPS and redirecting Moonraker
+/// hosts cannot be monitored here.
 pub(crate) struct WatchedFarm(pub(crate) MoonrakerStatus);
 
 impl FarmObservations for WatchedFarm {
@@ -138,7 +154,7 @@ pub(crate) fn observed(status: &MoonrakerStatus, id: &str) -> Observation {
 fn watched(kind: &IntegrationKind) -> bool {
     matches!(
         kind,
-        IntegrationKind::Moonraker | IntegrationKind::Prusalink
+        IntegrationKind::Moonraker | IntegrationKind::Prusalink | IntegrationKind::Bambu
     )
 }
 
@@ -356,10 +372,69 @@ mod tests {
     }
 
     #[test]
+    fn ticket_t_25_bambu_hosts_carry_the_pin_for_their_address_only() {
+        use pp_gateway::printer_host::{BAMBU_ADDRESS_CHANGED, BAMBU_NOT_PINNED};
+        use pp_storage::{printer_hosts::BambuRow, tls_pins::Pin};
+        let row = |id: &str, config: serde_json::Value, pinned: Option<(&str, u16)>| BambuRow {
+            id: id.into(),
+            config,
+            enabled: true,
+            pin: pinned.map(|(host, port)| Pin {
+                host: host.into(),
+                port,
+                sha256: [7; 32],
+                pinned_at: String::new(),
+            }),
+        };
+        let config = serde_json::json!({"host": "192.168.1.20", "serial": "FIXTURE01", "access_code": "code"});
+        let hosts = watched_hosts(WatchedHosts {
+            moonraker: Vec::new(),
+            prusalink: Vec::new(),
+            bambu: vec![
+                row("pinned", config.clone(), Some(("192.168.1.20", 8883))),
+                row("moved", config.clone(), Some(("192.168.1.20", 1883))),
+                row("readdressed", config.clone(), Some(("192.168.1.21", 8883))),
+                row("new", config.clone(), None),
+                row(
+                    "bad",
+                    serde_json::json!({"host": "192.168.1.22"}),
+                    Some(("192.168.1.22", 8883)),
+                ),
+            ],
+        });
+        let pins: Vec<_> = hosts
+            .iter()
+            .map(|host| match &host.kind {
+                HostKind::Bambu { config, pin } => (
+                    host.base_url.as_str(),
+                    config.as_ref().err().cloned(),
+                    pin.clone(),
+                ),
+                _ => panic!("{} is not a Bambu host", host.id),
+            })
+            .collect();
+        assert_eq!(
+            pins,
+            [
+                ("192.168.1.20", None, Ok([7; 32])),
+                ("192.168.1.20", None, Err(BAMBU_ADDRESS_CHANGED.to_owned())),
+                ("192.168.1.20", None, Err(BAMBU_ADDRESS_CHANGED.to_owned())),
+                ("192.168.1.20", None, Err(BAMBU_NOT_PINNED.to_owned())),
+                (
+                    "192.168.1.22",
+                    Some("access_code is required".to_owned()),
+                    Err("access_code is required".to_owned())
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn ticket_t_22_prusalink_hosts_follow_moonraker_with_their_credentials() {
         let hosts = watched_hosts(WatchedHosts {
             moonraker: vec![moonraker("a")],
             prusalink: vec![prusalink("mk4")],
+            bambu: Vec::new(),
         });
         let ids: Vec<_> = hosts.iter().map(|host| host.id.as_str()).collect();
         assert_eq!(ids, ["a", "mk4"]);

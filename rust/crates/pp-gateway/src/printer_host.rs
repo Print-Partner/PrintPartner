@@ -177,6 +177,26 @@ pub use bambu::CERTIFICATE_CHANGED as BAMBU_CERTIFICATE_CHANGED;
 pub const BAMBU_ADDRESS_CHANGED: &str =
     "Printer address changed since its certificate was pinned. Reset its certificate in Settings.";
 
+/// Shown for a Bambu host whose certificate the user has not pinned: the
+/// status watchers never connect to it.
+pub const BAMBU_NOT_PINNED: &str = "Certificate not pinned yet. Run Test connection in Settings.";
+
+/// How the status watchers take a stored Bambu integration: its settings and
+/// the pin taken at that address, or the message it shows instead of
+/// connecting. The watchers never pin (GRE-1176).
+pub fn bambu_watch(config: &Value, pin: Option<&BambuPin>) -> crate::HostKind {
+    let config = bambu::Config::from_stored(config);
+    let pin = match (&config, pin) {
+        (Err(message), _) => Err(message.clone()),
+        (Ok(_), None) => Err(BAMBU_NOT_PINNED.to_owned()),
+        (Ok(config), Some(pin)) if pin.host == config.host && pin.port == config.port => {
+            Ok(pin.sha256)
+        }
+        (Ok(_), Some(_)) => Err(BAMBU_ADDRESS_CHANGED.to_owned()),
+    };
+    crate::HostKind::Bambu { config, pin }
+}
+
 #[derive(Clone)]
 pub struct HostReads {
     guard: HttpGuard,

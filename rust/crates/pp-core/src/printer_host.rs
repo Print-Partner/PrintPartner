@@ -78,8 +78,8 @@ async fn linked<T>(settings: &SettingsClient, printer: String) -> Result<Host, H
         .map(|(host, _)| host)
 }
 
-/// Whether the watchers poll this PrusaLink row: storage took it (within the
-/// cap, not on a Moonraker id) and it has an address.
+/// Whether the watchers take this PrusaLink or Bambu row: storage took it
+/// (within the cap, not on an id another row has) and it has an address.
 fn status_watched(
     integration: &StoredIntegration,
     hosts: Option<printer_hosts::WatchedHosts>,
@@ -89,6 +89,10 @@ fn status_watched(
             .prusalink
             .iter()
             .any(|row| row.id == integration.id && !row.base_url.trim().is_empty())
+            || hosts
+                .bambu
+                .iter()
+                .any(|row| row.id == integration.id && row.address().is_some())
     })
 }
 
@@ -106,7 +110,9 @@ async fn linked_watched<T>(
     let link = tokio::task::spawn_blocking(move || {
         let link = printer_hosts::printer_link(&client, READER_WAIT, &printer)?;
         let watched = match &link {
-            PrinterLink::Linked(integration) if status && integration.kind == "prusalink" => {
+            PrinterLink::Linked(integration)
+                if status && matches!(integration.kind.as_str(), "prusalink" | "bambu") =>
+            {
                 status_watched(integration, printer_hosts::read(&client, READER_WAIT)?)
             }
             _ => true,
@@ -207,8 +213,13 @@ impl PrinterHostPort for StoredPrinterHosts {
                     cameras: true,
                     status: watched,
                 }),
-                // Bambu status arrives with its watcher (GRE-1176).
-                Ok((Host::Status | Host::Unported, _)) => HostAnswer::Unsupported,
+                // Bambu has a status watcher (GRE-1176) and nothing to browse.
+                Ok((Host::Status, watched)) => HostAnswer::Ok(Capabilities {
+                    files: false,
+                    cameras: false,
+                    status: watched,
+                }),
+                Ok((Host::Unported, _)) => HostAnswer::Unsupported,
                 Err(answer) => answer,
             }
         })

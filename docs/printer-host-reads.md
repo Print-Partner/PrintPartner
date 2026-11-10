@@ -30,7 +30,7 @@ Uploads go through the send queue's worker, which calls each driver's `upload_fi
 
 ## Not served here yet
 
-- Bambu status (GRE-1176). Bambu reads as having no capabilities, and the files and camera routes answer unsupported. Only `POST /api/v1/integrations/{id}/test` contacts a Bambu printer, to read its status once and pin its certificate ([Pinning in Settings](bambu-lan.md#pinning-in-settings)).
+- Bambu files and cameras. Bambu reports only the status capability (from its watcher, [Status watcher](bambu-lan.md#status-watcher)), and none for a row the watchers do not take (no address, past the 128-host cap, or an id an earlier row took). The files and camera routes answer unsupported. `POST /api/v1/integrations/{id}/test` reads its status once and pins its certificate ([Pinning in Settings](bambu-lan.md#pinning-in-settings)).
 
 ## Streamed downloads and camera views
 

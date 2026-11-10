@@ -655,6 +655,18 @@ impl Driver {
             .filter(|v| v.is_finite() && *v >= 0.0)
     }
 
+    /// The file name and `consumed_material` (millimetres) of the job
+    /// `/api/v1/job` reports, from one read; `None` unless it is `FINISHED`.
+    pub async fn finished_filament(&self) -> Option<(String, f64)> {
+        let reply = self.get("/api/v1/job").await.ok()?;
+        ok(&reply).then_some(())?;
+        let job = json(&reply.body).ok()?;
+        let state = job.get("state")?.as_str()?;
+        state.eq_ignore_ascii_case("FINISHED").then_some(())?;
+        let used = job.get("consumed_material")?.as_f64()?;
+        Some((file_name(job.get("file"))?, used))
+    }
+
     /// PUT the file into the pinned storage (default `usb`). The body is sent
     /// once; a 401 reply is reported, never answered with a resend.
     pub async fn upload_file(

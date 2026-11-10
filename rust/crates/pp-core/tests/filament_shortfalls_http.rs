@@ -302,7 +302,7 @@ async fn node_shaped_outcomes_report_grams_not_recorded() {
     for (basis, needed) in [
         (
             "estimated",
-            json!({"kind": "estimated", "grams": 42, "job_count": 1}),
+            json!({"kind": "estimated", "grams": 42, "job_count": 1, "reason": null}),
         ),
         ("measured", measured()),
     ] {

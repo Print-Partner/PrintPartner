@@ -102,8 +102,8 @@ export function ModuleOff({
       <p>
         When it is on, {where} shows {wouldShow}.
       </p>
-      <Link to="/settings" className="pp-link">
-        Turn it on in Settings
+      <Link to="/settings#modules" className="pp-link">
+        See Modules in Settings
       </Link>
     </div>
   );

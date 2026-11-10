@@ -1,5 +1,5 @@
 use super::*;
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, RequestBuilder};
 use std::net::SocketAddr;
 
 #[path = "../../tests/support/mcp_rpc.rs"]
@@ -42,15 +42,28 @@ impl McpServer {
     }
 
     async fn routed(flag: Option<&str>, tenant: &str) -> Self {
-        Self::open(flag, tenant, "").await
+        Self::open(flag, tenant, "", |config| config).await
     }
 
     /// The flag on for `default`, with `seed` run on the fixture first.
     async fn seeded(seed: &str) -> Self {
-        Self::open(Some("1"), "default", seed).await
+        Self::open(Some("1"), "default", seed, |config| config).await
     }
 
-    async fn open(flag: Option<&str>, tenant: &str, seed: &str) -> Self {
+    async fn configured(
+        flag: Option<&str>,
+        tenant: &str,
+        configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
+    ) -> Self {
+        Self::open(flag, tenant, "", configure).await
+    }
+
+    async fn open(
+        flag: Option<&str>,
+        tenant: &str,
+        seed: &str,
+        configure: impl FnOnce(McpHttpConfig) -> McpHttpConfig,
+    ) -> Self {
         let directory = crate::scratch::Scratch::new("pp-mcp-http-");
         let database = directory.join("print-partner.db");
         std::fs::write(
@@ -66,7 +79,7 @@ impl McpServer {
             .unwrap()
             .0;
         let (listener, origin) = mcp_rpc::listen().await;
-        let config = McpHttpConfig::from_startup(&origin, tenant, flag).unwrap();
+        let config = configure(McpHttpConfig::from_startup(&origin, tenant, flag).unwrap());
         let (router, _) = test_router(&owner, config, policy());
         let task = tokio::spawn(async move {
             axum::serve(
@@ -139,6 +152,10 @@ impl McpServer {
         headers: &[(&str, &str)],
         body: &Value,
     ) -> (u16, String, Option<String>) {
+        mcp_rpc::send(self.request(path, headers, body)).await
+    }
+
+    fn request(&self, path: &str, headers: &[(&str, &str)], body: &Value) -> RequestBuilder {
         let mut request = self
             .client
             .request(Method::POST, format!("{}{path}", self.origin))
@@ -148,7 +165,7 @@ impl McpServer {
         for (name, value) in headers {
             request = request.header(*name, value.replace(SELF, &self.origin));
         }
-        mcp_rpc::send(request).await
+        request
     }
 }
 
@@ -377,4 +394,110 @@ async fn ticket_t_16_mcp_refuses_a_key_from_another_tenant() {
         assert_eq!(rpc(&body), json!({ "detail": KEY_REQUIRED }), "{path}");
         assert!(session.is_none(), "{path}");
     }
+}
+
+/// GRE-1039: Node's application budget on Rust MCP. An admitted request
+/// counts before its key is checked, so keyless guesses use it up too; past
+/// the limit even a valid key gets the gateway's 429 until the window resets.
+/// A foreign Origin is refused first and costs nothing. The test clock moves
+/// only when the test advances it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ticket_t_16_mcp_rate_limits_requests_before_the_key_check() {
+    let clock = rate_limit::ManualClock::new();
+    let server = McpServer::configured(Some("1"), "default", |config| {
+        config.with_budget(3, Duration::from_secs(60), clock.clone())
+    })
+    .await;
+    let (_, key) = server.create_key().await;
+    let bearer = format!("Bearer {key}");
+    let send = |path: &'static str, headers: Vec<(&'static str, String)>| {
+        let headers: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
+        server.request(path, &headers, &initialize()).send()
+    };
+    let header = |response: &reqwest::Response, name: &str| {
+        response
+            .headers()
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_owned())
+    };
+    let keyed_headers = || vec![("authorization", bearer.clone())];
+
+    let mut foreign = keyed_headers();
+    foreign.push(("origin", "http://evil.example".into()));
+    let refused = send("/mcp", foreign).await.unwrap();
+    assert_eq!(refused.status(), 403);
+    assert_eq!(header(&refused, "x-ratelimit-remaining"), None);
+
+    for (path, remaining) in [("/mcp", "2"), ("/api/v1/mcp", "1")] {
+        let keyless = send(path, vec![("origin", server.origin.clone())])
+            .await
+            .unwrap();
+        assert_eq!(keyless.status(), 401, "{path}");
+        assert_eq!(header(&keyless, "x-ratelimit-limit").as_deref(), Some("3"));
+        assert_eq!(header(&keyless, "x-ratelimit-reset").as_deref(), Some("60"));
+        assert_eq!(
+            header(&keyless, "x-ratelimit-remaining").as_deref(),
+            Some(remaining),
+            "{path}"
+        );
+    }
+    let admitted = send("/mcp", keyed_headers()).await.unwrap();
+    assert_eq!(admitted.status(), 200);
+    assert_eq!(
+        header(&admitted, "x-ratelimit-remaining").as_deref(),
+        Some("0")
+    );
+
+    // 1.5 s and then 0.5 s left: `retry-after` rounds the remainder up.
+    for (advance, reset, after) in [
+        (Duration::from_millis(58_500), "2", "2 seconds"),
+        (Duration::from_secs(1), "1", "1 second"),
+    ] {
+        clock.advance(advance);
+        for path in ["/mcp", "/api/v1/mcp"] {
+            let limited = send(path, keyed_headers()).await.unwrap();
+            assert_eq!(limited.status(), 429, "{path}");
+            assert!(header(&limited, "mcp-session-id").is_none(), "{path}");
+            let expected = json!({
+                "statusCode": 429,
+                "error": "Too Many Requests",
+                "message": format!("Rate limit exceeded, retry in {after}"),
+            })
+            .to_string();
+            for (name, value) in [
+                ("content-type", "application/json; charset=utf-8"),
+                ("cache-control", "no-store"),
+                ("retry-after", reset),
+                ("x-ratelimit-reset", reset),
+                ("x-ratelimit-limit", "3"),
+                ("x-ratelimit-remaining", "0"),
+            ] {
+                assert_eq!(
+                    header(&limited, name).as_deref(),
+                    Some(value),
+                    "{path} {name}"
+                );
+            }
+            assert_eq!(
+                header(&limited, "content-length"),
+                Some(expected.len().to_string()),
+                "{path}"
+            );
+            assert_eq!(limited.text().await.unwrap(), expected, "{path}");
+        }
+    }
+
+    // At exactly 60 s a new window starts.
+    clock.advance(Duration::from_millis(500));
+    let reset = send("/api/v1/mcp", keyed_headers()).await.unwrap();
+    assert_eq!(reset.status(), 200);
+    assert!(header(&reset, "mcp-session-id").is_some());
+    assert_eq!(
+        header(&reset, "x-ratelimit-remaining").as_deref(),
+        Some("2")
+    );
+    assert_eq!(header(&reset, "x-ratelimit-reset").as_deref(), Some("60"));
 }

@@ -3,7 +3,7 @@
 The repository has two build trees:
 
 - `web/` holds the React web UI and the Node server that the Rust core replaces.
-- `rust/` holds the Rust workspace. [Architecture](../architecture.md#crate-map) lists its crates.
+- `rust/` holds the Rust workspace. [Architecture](../architecture.md#crates-and-allowed-edges) lists its crates.
 
 ## Web
 

@@ -213,6 +213,17 @@ impl Driver {
             .filter(|v| v.is_finite() && *v >= 0.0)
     }
 
+    /// The file name and filament length in millimetres of the print
+    /// `print_stats` reports, from one read; `None` unless that read says the
+    /// print is `complete`.
+    pub async fn finished_filament(&self) -> Option<(String, f64)> {
+        let status = self.query_status("print_stats").await?;
+        let stats = status.get("print_stats")?;
+        (stats.get("state")?.as_str()? == "complete").then_some(())?;
+        let used = stats.get("filament_used")?.as_f64()?;
+        Some((stats.get("filename")?.as_str()?.to_owned(), used))
+    }
+
     pub async fn object_list(&self) -> Vec<String> {
         let Some(status) = self.query_status("exclude_object").await else {
             return Vec::new();

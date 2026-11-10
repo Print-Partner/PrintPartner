@@ -92,8 +92,8 @@ describe("FRM-03 screen template", () => {
     expect(
       screen.getByText("When it is on, this screen shows printers and the queue."),
     ).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Turn it on in Settings" }).getAttribute("href")).toBe(
-      "/settings",
+    expect(screen.getByRole("link", { name: "See Modules in Settings" }).getAttribute("href")).toBe(
+      "/settings#modules",
     );
   });
 

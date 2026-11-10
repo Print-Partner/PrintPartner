@@ -185,6 +185,11 @@ enum Envelope {
         reply: mpsc::Sender<Result<send_queue::writes::Reply>>,
     },
     #[cfg(feature = "desktop_rebuild")]
+    PrintGrams {
+        command: print_grams::Command,
+        reply: mpsc::Sender<Result<Option<print_grams::Measurement>>>,
+    },
+    #[cfg(feature = "desktop_rebuild")]
     Farm {
         command: read_model::farm::Command,
         reply: mpsc::Sender<Result<read_model::farm::Farm>>,
@@ -270,6 +275,10 @@ struct Shared {
     import_quota: Mutex<Option<u64>>,
     #[cfg(feature = "desktop_rebuild")]
     domain_events: domain_events::Feed,
+    /// Print-file snapshots, one store per open database as Node keeps one
+    /// per repository.
+    #[cfg(feature = "desktop_rebuild")]
+    print_file_snapshots: Arc<checkoff_progress::print_file::SnapshotStore>,
 }
 #[derive(Clone)]
 pub struct SettingsClient {
@@ -448,6 +457,12 @@ impl SettingsClient {
         );
         self.enqueue(Work::Setting(command), cancelled, wait)
     }
+    /// The print-file snapshot store the files/content route captures into
+    /// and the assignment route redeems from.
+    #[cfg(feature = "desktop_rebuild")]
+    pub fn print_file_snapshots(&self) -> Arc<checkoff_progress::print_file::SnapshotStore> {
+        Arc::clone(&self.shared.print_file_snapshots)
+    }
     pub fn reader(&self, wait: Duration) -> Result<ReaderCheckout> {
         let deadline = Instant::now() + wait;
         let mut state = self
@@ -479,12 +494,11 @@ impl SettingsClient {
     }
 }
 impl ReaderCheckout {
+    pub(crate) fn connection(&self) -> &Connection {
+        self.connection.as_ref().expect("checked out connection")
+    }
     pub fn snapshot(&self, tenant: &str, key: &str) -> Result<SettingSnapshot> {
-        snapshot(
-            self.connection.as_ref().expect("checked out connection"),
-            tenant,
-            key,
-        )
+        snapshot(self.connection(), tenant, key)
     }
     pub fn get_setting(
         &self,
@@ -667,6 +681,8 @@ impl WriterOwner {
             capacity: limits.queued_writes,
             #[cfg(feature = "desktop_rebuild")]
             domain_events: event_feed,
+            #[cfg(feature = "desktop_rebuild")]
+            print_file_snapshots: Arc::default(),
             job_admission: Mutex::new(None),
             #[cfg(feature = "desktop_rebuild")]
             orphaned_source_leases: Mutex::new(Vec::new()),
@@ -857,6 +873,11 @@ impl WriterOwner {
                             admission,
                             &worker.job_subscriptions,
                         ));
+                    }
+                    #[cfg(feature = "desktop_rebuild")]
+                    Envelope::PrintGrams { command, reply } => {
+                        let _ =
+                            reply.send(print_grams::execute(&mut connection, command, admission));
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::History { command, reply } => {

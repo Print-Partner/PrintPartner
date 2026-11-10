@@ -178,13 +178,9 @@ fn checkoff_routes(
     client: ProgressClient,
     settings: SettingsClient,
 ) -> Result<Router> {
+    let snapshots = settings.print_file_snapshots();
     let hosts = crate::printer_host::StoredPrinterHosts::new(settings, HostReads::new()?);
-    let files = file_assignments_router(
-        config.clone(),
-        client.clone(),
-        Arc::default(),
-        Arc::new(hosts),
-    );
+    let files = file_assignments_router(config.clone(), client.clone(), snapshots, Arc::new(hosts));
     Ok(checkoff_router(config, client).merge(files))
 }
 

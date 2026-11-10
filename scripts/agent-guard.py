@@ -63,7 +63,7 @@ COMMIT_VALUE_LONG = {"--author", "--date", "--file", "--message", "--reedit-mess
 GH_SHORT_BOOLEAN = set("ih")
 # gh command groups whose subcommand the guard classifies.
 GH_GROUPS = {"pr", "release", "variable", "alias", "extension", "extensions", "ext", "codespace", "skill",
-             "skills"}
+             "skills", "agent-task"}
 # gh's built-in commands and help topics (gh help, gh 2.103). Any other subcommand is an alias or an extension,
 # which runs a command the guard never sees, wherever its config lives. co is left out: it is a default alias.
 GH_COMMANDS = frozenset({
@@ -74,14 +74,16 @@ GH_COMMANDS = frozenset({
     "telemetry", "variable", "version", "workflow", "skills",
 })
 # Built-in groups whose other subcommands run or change code the guard never sees: an extension (exec, browse,
-# create, remove, install, upgrade) or an agent skill (install, update, publish). Only these subcommands are allowed.
+# create, remove, install, upgrade), an agent skill (install, update, publish), or a remote agent task (create,
+# which starts an agent acting on the repo with the user's GitHub identity). Only these subcommands are allowed.
 GH_READ_ONLY = {"extension": {"list", "search"}, "extensions": {"list", "search"}, "ext": {"list", "search"},
-                "skill": {"list", "search", "preview"}, "skills": {"list", "search", "preview"}}
+                "skill": {"list", "search", "preview"}, "skills": {"list", "search", "preview"},
+                "agent-task": {"list", "view"}}
 # Built-in commands that run code: codespace ssh, cp, code, and jupyter run it in a codespace, and copilot downloads
 # and runs the Copilot CLI. Lanes have no use for either.
 GH_RUNS_CODE = {"codespace", "copilot"}
-GH_CODE = ("`gh {}` runs or changes code the guard cannot see (an extension, an agent skill, a codespace, or the "
-           "Copilot CLI); lanes may not run it.")
+GH_CODE = ("`gh {}` runs or changes code the guard cannot see (an extension, an agent skill, a codespace, a remote "
+           "agent task, or the Copilot CLI); lanes may not run it.")
 UNKNOWN_GH = ("`gh {}` is not a built-in gh command, so it would run an alias or an extension; lanes may not run "
               "those. Run the built-in command it stands for.")
 # Variables that move gh's config, and with it its aliases and extensions.

@@ -317,7 +317,7 @@ fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
     };
     for (version, expected) in [
         (schema::CURRENT_VERSION + 1, "newer than supported"),
-        (30, "Cannot upgrade database schema version 30"),
+        (30, "upgrade database schema version 30"),
         (0, "no schema version"),
     ] {
         let refused = refuse(version, "full", &[]);

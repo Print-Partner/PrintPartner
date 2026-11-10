@@ -4,7 +4,7 @@ Grade each answer correct (1) or incorrect (0). An answer is correct when it sta
 
 ## Answer key
 
-Paths are relative to the repository root at the commit above.
+Paths are relative to the repository root at commit 7908c70361dd22357704a9d9b38ead15e1b9c658. The with arm's commit, 6deb5b542f9a5cb141c8f5e4ce506e6b4f8a2163, changes only documentation and four scripts (check-family-index.py, its test, verify-a8-record-move.py and its test), not the code any fact names, so the same paths and facts apply to both arms.
 
 ### 1. Accept publishes a Plan
 

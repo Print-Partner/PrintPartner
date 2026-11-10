@@ -10,7 +10,7 @@ The questions, models and method below were fixed and committed before the first
 
 - **Commit:** `7908c70361dd22357704a9d9b38ead15e1b9c658` (main, 2026-11-09, after #1638).
 - **Without arm:** that commit as it is, in a detached worktree.
-- **With arm:** the same commit plus the signpost files from the PR heads of A3 (GRE-1315, family index), A5 (GRE-1316, nested `AGENTS.md`) and A8 (GRE-1317, receipts moved to `docs/records/`), copied into a second worktree. The arm ran on one combined commit, `6deb5b542`, not on separate PR heads. The signpost PRs were opened after the run; their heads are listed in the With arm section.
+- **With arm:** one combined commit, `6deb5b542`, which is the same commit plus the signposts: A3 (GRE-1315, family index), A5 (GRE-1316, nested `AGENTS.md`) and A8 (GRE-1317, receipts moved to `docs/records/`). The arm ran on that commit in a second worktree, not on separate PR heads. The signpost PRs were opened after the run; their heads are listed in the With arm section.
 
 ## Models
 
@@ -207,7 +207,9 @@ Two grading choices on the without arm were made after seeing the answers. They 
 
 ### Reruns (2026-11-09)
 
-Under the Scoring rule, each cell with a wrong answer earned one rerun, and the cell fails if that rerun is also wrong. The reruns ran on the same frozen checkouts with the same prompt and settings. They are correctness checks, so their answers are not in the three-session medians.
+**Blocked-slot re-runs.** Before grading, five original sessions were blocked (Q3 Claude runs 1 and 3, and all three Q3 Codex runs). Each slot was filled by a fresh re-run with the same prompt and settings. Those five re-runs are the Q3 rows in the without-arm table, and their counts are in `counts/sessions-without-q3-reruns.csv` (in PR #1643). They were graded with the other without-arm answers.
+
+**Correctness re-runs.** Under the Scoring rule, each cell with a wrong answer earned one rerun, and the cell fails if that rerun is also wrong. The reruns ran on the same frozen checkouts with the same prompt and settings. They are correctness checks, so their answers are not in the three-session medians.
 
 | Cell | Wrong runs in the 30 | Rerun correct | Cell passes |
 | --- | --- | --- | --- |

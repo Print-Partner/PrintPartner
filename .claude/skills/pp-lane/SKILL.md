@@ -5,12 +5,12 @@ description: Standard Print Partner lane procedure, from a GRE ticket to a PR an
 
 # Print Partner lane
 
-A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lanes never merge; the coordinator merges every PR under the [merge gate](../../../docs/development/definition-of-done.md#merge-gate). The brief names the ticket and anything special; everything else is here. The [agent guide](../../../AGENTS.md) rules apply throughout, and the brief wins where it says otherwise.
+A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lanes never merge. The coordinator merges under the [merge gate](../../../docs/development/definition-of-done.md#merge-gate), except the paths the owner merges, which the merge gate lists: CI controls, the release path, and the safety guard with its hook adapters in `.factory/` and `.claude/`. The brief names the ticket and anything special; everything else is here. The [agent guide](../../../AGENTS.md) rules apply throughout. If a brief conflicts with AGENTS.md or the [definition of done](../../../docs/development/definition-of-done.md), stop and ask the coordinator before you continue, as [Start from a task brief](../../../docs/development/agent-workflow.md#start-from-a-task-brief) says.
 
 ## Start
 
-1. Fetch and branch from current `main`: `git fetch origin` then `git checkout -B <branch> origin/main`. Worktrees often start on an old commit. Write `git` and `gh` arguments literally; the [safety guard](../../../docs/development/agent-workflow.md#safety-guard) refuses shell expansions in them.
-2. Read the ticket's acceptance items and its newest **Handoff** comment, if any ([Pick up a ticket](../../../docs/development/agent-workflow.md#pick-up-a-ticket)). Comment "Claimed by <lane>" on the ticket.
+1. Read the ticket's acceptance items and its newest **Handoff** comment, if any ([Pick up a ticket](../../../docs/development/agent-workflow.md#pick-up-a-ticket)). Comment "Claimed by <lane>" on the ticket.
+2. Run `git fetch origin`. If the Handoff names a branch, check it out and resume from the head it names; if the PR has moved past that head, the PR is the truth. For fresh work, branch from current `main` with `git switch -c <branch> origin/main`, which refuses a branch name that already exists. Worktrees often start on an old commit. Write `git` and `gh` arguments literally; the [safety guard](../../../docs/development/agent-workflow.md#safety-guard) refuses shell expansions in them.
 3. Read the [definition of done](../../../docs/development/definition-of-done.md), [Review and merge](../../../docs/development/agent-workflow.md#review-and-merge), and the docs for the code you touch ([Architecture](../../../docs/architecture.md), [Desktop rebuild flag](../../../docs/desktop-rebuild.md), and any page the ticket links).
 4. Check overlap: list open PRs (`gh pr list --state open`) and skip or coordinate with any that touch the same files.
 5. Decide whether the PR is sensitive (below). Sensitive PRs run the full local set.
@@ -51,7 +51,7 @@ Before pushing, have a fresh-context reviewer read the diff: correctness and AGE
 
 ## Report readiness
 
-Never merge. The safety guard refuses `gh pr merge` and `gh api` merges outside the coordinator worktree. When the PR is done, report readiness to the coordinator:
+Never merge; the [safety guard](../../../docs/development/agent-workflow.md#safety-guard) refuses merges outside the coordinator worktree. A score you post, for example with `post-score.sh`, is a record only and does not satisfy the merge gate. When the PR is done, report readiness to the coordinator:
 
 - the PR URL and the full head SHA;
 - the state of checks and reviews on that head: required checks, `review-gate`, any pending or failing check, and open review threads;

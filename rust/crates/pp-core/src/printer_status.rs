@@ -185,7 +185,15 @@ fn observe(
     let Some(status) = status else {
         return Observation::Unavailable;
     };
-    if [HTTPS_UNAVAILABLE, REDIRECT_UNAVAILABLE].contains(&status.message.as_deref().unwrap_or(""))
+    // Hosts the watchers hold but never connect to: HTTPS and redirecting
+    // hosts, and Bambu while the tenant's feature is off or invalid.
+    if [
+        HTTPS_UNAVAILABLE,
+        REDIRECT_UNAVAILABLE,
+        BAMBU_FEATURE_DISABLED,
+        BAMBU_FEATURE_INVALID,
+    ]
+    .contains(&status.message.as_deref().unwrap_or(""))
     {
         return Observation::NotSupported;
     }

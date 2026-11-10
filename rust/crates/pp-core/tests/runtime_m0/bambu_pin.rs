@@ -19,6 +19,7 @@ const PIN: &str = "/api/v1/integrations/bambu-1/tls-pin";
 const RESET: &str = "/api/v1/integrations/bambu-1/tls-pin/reset";
 const TEST: &str = "/api/v1/integrations/bambu-1/test";
 const STATUS: &str = "/api/v1/integrations/bambu-1/status";
+const CAPABILITIES: &str = "/api/v1/printers/p-x1c/capabilities";
 const CHANGED: &str = "Printer certificate changed. If you replaced or reset the printer, reset its certificate in Settings.";
 
 #[tokio::test]
@@ -114,6 +115,20 @@ async fn held(broker: &Broker) {
 const BLOCKED: Duration = Duration::from_secs(2);
 
 /// Polls the status route until the watcher reports `message`.
+/// Stores the tenant's feature toggles while the runtime runs, as a settings
+/// edit from another process would; the watchers re-read them every second.
+fn features(data: &std::path::Path, toggles: &str) {
+    let database = rusqlite::Connection::open(data.join("print-partner.db")).unwrap();
+    database.busy_timeout(Duration::from_secs(5)).unwrap();
+    let changed = database
+        .execute(
+            "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='feature_toggles'",
+            [toggles],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+}
+
 async fn watched(origin: &str, cookie: &str, message: &str) {
     let mut last = Value::Null;
     for _ in 0..100 {
@@ -177,13 +192,7 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
     .await;
     assert!(broker.log().is_empty(), "{:?}", broker.log());
     assert_eq!(
-        call(
-            &origin,
-            &cookie,
-            "GET",
-            "/api/v1/printers/p-x1c/capabilities"
-        )
-        .await,
+        call(&origin, &cookie, "GET", CAPABILITIES).await,
         (
             StatusCode::OK,
             json!({"files": false, "cameras": false, "status": true})
@@ -244,6 +253,41 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
         2,
         "the Test connection, then the watcher restarted on the new pin"
     );
+
+    // Turning Bambu off ends the watch: no session and no status capability
+    // until it is on again.
+    let off = broker.log().len();
+    features(&data, r#"{"bambu":false}"#);
+    watched(&origin, &cookie, "Feature bambu is disabled.").await;
+    assert_eq!(
+        call(&origin, &cookie, "GET", CAPABILITIES).await,
+        (
+            StatusCode::OK,
+            json!({"files": false, "cameras": false, "status": false})
+        )
+    );
+    let (code, farm) = call(&origin, &cookie, "GET", "/api/v2/printers").await;
+    let x1c = &farm["printers"][0];
+    assert_eq!(
+        (code, &x1c["id"], &x1c["state"]["execution"], &x1c["reason"]),
+        (
+            StatusCode::OK,
+            &json!("p-x1c"),
+            &json!("manual"),
+            &json!("monitoring_not_supported")
+        ),
+        "farm reads do not list it as watched: {farm}"
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        connects(&broker.log()[off..]),
+        0,
+        "{:?}",
+        &broker.log()[off..]
+    );
+    features(&data, r#"{"bambu":true}"#);
+    watched(&origin, &cookie, "Idle").await;
+    assert_eq!(connects(&broker.log()[off..]), 1, "the watcher resumed");
     let (code, problem) = call(&origin, &cookie, "GET", "/api/v1/integrations/gone/tls-pin").await;
     assert_eq!(
         (code, &problem["detail"]),
@@ -252,7 +296,11 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
 
     shut_down(runtime).await;
     let log = broker.log();
-    assert_eq!(connects(&log), 4, "Test and watcher on each pin: {log:?}");
+    assert_eq!(
+        connects(&log),
+        5,
+        "Test and watcher on each pin, and the watcher once Bambu was on again: {log:?}"
+    );
     only_status_traffic(&log);
     assert_eq!(settings_rows(&data), settings, "pinning changed settings");
 }

@@ -10,7 +10,10 @@ anyhow.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# The shipped binaries always build serde_json with `preserve_order` (through
+# pp-storage and pp-services), so the gateway's JSON bodies keep insertion order.
+# Declaring it here keeps that order when the gateway builds without them.
+serde_json = { workspace = true, features = ["preserve_order"] }
 rand.workspace = true
 sha2.workspace = true
 hex.workspace = true

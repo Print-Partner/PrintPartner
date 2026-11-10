@@ -186,7 +186,7 @@ describe("FRM-02 palette and shortcut list by keyboard", () => {
     expect(items).toEqual([...PLAN_HELP]);
     expect(items.join(" ")).toMatch(/save to a draft as you make them/);
     expect(items.join(" ")).toMatch(/does not change until you accept/);
-    expect(items.join(" ")).toMatch(/Accept saves a snapshot of the accepted Plan it replaces/);
+    expect(items.join(" ")).toMatch(/Accept first saves a snapshot of the accepted Plan it replaces/);
   });
 
   it("pulls focus back when it leaves the dialog, as Shift+Tab from the panel does", () => {

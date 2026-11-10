@@ -182,7 +182,7 @@ describe("UI8-01 History lists the Build's records from one read", () => {
     );
     expect(await screen.findByText(HISTORY_EMPTY)).toBeTruthy();
     expect(HISTORY_EMPTY).toMatch(/^Nothing has happened to this Build yet\./);
-    expect(HISTORY_EMPTY).toMatch(/snapshot each Accept saves/);
+    expect(HISTORY_EMPTY).toMatch(/snapshots Accept saves/);
   });
 });
 

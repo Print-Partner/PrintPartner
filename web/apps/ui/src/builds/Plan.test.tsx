@@ -597,7 +597,7 @@ describe("UI6-01 Plan edits autosave to the draft", () => {
     expect(await screen.findByText(DRAFT_OPEN)).toBeTruthy();
     expect(DRAFT_OPEN).toMatch(/Changes save to it as you make them/);
     expect(DRAFT_OPEN).toMatch(/the Build changes only when you accept/);
-    expect(DRAFT_OPEN).toMatch(/Accept first saves a snapshot of the accepted Plan/);
+    expect(DRAFT_OPEN).toMatch(/Accept first saves a snapshot of the accepted Plan when it can/);
   });
 
   it("shows the accepted header with no draft, and Start a draft saves it unchanged", async () => {

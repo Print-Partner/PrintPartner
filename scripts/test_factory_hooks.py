@@ -1280,7 +1280,15 @@ class HiddenMergeTests(unittest.TestCase):
                "gh extensions exec x", "xargs sh -c 'gh m'",
                # Redirect counterparts that stay refused, and runners whose program position holds gh.
                "export HOME=/tmp; gh pr view 12", "env -uGH_CONFIG_DIR gh pr view 12", "(export HOME=/tmp; gh pr view 12)",
-               "export HOME=/tmp | gh pr view 12", "HOME=/tmp find . -exec gh pr view 12 \\;",
+               "(export HOME=/tmp; (gh pr view 12))", "(export HOME=/tmp; gh pr view 12 | cat)",
+               "HOME=/tmp find . -exec gh pr view 12 \\;",
+               # xargs options read the way getopt reads them (Sol at 4ed57bd3); an unknown one falls back to
+               # trying every word. Every find -exec is a program position, even as another option's value.
+               "printf '12\\n' | xargs -rI {} gh pr merge {}", "xargs --replace gh pr merge 12", "xargs -i gh pr merge 12",
+               "xargs -0rn1 gh pr merge", "xargs -I{} gh pr merge {}", "xargs --replace={} gh pr merge {}",
+               "xargs -a f.txt gh pr merge", "xargs -Z gh pr merge 12", "xargs --rep gh pr merge 12",
+               "xargs -l gh pr merge 12", "find . -name -exec gh pr merge {} \\;",
+               "find . -exec echo ';' -exec gh pr merge {} \\;", "env -S 'gh pr view' 12",
                "HOME=/tmp flock /tmp/x gh pr view 12", "env -C/tmp gh pr merge 12", "timeout -k0.5s 5 gh pr merge 12",
                "/usr/bin/time -f%E gh pr merge 12", "env -x/tmp gh pr view 12",
                "xargs find . -exec sh -c 'gh pr merge 1' \\;", "find . -exec xargs gh pr merge 1 \\;",
@@ -1355,6 +1363,9 @@ class HiddenMergeTests(unittest.TestCase):
                "HOME=/tmp find docs -name gh -print", "(export HOME=/tmp); gh pr view 12",
                "export HOME=/tmp | cat; gh pr view 12", "gh variable ls", "gh release ls", "gh pr ls", "gh secret ls",
                "gh repo ls", "gh alias ls", "find docs -exec grep -e gh -e pr -e merge {} +",
+               "(export HOME=/tmp); (gh pr view 12)", "export HOME=/tmp | gh pr view 12",
+               "env -uSSH_AUTH_SOCK gh pr view 12", "env -uSSH_AUTH_SOCK npm test", "xargs grep -e gh -e pr -e merge",
+               "printf 'x\\n' | xargs -rI {} echo {}", "xargs -0 -r -n 1 -P 4 echo",
                "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
                "sudo -uroot gh pr view 12", "time -fx gh pr view 12", "stdbuf -oL gh pr view 12",
                "ionice -c2 gh pr view 12", "taskset -c0 gh pr view 12",

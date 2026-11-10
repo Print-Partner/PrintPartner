@@ -431,14 +431,23 @@ def substitutions(text):
 
 
 def shell_commands(source):  # noqa: C901
-    """Split shell source into (arguments, in_subshell, after_and_or) for simple commands.
+    """Split shell source into (arguments, scope, after_and_or) for simple commands.
 
     Handles quotes, escapes, continuations, separators, comments, redirections,
     heredoc bodies, and command substitutions. It does not evaluate expansions.
+
+    scope is False for a command in the line's own shell. Otherwise it is truthy: (groups, stage), where groups is
+    the tuple of the ( ) subshells around the command, outermost first, and stage is a number unique to one pipeline
+    stage or background job, each its own process, or None. A command substitution's commands get True.
     """
     commands, args, word, heredocs, nested = [], [], None, [], []
     drop_next = piped = after_logic = False
     depth = 0
+    groups, counter = [], itertools.count(1)
+
+    def scope(group_path, in_pipe):
+        stage = next(counter) if in_pipe else None
+        return (group_path, stage) if group_path or stage else False
 
     def finish_word():
         nonlocal word, drop_next
@@ -551,10 +560,14 @@ def shell_commands(source):  # noqa: C901
                 pipe = char in "|&" and source[i + 1:i + 2] != char and source[i - 1:i] != char
                 # A command after && or || may not run.
                 logic = char in "|&" and not pipe
-                inside = depth > 0
+                inside = tuple(groups)
                 depth += {"(": 1, ")": -1}.get(char, 0)
+                if char == "(":
+                    groups.append(next(counter))
+                elif char == ")" and groups:
+                    groups.pop()
                 if args:
-                    commands.append((args, inside or pipe or piped, after_logic))
+                    commands.append((args, scope(inside, pipe or piped), after_logic))
                     args = []
                 piped, after_logic = pipe, logic
             i += 1
@@ -569,7 +582,7 @@ def shell_commands(source):  # noqa: C901
             i += 1
     finish_word()
     if args:
-        commands.append((args, depth > 0 or piped, after_logic))
+        commands.append((args, scope(tuple(groups), piped), after_logic))
     for inner in nested:
         commands.extend((inner_args, True, conditional) for inner_args, _, conditional in shell_commands(inner))
     return commands
@@ -633,8 +646,6 @@ def program(args):
             if option == "--":
                 i += 1
                 break
-            if name == "env" and (option.startswith("--split-string") or re.match(r"^-[^-]*S", option)):
-                raise Unclear
             # Only the option that takes the value can change directory, so env -uGH_CONFIG_DIR does not.
             flag = option.split("=", 1)[0] if option.startswith("--") else (
                 wrapper_bundle(name, option)[1] if option != "-" else None)
@@ -1577,20 +1588,23 @@ def redirects_gh_config(args):
 def redirect_scope(args, name, persistent, scoped):
     """Return (redirect in effect for this command, the line's redirect state for the commands after it).
 
-    persistent is (line, group). A prefix assignment or env option moves gh's config for its own command only. An
-    export, declare, typeset, readonly, or unset, or a bare assignment, moves it for the rest of the line; inside a
-    subshell or a pipeline stage (scoped) only for the scoped commands that follow it, so (export HOME=/tmp); gh and
-    export HOME=/tmp | cat; gh do not carry it to gh.
+    persistent is (line, groups): whether the line's own shell moved gh's config, and the ( ) subshells inside which
+    it was moved. A prefix assignment or env option moves it for its own command only. An export, declare, typeset,
+    readonly, or unset, or a bare assignment, moves it for the later commands of the same shell: the line's own
+    shell, or the same subshell and the subshells inside it. A pipeline stage is its own process, so nothing carries
+    out of one: (export HOME=/tmp); (gh pr view 12) and export HOME=/tmp | gh pr view 12 stay allowed, while
+    (export HOME=/tmp; gh pr view 12) is refused.
     """
-    line, group = persistent
-    group = group and scoped
+    line, moved_in = persistent
+    path, stage = scoped if isinstance(scoped, tuple) else ((), None)
     local = redirects_gh_config(args)
-    if local and (name is None or name in DECLARATIONS or name == "unset"):
-        if scoped:
-            group = True
+    if local and (name is None or name in DECLARATIONS or name == "unset") and stage is None and scoped is not True:
+        if path:
+            moved_in = moved_in | {path}
         else:
             line = True
-    return line or group or local, (line, group)
+    inherited = any(path[:len(group)] == group for group in moved_in)
+    return line or local or inherited, (line, moved_in)
 
 
 def runs_gh(name, rest):
@@ -1600,22 +1614,55 @@ def runs_gh(name, rest):
                             and any(PurePosixPath(word).name == "gh" for word in runner_programs(name, rest)))
 
 
-# xargs options that take the next word as their value.
-XARGS_VALUE_OPTIONS = {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof",
-                       "--replace", "--max-lines", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"}
+# xargs options, read the way getopt reads them (GNU, with BSD's -J, -R, and -S). Short letters that take a value,
+# attached or as the next word; letters that take one only when attached; flags; long options and whether they take
+# the next word (None: only with =).
+XARGS_VALUE_LETTERS = "adEILnPsRJS"
+XARGS_ATTACHED_LETTERS = "eil"
+XARGS_FLAG_LETTERS = "0rtpxo"
+XARGS_LONG = {"--arg-file": True, "--delimiter": True, "--max-args": True, "--max-procs": True, "--max-chars": True,
+              "--process-slot-var": True, "--eof": None, "--replace": None, "--max-lines": None, "--null": False,
+              "--interactive": False, "--open-tty": False, "--no-run-if-empty": False, "--show-limits": False,
+              "--verbose": False, "--exit": False, "--help": False, "--version": False}
+
+
+def xargs_program_start(rest):
+    """Return the index of the program xargs runs, or None when an option the guard does not know hides it."""
+    i = 0
+    while i < len(rest) and rest[i].startswith("-") and rest[i] != "-":
+        option = rest[i]
+        if option == "--":
+            return i + 1
+        if option.startswith("--"):
+            long, attached, _ = option.partition("=")
+            if long not in XARGS_LONG:
+                return None
+            i += 2 if XARGS_LONG[long] and not attached else 1
+            continue
+        used = 1
+        for k, letter in enumerate(option[1:]):
+            if letter in XARGS_VALUE_LETTERS:
+                used = 1 if option[k + 2:] else 2
+                break
+            if letter in XARGS_ATTACHED_LETTERS:
+                break
+            if letter not in XARGS_FLAG_LETTERS:
+                return None
+        i += used
+    return i
 
 
 def runner_program_starts(name, rest):
-    """Return the indexes in rest where the runner's program can start. find and xargs have a known place for it;
-    any other runner may take options and operands first, so every word that is not an option is tried."""
+    """Return the indexes in rest where the runner's program can start. find and xargs have a known place for it:
+    every -exec, -execdir, -ok, or -okdir of find, even one that reads as another option's value, so none can hide;
+    and the word after xargs's options. Any other runner, or xargs with an option the guard does not know, may take
+    options and operands first, so every word that is not an option is tried."""
     if name == "find":
         return [i + 1 for i, word in enumerate(rest[:-1]) if word in ("-exec", "-execdir", "-ok", "-okdir")]
     if name == "xargs":
-        i = 0
-        while i < len(rest) and rest[i].startswith("-") and rest[i] != "--":
-            i += 2 if rest[i] in XARGS_VALUE_OPTIONS else 1
-        i += rest[i:i + 1] == ["--"]
-        return [i] if i < len(rest) else []
+        start = xargs_program_start(rest)
+        if start is not None:
+            return [start] if start < len(rest) else []
     return [i for i, word in enumerate(rest) if not word.startswith("-")]
 
 
@@ -1736,10 +1783,10 @@ def check_line(command, cwd, outer, state):
         marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
-        persistent = (False, False)
+        persistent = (False, frozenset())
         if outer is not None:
             head_moves, config_unknown, env_config, persistent = (
-                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], (outer[3], False))
+                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], (outer[3], frozenset()))
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
             check_deadline()

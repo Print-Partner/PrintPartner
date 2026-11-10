@@ -54,6 +54,10 @@ WRAPPERS = {
 }
 # Positional operands, such as a duration, that come before the wrapped program.
 WRAPPER_OPERANDS = {"timeout": 1}
+# Each wrapper's single-letter flags that take no value. In a bundle such as env -vu, letters before the first one
+# that takes a value must come from here; anything else leaves the bundle unreadable.
+WRAPPER_BOOLEANS = {"command": "pvV", "env": "0iv", "exec": "cl", "nohup": "", "nice": "0123456789",
+                    "sudo": "AbEeHiKklnPSsVv", "time": "apqv", "timeout": "v"}
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
 HOOK_COMMANDS = {"am", "cherry-pick", "merge", "rebase", "revert"}
 MAIN_REF = re.compile(r"^(?:(?:refs/)?heads/)?main$")
@@ -542,6 +546,26 @@ def shell_commands(source):  # noqa: C901
     return commands
 
 
+def wrapper_option_words(name, option):
+    """Return how many words a wrapper option uses: 2 when it takes the next word as its value, else 1.
+
+    A bundle is read letter by letter, as the wrapper does: the first letter that takes a value uses the rest of
+    the bundle as that value (timeout -k1s, env -uFOO), or the next word when nothing follows (env -vu HOME).
+    Letters before it must be the wrapper's boolean flags; otherwise the guard cannot tell where the program
+    starts and raises Unclear.
+    """
+    if option in WRAPPERS[name]:
+        return 2
+    if not re.fullmatch(r"-[A-Za-z0-9]{2,}", option):
+        return 1
+    for k, flag in enumerate(option[1:]):
+        if "-" + flag in WRAPPERS[name]:
+            return 1 if option[k + 2:] else 2
+        if flag not in WRAPPER_BOOLEANS.get(name, ""):
+            raise Unclear
+    return 1
+
+
 def program(args):
     """Return the executed program name, its arguments, whether a wrapper changed directory,
     and the environment assignments the command makes."""
@@ -567,9 +591,7 @@ def program(args):
             if name == "env" and (option.startswith("--split-string") or re.match(r"^-[^-]*S", option)):
                 raise Unclear
             moved = moved or option.split("=", 1)[0] in WRAPPER_CHDIR or bool(re.match(r"^-[^-]*[CD]", option))
-            # A bundle such as env -vu takes the next word as its value when its last flag takes one.
-            bundled = re.fullmatch(r"-[A-Za-z0-9]+", option) and "-" + option[-1] in WRAPPERS[name]
-            i += 2 if option in WRAPPERS[name] or bundled else 1
+            i += wrapper_option_words(name, option)
         i += WRAPPER_OPERANDS.get(name, 0)
     return None, [], moved, assigned
 

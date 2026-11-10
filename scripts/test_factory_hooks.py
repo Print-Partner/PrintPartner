@@ -1265,6 +1265,12 @@ class HiddenMergeTests(unittest.TestCase):
                "GH_CONFIG_DIR=/tmp/c sh -c 'gh pr view 12'", "export HOME=/tmp; bash -c 'gh pr view 12'",
                "declare -x HOME=/tmp; gh pr view 12", "typeset -x XDG_CONFIG_HOME=/tmp; gh pr view 12",
                "set -a; HOME=/tmp; gh pr view 12", "env HOME=/tmp gh pr view 12",
+               # Wrapper bundles read letter by letter: an attached value does not use up the program word.
+               "timeout -k1s 5 gh pr merge 12", "env -uFOOu gh pr merge 12", "env -uXC gh pr merge 12",
+               "sudo -nu bob gh pr merge 12", "env -xu FOO gh pr merge 12", "env -vuFOO gh pr merge 12",
+               "nice -n5 gh pr merge 12", "timeout -s9 5 gh pr merge 12", "sudo -uroot gh pr merge 12",
+               "time -fx gh pr merge 12", "exec -abash gh pr merge 12", "stdbuf -oL gh pr merge 12",
+               "ionice -c2 gh pr merge 12", "taskset -c0 gh pr merge 12",
                # Nested shells (Sol at 7a96c572); past the nesting limit the guard fails closed.
                "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
@@ -1313,6 +1319,10 @@ class HiddenMergeTests(unittest.TestCase):
                "gh pr comment 12 --body HOME=/tmp", "echo HOME=/tmp; gh pr view 12", "env -u FOO gh pr view 12",
                "env -C /tmp gh pr view 12", "env -C /tmp -u PATH gh pr view 12", "env -vu FOO gh pr view 12",
                "unset FOO; gh pr view 12", "HOME=/tmp echo hi", "find . -maxdepth 0 -exec gh pr view 12 \\;",
+               "timeout -k1s 5 gh pr view 12", "env -uFOO gh pr view 12", "nice -19 gh pr view 12",
+               "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
+               "sudo -uroot gh pr view 12", "time -fx gh pr view 12", "stdbuf -oL gh pr view 12",
+               "ionice -c2 gh pr view 12", "taskset -c0 gh pr view 12",
                "python3 -c 'import os; os.system(\"gh pr view 12\")'", "xargs " + nested_shells("echo hi", 8),
                # entr runs its arguments as a shell command line only with -s.
                "entr echo 'gh pr merge 1'",

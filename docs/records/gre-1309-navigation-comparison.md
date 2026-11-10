@@ -2,6 +2,8 @@
 
 This record holds the W0.5 navigation comparison from the maintainability plan (GRE-1306, revision 20). It records the comparison only. The navigation gate is decided by GRE-1320 on main after A3, A5 and A8 merge, not here.
 
+Companion PRs: the counts (#1643), the counting tools (#1644), the grading inputs and grades (#1645) and the logs archive (#1646) are separate. The paths below refer to files in those PRs, and they resolve once those PRs merge.
+
 The questions, models and method below were fixed and committed before the first session ran. Results are added below them as sessions finish.
 
 ## Commit and arms
@@ -31,7 +33,7 @@ Each session gets one question. The prompt names the worktree, says to answer fr
 
 ## Scoring
 
-- **Files opened** (counted by [`navcount.py`](gre-1309/navcount.py); prompt in [`prompt.txt`](gre-1309/prompt.txt)): distinct repository files whose contents the session read, counted from the thread's tool log. Read-tool calls and shell commands that print file contents (`cat`, `sed -n`, `head`, `tail`, `nl`, `less`) count. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened.
+- **Files opened** (counted by [`navcount.py`](gre-1309/navcount.py); prompt in [`prompt.txt`](gre-1309/prompt.txt)): distinct repository files whose contents the session read, counted from the thread's tool log. Shell commands that print file contents (`cat`, `sed -n`, `head`, `tail`, `nl`, `less`) count. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened. The counter reads only shell commands, and it stops with an error on any other tool item type, so a Read-tool call cannot be missed silently. None of the session logs contains a Read-tool item; every file access in them is a shell command.
 - **Minutes:** from the run's start to its completion timestamp in the thread log.
 - **Correctness:** the coordinator marks the final answer against the key below. The answer is correct only when it contains every required fact, and incorrect if it names a listed wrong answer as the answer.
 - **Sessions:** three per model, per question, per arm, so 60 in all.
@@ -112,48 +114,50 @@ Wrong answers: `cargo test` or `cargo nextest run` alone; the hand-run list in `
 
 All 30 sessions ran on `7908c703` between 21:23 and 21:40 UTC. Files are counted by `navcount.py`, which reads each session's tool log and applies the rule in Scoring. "Correct" is the coordinator's mark against the key.
 
-| Question | Model | Session | Files opened | Minutes | Correct |
-| --- | --- | --- | --- | --- | --- |
-| 1 | Claude | 1 | 2 | 0.6 | yes |
-| 1 | Claude | 2 | 5 | 0.6 | yes |
-| 1 | Claude | 3 | 1 | 0.5 | yes |
-| 1 | Codex | 1 | 5 | 0.9 | yes |
-| 1 | Codex | 2 | 4 | 0.4 | yes |
-| 1 | Codex | 3 | 2 | 0.7 | yes |
-| 2 | Claude | 1 | 3 | 0.4 | yes |
-| 2 | Claude | 2 | 3 | 0.4 | yes |
-| 2 | Claude | 3 | 3 | 0.5 | yes |
-| 2 | Codex | 1 | 1 | 0.4 | yes |
-| 2 | Codex | 2 | 1 | 0.4 | yes |
-| 2 | Codex | 3 | 2 | 0.5 | yes |
-| 3 | Claude | 1 | 2 | 0.3 | yes |
-| 3 | Claude | 2 | 0 | 0.4 | yes |
-| 3 | Claude | 3 | 3 | 0.5 | yes |
-| 3 | Codex | 1 | 1 | 0.4 | yes |
-| 3 | Codex | 2 | 1 | 0.4 | yes |
-| 3 | Codex | 3 | 1 | 0.5 | yes |
-| 4 | Claude | 1 | 3 | 0.4 | yes |
-| 4 | Claude | 2 | 1 | 0.3 | yes |
-| 4 | Claude | 3 | 2 | 0.5 | yes |
-| 4 | Codex | 1 | 1 | 0.4 | yes |
-| 4 | Codex | 2 | 1 | 0.6 | yes |
-| 4 | Codex | 3 | 1 | 0.5 | yes |
-| 5 | Claude | 1 | 2 | 0.3 | yes |
-| 5 | Claude | 2 | 1 | 0.4 | yes |
-| 5 | Claude | 3 | 2 | 0.5 | yes |
-| 5 | Codex | 1 | 2 | 0.4 | yes |
-| 5 | Codex | 2 | 4 | 0.6 | yes |
-| 5 | Codex | 3 | 2 | 0.5 | yes |
+| Question | Model | Session | Files opened, as recorded | Files opened, corrected | Minutes | Correct |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Claude | 1 | 2 | 2 | 0.56 | yes |
+| 1 | Claude | 2 | 5 | 5 | 0.62 | yes |
+| 1 | Claude | 3 | 1 | 5 | 0.5 | yes |
+| 1 | Codex | 1 | 5 | 5 | 0.91 | yes |
+| 1 | Codex | 2 | 4 | 4 | 0.42 | yes (adjudicated; blind grade no) |
+| 1 | Codex | 3 | 2 | 4 | 0.72 | yes |
+| 2 | Claude | 1 | 3 | 3 | 0.4 | yes |
+| 2 | Claude | 2 | 3 | 3 | 0.41 | yes |
+| 2 | Claude | 3 | 3 | 3 | 0.5 | yes |
+| 2 | Codex | 1 | 1 | 3 | 0.36 | yes |
+| 2 | Codex | 2 | 1 | 4 | 0.37 | yes |
+| 2 | Codex | 3 | 2 | 5 | 0.49 | yes |
+| 3 | Claude | 1 | 2 | 3 | 0.37 | yes |
+| 3 | Claude | 2 | 0 | 2 | 0.36 | yes |
+| 3 | Claude | 3 | 3 | 2 | 0.36 | no (first re-run); yes (second re-run) |
+| 3 | Codex | 1 | 1 | 2 | 0.44 | yes |
+| 3 | Codex | 2 | 1 | 3 | 0.44 | yes |
+| 3 | Codex | 3 | 1 | 3 | 0.46 | yes |
+| 4 | Claude | 1 | 3 | 3 | 0.41 | yes |
+| 4 | Claude | 2 | 1 | 1 | 0.32 | yes |
+| 4 | Claude | 3 | 2 | 2 | 0.47 | yes |
+| 4 | Codex | 1 | 1 | 1 | 0.4 | yes |
+| 4 | Codex | 2 | 1 | 2 | 0.62 | yes |
+| 4 | Codex | 3 | 1 | 2 | 0.51 | yes |
+| 5 | Claude | 1 | 2 | 2 | 0.28 | yes |
+| 5 | Claude | 2 | 1 | 1 | 0.37 | yes |
+| 5 | Claude | 3 | 2 | 2 | 0.5 | yes |
+| 5 | Codex | 1 | 2 | 3 | 0.4 | yes |
+| 5 | Codex | 2 | 4 | 4 | 0.6 | yes |
+| 5 | Codex | 3 | 2 | 6 | 0.51 | yes |
 
-Per question and model, as the mean of the three sessions:
+Per question and model, the median of the three corrected file counts:
 
-| Question | Claude files | Claude minutes | Codex files | Codex minutes |
-| --- | --- | --- | --- | --- |
-| 1 | 2.67 | 0.57 | 3.67 | 0.67 |
-| 2 | 3.0 | 0.43 | 1.33 | 0.43 |
-| 3 | 1.67 | 0.4 | 1.0 | 0.43 |
-| 4 | 2.0 | 0.4 | 1.0 | 0.5 |
-| 5 | 1.67 | 0.4 | 2.67 | 0.5 |
+| Question | Claude files | Codex files |
+| --- | --- | --- |
+| 1 | 5 | 4 |
+| 2 | 3 | 4 |
+| 3 | 2 | 3 |
+| 4 | 2 | 2 |
+| 5 | 2 | 4 |
+
+The as-recorded table above and these medians differ because the counts were corrected: shell variables are now expanded, and multi-line Codex scripts are parsed in full. Ten sessions changed. The as-recorded column keeps the original values. Q3 Claude runs 1 and 3 and all Q3 Codex runs were blocked in the original sessions, so their corrected values come from the re-runs.
 
 Files opened in each session, as `navcount.py` counted them:
 
@@ -198,7 +202,7 @@ Two grading choices on the without arm were made after seeing the answers. They 
 ### Measurement limits
 
 - **Search output isn't counted:** both models mostly navigate with `rg` and `grep`, often with line numbers or context. Search output is not counted as opening a file, so a session can read code through search hits and score 0 or 1 files. Q3 Claude session 2 did this.
-- **Floor effect:** the without arm averages 1.0 to 3.7 files per question and model, and every answer was correct. For the pass rule (fewer files with the signposts, for both models), a 1.0 baseline leaves almost no room to improve. That holds for Codex on Q3 and Q4.
+- **Floor effect:** the corrected without-arm medians run from 2 to 5 files per question and model. 29 of 30 without-arm answers were correct after adjudication. The one that was not (Q3 Claude run 3) failed its first re-run and passed the second. For the pass rule (fewer files with the signposts, for both models), a 2-file baseline leaves little room to improve.
 - **Root `AGENTS.md`:** each session started in the coordinator's checkout of a newer `main`, then worked in the arm's worktree by absolute path. The runner may load that checkout's root `AGENTS.md` into context. It is the same file for both arms.
 
 ### Reruns (2026-11-09)
@@ -209,7 +213,7 @@ Under the Scoring rule, each cell with a wrong answer earned one rerun. The reru
 | --- | --- | --- | --- |
 | With arm, Q1 Claude | run 3 | no: names a generic transaction and omits the immediate writer mode | no |
 | With arm, Q3 Claude | runs 1 and 2 | no: names only the ADR 0007 table, not the crate map in `docs/architecture.md` | no |
-| Without arm, Q3 Claude | run 3 | yes | yes |
+| Without arm, Q3 Claude | run 3 | first re-run no (no architecture crate map); second re-run yes | yes |
 
 The 30 session grades above are unchanged by the reruns. Grades are in `grading/rerun-grades.tsv`, graded blind by a fresh agent under the key and the rulings in `grading/key-rulings.md`.
 
@@ -250,10 +254,8 @@ The 30 session grades above are unchanged by the reruns. Grades are in `grading/
 - Two categories are borderline: the commit-on-outcome condition for Q1, and the `GATED` step for Q3. The grader counted both as required. They are not adjudicated; see open items.
 
 **Open items.**
-- **Reruns.** The rule in Scoring gives one rerun per model per question that has a wrong answer. Six cells qualify: with Q1 Claude, with Q1 Codex, with Q3 Claude, with Q3 Codex, without Q1 Codex, and without Q3 Claude. These reruns are not run. They cost six sessions, and they need the owner's go-ahead.
-- **Borderline adjudication.** A second blind grader should decide the commit-on-outcome and `GATED` items before the correctness numbers are final.
+- **Re-runs.** Done (see the Re-runs section). With-arm Q1 Claude and Q3 Claude fail again. Without-arm Q3 Claude passed on its second re-run.
+- **Borderline adjudication.** Done (see the Adjudication section, 2026-11-09). The original grades are kept.
 - **Missing paths.** Eleven paths named in with-arm search commands are absent from the with checkout. None was opened.
-- **Logs.** The raw logs are packed into one archive so the diff stays reviewable. They contain local paths, including the username, because the counts depend on those paths. Extract with `tar -xzf logs.tar.gz` in `docs/records/gre-1309/`.
+- **Logs.** The raw logs are in one archive, `logs.tar.gz`, in PR #1646. That PR is blocked by the repository large-file limit, so the archive is not yet on main. The logs contain local paths, including the username.
 
-
-The with arm takes its signpost files from the PR heads of A3 (GRE-1315), A5 (GRE-1316) and A8 (GRE-1317). None of those PRs or branches existed on 2026-11-09, so this arm has not run, and the per-question comparison isn't recorded yet. It will use the same commit, questions, models, prompt and counting script.

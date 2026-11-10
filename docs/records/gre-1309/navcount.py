@@ -79,7 +79,10 @@ def files_in(seg):
 
 def opened(items, root):
     cwd, files, outside = root, set(), set()
+    known = {"user_message", "assistant_message", "reasoning", "checkpoint", "command_execution"}
     for it in items:
+        if it["type"] not in known:
+            raise ValueError(f"unknown item type {it['type']!r}: extend opened() before counting this log")
         if it["type"] != "command_execution":
             continue
         for seg in segments(command_line(it["text"])):

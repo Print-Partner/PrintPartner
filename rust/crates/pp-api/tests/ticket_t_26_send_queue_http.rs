@@ -170,6 +170,7 @@ impl Queue {
     }
 
     /// Replaces the stored `feature_toggles` text.
+    #[track_caller]
     fn store_toggles(&self, value: &str) {
         rusqlite::Connection::open(self.root.join("print-partner.db"))
             .unwrap()

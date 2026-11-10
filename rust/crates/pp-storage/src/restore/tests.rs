@@ -183,9 +183,11 @@ fn work_entries(root: &Path) -> Vec<String> {
 
 /// An upload refused because the work directory is a link, with nothing
 /// written where the link points.
+#[track_caller]
 fn refused_link(error: &anyhow::Error, outside: &Path) {
     assert!(error.to_string().contains("not a directory"), "{error:#}");
-    assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+    let written = std::fs::read_dir(outside).unwrap().count();
+    assert_eq!(written, 0, "nothing is written through the link");
 }
 
 fn refusal(error: &anyhow::Error) -> Option<&Refusal> {

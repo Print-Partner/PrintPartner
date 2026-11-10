@@ -15,10 +15,9 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 DOCUMENTS = (
     "AGENTS.md",
-    ".factory/skills/pp-readiness/SKILL.md",
-    ".factory/skills/pp-verify/SKILL.md",
-    ".factory/skills/pp-mission-qa/SKILL.md",
-    "docs/development/factory-missions.md",
+    ".claude/skills/pp-readiness/SKILL.md",
+    ".claude/skills/pp-verify/SKILL.md",
+    ".claude/skills/pp-mission-qa/SKILL.md",
     "docs/development/agent-workflow.md",
 )
 # An inline link or image destination: bare (one level of parentheses allowed) or in angle

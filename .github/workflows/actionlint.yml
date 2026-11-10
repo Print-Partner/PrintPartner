@@ -29,9 +29,7 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts -p test_agent_guidance.py -v
           python3 -B scripts/check-agent-guidance.py
-          python3 -B -m unittest discover -s scripts -p test_factory_hooks.py -v
           python3 -B -m unittest discover -s scripts -p test_pre_commit_sparse_snapshot.py -v
-          python3 -B -m unittest discover -s scripts -p test_factory_environment.py -v
 
   large-files:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -63,7 +61,7 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts -p test_ruff_lint.py -v
           python3 -B -m unittest discover -s scripts -p test_operation_inventory.py -v
-          ruff check scripts rust/scripts web/scripts slicer-sidecar .factory/hooks .claude/hooks
+          ruff check scripts rust/scripts web/scripts slicer-sidecar .claude/hooks
 
   changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft

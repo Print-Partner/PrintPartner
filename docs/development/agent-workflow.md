@@ -1,6 +1,6 @@
 # Agent and contributor workflow
 
-This is the shared procedure for any coding agent or person working on Print Partner. It needs a shell, Git, Python 3, and the toolchains in [AGENTS.md](../../AGENTS.md). Factory Droid is supported but not required. Its skills in `.factory/skills/` link to the sections below, and its project hook runs the safety guard for you.
+This is the shared procedure for any coding agent or person working on Print Partner. It needs a shell, Git, Python 3, and the toolchains in [AGENTS.md](../../AGENTS.md). The repo skills in `.claude/skills/` link to the sections below.
 
 The rules in AGENTS.md apply everywhere in this page.
 
@@ -36,7 +36,7 @@ When you stop with work in flight or hand it off, post a Handoff comment on the 
 
 ## Handoffs
 
-Any agent or person can take over Print Partner Desktop work: Capy, Factory Droid, Claude Code, Codex, or you. Everything needed to continue lives in four places, never only in one agent's chat or machine:
+Any agent or person can take over Print Partner Desktop work: Claude Code, Codex, or you. Everything needed to continue lives in four places, never only in one agent's chat or machine:
 
 | What | Where |
 | --- | --- |
@@ -93,13 +93,13 @@ python3 scripts/local-ci.py --list
 python3 scripts/local-ci.py --only <step-ids> --fail-on-skip
 ```
 
-`just guidance` checks local links and heading anchors in every tracked Markdown page; checks titles, skill metadata and Git trackability in AGENTS.md, this page, factory-missions.md and the repo skills; and runs the safety guard tests. The [CI guide](ci.md) maps each hosted check to a local command.
+`just guidance` checks local links and heading anchors in every tracked Markdown page; checks titles, skill metadata and Git trackability in AGENTS.md, this page and the repo skills; and runs the safety guard tests. The [CI guide](ci.md) maps each hosted check to a local command.
 
 ## Safety guard
 
 `scripts/agent-guard.py` checks one shell command, file edit, or patch before it runs. It refuses actions reserved for the maintainer. Exit 0 allows the operation. Exit 2 refuses it, or rejects input it does not understand, with the reason on stderr.
 
-Droid runs it automatically through `.factory/hooks.json` and the adapter `.factory/hooks/guard.py`. Claude Code runs it through `.claude/hooks/guard.py` after you add the hook settings in [Claude Code](#claude-code). No other runner does. Configure your runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
+Claude Code runs it through `.claude/hooks/guard.py` after you add the hook settings in [Claude Code](#claude-code). No other runner does. Configure your runner's pre-tool hook to call the guard, or run it yourself before any `git` or `gh` command that pushes, merges, publishes, or changes settings, and before editing environment, Git, or generated files.
 
 ```sh
 python3 -B scripts/agent-guard.py command --cwd "$PWD" 'git push -u origin HEAD:chore/topic'
@@ -183,17 +183,17 @@ The command must stand alone: no other options such as `--admin`, `--auto`, or `
 }
 ```
 
-Replace `/persist/coordinator/PrintPartner` with the coordinator worktree's absolute path. A Droid hook command can set the same variable.
+Replace `/persist/coordinator/PrintPartner` with the coordinator worktree's absolute path.
 
 ## Writing and plans
 
-Write docs, comments, and PR text plainly. State what the code or command does, with the number, path, or command where there is one. Use active voice. Cut filler, puffery, and abstractions the change doesn't need. Droid users can run the `unslop` skill; the result is what counts.
+Write docs, comments, and PR text plainly. State what the code or command does, with the number, path, or command where there is one. Use active voice. Cut filler, puffery, and abstractions the change doesn't need. Claude Code users can run the `unslop` skill; the result is what counts.
 
-Before large or risky work, write the plan down and challenge it. Risky work includes moving operation ownership, persistence formats, printer sends, CI or security controls, and changes over about 1,500 lines. List how the plan could fail, check each risk against the code, and get open decisions answered by the owner before you build. The `grilling` skill does this in Droid.
+Before large or risky work, write the plan down and challenge it. Risky work includes moving operation ownership, persistence formats, printer sends, CI or security controls, and changes over about 1,500 lines. List how the plan could fail, check each risk against the code, and get open decisions answered by the owner before you build. The `grilling` skill does this in Claude Code.
 
 ## Review and merge
 
-Every ready PR needs the required `review-gate` check. It passes on the PR's head when Factory Droid's `droid-review`, or Claude's code review together with its security review, succeeded on that head, or when the coordinator recorded its own review of that head. Droid review is suspended until a provider-neutral gate replaces it or the Factory quota returns, and the Claude reviews run only on the owner's own PRs from this repository. [Code review](definition-of-done.md#code-review) describes each path. The Claude reviews draw on the owner's subscription usage limits, so the Droid and coordinator paths stay. If you work in another tool, the checks still run on your PR. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. The coordinator merges from its own worktree once the [merge gate](definition-of-done.md#merge-gate) passes; lanes and other agents report readiness and never merge. A score that a lane posts with `post-score.sh` is a record only.
+Every ready PR needs the required `review-gate` check. It passes on the PR's head when Claude's code review together with its security review succeeded on that head, or when the coordinator recorded its own review of that head. The Claude reviews run only on the owner's own PRs from this repository. [Code review](definition-of-done.md#code-review) describes each path. If you work in another tool, the checks still run on your PR. Fix each finding, or reply with why it doesn't apply, then resolve the thread. Merging needs green required checks and no open threads. The coordinator merges from its own worktree once the [merge gate](definition-of-done.md#merge-gate) passes; lanes and other agents report readiness and never merge. A score that a lane posts with `post-score.sh` is a record only.
 
 Every PR says `Fixes GRE-xxx`. Put unmet acceptance items in a child ticket that quotes them verbatim; see [Fixes only](definition-of-done.md#fixes-only). `linear-pr-sync.yml` sets the ticket states that follow a PR, so don't move them yourself.
 
@@ -260,7 +260,7 @@ try {
 }
 ```
 
-`playwright-core` does not download a browser. Both programs call `browserExecutable()` from `web/apps/web/test/browser/browserExecutable.mjs`, the resolver the browser tests use. It tries `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then a Chromium that Playwright downloaded, then the usual Chrome and Chromium install paths, and throws if it finds none. The development container and the Factory cloud setup set the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows, or run `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture. In Droid, the `agent-browser` skill works too if one session covers the interaction and the capture.
+`playwright-core` does not download a browser. Both programs call `browserExecutable()` from `web/apps/web/test/browser/browserExecutable.mjs`, the resolver the browser tests use. It tries `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then a Chromium that Playwright downloaded, then the usual Chrome and Chromium install paths, and throws if it finds none. The development container sets the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows, or run `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture. In Claude Code, the `agent-browser` skill works too if one session covers the interaction and the capture.
 
 ### Rust gateway
 

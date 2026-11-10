@@ -135,7 +135,7 @@ class AgentGuidanceTests(unittest.TestCase):
         self.assertEqual(GUIDANCE.tracked_markdown(self.root), ["docs/a b.md"])
 
     def test_skill_metadata(self):
-        name = ".factory/skills/pp-readiness/SKILL.md"
+        name = ".claude/skills/pp-readiness/SKILL.md"
         for metadata, expected in (
             ("---\nname: pp-readiness\ndescription: Run bounded QA.\n---\n", []),
             ("# No frontmatter\n", ["missing YAML frontmatter"]),
@@ -172,8 +172,8 @@ class AgentGuidanceTests(unittest.TestCase):
     def test_real_ignore_rules_allow_templates_but_not_secrets(self):
         cases = {
             "AGENTS.md": False,
-            ".factory/skills/pp-readiness/SKILL.md": False,
-            ".factory/skills/pp-verify/SKILL.md": False,
+            ".claude/skills/pp-readiness/SKILL.md": False,
+            ".claude/skills/pp-verify/SKILL.md": False,
             ".env.example": False,
             ".env.development.example": False,
             "web/apps/web/.env.example": False,

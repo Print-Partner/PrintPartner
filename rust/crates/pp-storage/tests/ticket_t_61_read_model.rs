@@ -560,22 +560,21 @@ fn ticket_t_61_read_model_plate_and_history_corruption_is_explicit() {
     }
 }
 
-#[test]
-fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
-    // GRE-1355: Today, the Build overview, the Builds list and MCP all read this
-    // reason. Autosave writes a draft; only Accept changes the Build. The wording matches
-    // web/apps/ui/src/builds/planCopy.ts (GRE-1140).
+/// Workflow facts for one Build with no jobs, no Checkoff work and the given Sources and Plan.
+fn workflow_facts(
+    sources: pp_storage::read_model::workflow::Sources,
+    accepted_plan: pp_storage::read_model::workflow::Accepted,
+) -> pp_storage::read_model::workflow::Facts {
     use pp_storage::read_model::workflow::{
-        self, Accepted, ActionKind, Build, Checkoff, Facts, PlateState, Production, Sources,
-        Working,
+        Build, Checkoff, Facts, PlateState, Production, Working,
     };
-    let facts = Facts {
+    Facts {
         build: Build {
             id: 1,
             name: "Build".into(),
         },
-        sources: Sources::Ready { attached_count: 1 },
-        accepted_plan: Accepted::None,
+        sources,
+        accepted_plan,
         working_plan: Working::None,
         production: Production {
             plate_state: PlateState::NotStarted,
@@ -592,7 +591,16 @@ fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
             match_suggestions: 0,
         },
         stock: Default::default(),
-    };
+    }
+}
+
+#[test]
+fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
+    // GRE-1355: Today, the Build overview, the Builds list and MCP all read this
+    // reason. Autosave writes a draft; only Accept changes the Build. The wording matches
+    // web/apps/ui/src/builds/planCopy.ts (GRE-1140).
+    use pp_storage::read_model::workflow::{self, Accepted, ActionKind, Sources};
+    let facts = workflow_facts(Sources::Ready { attached_count: 1 }, Accepted::None);
     let action = workflow::resolve(&facts).unwrap().next_action;
     assert_eq!(action.kind, ActionKind::CreateWorkingPlan);
     assert_eq!(action.label, "Open Plan");
@@ -606,38 +614,16 @@ fn open_plan_reason_says_drafts_save_and_accept_changes_the_build() {
 
 #[test]
 fn ticket_t_61_read_model_workflow_rejects_unsafe_numbers() {
-    use pp_storage::read_model::workflow::{
-        self, Accepted, Build, Checkoff, Facts, PlateState, Production, Sources, Working,
-    };
-    let mut facts = Facts {
-        build: Build {
-            id: 1,
-            name: "Build".into(),
-        },
-        sources: Sources::Empty,
-        accepted_plan: Accepted::Ready {
+    use pp_storage::read_model::workflow::{self, Accepted, Sources};
+    let mut facts = workflow_facts(
+        Sources::Empty,
+        Accepted::Ready {
             revision_id: 1,
             plan_version: 1,
             total_units: 1,
             remaining_units: 2,
         },
-        working_plan: Working::None,
-        production: Production {
-            plate_state: PlateState::NotStarted,
-            queued_jobs: 0,
-            sending_jobs: 0,
-            printing_jobs: 0,
-            failed_jobs: 0,
-        },
-        checkoff: Checkoff {
-            awaiting_verification: 0,
-            failed_verifications: 0,
-            printer_links: 0,
-            beds_to_clear: 0,
-            match_suggestions: 0,
-        },
-        stock: Default::default(),
-    };
+    );
     assert!(workflow::resolve(&facts).is_err());
     facts.accepted_plan = Accepted::None;
     facts.production.queued_jobs = 9_007_199_254_740_991;

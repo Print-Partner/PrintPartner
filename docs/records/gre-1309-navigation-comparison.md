@@ -33,7 +33,7 @@ Each session gets one question. The prompt names the worktree, says to answer fr
 
 ## Scoring
 
-- **Files opened** (as recorded, counted by [`navcount.py`](gre-1309/navcount.py); corrected, counted by `recount.py` in the tools PR #1644; prompt in [`prompt.txt`](gre-1309/prompt.txt)): distinct repository files whose contents the session read, counted from the thread's tool log. Shell commands that print file contents (`cat`, `sed -n`, `head`, `tail`, `nl`, `less`) count. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened. The counter reads only shell commands, and it stops with an error on any other tool item type, so a Read-tool call cannot be missed silently. None of the session logs contains a Read-tool item; every file access in them is a shell command.
+- **Files opened** (as recorded, counted by [`navcount.py`](gre-1309/navcount.py); corrected, counted by `recount.py` in the tools PR #1644; prompt in [`prompt.txt`](gre-1309/prompt.txt)): distinct repository files whose contents the session read, counted from the thread's tool log. Shell commands that print file contents count when they name a file: `cat`, `sed`, `head`, `tail`, `nl`, `less`, `more`, `bat` and `awk`, the same set as `READERS` in `navcount.py`. Search hits (`rg`, `grep`, `find`, `ls`) don't count as opened. The counter reads only shell commands, and it stops with an error on any other tool item type, so a Read-tool call cannot be missed silently. None of the session logs contains a Read-tool item; every file access in them is a shell command.
 - **Minutes:** from the run's start to its completion timestamp in the thread log.
 - **Correctness:** the coordinator marks the final answer against the key below. The answer is correct only when it contains every required fact, and incorrect if it names a listed wrong answer as the answer.
 - **Sessions:** three per model, per question, per arm, so 60 in all.
@@ -112,7 +112,7 @@ Wrong answers: `cargo test` or `cargo nextest run` alone; the hand-run list in `
 
 ### Without arm (complete, 2026-11-09)
 
-All 30 sessions ran on `7908c703` between 21:23 and 21:40 UTC. The as-recorded counts come from `navcount.py`, which reads each session's tool log and applies the rule in Scoring. The corrected counts and the minutes in the table come from `recount.py` (tools PR #1644), which also expands shell variables, parses multi-line Codex scripts, and reports minutes to two decimals. `navcount.py` reports minutes to one decimal, as recorded. "Correct" is the coordinator's mark against the key.
+The 30 original sessions ran on `7908c703` between 21:23 and 21:40 UTC; the five re-runs for blocked slots ran later (see Reruns). The as-recorded counts come from `navcount.py`, which reads each session's tool log and applies the rule in Scoring. For the blocked rows, the as-recorded count is the value from the original, blocked session, and the corrected count, minutes and Correct come from the re-run that filled the slot. Q3 Claude run 2 is the original session throughout. The corrected counts and the minutes in the table come from `recount.py` (tools PR #1644), which also expands shell variables, parses multi-line Codex scripts, and reports minutes to two decimals. `navcount.py` reports minutes to one decimal, as recorded. "Correct" is the coordinator's mark against the key.
 
 | Question | Model | Session | Files opened, as recorded | Files opened, corrected | Minutes | Correct |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -157,7 +157,7 @@ Per question and model, the median of the three corrected file counts:
 | 4 | 2 | 2 |
 | 5 | 2 | 4 |
 
-The as-recorded table above and these medians differ because the counts were corrected: shell variables are now expanded, and multi-line Codex scripts are parsed in full. Ten sessions changed. The as-recorded column keeps the original values. Q3 Claude runs 1 and 3 and all Q3 Codex runs were blocked in the original sessions, so their corrected values come from the re-runs.
+The as-recorded table above and these medians differ because the counts were corrected: shell variables are now expanded, and multi-line Codex scripts are parsed in full. Ten sessions changed. The as-recorded column keeps the original values. Q3 Claude runs 1 and 3 and all Q3 Codex runs were blocked in the original sessions. For those rows the as-recorded value is the blocked session's, and the corrected count, minutes and Correct column come from the re-run that filled the slot. The medians for Q3 use the re-run values.
 
 Files opened in each session, as recorded before the counting correction (`navcount.py` output). These are not the corrected counts; the corrected values are in the table above.
 

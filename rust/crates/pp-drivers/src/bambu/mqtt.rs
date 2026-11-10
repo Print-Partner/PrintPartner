@@ -74,6 +74,11 @@ pub(crate) fn disconnect() -> Vec<u8> {
     vec![0xe0, 0]
 }
 
+/// PINGREQ, which keeps a long-lived session open.
+pub(crate) fn pingreq() -> Vec<u8> {
+    vec![0xc0, 0]
+}
+
 /// Reads one packet. A packet over `MAX_PACKET` fails before its body is read.
 pub(crate) async fn read(reader: &mut (impl AsyncRead + Unpin)) -> Result<Packet> {
     let header = reader.read_u8().await?;

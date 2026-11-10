@@ -26,7 +26,7 @@ cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 just ci --fast     # local CI for a normal PR: affected nextest, no full test or doc passes
 just ci            # full local CI for a sensitive PR; same as python3 scripts/local-ci.py
 just ci --list     # step ids for --only / --skip
-just guidance      # checks links in every .md, this file, and the repo skills
+just guidance      # checks links in every .md, this file, the repo skills, and the safety guard
 ```
 
 `just ci` exits 0 with SKIP lines when a tool is missing. A SKIP is not a pass: list it under Evidence. The [CI guide](docs/development/ci.md) maps each hosted check to a local command.

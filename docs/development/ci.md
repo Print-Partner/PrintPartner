@@ -35,7 +35,7 @@ The `agent-guidance` job in `actionlint.yml` runs `scripts/check-agent-guidance.
 - **Links in every page:** for every tracked Markdown page (`git ls-files '*.md'`), each local link (inline, image or reference definition) must point to a file or directory inside the checkout, and each `#anchor` into a Markdown page must match a heading anchor as GitHub generates it or an explicit HTML `id` or `name` anchor. Links in fenced code blocks and inline code are examples and are skipped. External links are not fetched.
 - **Guidance rules:** only for the shared guidance (the root `AGENTS.md`, `docs/development/agent-workflow.md` and the repo skills in `.claude/skills/`): a `# ` title (skills excepted), each skill's `name` and `description`, and that Git does not ignore these files.
 
-The job also tests the staged-Rust snapshot in the opt-in pre-commit hook (including sparse worktrees). Run it locally with `just guidance`; the `agent-guidance` step of `just ci` runs the link check and its tests. Renaming a heading or moving a page fails this check until every link to it is updated.
+The job also tests the agent safety guard and the staged-Rust snapshot in the opt-in pre-commit hook (including sparse worktrees). Run it locally with `just guidance`; the `agent-guidance` step of `just ci` runs the link check and its tests. Renaming a heading or moving a page fails this check until every link to it is updated.
 
 ## Large-file and pre-commit checks
 

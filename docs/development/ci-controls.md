@@ -132,6 +132,8 @@ The ruleset has these protections:
 
 `rust (macos)` and `rust (windows)` are absent, consistent with their advisory status in [Continuous integration](ci.md).
 
+Factory Droid review (#1386, 2026-10-31) replaced the `pp/score-verified` model-score check. Droid was removed on 2026-11-10; `review-gate`, which passes on a Claude review or the owner's marker, now covers that role.
+
 No approving reviews are required. Chad authors PRs as `poitee`, and GitHub forbids
 self-approval. CODEOWNERS requests Chad's review but does not make it a merge requirement.
 
@@ -156,9 +158,9 @@ No diff means the normalized live response matches the snapshot. A diff needs re
 
 ## Turn on the merge queue
 
-The repository moved to the Print-Partner organization on 2026-11-07, which makes GitHub's merge queue available on this public repository at no cost. All five required checks report on `merge_group` events; [Merge queue](ci.md#merge-queue) describes what each one does there. The queue stays off until Chad adds the rule below. Agents never change the ruleset.
+The repository moved to the Print-Partner organization on 2026-11-07, which makes GitHub's merge queue available on this public repository at no cost. All five required checks report on `merge_group` events; [Merge queue](ci.md#merge-queue) describes what each one does there. The queue is on: the rule below was added to ruleset `25285698` on 2026-11-09 (ruleset version `56963310`), and `main-ci-controls.ruleset.json` records it. Agents never change the ruleset.
 
-Chad adds one `merge_queue` rule to ruleset `25285698` and changes nothing else in it:
+The rule, as added (it changed nothing else in the ruleset):
 
 | Setting | Value | Why |
 | --- | --- | --- |
@@ -170,19 +172,7 @@ Chad adds one `merge_queue` rule to ruleset `25285698` and changes nothing else 
 
 The required status checks and `strict_required_status_checks_policy: false` stay as they are; the queue replaces "branch must be up to date".
 
-In the web UI: **Settings > Rules > main CI controls > Require merge queue**, with the values above. Or, as an admin, from the repository root:
-
-```sh
-jq 'del(.id, .source, .source_type)
-    | .rules += [{"type": "merge_queue", "parameters": {
-        "check_response_timeout_minutes": 150, "grouping_strategy": "ALLGREEN",
-        "max_entries_to_build": 2, "max_entries_to_merge": 5, "merge_method": "SQUASH",
-        "min_entries_to_merge": 1, "min_entries_to_merge_wait_minutes": 5}}]' \
-  docs/development/main-ci-controls.ruleset.json \
-  | gh api -X PUT repos/Print-Partner/PrintPartner/rulesets/25285698 --input -
-```
-
-Afterwards, save the live ruleset into `docs/development/main-ci-controls.ruleset.json` with the read-only command above in a docs PR, then queue two small PRs back to back to test it.
+To test the queue, queue two small PRs back to back and check that both land.
 
 With the queue on, `gh pr merge <n> --squash --match-head-commit <sha>` adds the PR to the queue instead of merging it, so queueing a PR is merging it. Queue only a PR whose required checks already passed on its head. Removing a PR from the queue needs the web UI.
 

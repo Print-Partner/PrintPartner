@@ -46,11 +46,11 @@ Cargo features:
 
 ## Tests
 
-- `tests/ticket_t_59_sync.rs`: replays `fixtures/parity/github-sync/node.json` (`generate.mjs` beside it).
-- `tests/ticket_t_60_profile_sync.rs`: replays `fixtures/parity/profile-sync`.
-- `tests/ticket_t_44_discovery.rs`: profile and bundle discovery on `tests/fixtures/discovery/{present,absent,unsupported}`; most cases are Unix-only.
-- `tests/ticket_t_62_mcp_domain.rs`: replays `fixtures/parity/mcp-proposals/*.json` and diffs `tools/list` against `web/apps/server/fixtures/mcp/tools-inventory.json`.
-- `tests/ticket_t_58_kit.rs` (`desktop_rebuild`): replays `fixtures/parity/kit-bundle`. Regenerate with `node fixtures/parity/kit-bundle/generate.mjs`.
+- `tests/github_sync_golden.rs`: replays `fixtures/parity/github-sync/node.json` (`generate.mjs` beside it).
+- `tests/profile_sync_golden.rs`: replays `fixtures/parity/profile-sync`.
+- `tests/native_discovery.rs`: profile and bundle discovery on `tests/fixtures/discovery/{present,absent,unsupported}`; most cases are Unix-only.
+- `tests/mcp_dispatch_parity.rs`: replays `fixtures/parity/mcp-proposals/*.json` and diffs `tools/list` against `web/apps/server/fixtures/mcp/tools-inventory.json`.
+- `tests/kit_bundle_golden.rs` (`desktop_rebuild`): replays `fixtures/parity/kit-bundle`. Regenerate with `node fixtures/parity/kit-bundle/generate.mjs`.
 - Unit tests in `src/discovery.rs`, `src/profile_sync.rs`, `src/sync/github_url.rs` and `src/kit/js.rs`.
 
 Fixture paths under `fixtures/` are at the repo root. No `pp-testkit` dev-dependency.

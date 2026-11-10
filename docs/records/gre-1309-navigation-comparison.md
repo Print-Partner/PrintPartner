@@ -2,7 +2,7 @@
 
 This record holds the W0.5 navigation comparison from the maintainability plan (GRE-1306, revision 20). It records the comparison only. The navigation gate is decided by GRE-1320 on main after A3, A5 and A8 merge, not here.
 
-Companion PRs: the counts (#1643), the counting tools (#1644), the grading inputs and grades (#1645) and the logs archive (#1646) are separate. The paths below refer to files in those PRs, and they resolve once those PRs merge.
+Companion PRs: the counts (#1643), the counting tools (#1644) and the grading inputs and grades (#1645). The paths below refer to files in those PRs. The raw session logs are not in the repository; see Logs under Measurement limits.
 
 The questions, models and method below were fixed and committed before the first session ran. Results are added below them as sessions finish.
 
@@ -219,13 +219,13 @@ Two grading choices on the without arm were made after seeing the answers. They 
 
 The 30 session grades above are unchanged by the reruns. Grades are in `grading/rerun-grades.tsv`, graded blind by a fresh agent under the key and the rulings in `grading/key-rulings.md`.
 
-**Limitation.** The rerun answers were taken from the completion notices, not from the raw thread logs. They were condensed for layout, and the required facts were kept. Their verbatim text is not yet in the archive.
+**Limitation.** The rerun answers were taken from the completion notices, not from the raw thread logs. They were condensed for layout, and the required facts were kept. Their verbatim text is not in the repository, because the raw logs are not committed.
 
 ### With arm (complete, 2026-11-09)
 
 **Treatment.** Commit `6deb5b542` on `lynchdc39987/gre-1309-with-arm-astra-3`: `7908c7036` plus the signposts. The signposts were not separate PR heads when the arm ran. The PRs were opened after the run, from the same files, at these heads: A3 PR #1650 at `de26fbf37` (two post-freeze row fixes), A5 PR #1651 at `986b24fc8` (a post-freeze `.gitignore` change), and A8 PR #1652 at `456cd3042` (the move as extracted; it still needs a line-27 link repair after #1650 merges). The frozen arm is `6deb5b542`, and each PR head differs from it only by the changes named here. A3 is the family index (`docs/families.md`). A5 is the nested `AGENTS.md` files. A8 is the receipt move: nine records moved verbatim into `docs/records/`, with link-target repairs, 2,258 lines. The sessions ran in a detached checkout of that commit. The prompt names that checkout's path; the without arm's path differs, and nothing else in the prompt changed.
 
-**Sessions.** 30 sessions, same models, settings and prompt as the without arm. Logs are in `docs/records/gre-1309/logs.tar.gz` (sha256 `834b83ff3d7e6f64e4724893da62a48edb18db7fa5e7cd5572c5bc85b00cf4d9`), with `logs/with/` for these sessions, `logs/without/` and `logs/without/reruns/` for the without arm, and the file lists in `counts/`. Counts are in `docs/records/gre-1309/counts/sessions-with.csv`.
+**Sessions.** 30 sessions, same models, settings and prompt as the without arm. The raw session logs are not committed (see Logs under Measurement limits). The counts in `docs/records/gre-1309/counts/sessions-with.csv` were computed from them. The archive that held them is kept outside git, with sha256 `834b83ff3d7e6f64e4724893da62a48edb18db7fa5e7cd5572c5bc85b00cf4d9`, so a copy can be checked.
 
 **Counts.** Medians of three sessions per cell. "Content" is the revision 22 count. "Files read" is the corrected files-opened count from the original rule.
 
@@ -259,5 +259,5 @@ The 30 session grades above are unchanged by the reruns. Grades are in `grading/
 - **Re-runs.** Done (see the Re-runs section). Under the rule, three cells fail: with-arm Q1 Claude, with-arm Q3 Claude, and without-arm Q3 Claude. An extra second re-run for the without-arm Q3 Claude cell passed; it was run outside the rule and is not counted.
 - **Borderline adjudication.** Done (see the Adjudication section, 2026-11-09). The original grades are kept.
 - **Missing paths.** Eleven paths named in with-arm search commands are absent from the with checkout. None was opened.
-- **Logs.** The raw logs are in one archive, `logs.tar.gz`, in PR #1646. That PR is blocked by the repository large-file limit, so the archive is not yet on main. The logs contain local paths, including the username.
+- **Logs.** The raw logs are not committed. The logs archive PR (#1646) is closed, because the archive (4,343,827 bytes) exceeds the repository's 1,572,864-byte large-file limit. The counts and grades in this repository were produced from the logs, so they cannot be recomputed from the repository alone. The archive is kept outside git, with sha256 `834b83ff3d7e6f64e4724893da62a48edb18db7fa5e7cd5572c5bc85b00cf4d9`. The logs contain local paths, including the username.
 

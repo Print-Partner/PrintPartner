@@ -682,6 +682,11 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
             )
         }
     };
+    unit_op(target, change)
+}
+
+/// A Required-unit change, refused when its token target is malformed.
+fn unit_op(target: Target, change: Change) -> std::result::Result<Op, Response> {
     if let Target::Token { expected, token } = &target
         && !(expected.valid() && is_token(token))
     {

@@ -3671,7 +3671,7 @@ correct:
 
 ```sh
 cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --features desktop_rebuild --lib read_model::capture_published_tests
-cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --test ticket_t_61_read_model
+cargo test --locked --manifest-path rust/Cargo.toml -p pp-storage --test read_model_batches
 ```
 
 

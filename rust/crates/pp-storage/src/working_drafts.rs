@@ -39,6 +39,9 @@ pub use rebase::{
     Conflict as RebaseConflict, Field as RebaseField, RebaseArgs, RebaseOutcome, RebaseRequest,
 };
 
+#[cfg(test)]
+#[path = "working_drafts/tests/draft_reads.rs"]
+mod draft_reads;
 mod manifest;
 #[cfg(test)]
 mod manifest_tests;
@@ -46,9 +49,6 @@ mod siblings;
 #[cfg(test)]
 mod siblings_tests;
 pub mod source_reads;
-#[cfg(test)]
-#[path = "working_drafts/tests/ticket_t_10_draftreads.rs"]
-mod ticket_t_10_draftreads;
 mod yaml;
 #[cfg(test)]
 mod yaml_continuation_tests;

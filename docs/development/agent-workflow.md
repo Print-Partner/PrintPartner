@@ -187,9 +187,9 @@ Replace `/persist/coordinator/PrintPartner` with the coordinator worktree's abso
 
 ## Writing and plans
 
-Write docs, comments, and PR text plainly. State what the code or command does, with the number, path, or command where there is one. Use active voice. Cut filler, puffery, and abstractions the change doesn't need. Claude Code users can run the `unslop` skill; the result is what counts.
+Write docs, comments, and PR text plainly. State what the code or command does, with the number, path, or command where there is one. Use active voice. Cut filler, puffery, and abstractions the change doesn't need.
 
-Before large or risky work, write the plan down and challenge it. Risky work includes moving operation ownership, persistence formats, printer sends, CI or security controls, and changes over about 1,500 lines. List how the plan could fail, check each risk against the code, and get open decisions answered by the owner before you build. The `grilling` skill does this in Claude Code.
+Before large or risky work, write the plan down and challenge it. Risky work includes moving operation ownership, persistence formats, printer sends, CI or security controls, and changes over about 1,500 lines. List how the plan could fail, check each risk against the code, and get open decisions answered by the owner before you build.
 
 ## Review and merge
 
@@ -264,7 +264,7 @@ try {
 }
 ```
 
-`playwright-core` does not download a browser. Both programs call `browserExecutable()` from `web/apps/web/test/browser/browserExecutable.mjs`, the resolver the browser tests use. It tries `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then a Chromium that Playwright downloaded, then the usual Chrome and Chromium install paths, and throws if it finds none. The development container sets the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows, or run `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture. In Claude Code, the `agent-browser` skill works too if one session covers the interaction and the capture.
+`playwright-core` does not download a browser. Both programs call `browserExecutable()` from `web/apps/web/test/browser/browserExecutable.mjs`, the resolver the browser tests use. It tries `PLAYWRIGHT_CHROMIUM_EXECUTABLE`, then a Chromium that Playwright downloaded, then the usual Chrome and Chromium install paths, and throws if it finds none. The development container sets the variable. On other machines, set it to your Chrome or Chromium binary, for example on Windows, or run `npx --prefix web playwright install chromium` first. Don't reload between the interaction and the capture.
 
 ### Rust gateway
 

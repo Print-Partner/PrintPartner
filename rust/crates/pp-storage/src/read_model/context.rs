@@ -984,6 +984,22 @@ pub(super) fn capture(
         "required_unit_map",
         b,
     )?;
+    // Every revision row naming one of this Build's units, in one scan:
+    // `required_unit_token` has no index of its own.
+    let mut memberships: HashMap<String, Vec<Row>> = HashMap::new();
+    for m in rows(
+        tx,
+        "plan_revision_required_units",
+        "required_unit_token IN (SELECT token FROM required_units WHERE profile_id=?1)",
+        &[&id],
+        "required_unit_map",
+        b,
+    )? {
+        memberships
+            .entry(m.s("required_unit_token")?.to_owned())
+            .or_default()
+            .push(m);
+    }
     for u in unit_rows {
         owned(&u, tenant, Some(id), "required_unit_map")?;
         let token = u.s("token")?;
@@ -992,16 +1008,8 @@ pub(super) fn capture(
             "required_unit_map",
             "Required-unit creation history belongs to another Build",
         )?;
-        let membership = rows(
-            tx,
-            "plan_revision_required_units",
-            "required_unit_token=?1",
-            &[&token],
-            "required_unit_map",
-            b,
-        )?;
         let mut ids = Vec::new();
-        for m in membership {
+        for m in memberships.remove(token).unwrap_or_default() {
             owned(&m, tenant, None, "required_unit_map")?;
             let rid = m.n("revision_id")?;
             check(

@@ -32,7 +32,7 @@ pub(crate) fn now() -> String {
     crate::auth::timestamp(0)
 }
 
-pub(super) fn uuid() -> String {
+pub(crate) fn uuid() -> String {
     let mut b = rand::random::<[u8; 16]>();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;

@@ -403,6 +403,7 @@ async fn ticket_t_23_a_report_before_suback_answers_the_read() {
     let identity = Identity::generate().unwrap();
     let script = Script {
         retained: Some(fixture("pushall-printing.json")),
+        after_suback: Vec::new(),
         replies: vec![],
         ..Script::reporting(CODE, SERIAL, b"")
     };

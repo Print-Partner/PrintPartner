@@ -326,7 +326,8 @@ body {
   }
 
   .pp-builds-table :is(th, td),
-  .pp-farm-table :is(th, td) {
+  .pp-farm-table :is(th, td),
+  .pp-sources-table :is(th, td) {
     padding: 4px;
     overflow-wrap: anywhere;
   }
@@ -364,12 +365,14 @@ body {
 }
 
 .pp-builds-table,
-.pp-farm-table {
+.pp-farm-table,
+.pp-sources-table {
   width: 100%;
   border-collapse: collapse;
 }
 
-.pp-farm-table :is(th, td) {
+.pp-farm-table :is(th, td),
+.pp-sources-table :is(th, td) {
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   text-align: left;
@@ -377,13 +380,15 @@ body {
   font-weight: var(--font-weight-regular);
 }
 
-.pp-farm-table thead th {
+.pp-farm-table thead th,
+.pp-sources-table thead th {
   color: var(--text-muted);
   font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
 }
 
-.pp-farm-table tbody th {
+.pp-farm-table tbody th,
+.pp-sources-table tbody th {
   font-weight: var(--font-weight-medium);
 }
 

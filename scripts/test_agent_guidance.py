@@ -174,6 +174,8 @@ class AgentGuidanceTests(unittest.TestCase):
             "AGENTS.md": False,
             ".factory/skills/pp-readiness/SKILL.md": False,
             ".factory/skills/pp-verify/SKILL.md": False,
+            ".factory/skills/pp-lane/SKILL.md": False,
+            ".claude/skills/pp-lane/SKILL.md": False,
             ".env.example": False,
             ".env.development.example": False,
             "web/apps/web/.env.example": False,

@@ -3,7 +3,7 @@
 //! Ported from `web/apps/server/src/services/export-kit.ts` (bundle data,
 //! `kit.json` text and the upload parser) and `kit-bundle-share.ts` (source
 //! references, in [`source_refs`]). `fixtures/parity/kit-bundle` holds the
-//! Node golden that `tests/ticket_t_58_kit.rs` replays.
+//! Node golden that `tests/kit_bundle_golden.rs` replays.
 //!
 //! Not here yet: the accepted-progress bundle mode, which reads the accepted
 //! operational export (GRE-422), and publishing the zip under the exports

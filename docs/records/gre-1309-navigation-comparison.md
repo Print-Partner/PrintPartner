@@ -10,7 +10,7 @@ The questions, models and method below were fixed and committed before the first
 
 - **Commit:** `7908c70361dd22357704a9d9b38ead15e1b9c658` (main, 2026-11-09, after #1638).
 - **Without arm:** that commit as it is, in a detached worktree.
-- **With arm:** the same commit plus the signpost files from the PR heads of A3 (GRE-1315, family index), A5 (GRE-1316, nested `AGENTS.md`) and A8 (GRE-1317, receipts moved to `docs/records/`), copied into a second worktree. The PR head SHAs are listed here when that arm runs.
+- **With arm:** the same commit plus the signpost files from the PR heads of A3 (GRE-1315, family index), A5 (GRE-1316, nested `AGENTS.md`) and A8 (GRE-1317, receipts moved to `docs/records/`), copied into a second worktree. The arm ran on one combined commit, `6deb5b542`, not on separate PR heads. The signpost PRs were opened after the run; their heads are listed in the With arm section.
 
 ## Models
 
@@ -221,7 +221,7 @@ The 30 session grades above are unchanged by the reruns. Grades are in `grading/
 
 ### With arm (complete, 2026-11-09)
 
-**Treatment.** Commit `6deb5b542` on `lynchdc39987/gre-1309-with-arm-astra-3`: `7908c7036` plus the signposts. A3 is the family index (`docs/families.md`). A5 is the nested `AGENTS.md` files. A8 is the receipt move: nine records moved verbatim into `docs/records/`, with link-target repairs, 2,258 lines. The sessions ran in a detached checkout of that commit. The prompt names that checkout's path; the without arm's path differs, and nothing else in the prompt changed.
+**Treatment.** Commit `6deb5b542` on `lynchdc39987/gre-1309-with-arm-astra-3`: `7908c7036` plus the signposts. The signposts were not separate PR heads when the arm ran. The PRs were opened after the run, from the same files, at these heads: A3 PR #1650 at `de26fbf37` (two post-freeze row fixes), A5 PR #1651 at `986b24fc8` (a post-freeze `.gitignore` change), and A8 PR #1652 at `456cd3042` (the move as extracted; it still needs a line-27 link repair after #1650 merges). The frozen arm is `6deb5b542`, and each PR head differs from it only by the changes named here. A3 is the family index (`docs/families.md`). A5 is the nested `AGENTS.md` files. A8 is the receipt move: nine records moved verbatim into `docs/records/`, with link-target repairs, 2,258 lines. The sessions ran in a detached checkout of that commit. The prompt names that checkout's path; the without arm's path differs, and nothing else in the prompt changed.
 
 **Sessions.** 30 sessions, same models, settings and prompt as the without arm. Logs are in `docs/records/gre-1309/logs.tar.gz` (sha256 `834b83ff3d7e6f64e4724893da62a48edb18db7fa5e7cd5572c5bc85b00cf4d9`), with `logs/with/` for these sessions, `logs/without/` and `logs/without/reruns/` for the without arm, and the file lists in `counts/`. Counts are in `docs/records/gre-1309/counts/sessions-with.csv`.
 

@@ -33,11 +33,11 @@ A PR is sensitive when it touches any area or path that item 6 of the [merge gat
 
 ## Review
 
-Before pushing, have a fresh-context reviewer read the diff: correctness and AGENTS.md rules always, and security for anything near auth, files, printers, secrets, or CI. Fix real findings. On the PR, fix each review thread's finding or reply with why it doesn't apply, then resolve the thread. P0 and P1 findings block. A P2 that affects real user data or security, or causes a crash, becomes a bug ticket (see the [review policy](../../../docs/development/definition-of-done.md#review-and-merge-policy)); only other P2s and P3s go on GRE-974. At most two fix rounds after the first review; then escalate on the ticket as the [review policy](../../../docs/development/definition-of-done.md#review-and-merge-policy) says.
+Before pushing, have a fresh-context reviewer read the diff: correctness and AGENTS.md rules always, and security for anything near auth, files, printers, secrets, or CI. Fix real findings. On the PR, fix each review thread's finding or reply with why it doesn't apply, then resolve the thread. P0 and P1 findings block. A P2 that affects real user data or security, or causes a crash, becomes a bug ticket (see the [review policy](../../../docs/development/definition-of-done.md#review-and-merge-policy)); only other P2s and P3s go on GRE-974. Each fix round is one push, and a fix restarts review on the new head (see [Push and open the PR](#push-and-open-the-pr)). At most two fix rounds after the first review; then escalate on the ticket as the [review policy](../../../docs/development/definition-of-done.md#review-and-merge-policy) says.
 
 ## Push and open the PR
 
-1. Push once: `git push --no-follow-tags origin HEAD:<branch>`. Never force-push.
+1. Push once per round with `git push --no-follow-tags origin HEAD:<branch>`. The first push opens the PR. Each review or scorer fix round is one more push, at most two rounds. Never force-push.
 2. Open the PR against `main`. The body starts with `Fixes GRE-<n>`, says what changed and why, says whether the PR is sensitive, and has `## Evidence` with each command and its result. Unmet acceptance items go to a child ticket that quotes them verbatim, never `Refs`.
 3. UI or desktop changes also need screenshots or video under Evidence; see [Gate evidence](../../../docs/contributing/gate-evidence.md). For the replacement UI on a Rust-only core, use the harness in two steps. First capture with `scripts/evidence/run.sh --shot <path>` (add `--step` or `--module` as needed); it never publishes. Then open each PNG it lists and check that it shows the change and nothing private. Only then publish with `python3 scripts/evidence/publisher.py <pr-number> <files...>`, the only publish path. The [harness README](../../../scripts/evidence/README.md) has the options.
 4. Don't edit the PR body after CI starts; every edit reruns the gate.
@@ -45,7 +45,7 @@ Before pushing, have a fresh-context reviewer read the diff: correctness and AGE
 
 ## While CI runs
 
-- **Standing rebase rule** (done by merging, not rebasing). When `main` moves and the PR conflicts, merge `origin/main` into the branch, regenerate generated files, rerun the affected checks, and push, without asking. These pushes don't count against "push once". Never rebase a pushed branch or force-push.
+- **Standing rebase rule** (done by merging, not rebasing). When `main` moves and the PR conflicts, merge `origin/main` into the branch, regenerate generated files, rerun the affected checks, and push, without asking. These merge pushes don't count as fix rounds. Never rebase a pushed branch or force-push.
 - No CI reruns, except once per job for a flake that has a ticket or an external 429 or 5xx.
 - `rust (windows)` is advisory; don't chase a red Windows job unless the ticket is Windows work.
 

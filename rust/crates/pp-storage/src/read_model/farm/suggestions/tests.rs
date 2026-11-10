@@ -22,8 +22,8 @@ fn library() -> MatchLibrary {
     MatchLibrary {
         builds: [(1, "Voron 2.4".into()), (2, "Trident".into())].into(),
         part_files: [
-            (1, vec!["parts/bracket.stl".into(), "arm.stl".into()]),
-            (2, vec!["bracket.stl".into(), "panel.stl".into()]),
+            (1, FilenameIndex::new(&["parts/bracket.stl", "arm.stl"])),
+            (2, FilenameIndex::new(&["bracket.stl", "panel.stl"])),
         ]
         .into(),
         units: [

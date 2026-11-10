@@ -1,6 +1,6 @@
 #![cfg(feature = "desktop_rebuild")]
-//! GRE-365 and GRE-1215 through the mounted Rust routes: Send now, Send
-//! ready, Reconcile and Remove on a disposable copy of a real SQLite fixture.
+//! GRE-365, GRE-1215 and GRE-1227 through the mounted Rust routes: Add to
+//! queue, Send now, Send ready, Reconcile and Remove on a disposable copy of a real SQLite fixture.
 //! The printer checks are a fake, so no request reaches a printer; the send
 //! worker's own tests cover the uploads.
 use axum::{Router, http::StatusCode};
@@ -22,6 +22,8 @@ use std::{
 
 #[path = "support/loopback.rs"]
 mod loopback;
+#[path = "support/multipart.rs"]
+mod multipart;
 
 const DATABASE: &[u8] =
     include_bytes!("../../pp-storage/tests/fixtures/required-units/unchanged.db");
@@ -38,7 +40,10 @@ struct Targets {
     busy: Vec<&'static str>,
     /// Items whose staged file is gone.
     missing: Vec<&'static str>,
+    /// Removed items' ids, and refused additions' staged paths.
     discarded: Mutex<Vec<String>>,
+    /// Files staged for added items, by name.
+    staged: Mutex<Vec<(String, Vec<u8>)>>,
     /// Wakes sent to the worker.
     dispatches: Mutex<usize>,
 }
@@ -61,13 +66,36 @@ impl SendTargets for Targets {
         }
     }
 
+    fn host(&self, printer_id: &str) -> Result<String, (StatusCode, String)> {
+        match printer_id {
+            "p-bambu" => Err((
+                StatusCode::BAD_REQUEST,
+                "Queue is not supported for bambu".into(),
+            )),
+            "p-none" => Err((StatusCode::NOT_FOUND, "Fleet printer not found".into())),
+            printer => Ok(format!("{printer} host")),
+        }
+    }
+
+    fn stage(&self, name: &str, file: &[u8]) -> std::io::Result<String> {
+        let mut staged = self.staged.lock().unwrap();
+        staged.push((name.to_owned(), file.to_vec()));
+        Ok(format!(
+            "/data/exports/printer-uploads/{}/{name}",
+            staged.len()
+        ))
+    }
+
     fn dispatched(&self) {
         *self.dispatches.lock().unwrap() += 1;
     }
 
     fn discard(&self, item: &Value) {
-        let id = item["id"].as_str().unwrap().to_owned();
-        self.discarded.lock().unwrap().push(id);
+        let id = item.get("id").unwrap_or(&item["artifact_path"]);
+        self.discarded
+            .lock()
+            .unwrap()
+            .push(id.as_str().unwrap().to_owned());
     }
 }
 
@@ -124,6 +152,33 @@ impl Queue {
     async fn send(&self, method: &str, path: &str, body: &str) -> (StatusCode, Value) {
         let cookie = Some("pp_session=required-unit-fixture-secret");
         loopback::send(&self.router, method, path, Some(body), cookie).await
+    }
+
+    async fn add(&self, parts: &[Part<'_>]) -> (StatusCode, Value) {
+        let (content_type, body) = multipart::multipart(parts);
+        let cookie = Some("pp_session=required-unit-fixture-secret");
+        let path = "/api/v2/printer-send-queue";
+        loopback::send_as(
+            &self.router,
+            "POST",
+            path,
+            Some(&content_type),
+            body,
+            cookie,
+        )
+        .await
+    }
+
+    /// The number of queue items and of durable jobs.
+    fn counts(&self) -> (i64, i64) {
+        let sql = rusqlite::Connection::open(self.root.join("print-partner.db")).unwrap();
+        let count = |table: &str| {
+            sql.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        (count("printer_send_queue"), count("durable_jobs"))
     }
 
     /// The item's state and error, and its upload job's state.
@@ -463,4 +518,184 @@ async fn ticket_t_26_a_send_needs_the_farm_feature() {
     assert_eq!(body["code"], "FEATURE_TOGGLES_INVALID", "{body}");
     assert_eq!(queue.item("q1"), ("queued".into(), None, None));
     assert_eq!(*queue.targets.dispatches.lock().unwrap(), 0);
+}
+
+const GCODE: &[u8] = b"G28\nG1 X10\n";
+/// A form part: field name, file name, bytes.
+type Part<'a> = (&'a str, Option<&'a str>, &'a [u8]);
+
+#[tokio::test]
+async fn add_to_queue_stages_the_file_and_queues_an_item_without_sending() {
+    let queue = Queue::open("1", Targets::default(), &[("q1", "p-a", "queued", None)]);
+    let before = queue.counts();
+    let (status, body) = queue
+        .add(&[
+            ("printer_id", None, b"p-b"),
+            ("profile_id", None, b"1"),
+            ("start", None, b"true"),
+            ("checkoff_units", None, br#"[{"part_id":3,"unit_index":1}]"#),
+            ("gcode", Some("plates/Plate 1.gcode"), GCODE),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let item = &body["item"];
+    assert_eq!(item["state"], "queued");
+    assert_eq!(item["printer_id"], "p-b");
+    assert_eq!(item["filename"], "Plate 1.gcode");
+    assert_eq!(item["profile_id"], 1);
+    assert_eq!(item["host_name"], "p-b host");
+    assert_eq!(
+        (&item["start"], &item["wait_for_idle"], &item["match"]),
+        (&json!(true), &json!(true), &json!("pinned"))
+    );
+    assert_eq!(
+        item["checkoff_units"],
+        json!([{ "part_id": 3, "unit_index": 1 }])
+    );
+    assert_eq!(
+        item["artifact_path"],
+        "/data/exports/printer-uploads/1/Plate 1.gcode"
+    );
+    assert_eq!(
+        *queue.targets.staged.lock().unwrap(),
+        [("Plate 1.gcode".to_owned(), GCODE.to_vec())]
+    );
+    let id = item["id"].as_str().unwrap();
+    assert_eq!(queue.item(id), ("queued".into(), None, None));
+    assert_eq!(queue.counts(), (before.0 + 1, before.1), "no upload job");
+    assert_eq!(
+        *queue.targets.dispatches.lock().unwrap(),
+        0,
+        "the worker is not woken"
+    );
+
+    let large = vec![b';'; 3 * 1024 * 1024];
+    let (status, body) = queue
+        .add(&[
+            ("printer_id", None, b"p-a"),
+            ("profile_id", None, b"1"),
+            ("file", Some("big.gco"), &large),
+        ])
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a file past axum's 2 MB default: {body}"
+    );
+
+    let (_, list) = queue
+        .send("POST", "/api/v2/printer-send-queue/drain", "")
+        .await;
+    assert_eq!(
+        list["results"].as_array().unwrap().len(),
+        2,
+        "one item per printer: {list}"
+    );
+    assert_eq!(
+        list["results"][1]["item_id"],
+        json!(id),
+        "the new item is after the stored one"
+    );
+}
+
+const PRINTER: Part = ("printer_id", None, b"p-a");
+const PLAN: Part = ("profile_id", None, b"1");
+const FILE: Part = ("file", Some("a.gcode"), GCODE);
+
+#[tokio::test]
+async fn add_to_queue_refuses_a_bad_form_or_printer_before_staging() {
+    let queue = Queue::open("1", Targets::default(), &[]);
+    let bad = StatusCode::BAD_REQUEST;
+    let cases: [(&[Part], StatusCode, &str); 7] = [
+        (&[PLAN, FILE], bad, "printer_id is required"),
+        (&[PRINTER, PLAN], bad, "G-code file required"),
+        (
+            &[PRINTER, PLAN, ("file", Some("a.stl"), GCODE)],
+            bad,
+            "Only .gcode / .bgcode / .gco files can be sent to a printer",
+        ),
+        (
+            &[PRINTER, FILE],
+            bad,
+            "Pick a plan to bind this send (profile_id required)",
+        ),
+        (
+            &[PRINTER, PLAN, FILE, ("gcode", Some("b.gcode"), GCODE)],
+            bad,
+            "Only one G-code file is allowed",
+        ),
+        (
+            &[("printer_id", None, b"p-bambu"), PLAN, FILE],
+            bad,
+            "Queue is not supported for bambu",
+        ),
+        (
+            &[("printer_id", None, b"p-none"), PLAN, FILE],
+            StatusCode::NOT_FOUND,
+            "Fleet printer not found",
+        ),
+    ];
+    for (parts, expected, text) in cases {
+        let (status, body) = queue.add(parts).await;
+        assert_eq!((status, detail(&body)), (expected, text));
+    }
+    assert!(
+        queue.targets.staged.lock().unwrap().is_empty(),
+        "nothing was staged"
+    );
+    assert_eq!(queue.counts().0, 0);
+}
+
+#[tokio::test]
+async fn add_to_queue_deletes_the_staged_file_when_storage_refuses_the_item() {
+    let queue = Queue::open("1", Targets::default(), &[]);
+    let (status, body) = queue.add(&[PRINTER, ("plan_id", None, b"99"), FILE]).await;
+    assert_eq!(
+        (status, detail(&body)),
+        (StatusCode::NOT_FOUND, "Profile not found")
+    );
+    let sql = rusqlite::Connection::open(queue.root.join("print-partner.db")).unwrap();
+    sql.execute(
+        "UPDATE app_settings SET value='{\"farm\":false}' WHERE tenant_id='default' AND key='feature_toggles'",
+        [],
+    )
+    .unwrap();
+    let (status, body) = queue.add(&[PRINTER, PLAN, FILE]).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::FORBIDDEN, &json!("FEATURE_DISABLED"))
+    );
+    assert_eq!(
+        *queue.targets.discarded.lock().unwrap(),
+        [
+            "/data/exports/printer-uploads/1/a.gcode",
+            "/data/exports/printer-uploads/2/a.gcode"
+        ]
+    );
+    assert_eq!(queue.counts().0, 0);
+}
+
+#[tokio::test]
+async fn add_to_queue_needs_a_valid_session_before_it_reads_the_upload() {
+    let queue = Queue::open("1", Targets::default(), &[]);
+    let (content_type, body) = multipart::multipart(&[
+        ("printer_id", None, b"p-a"),
+        ("profile_id", None, b"1"),
+        ("file", Some("a.gcode"), GCODE),
+    ]);
+    let path = "/api/v2/printer-send-queue";
+    let wrong = Some("pp_session=not-a-session");
+    let (status, _) = loopback::send_as(
+        &queue.router,
+        "POST",
+        path,
+        Some(&content_type),
+        body,
+        wrong,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(queue.targets.staged.lock().unwrap().is_empty());
+    let (status, _) = queue.send("POST", path, "{}").await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }

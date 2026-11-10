@@ -18,6 +18,7 @@ DOCUMENTS = (
     ".claude/skills/pp-readiness/SKILL.md",
     ".claude/skills/pp-verify/SKILL.md",
     ".claude/skills/pp-mission-qa/SKILL.md",
+    ".claude/skills/pp-lane/SKILL.md",
     "docs/development/agent-workflow.md",
 )
 # An inline link or image destination: bare (one level of parentheses allowed) or in angle

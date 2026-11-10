@@ -160,6 +160,9 @@ const CASES: [(&str, &str, Want); 16] = [
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ticket_t_62_mcp_domain_progress_reads_answer_node_text_for_the_callers_tenant() {
     let server = McpServer::seeded(SEED).await;
+    // The Accepted Plan's Source revision snapshot, which Rust's accepted
+    // read checks on disk and Node does not read.
+    std::fs::create_dir_all(server._directory.join("repos/1/revisions/fixture")).unwrap();
     let (_, key) = server.create_key().await;
     let headers = session(&server, &format!("Bearer {key}")).await;
     for (tool, arguments, want) in CASES {

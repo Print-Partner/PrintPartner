@@ -706,7 +706,6 @@ impl Session {
                 self.print = Some(usable(payload)?);
                 self.requested = false;
             }
-            None => return None,
             Some(Value::Object(full)) => {
                 let report: Value = serde_json::from_slice(payload).ok()?;
                 let Value::Object(changed) = report.get("print")?.clone() else {
@@ -714,7 +713,8 @@ impl Session {
                 };
                 full.extend(changed);
             }
-            Some(_) => return None,
+            // Before the pushall: no base to merge into.
+            None | Some(_) => return None,
         }
         self.print.as_ref().map(status_from_print)
     }

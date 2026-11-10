@@ -2,7 +2,7 @@
 //!
 //! Each [`ClientRoute`] names a route registered by [`crate::builds`],
 //! [`crate::drafts`], [`crate::workflow`], [`crate::accepted`], [`crate::planning`],
-//! [`crate::farm`], [`crate::checkoff`] or [`crate::auth`]. `pp-core`'s
+//! [`crate::farm`], [`crate::checkoff`], [`crate::modules`] or [`crate::auth`]. `pp-core`'s
 //! `client_routes_match_registrations` test sends every entry to the composed
 //! routers and checks that it is registered with the stated authentication.
 //!
@@ -334,6 +334,16 @@ pub const CLIENT_ROUTES: &[ClientRoute] = &[
         "SendQueue",
     ),
     ClientRoute {
+        text_params: &["module"],
+        ..route(
+            "setModule",
+            "PUT",
+            "/api/v2/modules/{module}",
+            Some("SetModuleRequest"),
+            "ModuleList",
+        )
+    },
+    ClientRoute {
         name: "readHealth",
         method: "GET",
         path: "/health",
@@ -478,6 +488,14 @@ mod codegen {
         schema("BuildWorkflow", schemars::schema_for!(BuildWorkflow))?;
         schema("TaskFeed", schemars::schema_for!(TaskFeed))?;
         schema("Health", schemars::schema_for!(crate::auth::Health))?;
+        schema(
+            "SetModuleRequest",
+            schemars::schema_for!(crate::modules::SetModuleRequest),
+        )?;
+        schema(
+            "ModuleList",
+            schemars::schema_for!(crate::modules::ModuleList),
+        )?;
         schema(
             "FilamentShortfalls",
             schemars::schema_for!(FilamentShortfalls),
@@ -1707,7 +1725,27 @@ mod codegen {
                 "modules-unreadable",
                 health(None, Some(pp_storage::features::modules::unreadable())),
             )?,
+            served(
+                "ModuleList",
+                "mixed",
+                crate::modules::ModuleList {
+                    modules: mixed_modules(),
+                },
+            )?,
         ];
+        for (name, value) in [
+            ("on", json!({"on": true})),
+            ("off", json!({"on": false})),
+            ("missing", json!({})),
+            ("not-boolean", json!({"on": "true"})),
+            ("extra-key", json!({"on": true, "plan": 1})),
+        ] {
+            cases.push(request::<crate::modules::SetModuleRequest>(
+                "SetModuleRequest",
+                name,
+                value,
+            ));
+        }
         for (index, value) in shortfalls().into_iter().enumerate() {
             cases.push(served(
                 "FilamentShortfalls",

@@ -47,3 +47,40 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
   --features pp-api/desktop_rebuild,pp-storage/desktop_rebuild,pp-core/desktop_rebuild \
   --no-tests=fail -E 'test(ticket_t_62_admin) | binary(rebuild_read_http)'
 ```
+
+## Module write route (GRE-1341)
+
+`PUT /api/v2/modules/{module}` turns one Module on or off for the replacement
+Settings screen. `{module}` is one of the five `GET /health` lists (`farm`,
+`spoolman`, `orders`, `bambu`, `assembly_tracking`) and the body is exactly
+`{"on": true}` or `{"on": false}`. It is `setModule` in the generated
+`@print-partner/rust-client`.
+
+- It mounts only under `/api/v2` and only when `PP_DESKTOP_REBUILD` is `1` or
+  `true`, so only the Rust-only runtime serves it. Node keeps
+  `PATCH /settings/features` at `/` and `/api/v1` in mixed mode, as
+  `operations.json` records, so the two never write the same setting.
+- The accepted gate admits loopback requests with an exact Host and Origin and
+  a credential; storage proves the credential inside the write's transaction
+  (401 when it fails). 30 changes a minute, then 429.
+- `FeatureClient::set_module` writes and reads back in one transaction.
+  `farm`, `spoolman`, `orders` and `bambu` write the user's `feature_toggles`
+  layer. Plan overrides (`feature_toggles:plan:<id>`) and every other stored key
+  stay as they were. `assembly_tracking` writes `build_tracking_assembly` as
+  `"1"` or `"0"`, as Node's `PUT /settings/build-tracking` does.
+- `200` answers `{"modules": [...]}`: every Module's state read from the same
+  rows `GET /health` and send admission read.
+- `404` `Module not found` for any other name. `400` for any other body.
+- When the stored `feature_toggles` doesn't parse, a feature Module answers
+  `500` with code `FEATURE_TOGGLES_INVALID` (Node's text) and nothing is
+  written. `/health` keeps reporting those Modules `setting_unreadable`.
+  `assembly_tracking` is its own row and still writes.
+- A writer that stays busy past its admission deadline answers `503`
+  `transaction_unavailable`; a full or stopping writer answers `503` as the
+  other routes do. Nothing was written in either case.
+
+```sh
+cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-storage \
+  --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild \
+  --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
+```

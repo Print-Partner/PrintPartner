@@ -181,18 +181,32 @@ pub const BAMBU_ADDRESS_CHANGED: &str =
 /// status watchers never connect to it.
 pub const BAMBU_NOT_PINNED: &str = "Certificate not pinned yet. Run Test connection in Settings.";
 
+/// Node's farm status for Bambu while the tenant's `bambu` feature is off.
+pub const BAMBU_FEATURE_DISABLED: &str = "Feature bambu is disabled.";
+/// Shown for every Bambu host while the stored feature toggles are invalid.
+pub const BAMBU_FEATURE_INVALID: &str = "Stored feature toggles are invalid.";
+/// Shown for a Bambu host whose stored pin cannot be read.
+pub const BAMBU_PIN_UNREADABLE: &str =
+    "Stored certificate pin is unreadable. Reset its certificate in Settings.";
+
 /// How the status watchers take a stored Bambu integration: its settings and
 /// the pin taken at that address, or the message it shows instead of
-/// connecting. The watchers never pin (GRE-1176).
-pub fn bambu_watch(config: &Value, pin: Option<&BambuPin>) -> crate::HostKind {
+/// connecting. `refused` (the feature off, or an unreadable pin) wins over
+/// everything else. The watchers never pin (GRE-1176).
+pub fn bambu_watch(
+    config: &Value,
+    pin: Option<&BambuPin>,
+    refused: Option<&str>,
+) -> crate::HostKind {
     let config = bambu::Config::from_stored(config);
-    let pin = match (&config, pin) {
-        (Err(message), _) => Err(message.clone()),
-        (Ok(_), None) => Err(BAMBU_NOT_PINNED.to_owned()),
-        (Ok(config), Some(pin)) if pin.host == config.host && pin.port == config.port => {
+    let pin = match (refused, &config, pin) {
+        (Some(message), ..) => Err(message.to_owned()),
+        (None, Err(message), _) => Err(message.clone()),
+        (None, Ok(_), None) => Err(BAMBU_NOT_PINNED.to_owned()),
+        (None, Ok(config), Some(pin)) if pin.host == config.host && pin.port == config.port => {
             Ok(pin.sha256)
         }
-        (Ok(_), Some(_)) => Err(BAMBU_ADDRESS_CHANGED.to_owned()),
+        (None, Ok(_), Some(_)) => Err(BAMBU_ADDRESS_CHANGED.to_owned()),
     };
     crate::HostKind::Bambu { config, pin }
 }

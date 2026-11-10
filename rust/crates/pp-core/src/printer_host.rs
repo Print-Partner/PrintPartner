@@ -79,7 +79,8 @@ async fn linked<T>(settings: &SettingsClient, printer: String) -> Result<Host, H
 }
 
 /// Whether the watchers take this PrusaLink or Bambu row: storage took it
-/// (within the cap, not on an id another row has) and it has an address.
+/// (within the cap, not on an id another row has) and it has an address. A
+/// Bambu row also needs the tenant's Bambu feature on.
 fn status_watched(
     integration: &StoredIntegration,
     hosts: Option<printer_hosts::WatchedHosts>,
@@ -89,10 +90,11 @@ fn status_watched(
             .prusalink
             .iter()
             .any(|row| row.id == integration.id && !row.base_url.trim().is_empty())
-            || hosts
-                .bambu
-                .iter()
-                .any(|row| row.id == integration.id && row.address().is_some())
+            || hosts.bambu_feature == Some(true)
+                && hosts
+                    .bambu
+                    .iter()
+                    .any(|row| row.id == integration.id && row.address().is_some())
     })
 }
 
@@ -504,5 +506,19 @@ mod tests {
         let blank = json!([{"id": "i", "type": "prusalink", "config": {"base_url": " "}}]);
         let blank = printer_hosts::watched(Some(&blank.to_string()));
         assert!(!status_watched(&prusalink, blank), "no address");
+
+        // A Bambu row reports status only while the tenant's Bambu feature
+        // is on, since the watchers do not connect otherwise.
+        let bambu = json!([{"id": "i", "type": "bambu", "config": {"host": "192.168.1.20"}}]);
+        let with = |feature| {
+            printer_hosts::watched(Some(&bambu.to_string())).map(|mut hosts| {
+                hosts.bambu_feature = feature;
+                hosts
+            })
+        };
+        let x1c = stored("bambu");
+        assert!(status_watched(&x1c, with(Some(true))));
+        assert!(!status_watched(&x1c, with(Some(false))), "feature off");
+        assert!(!status_watched(&x1c, with(None)), "invalid toggles");
     }
 }

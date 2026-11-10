@@ -101,14 +101,16 @@ fn ticket_t_25_watched_bambu_rows_carry_their_pins() {
                 row.id.as_str(),
                 row.address(),
                 row.enabled,
-                row.pin.as_ref().map(|pin| pin.sha256[0]),
+                row.pin
+                    .as_ref()
+                    .map(|pin| pin.as_ref().map(|pin| pin.sha256[0]).ok()),
             )
         })
         .collect();
     assert_eq!(
         rows,
         [
-            ("x1c", Some("192.168.1.20"), true, Some(1)),
+            ("x1c", Some("192.168.1.20"), true, Some(Some(1))),
             ("p1s", Some("192.168.1.21"), true, None),
             ("blank", None, true, None),
             ("off", Some("a1.lan"), false, None),
@@ -119,6 +121,48 @@ fn ticket_t_25_watched_bambu_rows_carry_their_pins() {
         crate::printer_hosts::polled_ids(Some(&stored)).unwrap(),
         ["moon", "x1c", "p1s", "off"],
         "a Bambu row without an address is never watched"
+    );
+    assert_eq!(hosts.bambu_feature, Some(false), "Bambu is off by default");
+
+    // The read carries the tenant's Bambu feature with the rows.
+    let database = rusqlite::Connection::open(directory.path().join("print-partner.db")).unwrap();
+    let feature = |toggles: &str| {
+        database
+            .execute(
+                "INSERT OR REPLACE INTO app_settings(tenant_id,key,value) VALUES('default','feature_toggles',?1)",
+                [toggles],
+            )
+            .unwrap();
+        crate::printer_hosts::read(&client, WAIT)
+            .unwrap()
+            .unwrap()
+            .bambu_feature
+    };
+    assert_eq!(feature(r#"{"bambu":true}"#), Some(true));
+    assert_eq!(feature("not json"), None, "invalid toggles");
+
+    // One unreadable pin refuses only its own row; the rest still load.
+    database
+        .execute_batch(
+            "PRAGMA ignore_check_constraints=ON;
+             INSERT INTO printer_tls_pins(tenant_id,integration_id,host,port,sha256,pinned_at)
+             VALUES('default','p1s','192.168.1.21',8883,x'0102','2026-11-10T00:00:00.000Z');",
+        )
+        .unwrap();
+    let hosts = crate::printer_hosts::read(&client, WAIT).unwrap().unwrap();
+    let pins: Vec<_> = hosts
+        .bambu
+        .iter()
+        .map(|row| (row.id.as_str(), row.pin.as_ref().map(Result::is_ok)))
+        .collect();
+    assert_eq!(
+        pins,
+        [
+            ("x1c", Some(true)),
+            ("p1s", Some(false)),
+            ("blank", None),
+            ("off", None),
+        ]
     );
     owner.shutdown().unwrap();
 }

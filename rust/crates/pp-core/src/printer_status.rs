@@ -16,7 +16,10 @@ use pp_api::{
     printer_stream::{HEARTBEAT, PrinterStream, printer_stream_router},
     send_queue::send_queue_router,
 };
-use pp_gateway::printer_host::{BambuPin, HostReads, bambu_watch};
+use pp_gateway::printer_host::{
+    BAMBU_FEATURE_DISABLED, BAMBU_FEATURE_INVALID, BAMBU_PIN_UNREADABLE, BambuPin, HostReads,
+    bambu_watch,
+};
 use pp_gateway::{
     HTTPS_UNAVAILABLE, HostKind, HostReadError, MoonrakerHost, MoonrakerHosts, MoonrakerStatus,
     PrinterHostState, PrinterHostStatus, PrinterObservations, REDIRECT_UNAVAILABLE,
@@ -95,18 +98,32 @@ fn watched_hosts(hosts: printer_hosts::WatchedHosts) -> Vec<MoonrakerHost> {
             },
         });
     }
+    // Node's tenant-global admission: with the feature off, or its stored
+    // toggles invalid, no Bambu host connects.
+    let feature = match hosts.bambu_feature {
+        Some(true) => None,
+        Some(false) => Some(BAMBU_FEATURE_DISABLED),
+        None => Some(BAMBU_FEATURE_INVALID),
+    };
     for row in hosts.bambu {
-        let pin = row.pin.as_ref().map(|pin| BambuPin {
-            host: pin.host.clone(),
-            port: pin.port,
-            sha256: pin.sha256,
-        });
+        let (pin, refused) = match &row.pin {
+            Some(Ok(pin)) => {
+                let pin = BambuPin {
+                    host: pin.host.clone(),
+                    port: pin.port,
+                    sha256: pin.sha256,
+                };
+                (Some(pin), feature)
+            }
+            Some(Err(_)) => (None, feature.or(Some(BAMBU_PIN_UNREADABLE))),
+            None => (None, feature),
+        };
         watched.push(MoonrakerHost {
             id: row.id.clone(),
             base_url: row.address().unwrap_or_default().to_owned(),
             api_key: None,
             enabled: row.enabled,
-            kind: bambu_watch(&row.config, pin.as_ref()),
+            kind: bambu_watch(&row.config, pin.as_ref(), refused),
         });
     }
     watched
@@ -379,11 +396,13 @@ mod tests {
             id: id.into(),
             config,
             enabled: true,
-            pin: pinned.map(|(host, port)| Pin {
-                host: host.into(),
-                port,
-                sha256: [7; 32],
-                pinned_at: String::new(),
+            pin: pinned.map(|(host, port)| {
+                Ok(Pin {
+                    host: host.into(),
+                    port,
+                    sha256: [7; 32],
+                    pinned_at: String::new(),
+                })
             }),
         };
         let config = serde_json::json!({"host": "192.168.1.20", "serial": "FIXTURE01", "access_code": "code"});
@@ -401,6 +420,7 @@ mod tests {
                     Some(("192.168.1.22", 8883)),
                 ),
             ],
+            bambu_feature: Some(true),
         });
         let pins: Vec<_> = hosts
             .iter()
@@ -427,6 +447,39 @@ mod tests {
                 ),
             ]
         );
+
+        // The feature off or its toggles invalid refuses every Bambu host,
+        // pinned or not; an unreadable pin refuses only its own host.
+        let refused = |feature, pin| {
+            let mut pinned = row("x1c", config.clone(), Some(("192.168.1.20", 8883)));
+            if let Some(pin) = pin {
+                pinned.pin = Some(pin);
+            }
+            let hosts = watched_hosts(WatchedHosts {
+                moonraker: Vec::new(),
+                prusalink: Vec::new(),
+                bambu: vec![pinned],
+                bambu_feature: feature,
+            });
+            match &hosts[0].kind {
+                HostKind::Bambu { pin, .. } => pin.clone().err(),
+                _ => panic!("not a Bambu host"),
+            }
+        };
+        assert_eq!(refused(Some(true), None), None);
+        assert_eq!(
+            refused(Some(false), None).as_deref(),
+            Some(BAMBU_FEATURE_DISABLED)
+        );
+        assert_eq!(refused(None, None).as_deref(), Some(BAMBU_FEATURE_INVALID));
+        assert_eq!(
+            refused(Some(true), Some(Err("bad".into()))).as_deref(),
+            Some(BAMBU_PIN_UNREADABLE)
+        );
+        assert_eq!(
+            refused(Some(false), Some(Err("bad".into()))).as_deref(),
+            Some(BAMBU_FEATURE_DISABLED)
+        );
     }
 
     #[test]
@@ -435,6 +488,7 @@ mod tests {
             moonraker: vec![moonraker("a")],
             prusalink: vec![prusalink("mk4")],
             bambu: Vec::new(),
+            bambu_feature: None,
         });
         let ids: Vec<_> = hosts.iter().map(|host| host.id.as_str()).collect();
         assert_eq!(ids, ["a", "mk4"]);

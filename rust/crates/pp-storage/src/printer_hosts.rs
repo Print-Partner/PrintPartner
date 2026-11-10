@@ -52,6 +52,11 @@ pub struct WatchedHosts {
     /// The Bambu rows the watchers take, chosen the same way and sharing the
     /// cap with the PrusaLink rows (GRE-1176).
     pub bambu: Vec<BambuRow>,
+    /// The tenant's Bambu feature, filled in by [`read`] when there are Bambu
+    /// rows: `Some(enabled)`, or `None` for invalid stored toggles (and from
+    /// [`watched`] alone). The watchers connect to Bambu only when it is
+    /// `Some(true)`.
+    pub bambu_feature: Option<bool>,
 }
 
 /// A stored Bambu integration for the watchers. Not `Debug`: its config
@@ -63,8 +68,10 @@ pub struct BambuRow {
     pub config: Value,
     /// False only when `config.enabled` is exactly `false`.
     pub enabled: bool,
-    /// The certificate pin stored for this integration, filled in by [`read`].
-    pub pin: Option<Pin>,
+    /// The certificate pin stored for this integration, filled in by
+    /// [`read`]. `Err` holds why a stored pin is unreadable; it affects only
+    /// this row.
+    pub pin: Option<std::result::Result<Pin, String>>,
 }
 
 impl BambuRow {
@@ -100,6 +107,7 @@ pub fn read(client: &SettingsClient, wait: Duration) -> Result<Option<WatchedHos
         for row in &mut hosts.bambu {
             row.pin = pins.remove(&row.id);
         }
+        hosts.bambu_feature = crate::features::bambu_enabled_in(&checkout)?;
     }
     Ok(Some(hosts))
 }
@@ -189,6 +197,7 @@ pub fn watched(raw: Option<&str>) -> Option<WatchedHosts> {
         moonraker,
         prusalink,
         bambu,
+        bambu_feature: None,
     })
 }
 

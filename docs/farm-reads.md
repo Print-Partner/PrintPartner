@@ -64,7 +64,7 @@ the two.
 | Integration disabled | `manual` | `monitoring_disabled` |
 | An HTTPS Moonraker or PrusaLink host, a redirecting Moonraker host, or a Moonraker, PrusaLink or Bambu host the watchers never take (no address, or past the 128-host cap; PrusaLink and Bambu rows come after every Moonraker row) | `manual` | `monitoring_not_supported` |
 | Moonraker, PrusaLink or Bambu with no status yet, or monitoring stopped | `unknown` | `awaiting_status` |
-| Moonraker or PrusaLink that did not answer its last poll; Bambu whose session dropped, or that has no usable pin and so is never connected | `unreachable` | `unreachable` |
+| Moonraker or PrusaLink that did not answer its last poll; Bambu whose session dropped, that has no usable pin, or whose tenant `bambu` feature is off, and so is never connected | `unreachable` | `unreachable` |
 | Moonraker, PrusaLink or Bambu `printing`, `paused` | `printing`, `paused` | `null` |
 | Moonraker, PrusaLink or Bambu `idle` or `complete` | `idle` | `null` |
 | Moonraker, PrusaLink or Bambu `error` | `failed` | `null` |

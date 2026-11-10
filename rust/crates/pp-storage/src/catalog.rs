@@ -173,7 +173,11 @@ pub use naming::{
 #[cfg(feature = "desktop_rebuild")]
 pub use naming::{NamingOverride, NamingPreview, QuantityOverride, RoleOverride, SlugOverride};
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "codegen", derive(schemars::JsonSchema))]
+/// The schema needs `pp_contracts`, which only `desktop_rebuild` brings in.
+#[cfg_attr(
+    all(feature = "codegen", feature = "desktop_rebuild"),
+    derive(schemars::JsonSchema)
+)]
 pub struct SourceSummary {
     pub id: i64,
     pub name: String,
@@ -182,60 +186,60 @@ pub struct SourceSummary {
     pub source_type: String,
     pub role: String,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub category: Option<String>,
     pub branch: String,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub tag: Option<String>,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub local_path: Option<String>,
     pub content_available: bool,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub last_synced_at: Option<String>,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub last_commit_sha: Option<String>,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<i64>")
     )]
     pub current_source_revision_id: Option<i64>,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub docs_url: Option<String>,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub manifest_community_slug: Option<String>,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<Map<String, Value>>")
     )]
     pub metadata: Option<Map<String, Value>>,
     pub naming_use_defaults: bool,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub update_status: Option<String>,
     #[cfg_attr(
-        feature = "codegen",
+        all(feature = "codegen", feature = "desktop_rebuild"),
         schemars(with = "pp_contracts::RequiredNullable<String>")
     )]
     pub update_checked_at: Option<String>,

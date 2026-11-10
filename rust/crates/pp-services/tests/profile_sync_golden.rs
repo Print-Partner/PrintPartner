@@ -1,3 +1,4 @@
+//! T-60: profile sync scans and events, replayed from the Node golden.
 //! Replays `fixtures/parity/profile-sync/node.json`: every record and event
 //! Node's profile sync produced for the files under `roots/`.
 use pp_services::profile_sync::{

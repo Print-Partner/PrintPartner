@@ -169,6 +169,17 @@ impl Queue {
         .await
     }
 
+    /// Replaces the stored `feature_toggles` text.
+    fn store_toggles(&self, value: &str) {
+        rusqlite::Connection::open(self.root.join("print-partner.db"))
+            .unwrap()
+            .execute(
+                "UPDATE app_settings SET value=?1 WHERE tenant_id='default' AND key='feature_toggles'",
+                [value],
+            )
+            .unwrap();
+    }
+
     /// The number of queue items and of durable jobs.
     fn counts(&self) -> (i64, i64) {
         let sql = rusqlite::Connection::open(self.root.join("print-partner.db")).unwrap();
@@ -481,12 +492,7 @@ async fn ticket_t_26_remove_cancels_a_waiting_item_and_deletes_its_staged_file()
 #[tokio::test]
 async fn ticket_t_26_a_send_needs_the_farm_feature() {
     let queue = Queue::open("1", Targets::default(), &[("q1", "p-a", "queued", None)]);
-    let sql = rusqlite::Connection::open(queue.root.join("print-partner.db")).unwrap();
-    sql.execute(
-        "UPDATE app_settings SET value='{\"farm\":false}' WHERE tenant_id='default' AND key='feature_toggles'",
-        [],
-    )
-    .unwrap();
+    queue.store_toggles(r#"{"farm":false}"#);
     let (status, body) = queue
         .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
         .await;
@@ -501,11 +507,7 @@ async fn ticket_t_26_a_send_needs_the_farm_feature() {
         "one problem for the whole drain"
     );
     assert_eq!(body["code"], "FEATURE_DISABLED", "{body}");
-    sql.execute(
-        "UPDATE app_settings SET value='not json' WHERE tenant_id='default' AND key='feature_toggles'",
-        [],
-    )
-    .unwrap();
+    queue.store_toggles("not json");
     let (status, body) = queue
         .send("POST", "/api/v2/printer-send-queue/q1/dispatch", "")
         .await;
@@ -654,12 +656,7 @@ async fn add_to_queue_deletes_the_staged_file_when_storage_refuses_the_item() {
         (status, detail(&body)),
         (StatusCode::NOT_FOUND, "Profile not found")
     );
-    let sql = rusqlite::Connection::open(queue.root.join("print-partner.db")).unwrap();
-    sql.execute(
-        "UPDATE app_settings SET value='{\"farm\":false}' WHERE tenant_id='default' AND key='feature_toggles'",
-        [],
-    )
-    .unwrap();
+    queue.store_toggles(r#"{"farm":false}"#);
     let (status, body) = queue.add(&[PRINTER, PLAN, FILE]).await;
     assert_eq!(
         (status, &body["code"]),

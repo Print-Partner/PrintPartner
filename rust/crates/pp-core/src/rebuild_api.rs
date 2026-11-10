@@ -13,7 +13,7 @@ use pp_api::{
     file_assignments::file_assignments_router,
     history::history_router,
     jobs::{JobsHttpConfig, jobs_router as api_jobs_router},
-    mcp::{McpHttpConfig, mcp_router},
+    mcp::{McpClients, McpHttpConfig, mcp_router},
     planning::planning_router,
     plates::plates_router,
     workflow::workflow_router,
@@ -264,7 +264,7 @@ pub fn read_router(
         config
             .clone()
             .with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
-        accepted_client,
+        accepted_client.clone(),
     );
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
@@ -275,11 +275,14 @@ pub fn read_router(
     let mcp = mcp_router(
         McpHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         auth_client.clone(),
-        builds_client,
-        workflow_client,
-        drafts_client,
-        planning_client,
-        checkoff_client,
+        McpClients {
+            builds: builds_client,
+            workflow: workflow_client,
+            drafts: drafts_client,
+            planning: planning_client,
+            progress: checkoff_client,
+            accepted: accepted_client,
+        },
     );
     let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
     Ok(Some(

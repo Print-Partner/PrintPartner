@@ -7,7 +7,9 @@
 //! the listener exactly. Write tools only propose; `confirm_apply` applies.
 //! `propose_verify_printer_checkoff` applies as a Checkoff burst on storage
 //! (GRE-1170, `mcp/checkoff.rs`). `list_plans`, `get_plan_decisions` and
-//! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`).
+//! `list_plan_snapshots` read storage with the caller's key (`mcp/reads.rs`),
+//! and so do `get_remaining` and `get_printer_checkoff`
+//! (`mcp/progress_reads.rs`).
 //! LAN peers stay out until the T-14 trust classes land.
 
 use crate::loopback::{
@@ -28,6 +30,7 @@ use pp_storage::checkoff_progress::ProgressClient;
 use pp_storage::{
     auth::{self, KeyPrincipal, Secret, rebuild::RebuildAuthClient},
     read_model::{
+        ReadClient,
         build_workflow::{Outcome, Request, WorkflowClient},
         planning::PlanningClient,
     },
@@ -87,8 +90,9 @@ struct Guard {
 /// The clients ported tools use: `get_build_workflow` reads the same client as
 /// `GET /plans/{id}/workflow`, and Plan Accept uses the draft routes' client
 /// and checks the Build planning brief with the planning routes' client.
-/// `progress` applies confirmed Checkoff proposals. `builds` lists Builds and
-/// `planning` also reads decisions and snapshots for the read tools.
+/// `progress` applies confirmed Checkoff proposals and reads printer Checkoff.
+/// `builds` lists Builds, `planning` also reads decisions and snapshots, and
+/// `accepted` reads Accepted Plan progress for the read tools.
 #[derive(Clone)]
 struct Reads {
     builds: BuildGraphClient,
@@ -96,23 +100,27 @@ struct Reads {
     drafts: WorkingDraftClient,
     planning: PlanningClient,
     progress: ProgressClient,
+    accepted: ReadClient,
     wait: Duration,
+}
+
+/// The storage clients MCP tools read and write, each used with the
+/// request's API key.
+pub struct McpClients {
+    pub builds: BuildGraphClient,
+    pub workflow: WorkflowClient,
+    pub drafts: WorkingDraftClient,
+    pub planning: PlanningClient,
+    pub progress: ProgressClient,
+    pub accepted: ReadClient,
 }
 
 /// Mounts the MCP transport at `/mcp` and `/api/v1/mcp` when the rebuild flag
 /// was on at startup. Otherwise nothing is mounted. `get_build_workflow` reads
 /// `workflow` and Plan Accept uses `drafts` and `planning`, each with the
 /// request's API key. Checkoff proposals apply through `progress`; `builds`
-/// serves `list_plans`.
-pub fn mcp_router(
-    config: McpHttpConfig,
-    auth: RebuildAuthClient,
-    builds: BuildGraphClient,
-    workflow: WorkflowClient,
-    drafts: WorkingDraftClient,
-    planning: PlanningClient,
-    progress: ProgressClient,
-) -> Router {
+/// serves `list_plans` and `accepted` serves `get_remaining`.
+pub fn mcp_router(config: McpHttpConfig, auth: RebuildAuthClient, clients: McpClients) -> Router {
     if !config.enabled {
         return Router::new();
     }
@@ -121,12 +129,21 @@ pub fn mcp_router(
     let transport = StreamableHttpServerConfig::default()
         .with_allowed_hosts([config.host.clone()])
         .with_allowed_origins([config.origin.clone()]);
+    let McpClients {
+        builds,
+        workflow,
+        drafts,
+        planning,
+        progress,
+        accepted,
+    } = clients;
     let reads = Reads {
         builds,
         workflow,
         drafts,
         planning,
         progress,
+        accepted,
         wait: config.wait,
     };
     let service = StreamableHttpService::new(
@@ -179,14 +196,18 @@ pub(crate) fn test_router(
             Default::default(),
         )
         .unwrap();
+    let accepted = owner.accepted_reads_with_policy(policy).unwrap();
     let router = mcp_router(
         config,
         auth.clone(),
-        builds,
-        workflow,
-        drafts,
-        planning,
-        progress,
+        McpClients {
+            builds,
+            workflow,
+            drafts,
+            planning,
+            progress,
+            accepted,
+        },
     );
     (router, auth)
 }
@@ -420,6 +441,10 @@ impl ServerHandler for ProductMcp {
             Some(presented) if reads::TOOLS.contains(&request.name.as_ref()) => {
                 self.read_tool(&request.name, &arguments, presented).await
             }
+            Some(presented) if progress_reads::TOOLS.contains(&request.name.as_ref()) => {
+                self.progress_tool(&request.name, &arguments, presented)
+                    .await
+            }
             Some(presented) if request.name == plan_accept::PROPOSE => {
                 self.propose_accept(&arguments, presented).await
             }
@@ -447,6 +472,8 @@ impl ServerHandler for ProductMcp {
 mod checkoff;
 #[path = "mcp/plan_accept.rs"]
 mod plan_accept;
+#[path = "mcp/progress_reads.rs"]
+mod progress_reads;
 #[path = "mcp/reads.rs"]
 mod reads;
 

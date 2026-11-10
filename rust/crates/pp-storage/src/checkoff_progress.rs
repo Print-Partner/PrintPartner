@@ -34,6 +34,8 @@ pub(crate) mod history_undo;
 pub(crate) mod links;
 #[cfg(feature = "desktop_rebuild")]
 mod lookup;
+#[cfg(feature = "desktop_rebuild")]
+pub use lookup::Filter as PrinterCheckoffFilter;
 mod manual;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_file;
@@ -226,6 +228,10 @@ pub enum Request {
     /// One printer Checkoff link by id, for MCP proposals. Reads only.
     #[cfg(feature = "desktop_rebuild")]
     CheckoffLink { id: String },
+    /// MCP `get_printer_checkoff`: links and open unattributed prints, with
+    /// fleet printer names. Reads only.
+    #[cfg(feature = "desktop_rebuild")]
+    PrinterCheckoff(lookup::Filter),
     /// `POST /printer-checkoff/file-assignments`, parsed and with its file
     /// already read by the route.
     #[cfg(feature = "desktop_rebuild")]
@@ -301,6 +307,9 @@ pub enum Body {
     #[cfg(feature = "desktop_rebuild")]
     #[serde(skip_serializing)]
     Suggestion(Box<Value>),
+    /// MCP `get_printer_checkoff`'s answer.
+    #[cfg(feature = "desktop_rebuild")]
+    PrinterCheckoff(Value),
     /// A dismissed unattributed print.
     Dismissed {
         ok: bool,
@@ -442,6 +451,8 @@ enum Op {
     CheckoffLink {
         id: String,
     },
+    #[cfg(feature = "desktop_rebuild")]
+    PrinterCheckoff(lookup::Filter),
 }
 enum Target {
     Token { expected: Basis, token: String },
@@ -621,6 +632,8 @@ fn validate(request: Request) -> std::result::Result<Op, Response> {
         Request::CheckoffLink { id } => {
             return lookup::link_id(&id).map(|id| Op::CheckoffLink { id });
         }
+        #[cfg(feature = "desktop_rebuild")]
+        Request::PrinterCheckoff(filter) => return Ok(Op::PrinterCheckoff(filter)),
         #[cfg(feature = "desktop_rebuild")]
         Request::AssignFile(assignment) => return Ok(Op::File(print_file::Op::Assign(assignment))),
         #[cfg(feature = "desktop_rebuild")]
@@ -831,6 +844,8 @@ fn mutate(tx: &Transaction<'_>, tenant: &str, op: Op, repos: &Path) -> Outcome {
         Op::BurstStatus { key } => return lookup::burst_status(tx, tenant, &key),
         #[cfg(feature = "desktop_rebuild")]
         Op::CheckoffLink { id } => return lookup::link(tx, tenant, &id),
+        #[cfg(feature = "desktop_rebuild")]
+        Op::PrinterCheckoff(filter) => return lookup::printer_checkoff(tx, tenant, &filter),
         #[cfg(feature = "desktop_rebuild")]
         Op::File(op) => return print_file::run(tx, tenant, op, repos),
         Op::Import(import) => return import_current(tx, tenant, import, repos),

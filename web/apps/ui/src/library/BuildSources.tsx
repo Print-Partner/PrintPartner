@@ -68,7 +68,7 @@ function SourcesBody({ build, layers }: BuildData) {
             <tr key={layer.id}>
               <td>{layer.layer_type}</td>
               <th scope="row">{layer.project_name ?? "No Source"}</th>
-              {layer.project_id === null ? (
+              {!layer.project_id ? (
                 <td colSpan={2}>
                   <span className="pp-muted">No Source on this layer</span>
                 </td>

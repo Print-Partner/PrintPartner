@@ -11,9 +11,13 @@ export const sourcesQuery = {
   queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listSources", {}, signal),
 } as const;
 
+/** The most events the core returns in one read. */
+export const ACTIVITY_LIMIT = 100;
+
 export const sourceActivityQuery = {
   queryKey: ["core", "sources", "activity"],
-  queryFn: ({ signal }: { signal: AbortSignal }) => readCore("listSourceActivity", {}, signal),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    readCore("listSourceActivity", {}, signal, { limit: String(ACTIVITY_LIMIT) }),
 } as const;
 
 export interface Line {
@@ -75,8 +79,9 @@ export function latestEvents(events: SourceEvent[]): Map<number, SourceEvent> {
 
 /**
  * Which revision of `source` the Build's Accepted Plan was built from, read from the Plan's
- * freshness. A reason naming this Source wins; with none, a current Plan uses the current
- * revision, and a Plan stale for a Plan-wide reason cannot say.
+ * freshness. The core lists a reason for each Source whose revision or naming differs from
+ * Accept, or that it does not track; every other Source was accepted at its current revision.
+ * A Plan-wide reason, such as a Source attached after Accept, leaves that unknown.
  */
 export function acceptedRevisionText(freshness: Freshness, source: Source): Line {
   const current = source.current_source_revision_id;
@@ -84,49 +89,40 @@ export function acceptedRevisionText(freshness: Freshness, source: Source): Line
     label: "The current revision",
     detail: current == null ? null : `Revision ${current}`,
   };
+  const untracked: Line = { label: "Not tracked by revision", detail: null };
+  const names = (reason: { kind: string; source_id?: number }) => reason.source_id === source.id;
   switch (freshness.status) {
     case "unavailable":
       return { label: "Not known", detail: `Plan freshness is unavailable (${freshness.code})` };
-    case "untracked": {
-      const untracked = freshness.reasons.some(
-        (r) => r.kind === "source_revision_untracked" && r.source_id === source.id,
-      );
-      if (untracked) return { label: "Not tracked by revision", detail: null };
+    case "current":
+      return currentLine;
+    case "untracked":
       if (freshness.reasons.some((r) => r.kind === "no_accepted_inputs")) {
         return { label: "No Plan accepted yet", detail: null };
       }
-      return { label: "Not tracked", detail: null };
-    }
-    case "current":
-      return currentLine;
+      return freshness.reasons.some(names) ? untracked : currentLine;
     case "stale": {
-      if (
-        freshness.untracked_sources.some(
-          (r) => r.kind === "source_revision_untracked" && r.source_id === source.id,
-        )
-      ) {
-        return { label: "Not tracked by revision", detail: null };
-      }
-      for (const reason of freshness.reasons) {
-        if (!("source_id" in reason) || reason.source_id !== source.id) continue;
-        switch (reason.kind) {
-          case "source_revision_changed":
-            return {
-              label: `Revision ${reason.accepted_revision_id}`,
-              detail: `The Source is now at revision ${reason.current_revision_id}`,
-            };
-          case "source_revision_unavailable":
-            return {
-              label: `Revision ${reason.accepted_revision_id}`,
-              detail: "That revision is no longer available",
-            };
-          case "naming_rules_changed":
-            return { ...currentLine, detail: "Its naming rules changed since Accept" };
+      if (freshness.untracked_sources.some(names)) return untracked;
+      const mine = freshness.reasons.filter(names);
+      // Revision reasons first: a Source can also have changed naming rules.
+      for (const reason of mine) {
+        if (reason.kind === "source_revision_changed") {
+          return {
+            label: `Revision ${reason.accepted_revision_id}`,
+            detail: `The Source is now at revision ${reason.current_revision_id}`,
+          };
+        }
+        if (reason.kind === "source_revision_unavailable") {
+          return {
+            label: `Revision ${reason.accepted_revision_id}`,
+            detail: "That revision is no longer available",
+          };
         }
       }
-      const planWide = freshness.reasons.some((r) => !("source_id" in r));
-      return planWide
-        ? { label: "Not known", detail: "The Plan changed since it was accepted" }
+      if (mine.length > 0)
+        return { ...currentLine, detail: "Its naming rules changed since Accept" };
+      return freshness.reasons.some((r) => !("source_id" in r))
+        ? { label: "Not known", detail: "This Source may not be in the Accepted Plan" }
         : currentLine;
     }
   }

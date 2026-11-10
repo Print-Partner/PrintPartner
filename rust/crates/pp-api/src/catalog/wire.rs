@@ -92,8 +92,6 @@ pub(super) fn import_rules_save(body: &Value) -> Option<Vec<String>> {
     }
 }
 
-/// Storage returns a bare activity array; HTTP wraps `{ "events": [...] }`.
-
 /// Node: `Number(query.limit ?? 20)`; non-finite → `20`; then trunc + clamp `1..=100`.
 pub(super) fn activity_limit(raw: Option<&str>) -> u8 {
     let requested = match raw {

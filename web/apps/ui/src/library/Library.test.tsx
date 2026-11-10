@@ -134,7 +134,7 @@ describe("UI14-01 Library lists Sources with revision, sync state and activity",
     const fetchMock = core((path) =>
       path === "/api/v1/sources"
         ? json(SOURCES)
-        : path === "/api/v1/sources/activity"
+        : path === "/api/v1/sources/activity?limit=100"
           ? json(ACTIVITY)
           : json({}, 404),
     );
@@ -155,7 +155,7 @@ describe("UI14-01 Library lists Sources with revision, sync state and activity",
     expect(within(fresh).getByText("No revision yet")).toBeTruthy();
     expect(within(fresh).getAllByText("Never synced")).toHaveLength(1);
     expect(within(fresh).getByText("No files on disk")).toBeTruthy();
-    expect(within(fresh).getByText("None recorded")).toBeTruthy();
+    expect(within(fresh).getByText("None in the last 100 events")).toBeTruthy();
     const recent = screen.getByRole("region", { name: "Recent activity" });
     expect(within(recent).getAllByRole("listitem")).toHaveLength(3);
     // Read only: no buttons in the list.

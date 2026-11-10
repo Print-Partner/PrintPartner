@@ -5,6 +5,7 @@ import { useConnection } from "../frame/connection";
 import { queryScreenState } from "../screen/queryState";
 import { ScreenTemplate } from "../screen/ScreenTemplate";
 import {
+  ACTIVITY_LIMIT,
   eventText,
   latestEvents,
   revisionText,
@@ -52,7 +53,8 @@ function ActivityCell({
 }) {
   if (!events) return <span className="pp-muted">Not loaded</span>;
   const event = events.get(id);
-  if (!event) return <span className="pp-muted">None recorded</span>;
+  if (!event)
+    return <span className="pp-muted">{`None in the last ${ACTIVITY_LIMIT} events`}</span>;
   return <LineCell line={{ label: eventText(event), detail: dateText(event.at) }} />;
 }
 

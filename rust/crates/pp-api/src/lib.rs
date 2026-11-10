@@ -54,6 +54,8 @@ pub mod printer_stream;
 #[cfg(feature = "desktop_rebuild")]
 pub mod send_queue;
 #[cfg(feature = "desktop_rebuild")]
+pub mod settings;
+#[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 
 #[cfg(test)]

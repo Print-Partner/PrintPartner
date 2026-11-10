@@ -16,6 +16,7 @@ use pp_api::{
     mcp::{McpHttpConfig, mcp_router},
     planning::planning_router,
     plates::plates_router,
+    settings::settings_router,
     workflow::workflow_router,
 };
 // Re-export so desktop_rebuild integration tests can build AuthRoutes without a
@@ -216,7 +217,7 @@ pub fn read_router(
         history_client,
         planning_client,
         workflow_client,
-        admin_files,
+        (admin_files, app_settings),
         events_client,
         (checkoff_client, settings),
         plates_client,
@@ -233,7 +234,10 @@ pub fn read_router(
             // No due-date field or Spoolman shortfall exists yet (slice 7,
             // GRE-1100/GRE-1095; shortfall PR #1479), so their inputs are pending.
             guard.build_workflow(policy, Arc::new(PendingInputs))?,
-            guard.admin_files()?,
+            (
+                guard.admin_files()?,
+                guard.app_settings_with_policy(policy)?,
+            ),
             guard.domain_events_with_policy(policy)?,
             (guard.checkoff_progress_with_policy(policy)?, guard.client()),
             guard.accepted_plates(policy)?,
@@ -254,6 +258,11 @@ pub fn read_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
         admin_files,
+    );
+    let settings_routes = settings_router(
+        AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+        accepted_client.clone(),
+        app_settings,
     );
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     let accepted = accepted_router(
@@ -287,6 +296,7 @@ pub fn read_router(
             .merge(planning)
             .merge(workflow)
             .merge(admin)
+            .merge(settings_routes)
             .merge(events)
             .merge(checkoff)
             .merge(plates)

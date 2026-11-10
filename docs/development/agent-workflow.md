@@ -199,6 +199,10 @@ Every PR says `Fixes GRE-xxx`. Put unmet acceptance items in a child ticket that
 
 Only the coordinator records a review. It runs an independent model review on a checkout pinned to the PR's head SHA, waits until every finding is answered and its thread resolved, and then posts a comment with a `pp-review-gate` marker naming that head, the reviewer model, and the finding count. The steps are in [Coordinator review record](definition-of-done.md#coordinator-review-record). The safety guard refuses marker comments from any other worktree; lanes report readiness instead.
 
+### Design calls
+
+Design decisions that stay inside the approved plan, the AGENTS.md rules, and the data invariants (SQLite formats, immutable IDs, autosave, restart recovery, operation ownership) are pre-approved: the coordinator makes them and logs each one on the ticket with its reason. Lanes ask the coordinator instead of stopping for the owner. Anything else goes to the owner in one daily list: scope, cutover, defaults, data formats, and security posture. Work that depends on such a decision waits for the answer; pick other work meanwhile. See [Design calls](definition-of-done.md#design-calls).
+
 ## Verify in a running app
 
 Run the real app at the PR head and look at the change. Mocked tests passing does not show that a screen works.

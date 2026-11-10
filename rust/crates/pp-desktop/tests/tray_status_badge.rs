@@ -1,3 +1,4 @@
+//! T-29: tray status text, colour and badge.
 use pp_core::{CoreStatus, RuntimeStatus, RustStatus};
 use pp_desktop::tray::{Tone, badge, menu_ids, runtime_status, status};
 

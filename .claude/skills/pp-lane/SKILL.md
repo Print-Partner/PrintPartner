@@ -5,7 +5,7 @@ description: Standard Print Partner lane procedure, from a GRE ticket to a PR an
 
 # Print Partner lane
 
-A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lanes never merge. The coordinator merges under the [merge gate](../../../docs/development/definition-of-done.md#merge-gate), except the paths the owner merges, which the merge gate lists: CI controls, the release path, and the safety guard with its hook adapters in `.factory/` and `.claude/`. The brief names the ticket and anything special; everything else is here. The [agent guide](../../../AGENTS.md) rules apply throughout. If a brief conflicts with AGENTS.md or the [definition of done](../../../docs/development/definition-of-done.md), stop and tell the coordinator. The coordinator takes rule conflicts to the owner, and the dependent work stays stopped until the owner decides; see [Start from a task brief](../../../docs/development/agent-workflow.md#start-from-a-task-brief).
+A lane takes one GRE ticket from `main` to an open PR and reports it ready. Lanes never merge. The coordinator merges under the [merge gate](../../../docs/development/definition-of-done.md#merge-gate), except the paths the owner merges, which the merge gate lists: CI controls, the release path, and the safety guard with its hook adapters in `.factory/` and `.claude/`. The brief names the ticket and anything special; everything else is here. The [agent guide](../../../AGENTS.md) rules apply throughout. If a brief conflicts with the code, [Architecture](../../../docs/architecture.md), an ADR, AGENTS.md or the [definition of done](../../../docs/development/definition-of-done.md), or hits another case in [Start from a task brief](../../../docs/development/agent-workflow.md#start-from-a-task-brief), stop and tell the coordinator. The coordinator takes rule conflicts to the owner, and the dependent work stays stopped until the owner decides.
 
 ## Start
 
@@ -51,7 +51,7 @@ Before pushing, have a fresh-context reviewer read the diff: correctness and AGE
 
 ## Report readiness
 
-Never merge; the [safety guard](../../../docs/development/agent-workflow.md#safety-guard) refuses merges outside the coordinator worktree. A score you post, for example with `post-score.sh`, is a record only and does not satisfy the merge gate. When the PR is done, report readiness to the coordinator:
+Never merge; the [safety guard](../../../docs/development/agent-workflow.md#safety-guard) refuses merges outside the coordinator worktree (see [Coordinator merges](../../../docs/development/agent-workflow.md#coordinator-merges)). A score you post, for example with `post-score.sh`, is a record only and does not satisfy the merge gate. When the PR is done, report readiness to the coordinator:
 
 - the PR URL and the full head SHA;
 - the state of checks and reviews on that head: required checks, `review-gate`, any pending or failing check, and open review threads;

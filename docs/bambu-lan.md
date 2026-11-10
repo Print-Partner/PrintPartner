@@ -1,6 +1,6 @@
 # Bambu LAN driver (GRE-362)
 
-`pp_drivers::bambu` reads a Bambu Lab printer's status over its LAN MQTT broker, as Node's `integrations/adapters/bambu.ts` does. It is status-only: it never uploads a file or controls a print. The Rust-only runtime's Test connection uses it to pin a printer's certificate ([Pinning in Settings](#pinning-in-settings)). GRE-1176 adds the status watcher. Both run only behind `desktop_rebuild` and `PP_DESKTOP_REBUILD`.
+`pp_drivers::bambu` reads a Bambu Lab printer's status over its LAN MQTT broker, as Node's `integrations/adapters/bambu.ts` does. It is status-only: it never uploads a file or controls a print. The Rust-only runtime's Test connection uses it to pin a printer's certificate ([Pinning in Settings](#pinning-in-settings)). `Driver::watch` keeps a pinned session open for the status watchers ([Status watcher](#status-watcher)). Both run only behind `desktop_rebuild` and `PP_DESKTOP_REBUILD`.
 
 ## One status read
 
@@ -38,6 +38,17 @@ The Rust-only runtime stores one pin per Bambu integration in `printer_tls_pins`
 - Settings → Printers shows a Bambu row's pin (`Certificate pinned · ab12cd34ef56 · <date>` or `Not pinned. Test connection to pin.`) and a **Reset certificate** button with a confirmation that the printer must be the same device. The row renders only when health advertises the desktop rebuild and the runtime serves the pin route. Node advertises the rebuild too but has no `tls-pin` route, so there the GET answers 404 and the row is hidden.
 
 Bambu is a `Host::Status` target in `pp-core`: capabilities read all false and the files and camera routes answer unsupported. No Rust route uploads to a Bambu printer.
+
+## Status watcher
+
+GRE-1176 puts Bambu under the same `Watchers` lifecycle in `pp-drivers` as Moonraker and PrusaLink: `HostKind::Bambu` gets one task per enabled host, inside the 128-host cap, cancelled and joined on a config change, suspend or shutdown, and started again on resume. The runtime does not feed the watchers a Bambu host yet, so the desktop app does not watch a Bambu printer until GRE-1346 wires in the stored hosts and their pins.
+
+- The watcher never pins. `HostKind::Bambu` carries the host's settings and its pin, each as a `Result`. When either is an `Err`, the host shows offline with that message and makes no connection. The caller writes the message: GRE-1346 has storage say that no pin exists yet, or that the pin was taken at another address.
+- `Driver::watch` opens one session with `Trust::Pinned` only, so a changed certificate fails before CONNECT. It subscribes, sends pushall, and publishes a status for every report: the answer to its own pushall, then each later report's `print` fields merged into it, since the printer sends only what changed. The answer is the first report with a non-blank `gcode_state` after the session sent pushall. A change report carries `gcode_state` too when the state changes, but little else, so a report before the pushall (one before SUBACK included) is never a base: it gives no status and does not count as hearing from the printer. Every session starts from nothing, since changes made while no session was open never arrive as changes: until the answer arrives the host reads `Awaiting status`. One gap: a change report that arrives after the pushall but before its answer is taken as the answer.
+- It sends PINGREQ every 15 s and treats 30 s without a packet as a dropped session. A dropped session reads offline with the driver's message and reconnects with the pollers' backoff from a 5 s interval: 10 s after a session that had reported, doubling with each attempt that did not, up to 60 s, each wait up to a fifth shorter for jitter.
+- pushall goes out at most once every five minutes per host task, across reconnects. A session that reconnects inside that window sends no pushall, so it reads `Awaiting status` and ignores change reports until it sends the deferred pushall once the five minutes have passed and the answer arrives. `last_heard` moves, and the backoff resets, only on a report from the printer.
+
+`rust/crates/pp-drivers/tests/ticket_t_25_bambu_watcher.rs` drives `Watchers` against the loopback broker: merged change reports, no pin and a changed certificate (no CONNECT, never pinned), a reconnect that waits for a fresh report without a second pushall, change-only `FINISH` reports before and after SUBACK that never become the base, suspend and resume, and a session kept alive past its keep-alive by pings.
 
 ## Status mapping
 

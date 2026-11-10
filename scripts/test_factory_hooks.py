@@ -1278,6 +1278,12 @@ class HiddenMergeTests(unittest.TestCase):
                # gh's own aliases resolve to their canonical commands before any check (19ad103f threads).
                "gh agents create x", "gh agent-tasks create x", "gh cs ls --help=false ssh", "gh skills install o/r",
                "gh extensions exec x", "xargs sh -c 'gh m'",
+               # Redirect counterparts that stay refused, and runners whose program position holds gh.
+               "export HOME=/tmp; gh pr view 12", "env -uGH_CONFIG_DIR gh pr view 12", "(export HOME=/tmp; gh pr view 12)",
+               "export HOME=/tmp | gh pr view 12", "HOME=/tmp find . -exec gh pr view 12 \\;",
+               "HOME=/tmp flock /tmp/x gh pr view 12", "env -C/tmp gh pr merge 12", "timeout -k0.5s 5 gh pr merge 12",
+               "/usr/bin/time -f%E gh pr merge 12", "env -x/tmp gh pr view 12",
+               "xargs find . -exec sh -c 'gh pr merge 1' \\;", "find . -exec xargs gh pr merge 1 \\;",
                "sudo -nu bob gh pr merge 12", "env -xu FOO gh pr merge 12", "env -vuFOO gh pr merge 12",
                "nice -n5 gh pr merge 12", "timeout -s9 5 gh pr merge 12", "sudo -uroot gh pr merge 12",
                "time -fx gh pr merge 12", "exec -abash gh pr merge 12", "stdbuf -oL gh pr merge 12",
@@ -1286,8 +1292,8 @@ class HiddenMergeTests(unittest.TestCase):
                "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "xargs " + nested_shells("gh pr merge 1", 8),
-               # Accepted edge: under an argv runner each later word is tried as the program it runs.
-               "find docs -exec grep -e gh -e pr -e merge {} +",
+               # Accepted edge: under a runner other than find or xargs each later word is tried as its program.
+               "setsid grep -e gh -e pr -e merge docs/x.md",
                # Quotes and backslashes are removed before interpreter code is matched.
                "python3 -c 'import os; os.system(\"gh pr m\\\\erge 12\")'",
                "python3 -c \"import os; os.system('gh pr me''rge 12')\"", "entr -cs 'gh pr merge 1'",
@@ -1342,6 +1348,13 @@ class HiddenMergeTests(unittest.TestCase):
                "sudo --preserve-env=PATH gh pr view 12", "nice --help", "env --version",
                "gh at download artifact", "gh rs ls", "gh rs view 1", "gh rs check main", "gh agent view 1",
                "gh extensions ls",
+               # Sol at 19ad103f: attached wrapper operands, runner data, redirects kept inside a subshell or a
+               # pipeline stage, and every group's ls alias.
+               "env -uGH_TOKEN gh pr view 12", "env -C/tmp gh pr view 12", "timeout -k0.5s 5 gh pr view 12",
+               "/usr/bin/time -f%E gh pr view 12", "env -uGH_TOKEN npm test", "HOME=/tmp xargs echo gh",
+               "HOME=/tmp find docs -name gh -print", "(export HOME=/tmp); gh pr view 12",
+               "export HOME=/tmp | cat; gh pr view 12", "gh variable ls", "gh release ls", "gh pr ls", "gh secret ls",
+               "gh repo ls", "gh alias ls", "find docs -exec grep -e gh -e pr -e merge {} +",
                "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
                "sudo -uroot gh pr view 12", "time -fx gh pr view 12", "stdbuf -oL gh pr view 12",
                "ionice -c2 gh pr view 12", "taskset -c0 gh pr view 12",
@@ -1384,7 +1397,7 @@ class HiddenMergeTests(unittest.TestCase):
                 self.assertTrue(reason is None or "too complex" in reason, reason)
                 if words == 40:
                     self.assertIsNone(reason)
-        self.assertIsNotNone(guard.check_command("xargs echo " + " ".join(["find"] * 40) + " gh pr merge 1", self.lane))
+        self.assertIsNotNone(guard.check_command("setsid " + " ".join(["find"] * 40) + " gh pr merge 1", self.lane))
         # An ordinary long line stays allowed quickly.
         started = time.monotonic()
         self.assertIsNone(guard.check_command("echo " + " ".join(f"word{i}" for i in range(5000)), self.lane))
@@ -1392,7 +1405,7 @@ class HiddenMergeTests(unittest.TestCase):
 
     def test_the_check_refuses_a_line_past_its_budget_or_deadline(self):
         guard = in_process(ROOT / "scripts/agent-guard.py")
-        self.assertIn("too complex", guard.check_command("xargs echo " + " ".join(["find"] * 6000), self.lane))
+        self.assertIn("too complex", guard.check_command("setsid echo " + " ".join(["find"] * 6000), self.lane))
         with patch.object(guard, "CHECK_SECONDS", 0):
             self.assertIn("too complex", guard.check_command("xargs echo find find", self.lane))
         self.assertIsNone(guard.check_command("xargs echo find find", self.lane))
@@ -1430,7 +1443,8 @@ class HiddenMergeTests(unittest.TestCase):
             peak = tracemalloc.get_traced_memory()[1]
         finally:
             tracemalloc.stop()
-        self.assertIn("too complex", reason)
+        # xargs runs echo, so the words are data; the line is allowed or, past the budget, refused as too complex.
+        self.assertTrue(reason is None or "too complex" in reason, reason)
         self.assertLess(peak, 50_000_000)
 
     def test_deep_recursion_in_a_nested_script_is_too_complex(self):

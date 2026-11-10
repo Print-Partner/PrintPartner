@@ -106,8 +106,11 @@ GH_READ_ONLY = {"extension": {"list", "search"}, "skill": {"list", "search", "pr
 GH_ALIASES = {"at": "attestation", "rs": "ruleset", "cs": "codespace", "agent": "agent-task",
               "agents": "agent-task", "agent-tasks": "agent-task", "ext": "extension", "extensions": "extension",
               "skills": "skill"}
-GH_SUBCOMMAND_ALIASES = {"extension": {"ls": "list"}, "skill": {"ls": "list", "show": "preview"},
-                         "ruleset": {"ls": "list"}, "codespace": {"ls": "list"}}
+GH_SUBCOMMAND_ALIASES = {"skill": {"show": "preview"}}
+# Groups whose list command answers to ls too (gh 2.103 help).
+GH_LS_GROUPS = {"alias", "cache", "codespace", "discussion", "extension", "gist", "gpg-key", "issue", "label", "org",
+                "pr", "project", "release", "repo", "ruleset", "run", "secret", "skill", "ssh-key", "variable",
+                "workflow"}
 # Built-in commands that run code: codespace ssh, cp, code, and jupyter run it in a codespace, and copilot downloads
 # and runs the Copilot CLI. Lanes have no use for either.
 GH_RUNS_CODE = {"codespace", "copilot"}
@@ -590,14 +593,22 @@ def wrapper_option_words(name, option):
         return 2 if WRAPPER_LONG[name][long] and not attached else 1
     if name == "env" and option == "-":
         return 1
-    if not re.fullmatch(r"-[A-Za-z0-9]+", option):
-        raise Unclear
+    return wrapper_bundle(name, option)[0]
+
+
+def wrapper_bundle(name, option):
+    """Return (words used, the value-taking flag or None) for a short-option bundle of a wrapper.
+
+    The first letter that takes a value uses the rest of the token as its value, whatever characters it holds
+    (env -uGH_TOKEN, env -C/tmp, timeout -k0.5s, time -f%E), or the next word when nothing follows. Letters before
+    it must be the wrapper's boolean flags, or the bundle is unclear.
+    """
     for k, flag in enumerate(option[1:]):
         if "-" + flag in WRAPPERS[name]:
-            return 1 if option[k + 2:] else 2
+            return (1 if option[k + 2:] else 2), "-" + flag
         if flag not in WRAPPER_BOOLEANS.get(name, ""):
             raise Unclear
-    return 1
+    return 1, None
 
 
 def program(args):
@@ -624,7 +635,10 @@ def program(args):
                 break
             if name == "env" and (option.startswith("--split-string") or re.match(r"^-[^-]*S", option)):
                 raise Unclear
-            moved = moved or option.split("=", 1)[0] in WRAPPER_CHDIR or bool(re.match(r"^-[^-]*[CD]", option))
+            # Only the option that takes the value can change directory, so env -uGH_CONFIG_DIR does not.
+            flag = option.split("=", 1)[0] if option.startswith("--") else (
+                wrapper_bundle(name, option)[1] if option != "-" else None)
+            moved = moved or flag in WRAPPER_CHDIR
             i += wrapper_option_words(name, option)
         i += WRAPPER_OPERANDS.get(name, 0)
     return None, [], moved, assigned
@@ -1039,9 +1053,22 @@ def gh_command(args):
     return path + without_repo_flags(args[i:])
 
 
+def canonical_gh(args):
+    """Return gh_command's words with gh's own aliases resolved: the command (at, rs, cs, agent, ext, skills...),
+    and within a group its subcommand (ls for list, skill show for preview)."""
+    if not args or args[0].startswith("-"):
+        return args
+    group = GH_ALIASES.get(args[0], args[0])
+    if args[1:2]:
+        action = GH_SUBCOMMAND_ALIASES.get(group, {}).get(args[1], args[1])
+        action = "list" if action == "ls" and group in GH_LS_GROUPS else action
+        return [group, action, *args[2:]]
+    return [group]
+
+
 def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
     """Return why a gh command is refused. marker says the command text holds a review marker."""
-    args = gh_command(args)
+    args = canonical_gh(gh_command(args))
     if any(EXPANDED in arg for arg in args[:2]):
         raise Unclear(EXPANSION)
     if args[:1] and not args[0].startswith("-") and args[0] not in GH_COMMANDS:
@@ -1054,11 +1081,7 @@ def gh_reason(args, cwd, alone=True, marker=False, ansi_c=False):  # noqa: C901
         if args[2:] and all(arg in ("--help", "-h") for arg in args[2:]):
             return None
         return MERGE if args[0] == "pr" else RELEASE
-    group = GH_ALIASES.get(args[0], args[0]) if args else None
-    if args and group in GH_GROUPS and args[1:2]:
-        args = [group, GH_SUBCOMMAND_ALIASES.get(group, {}).get(args[1], args[1]), *args[2:]]
-    elif args:
-        args = [group, *args[1:]]
+    group = args[0] if args else None
     if group in GH_RUNS_CODE or (group in GH_READ_ONLY and args[1:2] and args[1] not in GH_READ_ONLY[group]):
         # Help is allowed: the group alone (gh codespace prints its help), or only --help or -h after the action.
         # gh copilot alone runs the Copilot CLI, so it is never help.
@@ -1490,8 +1513,10 @@ def merge_in(args, depth, strict, state, scan):
         # each is tried in program position: gh itself, a wrapper, a shell's -c, or interpreter code. The words
         # after an ordinary program, such as a grep pattern, stay data. One pass covers every later word, so a
         # runner met in it does not scan again (scan=False); its strings and expansions are still checked.
-        if scan and any(hidden_merge(rest, state, depth + 1, True, scan=False, start=i) for i in range(len(rest))
-                        if not rest[i].startswith("-")):
+        # find and xargs give one known place for their program, so a runner found there scans its own; any
+        # other runner tries every word, and a runner found that way does not scan again (scan=False).
+        if scan and any(hidden_merge(rest, state, depth + 1, True, scan=name in ("find", "xargs"), start=i)
+                        for i in runner_program_starts(name, rest)):
             return True
     for text in strings:
         # The same command string often repeats, as in several identical sh -c scripts; its result is kept by
@@ -1549,23 +1574,58 @@ def redirects_gh_config(args):
                for i, word in enumerate(prefix))
 
 
-def redirect_scope(args, name, persistent):
-    """Return (redirect in effect for this command, redirect in effect for the commands after it).
+def redirect_scope(args, name, persistent, scoped):
+    """Return (redirect in effect for this command, the line's redirect state for the commands after it).
 
-    A prefix assignment or env option moves gh's config for its own command only. An export, declare, typeset,
-    readonly, or unset, or a bare assignment, moves it for the rest of the line, and persistent carries that, or a
-    redirect inherited from an outer line, into each later command.
+    persistent is (line, group). A prefix assignment or env option moves gh's config for its own command only. An
+    export, declare, typeset, readonly, or unset, or a bare assignment, moves it for the rest of the line; inside a
+    subshell or a pipeline stage (scoped) only for the scoped commands that follow it, so (export HOME=/tmp); gh and
+    export HOME=/tmp | cat; gh do not carry it to gh.
     """
+    line, group = persistent
+    group = group and scoped
     local = redirects_gh_config(args)
-    if name is None or name in DECLARATIONS or name == "unset":
-        persistent = persistent or local
-        return persistent, persistent
-    return persistent or local, persistent
+    if local and (name is None or name in DECLARATIONS or name == "unset"):
+        if scoped:
+            group = True
+        else:
+            line = True
+    return line or group or local, (line, group)
 
 
 def runs_gh(name, rest):
-    """Whether this command runs gh: as its program, or as the program a runner runs."""
-    return name == "gh" or (name in UNWRAPPED_RUNNERS and any(PurePosixPath(word).name == "gh" for word in rest))
+    """Whether this command runs gh: as its program, or as the program a runner runs. A runner's data, as in
+    xargs echo gh or find docs -name gh, does not count."""
+    return name == "gh" or (name in UNWRAPPED_RUNNERS
+                            and any(PurePosixPath(word).name == "gh" for word in runner_programs(name, rest)))
+
+
+# xargs options that take the next word as their value.
+XARGS_VALUE_OPTIONS = {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof",
+                       "--replace", "--max-lines", "--max-args", "--max-procs", "--max-chars", "--process-slot-var"}
+
+
+def runner_program_starts(name, rest):
+    """Return the indexes in rest where the runner's program can start. find and xargs have a known place for it;
+    any other runner may take options and operands first, so every word that is not an option is tried."""
+    if name == "find":
+        return [i + 1 for i, word in enumerate(rest[:-1]) if word in ("-exec", "-execdir", "-ok", "-okdir")]
+    if name == "xargs":
+        i = 0
+        while i < len(rest) and rest[i].startswith("-") and rest[i] != "--":
+            i += 2 if rest[i] in XARGS_VALUE_OPTIONS else 1
+        i += rest[i:i + 1] == ["--"]
+        return [i] if i < len(rest) else []
+    return [i for i, word in enumerate(rest) if not word.startswith("-")]
+
+
+def runner_programs(name, rest):
+    """Return the words where a runner's program can stand: after find's -exec, -execdir, -ok, or -okdir; the first
+    word after xargs's options; for any other runner the first two words that are not options, which covers
+    flock FILE, taskset MASK, chrt PRIORITY, and ssh HOST before the program."""
+    if name in ("find", "xargs"):
+        return [rest[i] for i in runner_program_starts(name, rest)]
+    return [word for word in rest if not word.startswith("-")][:2]
 
 
 def env_clears_gh_config(options):
@@ -1676,15 +1736,15 @@ def check_line(command, cwd, outer, state):
         marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
-        persistent = False
+        persistent = (False, False)
         if outer is not None:
             head_moves, config_unknown, env_config, persistent = (
-                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], outer[3])
+                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], (outer[3], False))
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
             check_deadline()
             # A command that moves gh's config could point a gh it runs at aliases or extensions written anywhere.
-            redirected, persistent = redirect_scope(args, name, persistent)
+            redirected, persistent = redirect_scope(args, name, persistent, scoped)
             if redirected and runs_gh(name, rest):
                 return GH_REDIRECT
             # Prefixes such as "{" or "!" can come before a control keyword.

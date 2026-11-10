@@ -115,6 +115,48 @@ async fn held(broker: &Broker) {
 const BLOCKED: Duration = Duration::from_secs(2);
 
 /// Polls the status route until the watcher reports `message`.
+/// Turning Bambu off ends the watch: no session, no status capability, and
+/// farm reads list the printer as not watched, until Bambu is on again.
+async fn feature_off_stops_the_watch(
+    data: &std::path::Path,
+    origin: &str,
+    cookie: &str,
+    broker: &Broker,
+) {
+    let off = broker.log().len();
+    features(data, r#"{"bambu":false}"#);
+    watched(origin, cookie, "Feature bambu is disabled.").await;
+    assert_eq!(
+        call(origin, cookie, "GET", CAPABILITIES).await,
+        (
+            StatusCode::OK,
+            json!({"files": false, "cameras": false, "status": false})
+        )
+    );
+    let (code, farm) = call(origin, cookie, "GET", "/api/v2/printers").await;
+    let x1c = &farm["printers"][0];
+    assert_eq!(
+        (code, &x1c["id"], &x1c["state"]["execution"], &x1c["reason"]),
+        (
+            StatusCode::OK,
+            &json!("p-x1c"),
+            &json!("manual"),
+            &json!("monitoring_not_supported")
+        ),
+        "farm reads do not list it as watched: {farm}"
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        connects(&broker.log()[off..]),
+        0,
+        "{:?}",
+        &broker.log()[off..]
+    );
+    features(data, r#"{"bambu":true}"#);
+    watched(origin, cookie, "Idle").await;
+    assert_eq!(connects(&broker.log()[off..]), 1, "the watcher resumed");
+}
+
 /// Stores the tenant's feature toggles while the runtime runs, as a settings
 /// edit from another process would; the watchers re-read them every second.
 fn features(data: &std::path::Path, toggles: &str) {
@@ -254,40 +296,7 @@ async fn ticket_t_23_rust_only_runtime_pins_in_child() {
         "the Test connection, then the watcher restarted on the new pin"
     );
 
-    // Turning Bambu off ends the watch: no session and no status capability
-    // until it is on again.
-    let off = broker.log().len();
-    features(&data, r#"{"bambu":false}"#);
-    watched(&origin, &cookie, "Feature bambu is disabled.").await;
-    assert_eq!(
-        call(&origin, &cookie, "GET", CAPABILITIES).await,
-        (
-            StatusCode::OK,
-            json!({"files": false, "cameras": false, "status": false})
-        )
-    );
-    let (code, farm) = call(&origin, &cookie, "GET", "/api/v2/printers").await;
-    let x1c = &farm["printers"][0];
-    assert_eq!(
-        (code, &x1c["id"], &x1c["state"]["execution"], &x1c["reason"]),
-        (
-            StatusCode::OK,
-            &json!("p-x1c"),
-            &json!("manual"),
-            &json!("monitoring_not_supported")
-        ),
-        "farm reads do not list it as watched: {farm}"
-    );
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(
-        connects(&broker.log()[off..]),
-        0,
-        "{:?}",
-        &broker.log()[off..]
-    );
-    features(&data, r#"{"bambu":true}"#);
-    watched(&origin, &cookie, "Idle").await;
-    assert_eq!(connects(&broker.log()[off..]), 1, "the watcher resumed");
+    feature_off_stops_the_watch(&data, &origin, &cookie, &broker).await;
     let (code, problem) = call(&origin, &cookie, "GET", "/api/v1/integrations/gone/tls-pin").await;
     assert_eq!(
         (code, &problem["detail"]),

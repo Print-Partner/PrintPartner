@@ -106,11 +106,11 @@ pub(crate) fn record_preflight_version(version: Option<u64>) {
 }
 
 /// The Node-backed runtime's schema check, run on its lease before the Node
-/// child starts. `Ok(Some(_))` refuses the start. A Rust validation that fails
-/// after the version was read still refuses a version Node cannot open. `Err`
-/// is a failure before the version was read, such as a failed integrity
-/// check; Node runs its own checks on that database, so the caller lets it
-/// start.
+/// child starts. `Ok(Some(_))` refuses the start. The integrity check and the
+/// Rust validations run after the version is read, so their failures still
+/// refuse a version Node cannot open. `Err` is a failure before the version
+/// was read, such as a file SQLite cannot open or a non-numeric version; Node
+/// runs its own checks on that database, so the caller lets it start.
 pub fn node_refusal(
     lease: &crate::lease::StorageLease,
 ) -> anyhow::Result<Option<IncompatibleSchema>> {

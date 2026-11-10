@@ -296,6 +296,20 @@ fn ticket_t_61_read_model_missing_unit() {
     );
 }
 #[test]
+fn read_model_foreign_unit_mapping_is_an_integrity_failure() {
+    failure(
+        "UPDATE plan_revision_required_units SET tenant_id='foreign'",
+        "required_unit_map",
+    );
+}
+#[test]
+fn read_model_missing_unit_creation_revision_is_an_integrity_failure() {
+    failure(
+        "UPDATE required_units SET created_in_revision_id=999999 WHERE token=(SELECT max(token) FROM required_units)",
+        "required_unit_map",
+    );
+}
+#[test]
 fn ticket_t_61_read_model_partial_unit_set() {
     failure(
         "DELETE FROM plan_revision_required_unit_sets",
@@ -534,6 +548,7 @@ fn ticket_t_61_read_model_plate_and_history_corruption_is_explicit() {
         "UPDATE accepted_plate_units SET required_unit_token='ppu_00000000000000000000000000000000'",
         "UPDATE plan_revisions SET parent_revision_id=id",
         "UPDATE plan_drafts SET base_revision_id=999999 WHERE state='open'",
+        "UPDATE plan_revision_required_units SET tenant_id='foreign' WHERE required_unit_token=(SELECT max(token) FROM required_units)",
     ] {
         let f = Fixture::from_bytes(include_bytes!("fixtures/accepted-plate-node.db"));
         f.mutate(sql);

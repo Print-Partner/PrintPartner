@@ -430,29 +430,15 @@ impl SendTargets for QueueTargets {
             Err(reason) => return refused(StatusCode::BAD_REQUEST, reason),
         }
         let printer = item["printer_id"].as_str().unwrap_or_default();
-        let integration = match printer_hosts::printer_link(&self.settings, READER_WAIT, printer) {
-            Ok(PrinterLink::Linked(integration)) => integration,
-            Ok(PrinterLink::PrinterNotFound) => {
-                return refused(StatusCode::NOT_FOUND, "Fleet printer not found");
-            }
-            Ok(PrinterLink::NotLinked) => {
-                return refused(StatusCode::BAD_REQUEST, "Printer is not linked to a host");
-            }
-            Ok(PrinterLink::NotAvailable) => {
-                return refused(StatusCode::BAD_REQUEST, "Linked host not found");
-            }
-            Err(_) => return refused(StatusCode::SERVICE_UNAVAILABLE, SETTINGS_UNAVAILABLE),
+        let texts = [
+            "Printer is not linked to a host",
+            "Linked host not found",
+            "Upload is not supported for",
+        ];
+        let (kind, id) = match readable(&self.settings, printer, texts) {
+            Ok(host) => host,
+            Err((status, detail)) => return Prepared::Refused { status, detail },
         };
-        let (kind, id) = (integration.kind.clone(), integration.id.clone());
-        if !matches!(
-            crate::printer_host::host(integration),
-            Some(crate::printer_host::Host::Read(_))
-        ) {
-            return refused(
-                StatusCode::BAD_REQUEST,
-                &format!("Upload is not supported for {kind}"),
-            );
-        }
         if idle {
             let wait = "wait for Idle or force dispatch";
             let busy = match (
@@ -489,6 +475,14 @@ impl SendTargets for QueueTargets {
         }
     }
 
+    fn host(&self, printer_id: &str) -> Result<String, (StatusCode, String)> {
+        queue_host(&self.settings, printer_id)
+    }
+
+    fn stage(&self, name: &str, file: &[u8]) -> std::io::Result<String> {
+        stage(&self.exports, name, file)
+    }
+
     fn dispatched(&self) {
         self.wake.notify_one();
     }
@@ -499,6 +493,70 @@ impl SendTargets for QueueTargets {
             item["artifact_path"].as_str().unwrap_or_default(),
         );
     }
+}
+
+/// The type and id of `printer`'s linked host when it is a
+/// [`Host::Read`](crate::printer_host::Host::Read) host, or the refusal,
+/// worded with `texts`: not linked, host missing, and the prefix before the
+/// host type that is not read.
+fn readable(
+    settings: &SettingsClient,
+    printer: &str,
+    texts: [&str; 3],
+) -> Result<(String, String), (StatusCode, String)> {
+    let integration = match printer_hosts::printer_link(settings, READER_WAIT, printer) {
+        Ok(PrinterLink::Linked(integration)) => integration,
+        Ok(PrinterLink::PrinterNotFound) => {
+            return Err((StatusCode::NOT_FOUND, "Fleet printer not found".into()));
+        }
+        Ok(PrinterLink::NotLinked) => return Err((StatusCode::BAD_REQUEST, texts[0].into())),
+        Ok(PrinterLink::NotAvailable) => return Err((StatusCode::BAD_REQUEST, texts[1].into())),
+        Err(_) => return Err((StatusCode::SERVICE_UNAVAILABLE, SETTINGS_UNAVAILABLE.into())),
+    };
+    let (kind, id) = (integration.kind.clone(), integration.id.clone());
+    match crate::printer_host::host(integration) {
+        Some(crate::printer_host::Host::Read(_)) => Ok((kind, id)),
+        _ => Err((StatusCode::BAD_REQUEST, format!("{} {kind}", texts[2]))),
+    }
+}
+
+/// Add to queue's printer check, in Node's words: a fleet printer linked to
+/// a host the send worker can upload to. The answer is the host's name.
+fn queue_host(settings: &SettingsClient, printer: &str) -> Result<String, (StatusCode, String)> {
+    let texts = [
+        "Printer is not linked to a host. Link a Moonraker or PrusaLink host in Settings.",
+        "Linked printer host was not found",
+        "Queue is not supported for",
+    ];
+    readable(settings, printer, texts)?;
+    printer_hosts::send_labels(settings, READER_WAIT, printer)
+        .map(|labels| labels.host_name.unwrap_or_default())
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, SETTINGS_UNAVAILABLE.into()))
+}
+
+/// Writes `file` as `name` in a new directory under
+/// `exports/printer-uploads/`, as Node's `streamPrinterUploadArtifact` does.
+fn stage(exports: &Path, name: &str, file: &[u8]) -> std::io::Result<String> {
+    let mut parts = Path::new(name).components();
+    if !matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Staged file name must be one path component",
+        ));
+    }
+    let directory = exports
+        .join("printer-uploads")
+        .join(hex::encode(rand::random::<[u8; 16]>()));
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join(name);
+    if let Err(error) = std::fs::write(&path, file) {
+        let _ = std::fs::remove_dir_all(&directory);
+        return Err(error);
+    }
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Deletes a staged file's own directory, as Node's

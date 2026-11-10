@@ -112,6 +112,8 @@ const optionalMembers = {
   ClaimUnattributedRequest: new Set(["selected_stl_basenames"]),
   ManualBurstRequest: new Set(["units.*.printed", "units.*.assembled"]),
   BuildHistoryPage: new Set(["entries.*.undo", "entries.*.undo.reason", "entries.*.undo.detail", "entries.*.undo.scope", "entries.*.restorable"]),
+  // Sent only while the desktop rebuild runtime flag is on (skip_serializing_if).
+  SourceList: new Set(["sources.*.catalog_metadata_version"]),
   BuildHistoryUndo: new Set(["entry.undo", "entry.undo.reason", "entry.undo.detail", "entry.undo.scope", "entry.restorable"]),
   // Accept's serde defaults: no remap, and no header version for a draft without a header row.
   AcceptDraftRequest: new Set(["remap_checkoff_links", "expected_header_version"]),

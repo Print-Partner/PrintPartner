@@ -565,7 +565,9 @@ def program(args):
             if name == "env" and (option.startswith("--split-string") or re.match(r"^-[^-]*S", option)):
                 raise Unclear
             moved = moved or option.split("=", 1)[0] in WRAPPER_CHDIR or bool(re.match(r"^-[^-]*[CD]", option))
-            i += 2 if option in WRAPPERS[name] else 1
+            # A bundle such as env -vu takes the next word as its value when its last flag takes one.
+            bundled = re.fullmatch(r"-[A-Za-z0-9]+", option) and "-" + option[-1] in WRAPPERS[name]
+            i += 2 if option in WRAPPERS[name] or bundled else 1
         i += WRAPPER_OPERANDS.get(name, 0)
     return None, [], moved, assigned
 
@@ -1330,6 +1332,26 @@ def check_deadline():
         raise TooComplex(TOO_COMPLEX)
 
 
+def nested_gh_refused(args, state):
+    """Whether gh_reason refuses gh args found below the top level. The reason is kept for hidden_reason. The
+    line's own directory stands in for cwd, so the coordinator worktree keeps its marker rules in nested gh."""
+    try:
+        reason = gh_reason(args, state.get("cwd"), alone=False)
+    except Unclear as error:
+        reason = str(error) or UNCLEAR
+    if reason:
+        state.setdefault("reason", reason)
+    return bool(reason)
+
+
+def code_gh_refused(code, state):
+    """Whether interpreter code names gh followed by words gh_reason refuses, such as an alias or extension name.
+    Like the rest of the interpreter rule this matches text, so it errs toward refusing."""
+    words = CODE_WORD.findall(code.replace(EXPANDED, " "))
+    return any(nested_gh_refused(words[i + 1:], state) for i, word in enumerate(words)
+               if PurePosixPath(word).name == "gh")
+
+
 def hidden_merge(words, state, depth=0, strict=False, scan=True, start=0):
     """Whether args runs a PR merge: directly, through a runner the guard does not unwrap, as interpreter code,
     as a shell's -c script, or as the command line inside an alias value or a runner's command string.
@@ -1378,9 +1400,14 @@ def merge_in(args, depth, strict, state, scan):
     if EXPANDED in name:
         return pr_merge_after(rest)
     if name == "gh":
-        return not merge_help(["gh", *rest]) and merge_tokens(["gh", *rest], api=strict, first_only=True)
+        if merge_help(["gh", *rest]):
+            return False
+        if merge_tokens(["gh", *rest], api=strict, first_only=True):
+            return True
+        # check_line's own loop already classified a gh at the top level; anything nested gets the same rules here.
+        return depth > 0 and nested_gh_refused(rest, state)
     if name in INTERPRETERS:
-        return any(names_merge(arg) or code_merge(arg) for arg in rest)
+        return any(names_merge(arg) or code_merge(arg) or code_gh_refused(arg, state) for arg in rest)
     strings = command_strings(name, rest)
     # Alias and git alias values and runner strings are commands no gh check sees.
     inner_strict = strict or bool(strings)
@@ -1442,39 +1469,47 @@ def merge_help(args):
     return words[:2] == ["pr", "merge"] and bool(words[2:]) and all(arg in ("--help", "-h") for arg in words[2:])
 
 
-def redirects_gh_config(parsed):
-    """Whether a command on the line sets or clears a variable that moves gh's config: an assignment, export,
-    env VAR=..., env -u VAR for one of them, or env -i, which clears them all."""
-    for args, *_ in parsed:
-        for i, word in enumerate(args):
-            if word.split("=", 1)[0] in GH_CONFIG_VARIABLES and "=" in word:
-                return True
-            if PurePosixPath(word).name == "env" and env_clears_gh_config(args[i + 1:]):
-                return True
-    return False
+def redirects_gh_config(args):
+    """Whether one simple command sets or clears a variable that moves gh's config: a prefix assignment, an
+    export, declare, typeset, or readonly argument, an env NAME=... operand, unset of one of them, env -u of one
+    of them, or env -i, which clears them all. Words that only look like an assignment, such as the data in
+    gh pr comment --body HOME=/tmp or echo HOME=/tmp, do not count."""
+    name, rest, _, assigned = program(args)
+    if any(word.split("=", 1)[0] in GH_CONFIG_VARIABLES for word in assigned):
+        return True
+    if name == "unset" and any(arg in GH_CONFIG_VARIABLES for arg in rest):
+        return True
+    prefix = args[:len(args) - len(rest) - (name is not None)]
+    return any(PurePosixPath(word).name == "env" and env_clears_gh_config(args[i + 1:])
+               for i, word in enumerate(prefix))
 
 
 def env_clears_gh_config(options):
-    """Whether env's leading options clear the whole environment (-i) or unset a gh config variable (-u VAR)."""
+    """Whether env's options clear the whole environment (-i) or unset a gh config variable (-u VAR). -C and
+    --chdir take an operand, as -u does; the options end at the first word that is not one."""
     j = 0
     while j < len(options) and options[j].startswith("-") and options[j] != "--":
         option = options[j]
-        if option in ("-i", "-", "--ignore-environment") or re.fullmatch(r"-[^-u]*i[^-]*", option):
+        if option in ("-", "--ignore-environment"):
             return True
-        if option in ("-u", "--unset"):
-            if options[j + 1:j + 2] and options[j + 1] in GH_CONFIG_VARIABLES:
+        if option.startswith("--"):
+            name, _, value = option.partition("=")
+            if name == "--unset" and (value or options[j + 1:j + 2]) and (value or options[j + 1]) in GH_CONFIG_VARIABLES:
                 return True
-            j += 2
+            j += 2 if name in ("--unset", "--chdir") and not value else 1
             continue
-        if option.startswith("--unset="):
-            unset = option.split("=", 1)[1]
-        elif re.fullmatch(r"-[^-]*u.+", option):
-            unset = option[option.index("u") + 1:]
+        flags = option[1:]
+        for k, flag in enumerate(flags):
+            if flag == "i":
+                return True
+            if flag in "uC":
+                value = flags[k + 1:] or "".join(options[j + 1:j + 2])
+                if flag == "u" and value in GH_CONFIG_VARIABLES:
+                    return True
+                j += 1 if flags[k + 1:] else 2
+                break
         else:
-            unset = None
-        if unset in GH_CONFIG_VARIABLES:
-            return True
-        j += 1
+            j += 1
     return False
 
 
@@ -1501,6 +1536,7 @@ def check_command(command, cwd, outer=None, state=None):
     if state is not None:
         return check_line(command, cwd, outer, state)
     state = merge_state()
+    state["cwd"] = cwd if cwd and ".." not in PurePosixPath(cwd).parts else (os.path.realpath(cwd) if cwd else cwd)
     LINE_DEADLINE, LINE_GIT = state["deadline"], {}
     try:
         return check_line(command, cwd, outer, state)
@@ -1524,7 +1560,7 @@ def hidden_reason(parsed, assigned, state):
     # pattern) does not. Nested sh -c scripts reach here through check_command. gh pr merge --help alone stays
     # allowed.
     if any(hidden_merge(args, state) for args, *_ in parsed):
-        return MERGE
+        return state.get("reason") or MERGE
     return None
 
 
@@ -1555,11 +1591,13 @@ def check_line(command, cwd, outer, state):
         marker = names_marker(command)
         # The guard reads push settings before any of these commands run.
         config_unknown = head_moves or any(writes_config(name, rest) for name, rest, *_ in commands)
+        # A line that moves gh's config, or a script run from such a line, could point gh at aliases or
+        # extensions written anywhere, so any gh it runs, nested or not, is refused.
+        redirected = any(redirects_gh_config(args) for args, *_ in parsed)
         if outer is not None:
-            head_moves, config_unknown, env_config = (head_moves or outer[0], config_unknown or outer[1],
-                                                      env_config or outer[2])
-        # A line that moves gh's config could point it at aliases or extensions written anywhere.
-        if any(name == "gh" for name, *_ in commands) and redirects_gh_config(parsed):
+            head_moves, config_unknown, env_config, redirected = (
+                head_moves or outer[0], config_unknown or outer[1], env_config or outer[2], redirected or outer[3])
+        if redirected and any(re.search(r"\bgh\b", unquoted(" ".join(args))) for args, *_ in parsed):
             return GH_REDIRECT
         control = 0
         for (args, *_), (name, rest, moved, _, scoped, conditional) in zip(parsed, commands):
@@ -1586,7 +1624,7 @@ def check_line(command, cwd, outer, state):
                 if script is not None:
                     # The script's own substitutions were already classified as nested commands.
                     # Identical scripts on one line, as in several sh -c '<same text>', are checked once.
-                    inherited = (head_moves, config_unknown, env_config)
+                    inherited = (head_moves, config_unknown, env_config, redirected)
                     key = ("script", script, here, inherited)
                     if key not in state["memo"]:
                         state["memo"][key] = check_command(script.replace(EXPANDED, ""), here, inherited, state)

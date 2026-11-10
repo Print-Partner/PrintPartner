@@ -1252,6 +1252,18 @@ class HiddenMergeTests(unittest.TestCase):
                "gh extension --help=false exec x", "gh ext browse", "gh ext create foo", "gh ext remove foo",
                "gh codespace ssh", "gh codespace cp a b", "gh copilot", "gh copilot -p hi", "gh skill install o/r",
                "gh skills update", "gh skill publish",
+               # Sol at edac4614: gh classified fully wherever it runs, and config redirects the line still missed.
+               "GH_CONFIG_DIR=/tmp/c xargs gh m </dev/null", "xargs gh m </dev/null", "find . -maxdepth 0 -exec gh m \\;",
+               "flock /tmp/x gh m", "setsid gh ext exec x", "xargs gh alias set m 'pr view'",
+               "python3 -c 'import os; os.system(\"gh m\")'",
+               "node -e 'require(\"child_process\").execSync(\"gh m\")'",
+               "python3 -c 'import subprocess; subprocess.run([\"gh\", \"ext\", \"exec\", \"x\"])'",
+               "unset GH_CONFIG_DIR; gh pr view 12", "unset HOME; gh pr view 12",
+               "env -C /tmp -u GH_CONFIG_DIR gh pr view 12", "env -C /tmp -i gh pr view 12",
+               "env --chdir=/tmp -u HOME gh pr view 12", "env -vu HOME gh pr view 12", "env -vu FOO gh pr merge 12",
+               "GH_CONFIG_DIR=/tmp/c sh -c 'gh pr view 12'", "export HOME=/tmp; bash -c 'gh pr view 12'",
+               "declare -x HOME=/tmp; gh pr view 12", "typeset -x XDG_CONFIG_HOME=/tmp; gh pr view 12",
+               "set -a; HOME=/tmp; gh pr view 12", "env HOME=/tmp gh pr view 12",
                # Nested shells (Sol at 7a96c572); past the nesting limit the guard fails closed.
                "xargs sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
                "setsid sh -c \"sh -c \\\"sh -c 'gh pr merge 1'\\\"\"",
@@ -1294,7 +1306,12 @@ class HiddenMergeTests(unittest.TestCase):
                # Read-only and help forms of those groups, and env -u of a variable that does not move gh's config.
                "gh extension search foo", "gh extension exec --help", "gh ext", "gh codespace", "gh codespace --help",
                "gh copilot --help", "gh skill list", "gh skill preview o/r x", "gh alias list", "gh alias delete m",
-               "gh attestation verify f --owner o", "env -u PATH gh pr view 12", "env --unset=FOO gh pr view 12", "xargs " + nested_shells("echo hi", 8),
+               "gh attestation verify f --owner o", "env -u PATH gh pr view 12", "env --unset=FOO gh pr view 12",
+               # Words that only look like an assignment, and env options that leave gh's config alone.
+               "gh pr comment 12 --body HOME=/tmp", "echo HOME=/tmp; gh pr view 12", "env -u FOO gh pr view 12",
+               "env -C /tmp gh pr view 12", "env -C /tmp -u PATH gh pr view 12", "env -vu FOO gh pr view 12",
+               "unset FOO; gh pr view 12", "HOME=/tmp echo hi", "find . -maxdepth 0 -exec gh pr view 12 \\;",
+               "python3 -c 'import os; os.system(\"gh pr view 12\")'", "xargs " + nested_shells("echo hi", 8),
                # entr runs its arguments as a shell command line only with -s.
                "entr echo 'gh pr merge 1'",
                "node -e 'require(\"child_process\").execSync(\"gh pr view 12\")'",

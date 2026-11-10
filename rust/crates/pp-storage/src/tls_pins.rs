@@ -65,13 +65,7 @@ pub(crate) fn all(connection: &Connection) -> Result<HashMap<String, Pin>> {
         "SELECT integration_id, host, port, sha256, pinned_at FROM printer_tls_pins WHERE tenant_id=?1",
     )?;
     let rows = statement.query_map(params![TENANT], |row| {
-        Ok((
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
-            row.get(3)?,
-            row.get(4)?,
-        ))
+        <(String, String, i64, Vec<u8>, String)>::try_from(row)
     })?;
     rows.map(|row| {
         let (integration, host, port, sha256, pinned_at) = row?;

@@ -1,6 +1,19 @@
 use super::*;
 use crate::{Limits, WriterOwner};
 
+const WAIT: Duration = Duration::from_secs(5);
+static IDLE: AtomicBool = AtomicBool::new(false);
+
+fn opened() -> (tempfile::TempDir, WriterOwner) {
+    let directory = tempfile::tempdir().unwrap();
+    let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
+    (directory, owner)
+}
+
+fn written(reply: Result<WriteReply>) -> bool {
+    reply.unwrap().recv().unwrap().unwrap()
+}
+
 fn pin(host: &str, byte: u8) -> Pin {
     Pin {
         host: host.into(),
@@ -12,24 +25,20 @@ fn pin(host: &str, byte: u8) -> Pin {
 
 #[test]
 fn ticket_t_23_a_pin_is_written_once_and_only_a_reset_removes_it() {
-    let directory = tempfile::tempdir().unwrap();
-    let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
+    let (_directory, owner) = opened();
     let client = owner.client();
-    let wait = Duration::from_secs(5);
-    let idle = AtomicBool::new(false);
-    let write = |reply: Result<WriteReply>| reply.unwrap().recv().unwrap().unwrap();
-    assert_eq!(read(&client, wait, "bambu-1").unwrap(), None);
-    assert!(write(client.pin_tls(
+    assert_eq!(read(&client, WAIT, "bambu-1").unwrap(), None);
+    assert!(written(client.pin_tls(
         "bambu-1",
         pin("192.168.1.20", 1),
-        &idle,
-        wait
+        &IDLE,
+        WAIT
     )));
     assert!(
-        !write(client.pin_tls("bambu-1", pin("192.168.1.20", 2), &idle, wait)),
+        !written(client.pin_tls("bambu-1", pin("192.168.1.20", 2), &IDLE, WAIT)),
         "the first pin stays"
     );
-    let stored = read(&client, wait, "bambu-1").unwrap().unwrap();
+    let stored = read(&client, WAIT, "bambu-1").unwrap().unwrap();
     assert_eq!(
         (stored.host.as_str(), stored.port, stored.sha256),
         ("192.168.1.20", 8883, [1; 32])
@@ -39,18 +48,18 @@ fn ticket_t_23_a_pin_is_written_once_and_only_a_reset_removes_it() {
         "{}",
         stored.pinned_at
     );
-    assert_eq!(read(&client, wait, "bambu-2").unwrap(), None);
-    assert!(write(client.reset_tls_pin("bambu-1", &idle, wait)));
-    assert!(!write(client.reset_tls_pin("bambu-1", &idle, wait)));
-    assert_eq!(read(&client, wait, "bambu-1").unwrap(), None);
-    assert!(write(client.pin_tls(
+    assert_eq!(read(&client, WAIT, "bambu-2").unwrap(), None);
+    assert!(written(client.reset_tls_pin("bambu-1", &IDLE, WAIT)));
+    assert!(!written(client.reset_tls_pin("bambu-1", &IDLE, WAIT)));
+    assert_eq!(read(&client, WAIT, "bambu-1").unwrap(), None);
+    assert!(written(client.pin_tls(
         "bambu-1",
         pin("192.168.1.21", 3),
-        &idle,
-        wait
+        &IDLE,
+        WAIT
     )));
     assert_eq!(
-        read(&client, wait, "bambu-1").unwrap().unwrap().sha256,
+        read(&client, WAIT, "bambu-1").unwrap().unwrap().sha256,
         [3; 32]
     );
     owner.shutdown().unwrap();
@@ -58,19 +67,14 @@ fn ticket_t_23_a_pin_is_written_once_and_only_a_reset_removes_it() {
 
 #[test]
 fn ticket_t_25_watched_bambu_rows_carry_their_pins() {
-    let directory = tempfile::tempdir().unwrap();
-    let (owner, _) = WriterOwner::open(directory.path(), Limits::default()).unwrap();
+    let (directory, owner) = opened();
     let client = owner.client();
-    let wait = Duration::from_secs(5);
-    let idle = AtomicBool::new(false);
-    assert!(
-        client
-            .pin_tls("x1c", pin("192.168.1.20", 1), &idle, wait)
-            .unwrap()
-            .recv()
-            .unwrap()
-            .unwrap()
-    );
+    assert!(written(client.pin_tls(
+        "x1c",
+        pin("192.168.1.20", 1),
+        &IDLE,
+        WAIT
+    )));
     let stored = serde_json::json!([
         {"id": "moon", "type": "moonraker", "config": {"base_url": "http://m.test"}},
         {"id": "moon", "type": "bambu", "config": {"host": "192.168.1.9"}},
@@ -88,7 +92,7 @@ fn ticket_t_25_watched_bambu_rows_carry_their_pins() {
         )
         .unwrap();
 
-    let hosts = crate::printer_hosts::read(&client, wait).unwrap().unwrap();
+    let hosts = crate::printer_hosts::read(&client, WAIT).unwrap().unwrap();
     let rows: Vec<_> = hosts
         .bambu
         .iter()

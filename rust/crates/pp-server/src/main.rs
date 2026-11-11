@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
-use pp_core::{CoreRuntime, CoreStatus, DesktopLaunch, DesktopRebuild, VerifiedBundle};
+use pp_core::{
+    CoreRuntime, CoreStatus, DesktopLaunch, DesktopRebuild, IncompatibleSchema, VerifiedBundle,
+};
 use std::io::Write;
 
 mod args;
@@ -19,11 +21,26 @@ fn main() -> Result<()> {
         args.next();
         return healthcheck(args);
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(serve(args.collect()))
+        .block_on(serve(args.collect()));
+    // An unsupported schema stays unsupported until someone acts, so exit
+    // with a code a restart policy can tell apart from a crash.
+    if let Some(refusal) = result
+        .as_ref()
+        .err()
+        .and_then(|error| error.downcast_ref::<IncompatibleSchema>())
+    {
+        eprintln!("{}", refusal.diagnostic());
+        eprintln!("{refusal}");
+        std::process::exit(INCOMPATIBLE_STORAGE_EXIT);
+    }
+    result
 }
+
+/// `EX_CONFIG` from sysexits.h: the data folder needs a person to act.
+const INCOMPATIBLE_STORAGE_EXIT: i32 = 78;
 
 /// `pp-server healthcheck`: exits 0 when the probe passes, 1 when it fails.
 fn healthcheck(args: impl Iterator<Item = String>) -> Result<()> {

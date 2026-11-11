@@ -147,8 +147,8 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   execution and bed-clear facts, last-heard time and distinct not-set-up,
   manual and unreachable reasons. They write nothing. See
   [Farm reads](farm-reads.md).
-- Send queue actions (GRE-365): Send now, Send ready, Reconcile and Remove
-  under `/api/v2/printer-send-queue`, and the printer-upload worker, which is
+- Send queue actions (GRE-365): Add to queue, Send now, Send ready, Reconcile
+  and Remove under `/api/v2/printer-send-queue`, and the printer-upload worker, which is
   the only Rust code that uploads to a printer. Every upload follows a user's
   dispatch; nothing is retried. See [Send queue](send-queue.md).
 - Match suggestions (GRE-1091):
@@ -199,7 +199,10 @@ With the Cargo feature compiled in and `PP_DESKTOP_REBUILD` exactly `1` or
   read-only on the printer: no upload or print start, and only PrusaLink's
   single Digest resend after a 401. Moonraker and PrusaLink both report the
   status capability, except a PrusaLink row the watchers do not poll (see
-  above); Bambu reads as having no capabilities. See
+  above); Bambu reports only the status capability, from its watcher, except
+  a Bambu row the watchers do not take (no address, past the 128-host cap, or
+  an id an earlier row took) or while the tenant's `bambu` feature is off (or
+  its toggles are invalid). See
   [Printer-host reads](printer-host-reads.md).
 
   ```sh

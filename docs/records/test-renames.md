@@ -10,6 +10,19 @@ quote old commands; they are not edited.
 
 | Old file | New file | Ticket |
 | --- | --- | --- |
+| `rust/crates/pp-api-types/tests/ticket_t_63_contracts.rs` | `rust/crates/pp-api-types/tests/node_boundary_contracts.rs` | T-63 |
+| `rust/crates/pp-api-types/tests/ticket_t_9_semantics.rs` | `rust/crates/pp-api-types/tests/schema_semantics.rs` | T-9 |
+| `rust/crates/pp-desktop/tests/ticket_t_29_tray.rs` | `rust/crates/pp-desktop/tests/tray_status_badge.rs` | T-29 |
+| `rust/crates/pp-desktop/tests/ticket_t_31_autostart.rs` | `rust/crates/pp-desktop/tests/launch_agent.rs` | GRE-369 (T-31) |
+| `rust/crates/pp-net/tests/ticket_t_22_stream.rs` | `rust/crates/pp-net/tests/streamed_replies.rs` | GRE-1044 (T-22) |
+| `rust/crates/pp-perf/tests/ticket_t_53.rs` | `rust/crates/pp-perf/tests/perf_record_gate.rs` | GRE-388 (T-53) |
+| `rust/crates/pp-perf/tests/ticket_t_53_capture.rs` | `rust/crates/pp-perf/tests/perf_capture.rs` | GRE-388 (T-53) |
+| `rust/crates/pp-server/tests/slice0_mount.rs` | `rust/crates/pp-server/tests/server_binary_routes.rs` | none in file |
+| `rust/crates/pp-services/tests/ticket_t_44_discovery.rs` | `rust/crates/pp-services/tests/native_discovery.rs` | GRE-456 (T-44) |
+| `rust/crates/pp-services/tests/ticket_t_58_kit.rs` | `rust/crates/pp-services/tests/kit_bundle_golden.rs` | GRE-425 (T-58) |
+| `rust/crates/pp-services/tests/ticket_t_59_sync.rs` | `rust/crates/pp-services/tests/github_sync_golden.rs` | GRE-429 (T-59) |
+| `rust/crates/pp-services/tests/ticket_t_60_profile_sync.rs` | `rust/crates/pp-services/tests/profile_sync_golden.rs` | T-60 |
+| `rust/crates/pp-services/tests/ticket_t_62_mcp_domain.rs` | `rust/crates/pp-services/tests/mcp_dispatch_parity.rs` | GRE-441 (T-62) |
 | `rust/crates/pp-core/tests/slice0_mount.rs` | `rust/crates/pp-core/tests/gateway_mount.rs` | none in name (slice0) |
 | `rust/crates/pp-core/tests/ticket_t_30_single_instance.rs` | `rust/crates/pp-core/tests/single_owner.rs` | T-30 |
 | `rust/crates/pp-core/tests/ticket_t_3_drain.rs` | `rust/crates/pp-core/tests/process_group_drain.rs` | T-3 |

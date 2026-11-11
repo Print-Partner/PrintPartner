@@ -1,3 +1,4 @@
+//! T-9: shared semantic corpora for the API types, with the frozen autosave corpus.
 use pp_api_types::{
     parse_identity, parse_receipt, parse_request, semantics::parse_semantic_fixture,
 };

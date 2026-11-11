@@ -58,7 +58,8 @@ fn stored(database: &Path, key: &str) -> Option<String> {
 }
 
 fn database_entry(archive: &Path, output: &Path) {
-    let mut reader = tar::Archive::new(GzDecoder::new(File::open(archive).unwrap()));
+    let mut reader =
+        tar::Archive::new(GzDecoder::new(BufReader::new(File::open(archive).unwrap())));
     for entry in reader.entries().unwrap() {
         let mut entry = entry.unwrap();
         if entry.path_bytes().as_ref() == DATABASE_FILE.as_bytes() {

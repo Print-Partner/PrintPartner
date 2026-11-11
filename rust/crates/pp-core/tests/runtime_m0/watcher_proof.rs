@@ -1,3 +1,4 @@
+//! T-4.
 //! GRE-449 / GRE-335: the Rust-only launcher start polls the Moonraker hosts
 //! stored in the `integrations` setting and serves their status through the
 //! gateway, with no Node child, no Node fallback and no Checkoff or queue
@@ -17,7 +18,7 @@ pub(super) const SUCCESS: &[u8] =
 async fn ticket_t_4_watcher_proof_rust_only_runtime_polls_stored_hosts() {
     let data = temporary("watcher-proof");
     let stdout = run_in_child(
-        "ticket_t_4_watcher_proof::ticket_t_4_watcher_proof_rust_only_runtime_in_child",
+        "watcher_proof::ticket_t_4_watcher_proof_rust_only_runtime_in_child",
         &data,
     )
     .await;

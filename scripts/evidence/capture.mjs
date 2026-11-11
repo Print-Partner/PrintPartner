@@ -112,6 +112,11 @@ async function main() {
         await guarded(page.getByRole("radio", { name: /^Overdue/ }).click(), "selecting Overdue failed");
         await guarded(page.getByText("No Builds match this filter.").waitFor(), "empty filter did not appear");
       }
+      if (config.reviewPlan && /^\/builds\/\d+\/plan\/?$/.test(path)) {
+        await guarded(page.getByRole("button", { name: "Review and accept", exact: true }).click(), "opening Accept preview failed");
+        await guarded(page.getByRole("dialog").waitFor(), "Accept gate did not open");
+        await guarded(page.getByRole("dialog").getByText("Checking what Accept would change.").waitFor({ state: "hidden" }), "Accept preview did not settle");
+      }
       const file = join(outDir, name);
       if (display) {
         // The installed evidence tool captures the display; move its file into outDir.

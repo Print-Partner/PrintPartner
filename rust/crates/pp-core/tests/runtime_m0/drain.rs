@@ -7,7 +7,7 @@ use pp_gateway::ownership::cutover::{CUTOVER_FILE, CutoverRefusal};
 use serde_json::json;
 use std::{fs, path::PathBuf, time::Duration};
 
-#[path = "ticket_t_3_drain_compression.rs"]
+#[path = "response_compression.rs"]
 mod compression;
 
 async fn isolated_case(name: &str, rebuild: bool) -> Option<PathBuf> {
@@ -1455,4 +1455,4 @@ async fn ticket_t_3_drain_legal_summary_representation_parity() {
     }
 }
 
-include!("ticket_t_3_drain_repeated_upload.rs");
+include!("repeated_upload.rs");

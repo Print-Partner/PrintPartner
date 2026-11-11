@@ -53,6 +53,18 @@ class ParseArgs(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse("--shot", "/farm", "--module", "telemetry")
 
+    def test_both_capture_modes_reach_the_browser_config(self):
+        args = parse("--empty-states", "--review-plan", "--shot", "/builds",
+                     "--shot", "/builds/1000/plan")
+        with mock.patch.object(run, "run") as capture:
+            run.capture(args, "http://127.0.0.1:3000", "http://127.0.0.1:4000",
+                        Path("credential.json"), Path("shots"), "node", Path("browser"))
+        config = json.loads(capture.call_args.args[2])
+        self.assertTrue(config["emptyStates"])
+        self.assertTrue(config["reviewPlan"])
+        self.assertEqual([shot["path"] for shot in config["shots"]],
+                         ["/builds", "/builds/1000/plan"])
+
     def test_shot_names(self):
         self.assertEqual(run.shot_name("/builds/2/history"), "builds-2-history.png")
         self.assertEqual(run.shot_name("/"), "root.png")
@@ -125,6 +137,19 @@ class Spawn(unittest.TestCase):
                           stdout=subprocess.PIPE, text=True)
         out, _ = child.communicate(timeout=30)
         self.assertEqual(out.strip(), "[]")
+
+
+class OrderHolderSeed(unittest.TestCase):
+    def test_only_the_other_unarchived_build_gets_an_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            seed = Path(folder)
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                db.executescript("CREATE TABLE build_profiles(id INTEGER, order_number TEXT, archived_at TEXT);"
+                                 "INSERT INTO build_profiles VALUES(1,NULL,'2026-11-01'),(2,NULL,NULL),(3,NULL,NULL);")
+            run.seed_order_holder(seed, [{"name": "duplicate-order", "arg": 2}])
+            with sqlite3.connect(seed / "print-partner.db") as db:
+                self.assertEqual(db.execute("SELECT id,order_number FROM build_profiles ORDER BY id").fetchall(),
+                                 [(1, None), (2, None), (3, "EVIDENCE-ORDER-2")])
 
 
 class CaptureNeverPublishes(unittest.TestCase):

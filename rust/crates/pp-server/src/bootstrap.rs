@@ -309,12 +309,12 @@ mod tests {
     fn directory() -> tempfile::TempDir {
         // Under /tmp: a socket path must fit in about 100 bytes, which macOS's
         // per-user temporary directory leaves no room for.
-        let directory = tempfile::Builder::new()
+        // Mode 0700 whatever the umask, as pp-storage's scratch directories.
+        tempfile::Builder::new()
             .prefix("pp-bootstrap-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in("/tmp")
-            .unwrap();
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        directory
+            .unwrap()
     }
 
     fn counting_mint() -> (Mint, Arc<std::sync::atomic::AtomicUsize>) {

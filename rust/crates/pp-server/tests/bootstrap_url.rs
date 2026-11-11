@@ -14,6 +14,7 @@ mod rust_only;
 use rust_only::{Server, server_binary};
 use std::{
     io::{Read, Write},
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::Path,
     process::Output,
     time::{Duration, Instant},
@@ -82,8 +83,11 @@ fn listing(directory: &Path) -> Vec<std::ffi::OsString> {
 fn bootstrap_url_signs_in_once_expires_and_never_reaches_server_output() {
     // Under /tmp: the socket path must fit in about 100 bytes, which macOS's
     // per-user temporary directory leaves no room for.
+    // Mode 0700 whatever the umask, as pp-storage's scratch directories: the
+    // client refuses a data directory other accounts can write.
     let root = tempfile::Builder::new()
         .prefix("ppb-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in("/tmp")
         .unwrap();
     let root = root.path();
@@ -103,7 +107,10 @@ fn bootstrap_url_signs_in_once_expires_and_never_reaches_server_output() {
 
     // The wrong directory, an empty one this account owns, fails and stays empty.
     let other = root.join("other");
-    std::fs::create_dir(&other).unwrap();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&other)
+        .unwrap();
     let output = bootstrap_url(&other);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());

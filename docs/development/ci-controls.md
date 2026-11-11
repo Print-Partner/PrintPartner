@@ -64,12 +64,15 @@ and the required contexts remain unchanged. See the
 [event table](ci.md#cross-os-pr-label).
 
 The stale merge-group canceller runs every ten minutes or by manual dispatch
-on main. It has only `actions: write`, needed for the cancel-run endpoint, and
-uses only `GITHUB_TOKEN`. It checks out no code and downloads only main's public
-script. It lists only the two cross-OS workflows and cancels queued/in-progress
-merge-group runs only after their queue ref returns 404. Other read errors abort
-the pass before any cancellation. This narrow new permission does not alter any
-build job's permissions or secrets. See [Superseded runs](ci.md#superseded-runs).
+on main. Its minimum permissions are `actions: write` for cancellation and
+`contents: read` for ref and ancestry checks, using only `GITHUB_TOKEN`. It checks
+out no code and downloads only main's public script. Startup must successfully
+read the expected main ref. It selects only the two cross-OS workflows' queued or
+in-progress merge-group runs with a missing queue ref (404), then preserves any
+run SHA already in main's history. Thus merged groups' advisory checks can finish.
+Read failures abort before cancellation; a cancel 409 skips the finished run and
+continues. These permissions do not alter build jobs' permissions or secrets.
+See [Superseded runs](ci.md#superseded-runs).
 
 The Mac runner stays unused. A follow-up must wait for Chad to configure a
 restricted runner group: selected workflows pinned to main, with fork access

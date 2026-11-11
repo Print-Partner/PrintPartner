@@ -760,14 +760,20 @@ never replaces the pending run and, because the original has finished, does not 
 
 `cancel-stale-merge-groups.yml` runs every ten minutes and supports manual
 dispatch on main. It downloads only main's public Python script, checks out
-nothing, and receives only `GITHUB_TOKEN` with `actions: write`. That permission
-is needed to cancel Actions runs; no contents or other write permission is granted.
-It paginates queued and in-progress runs of `rust-cross-os.yml` and
-`desktop-native-macos.yml`, selects only `merge_group` runs on
-`gh-readonly-queue/` branches, and queries each queue ref. Only an explicit ref
-404 authorizes cancellation. A live ref is never cancelled. A listing or ref
-API error aborts preflight before any cancellation; an API error while cancelling
-stops further writes. Other workflows and PR/main runs are never selected.
+nothing, and receives only `GITHUB_TOKEN` with the minimum permissions:
+`actions: write` for cancellation and `contents: read` for ref and ancestry checks.
+It first requires a successful read of `refs/heads/main` with the expected ref;
+any failure, including 404, aborts without cancelling anything. It paginates queued
+and in-progress runs of `rust-cross-os.yml` and `desktop-native-macos.yml`, selects
+only `merge_group` runs on `gh-readonly-queue/` branches, and queries each queue ref.
+An explicit queue-ref 404 is necessary but not sufficient: merged entries also lose
+their refs. For each absent ref it checks `compare/{head_sha}...main`. Status
+`identical` or `ahead` means the run SHA is in main's history, so that run is kept;
+only `behind` or `diverged` can be cancelled. A live queue ref is never cancelled.
+All reads finish before writes. Any read API error or unexpected comparison status
+aborts preflight without cancelling anything. A cancel-endpoint 409 means the run
+finished meanwhile: skip it and continue. Other cancel API errors stop further writes.
+Other workflows and PR/main runs are never selected.
 GitHub schedules can be delayed, so ten minutes is an interval, not a guarantee.
 The workflow and main script must land before the scheduled job can run.
 

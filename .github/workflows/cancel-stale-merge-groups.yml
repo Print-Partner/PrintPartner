@@ -5,10 +5,11 @@ on:
     - cron: '3,13,23,33,43,53 * * * *'
   workflow_dispatch:
 
-# Cancelling obsolete Actions runs needs actions:write. No contents access,
-# checkout, PR trigger or repository secrets; download only main's public script.
+# Minimum permissions: actions:write to cancel runs, contents:read to verify
+# refs and ancestry. No checkout, PR trigger or repository secrets.
 permissions:
   actions: write
+  contents: read
 
 concurrency:
   group: cancel-stale-merge-groups

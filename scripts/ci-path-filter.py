@@ -27,6 +27,7 @@ def relevant(path, kind):
         # Keep embedded legal text, hashed fixtures and the Docker deployment input.
         if (path.endswith(".md")
                 and not path.startswith(("web/apps/server/src/data/", "fixtures/"))
+                and not (kind == "web" and path.startswith("web/apps/server/src/test-fixtures/"))
                 and path not in {"web/DEPLOY.md", "LICENSE-SUMMARY.md", "ATTRIBUTION.md",
                                  "THIRD_PARTY_NOTICES.md"}):
             return False
@@ -42,7 +43,7 @@ def relevant(path, kind):
         # inputs selected until their commands move to the replacement UI job.
         return (shared or path.startswith(("web/", "slicer-sidecar/", "rust/"))
                 or path in {"Caddyfile", "Dockerfile", ".dockerignore", "docker-entrypoint.sh",
-                            "pp-compose.yml", "rust-toolchain.toml", "LICENSE-SUMMARY.md",
+                            "pp-compose.yml", "rust-toolchain.toml", "LICENSE", "LICENSE-SUMMARY.md",
                             "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md"}
                 or re.fullmatch(r"docker-compose[^/]*\.yml", path) is not None)
     # Markdown is not a Rust input, except the legal texts that pp-api and pp-gateway embed with

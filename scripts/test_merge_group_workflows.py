@@ -118,6 +118,31 @@ class MergeGroupWorkflowTests(unittest.TestCase):
                 # skipped a group would leave the required check pending.
                 self.assertEqual(workflow["on"].get("merge_group"), {"types": [EVENT["action"]]})
 
+    def test_release_audit_runs_without_path_selection_or_dependencies(self):
+        workflow = yaml.load((ROOT / ".github/workflows/web-ci.yml").read_text(),
+                             Loader=yaml.BaseLoader)
+        job = workflow["jobs"]["release-audit"]
+        self.assertEqual(job["if"],
+                         "github.event_name != 'pull_request' || !github.event.pull_request.draft")
+        self.assertNotIn("needs", job)
+        self.assertNotIn("continue-on-error", job)
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertNotIn("permissions", job)
+        checkout, setup, verify, audit = job["steps"]
+        self.assertEqual(checkout, {
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {"persist-credentials": "false"}})
+        self.assertEqual(setup, {
+            "uses": "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
+            "with": {"node-version": "22.23.3"}})
+        self.assertEqual(verify, {"name": "Verify pinned Node version",
+                                  "run": 'test "$(node --version)" = "v22.23.3"'})
+        self.assertEqual(audit, {"name": "Audit public release inputs",
+                                "run": "node scripts/audit-public-release.mjs"})
+        for event in ("pull_request", "push", "merge_group"):
+            self.assertNotIn("paths", workflow["on"][event])
+            self.assertNotIn("paths-ignore", workflow["on"][event])
+
     def test_web_jobs_use_per_kind_selection_and_fail_closed(self):
         workflow = yaml.load((ROOT / ".github/workflows/web-ci.yml").read_text(),
                              Loader=yaml.BaseLoader)

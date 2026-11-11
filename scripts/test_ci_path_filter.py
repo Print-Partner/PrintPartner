@@ -23,7 +23,10 @@ class CiPathFilterTests(unittest.TestCase):
                     "slicer-sidecar/main.py", "Dockerfile", ".dockerignore", "Caddyfile",
                     "docker-compose.hosted.yml", "pp-compose.yml", "rust/Cargo.lock",
                     "web/DEPLOY.md", "web/apps/server/src/data/legal/ATTRIBUTION.md",
-                    "fixtures/parity/README.md"],
+                    "fixtures/parity/README.md", "LICENSE", "LICENSE-SUMMARY.md",
+                    "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md",
+                    "web/apps/server/src/test-fixtures/kit-workspace/assistant-domain/sources/Example-Probe/workflow.md",
+                    "web/apps/server/src/test-fixtures/kit-workspace/assistant-domain/sources/Example-Probe/pitfalls.md"],
         }.items():
             for path in paths + ["web/packages/contracts/src/index.ts", "web/scripts/tool.mjs",
                                  "web/package-lock.json", "web/tsconfig.base.json",

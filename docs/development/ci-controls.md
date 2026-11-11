@@ -61,7 +61,11 @@ job publishes separate `web` and `ui` outputs. `web`, `web-build`, `sidecar` and
 native, Windows and UI kinds stay selected. Pushes and manual/call events
 select all kinds. [Web job selection](ci.md#web-job-selection) lists the paths
 and commands retained. This adds no required check and does not edit the
-ruleset snapshot.
+ruleset snapshot. The independent `release-audit` job runs without path selection
+on every non-draft PR and on non-PR events, so documentation, license and
+screenshot audits remain covered when the heavy web jobs skip. Its pinned Node
+setup, version assertion, read-only permissions and unconditional audit command
+are checked by `test_merge_group_workflows.py`.
 
 This selection deliberately changes four CI guards, with regression tests:
 `checkNodeLanes` permits only the exact `needs: [changes]` and web-output

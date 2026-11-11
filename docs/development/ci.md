@@ -41,11 +41,12 @@ selected; Docker still requires successful `web` and `web-build` jobs.
 The `web` kind covers non-Markdown files under `web/`, `scripts/`, `fixtures/`,
 `manifests/`, `slicer-sidecar/`, `rust/`, workflows and local actions, plus shared
 package/configuration files, Docker and Compose inputs, Caddyfile and the Rust
-toolchain. Markdown selects it only under `web/apps/server/src/data/` and
+toolchain and root `LICENSE`. Markdown selects it under
+`web/apps/server/src/data/`, `web/apps/server/src/test-fixtures/` and
 `fixtures/`, or for `web/DEPLOY.md` and the root legal/notices files.
 The `ui` kind covers `web/apps/ui/`, shared packages including `rust-client`,
 web scripts and configuration, fixtures, manifests, scripts and CI inputs.
-It is an output for the later dedicated UI job; this change adds no UI job.
+The `ui` kind is computed but unused until a dedicated UI job exists.
 
 The overlap is intentional: `web` still lints `apps/ui`, and its tests and
 typecheck still cover `rust-client`. Every existing step stays in its job:
@@ -54,12 +55,20 @@ workaround ratchet, MCP inventory, audit, notices, lint, dead-code check,
 typecheck and unit tests; `web-build` keeps build, workflow smoke, bundle,
 runtime and browser checks; `sidecar` keeps its build and request tests;
 `docker` keeps Compose validation, image build, persistence and workflow smoke.
-Selecting those inputs therefore preserves their commands and coverage.
+The independent `release-audit` job runs `node scripts/audit-public-release.mjs`
+on every non-draft PR, with no path selection or dependency on `changes`.
+It also runs on non-PR events. It checks every tracked Markdown file, root
+`LICENSE`, `.gitignore` and screenshot dimensions even when heavy web jobs skip.
+It needs only checkout and pinned Node, with read-only contents permission and
+no npm install. The audit still runs through `npm test` when `web` is selected;
+this cheap duplicate is intentional to keep the existing npm command intact.
 
 Merge groups select `rust`, `actions`, `native`, `windows` and `ui`, but not
 `web`. All four legacy Web CI jobs skip there, avoiding sidecar/image builds
-for each queue entry. Other non-PR events select every kind. No job names,
-required checks or ruleset snapshot change.
+for each queue entry. The merge queue does not run `web`, `web-build`, `sidecar`
+or `docker`, so a web break caused by combining two PRs is caught by the push
+to `main`, after merge. Other non-PR events select every kind. Existing job
+names, required checks and the ruleset snapshot stay unchanged.
 
 ## Agent guidance check
 

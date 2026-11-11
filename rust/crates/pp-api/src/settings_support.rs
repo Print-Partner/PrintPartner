@@ -74,7 +74,7 @@ pub fn support_router(
         Router::new()
             .merge(routes.clone())
             .nest("/api/v1", routes)
-            .fallback(|| async { failure(StatusCode::NOT_FOUND, "Not Found") })
+            .fallback(|| async { StatusCode::NOT_FOUND })
             .layer(DefaultBodyLimit::max(1024 * 1024)),
     )
     .merge(update_routes)

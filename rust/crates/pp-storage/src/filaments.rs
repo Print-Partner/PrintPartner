@@ -2,7 +2,11 @@
 #[cfg(feature = "desktop_rebuild")]
 mod runtime;
 #[cfg(feature = "desktop_rebuild")]
+pub(super) use runtime::cleanup_temporary_files;
+#[cfg(feature = "desktop_rebuild")]
 pub use runtime::{FilamentClient, Outcome, Request};
+#[cfg(not(feature = "desktop_rebuild"))]
+pub(super) fn cleanup_temporary_files(_: &std::path::Path) {}
 
 /// Node-compatible custom filament JSON format.
 #[cfg(feature = "desktop_rebuild")]

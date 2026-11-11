@@ -98,13 +98,17 @@ pub(super) fn execute(
         return catalog_inputs(&tx, &tenant, &command.directory, query);
     }
     let path = command.directory.join(STORE_FILE);
+    let mut corrupt = None;
     let mut store = match std::fs::read(&path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(store) => store,
             Err(_) => match serde_json::from_str::<Box<serde_json::value::RawValue>>(
                 &String::from_utf8_lossy(&bytes),
             ) {
-                Err(_) => json!({"filaments":[]}),
+                Err(_) => {
+                    corrupt = Some(bytes.clone());
+                    json!({"filaments":[]})
+                }
                 Ok(_) => {
                     return Ok(Outcome::Refused(
                         400,
@@ -158,6 +162,9 @@ pub(super) fn execute(
         }
         Request::Catalog(_) => unreachable!(),
     };
+    if let Some(bytes) = corrupt {
+        preserve_corrupt(&command.directory, &bytes, pp_os::sync_directory)?;
+    }
     publish(
         &command.directory,
         &serde_json::to_vec_pretty(&store)?,
@@ -289,6 +296,44 @@ fn publish(
     bytes: &[u8],
     mid_write: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<()> {
+    publish_to(
+        directory,
+        STORE_FILE,
+        bytes,
+        mid_write,
+        pp_os::sync_directory,
+    )
+}
+fn preserve_corrupt(
+    directory: &std::path::Path,
+    bytes: &[u8],
+    sync_directory: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let mut now = time::OffsetDateTime::now_utc();
+    loop {
+        let name = format!(
+            "{STORE_FILE}.corrupt-{:04}{:02}{:02}T{:02}{:02}{:02}.{:09}Z",
+            now.year(),
+            u8::from(now.month()),
+            now.day(),
+            now.hour(),
+            now.minute(),
+            now.second(),
+            now.nanosecond()
+        );
+        if !directory.join(&name).try_exists()? {
+            return publish_to(directory, &name, bytes, || Ok(()), sync_directory);
+        }
+        now += time::Duration::nanoseconds(1);
+    }
+}
+fn publish_to(
+    directory: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+    mid_write: impl FnOnce() -> std::io::Result<()>,
+    sync_directory: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<()> {
     let temporary = directory.join(format!(
         ".custom-filaments-{}",
         hex::encode(rand::random::<[u8; 8]>())
@@ -303,8 +348,14 @@ fn publish(
         mid_write()?;
         file.write_all(&bytes[half..])?;
         file.sync_all()?;
-        pp_os::publish_rename(&temporary, &directory.join(STORE_FILE))?;
-        pp_os::sync_directory(directory)?;
+        pp_os::publish_rename(&temporary, &directory.join(name))?;
+        if let Err(error) = sync_directory(directory) {
+            // Preserve the corrupt copy durably before replacing the live store.
+            if name != STORE_FILE {
+                return Err(error.into());
+            }
+            eprintln!("Custom filament file published; directory sync failed: {error}");
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -313,9 +364,99 @@ fn publish(
     result
 }
 
+pub(crate) fn cleanup_temporary_files(directory: &std::path::Path) {
+    let cleanup = || -> std::io::Result<()> {
+        let now = std::time::SystemTime::now();
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".custom-filaments-"))
+                && entry.file_type()?.is_file()
+                && now
+                    .duration_since(entry.metadata()?.modified()?)
+                    .unwrap_or_default()
+                    > Duration::from_secs(3600)
+            {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    };
+    if let Err(error) = cleanup() {
+        eprintln!("Custom filament temporary-file cleanup failed: {error}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn corrupt_copy_sync_failure_keeps_live_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = b"not json\xff";
+        let store = directory.path().join(STORE_FILE);
+        std::fs::write(&store, original).unwrap();
+        assert!(
+            preserve_corrupt(directory.path(), original, |_| {
+                Err(std::io::Error::other("injected corrupt-copy sync failure"))
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read(store).unwrap(), original);
+    }
+    #[test]
+    fn published_file_succeeds_when_directory_sync_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = br#"{"filaments":[{"id":"published"}]}"#;
+        publish_to(
+            directory.path(),
+            STORE_FILE,
+            bytes,
+            || Ok(()),
+            |_| Err(std::io::Error::other("injected directory sync failure")),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(directory.path().join(STORE_FILE)).unwrap(),
+            bytes
+        );
+    }
+    #[test]
+    fn writer_start_removes_only_stale_temporary_regular_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let old = directory.path().join(".custom-filaments-old");
+        std::fs::write(&old, b"partial").unwrap();
+        let copy = format!("{STORE_FILE}.corrupt-old");
+        let kept = [".custom-filaments-recent", STORE_FILE, &copy];
+        for name in kept {
+            std::fs::write(directory.path().join(name), b"keep").unwrap();
+        }
+        for path in [
+            &old,
+            &directory.path().join(STORE_FILE),
+            &directory.path().join(&copy),
+        ] {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+                .unwrap();
+        }
+        let subdir = directory.path().join(".custom-filaments-directory");
+        std::fs::create_dir(&subdir).unwrap();
+        let owner = WriterOwner::open(directory.path(), crate::Limits::default())
+            .unwrap()
+            .0;
+        assert!(!old.exists());
+        assert!(subdir.is_dir());
+        for name in kept {
+            assert_eq!(std::fs::read(directory.path().join(name)).unwrap(), b"keep");
+        }
+        owner.shutdown().unwrap();
+    }
     #[test]
     fn interrupted_publication_preserves_previous_file() {
         let directory = tempfile::tempdir().unwrap();
@@ -343,6 +484,7 @@ mod tests {
 mod crash_tests {
     use super::*;
     #[test]
+    #[ignore = "invoked with crash environment by check-filament-publication.py"]
     fn crash_child() {
         if let Some(directory) = std::env::var_os("PP_FILAMENT_CRASH_TEST") {
             publish(

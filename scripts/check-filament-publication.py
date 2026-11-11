@@ -26,7 +26,7 @@ def main():
         previous = b'{"filaments":[{"id":"keep"}]}'
         store.write_bytes(previous)
         env = dict(os.environ, PP_FILAMENT_CRASH_TEST=directory, PP_FILAMENT_CRASH="1")
-        command = [binary, "--exact", "filaments::runtime::crash_tests::crash_child"]
+        command = [binary, "--ignored", "--exact", "filaments::runtime::crash_tests::crash_child"]
         crashed = subprocess.run(command, env=env, capture_output=True, check=False)
         assert crashed.returncode == 73, crashed.stderr.decode()
         assert store.read_bytes() == previous

@@ -64,9 +64,40 @@ async fn start_with_reader(
 async fn filament_journey_aliases_validation_admission_and_restart() {
     let directory = seeded_directory();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
-    std::fs::write(directory.path().join("custom_filaments.json"), b"not json").unwrap();
+    let corrupt = b"not json\xff";
+    let path = directory.path().join("custom_filaments.json");
+    std::fs::write(&path, corrupt).unwrap();
     let (owner, serving, origin) = start(directory.path(), Some("1")).await;
+    let empty: Value = client
+        .get(format!("{origin}/filaments/custom"))
+        .header("cookie", "pp_session=read-fixture-secret")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(empty, json!({"filaments":[]}));
+    assert_eq!(std::fs::read(&path).unwrap(), corrupt);
     exercise_aliases(&client, &origin).await;
+    let copies: Vec<_> = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .unwrap()
+                .starts_with("custom_filaments.json.corrupt-")
+        })
+        .collect();
+    assert_eq!(copies.len(), 1);
+    assert!(copies[0].file_name().to_str().unwrap().ends_with('Z'));
+    assert_eq!(std::fs::read(copies[0].path()).unwrap(), corrupt);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+        json!({"filaments":[]})
+    );
     let kept: Value = client
         .post(format!("{origin}/filaments/custom"))
         .header("cookie", "pp_session=read-fixture-secret")

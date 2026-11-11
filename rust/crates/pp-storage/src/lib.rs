@@ -685,6 +685,7 @@ impl WriterOwner {
                 .with_context(|| format!("WriterOwner::open: create storage directory {name}"))?;
         }
         let (mut connection, ready) = schema::initialize(&path, version, seed_timestamp)?;
+        filaments::cleanup_temporary_files(lease.data_dir());
         jobs::recover(&mut connection)?;
         #[cfg(feature = "desktop_rebuild")]
         send_queue::recover(&mut connection)?;

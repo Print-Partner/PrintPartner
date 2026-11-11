@@ -88,6 +88,10 @@ fn declared_versions_match_the_node_and_rust_sources() {
         include_str!("../../pp-core/src/review_observations.rs"),
         "\"accepted-thumbnail-v",
     );
+    let rust_filaments = number_after(
+        include_str!("../../pp-storage/src/filaments.rs"),
+        "pub const FORMAT_VERSION: u32 = ",
+    );
     assert_eq!((node_schema, rust_schema), (34, 35));
     assert_eq!((node_thumbnails, rust_thumbnail_reader), (3, 3));
     assert_eq!((node_snapshot, rust_snapshot), (1, 1));
@@ -102,7 +106,7 @@ fn declared_versions_match_the_node_and_rust_sources() {
             "path-hints": {"node_reads": node_path_hints, "rust_writes": "none"},
             "community-manifests": {"node_reads": 1, "rust_writes": "none"},
             "accepted-thumbnails": {"node_reads": node_thumbnails, "rust_writes": "none"},
-            "custom-filaments": {"node_reads": 1, "rust_writes": 1},
+            "custom-filaments": {"node_reads": 1, "rust_writes": rust_filaments},
             "filament-catalog": {"node_reads": 1, "rust_writes": "none"},
             "assistant-domain": {"node_reads": 1, "rust_writes": "none"},
         })

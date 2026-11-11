@@ -211,8 +211,12 @@ constructed. Cookie writes require the listener's Origin. There is no Node fallb
 Rust keeps Node's entry fields and the `custom-` plus eight hex digit ID shape.
 The writer writes a new temporary file in the data directory, syncs it, renames
 it onto `custom_filaments.json`, then syncs the directory. An interrupted write
-leaves the previous published file readable. Restart ignores incomplete temporary
-files. The live-format version is 1; regenerate its declaration with
+leaves the previous published file readable. At writer startup, Rust removes
+regular `.custom-filaments-*` temporary files older than one hour and keeps
+recent temporary files. A directory-sync error after a successful live-store rename is
+logged; the write still succeeds because the entry is already published, so
+the response must not invite a duplicate retry. The live-format version is 1;
+regenerate its declaration with
 `python3 scripts/generate-filament-format.py`.
 
 `GET /filaments/catalog` combines the bundled colors and custom colors. Spoolman
@@ -221,8 +225,15 @@ Disabled access withholds Spoolman colors and the stored default connector.
 Rust refuses updates to a Node-valid store it cannot decode losslessly (for
 example, an isolated UTF-16 surrogate or nesting past 128 levels). POST and
 DELETE return a 400 problem without writing, preserving the original file bytes.
-Only a real JSON syntax failure uses Node's empty-store fallback. Catalog reads
-still preserve escaped UTF-16 values using the same Node-compatible parser as
+Only a real JSON syntax failure uses Node's empty-store fallback. As a deliberate
+difference from Node, before POST replaces malformed bytes, Rust preserves an
+exact copy at the sibling `custom_filaments.json.corrupt-<UTC timestamp>`.
+The copy uses a temporary file, file fsync, rename and directory fsync before
+the fresh store is published. UTC timestamps include nanoseconds and use filesystem-safe digits
+and `T`, `Z`, `.` separators. A copy failure refuses the update and keeps the
+original store. Reads still return the empty store and do not create copies;
+corrupt copies are retained and are not part of temporary-file cleanup.
+Catalog reads still preserve escaped UTF-16 values using the same Node-compatible parser as
 `GET /filaments/custom`. For a store nested past 128 levels, both GET aliases
 keep today's 200 response: custom GET returns `{"filaments":[]}`; catalog GET
 returns the bundled colors and `custom_colors: []`. Neither GET changes the file.

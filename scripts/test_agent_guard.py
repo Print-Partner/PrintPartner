@@ -1336,6 +1336,60 @@ class HiddenMergeTests(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_stderr_pipe_keeps_cd_and_exports_in_pipeline_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            for command in ("true |& cd ../lane-wt; git push origin HEAD",
+                            "true |& cd ../lane-wt; git push --no-follow-tags origin HEAD"):
+                for result in self.results(command, str(main), None):
+                    with self.subTest(command=command):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+            for declaration in ("export GH_CONFIG_DIR=/tmp/evil", "export HOME=/tmp"):
+                command = f"true |& {declaration}; gh pr view 12"
+                for result in self.results(command, str(main), None):
+                    with self.subTest(command=command):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+        guard = in_process(CLI)
+        self.assertTrue(all(scope for _, scope, _ in guard.shell_commands("a |& b")))
+
+    def test_package_runner_call_options_are_checked_as_shell_strings(self):
+        for runner in ("npx", "npm exec"):
+            for option in ("-c", "--call"):
+                for separator in (" ", "="):
+                    for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+                        command = f"{runner} {option}{separator}'gh pr merge 12'"
+                        for result in self.results(command, cwd, coordinator):
+                            with self.subTest(command=command, cwd=cwd):
+                                self.assertEqual(result.returncode, 2, result.stderr)
+                    command = f"{runner} {option}{separator}'gh pr view 12'"
+                    for result in self.results(command, self.lane, None):
+                        with self.subTest(command=command):
+                            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fish_prefixes_fail_closed_and_command_is_classified(self):
+        for script in ("true; and gh pr merge 12", "false; or gh pr merge 12", "not gh pr merge 12",
+                       "builtin gh pr merge 12", "command gh pr merge 12"):
+            for prefix in ("", "xvfb-run -a "):
+                command = f"{prefix}fish -c '{script}'"
+                for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+                    for result in self.results(command, cwd, coordinator):
+                        with self.subTest(command=command, cwd=cwd):
+                            self.assertEqual(result.returncode, 2, result.stderr)
+        for result in self.results("fish -c 'command gh pr view 12'", self.lane, None):
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_python_executable_suffixes_are_recognized(self):
+        for executable in ("python3.14t", "python3.12-dbg", "/usr/bin/python3.14t-dbg"):
+            command = f"{executable} -c 'import os; os.system(\"gh pr merge 12\")'"
+            for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+                for result in self.results(command, cwd, coordinator):
+                    with self.subTest(command=command, cwd=cwd):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+            for result in self.results(f"{executable} -c 'print(1)'", self.lane, None):
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_lane_runners_and_additional_shells_refuse_merges(self):
         commands = ("xvfb-run -a gh pr merge 12", "pp-netns gh pr merge 12",
                     "direnv exec . gh pr merge 12", "npx gh pr merge 12",

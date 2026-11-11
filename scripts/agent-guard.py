@@ -173,7 +173,7 @@ UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "par
 # watch, tmux).
 # The others run a program with arguments, so only their program positions are commands.
 STRING_RUNNERS = {"script", "su", "runuser", "flock", "expect", "ssh", "watch", "tmux", "screen", "dtach",
-                  "parallel", "at", "batch", "entr", "sg"}
+                  "parallel", "at", "batch", "entr", "sg", "npx"}
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -568,8 +568,8 @@ def shell_commands(source):  # noqa: C901
                 if args:
                     commands.append((args, scope(inside, pipe or piped), after_logic))
                     args = []
-                # Only a pipe scopes the following command; & backgrounds the preceding job.
-                piped, after_logic = pipe and char != "&", logic
+                # A lone & backgrounds the preceding job; the & in |& continues a pipe.
+                piped, after_logic = pipe and (char != "&" or source[i - 1:i] == "|"), logic
             i += 1
             if char == "\n":
                 for delimiter, expands, tabs in heredocs:
@@ -1237,8 +1237,8 @@ def coordinator_worktree(cwd):
     return bool(top) and os.path.realpath(top) == root and os.path.commonpath([root, lanes]) != lanes
 
 
-def shell_script(args):
-    """Return (script, unclear) for a sh, bash, zsh, or dash invocation.
+def shell_script(args, shell=None):
+    """Return (script, unclear) for a recognized shell invocation.
 
     script is what the shell runs with -c, or None. unclear is True when an option before the
     script is not one the guard knows, so it cannot tell which argument is the script.
@@ -1266,7 +1266,12 @@ def shell_script(args):
             return None, True
         else:
             break
-    return (args[i] if reads_script and i < len(args) else None), False
+    script = args[i] if reads_script and i < len(args) else None
+    if script is not None and shell == "fish":
+        # These fish prefixes change program position; the POSIX parser cannot classify them.
+        if any(program(words)[0] in {"and", "or", "not", "builtin"} for words, *_ in shell_commands(script)):
+            raise Unclear("Cannot classify fish and/or/not/builtin prefixes; run git and gh directly.")
+    return script, False
 
 
 def sourced_reason(name, rest, cwd):
@@ -1330,6 +1335,9 @@ def command_strings(name, rest):
         return [value[1:] if value.startswith("!") else value for value in values]
     if name == "entr" and not any(re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*", arg) for arg in rest):
         return []
+    if name == "npx" or (name == "npm" and rest[:1] == ["exec"]):
+        return ([rest[i + 1] for i, arg in enumerate(rest[:-1]) if arg in ("-c", "--call")]
+                + [arg.split("=", 1)[1] for arg in rest if arg.startswith(("-c=", "--call="))])
     if name in STRING_RUNNERS:
         return [arg for arg in rest if re.search(r"\s", arg)]
     return []
@@ -1502,7 +1510,7 @@ def merge_in(args, depth, strict, state, scan):
             return True
         # check_line's own loop already classified a gh at the top level; anything nested gets the same rules here.
         return depth > 0 and nested_gh_refused(rest, state)
-    if name in INTERPRETERS or re.fullmatch(r"python3(?:\.\d+)+", name):
+    if name in INTERPRETERS or re.fullmatch(r"python3(?:\.\d+)+[a-z]*(?:-\w+)?", name):
         return any(names_merge(arg) or code_merge(arg) or code_gh_refused(arg, state) for arg in rest)
     strings = command_strings(name, rest)
     # Alias and git alias values and runner strings are commands no gh check sees.
@@ -1511,7 +1519,7 @@ def merge_in(args, depth, strict, state, scan):
         if depth == 0:
             # check_line runs this script through check_command, with the script's own cwd and alone.
             return False
-        script, unclear = shell_script(rest)
+        script, unclear = shell_script(rest, name)
         if unclear:
             return names_merge(" ".join(rest))
         strings = [script] if script is not None else []
@@ -1810,7 +1818,7 @@ def check_line(command, cwd, outer, state):
                 continue
             here = None if moved else cwd
             if name in SHELLS:
-                script, unclear = shell_script(rest)
+                script, unclear = shell_script(rest, name)
                 if unclear and re.search(r"\b(?:gh|git)\b", " ".join(rest)) and not coordinator_worktree(here):
                     return SHELL_OPTIONS
                 if script is not None:

@@ -294,11 +294,8 @@ fn read_router_with_updates(
     );
     let filaments = filaments(admin_config.clone(), &accepted_client, filament_client)?;
     let modules = modules_router(config.clone(), features);
-    let settings_routes = settings_router(
-        admin_config.with_server_update_checks(server_updates),
-        accepted_client.clone(),
-        app_settings,
-    );
+    let admin_config = admin_config.with_server_update_checks(server_updates);
+    let settings_routes = settings_router(admin_config, accepted_client.clone(), app_settings);
     let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());

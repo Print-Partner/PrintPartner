@@ -1,3 +1,4 @@
+//! T-61 (required units).
 #![cfg(feature = "desktop_rebuild")]
 //! Replays the seeded Node histories in
 //! `fixtures/parity/required-unit-histories/node.json` through the public

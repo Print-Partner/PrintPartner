@@ -20,7 +20,12 @@ fn reused_leftovers(path: &Path) -> [std::time::SystemTime; 2] {
 
 /// Opens the writer with a preflight failure and checks that the data directory,
 /// recursively and byte for byte, is as it was before, and that no lock is held.
-fn assert_refused_open_leaves_listing(path: &Path, owned: bool, expected: &str) {
+fn assert_refused_open_leaves_listing(
+    path: &Path,
+    fail_owned_preflight: bool,
+    lease_created: bool,
+    expected: &str,
+) {
     let before = listing(path);
     RUNTIME_DIR.take();
     // A reservation this call created must go while the advisory lock is still held.
@@ -28,7 +33,7 @@ fn assert_refused_open_leaves_listing(path: &Path, owned: bool, expected: &str) 
     if created {
         CHECK_LOCK_DURING_RESERVATION_RELEASE.set(Some(path.to_path_buf()));
     }
-    FAIL_OWNED_PREFLIGHT.set(owned);
+    FAIL_OWNED_PREFLIGHT.set(fail_owned_preflight);
     let result = crate::WriterOwner::open(path, crate::Limits::default());
     FAIL_OWNED_PREFLIGHT.set(false);
     let error = format!("{:#}", result.err().expect("preflight refused the writer"));
@@ -37,14 +42,17 @@ fn assert_refused_open_leaves_listing(path: &Path, owned: bool, expected: &str) 
         assert!(CHECK_LOCK_DURING_RESERVATION_RELEASE.take().is_none());
     }
     assert_eq!(listing(path), before);
-    // Only the second preflight runs after this lease created its runtime directory, which
-    // abandon removes. The path is this thread's lease, so parallel tests cannot disturb it.
+    // Owned preflight and restore recovery run after the lease creates its
+    // runtime directory. Abandon must remove that directory on either refusal.
     match RUNTIME_DIR.take() {
         Some(runtime_dir) => {
-            assert!(owned, "the first preflight runs before the lease exists");
+            assert!(
+                lease_created,
+                "the first preflight runs before the lease exists"
+            );
             assert!(!runtime_dir.exists(), "{}", runtime_dir.display());
         }
-        None => assert!(!owned, "the lease recorded no runtime directory"),
+        None => assert!(!lease_created, "the lease recorded no runtime directory"),
     }
     for name in ["printpartner.lock", ".desktop-lease"] {
         if let Ok(file) = File::open(path.join(name)) {
@@ -69,9 +77,22 @@ fn second_preflight_failure_keeps_restore_upload_and_stage() {
     .unwrap();
     let database = pp_testkit::node_schema::database_files(path);
     let recovery = pp_testkit::snapshot(&work).unwrap();
-    assert_refused_open_leaves_listing(path, true, "forced owned preflight failure");
+    assert_refused_open_leaves_listing(path, true, true, "forced owned preflight failure");
     assert_eq!(pp_testkit::node_schema::database_files(path), database);
     assert_eq!(pp_testkit::snapshot(&work).unwrap(), recovery);
+}
+
+#[test]
+#[cfg(feature = "desktop_rebuild")]
+fn refused_restore_recovery_removes_the_lease_files_it_created() {
+    let path = directory();
+    let work = path.join(".pp-restore");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::write(work.join("unknown-backup"), b"preserve this backup").unwrap();
+
+    assert_refused_open_leaves_listing(&path, false, true, "holds unexpected entry unknown-backup");
+
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]
@@ -79,11 +100,11 @@ fn gre_1159_failed_preflight_removes_the_lease_files_it_created() {
     // The first preflight, under the lock, refuses a database that is a directory.
     let path = directory();
     std::fs::create_dir(path.join("print-partner.db")).unwrap();
-    assert_refused_open_leaves_listing(&path, false, "Is a directory");
+    assert_refused_open_leaves_listing(&path, false, false, "Is a directory");
     std::fs::remove_dir_all(&path).unwrap();
     // The second preflight runs after the lease is held.
     let path = directory();
-    assert_refused_open_leaves_listing(&path, true, "forced owned preflight failure");
+    assert_refused_open_leaves_listing(&path, true, true, "forced owned preflight failure");
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -100,7 +121,7 @@ fn gre_1159_failed_preflight_leaves_reused_lease_files_unchanged() {
         } else {
             "Is a directory"
         };
-        assert_refused_open_leaves_listing(&path, owned, expected);
+        assert_refused_open_leaves_listing(&path, owned, owned, expected);
         for (name, modified) in ["printpartner.lock", ".desktop-lease"].iter().zip(mtimes) {
             let metadata = std::fs::metadata(path.join(name)).unwrap();
             assert_eq!(

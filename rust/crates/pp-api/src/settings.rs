@@ -170,8 +170,8 @@ async fn put_spoolman_default(
 
 /// `request.body[name]` as Node's handler sees it, `Null` when absent. Fastify
 /// refuses an empty or unparsable JSON body, reads `text/plain` as a string,
-/// and leaves the body `undefined` without a content type; the handler then
-/// throws on a `null` or `undefined` body.
+/// and leaves the body `undefined` without a content type. Rust refuses a
+/// `null` or absent body as malformed before admitting a write.
 fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Response>> {
     let media = headers.get(header::CONTENT_TYPE).map(|value| {
         let essence = value.to_str().unwrap_or_default().split(';').next();
@@ -194,10 +194,7 @@ fn field(headers: &HeaderMap, body: &[u8], name: &str) -> Result<Value, Box<Resp
         }
     };
     match parsed {
-        Value::Null => Err(Box::new(failure(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal Server Error",
-        ))),
+        Value::Null => Err(Box::new(unreadable())),
         Value::Object(members) => Ok(members.get(name).cloned().unwrap_or(Value::Null)),
         _ => Ok(Value::Null),
     }

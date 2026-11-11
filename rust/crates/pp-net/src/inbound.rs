@@ -13,7 +13,7 @@ pub fn origin<B>(request: &Request<B>) -> Result<(String, String)> {
     let ip: IpAddr = authority.host().trim_matches(['[', ']']).parse()?;
     ensure!(!ip.is_unspecified() && !ip.is_multicast(), "Invalid Host");
     ensure!(
-        authority.port().is_none() || authority.port_u16().is_some(),
+        host == authority.host() || host.parse::<std::net::SocketAddr>().is_ok(),
         "Invalid port"
     );
     ensure!(!host.contains('@'), "Invalid Host");
@@ -96,6 +96,8 @@ mod tests {
             "0.0.0.0:8080",
             "[::]:8080",
             "127.0.0.1:99999",
+            "127.0.0.1:",
+            "127.0.0.1:+8080",
         ] {
             assert!(origin(&request("GET", host, None)).is_err(), "{host}");
         }

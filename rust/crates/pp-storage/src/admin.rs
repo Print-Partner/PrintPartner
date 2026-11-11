@@ -1,4 +1,4 @@
-//! Node-owned admin files that Rust reads but never writes (GRE-438).
+//! Admin file reads with Node-compatible JSON serialization (GRE-438).
 
 use crate::source_scan::node_json::{Property, property};
 use anyhow::{Result, anyhow};
@@ -48,7 +48,7 @@ pub enum CustomFilaments {
 /// that are not UTF-8 decode with U+FFFD, as `readFileSync(path, "utf8")`
 /// does, and a byte order mark stays and fails the parse.
 pub fn custom_filaments(data_dir: &Path) -> CustomFilaments {
-    // ast-grep-ignore: no-writer-family-literal -- Reads the Node-written store; Rust does not write the family.
+    // ast-grep-ignore: no-writer-family-literal -- Read side of the filaments writer family.
     let text = match std::fs::read(data_dir.join("custom_filaments.json")) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(_) => return CustomFilaments::Body(r#"{"filaments":[]}"#.into()),

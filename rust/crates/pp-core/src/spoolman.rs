@@ -81,3 +81,35 @@ impl InventoryReader for SpoolmanInventory {
         Box::pin(async move { reader.read_inventory(&integration).await.ok() })
     }
 }
+
+impl pp_api::filaments::CatalogReader for SpoolmanInventory {
+    fn read(&self, integration: Value) -> Pin<Box<dyn Future<Output = Option<Vec<Value>>> + Send>> {
+        let reader = self.clone();
+        Box::pin(async move {
+            let config = FilamentProviderConfig::new(
+                integration["config"]["base_url"]
+                    .as_str()
+                    .or_else(|| integration["config"]["baseUrl"].as_str())?,
+                integration["id"].as_str()?,
+                integration["config"]["api_key"]
+                    .as_str()
+                    .or_else(|| integration["config"]["apiKey"].as_str())
+                    .map(str::trim)
+                    .filter(|key| !key.is_empty())
+                    .map(str::to_owned),
+            )
+            .ok()?;
+            let body = reader.get(&config, "filament").await.ok()?;
+            let rows = crate::review_observations::list(&body)?;
+            Some(rows.iter().filter_map(|row| {
+                let id = row["id"].as_i64()?;
+                let text = |key: &str| row[key].as_str().unwrap_or("").trim();
+                let name = if text("name").is_empty() {format!("Filament {id}")} else {text("name").to_owned()};
+                let vendor = row["vendor"].as_str().or_else(|| row["vendor"]["name"].as_str()).unwrap_or("").trim();
+                let prefix = [vendor, text("material")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+                let raw_hex = text("color_hex");
+                Some(serde_json::json!({"id":format!("spoolman:{}:filament:{id}", integration["id"].as_str()?), "display_name":name, "product_line":if prefix.is_empty() {"Spoolman"} else {&prefix}, "combo_label":if prefix.is_empty() {name.clone()} else {format!("{prefix} · {name}")}, "hex":if raw_hex.is_empty() {"#888888".into()} else if raw_hex.starts_with('#') {raw_hex.to_owned()} else {format!("#{raw_hex}")}, "swatch_url":""}))
+            }).collect())
+        })
+    }
+}

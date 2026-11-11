@@ -1,6 +1,6 @@
 {
   "pp-api": {
-    "module": 58,
+    "module": 59,
     "item": 165,
     "statement": 23
   },
@@ -20,7 +20,7 @@
     "statement": 0
   },
   "pp-core": {
-    "module": 42,
+    "module": 43,
     "item": 40,
     "statement": 7
   },
@@ -75,8 +75,8 @@
     "statement": 3
   },
   "pp-storage": {
-    "module": 125,
-    "item": 397,
+    "module": 128,
+    "item": 403,
     "statement": 362
   },
   "pp-testkit": {

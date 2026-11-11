@@ -5,7 +5,6 @@ pub mod production;
 pub mod admin;
 #[cfg(feature = "desktop_rebuild")]
 pub mod app_settings;
-#[cfg(feature = "desktop_rebuild")]
 pub mod filaments;
 
 pub mod archive;
@@ -140,7 +139,9 @@ enum Envelope {
         reply: mpsc::Sender<Result<working_drafts::Outcome>>,
     },
     #[cfg(feature = "desktop_rebuild")]
-    WorkingDraftWrite { command: working_drafts::Write },
+    WorkingDraftWrite {
+        command: working_drafts::Write,
+    },
     #[cfg(feature = "desktop_rebuild")]
     BuildGraph {
         command: build_graph::Command,
@@ -156,11 +157,7 @@ enum Envelope {
         command: features::Command,
         reply: mpsc::Sender<Result<features::Reply>>,
     },
-    #[cfg(feature = "desktop_rebuild")]
-    Filaments {
-        command: filaments::Command,
-        reply: filaments::Reply,
-    },
+    Filaments(filaments::Message),
     #[cfg(feature = "desktop_rebuild")]
     AppSettings {
         command: app_settings::Command,
@@ -836,9 +833,8 @@ impl WriterOwner {
                     Envelope::Features { command, reply } => {
                         let _ = reply.send(features::execute(&mut connection, command, admission));
                     }
-                    #[cfg(feature = "desktop_rebuild")]
-                    Envelope::Filaments { command, reply } => {
-                        reply.send(filaments::execute(&mut connection, command, admission))
+                    Envelope::Filaments(message) => {
+                        filaments::dispatch(&mut connection, message, admission)
                     }
                     #[cfg(feature = "desktop_rebuild")]
                     Envelope::AppSettings { command, reply } => {

@@ -145,7 +145,9 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
 In Rust-only mode, authenticated `POST /filaments/custom` adds a trimmed name,
 RGB hex and optional product line; `DELETE /filaments/custom/:id` removes the
 matching entry. Both root and `/api/v1` aliases use one credentialed writer
-command. Cookie writes require the listener's Origin. There is no Node fallback.
+command. The family facade dispatches to an item-gated implementation; without
+`desktop_rebuild` its request type is uninhabited, so no filament request can be
+constructed. Cookie writes require the listener's Origin. There is no Node fallback.
 Rust keeps Node's entry fields and the `custom-` plus eight hex digit ID shape.
 The writer writes a new temporary file in the data directory, syncs it, renames
 it onto `custom_filaments.json`, then syncs the directory. An interrupted write

@@ -828,3 +828,5 @@ The job has no job-level `if`. GitHub counts a skipped required job as a pass, s
 `scripts/test_merge_group_workflows.py` pins the `merge_group` trigger on all four required workflows and the merge-group runner routing. `scripts/test_review_gate.py` runs the merge-group step against a fake `gh` for each pass and fail case.
 
 [CI controls](ci-controls.md#turn-on-the-merge-queue) records the merge_queue rule that turned the queue on.
+
+The Rust client generator writes route modules under `web/packages/rust-client/src/routes/` and named schema modules under `src/schemas/`, with generated indexes preserving package imports. After merging main, rerun the rust-client generator; do not hand-merge generated files. Its `--verify` checks the recursive file inventory and hashes without Cargo; `--check` also compares fresh Rust output and runs contract round trips.

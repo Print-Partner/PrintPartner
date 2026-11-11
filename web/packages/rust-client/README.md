@@ -21,12 +21,16 @@ One entry point, `.` (`src/index.ts`). `src/` holds only generated files. Do not
 
 | File | Contents |
 | --- | --- |
-| `src/schemas.generated.ts` | One Zod schema and output type per DTO, plus `dtoSchemas` keyed by Rust contract name |
+| `src/schemas/*.generated.ts` | One module per named Rust schema, importing only its dependencies; DTO modules also export their output types |
+| `src/schemas.generated.ts` | DTO schema/type exports and `dtoSchemas` keyed by Rust contract name |
 | `src/descriptors.generated.ts` | Constant tables from the contract's `descriptors` list. Today only `printerDisplayDescriptors`: one row per printer display state with its label, Lucide icon name and `--status-*` colour token |
+| `src/routes/*.generated.ts` | One route definition per module, importing its request and response schemas |
 | `src/routes.generated.ts` | `routes` (method, path, path params, text params, required request headers such as `reconcileDraft`'s `Idempotency-Key`, auth, request and response schema), `RouteRequest`, `RouteResponse`, `routePath` (positive integer IDs, or a percent-encoded non-empty string for a text param such as `undoFarmLogEntry`'s `id`) |
-| `src/index.ts` | Re-exports both files |
+| `src/index.ts` | Re-exports the three indexes and records the generated file inventory |
 
-Each file starts with a `Content SHA256` header over the rest of the file.
+Each file starts with a `Content SHA256` header over the rest of the file. Generation removes obsolete modules. Both checks verify the recursive file inventory; missing modules, stray files and hand edits fail. Adding a route changes its own modules and the indexes, without rewriting unrelated route or schema modules.
+
+Transition for lanes: after merging main, rerun the rust-client generator. Do not hand-merge generated files.
 
 ### Coverage
 

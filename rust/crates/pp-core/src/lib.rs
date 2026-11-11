@@ -22,8 +22,6 @@ mod drain;
 #[cfg(feature = "desktop_rebuild")]
 mod network;
 mod origin;
-#[cfg(feature = "desktop_rebuild")]
-use network::network_admission;
 pub mod perf_launch;
 pub mod perf_seed;
 mod preferences;
@@ -591,14 +589,7 @@ async fn start_rust_resources(
         // `pp-server` and `pp-desktop` still ship the old `apps/web` build;
         // GRE-1294 passes `ServedUi::Replacement` when this runtime serves `apps/ui`.
         pp_gateway::ServedUi::Legacy,
-        move |status| {
-            let routes = product.merge(status_routes.mount(status));
-            if listen.is_some() {
-                routes.layer(axum::middleware::from_fn(network_admission))
-            } else {
-                routes
-            }
-        },
+        move |status| network::for_listener(product.merge(status_routes.mount(status)), listen),
         receiver,
         hosts,
     )?;

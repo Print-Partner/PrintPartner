@@ -219,8 +219,10 @@ fn probe_gateway(origin: &str, timeout: Duration) -> Result<()> {
     let address: SocketAddr = authority
         .parse()
         .context("Recorded origin is not an address")?;
+    let ip = address.ip().to_canonical();
+    ensure!(!ip.is_unspecified(), "Recorded origin is unspecified");
     ensure!(
-        address.ip().is_loopback() || std::net::UdpSocket::bind((address.ip(), 0)).is_ok(),
+        ip.is_loopback() || std::net::UdpSocket::bind((address.ip(), 0)).is_ok(),
         "Recorded origin is not loopback or a local interface"
     );
     let deadline = Instant::now() + timeout;
@@ -482,6 +484,18 @@ mod tests {
                 "Gateway answered 503",
             ),
             (gateway(None), "Gateway did not answer in time"),
+            (
+                "http://0.0.0.0:80".to_owned(),
+                "Recorded origin is unspecified",
+            ),
+            (
+                "http://[::]:80".to_owned(),
+                "Recorded origin is unspecified",
+            ),
+            (
+                "http://[::ffff:0.0.0.0]:80".to_owned(),
+                "Recorded origin is unspecified",
+            ),
             (
                 "http://192.0.2.1:80".to_owned(),
                 "Recorded origin is not loopback or a local interface",

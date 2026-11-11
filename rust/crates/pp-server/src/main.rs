@@ -70,11 +70,17 @@ fn healthcheck(args: impl Iterator<Item = String>) -> Result<()> {
 fn listen_address() -> Result<Option<std::net::SocketAddr>> {
     std::env::var_os("PP_LISTEN_ADDR")
         .map(|value| -> Result<std::net::SocketAddr> {
-            value
+            let address: std::net::SocketAddr = value
                 .to_str()
                 .context("PP_LISTEN_ADDR must be UTF-8")?
                 .parse()
-                .context("Invalid PP_LISTEN_ADDR: expected IP:port")
+                .context("Invalid PP_LISTEN_ADDR: expected IP:port")?;
+            let ip = address.ip().to_canonical();
+            anyhow::ensure!(
+                !ip.is_multicast() && (!ip.is_unspecified() || address.ip().is_unspecified()),
+                "Invalid PP_LISTEN_ADDR: multicast and mapped unspecified addresses are unsupported"
+            );
+            Ok(address)
         })
         .transpose()
 }

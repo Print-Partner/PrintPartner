@@ -11,6 +11,7 @@ pub fn origin<B>(request: &Request<B>) -> Result<(String, String)> {
     let host = headers["host"].to_str()?;
     let authority: axum::http::uri::Authority = host.parse()?;
     let ip: IpAddr = authority.host().trim_matches(['[', ']']).parse()?;
+    let ip = ip.to_canonical();
     ensure!(!ip.is_unspecified() && !ip.is_multicast(), "Invalid Host");
     ensure!(
         host == authority.host() || host.parse::<std::net::SocketAddr>().is_ok(),
@@ -95,6 +96,8 @@ mod tests {
             "user@127.0.0.1:8080",
             "0.0.0.0:8080",
             "[::]:8080",
+            "[::ffff:0.0.0.0]:8080",
+            "[::ffff:224.0.0.1]:8080",
             "127.0.0.1:99999",
             "127.0.0.1:",
             "127.0.0.1:+8080",

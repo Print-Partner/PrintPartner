@@ -8,6 +8,14 @@ use std::{borrow::Cow, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 
 impl Gateway {
+    /// Dispatch through the gateway's HTTP admission; transports supply `ConnectInfo`.
+    pub async fn respond(
+        &self,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> axum::http::Response<axum::body::Body> {
+        super::handle(axum::extract::State(self.state.clone()), request).await
+    }
+
     /// Start a runtime with no Node child: `product` answers admitted
     /// requests, nothing is forwarded, and `/__runtime` reports `status`.
     /// Moonraker watchers poll the hosts `hosts` reads; `product` receives

@@ -39,7 +39,16 @@ fn malformed_listener_is_rejected_before_opening_paths() {
     } else {
         env!("CARGO_BIN_EXE_pp-server").into()
     };
-    for address in ["", "localhost:8080", "0.0.0.0", "0.0.0.0:99999"] {
+    for address in [
+        "",
+        "localhost:8080",
+        "0.0.0.0",
+        "0.0.0.0:99999",
+        "[::ffff:0.0.0.0]:8080",
+        "[::ffff:224.0.0.1]:8080",
+        "224.0.0.1:8080",
+        "[ff02::1]:8080",
+    ] {
         let output = child_process::command(&binary)
             .env("PP_LISTEN_ADDR", address)
             .args(["--web", "/path-that-must-not-be-opened"])

@@ -50,16 +50,24 @@ WRAPPERS = {
     "nice": {"-n", "--adjustment"},
     "time": {"-f", "--format", "-o", "--output"},
     "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "xvfb-run": {"-n", "-s", "-e", "-f", "-p", "-w"},
+    "pp-netns": set(),
+    "direnv": set(),
 }
 # Positional operands, such as a duration, that come before the wrapped program.
 WRAPPER_OPERANDS = {"timeout": 1}
 # Each wrapper's single-letter flags that take no value. In a bundle such as env -vu, letters before the first one
 # that takes a value must come from here; anything else leaves the bundle unreadable.
 WRAPPER_BOOLEANS = {"command": "pvV", "env": "0iv", "exec": "cl", "nohup": "", "nice": "0123456789",
-                    "sudo": "AbEeHiKklnPSsVv", "time": "apqv", "timeout": "v"}
+                    "sudo": "AbEeHiKklnPSsVv", "time": "apqv", "timeout": "v", "xvfb-run": "adhl", "pp-netns": "", "direnv": ""}
 # Each wrapper's long options, and whether one takes the next word as its value. A long option the guard does not
 # know, including an abbreviation such as env --un, leaves the command unreadable.
 WRAPPER_LONG = {
+    "xvfb-run": {"--auto-servernum": False, "--auto-display": False, "--listen-tcp": False,
+                 "--server-num": True, "--server-args": True, "--error-file": True, "--auth-file": True,
+                 "--xauth-protocol": True, "--wait": True},
+    "pp-netns": {},
+    "direnv": {},
     "command": {},
     "env": {"--ignore-environment": False, "--null": False, "--unset": True, "--chdir": True, "--debug": False},
     "exec": {},
@@ -168,7 +176,7 @@ GH_VALUE_FLAGS = {"-R", "--repo"}
 UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "parallel", "su", "runuser", "doas",
                      "ssh", "unbuffer", "chronic", "ionice", "taskset", "chrt", "systemd-run", "busybox", "entr",
                      "stdbuf", "strace", "ltrace", "fakeroot", "firejail", "bwrap", "unshare", "nsenter", "chroot",
-                     "expect", "tmux", "screen", "dtach", "at", "batch", "xvfb-run", "pp-netns", "direnv"}
+                     "expect", "tmux", "screen", "dtach", "at", "batch"}
 # Runners that hand an argument to a shell as a command line (script -c, su -c, flock -c, entr -s, ssh host,
 # watch, tmux).
 # The others run a program with arguments, so only their program positions are commands.
@@ -443,6 +451,7 @@ def shell_commands(source):  # noqa: C901
     drop_next = piped = after_logic = False
     depth = 0
     groups, counter = [], itertools.count(1)
+    and_or_starts = {(): 0}
 
     def scope(group_path, in_pipe):
         stage = next(counter) if in_pipe else None
@@ -571,16 +580,26 @@ def shell_commands(source):  # noqa: C901
                 depth += {"(": 1, ")": -1}.get(char, 0)
                 if char == "(":
                     groups.append(next(counter))
+                    and_or_starts[tuple(groups)] = len(commands)
                 elif char == ")" and groups:
                     groups.pop()
                 had_args = bool(args)
                 if args:
                     commands.append((args, scope(inside, pipe or piped), after_logic))
                     args = []
+                if separator == "&":
+                    # Bash backgrounds the whole preceding and-or list, not just its last command.
+                    for index in range(and_or_starts.get(inside, len(commands)), len(commands)):
+                        words, scoped, conditional = commands[index]
+                        path, stage = scoped if scoped else (inside, None)
+                        commands[index] = (words, (path, stage if stage is not None else next(counter)), conditional)
+                pending = not had_args and (piped or after_logic)
+                if separator not in ("&&", "||", "|", "|&", "(", ")") and not (separator == "\n" and pending):
+                    and_or_starts[inside] = len(commands)
                 # Only a pipe token carries pipeline scope forward. Newlines awaiting its next stage
-                # keep it pending; a background & token scopes only the command that precedes it.
-                piped = separator in ("|", "|&") or (separator == "\n" and not had_args and piped)
-                after_logic = logic
+                # keep it pending; a background & token scopes only the preceding and-or list.
+                piped = separator in ("|", "|&") or (separator == "\n" and pending and piped)
+                after_logic = logic or (separator == "\n" and pending and after_logic)
             i += 1
             if char == "\n":
                 for delimiter, expands, tabs in heredocs:
@@ -662,6 +681,12 @@ def program(args):
                 wrapper_bundle(name, option)[1] if option != "-" else None)
             moved = moved or flag in WRAPPER_CHDIR
             i += wrapper_option_words(name, option)
+        if name == "direnv":
+            if args[i:i + 1] != ["exec"] or i + 2 >= len(args):
+                raise Unclear
+            # direnv runs the child in DIR; relative git and request-file paths are unknown here.
+            moved = True
+            i += 2
         i += WRAPPER_OPERANDS.get(name, 0)
     return None, [], moved, assigned
 

@@ -1380,6 +1380,63 @@ class HiddenMergeTests(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_daily_wrappers_expose_gh_config_redirects(self):
+        commands = ("export GH_CONFIG_DIR=/tmp/evil; direnv exec . gh pr view 12",
+                    "HOME=/tmp direnv exec . gh pr comment 12 -b x",
+                    "export GH_CONFIG_DIR=/tmp/evil; xvfb-run -e /tmp/err -f /tmp/auth gh pr view 12")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config redirected", result.stderr)
+
+    def test_daily_wrappers_expose_git_refusals(self):
+        commands = ("direnv exec . git push -f", "xvfb-run -a git push --force origin topic",
+                    "pp-netns git push origin HEAD:main", "direnv exec . git commit --no-verify -m x")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_daily_wrapper_options_resolve_the_real_program(self):
+        guard = in_process(CLI)
+        for option in ("-a", "-n 90", "-s '-screen 0 800x600x24'", "-e /tmp/err", "-f /tmp/auth",
+                       "-p MIT-MAGIC-COOKIE-1", "-w 2", "--auto-servernum", "--server-num=90",
+                       "--server-args='-screen 0 800x600x24'", "--error-file=/tmp/err", "--auth-file=/tmp/auth",
+                       "--xauth-protocol=MIT-MAGIC-COOKIE-1", "--wait=2"):
+            words, *_ = guard.shell_commands(f"xvfb-run {option} gh pr view 12")[0]
+            with self.subTest(option=option):
+                self.assertEqual(guard.program(words)[:2], ("gh", ["pr", "view", "12"]))
+        self.assertEqual(guard.program(["pp-netns", "--", "git", "status"])[:2], ("git", ["status"]))
+        self.assertEqual(guard.program(["direnv", "exec", ".", "git", "status"])[:2], ("git", ["status"]))
+
+    def test_background_and_or_lists_do_not_move_parent_cwd(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            for operator in ("&&", "||", "&&\n"):
+                command = f"cd ../lane-wt {operator} git status & git push origin HEAD"
+                for result in self.results(command, str(main), None):
+                    with self.subTest(command=command):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+        guard = in_process(CLI)
+        parsed = guard.shell_commands("a; b && c & d")
+        self.assertFalse(parsed[0][1])
+        self.assertTrue(parsed[1][1])
+        self.assertTrue(parsed[2][1])
+        self.assertFalse(parsed[3][1])
+        grouped = guard.shell_commands("(a && b & c)")
+        self.assertTrue(all(scoped[1] is not None for _, scoped, _ in grouped[:2]))
+        self.assertIsNone(grouped[2][1][1])
+
+    def test_routine_wrapped_builds_and_background_jobs_stay_allowed(self):
+        for command in ("xvfb-run -a cargo test", "direnv exec . cargo build", "pp-netns npx vite --port 5173",
+                        "cargo build & npm run dev; wait"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_hidden_merges_are_refused_everywhere(self):
         for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
             for command, results in self.run_all(self.REFUSED, cwd, coordinator):

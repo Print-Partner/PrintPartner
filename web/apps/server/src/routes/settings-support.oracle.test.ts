@@ -54,7 +54,13 @@ it("records static help and OpenAPI shapes from Node", async () => {
       for (const entry of stored ?? []) if (entry.updated_at) entry.updated_at = "<timestamp>";
       bindings.push({ status: reply.statusCode, body, stored });
     }
-    const value = { metadata, route_groups, help_off: off.body, help_on: on.body, bindings };
+    const value = {
+      metadata,
+      route_groups: routeGroups,
+      help_off: off.body,
+      help_on: on.body,
+      bindings,
+    };
     const file = new URL("../../../../../fixtures/admin/settings-support.json", import.meta.url);
     if (process.env.UPDATE_ADMIN_ORACLE) {
       // Group repeated shapes; each line names one shape and all its aliases.

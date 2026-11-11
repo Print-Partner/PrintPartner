@@ -27,6 +27,14 @@ New Rust rebuild code compiles only with the `desktop_rebuild` Cargo feature, wh
 
 The web ESLint config enforces `camelCase` for ordinary identifiers, `PascalCase` for types, and `UPPER_CASE` for constants. Property names, imports, and destructured names are exempt so contract, JSON, SQLite, and third-party field names stay unchanged. Generated `*.generated.ts` files are exempt; fix their names in the generator instead. `web/eslint-suppressions.json` tracks existing violations in the legacy Node server. Remove entries as those names are corrected; do not increase the baseline to hide new violations.
 
+## Rust test renames
+
+[Test file renames](../records/test-renames.md) is the crate index and naming guide.
+Record old paths, new paths and tickets in `docs/records/test-renames/<crate>.md`.
+Rename PRs add rows only to their crate's file, so unrelated crates do not edit a
+shared table. Keep existing rows verbatim and follow the index's rules for binary
+names, module paths and command references.
+
 ## Complexity limits
 
 The web ESLint config limits `complexity` to 20, nesting depth to 5 and parameters to 5 in every TypeScript and JavaScript file. Existing violations are recorded in `web/eslint-suppressions.json` with the naming violations, as a count per file and rule. A new violation, or one more in a file that already has some, fails `npm run lint`. When you simplify code, run `npx eslint . --prune-suppressions` from `web/` and commit the lower counts. Function and file length limits come after the Prettier rollout, because reformatting changes line counts.

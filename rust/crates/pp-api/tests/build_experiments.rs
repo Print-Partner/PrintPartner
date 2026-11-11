@@ -108,6 +108,7 @@ async fn verify_restart_and_delete(data: &Installation, owner: WriterOwner, buil
     let db = Connection::open(data.database_path()).unwrap();
     fixtures::assert_restricted_and_archive(&db, build).unwrap();
     let app = router(&owner, Some("true"));
+    assert_eq!(fixtures::manifest_count(&db, build).unwrap(), 1);
     assert_eq!(send(&app, "DELETE", "/plans/1", None).await.0, 409);
     assert_eq!(
         send(&app, "DELETE", &format!("/plans/{build}"), None)
@@ -115,7 +116,10 @@ async fn verify_restart_and_delete(data: &Installation, owner: WriterOwner, buil
             .0,
         204
     );
+    assert_eq!(fixtures::manifest_count(&db, build).unwrap(), 0);
+    assert_eq!(fixtures::manifest_count(&db, 1).unwrap(), 1);
     assert_eq!(send(&app, "DELETE", "/plans/1", None).await.0, 204);
+    assert_eq!(fixtures::manifest_count(&db, 1).unwrap(), 0);
     drop(app);
     drop(db);
     owner.shutdown().unwrap();
@@ -127,6 +131,11 @@ async fn duplicate_refuses_invalid_names_missing_builds_and_flag_off_without_wri
     let before = bytes(&data);
     for (path, body, status) in [
         ("/plans/1/duplicate", r#"{"name":""}"#, 400),
+        (
+            "/plans/1/duplicate",
+            r#"{"name":"Legacy","clear_checkoff":true}"#,
+            400,
+        ),
         ("/plans/999/duplicate", r#"{"name":"Missing"}"#, 404),
         ("/api/v1/plans/1/duplicate", r#"{"name":"Legacy"}"#, 409),
         (
@@ -207,4 +216,81 @@ async fn duplicate_rolls_back_build_and_ancestry_when_draft_insert_fails() {
     drop(app);
     drop(db);
     owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn duplicate_refuses_a_taken_name_without_writes() {
+    let (data, owner, app) = open();
+    let body = Some(r#"{"name":"Taken"}"#);
+    assert_eq!(send(&app, "POST", "/plans/1/duplicate", body).await.0, 201);
+    let before = bytes(&data);
+    let refused = send(&app, "POST", "/plans/1/duplicate", body).await;
+    assert_eq!(refused.0, 409);
+    assert_eq!(refused.1["code"], "duplicate_build_name");
+    assert_eq!(bytes(&data), before);
+    drop(app);
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn duplicate_without_an_accepted_revision_has_no_draft() {
+    let (data, owner, app) = open();
+    let db = Connection::open(data.database_path()).unwrap();
+    fixtures::unaccepted_parent(&db).unwrap();
+    let copied = send(
+        &app,
+        "POST",
+        "/plans/99/duplicate",
+        Some(r#"{"name":"Empty experiment"}"#),
+    )
+    .await;
+    assert_eq!(copied.0, 201, "{copied:?}");
+    assert_eq!(copied.1["parent_build_id"], 99);
+    assert!(copied.1["draft_id"].is_null());
+    drop(db);
+    drop(app);
+    owner.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn experiment_accept_refuses_an_order_and_accepts_without_one() {
+    for order in [Some("PO-9"), None] {
+        let (data, owner, app) = open();
+        let db = Connection::open(data.database_path()).unwrap();
+        fixtures::prepare_order_claim(&db).unwrap();
+        fixtures::set_experiment_order(&db, order).unwrap();
+        let workspace = send(&app, "GET", "/plans/1/drafts/2", None).await;
+        assert_eq!(workspace.0, 200);
+        let draft = &workspace.1["draft"];
+        let body = json!({"expected_snapshot_digest": draft["snapshot_digest"],
+            "expected_lifecycle_version": draft["lifecycle_version"],
+            "expected_base": draft["base"], "expected_header_version":1,
+            "remap_checkoff_links":false});
+        let before = bytes(&data);
+        let (status, answer) = loopback::send_with_headers(
+            &app,
+            "POST",
+            "/api/v2/plans/1/drafts/2/apply",
+            Some("application/json"),
+            serde_json::to_vec(&body).unwrap(),
+            Some("pp_session=required-unit-fixture-secret"),
+            &[("idempotency-key", "experiment-accept")],
+        )
+        .await;
+        let answer = pp_api::problem::without_envelope(answer);
+        if order.is_some() {
+            assert_eq!(status.as_u16(), 409, "{answer:?}");
+            assert_eq!(answer["code"], "experiment_order_requires_promotion");
+            assert_eq!(bytes(&data), before);
+        } else {
+            assert_eq!(status.as_u16(), 200, "{answer:?}");
+            assert_eq!(answer["draft_id"], 2);
+            assert_eq!(answer["plan_version"], 2);
+            fixtures::assert_experiment_accepted(&db, answer["revision_id"].as_i64().unwrap())
+                .unwrap();
+        }
+        drop(db);
+        drop(app);
+        owner.shutdown().unwrap();
+    }
 }

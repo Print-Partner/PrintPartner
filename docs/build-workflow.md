@@ -205,9 +205,10 @@ result rather than a second local stock authority.
 With `desktop_rebuild` compiled and `PP_DESKTOP_REBUILD=1` or `true`,
 `POST /api/v2/plans/{id}/duplicate` takes `{"name":"Alternative"}` and returns
 201 with `build_id`, `parent_build_id` and nullable `draft_id`. The unprefixed
-route has the same behavior; `/api/v1` refuses duplication. The request cannot
-supply ancestry or order authority. Node keeps its existing duplicate route in
-the default runtime.
+Rust route uses this same strict body and response, unlike Node's legacy route.
+A legacy `clear_checkoff` field is rejected with 400; `/api/v1` refuses duplication.
+The request cannot supply ancestry or order authority. Node keeps its existing
+duplicate route in the default runtime.
 
 The Rust writer copies the Source layers, special request, customer, due date,
 kit manifest, feature settings and role filament defaults in one immediate
@@ -226,7 +227,8 @@ number with `experiment_order_requires_promotion` until promotion is implemented
 Deleting a Build with experiments returns 409 `build_has_experiments` with
 `builds: [{build_id, name}]`, ordered by ID, and writes nothing. Archived
 experiments still prevent parent deletion. Delete the experiments first to
-remove the parent. Archive keeps its existing rules and does not affect ancestry.
+remove the parent. Delete also removes the Build's kit manifest and other
+per-Build settings. Archive keeps its existing rules and does not affect ancestry.
 This follows the coordinator call on GRE-1284 (2026-11-10).
 
 Promotion and its injected-failure rollback verification are tracked in

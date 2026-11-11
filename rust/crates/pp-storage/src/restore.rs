@@ -406,7 +406,7 @@ fn leftover(path: &Path, name: &str) -> Result<Option<Leftover>> {
 }
 
 /// Clears an interrupted stage. Runs at open, under the directory lock and
-/// after the ownership marker was admitted, before the database is read.
+/// after the ownership marker and both read-only schema preflights were admitted.
 /// Every entry is checked before anything is removed: only a regular file
 /// `incoming-<id>.tar.gz` and a real directory `staged-<id>` are removed. Any
 /// other entry, a link, a wrong type, or a `.pp-restore` that is not a real

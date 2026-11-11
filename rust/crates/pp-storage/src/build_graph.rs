@@ -7,6 +7,7 @@ pub use header::{ArchiveRefusal, BuildPatch, SpecialRequest};
 pub mod variants;
 pub use variants::{VariantCommand, VariantOutcome};
 mod decisions;
+pub mod mcp;
 pub use decisions::DecisionOutcome;
 pub(crate) mod projection;
 use crate::{Envelope, Shared, WriterOwner, auth, read_model};
@@ -53,6 +54,7 @@ impl std::error::Error for Failure {}
 
 #[derive(Clone)]
 pub enum BuildCommand {
+    Mcp(mcp::Request),
     Manifest(ManifestOptionsCommand),
     Variants(VariantCommand),
     /// Node's GET or PATCH /plans/{id}/features; read-only without a patch.
@@ -105,6 +107,7 @@ pub enum BuildCommand {
 }
 #[derive(Debug)]
 pub enum BuildOutcome {
+    Mcp(serde_json::Value),
     Manifest(ManifestOptionsOutcome),
     Variants(VariantOutcome),
     PlanFeatures(crate::features::PlanFeatureOutcome),
@@ -223,6 +226,9 @@ impl BuildGraphClient {
         cancelled: Arc<AtomicBool>,
         wait: Duration,
     ) -> Result<BuildOutcome> {
+        if let BuildCommand::Mcp(request) = command {
+            return self.execute_mcp(credential, request, cancelled, wait);
+        }
         if let BuildCommand::Variants(command) = command {
             return self.execute_variants(credential, command, cancelled, wait);
         }
@@ -387,6 +393,9 @@ fn mutation(
 ) -> Result<BuildOutcome> {
     let mut budget = read_model::graph::Budget::default();
     match command {
+        BuildCommand::Mcp(request) => {
+            mcp::execute(tx, tenant, request, repos, cancelled).map(BuildOutcome::Mcp)
+        }
         BuildCommand::Create { name, base_source } => {
             let duplicate: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM build_profiles WHERE tenant_id=?1 AND name=?2)",
@@ -610,6 +619,9 @@ fn read(
 ) -> Result<BuildOutcome> {
     let mut budget = read_model::graph::Budget::default();
     match command {
+        BuildCommand::Mcp(request) => {
+            mcp::execute(tx, tenant, request, repos, cancelled).map(BuildOutcome::Mcp)
+        }
         BuildCommand::Manifest(command) => Ok(BuildOutcome::Manifest(manifest_options::read(
             tx, tenant, command,
         )?)),
@@ -676,7 +688,8 @@ pub(super) fn execute(
     let read_only = matches!(
         command.command,
         BuildCommand::List | BuildCommand::Read { .. } | BuildCommand::ListLayers { .. }
-    ) || matches!(&command.command, BuildCommand::Manifest(command) if command.is_read())
+    ) || matches!(&command.command, BuildCommand::Mcp(request) if !request.apply)
+        || matches!(&command.command, BuildCommand::Manifest(command) if command.is_read())
         || matches!(&command.command, BuildCommand::PlanFeatures(request) if request.patch.is_none());
     let tx = if read_only {
         connection.transaction()?

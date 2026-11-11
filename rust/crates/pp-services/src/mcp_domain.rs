@@ -13,6 +13,7 @@
 //! server by `web/apps/server/scripts/export-mcp-catalog.ts`; the Node test
 //! `src/mcp/rust-catalog.test.ts` fails when the two differ.
 
+pub mod addon;
 mod custom_filaments;
 
 pub use custom_filaments::list as list_custom_filaments;

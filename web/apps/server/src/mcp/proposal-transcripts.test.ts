@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { StatusExecution } from "../integrations/status-execution.js";
 /**
  * Golden MCP proposal lifecycle transcripts (GRE-577).
@@ -94,10 +95,20 @@ async function runScenario(
   scenario: string,
   description: string,
   body: (session: Session) => Promise<void>,
+  seed?: string,
 ): Promise<{ transcript: Record<string, unknown>; dataDir: string; cleanup: () => Promise<void> }> {
   const dataDir = mkdtempSync(join(tmpdir(), "pp-mcp-transcript-"));
   const sqlite = new SqliteDatabase(dataDir);
   sqlite.connect();
+  if (seed) {
+    for (const statement of seed.replaceAll("<data-dir>", dataDir.replaceAll("'", "''")).split(";").filter((s) => s.trim())) getDb(sqlite).run(sql.raw(statement));
+    mkdirSync(join(dataDir,"repos/2"), {recursive:true});
+    const documents = JSON.parse(readFileSync(join(FIXTURE_DIR,"build-planning/documents.json"),"utf8")) as {sources: {source_name:string}[]};
+    for (const source of documents.sources) {
+      const root = join(dataDir,"assistant-domain/sources",source.source_name);
+      mkdirSync(root,{recursive:true});writeFileSync(join(root,"compatibility.yaml"),JSON.stringify(source));
+    }
+  }
   const repo = new AppRepository(getDb(sqlite), undefined, sqlite.reposDir);
   const getRepo = () => repo;
   const config = { ...loadConfig(), dataDir };
@@ -126,13 +137,14 @@ async function runScenario(
       const result = await client.callTool({ name, arguments: args });
       const content = (result.content as { type: string; text?: string }[]).map((c) => {
         if (c.type !== "text" || c.text === undefined) return { type: c.type };
+        if (seed) return {type:c.type,text:c.text};
         try {
           return { type: c.type, json: JSON.parse(c.text) as unknown };
         } catch {
           return { type: c.type, text: c.text };
         }
       });
-      const first = content[0]?.json as { action?: { id?: string } } | undefined;
+      const first = (seed ? JSON.parse((result.content as {text:string}[])[0]!.text) : content[0]?.json) as { action?: { id?: string } } | undefined;
       if (typeof first?.action?.id === "string") lastProposedId = first.action.id;
       steps.push({
         request: { method: "tools/call", params: { name, arguments: args } },
@@ -170,7 +182,7 @@ function checkGolden(scenario: string, transcript: Record<string, unknown>): voi
   const path = join(FIXTURE_DIR, `${scenario}.json`);
   const actual = `${JSON.stringify(transcript, null, 2)}\n`;
   if (UPDATE) {
-    mkdirSync(FIXTURE_DIR, { recursive: true });
+    mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, actual, "utf8");
     return;
   }
@@ -304,5 +316,20 @@ describe("golden MCP proposal lifecycle transcripts", () => {
     );
     cleanups.push(a!.cleanup, b!.cleanup);
     expect(a!.transcript).toEqual(b!.transcript);
+  });
+});
+
+
+describe("Build planning proposal parity", () => {
+  it("records addon and brief confirmation on the shared seed", async () => {
+    const scenario = "build-planning/addon-brief";
+    const seed = readFileSync(join(FIXTURE_DIR,"build-planning/seed.sql"),"utf8");
+    const run = await runScenario(scenario,"Rust storage addon and brief proposal/confirm identity",async (s) => {
+      await s.call("add_addon", {plan_id:1,source_name:"Addon"});
+      await s.call("confirm_apply", {action_id:s.lastProposedId(),suggested_excludes:[" custom.stl "]});
+      await s.call("propose_update_build_brief", {plan_id:1,requirements:[{key:" size ",value:" 350 ",status:"satisfied"}]});
+      await s.call("confirm_apply", {action_id:s.lastProposedId()});
+    },seed);
+    try { checkGolden(scenario,run.transcript); } finally { await run.cleanup(); }
   });
 });

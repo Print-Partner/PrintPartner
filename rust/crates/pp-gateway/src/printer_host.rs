@@ -15,6 +15,7 @@ use anyhow::Result;
 use axum::body::{Body, Bytes};
 use http_body::Frame;
 pub use pp_drivers::moonraker_driver::UploadResult;
+pub use pp_drivers::probe::{PrinterProbeRequest, PrinterProbeResult};
 use pp_drivers::{
     bambu,
     moonraker::PrinterHostState,
@@ -227,6 +228,13 @@ impl HostReads {
 
     pub fn with_guard(guard: HttpGuard) -> Self {
         Self { guard }
+    }
+
+    pub async fn probe(
+        &self,
+        request: pp_drivers::probe::PrinterProbeRequest,
+    ) -> pp_drivers::probe::PrinterProbeResult {
+        pp_drivers::probe::probe(self.guard.clone(), request).await
     }
 
     fn driver(&self, target: &HostTarget) -> Driver {

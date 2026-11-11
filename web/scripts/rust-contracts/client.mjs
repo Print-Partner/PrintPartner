@@ -186,7 +186,7 @@ export function generate(document) {
   const routes = `import type { z } from "zod";
 ${document.routes.map((route) => `import { route as route_${route.name} } from "./routes/${route.name}.generated.js";`).join("\n")}
 
-/** Routes registered in pp-api, from pp_api::client_contract::CLIENT_ROUTES. */
+/** Routes registered in pp-api, from the export-rust-client contract. */
 export const routes = {
 ${routeLines.join("\n")}
 } as const;

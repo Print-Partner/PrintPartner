@@ -376,8 +376,10 @@ raw names, raw feature strings and escaped feature values. Lexical `cfg` and
 `cfg_attr` metas in macro call arguments also count as statements. The scanner
 does not expand macros: it conservatively counts that text even if a particular
 macro does not apply the meta as an attribute. Nested conditional metas count
-once. Documentation metadata such as
+once. For actual `#[...]` attributes, documentation metadata such as
 `#[cfg_attr(docsrs, doc(cfg(feature = "desktop_rebuild")))]` does not count.
+Opaque input `m!(cfg_attr(docsrs, doc(cfg(feature = "desktop_rebuild"))))`
+counts as one statement: the scanner cannot determine what `m!` applies.
 
 The version 2 placement baseline includes the 17 existing `cfg!` expressions:
 pp-compat 2, pp-core 5, pp-desktop 1, pp-storage 9. When comparing with an

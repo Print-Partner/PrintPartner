@@ -189,6 +189,19 @@ class RatchetTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("0 classified = 0 text gates", result.stdout)
 
+    def test_opaque_macro_doc_metadata_is_conservatively_frozen(self):
+        for meta, count in (
+            ('cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))', 1),
+            ('#[cfg_attr(docsrs, doc(cfg(feature="desktop_rebuild")))] struct S;', 0),
+        ):
+            with self.subTest(meta=meta):
+                self.source("pp-source/src/lib.rs", f"fn f() {{ m!({meta}); }}")
+                self.baseline()
+                result = self.check()
+                self.assertEqual(result.returncode, count, result.stdout + result.stderr)
+                self.assertIn(f"{count} classified = {count} text gates", result.stdout)
+                self.assertIn(f"statement={count}", result.stdout)
+
     def test_macro_argument_meta_counts_as_statement(self):
         for meta in ('cfg(feature="desktop_rebuild")',
                      'cfg_attr(all(), cfg(feature="desktop_rebuild"))',

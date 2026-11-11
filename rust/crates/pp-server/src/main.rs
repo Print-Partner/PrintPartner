@@ -67,6 +67,18 @@ fn healthcheck(args: impl Iterator<Item = String>) -> Result<()> {
     }
 }
 
+fn listen_address() -> Result<Option<std::net::SocketAddr>> {
+    std::env::var_os("PP_LISTEN_ADDR")
+        .map(|value| -> Result<std::net::SocketAddr> {
+            value
+                .to_str()
+                .context("PP_LISTEN_ADDR must be UTF-8")?
+                .parse()
+                .context("Invalid PP_LISTEN_ADDR: expected IP:port")
+        })
+        .transpose()
+}
+
 async fn serve(args: Vec<String>) -> Result<()> {
     let args::Arguments {
         data,
@@ -76,15 +88,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
         credential_file,
         status_file,
     } = args::parse(args.into_iter())?;
-    let listen = std::env::var_os("PP_LISTEN_ADDR")
-        .map(|value| -> Result<std::net::SocketAddr> {
-            value
-                .to_str()
-                .context("PP_LISTEN_ADDR must be UTF-8")?
-                .parse()
-                .context("Invalid PP_LISTEN_ADDR: expected IP:port")
-        })
-        .transpose()?;
+    let listen = listen_address()?;
     let web = web.context("--web is required")?.canonicalize()?;
     let package: serde_json::Value =
         serde_json::from_slice(&std::fs::read(web.join("package.json"))?)?;

@@ -142,7 +142,7 @@ jobs:
         run: |
           case "$(node --version)" in
             v22.*)
-              cargo test --locked --manifest-path ../rust/Cargo.toml -p pp-api --features desktop_rebuild --test ticket_t_10_fixtures
+              cargo test --locked --manifest-path ../rust/Cargo.toml -p pp-api --features desktop_rebuild --test node_fixture_replay
               ;;
           esac
       - name: Verify contracts and frozen corpus

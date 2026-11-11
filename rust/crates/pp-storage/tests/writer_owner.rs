@@ -1,3 +1,4 @@
+//! T-7.
 //! Unix only: the Node probe links `node_modules` with a symbolic link.
 #![cfg(unix)]
 

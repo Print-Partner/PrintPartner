@@ -32,7 +32,7 @@ use pp_storage::{
     },
     build_graph::BuildGraphClient,
     checkoff_progress::ProgressClient,
-    read_model::build_workflow::PendingInputs,
+    read_model::{ReadClient, build_workflow::PendingInputs},
     working_drafts::{
         WorkingDraftClient,
         observation::{DraftReads, PreparationLimits},
@@ -186,6 +186,14 @@ fn checkoff_routes(
     Ok(checkoff_router(config, client).merge(files))
 }
 
+fn accepted_routes(config: AcceptedHttpConfig, client: ReadClient) -> Result<Router> {
+    // Spoolman shortfalls read inventory through pp-net's checked connections.
+    Ok(accepted_router(
+        config.with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
+        client,
+    ))
+}
+
 /// Compose authenticated read routers (auth, Plan builds, catalog, Accepted
 /// Plan Checkoff and Spoolman shortfalls, managed Plates, Build history, Build
 /// planning and decisions, Build workflow and task feed, legal documents, custom filaments,
@@ -268,13 +276,7 @@ pub fn read_router(
         accepted_client.clone(),
         app_settings,
     );
-    // Spoolman shortfalls read inventory through pp-net's checked connections.
-    let accepted = accepted_router(
-        config
-            .clone()
-            .with_stock(Arc::new(crate::spoolman::SpoolmanInventory::new()?)),
-        accepted_client.clone(),
-    );
+    let accepted = accepted_routes(config.clone(), accepted_client.clone())?;
     let history = history_router(config.clone(), history_client);
     let planning = planning_router(config.clone(), planning_client.clone());
     let workflow = workflow_router(config.clone(), workflow_client.clone());

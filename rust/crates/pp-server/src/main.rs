@@ -27,11 +27,11 @@ fn main() -> Result<()> {
         .block_on(serve(args.collect()));
     // An unsupported schema stays unsupported until someone acts, so exit
     // with a code a restart policy can tell apart from a crash.
-    if let Some(refusal) = result
-        .as_ref()
-        .err()
-        .and_then(|error| error.downcast_ref::<IncompatibleSchema>())
-    {
+    if let Some(refusal) = result.as_ref().err().and_then(|error| {
+        error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<IncompatibleSchema>())
+    }) {
         eprintln!("{}", refusal.diagnostic());
         eprintln!("{refusal}");
         std::process::exit(INCOMPATIBLE_STORAGE_EXIT);

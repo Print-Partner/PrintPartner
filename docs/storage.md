@@ -207,7 +207,7 @@ The generator does not produce open drafts, Checkoff progress, printer sends, ex
 
 ## Whole-installation restore: staging
 
-With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Activation, which swaps the staged copy into place, and the HTTP routes are not built yet (GRE-404, GRE-1161). Build snapshot restore is a separate Plan operation.
+With the `desktop_rebuild` feature, `pp_storage::restore` stages a whole-installation restore: the database and every backup root in `archive::FULL_ROOTS`. Staging never changes live files. Confirmed activation swaps the staged copy into place under the same owner. HTTP routes remain GRE-1161 work. Build snapshot restore is a separate Plan operation.
 
 Staging (`WriterOwner::installation`, then `InstallationClient::begin_upload` and `stage`) takes no filesystem path from the caller:
 
@@ -220,22 +220,35 @@ The upload file is removed whether staging succeeds or not. A refusal removes on
 
 Restore work belongs to the `WriterOwner` that created the client. Shutdown first closes all admission at once: new storage writes, reader checkouts, uploads, upload writes and stages are refused from then on. It then waits for reader checkouts and restore work against one shared 5 s deadline, so the drain takes at most 5 s in total before the writer thread is joined. If a checkout or restore work is still running at the deadline, shutdown fails and the owner keeps its lease until the process exits, so no other owner can clear `.pp-restore` under it.
 
-Stages are ephemeral until activation. A stage lasts only as long as the `WriterOwner` that made it. The next open removes every stage, complete or not, and the client has to upload the backup again. Schema admission holds only for the build that ran it, and a restart can be an upgrade or a downgrade. Without a completion marker, `recover` also can't tell a complete stage from a half-extracted one, and a forgotten stage of up to 20 GiB would otherwise stay on the data volume. Activation (GRE-1285) runs in the same process as its stage.
+Stages are ephemeral until activation. A stage lasts only as long as the `WriterOwner` that made it. The next schema-admitted open removes every stage, complete or not, and the client has to upload the backup again. Schema admission holds only for the build that ran it, and a restart can be an upgrade or a downgrade. Without a completion marker, `recover` also can't tell a complete stage from a half-extracted one, and a forgotten stage of up to 20 GiB would otherwise stay on the data volume. Activation runs in the same process as its stage. After a restart an unknown restore id tells the client to upload the backup again.
 
 A `full` archive need not contain every root in `includedRoots`. Both the Rust (`archive::plan`) and Node (`backup-restore.ts`) exporters declare all eleven roots and skip a root that was missing when the backup was taken. Three roots are files, which have no directory entry. A declared root with no entries therefore means it was absent at backup time, and an archive holding only the metadata and the database is a valid backup of an installation with no files. Validation still refuses any entry outside the declared roots. Telling an absent root apart from a stripped archive needs a format change, tracked in GRE-1348.
 
-`WriterOwner::open` runs `restore::recover` under the directory lock, after the ownership marker decision and before preflight. It checks every entry before it removes any: `incoming-<id>.tar.gz` must be a regular file and `staged-<id>` a real directory, both read with `symlink_metadata`. It then removes them and `.pp-restore` itself. Any other entry, a link or a wrong type under one of those names, or a `.pp-restore` that is not a real directory, refuses the open and removes nothing, because this build cannot tell whether it holds the only copy of an installation.
+`WriterOwner::open` runs `restore::recover` under the directory lock, after the ownership marker decision and both read-only schema preflights, under the held lease. It checks every entry before it removes any: `incoming-<id>.tar.gz` must be a regular file and `staged-<id>` a real directory, both read with `symlink_metadata`. Without an activation journal it then removes them and `.pp-restore` itself. A downgrade refuses before this cleanup and preserves the live SQLite files and recovery copies. Any other entry, a link or a wrong type under one of those names, or a `.pp-restore` that is not a real directory, refuses the open and removes nothing, because this build cannot tell whether it holds the only copy of an installation.
 
 Threat model for `.pp-restore`: staging checks the work directory with `symlink_metadata` and then uses its pathname for the upload, the extraction, schema admission and cleanup. A process that can replace `.pp-restore` between that check and that use could redirect those writes or removals. Only the effective user or root can do that, because store admission requires the data directory to belong to the effective user and to deny group and other write (see [Desktop rebuild](desktop-rebuild.md)). Print Partner is single-user, so this is in scope only for a hostile process running as that user, which could already change the data directory directly. A `.pp-restore`, `staged-*` or `incoming-*` that is already a link or has the wrong type is refused. Moving every restore path onto `O_NOFOLLOW` directory handles is tracked in GRE-1347.
 
 Tests: `pp-storage/src/restore/tests.rs` (`ticket_t_8_restore_*`, on pp-testkit installations with a copied schema-34 database).
+
+## Whole-installation backup and confirmed activation
+
+`InstallationClient::backup_to_temporary(app_version)` queues a full archive through the writer. The returned `BackupFile` holds metadata, size and SHA-256 and removes its private temporary directory on drop. The archive stays outside managed storage. It uses the system temporary directory; moving it to a bounded disk location and cleaning copies left by a crash is separate GRE-1383 work.
+
+`InstallationClient::activate(restore_id, confirmation)` takes a stage id, never a filesystem path. It requires the exact `restore::CONFIRMATION` text, which says that replacing the database and files cannot reverse prints already sent or filament usage recorded in Spoolman. It refuses invalid ids, missing stages and unsupported schemas before changing live files. Staging and activation share a gate, and the client stays bound to its owner.
+
+Activation runs on the writer thread. It stops writer and authentication admission, rejects queued work behind it, closes idle readers and waits up to five seconds for reader checkouts to return. A retained reader refuses activation and leaves the original database and archive unchanged. The writer checkpoints and closes its connection before any swap. Shutdown is permanent: finishing activation cannot reopen admission that shutdown closed.
+
+Before the first rename, activation syncs the stage and publishes `.pp-restore/journal.json`. The journal records the staged directory, a `prior-<id>` directory, and the managed names present on each side. It moves the four SQLite files and `archive::FULL_ROOTS` while retaining the prior copies. The ownership marker, leases and unrelated files stay in place. It opens and admits the restored database, recovers durable jobs and sends, and refreshes catalog/publication state, import epochs, event cursors, file previews before reopening admission. Existing job streams close under their authority gate; clients reconnect against restored job versions.
+
+A failure before completion rolls back to the prior graph and reopens its consumers. An unpublished `journal.json.tmp` is removed only when it is a regular file; no live rename precedes the published intent. A `swapping` journal on restart rolls back; a `committed` journal completes cleanup. The journal remains until both prior and staged copies are removed, so interrupted cleanup can repeat. Startup runs this recovery only after both schema preflights, verifies the prior database schema before replay, and reads the recovered schema again before opening it for writes. A corrupt journal, an unexpected entry, or a linked recovery directory refuses without removing recovery copies.
+
+Tests in `pp-storage/src/restore/tests/activation.rs` use disposable pp-testkit installations. They check retained IDs, drafts, history and files, observe stopped admission and drained readers, and inject failure or interruption at each swap step. No production restore or real printer send is authorized by these APIs.
 
 ## To be written
 
 The storage milestone fills in these sections:
 
 - Schema versions and how migrations run on startup.
-- Restore activation, and downgrade blocking.
 - Durable jobs and recovery after an interrupted external effect. An interrupted printer send is never retried automatically.
 
 [Operations](../OPERATIONS.md) describes backups for the current Node server.

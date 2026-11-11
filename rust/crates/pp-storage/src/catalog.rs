@@ -358,6 +358,14 @@ impl State {
             directory,
         }
     }
+    #[cfg(feature = "desktop_rebuild")]
+    pub(crate) fn after_restore(&mut self) {
+        let issued = self.issued_high_water;
+        *self = Self::new(self.directory.clone());
+        // Outstanding lease drops still carry a bare token, so never reuse one.
+        self.issued_high_water = issued;
+    }
+
     pub(crate) fn source_busy(&self, tenant: &str, id: i64) -> bool {
         self.active
             .values()

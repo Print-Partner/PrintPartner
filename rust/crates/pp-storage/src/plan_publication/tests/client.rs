@@ -20,6 +20,7 @@ fn client(capacity: usize) -> PublicationClient {
                 auth_ready: VecDeque::new(),
                 next: QueueClass::Normal,
                 closed: false,
+                restoring: false,
                 pending: VecDeque::new(),
             }),
             changed: Condvar::new(),
@@ -30,7 +31,7 @@ fn client(capacity: usize) -> PublicationClient {
             import_epoch: std::sync::atomic::AtomicU64::new(0),
             import_quota: Mutex::new(None),
             domain_events: crate::domain_events::Feed::new(0),
-            print_file_snapshots: Arc::default(),
+            restoration: crate::restore::activation::Context::for_test(),
         }),
         policy: policy(),
     }

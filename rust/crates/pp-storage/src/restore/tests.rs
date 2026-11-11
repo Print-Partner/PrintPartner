@@ -317,7 +317,11 @@ fn ticket_t_8_restore_refused_archives_leave_the_original_unchanged() {
     let client = owner.installation().unwrap();
     let refuse = |version: u64, scope: &str, extra: &[(&[u8], EntryType)]| {
         let archive = archive_with(scratch.path(), version, scope, extra);
+        let database = pp_testkit::node_schema::database_files(&root);
+        let archive_bytes = std::fs::read(&archive).unwrap();
         let error = stage(&client, &archive).unwrap_err();
+        assert!(pp_testkit::node_schema::database_files(&root) == database);
+        assert_eq!(std::fs::read(&archive).unwrap(), archive_bytes);
         assert!(work_entries(&root).is_empty());
         assert!(!root.parent().unwrap().join("escape").exists());
         refusal(&error)
@@ -458,7 +462,12 @@ fn ticket_t_8_restore_an_unknown_work_entry_or_linked_work_directory_refuses_ope
         std::fs::create_dir(&work).unwrap();
         std::fs::write(work.join(name), b"keep").unwrap();
         let error = open(&root).err().unwrap();
-        assert!(error.to_string().contains("unexpected entry"), "{error:#}");
+        let expected = if name == "journal.json" {
+            "Restore journal"
+        } else {
+            "unexpected entry"
+        };
+        assert!(error.to_string().contains(expected), "{error:#}");
         assert_eq!(std::fs::read(work.join(name)).unwrap(), b"keep");
         assert_eq!(state(&root), before);
         std::fs::remove_dir_all(&work).unwrap();
@@ -840,4 +849,61 @@ fn ticket_t_8_restore_a_concurrently_created_work_directory_is_accepted_but_a_li
     refused_link(&error, outside.path());
     std::fs::remove_file(&work).unwrap();
     owner.shutdown().unwrap();
+}
+
+/// A simulated process death: activation returns without rolling back.
+#[derive(Debug)]
+pub(super) struct Crash;
+impl fmt::Display for Crash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("simulated crash")
+    }
+}
+impl std::error::Error for Crash {}
+
+/// (data directory, steps to pass before failing, crash instead of fail)
+static STEPS: Mutex<Vec<(PathBuf, usize, bool)>> = Mutex::new(Vec::new());
+static DURING: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+/// Called before each rename, before the journal commits and after it.
+pub(crate) fn step(data_dir: &Path) -> Result<()> {
+    let mut steps = STEPS.lock().unwrap();
+    let Some(index) = steps.iter().position(|(dir, ..)| dir == data_dir) else {
+        return Ok(());
+    };
+    if steps[index].1 > 0 {
+        steps[index].1 -= 1;
+        return Ok(());
+    }
+    let (_, _, crash) = steps.remove(index);
+    Err(if crash {
+        Crash.into()
+    } else {
+        anyhow!("injected restore failure")
+    })
+}
+
+/// Called after admission stopped and connections closed, before the swap.
+pub(super) fn during_activation(data_dir: &Path) {
+    let hook = {
+        let mut hooks = DURING.lock().unwrap();
+        let index = hooks.iter().position(|(dir, _)| dir == data_dir);
+        index.map(|index| hooks.remove(index).1)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+pub(super) fn crashed(error: &anyhow::Error) -> bool {
+    error.is::<Crash>()
+}
+
+mod activation;
+
+static AFTER_ROLLBACK: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+pub(crate) fn after_rollback(root: &Path) {
+    if let Some(hook) = take_hook(&AFTER_ROLLBACK, root) {
+        hook();
+    }
 }

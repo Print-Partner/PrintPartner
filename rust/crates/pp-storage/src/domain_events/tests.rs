@@ -327,3 +327,19 @@ fn domain_events_panicking_waker_is_unsubscribed_and_others_still_wake() {
     assert_eq!(woken.load(Ordering::SeqCst), 2);
     assert_eq!(feed.wakers.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn replacing_the_database_invalidates_existing_cursors() {
+    let (mut connection, feed, start) = opened();
+    commit(&mut connection, "default", 1);
+    feed.reset(&connection).unwrap();
+    assert_eq!(
+        resync(read_at(&mut connection, &feed, "default", Some(&start))),
+        ResyncReason::GenerationChanged
+    );
+    let (_, position) = events(read_at(&mut connection, &feed, "default", None));
+    assert_eq!(position.seq, 1);
+    commit(&mut connection, "default", 2);
+    let (rows, _) = events(read_at(&mut connection, &feed, "default", Some(&position)));
+    assert_eq!(rows.len(), 1);
+}

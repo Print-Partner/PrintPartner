@@ -9,7 +9,7 @@ use std::{
 };
 
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const CURRENT_VERSION: u64 = 47;
+pub(crate) const CURRENT_VERSION: u64 = 48;
 /// The newest step that writes its own `pre-schema{N}.db` copy. Every step
 /// from 38 does.
 ///
@@ -20,7 +20,7 @@ pub(crate) const CURRENT_VERSION: u64 = 47;
 /// whose run left `pre-schema38.db` to `pre-schema41.db` and no marker, so an
 /// open from 41 without a marker skips retention.
 #[cfg(feature = "desktop_rebuild")]
-pub(crate) const LAST_COPIED_STEP: u64 = 47;
+pub(crate) const LAST_COPIED_STEP: u64 = 48;
 #[cfg(feature = "desktop_rebuild")]
 const _: () = assert!(CURRENT_VERSION == LAST_COPIED_STEP);
 /// The last step a release without the run marker installs. Its interrupted
@@ -572,6 +572,9 @@ fn install_steps(
         |connection| Ok(connection.execute_batch(include_str!("print_grams/schema.sql"))?);
     let install_tls_pins: fn(&Connection) -> Result<()> =
         |connection| Ok(connection.execute_batch(include_str!("tls_pins/schema.sql"))?);
+    let install_experiments: fn(&Connection) -> Result<()> = |connection| {
+        Ok(connection.execute_batch(include_str!("build_graph/experiments_schema.sql"))?)
+    };
     for (step, install) in crate::uploads::SCHEMA_STEPS.into_iter().chain([
         (40, install_scan),
         (41, install_sync),
@@ -581,6 +584,7 @@ fn install_steps(
         (SNAPSHOT_HEADER_STEP, install_snapshot_headers),
         (crate::print_grams::SCHEMA_STEP, install_print_grams),
         (crate::tls_pins::SCHEMA_STEP, install_tls_pins),
+        (48, install_experiments),
     ]) {
         if version < step {
             let target = (populated && step <= LAST_COPIED_STEP)
@@ -611,7 +615,7 @@ fn install_steps(
 /// Rust-only side tables: each step's objects must match its reference SQL
 /// from that step on and be absent before it.
 #[cfg(feature = "desktop_rebuild")]
-const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 6] = [
+const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 7] = [
     (
         crate::domain_events::SCHEMA_STEP,
         "name LIKE 'domain_event%'",
@@ -653,6 +657,13 @@ const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 6] = [
         include_str!("tls_pins/schema.sql"),
         "Unexpected TLS pin schema",
         "TLS pin schema mismatch",
+    ),
+    (
+        48,
+        "tbl_name = 'build_experiments'",
+        include_str!("build_graph/experiments_schema.sql"),
+        "Unexpected experiment schema",
+        "Experiment schema mismatch",
     ),
 ];
 

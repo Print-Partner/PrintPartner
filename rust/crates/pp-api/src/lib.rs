@@ -29,6 +29,8 @@ impl NetworkAdmission {
 }
 
 #[cfg(feature = "desktop_rebuild")]
+pub mod diagnostics;
+#[cfg(feature = "desktop_rebuild")]
 pub mod problem;
 pub mod serving;
 /// With `desktop_rebuild` off, pp-api errors keep their legacy JSON bodies.

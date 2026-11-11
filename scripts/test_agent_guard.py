@@ -747,10 +747,12 @@ class CoordinatorMergeTests(unittest.TestCase):
         bindir = Path(folder.name, "bin")
         bindir.mkdir()
         gh = bindir / "gh"
+        replies = {"pr view 12 --json headRefOid,changedFiles": {"headRefOid": SHA, "changedFiles": 1},
+                   "api repos/{owner}/{repo}/pulls/12/files --paginate --slurp":
+                       [[{"filename": "docs/example.md", "status": "modified"}]]}
         gh.write_text("#!/usr/bin/env python3\nimport json, sys\n"
-                      "assert sys.argv[1:] == ['pr', 'view', '12', '--json', 'files,headRefOid,changedFiles']\n"
-                      + "print(" + repr(json.dumps({"files": [{"path": "docs/example.md"}],
-                                                   "headRefOid": SHA, "changedFiles": 1})) + ")\n")
+                      f"REPLIES = {json.dumps(replies)!r}\n"
+                      "print(json.dumps(json.loads(REPLIES)[' '.join(sys.argv[1:])]))\n")
         gh.chmod(0o755)
         env = patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]})
         env.start()
@@ -805,7 +807,7 @@ class CoordinatorMergeTests(unittest.TestCase):
 
 
 class CoordinatorMergeClassTests(unittest.TestCase):
-    def check(self, paths, authors=(), comments=None, error=None, pr_override=None):
+    def check(self, paths, authors=(), comments=None, error=None, pr_override=None, renames=()):
         guard = load(CLI, "agent_guard_classes")
         config_path = ROOT / "scripts/merge-classes.json"
         config = json.loads(config_path.read_text())
@@ -820,9 +822,18 @@ class CoordinatorMergeClassTests(unittest.TestCase):
             self.assertTrue(kwargs["check"])
             if error:
                 raise error
-            if command == ["gh", "pr", "view", "12", "--json", "files,headRefOid,changedFiles"]:
-                data = {"files": [{"path": p} for p in paths], "headRefOid": SHA, "changedFiles": len(paths)}
-                data.update(pr_override or {})
+            override = dict(pr_override or {})
+            entries = ([{"filename": p, "status": "modified"} for p in paths]
+                       + [{"filename": new, "status": "renamed", "previous_filename": old} for old, new in renames])
+            pages = [entries]
+            if "files" in override:
+                files = override.pop("files")
+                pages = [files] if isinstance(files, list) and files else files
+            if command == ["gh", "pr", "view", "12", "--json", "headRefOid,changedFiles"]:
+                data = {"headRefOid": SHA, "changedFiles": len(entries)}
+                data.update(override)
+            elif command == ["gh", "api", "repos/{owner}/{repo}/pulls/12/files", "--paginate", "--slurp"]:
+                data = pages
             else:
                 self.assertEqual(command, ["gh", "api", "repos/{owner}/{repo}/issues/12/comments", "--paginate", "--slurp"])
                 data = comments
@@ -875,6 +886,15 @@ class CoordinatorMergeClassTests(unittest.TestCase):
 
     def test_lane_allowed(self):
         self.assertIsNone(self.check(["docs/example.md"]))
+        self.assertIsNone(self.check([], renames=[("docs/a.md", "docs/b.md")]))
+
+    def test_rename_is_classified_by_both_paths(self):
+        # GraphQL files lists only a rename's new path; the old owner or sensitive path must still count.
+        self.assertIn("owner merges", self.check([], renames=[("scripts/agent-guard.py", "scripts/old/guard.py")]))
+        self.assertIn("owner merges", self.check(["docs/a.md"], renames=[("rust/deny.toml", "rust/deny.old")]))
+        self.assertIn("Sensitive PR refused", self.check([], renames=[("rust/rules/x.yml", "docs/x.yml")]))
+        missing_old = {"files": [{"filename": "docs/x.yml", "status": "renamed"}]}
+        self.assertIn("merge refused", self.check([], pr_override=missing_old))
 
     def test_gh_error_refused(self):
         for error in (OSError("gh unavailable"), subprocess.CalledProcessError(1, "gh"),
@@ -898,12 +918,13 @@ class CoordinatorMergeClassTests(unittest.TestCase):
     def test_numeric_sha_before_number(self):
         guard = load(CLI, "agent_guard_numeric_sha")
         sha = "1" * 40
-        response = subprocess.CompletedProcess("gh", 0, json.dumps({
-            "files": [{"path": "docs/example.md"}], "headRefOid": sha, "changedFiles": 1}))
+        replies = [{"headRefOid": sha, "changedFiles": 1}, [[{"filename": "docs/example.md", "status": "modified"}]]]
+        responses = [subprocess.CompletedProcess("gh", 0, json.dumps(reply)) for reply in replies]
         with patch.object(guard, "coordinator_worktree", return_value=True), \
-                patch.object(guard.subprocess, "run", return_value=response) as run:
+                patch.object(guard.subprocess, "run", side_effect=responses) as run:
             self.assertIsNone(guard.check_command(f"gh pr merge --match-head-commit {sha} --squash 12", "/coordinator"))
-            self.assertEqual(run.call_args.args[0][3], "12")
+            self.assertEqual(run.call_args_list[0].args[0][3], "12")
+            self.assertIn("pulls/12/files", run.call_args_list[1].args[0][2])
 
     def test_unnumbered_merge_refused_without_gh(self):
         guard = load(CLI, "agent_guard_no_number")

@@ -1025,6 +1025,23 @@ def coordinator_merge(args, cwd):
     return bool(number and squash and sha and FULL_SHA.match(sha)) and coordinator_worktree(cwd)
 
 
+def changed_paths(pages, changed_files):
+    """Return every path a PR touches, both sides of each rename; refuse incomplete lists."""
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise ValueError("missing PR file pages")
+    files = [entry for page in pages for entry in page]
+    if not files or type(changed_files) is not int or changed_files != len(files):
+        raise ValueError("missing or incomplete PR files")
+    paths = []
+    for entry in files:
+        paths.append(entry["filename"])
+        if entry["status"] == "renamed":
+            paths.append(entry["previous_filename"])
+    if any(not isinstance(path, str) or not path for path in paths):
+        raise ValueError("missing PR file path")
+    return paths
+
+
 def trusted_comment_bodies(pages, authors):
     """Return the bodies of PR comments whose author is in authors; refuse malformed pages."""
     if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
@@ -1065,14 +1082,12 @@ def coordinator_merge_reason(args, cwd):
                                     text=True, timeout=30, check=True)
             return json.loads(result.stdout)
 
-        pr = gh_json("pr", "view", number, "--json", "files,headRefOid,changedFiles")
-        files = pr["files"]
-        if (not isinstance(files, list) or not files or pr["headRefOid"] != sha
-                or type(pr["changedFiles"]) is not int or pr["changedFiles"] != len(files)):
-            raise ValueError("missing, incomplete, or stale PR files")
-        paths = [entry["path"] for entry in files]
-        if any(not isinstance(path, str) or not path for path in paths):
-            raise ValueError("missing PR file path")
+        pr = gh_json("pr", "view", number, "--json", "headRefOid,changedFiles")
+        if pr["headRefOid"] != sha:
+            raise ValueError("stale PR head")
+        # The REST file list carries previous_filename; GraphQL `files` gives only a rename's new path.
+        paths = changed_paths(gh_json("api", f"repos/{{owner}}/{{repo}}/pulls/{number}/files", "--paginate", "--slurp"),
+                              pr["changedFiles"])
         classes = {key: [merge_class.glob_regex(p) for p in config[key]] for key in ("owner", "sensitive")}
         kind = merge_class.classify(paths, classes)
         if kind == "owner":

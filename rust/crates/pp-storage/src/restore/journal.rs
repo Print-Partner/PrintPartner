@@ -68,8 +68,12 @@ fn managed() -> impl Iterator<Item = &'static str> {
         .chain(archive::FULL_ROOTS.iter().map(|(name, _)| *name))
 }
 
-fn exists(path: &Path) -> bool {
-    path.symlink_metadata().is_ok()
+fn exists(path: &Path) -> Result<bool> {
+    match path.symlink_metadata() {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn remove_entry(path: &Path) -> std::io::Result<()> {
@@ -109,19 +113,27 @@ impl Journal {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow!("Staged restore has no name"))?;
+        let mut live = Vec::new();
+        let mut incoming = Vec::new();
+        for name in managed() {
+            if exists(&data_dir.join(name))? {
+                live.push(name.to_owned());
+            }
+            if exists(&staged.join(name))? {
+                incoming.push(name.to_owned());
+            }
+        }
+        ensure!(
+            live.iter().any(|name| name == archive::DATABASE_FILE),
+            "Live database disappeared before restore"
+        );
         let journal = Self {
             version: 1,
             state: JournalState::Swapping,
             staged: staged_name.to_owned(),
             prior: format!("prior-{}", random_id()),
-            live: managed()
-                .filter(|name| exists(&data_dir.join(name)))
-                .map(str::to_owned)
-                .collect(),
-            incoming: managed()
-                .filter(|name| exists(&staged.join(name)))
-                .map(str::to_owned)
-                .collect(),
+            live,
+            incoming,
         };
         ensure!(
             journal
@@ -232,10 +244,11 @@ impl Journal {
         for name in managed() {
             let (live, kept) = (data_dir.join(name), prior.join(name));
             let was_live = self.live.iter().any(|known| known == name);
-            if exists(&live) && (!was_live || exists(&kept)) {
+            let retained = exists(&kept)?;
+            if exists(&live)? && (!was_live || retained) {
                 remove_entry(&live).with_context(|| format!("Remove restored {name}"))?;
             }
-            if exists(&kept) {
+            if retained {
                 std::fs::rename(&kept, &live).with_context(|| format!("Move {name} back"))?;
             }
         }

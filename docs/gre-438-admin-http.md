@@ -53,8 +53,8 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-api -p pp-stora
 `/` and `/api/v1` under the same flag and credential check, and
 `read_router` mounts them beside the admin reads. Each request reads or writes
 one `app_settings` row on the writer thread, in the tenant its credential
-resolves to in the same transaction. The `pp_storage::app_settings` client
-names only these three keys.
+resolves to in the same transaction. The `pp_storage::app_settings` client names fixed supported keys; this group
+uses the three rows below.
 
 | Route | Row | `GET` body | `PUT` |
 | --- | --- | --- | --- |
@@ -199,6 +199,46 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
+
+## GitHub PAT and Discord notification settings (GRE-1360)
+
+The settings router mounts `/settings/github-pat`, `/settings/discord-notify`
+(`GET`, `HEAD`, `PUT`) at `/` and
+`/api/v1`. The default-off rebuild gates and the existing credential and Origin
+checks apply. Rust owns these operations only in the Rust-only runtime.
+
+Following the coordinator's 2026-11-11 decision, storage uses Node's existing
+`app_settings` keys and text formats. `github_pat` holds the trimmed token;
+`discord_notify_webhook_url` holds the trimmed URL. Empty strings clear them.
+Discord flags use `"1"` and `"0"` in `discord_notify_on_update`,
+`discord_notify_on_sync`, and `discord_auto_sync_updates`; missing defaults are
+true, false, true. A Discord partial update and its readback share one writer
+transaction. PAT replies expose only `configured` and `masked`, matching Node.
+Native secret storage and migration remain later work under GRE-1330.
+
+Differences by design:
+
+- Discord GET and PUT return `https://<host>/[REDACTED]` for a configured webhook,
+  preserving scheme and host but masking the entire path, query and fragment.
+  Invalid legacy text returns `[REDACTED]`. Node returns the complete URL.
+  A masked response is not a valid replacement URL; omit `webhook_url` to keep
+  the stored value. These settings routes never return the stored secret.
+- Errors use the Rust problem envelope, with Node validation detail where applicable.
+- Null Discord JSON bodies and non-string webhook values answer 400 rather than
+  Node's TypeError. PAT null or absent bodies use the Rust malformed-request
+  detail instead of Node's `Token must be a string`.
+  Backslashes and control characters in webhook tokens are rejected.
+
+Explicit test delivery moves to GRE-1403; external-access settings and their
+admission policy move to GRE-1404. Each child quotes the unmet parent items.
+They start from main after this settings change merges. Neither operation is
+mounted by this change. Sharing, listener binding and MCP authentication stay
+unchanged.
+
+`fixtures/admin/secret-settings-cases.json` contains 32 requests using obviously
+fake values. The Node oracle records exact stored bytes; Rust checks them,
+asserts the stricter response redaction, refuses unauthorized/cross-site writes,
+and reopens the database to check restart persistence.
 
 ## Custom filament mutations and catalog (GRE-1358)
 

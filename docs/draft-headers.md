@@ -281,26 +281,10 @@ Build of a tenant. `pp-storage/src/order_authority.rs` owns the rule:
 The rule covers Rust Accept and Rust MCP under `desktop_rebuild` and
 `PP_DESKTOP_REBUILD`. Node writes order numbers without it: Node's Accept
 with the flag off, `POST /plans/:id/duplicate` (copies the order number),
-and kit import. Duplicating a Build as a detached experiment, promoting it,
-and order import are not built yet.
+and kit import. Rust duplication creates a [detached experiment](build-workflow.md#experiments).
+Promotion and order import are not built yet.
 
-### Experiment ancestry: open schema decision
-
-Before implementing GRE-1284, decide what deleting an experiment's parent
-Build does to `parent_build_id`. The Rust Build delete operation currently
-hard-deletes the Build in `pp-storage/src/build_graph.rs`; there is no parent
-link today. ORD-02 requires that duplication record that link.
-
-Should deleting a parent be refused while experiments point to it, clear
-their parent links, or retain the original parent ID after deletion?
-
-The proposed choice is to refuse deletion while experiments point to the
-Build. This preserves ancestry, but changes the existing delete contract.
-Clearing the link loses ancestry. Retaining an ID after deletion needs a
-schema that permits a missing parent and a promotion refusal for that case.
-No choice is implemented or approved yet.
-
-There is no schema step: a unique index would need a normalized column and
+Order conflict enforcement has no schema step: a unique index would need a normalized column and
 would refuse the existing duplicates.
 
 Tests: `order_authority_*` in `pp-storage` (normalization, `claim`) and in

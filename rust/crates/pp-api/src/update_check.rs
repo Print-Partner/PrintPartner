@@ -10,7 +10,7 @@ pub(crate) struct UpdateCheck {
     latest: Option<String>,
     hours: f64,
     endpoint: String,
-    client: reqwest::Client,
+    client: Option<reqwest::Client>,
     cache: Mutex<Option<(Instant, Value)>>,
 }
 impl UpdateCheck {
@@ -21,11 +21,11 @@ impl UpdateCheck {
             .unwrap_or_else(|| "Print-Partner/PrintPartner".into())
             .trim()
             .to_owned();
-        let package: Value =
-            serde_json::from_str(include_str!("../../../../web/package.json")).unwrap();
+        let package: Value = serde_json::from_str(include_str!("../../../../web/package.json"))
+            .unwrap_or(Value::Null);
         Self {
             enabled: env("PRINT_PARTNER_UPDATE_CHECK").as_deref() != Some("0"),
-            version: format!("{}-web", package["version"].as_str().unwrap()),
+            version: format!("{}-web", package["version"].as_str().unwrap_or("unknown")),
             endpoint: format!("https://api.github.com/repos/{repo}/releases/latest"),
             repo,
             latest: env("PRINT_PARTNER_LATEST_VERSION")
@@ -35,7 +35,7 @@ impl UpdateCheck {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
-                .expect("release client"),
+                .ok(),
             cache: Mutex::new(None),
         }
     }
@@ -82,6 +82,7 @@ impl UpdateCheck {
     async fn fetch(&self) -> Option<(String, String)> {
         let mut reply = self
             .client
+            .as_ref()?
             .get(&self.endpoint)
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "PrintPartner-UpdateCheck")

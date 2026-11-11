@@ -32,7 +32,7 @@ it("records static help and OpenAPI shapes from Node", async () => {
       const key = JSON.stringify(shape);
       groups.set(key, [...(groups.get(key) ?? []), path]);
     }
-    const route_groups = [...groups].map(([shape, paths]) => ({ shape: JSON.parse(shape), paths }));
+    const routeGroups = [...groups].map(([shape, paths]) => ({ shape: JSON.parse(shape), paths }));
     const cases = JSON.parse(
       readFileSync(
         new URL("../../../../../fixtures/admin/bindings-cases.json", import.meta.url),
@@ -58,7 +58,7 @@ it("records static help and OpenAPI shapes from Node", async () => {
     const file = new URL("../../../../../fixtures/admin/settings-support.json", import.meta.url);
     if (process.env.UPDATE_ADMIN_ORACLE) {
       // Group repeated shapes; each line names one shape and all its aliases.
-      const lines = route_groups.map((group) => `    ${JSON.stringify(group)}`).join(",\n");
+      const lines = routeGroups.map((group) => `    ${JSON.stringify(group)}`).join(",\n");
       writeFileSync(
         file,
         `{\n  "metadata": ${JSON.stringify(metadata)},\n  "route_groups": [\n${lines}\n  ],\n  "help_off": ${JSON.stringify(off.body)},\n  "help_on": ${JSON.stringify(on.body)},\n  "bindings": ${JSON.stringify(bindings)}\n}\n`,

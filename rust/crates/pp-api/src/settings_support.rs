@@ -57,7 +57,7 @@ pub fn support_router(
                     .header("location", "/api/v1/openapi.json")
                     .header("cache-control", "private, no-store")
                     .body(axum::body::Body::empty())
-                    .unwrap()
+                    .unwrap_or_else(|_| internal())
             }),
         )
         .route("/api/v1/openapi.json", get(document))
@@ -77,23 +77,23 @@ pub fn support_router(
 }
 
 const SHAPES: &str = include_str!("../../../../fixtures/admin/settings-support.json");
-fn shapes() -> Value {
-    serde_json::from_str(SHAPES).expect("generated Node shapes")
+fn shapes() -> Option<Value> {
+    serde_json::from_str(SHAPES).ok()
 }
-fn document_shape() -> Value {
-    let fixture = shapes();
+fn document_shape() -> Option<Value> {
+    let fixture = shapes()?;
     let mut document = fixture["metadata"].clone();
     let mut paths = serde_json::Map::new();
-    for group in fixture["route_groups"].as_array().unwrap() {
-        for path in group["paths"].as_array().unwrap() {
-            paths.insert(path.as_str().unwrap().into(), group["shape"].clone());
+    for group in fixture["route_groups"].as_array()? {
+        for path in group["paths"].as_array()? {
+            paths.insert(path.as_str()?.into(), group["shape"].clone());
         }
     }
     document["paths"] = Value::Object(paths);
-    document
+    Some(document)
 }
 async fn document() -> Response {
-    ok(document_shape())
+    document_shape().map(ok).unwrap_or_else(internal)
 }
 async fn help(
     State(app): State<App>,
@@ -115,11 +115,10 @@ async fn help(
             } else {
                 "help_on"
             };
-            response(
-                StatusCode::OK,
-                "text/plain; charset=utf-8",
-                shapes()[key].as_str().unwrap().into(),
-            )
+            match shapes().and_then(|shape| shape[key].as_str().map(str::to_owned)) {
+                Some(text) => response(StatusCode::OK, "text/plain; charset=utf-8", text),
+                None => internal(),
+            }
         }
         Err(error) => *error,
         _ => internal(),

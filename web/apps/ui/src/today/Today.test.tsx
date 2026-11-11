@@ -1615,3 +1615,17 @@ describe("UI5-02 one burst is one request and one undo entry", () => {
     ).toBeTruthy();
   });
 });
+
+it("offers Builds when the task feed is empty, without marking anything", async () => {
+  const core = fakeCore();
+  const base = core.fetchMock.getMockImplementation()!;
+  core.fetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
+    if (path === "/api/v2/tasks") return json({ tasks: [], unavailable: [] });
+    if (path === "/api/v2/printer-checkoff") return json({ results: [] });
+    return base(path, init);
+  });
+  renderToday(core);
+  const link = await screen.findByRole("link", { name: "View Builds" });
+  expect(link.getAttribute("href")).toBe("/builds");
+  expect(screen.queryByRole("button", { name: /Confirm/ })).toBeNull();
+});

@@ -108,6 +108,10 @@ async function main() {
     for (const { path, file: name } of shots) {
       await guarded(page.goto(new URL(path, uiOrigin).href), `opening ${path} failed`);
       await settle(page, path);
+      if (config.emptyStates && path === "/builds") {
+        await guarded(page.getByRole("radio", { name: /^Overdue/ }).click(), "selecting Overdue failed");
+        await guarded(page.getByText("No Builds match this filter.").waitFor(), "empty filter did not appear");
+      }
       if (config.reviewPlan && /^\/builds\/\d+\/plan\/?$/.test(path)) {
         await guarded(page.getByRole("button", { name: "Review and accept", exact: true }).click(), "opening Accept preview failed");
         await guarded(page.getByRole("dialog").waitFor(), "Accept gate did not open");

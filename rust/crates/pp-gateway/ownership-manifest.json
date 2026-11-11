@@ -2119,7 +2119,7 @@
     },
     "custom-filaments": {
       "node_reads": 1,
-      "rust_writes": "none"
+      "rust_writes": 1
     },
     "filament-catalog": {
       "node_reads": 1,

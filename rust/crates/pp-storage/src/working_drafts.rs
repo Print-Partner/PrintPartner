@@ -538,12 +538,7 @@ pub enum Failure {
     OutcomeUnknown,
     CorruptOrigin,
 }
-impl std::fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{self:?}")
-    }
-}
-impl std::error::Error for Failure {}
+crate::impl_debug_error!(Failure);
 
 #[derive(Clone)]
 pub struct WorkingDraftClient {

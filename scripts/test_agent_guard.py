@@ -1312,6 +1312,49 @@ class HiddenMergeTests(unittest.TestCase):
     def run_all(self, commands, cwd, coordinator):
         return [(command, self.results(command, cwd, coordinator)) for command in commands]
 
+    def test_background_separator_keeps_following_config_changes_in_current_shell(self):
+        commands = ("true & export GH_CONFIG_DIR=/tmp/evil; gh pr view 12",
+                    "true & HOME=/tmp; gh pr view 12",
+                    "true & declare -x HOME=/tmp; gh pr view 12")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("gh config redirected", result.stderr)
+
+    def test_pipeline_after_background_separator_keeps_each_stage_scoped(self):
+        guard = in_process(CLI)
+        parsed = guard.shell_commands("a & b | c")
+        self.assertEqual([args for args, _, _ in parsed], [["a"], ["b"], ["c"]])
+        stages = [scoped[1] for _, scoped, _ in parsed]
+        self.assertTrue(all(stage is not None for stage in stages))
+        self.assertEqual(len(set(stages)), 3)
+        for command in ("true & echo hi | export HOME=/tmp; gh pr view 12",
+                        "true & export HOME=/tmp | cat; gh pr view 12",
+                        "export HOME=/tmp & gh pr view 12"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_lane_runners_and_additional_shells_refuse_merges(self):
+        commands = ("xvfb-run -a gh pr merge 12", "pp-netns gh pr merge 12",
+                    "direnv exec . gh pr merge 12", "npx gh pr merge 12",
+                    "sg users -c 'gh pr merge 12'", "ksh -c 'gh pr merge 12'",
+                    "fish -c 'gh pr merge 12'", "python3.14 -c 'import os; os.system(\"gh pr merge 12\")'",
+                    "xvfb-run -a pp-netns gh pr merge 12")
+        for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
+            for command, results in self.run_all(commands, cwd, coordinator):
+                for result in results:
+                    with self.subTest(command=command, cwd=cwd):
+                        self.assertEqual(result.returncode, 2, result.stderr)
+        for command in ("xvfb-run -a gh pr view 12", "pp-netns gh pr view 12",
+                        "direnv exec . gh pr view 12", "npx gh pr view 12",
+                        "sg users -c 'gh pr view 12'", "ksh -c 'gh pr view 12'",
+                        "fish -c 'gh pr view 12'", "python3.14 -c 'print(1)'"):
+            for result in self.results(command, self.lane, None):
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_hidden_merges_are_refused_everywhere(self):
         for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):
             for command, results in self.run_all(self.REFUSED, cwd, coordinator):

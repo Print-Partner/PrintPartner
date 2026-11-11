@@ -134,7 +134,7 @@ MARKER = ("Only the coordinator worktree posts pp-review-gate review markers or 
           "pp-review-gate, in any case or encoding; report readiness to the coordinator instead.")
 # Shells whose -c script the guard classifies like a top-level command, and the long options they
 # accept before it. Any other option makes the script position unknown.
-SHELLS = {"sh", "bash", "zsh", "dash"}
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 SHELL_VALUE_LONG = {"--rcfile", "--init-file"}
 SHELL_FLAG_LONG = {"--login", "--norc", "--noprofile", "--posix", "--noediting", "--restricted", "--verbose",
                    "--debugger", "--dump-strings", "--dump-po-strings", "--pretty-print"}
@@ -168,12 +168,12 @@ GH_VALUE_FLAGS = {"-R", "--repo"}
 UNWRAPPED_RUNNERS = {"xargs", "find", "setsid", "flock", "watch", "script", "parallel", "su", "runuser", "doas",
                      "ssh", "unbuffer", "chronic", "ionice", "taskset", "chrt", "systemd-run", "busybox", "entr",
                      "stdbuf", "strace", "ltrace", "fakeroot", "firejail", "bwrap", "unshare", "nsenter", "chroot",
-                     "expect", "tmux", "screen", "dtach", "at", "batch"}
+                     "expect", "tmux", "screen", "dtach", "at", "batch", "xvfb-run", "pp-netns", "direnv", "npx", "sg"}
 # Runners that hand an argument to a shell as a command line (script -c, su -c, flock -c, entr -s, ssh host,
 # watch, tmux).
 # The others run a program with arguments, so only their program positions are commands.
 STRING_RUNNERS = {"script", "su", "runuser", "flock", "expect", "ssh", "watch", "tmux", "screen", "dtach",
-                  "parallel", "at", "batch", "entr"}
+                  "parallel", "at", "batch", "entr", "sg"}
 # Git commands that can change which branch HEAD names before a later push runs.
 BRANCH_CHANGES = {"bisect", "checkout", "rebase", "switch"}
 # Marks text the shell expands at run time, so its value is unknown here.
@@ -568,7 +568,8 @@ def shell_commands(source):  # noqa: C901
                 if args:
                     commands.append((args, scope(inside, pipe or piped), after_logic))
                     args = []
-                piped, after_logic = pipe, logic
+                # Only a pipe scopes the following command; & backgrounds the preceding job.
+                piped, after_logic = pipe and char != "&", logic
             i += 1
             if char == "\n":
                 for delimiter, expands, tabs in heredocs:
@@ -1501,7 +1502,7 @@ def merge_in(args, depth, strict, state, scan):
             return True
         # check_line's own loop already classified a gh at the top level; anything nested gets the same rules here.
         return depth > 0 and nested_gh_refused(rest, state)
-    if name in INTERPRETERS:
+    if name in INTERPRETERS or re.fullmatch(r"python3(?:\.\d+)+", name):
         return any(names_merge(arg) or code_merge(arg) or code_gh_refused(arg, state) for arg in rest)
     strings = command_strings(name, rest)
     # Alias and git alias values and runner strings are commands no gh check sees.

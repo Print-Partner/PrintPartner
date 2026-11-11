@@ -140,3 +140,48 @@ cargo nextest run --locked --manifest-path rust/Cargo.toml -p pp-core -p pp-stor
   --features pp-core/desktop_rebuild,pp-storage/desktop_rebuild,pp-api/desktop_rebuild \
   --no-tests=fail -E 'test(module_route) | test(client_routes_match_registrations) | test(health_modules) | test(unreadable_stored_layer)'
 ```
+
+## Update checks, printer bindings, help and OpenAPI
+
+`pp_api::settings_support` mounts under the same compile-time and runtime
+rebuild gates. Settings and help use the existing credential and Origin gate
+at `/` and `/api/v1`.
+
+- `GET /settings/update-check` follows Node's enabled flag, version override,
+  release response cap (1 MiB), version comparison, cache interval and
+  `refresh=1`. Upstream failures return no latest release and expose no
+  upstream error text. Tests use a loopback fake, never GitHub.
+- `GET`/`PUT /settings/printer-plan-bindings` and
+  `DELETE /settings/printer-plan-bindings/{integration_id}` read or update
+  `printer.plan_bindings`. Credential proof and each read-modify-write run
+  in one writer transaction. Replacement preserves position; deletion removes
+  all matching entries. Timestamps use UTC milliseconds, as Node does.
+- `GET /help/workflow` returns Node's text. The API tip follows the stored
+  `external_access_mode`, including Node's default for an unknown value.
+- `/openapi.json` redirects with `302` to `/api/v1/openapi.json`.
+  That document and `/api/v2/openapi.json` are public, as in Node: Node exempts
+  `.json` paths from the session hook and explicitly exempts OpenAPI from
+  API-key authentication. Help and settings remain authenticated. Sharing
+  defaults and MCP authentication stay unchanged.
+
+The OpenAPI document contains route and schema shapes only: no credentials,
+user data, data-directory paths or hostnames. A test checks string values for
+`token`, `secret`, `password`, absolute filesystem paths and URLs. The sole
+structural exception is a path parameter whose `name` is `token`; it contains
+no token value. The document is generated from Node, with repeated route
+shapes grouped in `fixtures/admin/settings-support.json`. The Node oracle
+checks its freshness; Rust expands the groups without consulting stored data.
+
+The binding fixtures compare replies and persisted values after each request
+and after reopening storage. As on the other settings routes, malformed JSON
+and null request bodies use Rust's redacted problem responses. Numeric ids and
+numeric strings written by the UI preserve Node's coercion. Exotic JavaScript
+coercions and unpaired UTF-16 surrogates remain outside the supported parity
+scope. Source update-check is deferred to GRE-1400 after GRE-1360 because it
+shares Discord auto-sync state.
+
+```sh
+npm --prefix web run test -w @print-partner/server -- src/routes/settings-support.oracle.test.ts src/routes/admin-routes.oracle.test.ts
+# Regenerate the Node snapshot only when its contract changes:
+UPDATE_ADMIN_ORACLE=1 npm --prefix web run test -w @print-partner/server -- src/routes/settings-support.oracle.test.ts
+```

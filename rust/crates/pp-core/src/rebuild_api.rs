@@ -265,7 +265,7 @@ pub fn read_router(
     let settings_routes = settings_router(
         AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
         accepted_client.clone(),
-        app_settings,
+        app_settings.clone(),
     );
     // Spoolman shortfalls read inventory through pp-net's checked connections.
     let accepted = accepted_router(
@@ -289,7 +289,7 @@ pub fn read_router(
             drafts: drafts_client,
             planning: planning_client,
             progress: checkoff_client,
-            accepted: accepted_client,
+            accepted: accepted_client.clone(),
         },
     );
     let auth_routes = auth_router(auth.http, auth_client, auth.providers, auth.mail);
@@ -304,6 +304,11 @@ pub fn read_router(
             .merge(admin)
             .merge(modules)
             .merge(settings_routes)
+            .merge(pp_api::settings_support::support_router(
+                AdminHttpConfig::from_startup(origin, api_key_tenant, Some("1"))?,
+                accepted_client.clone(),
+                app_settings,
+            ))
             .merge(events)
             .merge(checkoff)
             .merge(plates)

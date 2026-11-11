@@ -60,6 +60,10 @@ pub mod send_queue;
 #[cfg(feature = "desktop_rebuild")]
 pub mod settings;
 #[cfg(feature = "desktop_rebuild")]
+pub mod settings_support;
+#[cfg(feature = "desktop_rebuild")]
+mod update_check;
+#[cfg(feature = "desktop_rebuild")]
 pub mod workflow;
 
 #[cfg(test)]

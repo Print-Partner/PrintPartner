@@ -282,3 +282,29 @@ async fn mcp_planning_addon_uses_the_data_directory_catalog_slot() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_planning_confirmation_never_substitutes_a_similar_source() {
+    for change in [
+        "DELETE FROM projects WHERE id=2",
+        "UPDATE projects SET name='Renamed' WHERE id=2",
+    ] {
+        let (server, headers) = keyed(SEED).await;
+        let database = server._directory.join("print-partner.db");
+        let peer = server._directory.join("repos/4");
+        std::fs::create_dir_all(&peer).unwrap();
+        pp_testkit::mcp_planning::edit(&database, &format!(
+            "INSERT INTO projects(id,tenant_id,name,url,source_type,branch,local_path,last_synced_at) SELECT 4,tenant_id,'Addon Lite',url,source_type,branch,'{}',last_synced_at FROM projects WHERE id=2",
+            peer.to_str().unwrap().replace('\'', "''")
+        )).unwrap();
+        let id = propose(
+            &server,
+            &headers,
+            "add_addon",
+            json!({"plan_id":1,"source_name":"Addon"}),
+        )
+        .await;
+        pp_testkit::mcp_planning::edit(&database, change).unwrap();
+        assert_refused(&server, &headers, &id, "Source not found: Addon").await;
+    }
+}

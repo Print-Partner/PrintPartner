@@ -73,7 +73,7 @@ pub(crate) fn execute(
     let needle =
         crate::read_model::views::js_trim(params["source_name"].as_str().unwrap_or_default());
     let sources = sources(tx, account)?;
-    let found = find(&sources, needle);
+    let found = find(&sources, needle, *apply);
     let Some(source) = found else {
         if *apply {
             return Ok(failure(&format!("Source not found: {needle}")));
@@ -82,7 +82,7 @@ pub(crate) fn execute(
     };
     if request.source_stamp.as_ref() != Some(source) {
         return Ok(failure(if *apply {
-            "Source changed since the proposal; propose again"
+            "Source changed during confirmation preparation; propose again"
         } else {
             "Source changed during proposal preparation; try again"
         }));
@@ -124,6 +124,7 @@ impl BuildGraphClient {
                         crate::read_model::views::js_trim(
                             request.params["source_name"].as_str().unwrap_or_default(),
                         ),
+                        request.apply,
                     )
                     .cloned()
                 } else {
@@ -312,7 +313,11 @@ fn compact(s: &str) -> String {
         })
         .collect()
 }
-fn find<'a>(sources: &'a [Source], needle: &str) -> Option<&'a Source> {
+fn find<'a>(sources: &'a [Source], needle: &str, exact_only: bool) -> Option<&'a Source> {
+    let exact = sources.iter().find(|s| s.1 == needle);
+    if exact_only {
+        return exact;
+    }
     let norm = |s: &str| {
         s.to_lowercase()
             .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
@@ -320,9 +325,7 @@ fn find<'a>(sources: &'a [Source], needle: &str) -> Option<&'a Source> {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    sources
-        .iter()
-        .find(|s| s.1 == needle)
+    exact
         .or_else(|| {
             sources
                 .iter()
@@ -417,7 +420,10 @@ fn proposed_addon(
 #[test]
 fn mcp_planning_fuzzy_source_ties_keep_first() {
     let rows = [(1, "Foo-A"), (2, "Foo-B")].map(|(id, s)| (id, s.into(), None, None));
-    assert_eq!(find(&rows, "Foo").map(|row| &row.1), Some(&rows[0].1));
+    assert_eq!(
+        find(&rows, "Foo", false).map(|row| &row.1),
+        Some(&rows[0].1)
+    );
 }
 #[cfg(test)]
 mod confirmation_tests {
@@ -531,7 +537,7 @@ mod confirmation_tests {
             (
                 true,
                 true,
-                "Source changed since the proposal; propose again",
+                "Source changed during confirmation preparation; propose again",
             ),
             (
                 true,

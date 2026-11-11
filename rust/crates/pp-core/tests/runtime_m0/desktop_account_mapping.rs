@@ -1,3 +1,4 @@
+//! T-68.
 #[cfg(feature = "desktop_rebuild")]
 use super::request;
 use super::{launch, temporary};
@@ -17,7 +18,7 @@ async fn isolated(name: &str, enabled: bool) -> Option<std::path::PathBuf> {
         tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                &format!("ticket_t_68_desktop_account_mapping::{name}"),
+                &format!("desktop_account_mapping::{name}"),
                 "--nocapture",
             ])
             .env("PP_ACCOUNT_CASE", name)

@@ -76,7 +76,7 @@ the undo runs (`burst::undo_blocked`), without writing.
 ## Undo
 
 `POST /api/v2/farm-log/{id}/undo` takes no body. For a burst entry it runs the
-compensating burst undo (see [Checkoff bursts](desktop-rebuild.md#checkoff-bursts-gre-1090))
+compensating burst undo (see [Checkoff bursts](records/d19-publication-client.md#checkoff-bursts-gre-1090))
 and answers the `checkoff_burst_undo` entry it appended. It answers 409 with
 the reason when the burst was already undone or its touched state changed,
 409 `A printer command cannot be undone` for a send, 409 `An undo cannot be

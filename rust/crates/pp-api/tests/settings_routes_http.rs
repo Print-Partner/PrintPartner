@@ -148,10 +148,19 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
     let replies = oracle["replies"].as_array().unwrap();
     assert_eq!(steps.len(), replies.len());
     let mut exact = 0;
+    let mut intended_differences = 0;
     for (index, (step, node)) in steps.iter().zip(replies).enumerate() {
         let context = format!("step {index}: {step}");
         let reply = server.send(step, &[COOKIE]).await;
-        assert_eq!(json!(reply.status), node["status"], "{context}");
+        // These four recorded Node TypeErrors are malformed requests in Rust.
+        let malformed_body = matches!(index, 11 | 12 | 31 | 50);
+        if malformed_body {
+            assert_eq!(node["status"], 500, "{context}");
+            assert_malformed(&reply);
+            intended_differences += 1;
+        } else {
+            assert_eq!(json!(reply.status), node["status"], "{context}");
+        }
         assert_eq!(
             reply.cache_control.as_deref(),
             Some("private, no-store"),
@@ -170,12 +179,14 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
         assert_eq!(reply.content_type.as_deref(), Some(PROBLEM), "{context}");
         // Rust answers its own problem text instead of Fastify's error code or
         // Node's TypeError; every other refusal keeps Node's `detail`.
-        if reply.status < 500 && !fastify_refusal {
+        if reply.status < 500 && !fastify_refusal && !malformed_body {
             let body = pp_api::problem::without_envelope(reply.json());
             assert_eq!(body, node["body"], "{context}");
             exact += 1;
         }
     }
+    assert_eq!(intended_differences, 4);
+    assert_eq!(steps.len() - intended_differences, 48);
     assert_eq!(exact, 43, "replies matched exactly");
     let saved = server.stored();
     assert_eq!(saved, replies.last().unwrap()["stored"]);
@@ -199,6 +210,35 @@ async fn settings_routes_match_the_node_oracle_and_survive_restart() {
             .send(&json!({"method": "GET", "path": path}), &[COOKIE])
             .await;
         assert_eq!((reply.status, reply.json()), (200, body), "{path}");
+    }
+    server.stop().await;
+}
+
+fn assert_malformed(reply: &Reply) {
+    assert_eq!(reply.status, 400);
+    assert_eq!(reply.content_type.as_deref(), Some(PROBLEM));
+    let body = reply.json();
+    assert_eq!(body["status"], 400);
+    assert_eq!(body["type"], "urn:print-partner:problem:malformed-request");
+    assert_eq!(body["detail"], "Request is invalid");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_routes_refuse_null_and_absent_bodies_without_writing() {
+    let (_directory, server) = seeded().await;
+    let before = server.stored();
+    for prefix in ["", "/api/v1"] {
+        for setting in ["date-format", "build-tracking", "spoolman-default"] {
+            let path = format!("{prefix}/settings/{setting}");
+            for step in [
+                json!({"method": "PUT", "path": path,
+                       "content_type": "application/json", "body": "null"}),
+                json!({"method": "PUT", "path": path}),
+            ] {
+                assert_malformed(&server.send(&step, &[COOKIE]).await);
+                assert_eq!(server.stored(), before, "{step}");
+            }
+        }
     }
     server.stop().await;
 }

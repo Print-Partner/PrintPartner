@@ -210,12 +210,15 @@ supply ancestry or order authority. Node keeps its existing duplicate route in
 the default runtime.
 
 The Rust writer copies the Source layers, special request, customer, due date,
-kit manifest and feature settings in one immediate transaction. Accepted Plan
-choices and pinned inputs become an open draft on the new Build, with no
+kit manifest, feature settings and role filament defaults in one immediate
+transaction. Accepted Plan choices and pinned inputs become an open draft on the new Build, with no
 Accepted predecessors. A Build without an Accepted revision yields no draft;
 its copied Source layers can be recomputed as usual. Open drafts on the parent
 are not copied. Experiments start active with no order number or Accepted Plan.
 They copy no printed progress, Required-unit tokens, Plates or printer history.
+Production setup is not copied; choose the experiment's printer and bed settings
+before arranging Plates. Role filament defaults remain available when recompute
+finds new Parts.
 The parent's immutable IDs, Accepted history and open drafts stay unchanged.
 An experiment can Accept its choices, but preview and Accept refuse an order
 number with `experiment_order_requires_promotion` until promotion is implemented.

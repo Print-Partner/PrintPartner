@@ -187,6 +187,7 @@ async fn experiment_accept_preview_refuses_order_authority_before_writing() {
 async fn duplicate_rolls_back_build_and_ancestry_when_draft_insert_fails() {
     let (data, owner, app) = open();
     let db = Connection::open(data.database_path()).unwrap();
+    fixtures::prepare_parent(&db).unwrap();
     db.execute_batch("CREATE TRIGGER fail_experiment_draft BEFORE INSERT ON plan_drafts WHEN NEW.created_by='system:experiment' BEGIN SELECT RAISE(ABORT,'injected draft failure'); END;").unwrap();
     let before = bytes(&data);
     let answer = send(

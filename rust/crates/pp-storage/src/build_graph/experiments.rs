@@ -52,7 +52,7 @@ pub(crate) fn duplicate(
     tx.execute(
         "INSERT INTO build_profile_details(profile_id,tenant_id,customer,due_date,updated_at) SELECT ?1,tenant_id,customer,due_date,?2 FROM build_profile_details WHERE tenant_id=?3 AND profile_id=?4",
         params![build,auth::catalog_timestamp(),tenant,parent])?;
-    for prefix in ["kit_manifest_", "feature_toggles:plan:"] {
+    for prefix in ["kit_manifest_", "feature_toggles:plan:", "role_filaments_"] {
         tx.execute(
             "INSERT INTO app_settings(tenant_id,key,value) SELECT tenant_id,?1,value FROM app_settings WHERE tenant_id=?2 AND key=?3",
             params![format!("{prefix}{build}"),tenant,format!("{prefix}{parent}")])?;

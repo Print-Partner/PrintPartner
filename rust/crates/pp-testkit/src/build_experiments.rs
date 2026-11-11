@@ -18,6 +18,9 @@ pub fn prepare_parent(db: &Connection) -> Result<ExperimentBaseline> {
     )?;
     let original = db.query_row::<String,_,_>("SELECT group_concat(required_unit_token,',') FROM plan_revision_required_units WHERE revision_id=?1",[parent.0],|r|r.get(0))?;
     db.execute("UPDATE parts SET filament_color_id='new-filament',filament_custom_hex='#112233',spoolman_spool_id='spool-42' WHERE profile_id=1",[])?;
+    db.execute_batch(r##"INSERT INTO app_settings(tenant_id,key,value) VALUES
+        ('default','role_filaments_1','{"primary":{"filament_color_id":"role-default","custom_hex":"#123456"}}'),
+        ('default','production_setup:1','{"printerId":"parent-printer"}');"##)?;
     Ok(ExperimentBaseline { parent, original })
 }
 
@@ -105,6 +108,23 @@ pub fn assert_restricted_and_archive(db: &Connection, build: i64) -> Result<()> 
         )?,
         1
     );
+    let defaults: String = db.query_row(
+        "SELECT value FROM app_settings WHERE tenant_id='default' AND key=?1",
+        [format!("role_filaments_{build}")],
+        |r| r.get(0),
+    )?;
+    let parent: String = db.query_row(
+        "SELECT value FROM app_settings WHERE tenant_id='default' AND key='role_filaments_1'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(defaults, parent);
+    let production: i64 = db.query_row(
+        "SELECT count(*) FROM app_settings WHERE tenant_id='default' AND key=?1",
+        [format!("production_setup:{build}")],
+        |r| r.get(0),
+    )?;
+    assert_eq!(production, 0);
     // Archived experiments still preserve their parent's ancestry.
     db.execute(
         "UPDATE build_profiles SET archived_at='2026-11-10' WHERE id=?1",

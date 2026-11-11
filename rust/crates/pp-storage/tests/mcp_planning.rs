@@ -107,7 +107,7 @@ fn mcp_planning_confirmations_preserve_manifest_and_accepted_history() {
         "add_addon",
         json!({"source_name":"Addon","suggested_excludes":["stock.stl"]}),
     );
-    assert_eq!(addon["ok"], true);
+    assert_eq!(addon["ok"], true, "{addon}");
     let brief = run(
         &owner,
         "propose_update_build_brief",

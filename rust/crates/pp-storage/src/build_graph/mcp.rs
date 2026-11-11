@@ -414,6 +414,49 @@ fn mcp_planning_fuzzy_source_ties_keep_first() {
 #[cfg(test)]
 mod confirmation_tests {
     use super::*;
+    #[test]
+    fn mcp_source_workspace_uses_canonical_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("repos/2");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let canonical = std::fs::canonicalize(&workspace).unwrap();
+        let data = std::fs::canonicalize(root.path()).unwrap();
+        let reads = crate::working_drafts::source_reads::SourceReads::new(&data);
+        let mixed = format!(
+            "{}/repos/2",
+            std::fs::canonicalize(root.path()).unwrap().display()
+        );
+        for path in [
+            workspace.to_str().unwrap(),
+            canonical.to_str().unwrap(),
+            &mixed,
+        ] {
+            assert_eq!(
+                reads.node_root(2, Some(path)),
+                Some(canonical.clone()),
+                "{path}"
+            );
+        }
+        assert_eq!(reads.node_root(3, Some(workspace.to_str().unwrap())), None);
+        assert_eq!(
+            reads.node_root(2, Some(root.path().to_str().unwrap())),
+            None
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn mcp_source_workspace_accepts_windows_case_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("repos/2");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let upper = workspace.to_str().unwrap().to_uppercase();
+        let data = std::fs::canonicalize(root.path()).unwrap();
+        let reads = crate::working_drafts::source_reads::SourceReads::new(&data);
+        assert_eq!(
+            reads.node_root(2, Some(&upper)),
+            Some(std::fs::canonicalize(workspace).unwrap())
+        );
+    }
     fn fixture() -> (tempfile::TempDir, rusqlite::Connection) {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("print-partner.db");

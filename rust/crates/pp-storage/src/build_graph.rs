@@ -617,15 +617,13 @@ fn read(
     repos: &std::path::Path,
     cancelled: &AtomicBool,
 ) -> Result<BuildOutcome> {
-    let mut budget = read_model::graph::Budget::default();
     match command {
-        BuildCommand::Mcp(request) => {
-            mcp::execute(tx, tenant, request, repos, cancelled).map(BuildOutcome::Mcp)
-        }
+        BuildCommand::Mcp(_) => mutation(tx, tenant, command, repos, cancelled),
         BuildCommand::Manifest(command) => Ok(BuildOutcome::Manifest(manifest_options::read(
             tx, tenant, command,
         )?)),
         BuildCommand::List => {
+            let mut budget = read_model::graph::Budget::default();
             let ids = {
                 let mut statement = tx.prepare(
                     "SELECT id FROM build_profiles WHERE tenant_id=?1 ORDER BY name,id LIMIT 65",
@@ -645,6 +643,7 @@ fn read(
             Ok(BuildOutcome::Listed { profiles })
         }
         BuildCommand::Read { build } => {
+            let mut budget = read_model::graph::Budget::default();
             let Some(profile) = read_model::graph::build_summary(
                 tx,
                 tenant,

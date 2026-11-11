@@ -90,18 +90,15 @@ impl SourceReads {
     /// the resolved path whether or not it exists, and `.` and `..` segments are
     /// resolved as Node's `path.resolve` resolves them.
     pub(crate) fn node_root(&self, source: i64, stored: Option<&str>) -> Option<PathBuf> {
-        let candidate = node_resolve(Path::new(stored.filter(|path| !path.is_empty())?));
+        // Stored Node paths can mix separators with a Windows verbatim prefix.
+        // Drop that prefix before resolving, so Windows treats both separators alike.
+        let candidate = node_resolve(&pp_os::display_path(Path::new(
+            stored.filter(|path| !path.is_empty())?,
+        )));
         if self.filesystem == SourceFilesystemPolicy::TrustedSingleUser {
             return Some(candidate);
         }
         let workspace = node_resolve(&self.repos).join(source.to_string());
-        let configured = fs::canonicalize(&self.repos).ok()?.join(source.to_string());
-        let shown = pp_os::display_path(&candidate);
-        if !shown.starts_with(pp_os::display_path(&workspace))
-            && !shown.starts_with(pp_os::display_path(&configured))
-        {
-            return None;
-        }
         let meta = fs::symlink_metadata(&workspace).ok()?;
         if meta.file_type().is_symlink() || !meta.is_dir() {
             return None;

@@ -584,7 +584,7 @@ fn install_steps(
         (SNAPSHOT_HEADER_STEP, install_snapshot_headers),
         (crate::print_grams::SCHEMA_STEP, install_print_grams),
         (crate::tls_pins::SCHEMA_STEP, install_tls_pins),
-        (48, install_experiments),
+        (crate::build_graph::SCHEMA_STEP, install_experiments),
     ]) {
         if version < step {
             let target = (populated && step <= LAST_COPIED_STEP)
@@ -659,7 +659,7 @@ const SIDE_SCHEMAS: [(u64, &str, &str, &str, &str); 7] = [
         "TLS pin schema mismatch",
     ),
     (
-        48,
+        crate::build_graph::SCHEMA_STEP,
         "tbl_name = 'build_experiments'",
         include_str!("build_graph/experiments_schema.sql"),
         "Unexpected experiment schema",

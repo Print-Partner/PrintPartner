@@ -42,6 +42,7 @@ pub mod plates;
 pub use pp_domain::printer_display_state;
 #[cfg(feature = "desktop_rebuild")]
 pub use pp_domain::slicer_grams;
+mod error_macros;
 #[cfg(feature = "desktop_rebuild")]
 pub mod print_grams;
 #[cfg(feature = "desktop_rebuild")]

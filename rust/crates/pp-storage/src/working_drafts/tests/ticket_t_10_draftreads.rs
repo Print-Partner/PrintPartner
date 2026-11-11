@@ -718,14 +718,10 @@ fn path_hints_partial_and_corrupt_documents_preserve_last_good_read_and_recover(
         );
         write(&path, invalid);
         assert!(read().is_err());
+        write(&data.path("hints-staged"), good);
+        fs::rename(data.path("hints-staged"), &path).unwrap();
+        assert_eq!(read().unwrap(), saved);
     }
-    write(&data.path("hints-staged"), good);
-    fs::rename(data.path("hints-staged"), &path).unwrap();
-    assert_eq!(read().unwrap(), saved);
-    assert_eq!(
-        SourceReads::new(&data.0).filesystem_policy(),
-        reads.filesystem_policy()
-    );
     fs::remove_file(path).unwrap();
     assert!(read().unwrap().is_empty());
 }

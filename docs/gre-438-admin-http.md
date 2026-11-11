@@ -214,9 +214,12 @@ at `/` and `/api/v1`.
 - `GET /settings/update-check` on the server follows Node's enabled flag, version override,
   release response cap (1 MiB), version comparison, cache interval and
   `refresh=1`. Upstream failures return no latest release and expose no
-  upstream error text. The HTTP client follows no redirects and uses no proxy,
-  matching Node undici. Fetches run outside the cache lock and auth admission
-  permit. Tests use a loopback fake, never GitHub.
+  upstream error text. The client uses no proxy, matching Node undici defaults.
+  Redirects are deliberately disabled by coordinator decision, unlike Node's
+  default fetch behavior. A renamed or transferred `GITHUB_REPO` can therefore
+  yield no latest release; configure its current canonical name. Fetches run
+  outside the cache lock and auth admission permit. Tests use a loopback fake,
+  never GitHub.
 - `GET`/`PUT /settings/printer-plan-bindings` and
   `DELETE /settings/printer-plan-bindings/{integration_id}` read or update
   `printer.plan_bindings`. Credential proof and each read-modify-write run

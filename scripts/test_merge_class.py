@@ -23,6 +23,9 @@ class ClassifyTests(unittest.TestCase):
             "scripts/linear/pr_status_sync.py",
             # The merge gate keeps edits to this rule with the owner.
             "rust/rules/runtime-process-command.yml",
+            # Owner decision 2026-11-11: the release signing key and the repository Git hooks.
+            "cosign.pub",
+            ".githooks/pre-commit",
         ]:
             self.assertEqual(mc.path_class(path, self.classes), "owner", path)
 

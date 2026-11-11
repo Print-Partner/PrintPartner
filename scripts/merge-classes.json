@@ -9,6 +9,8 @@
     "docs/development/ci-controls.md",
     "docs/development/main-ci-controls.ruleset.json",
     "rust/rules/runtime-process-command.yml",
+    "cosign.pub",
+    ".githooks/**",
     "scripts/agent-guard.py",
     "scripts/ci-path-filter.py",
     "scripts/test_ci_path_filter.py",

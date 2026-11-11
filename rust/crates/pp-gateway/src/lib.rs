@@ -32,6 +32,7 @@ mod assets;
 pub mod ownership;
 pub mod printer_host;
 mod rate_limit;
+mod rust_only;
 mod stall;
 
 use ownership::{Owner, cutover::OperationOwners};
@@ -287,6 +288,7 @@ struct GatewayState {
     monitoring_suspended: tokio::sync::watch::Sender<bool>,
     origin: String,
     host: String,
+    network: bool,
     cookie_name: String,
     assets: PathBuf,
     /// The replacement policy only on a Rust-only runtime serving `ServedUi::Replacement`.
@@ -366,31 +368,6 @@ impl Gateway {
         )
     }
 
-    /// Start a runtime with no Node child: `product` answers admitted
-    /// requests, nothing is forwarded, and `/__runtime` reports `status`.
-    /// Moonraker watchers poll the hosts `hosts` reads; `product` receives
-    /// the status lookup so an authenticated route can answer from them.
-    /// `ui` names the build in `assets`; only [`ServedUi::Replacement`] gets
-    /// the replacement Content-Security-Policy.
-    pub fn start_rust_only(
-        listener: TcpListener,
-        assets: PathBuf,
-        ui: ServedUi,
-        product: impl FnOnce(MoonrakerStatus) -> axum::Router + 'static,
-        status: tokio::sync::watch::Receiver<RustStatus>,
-        hosts: Arc<dyn MoonrakerHosts>,
-    ) -> Result<Self> {
-        Self::start_inner(
-            listener,
-            assets,
-            ui,
-            CompatHandle::unpublished(),
-            &OperationOwners::node_only(),
-            Some(Box::new(product)),
-            Some((status, hosts)),
-        )
-    }
-
     fn start_inner(
         listener: TcpListener,
         assets: PathBuf,
@@ -401,14 +378,26 @@ impl Gateway {
         rust_only: Option<(
             tokio::sync::watch::Receiver<RustStatus>,
             Arc<dyn MoonrakerHosts>,
+            bool,
         )>,
     ) -> Result<Self> {
-        let (rust_status, hosts) = rust_only.unzip();
-        let address = listener.local_addr()?;
+        let (rust_status, hosts, network) = match rust_only {
+            Some((status, hosts, network)) => (Some(status), Some(hosts), network),
+            None => (None, None, false),
+        };
+        let mut address = listener.local_addr()?;
         anyhow::ensure!(
-            address.ip().is_loopback(),
+            network || address.ip().is_loopback(),
             "Desktop gateway requires a loopback listener"
         );
+        if network {
+            eprintln!("Listening on {address}");
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
         let host = address.to_string();
         let origin = format!("http://{host}");
         let mut manifest: Manifest = serde_json::from_str(include_str!("../operations.json"))?;
@@ -471,6 +460,7 @@ impl Gateway {
             monitoring_suspended: tokio::sync::watch::channel(false).0,
             origin,
             host,
+            network,
             cookie_name: format!("pp_desktop_{}", address.port()),
             assets,
             asset_policy,
@@ -920,8 +910,12 @@ async fn handle(
     State(state): State<Arc<GatewayState>>,
     mut request: Request<Body>,
 ) -> Response<Body> {
+    let (expected_origin, expected_host) = match rust_only::authority(&state, &request) {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::FORBIDDEN, "Invalid network authority"),
+    };
     let mut hosts = request.headers().get_all("host").iter();
-    if hosts.next().map(HeaderValue::as_bytes) != Some(state.host.as_bytes())
+    if hosts.next().map(HeaderValue::as_bytes) != Some(expected_host.as_bytes())
         || hosts.next().is_some()
     {
         return error(StatusCode::BAD_REQUEST, "Invalid Host");
@@ -951,7 +945,7 @@ async fn handle(
     let upgrade = request.headers().contains_key("upgrade");
     let unsafe_method = !matches!(request.method().as_str(), "GET" | "HEAD" | "OPTIONS");
     if origins.next().is_some()
-        || origin.is_some_and(|value| value.as_bytes() != state.origin.as_bytes())
+        || origin.is_some_and(|value| value.as_bytes() != expected_origin.as_bytes())
         || ((unsafe_method || upgrade) && origin.is_none())
     {
         return error(StatusCode::FORBIDDEN, "Invalid Origin");
@@ -2000,7 +1994,7 @@ fn product_router(state: &GatewayState) -> Option<axum::Router> {
 }
 
 /// Answer from the Rust product routes. They see the peer as `ConnectInfo`
-/// and refuse a non-loopback one themselves. A `text/event-stream` body only
+/// and apply the composed transport and credential gates. A `text/event-stream` body only
 /// reads, so when draining begins it stops counting as active and ends at its
 /// next poll, even if its client has stopped reading; other bodies end when
 /// the drain finishes.

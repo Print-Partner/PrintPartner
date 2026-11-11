@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, Query, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -16,7 +16,7 @@ use pp_storage::{
 };
 use serde::Deserialize;
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::IpAddr,
     sync::{Arc, Mutex},
 };
 
@@ -154,23 +154,18 @@ fn admit(
     config: &CatalogHttpConfig,
     request: &axum::extract::Request,
 ) -> std::result::Result<(), (StatusCode, &'static str)> {
-    let Some(ConnectInfo(peer)) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Transport identity unavailable",
-        ));
-    };
-    if !peer.ip().is_loopback() {
-        return Err((StatusCode::FORBIDDEN, "Loopback transport required"));
-    }
+    crate::NetworkAdmission::peer(request)?;
+    let network = request.extensions().get::<crate::NetworkAdmission>();
+    let expected_origin = network.map_or(config.origin.as_str(), |value| value.origin.as_str());
+    let expected_host = network.map_or(config.host.as_str(), |value| value.host.as_str());
     let headers = request.headers();
     let host = headers.get("host").and_then(|value| value.to_str().ok());
     if headers.get_all("host").iter().count() != 1
-        || host != Some(config.host.as_str())
+        || host != Some(expected_host)
         || request
             .uri()
             .authority()
-            .is_some_and(|authority| authority.as_str() != config.host)
+            .is_some_and(|authority| authority.as_str() != expected_host)
         || headers
             .keys()
             .any(|key| key == "forwarded" || key.as_str().starts_with("x-forwarded-"))
@@ -183,8 +178,8 @@ fn admit(
         Method::GET | Method::HEAD | Method::OPTIONS
     );
     if headers.get_all("origin").iter().count() > 1
-        || (headers.contains_key("origin") && origin != Some(config.origin.as_str()))
-        || (!reading && origin != Some(config.origin.as_str()) && !has_api_key(headers))
+        || (headers.contains_key("origin") && origin != Some(expected_origin))
+        || (!reading && origin != Some(expected_origin) && !has_api_key(headers))
         || headers
             .get_all("sec-fetch-site")
             .iter()

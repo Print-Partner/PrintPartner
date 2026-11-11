@@ -76,6 +76,15 @@ async fn serve(args: Vec<String>) -> Result<()> {
         credential_file,
         status_file,
     } = args::parse(args.into_iter())?;
+    let listen = std::env::var_os("PP_LISTEN_ADDR")
+        .map(|value| -> Result<std::net::SocketAddr> {
+            value
+                .to_str()
+                .context("PP_LISTEN_ADDR must be UTF-8")?
+                .parse()
+                .context("Invalid PP_LISTEN_ADDR: expected IP:port")
+        })
+        .transpose()?;
     let web = web.context("--web is required")?.canonicalize()?;
     let package: serde_json::Value =
         serde_json::from_slice(&std::fs::read(web.join("package.json"))?)?;
@@ -97,12 +106,24 @@ async fn serve(args: Vec<String>) -> Result<()> {
         runtime_version: format!("{version}-web"),
         commit: commit.context("--commit is required")?,
     };
-    let mut runtime = CoreRuntime::start_for_launcher(DesktopLaunch {
-        data_dir: data.context("--data is required")?,
-        assets: web.join("apps/web/dist"),
-        bundle,
-    })
+    let mut runtime = CoreRuntime::start_for_server(
+        DesktopLaunch {
+            data_dir: data.context("--data is required")?,
+            assets: web.join("apps/web/dist"),
+            bundle,
+        },
+        listen,
+    )
     .await?;
+    let health_origin = match listen {
+        Some(address) if !address.ip().is_unspecified() => {
+            let mut bound: std::net::SocketAddr =
+                runtime.origin().trim_start_matches("http://").parse()?;
+            bound.set_ip(address.ip());
+            format!("http://{bound}")
+        }
+        _ => runtime.origin().to_owned(),
+    };
     if let Some(path) = credential_file {
         let url = runtime.take_launch_target()?.into_url();
         let child_pid = match runtime.handle().compat_status() {
@@ -133,7 +154,7 @@ async fn serve(args: Vec<String>) -> Result<()> {
     let stop_signal = platform::stop_signal()?;
     if let Some(Err(error)) = status
         .as_ref()
-        .map(|status| status.publish(health::State::Ready, Some(runtime.origin())))
+        .map(|status| status.publish(health::State::Ready, Some(&health_origin)))
     {
         let receipt = runtime.shutdown().await;
         anyhow::ensure!(receipt.complete(), "Desktop shutdown incomplete");

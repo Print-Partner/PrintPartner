@@ -1,9 +1,8 @@
 //! Shared loopback Host/Origin admission for rebuild HTTP surfaces.
 use anyhow::{Result, ensure};
-use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, StatusCode};
 use pp_storage::{auth::Secret, read_model::Credential};
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 
 /// Parsed loopback listener origin (`http://127.0.0.1:port`) and its Host form.
 #[derive(Clone, Debug)]
@@ -119,15 +118,10 @@ pub fn admit(
     api_key_tenant: &str,
     request: &axum::extract::Request,
 ) -> std::result::Result<(), (StatusCode, &'static str)> {
-    let Some(ConnectInfo(peer)) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Transport identity unavailable",
-        ));
-    };
-    if !peer.ip().is_loopback() {
-        return Err((StatusCode::FORBIDDEN, "Loopback transport required"));
-    }
+    crate::NetworkAdmission::peer(request)?;
+    let network = request.extensions().get::<crate::NetworkAdmission>();
+    let origin = network.map_or(origin, |value| value.origin.as_str());
+    let host = network.map_or(host, |value| value.host.as_str());
     let headers = request.headers();
     let authority = request.uri().authority().map(|value| value.as_str());
     let request_host = headers.get("host").and_then(|value| value.to_str().ok());

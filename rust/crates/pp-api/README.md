@@ -6,7 +6,7 @@ Current ownership and allowed dependencies: [Architecture](../../../docs/archite
 
 ## Purpose
 
-- Owns request admission for its routes: loopback Host/Origin checks, credential extraction (session cookie or API key), body limits, rate limits, and bounded concurrency.
+- Owns request admission for its routes: loopback Host/Origin checks (or a `NetworkAdmission` extension from the explicit headless listener), credential extraction (session cookie or API key), body limits, rate limits, and bounded concurrency.
 - Owns the auth HTTP surface: login, registration, sessions, API keys, password reset mail, and GitHub/Discord OAuth.
 - Under `desktop_rebuild`, adapts Builds, drafts, Sources (catalog), Accepted Plan Checkoff, admin/legal reads, jobs, and MCP onto storage clients, matching the Node responses. It also serves Build history, a Rust-only route with no Node counterpart ([Build history](../../../docs/build-history.md)).
 - Owns the route list and DTO schemas that `web/packages/rust-client` is generated from.

@@ -1,6 +1,6 @@
 # Network sharing
 
-The desktop app's "Share on network" setting serves the web UI to phones, tablets and other computers on the local network. This page will describe how to turn it on and how access is protected. The feature does not exist yet. Today the Rust gateway listens on loopback only.
+The desktop app's "Share on network" setting serves the web UI to phones, tablets and other computers on the local network. This page will describe how to turn it on and how access is protected. The feature does not exist yet. Desktop startup keeps the Rust gateway on loopback. The Docker launcher can set an explicit listener; see [Docker image](docker.md#run).
 
 ## Rules
 

@@ -3,7 +3,7 @@
 //!
 //! The check is local, bounded and effect-free. It reads one small file, checks
 //! that the recorded process is alive, and, once the server is ready, sends one
-//! `GET /health` without a session to the recorded loopback origin. The gateway
+//! `GET /health` without a session to the recorded local origin. The gateway
 //! refuses that request with 401 before admitting it, so the probe creates no
 //! session, job or printer contact. It only proves the gateway answered.
 
@@ -209,7 +209,7 @@ fn process_alive(_pid: u32) -> bool {
     true
 }
 
-/// One `GET /health` with no cookie to a loopback origin. Passes on any HTTP
+/// One `GET /health` with no cookie to a local origin. Passes on any HTTP
 /// status below 500: the gateway answers 401 before admitting the request.
 fn probe_gateway(origin: &str, timeout: Duration) -> Result<()> {
     let authority = origin
@@ -220,8 +220,8 @@ fn probe_gateway(origin: &str, timeout: Duration) -> Result<()> {
         .parse()
         .context("Recorded origin is not an address")?;
     ensure!(
-        address.ip().is_loopback(),
-        "Recorded origin is not loopback"
+        address.ip().is_loopback() || std::net::UdpSocket::bind((address.ip(), 0)).is_ok(),
+        "Recorded origin is not loopback or a local interface"
     );
     let deadline = Instant::now() + timeout;
     let remaining = || {
@@ -484,7 +484,7 @@ mod tests {
             (gateway(None), "Gateway did not answer in time"),
             (
                 "http://192.0.2.1:80".to_owned(),
-                "Recorded origin is not loopback",
+                "Recorded origin is not loopback or a local interface",
             ),
         ] {
             record(

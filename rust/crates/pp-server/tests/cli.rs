@@ -31,3 +31,22 @@ fn missing_argument_value_is_rejected_before_startup() {
 fn unknown_argument_is_rejected_before_startup() {
     rejected(&["--unknown", "value"], "Unknown argument");
 }
+
+#[test]
+fn malformed_listener_is_rejected_before_opening_paths() {
+    let binary = if std::env::var_os("NEXTEST_BIN_EXE_pp-server").is_some() {
+        child_process::bin_exe("pp-server")
+    } else {
+        env!("CARGO_BIN_EXE_pp-server").into()
+    };
+    for address in ["", "localhost:8080", "0.0.0.0", "0.0.0.0:99999"] {
+        let output = child_process::command(&binary)
+            .env("PP_LISTEN_ADDR", address)
+            .args(["--web", "/path-that-must-not-be-opened"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid PP_LISTEN_ADDR"));
+    }
+}

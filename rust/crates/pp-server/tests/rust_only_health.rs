@@ -49,12 +49,38 @@ fn healthcheck(probe: &str, status: &Path) -> Output {
 
 #[test]
 fn rust_only_server_needs_no_node_and_reports_health() {
+    server_reports_health(None);
+}
+
+#[test]
+fn explicit_wildcard_listener_reports_health() {
+    server_reports_health(Some("0.0.0.0:0"));
+}
+
+#[test]
+fn explicit_loopback_listener_reports_health() {
+    server_reports_health(Some("127.0.0.1:0"));
+}
+
+// Linux routes the entire 127/8 range to loopback without interface aliases.
+#[cfg(target_os = "linux")]
+#[test]
+fn explicit_specific_listener_reports_health() {
+    server_reports_health(Some("127.0.0.2:0"));
+}
+
+fn server_reports_health(listen: Option<&str>) {
     let root = scratch::Scratch::new("pp-rust-only-health-");
     let data = root.join("data");
     let status = root.join("status.json");
     let bundle = release::launch(data.clone()).bundle;
+    let mut command = child_process::command(server_binary());
+    command.env_remove("PP_LISTEN_ADDR");
+    if let Some(address) = listen {
+        command.env("PP_LISTEN_ADDR", address);
+    }
     let mut server = Server(
-        child_process::command(server_binary())
+        command
             .env("PP_DESKTOP_REBUILD", "1")
             .args(["--data".as_ref(), data.as_os_str()])
             .args(["--web".as_ref(), bundle.web_root.as_os_str()])
@@ -83,7 +109,14 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         std::thread::sleep(Duration::from_millis(50));
     };
     let origin = recorded["origin"].as_str().unwrap().to_owned();
-    assert!(origin.starts_with("http://127.0.0.1:"), "{origin}");
+    let probe_address: std::net::SocketAddr = origin.trim_start_matches("http://").parse().unwrap();
+    let expected_ip = if listen == Some("127.0.0.2:0") {
+        "127.0.0.2"
+    } else {
+        "127.0.0.1"
+    };
+    assert_eq!(probe_address.ip().to_string(), expected_ip);
+    assert_eq!(data.join("desktop.toml").exists(), listen.is_none());
     // The marker itself is pp-storage's to test: a workspace build unifies its
     // test-only test-unmarked-writer feature, which skips writing it.
     assert!(
@@ -121,7 +154,12 @@ fn rust_only_server_needs_no_node_and_reports_health() {
         .read_to_string(&mut printed)
         .unwrap();
     let mut lines = printed.lines();
-    assert_eq!(lines.next(), Some(origin.as_str()), "origin first");
+    let canonical_origin = format!("http://127.0.0.1:{}", probe_address.port());
+    assert_eq!(
+        lines.next(),
+        Some(canonical_origin.as_str()),
+        "origin first"
+    );
     let receipt: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert!(
         exit.success()

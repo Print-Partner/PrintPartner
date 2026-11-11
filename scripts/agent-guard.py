@@ -43,6 +43,7 @@ SHELL_PREFIXES = {"!", "{", "}", "if", "then", "elif", "else", "while", "until",
 # Wrapper programs and their options that take a separate value.
 WRAPPERS = {
     "command": set(),
+    "builtin": set(),
     "env": {"-u", "--unset", "-C", "--chdir"},
     "exec": {"-a"},
     "nohup": set(),
@@ -58,7 +59,7 @@ WRAPPERS = {
 WRAPPER_OPERANDS = {"timeout": 1}
 # Each wrapper's single-letter flags that take no value. In a bundle such as env -vu, letters before the first one
 # that takes a value must come from here; anything else leaves the bundle unreadable.
-WRAPPER_BOOLEANS = {"command": "pvV", "env": "0iv", "exec": "cl", "nohup": "", "nice": "0123456789",
+WRAPPER_BOOLEANS = {"command": "pvV", "builtin": "pvV", "env": "0iv", "exec": "cl", "nohup": "", "nice": "0123456789",
                     "sudo": "AbEeHiKklnPSsVv", "time": "apqv", "timeout": "v", "xvfb-run": "adhl", "pp-netns": "", "direnv": ""}
 # Each wrapper's long options, and whether one takes the next word as its value. A long option the guard does not
 # know, including an abbreviation such as env --un, leaves the command unreadable.
@@ -69,6 +70,7 @@ WRAPPER_LONG = {
     "pp-netns": {},
     "direnv": {},
     "command": {},
+    "builtin": {},
     "env": {"--ignore-environment": False, "--null": False, "--unset": True, "--chdir": True, "--debug": False},
     "exec": {},
     "nohup": {},
@@ -576,6 +578,9 @@ def shell_commands(source, facts=None):  # noqa: C901
                         i = end
                 pipe = separator in ("|", "|&", "&")
                 logic = separator in ("&&", "||")
+                if char == "(" and args and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args[-1]):
+                    if re.match(r"\s*\)\s*\{", source[i + 1:]):
+                        facts["function"] = True
                 inside = tuple(groups)
                 depth += {"(": 1, ")": -1}.get(char, 0)
                 if char == "(":
@@ -620,6 +625,8 @@ def wrapper_option_words(name, option):
     options in full, in WRAPPER_LONG. Anything else means the guard cannot tell where the program starts, so it
     raises Unclear.
     """
+    if name == "env" and re.match(r"^-[^-]*S", option):
+        raise Unclear
     if option.startswith("--"):
         long, attached, _ = option.partition("=")
         if long in ("--help", "--version"):
@@ -651,7 +658,7 @@ def program(args, cwd=None, direnv_target=False):
     """Return the executed program name, its arguments, whether a wrapper changed directory,
     and the environment assignments the command makes."""
     i, moved, assigned = 0, False, []
-    seen_direnv = False
+    seen_direnv = wrapped = False
     while i < len(args):
         word = args[i]
         if ASSIGNMENT.match(word) or word in SHELL_PREFIXES:
@@ -663,7 +670,8 @@ def program(args, cwd=None, direnv_target=False):
         if name not in WRAPPERS or (name == "direnv" and args[i + 1:i + 2] != ["exec"]):
             if name in DECLARATIONS:
                 assigned += [arg for arg in args[i + 1:] if ASSIGNMENT.match(arg)]
-            return name, args[i + 1:], moved, assigned
+            return name, args[i + 1:], moved or (wrapped and name in ("cd", "pushd", "popd")), assigned
+        wrapped = True
         i += 1
         while i < len(args) and args[i].startswith("-"):
             option = args[i]
@@ -834,6 +842,8 @@ def git_command(args):
             raise Unclear(EXPANSION)
         if option in ("-C", "--git-dir", "--work-tree", "-c", "--config-env"):
             location += [option, value]
+        elif option.startswith("-C"):
+            location += ["-C", option[2:]]
         elif option.startswith(("--git-dir=", "--work-tree=", "--config-env=")):
             location.append(option)
         i += 2 if option in GIT_VALUE_OPTIONS else 1
@@ -889,7 +899,14 @@ def moves_head(name, args):
 
 
 def git_reason(args, cwd, head_moves=False, config_unknown=False, env_config=False):
+    # Main ignored attached -C operands. Preserve any refusal from that reading as well as
+    # checking the correctly resolved location, so accepting the syntax cannot loosen main.
     i, location, reason = git_command(args)
+    legacy = [arg for index, arg in enumerate(args) if not (index < i and arg.startswith("-C") and arg != "-C")]
+    if legacy != args:
+        refusal = git_reason(legacy, cwd, head_moves, config_unknown, env_config)
+        if refusal:
+            return refusal
     if reason or i >= len(args):
         return reason
     command, rest = args[i], args[i + 1:]
@@ -1112,7 +1129,7 @@ def canonical_gh(args):
     group = GH_ALIASES.get(args[0], args[0])
     if args[1:2]:
         action = GH_SUBCOMMAND_ALIASES.get(group, {}).get(args[1], args[1])
-        action = "list" if action == "ls" and group in GH_LS_GROUPS else action
+        action = "list" if action == "ls" and group in GH_LS_GROUPS and group not in ("release", "variable") else action
         return [group, action, *args[2:]]
     return [group]
 
@@ -1816,10 +1833,12 @@ def line_commands(parsed, facts):
 
 def conservative_line(command, parsed, facts, cwd):
     """Refuse ambiguous cwd/auth changes across the whole line; do not reconstruct bash scope."""
-    if re.search(r"\bcoproc\b", command) and re.search(r"\b(?:gh|git)\b", command):
-        return UNCLEAR, False
     flat = line_commands(parsed, facts)
     readings = [reading for args in flat for reading in program_readings(args, cwd)]
+    names = {name for name, *_ in readings}
+    words = {PurePosixPath(word).name for args in flat for word in args}
+    if ("coproc" in names or "function" in names or facts.get("function")) and words & {"git", "gh"}:
+        return UNCLEAR, False
     changes_directory = any(name in ("cd", "pushd", "popd") or moved or (name == "git" and any(
         arg.startswith("-C") for arg in rest)) for name, rest, moved, *_ in readings)
     if facts.get("background", False) and changes_directory:

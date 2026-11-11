@@ -1285,10 +1285,10 @@ class HiddenMergeTests(unittest.TestCase):
                "env -C/tmp gh pr view 12", "timeout -k0.5s 5 gh pr view 12",
                "/usr/bin/time -f%E gh pr view 12", "env -uGH_TOKEN npm test", "HOME=/tmp xargs echo gh",
                "HOME=/tmp find docs -name gh -print",
-               "gh variable ls", "gh release ls", "gh pr ls", "gh secret ls",
+               "gh pr ls", "gh secret ls",
                "gh repo ls", "gh alias ls", "find docs -exec grep -e gh -e pr -e merge {} +",
 
-               "env -uSSH_AUTH_SOCK gh pr view 12", "env -uSSH_AUTH_SOCK npm test", "xargs grep -e gh -e pr -e merge",
+               "xargs grep -e gh -e pr -e merge",
                "printf 'x\\n' | xargs -rI {} echo {}", "xargs -0 -r -n 1 -P 4 echo",
                "sudo -nu bob gh pr view 12", "env -vuFOO gh pr view 12", "nice -n5 gh pr view 12",
                "sudo -uroot gh pr view 12", "time -fx gh pr view 12", "stdbuf -oL gh pr view 12",
@@ -1526,6 +1526,55 @@ class HiddenMergeTests(unittest.TestCase):
             for result in results:
                 with self.subTest(command=command):
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_wrapped_directory_commands_never_move_parent_cwd(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main, lane = Path(folder, "main-wt"), Path(folder, "lane-wt")
+            for path, branch in ((main, "main"), (lane, "topic")):
+                subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True)
+            for wrapper in ("xvfb-run -a", "pp-netns", "direnv exec .", "env", "nohup", "timeout 5", "builtin"):
+                for command in ("cd", "pushd"):
+                    line = f"{wrapper} {command} ../lane-wt; git push origin HEAD"
+                    for result in self.results(line, str(main), None):
+                        with self.subTest(command=line):
+                            self.assertEqual(result.returncode, 2, result.stderr)
+            for result in self.results("git -C../main-wt push origin HEAD", str(lane), None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+            for result in self.results("git -C../lane-wt push origin HEAD", str(main), None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+            guard = in_process(CLI)
+            self.assertEqual(guard.git_command(["-C../lane-wt", "status"])[1], ["-C", "../lane-wt"])
+
+    def test_coproc_uses_parsed_words_and_ignores_comments(self):
+        commands = ("co\\\nproc git push origin HEAD:main", "coproc gi''t push origin HEAD:main",
+                    "coproc g''h pr merge 12", 'coproc { cd ../main-wt; "g"it push origin HEAD; }')
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("Cannot classify", result.stderr)
+        for result in self.results("git status # coproc", self.lane, None):
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_builtin_eval_source_and_function_definitions_fail_closed(self):
+        commands = ("builtin eval 'gh pr merge 12'", "f() { gh pr merge 12; }; f",
+                    "function f { git push origin topic; }; f", "f () { echo hi; }; git status")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "commands.sh").write_text("gh pr merge 12")
+            for result in self.results("builtin source ./commands.sh", folder, None):
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_previous_main_sweep_exceptions_are_refused(self):
+        commands = ("env -uSSH_AUTH_SOCK gh pr view 12", "env -uSSH_AUTH_SOCK npm test",
+                    "gh release ls", "gh variable ls")
+        for command, results in self.run_all(commands, self.lane, None):
+            for result in results:
+                with self.subTest(command=command):
+                    self.assertEqual(result.returncode, 2, result.stderr)
 
     def test_hidden_merges_are_refused_everywhere(self):
         for cwd, coordinator in ((self.lane, None), (self.coordinator, self.coordinator)):

@@ -152,7 +152,7 @@ enum Envelope {
     #[cfg(feature = "desktop_rebuild")]
     Features {
         command: features::Command,
-        reply: mpsc::Sender<Result<features::View>>,
+        reply: mpsc::Sender<Result<features::Reply>>,
     },
     #[cfg(feature = "desktop_rebuild")]
     AppSettings {

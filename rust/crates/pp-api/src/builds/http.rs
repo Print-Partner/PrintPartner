@@ -149,6 +149,7 @@ pub fn build_router(config: BuildHttpConfig, client: BuildGraphClient) -> Router
             "/plans/{id}",
             get(detail).delete(remove).patch(super::header::update),
         )
+        .route("/plans/{id}/duplicate", post(super::header::duplicate))
         .route("/plans/{id}/archive", post(super::header::archive))
         .route("/plans/{id}/layers", get(list_layers).post(attach_addon))
         .route("/plans/{id}/layers/base", put(set_base))
@@ -631,6 +632,8 @@ fn present(
             let profiles: Vec<_> = profiles.into_iter().filter_map(Result::ok).collect();
             json_response(StatusCode::OK, &json!(ProfileList { profiles }), head)
         }
+        BuildOutcome::Duplicated(copy) => json_response(StatusCode::CREATED, &copy, head),
+        BuildOutcome::HasExperiments { builds } => super::header::has_experiments(builds),
         BuildOutcome::RenameTaken { name } => crate::problem::duplicate_build_name(&name),
         BuildOutcome::NameRequired => failure(StatusCode::BAD_REQUEST, "Profile name is required"),
         BuildOutcome::FeatureDisabled => crate::problem::coded(

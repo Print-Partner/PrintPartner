@@ -85,6 +85,7 @@ jobs:
         run: |
           python3 -m pip install PyYAML==6.0.3
           python3 -B -m unittest discover -s scripts -p test_merge_group_workflows.py
+          python3 -B -m unittest discover -s scripts -p test_cancel_stale_merge_groups.py
           python3 -B -m unittest discover -s scripts -p test_review_gate.py
           python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'
           python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py

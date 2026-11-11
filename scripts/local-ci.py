@@ -72,8 +72,9 @@ STEPS = [
          requires=(("python3", None),)),
     Step("selector-tests", "CI input-selection tests",
          ("python3 -B -m unittest discover -s scripts -p 'test_*path_filter.py'",
-          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py"),
-         (CROSS_OS + "Select changed inputs",), requires=(("python3", None),)),
+          "python3 -B -m unittest discover -s scripts -p test_alert_macos_main.py",
+          "python3 -B -m unittest discover -s scripts -p test_cancel_stale_merge_groups.py"),
+         (CROSS_OS + "Select changed inputs", "actionlint.yml#Select changed inputs"), requires=(("python3", None),)),
     # No hosted job runs these yet, so the line is local-only.
     Step("perf-baseline-tests", "Node-versus-Rust baseline harness tests",
          setup=("python3 -B -m unittest discover -s scripts/perf-baseline -p 'test_*.py' -v",),
@@ -211,7 +212,7 @@ STEPS = [
     Step("rust-windows", "rust (windows) (advisory check)",
          host_only="needs a Windows runner; CI runs it on windows-latest"),
     Step("rust-macos", "rust (macos) (advisory check)",
-         host_only="needs a macOS runner with a case-sensitive TMPDIR; add the macos label to run it in CI"),
+         host_only="needs a macOS runner with a case-sensitive TMPDIR; add the ci:cross-os label to run it in CI"),
     Step("pr-evidence", "Lint Evidence block (required check)",
          host_only="reads the pull request body; CI checks it on the PR"),
 ]

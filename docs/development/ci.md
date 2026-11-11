@@ -328,7 +328,7 @@ If `sccache` is on `PATH`, or at `/opt/agent-fleet/bin/sccache`, both the full a
 | Step | What it runs | CI source |
 |------|--------------|-----------|
 | `local-ci-self-test` | `scripts/test_local_ci.py` | None. This test fails when a copied command no longer matches its workflow step. |
-| `selector-tests` | The path-filter and macOS-alert unit tests | `rust-cross-os.yml` `changes` |
+| `selector-tests` | The path-filter, macOS-alert and stale merge-group canceller unit tests | `rust-cross-os.yml` and `actionlint.yml` `changes` |
 | `perf-baseline-tests` | The unit tests of the Node-versus-Rust baseline harness in `scripts/perf-baseline` | None yet. A local-only line; see [Performance](performance.md). |
 | `actionlint` | `actionlint -color` | `actionlint` (required) |
 | `agent-guidance` | `test_agent_guidance.py` and `check-agent-guidance.py`: local links and anchors in every tracked Markdown page, and the guidance title and skill rules | `agent-guidance` in `actionlint.yml` |

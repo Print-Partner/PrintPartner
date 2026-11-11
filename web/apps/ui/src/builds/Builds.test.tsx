@@ -289,6 +289,19 @@ describe("UI7-03 and UI7-04 due dates and duplicate orders", () => {
     fireEvent.click(screen.getByRole("radio", { name: /No due date/ }));
     expect(within(row("Undated")).getByText("Also on Late")).toBeTruthy();
   });
+  it("resets an empty overdue filter without changing stored Builds", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(2000, 0, 1, 12) });
+    const fetchMock = core(dated);
+    renderAt("/builds", fetchMock);
+    await screen.findByRole("link", { name: "Late" });
+    fireEvent.click(screen.getByRole("radio", { name: "Overdue (0)" }));
+    expect(screen.getByText("No Builds match this filter.")).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Builds" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show all Builds" }));
+    expect(names()).toHaveLength(7);
+    expect(screen.getByRole("radio", { name: "All (7)" }).getAttribute("aria-checked")).toBe("true");
+  });
+
   it("normalizes order numbers as order_authority::normalize does", () => {
     expect(normalizeOrderNumber("\uFEFF Po-7\u3000")).toBe("po-7");
     expect(normalizeOrderNumber("Order \u00A0\t 12")).toBe("order 12");

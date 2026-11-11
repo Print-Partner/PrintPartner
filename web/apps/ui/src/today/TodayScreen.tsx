@@ -527,7 +527,10 @@ function RankedTasks({
     <>
       {notice}
       {tasks.length === 0 ? (
-        <p className="pp-muted">No other open tasks.</p>
+        <div>
+          <p className="pp-muted">No other open tasks.</p>
+          <Link to="/builds" className="pp-link">View Builds</Link>
+        </div>
       ) : (
         <ol className="pp-tasks" aria-label="Ranked tasks">
           {tasks.map((task) => (

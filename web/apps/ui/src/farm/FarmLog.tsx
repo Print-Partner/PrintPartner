@@ -155,7 +155,10 @@ export function FarmLog() {
           <OlderEntries query={query} table={table} />
         </>
       )}
-      empty={{ message: "No farm actions yet. Checkoff bursts and sends appear here." }}
+      empty={{
+        message: "No farm actions yet. Checkoff bursts and sends appear here.",
+        action: <Link to="/farm" className="pp-link">View Farm</Link>,
+      }}
     />
   );
 }

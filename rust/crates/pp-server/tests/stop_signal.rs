@@ -63,6 +63,8 @@ fn stop_signal_finishes_the_shutdown_and_releases_storage() {
     let bundle = release::launch(root.join("data")).bundle;
     let mut command = child_process::command(server_binary());
     command
+        // A Node-backed start, whatever the caller's environment says.
+        .env_remove("PP_DESKTOP_REBUILD")
         .args(["--data".as_ref(), root.join("data").as_os_str()])
         .args(["--web".as_ref(), bundle.web_root.as_os_str()])
         .args(["--node".as_ref(), bundle.node.as_os_str()])
@@ -88,6 +90,10 @@ fn stop_signal_finishes_the_shutdown_and_releases_storage() {
     };
     if !origin.starts_with("http://") {
         fail(&mut child, &format!("unexpected first line: {origin:?}"));
+    }
+    // Only a Rust-only start serves `pp-server bootstrap-url` (GRE-1293).
+    if root.join("data/.pp-server-bootstrap.sock").exists() {
+        fail(&mut child, "a Node-backed start opened the sign-in socket");
     }
     send_stop_signal(&child);
     let deadline = Instant::now() + Duration::from_secs(30);

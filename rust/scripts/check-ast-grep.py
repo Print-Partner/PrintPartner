@@ -16,6 +16,62 @@ import tempfile
 
 BASE_REF = "origin/main"
 RAISE_OVERRIDE = "PP_AST_GREP_ALLOW_BASELINE_RAISE"
+PLACEMENT_FILE = "desktop-rebuild-baseline.json"
+PLACEMENT_CLASSES = ("module", "item", "statement")
+PLACEMENT_RULES = {f"desktop-rebuild-{name}" for name in PLACEMENT_CLASSES}
+
+
+def placement_counts(root, hits):
+    """Include zero-count crates so the baseline is a complete inventory."""
+    counts = {path.name: dict.fromkeys(PLACEMENT_CLASSES, 0)
+              for path in sorted((root / "crates").iterdir()) if path.is_dir()}
+    for hit in hits:
+        if hit["ruleId"] in PLACEMENT_RULES:
+            crate = Path(hit["file"]).parts[1]
+            counts[crate][hit["ruleId"].removeprefix("desktop-rebuild-")] += 1
+    return counts
+
+
+def parse_placement(text):
+    baseline = json.loads(text)
+    if not isinstance(baseline, dict):
+        raise ValueError("placement baseline must map crates to class counts")
+    for counts in baseline.values():
+        if (not isinstance(counts, dict) or counts.keys() != set(PLACEMENT_CLASSES)
+                or any(type(n) is not int or n < 0 for n in counts.values())):
+            raise ValueError("placement baseline needs nonnegative module/item/statement counts")
+    return baseline
+
+
+def check_placement(root, hits):
+    baseline = parse_placement((root / PLACEMENT_FILE).read_text())
+    counts = placement_counts(root, hits)
+    spec = f"{BASE_REF}:./{PLACEMENT_FILE}"
+    previous = subprocess.run(["git", "show", spec], cwd=root, text=True, capture_output=True)
+    if previous.returncode:
+        # Distinguish first landing from a broken reference or git invocation.
+        if subprocess.run(["git", "cat-file", "-e", spec], cwd=root, capture_output=True).returncode != 128:
+            raise ValueError("could not read placement baseline from main")
+        main = {}
+    else:
+        main = parse_placement(previous.stdout)
+    status = 0
+    for crate in sorted(counts.keys() | baseline.keys()):
+        actual = counts.get(crate, dict.fromkeys(PLACEMENT_CLASSES, 0))
+        print(f"desktop-rebuild {crate}: " + ", ".join(f"{k}={actual[k]}" for k in PLACEMENT_CLASSES))
+        if counts.get(crate) != baseline.get(crate):
+            print(f"desktop-rebuild {crate}: counts differ from {PLACEMENT_FILE}")
+            status = 1
+        before = main.get(crate, {}).get("statement", 0)
+        if previous.returncode == 0 and baseline.get(crate, {}).get("statement", 0) > before:
+            print(f"desktop-rebuild {crate}: statement baseline raised over {BASE_REF} ({before} -> {baseline[crate]['statement']})")
+            status = 1
+    if status:
+        for hit in hits:
+            if hit["ruleId"] == "desktop-rebuild-statement":
+                print(f'{hit["file"]}:{hit["range"]["start"]["line"] + 1}: statement gate')
+    return status
+
 
 
 # Keywords have no ordinary identifier spelling. Replacing their raw prefix
@@ -143,13 +199,15 @@ def main():
             r"^sg: entity\|rule\|(.+): finalSeverity=(\w+)$", scan.stderr, re.MULTILINE
         ) if severity != "Off"
     }
-    if loaded != baseline.keys():
+    if loaded != baseline.keys() | PLACEMENT_RULES:
         raise ValueError(
             f"ast-grep rule set differs from baseline: "
-            f"unloaded={sorted(baseline.keys() - loaded)}, "
-            f"unbaselined={sorted(loaded - baseline.keys())}"
+            f"unloaded={sorted((baseline.keys() | PLACEMENT_RULES) - loaded)}, "
+            f"unbaselined={sorted(loaded - (baseline.keys() | PLACEMENT_RULES))}"
         )
     hits = command_hits_with_canonical_names(root, json.loads(scan.stdout))
+    placement_status = check_placement(root, hits)
+    hits = [hit for hit in hits if hit["ruleId"] not in PLACEMENT_RULES]
     counts = Counter(hit["ruleId"] for hit in hits)
     unknown = counts.keys() - baseline.keys()
     if unknown:
@@ -168,7 +226,7 @@ def main():
         print(f"ast-grep baseline raise check skipped: {BASE_REF} has no ast-grep-baseline.json yet (first landing).")
     for rule, (before, after) in raised.items():
         print(f"{rule}: baseline raised {before} -> {after} over {BASE_REF}")
-    status = 0
+    status = placement_status
     if exceeded:
         print("ast-grep ratchet FAILED: hits exceed the baseline.")
         status = 1

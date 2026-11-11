@@ -329,6 +329,18 @@ Except where noted below, each step runs the command lines of its workflow step 
 
 - It does not install tools. If a tool is not on `PATH`, or if its version is not the version that CI pins, the step is reported as `SKIP` with the reason. The pinned versions are Node 24.21.0, ast-grep 0.50.0, actionlint 1.7.12 and zizmor 1.31.1. The `workaround-ratchet` and `node-fixtures` steps are also skipped when `PP_SCHEMA_PARITY_NODE` does not point to Node 22.23.3.
 - `ast-grep` fetches `origin/main` without `--depth=1`, because a shallow fetch would make a full clone shallow.
+
+The same step counts `cfg(..desktop_rebuild..)` attributes across every crate,
+including tests. `rust/desktop-rebuild-baseline.json` records three classes:
+`module` (mod/use), `item` (including variants and fields), and `statement`
+(statements, expressions and match arms). Stacked attributes, raw feature strings and comments do not
+change attachment. Inner crate/module gates count as module gates; inner block
+gates count as statement gates. Counts must match the baseline; update it when gates move or
+disappear. Only module and item counts may grow. Statement counts may not rise
+per crate over `origin/main`, even with `PP_AST_GREP_ALLOW_BASELINE_RAISE=1`.
+The first landing establishes the placement baseline. The existing ast-grep step
+runs in both `just ci --fast` and the full `just ci`.
+
 - It does not set the CI-only `CARGO_PROFILE_*_DEBUG` and mold `RUSTFLAGS` values. They change debug info and the linker, not test results, and setting them would invalidate your local build cache.
 - `nextest-on` always runs. Use `--skip nextest-on` for a shorter run.
 - The nextest profile is `default` unless you set `NEXTEST_PROFILE`. CI uses `default`.

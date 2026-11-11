@@ -1,0 +1,87 @@
+{
+  "pp-api": {
+    "module": 54,
+    "item": 165,
+    "statement": 22
+  },
+  "pp-api-types": {
+    "module": 0,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-compat": {
+    "module": 0,
+    "item": 4,
+    "statement": 1
+  },
+  "pp-contracts": {
+    "module": 7,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-core": {
+    "module": 41,
+    "item": 40,
+    "statement": 7
+  },
+  "pp-desktop": {
+    "module": 2,
+    "item": 6,
+    "statement": 12
+  },
+  "pp-domain": {
+    "module": 6,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-drivers": {
+    "module": 1,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-gateway": {
+    "module": 0,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-net": {
+    "module": 0,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-os": {
+    "module": 0,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-perf": {
+    "module": 0,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-server": {
+    "module": 1,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-services": {
+    "module": 2,
+    "item": 0,
+    "statement": 0
+  },
+  "pp-source": {
+    "module": 7,
+    "item": 5,
+    "statement": 3
+  },
+  "pp-storage": {
+    "module": 125,
+    "item": 377,
+    "statement": 362
+  },
+  "pp-testkit": {
+    "module": 0,
+    "item": 0,
+    "statement": 0
+  }
+}

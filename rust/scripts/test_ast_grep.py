@@ -15,7 +15,7 @@ RAISE_OVERRIDE = "PP_AST_GREP_ALLOW_BASELINE_RAISE"
 
 class RatchetTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="pp-ast-grep-")
+        self.temp = tempfile.TemporaryDirectory(prefix="pp-ast-grep-", dir=RUST)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         shutil.copy(RUST / "sgconfig.yml", self.root)
@@ -32,7 +32,15 @@ class RatchetTests(unittest.TestCase):
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(text)
 
+    def placement_baseline(self):
+        counts = getattr(self, "placements", {
+            p.name: dict.fromkeys(("module", "item", "statement"), 0)
+            for p in (self.root / "crates").iterdir()
+        })
+        (self.root / "desktop-rebuild-baseline.json").write_text(json.dumps(counts))
+
     def baseline(self, unwrap=0, command=0):
+        self.placement_baseline()
         (self.root / "ast-grep-baseline.json").write_text(json.dumps({
             "no-unwrap-expect": unwrap,
             "runtime-process-command": command,
@@ -57,6 +65,7 @@ class RatchetTests(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
 
     def check(self, allow_raise=False):
+        self.placement_baseline()
         environment = {key: value for key, value in os.environ.items() if key != RAISE_OVERRIDE}
         if allow_raise:
             environment[RAISE_OVERRIDE] = "1"
@@ -66,6 +75,49 @@ class RatchetTests(unittest.TestCase):
             capture_output=True,
             env=environment,
         )
+
+    def test_statement_gate_addition_fails(self):
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement=1", result.stdout)
+
+    def test_statement_baseline_raise_cannot_hide_addition(self):
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 0}}
+        self.publish_main()
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.placements["pp-source"]["statement"] = 1
+        result = self.check(allow_raise=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("statement baseline raised", result.stdout)
+
+    def test_module_and_item_baselines_can_grow(self):
+        self.source("pp-source/src/lib.rs",
+                    '#[cfg(feature = "desktop_rebuild")] mod m;'
+                    '#[cfg(feature = "desktop_rebuild")] struct S;')
+        self.placements = {"pp-source": {"module": 1, "item": 1, "statement": 0}}
+        self.baseline()
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_statement_count_is_per_crate(self):
+        self.source("pp-source/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.placements = {"pp-source": {"module": 0, "item": 0, "statement": 1}}
+        self.publish_main()
+        self.source("pp-source/src/lib.rs", "fn f() {}")
+        self.source("pp-other/src/lib.rs",
+                    'fn f() { #[cfg(feature = "desktop_rebuild")] let x = 1; }')
+        self.placements = {
+            "pp-source": {"module": 0, "item": 0, "statement": 0},
+            "pp-other": {"module": 0, "item": 0, "statement": 1},
+        }
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("pp-other: statement baseline raised", result.stdout)
 
     def test_matching_baseline_passes(self):
         result = self.check()

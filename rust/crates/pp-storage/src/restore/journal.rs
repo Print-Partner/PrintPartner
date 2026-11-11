@@ -138,11 +138,14 @@ impl Journal {
 
     pub(super) fn read(data_dir: &Path) -> Result<Option<Self>> {
         let path = data_dir.join(WORK_DIR).join(JOURNAL);
-        let file = match pp_os::open_read_nofollow(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
+        let opened = pp_os::open_read_nofollow(&path);
+        if opened
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            return Ok(None);
+        }
+        let file = opened?;
         let mut bytes = Vec::new();
         file.take(MAX_JOURNAL_BYTES + 1).read_to_end(&mut bytes)?;
         let journal: Self = serde_json::from_slice(&bytes)
@@ -239,10 +242,10 @@ impl Journal {
         let work = data_dir.join(WORK_DIR);
         for name in [&self.prior, &self.staged] {
             let path = work.join(name);
-            if let Err(error) = std::fs::remove_dir_all(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    return;
-                }
+            if let Err(error) = std::fs::remove_dir_all(path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return;
             }
         }
         if pp_os::sync_directory(&work).is_ok() {

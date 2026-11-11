@@ -8,11 +8,11 @@ fn assert_marked(root: &Path) {
         ownership_marker::MarkerState::Valid(_)
     ));
 }
-#[test]
-fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_files() {
-    let (_installation, root) = installation();
-    let owner = open(&root).unwrap();
-    let backed_up = state(&root);
+fn backup_then_modify(
+    owner: &WriterOwner,
+    root: &Path,
+) -> (crate::restore::BackupFile, BTreeMap<String, String>) {
+    let backed_up = state(root);
     let backup = owner
         .installation()
         .unwrap()
@@ -20,6 +20,13 @@ fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_fi
         .unwrap();
     std::fs::remove_file(root.join("repos/source-a/part.stl")).unwrap();
     std::fs::write(root.join("exports/later.3mf"), b"later").unwrap();
+    (backup, backed_up)
+}
+#[test]
+fn restore_runs_with_admission_stopped_and_round_trips_ids_drafts_history_and_files() {
+    let (_installation, root) = installation();
+    let owner = open(&root).unwrap();
+    let (backup, backed_up) = backup_then_modify(&owner, &root);
     let settings = owner.client();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let seen = observed.clone();
@@ -124,14 +131,7 @@ fn an_open_reader_refuses_activation_and_keeps_the_installation() {
 fn failure_or_crash_at_every_step_leaves_the_old_or_the_new_installation() {
     let (_installation, root) = installation();
     let owner = open(&root).unwrap();
-    let backed_up = state(&root);
-    let backup = owner
-        .installation()
-        .unwrap()
-        .backup_to_temporary("test")
-        .unwrap();
-    std::fs::remove_file(root.join("repos/source-a/part.stl")).unwrap();
-    std::fs::write(root.join("exports/later.3mf"), b"later").unwrap();
+    let (backup, backed_up) = backup_then_modify(&owner, &root);
     owner.shutdown().unwrap();
     let old = state(&root);
     let mut running = None;

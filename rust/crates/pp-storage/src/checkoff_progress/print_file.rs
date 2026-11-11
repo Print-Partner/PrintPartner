@@ -1175,16 +1175,16 @@ mod tests {
 
 #[cfg(test)]
 mod snapshot_store_tests {
-    #[test]
-    fn a_reservation_cannot_return_a_preview_from_before_restore() {
-        let store = std::sync::Arc::new(super::SnapshotStore::default());
+    fn begin_capture(
+        store: &std::sync::Arc<super::SnapshotStore>,
+    ) -> (super::Scope, super::Capture) {
         let scope = super::Scope {
             profile_id: 1,
             printer_id: "printer".into(),
             remote_path: "part.gcode".into(),
             filename: "part.gcode".into(),
         };
-        let mut capture = store
+        let capture = store
             .begin(
                 scope.clone(),
                 serde_json::json!({}),
@@ -1192,6 +1192,13 @@ mod snapshot_store_tests {
                 Some("source"),
             )
             .unwrap();
+        (scope, capture)
+    }
+
+    #[test]
+    fn a_reservation_cannot_return_a_preview_from_before_restore() {
+        let store = std::sync::Arc::new(super::SnapshotStore::default());
+        let (scope, mut capture) = begin_capture(&store);
         let token = capture.token().to_owned();
         capture.push(b"G1 X1\n").unwrap();
         capture.finish().unwrap();
@@ -1205,20 +1212,7 @@ mod snapshot_store_tests {
     #[test]
     fn captures_started_before_restore_cannot_publish_a_preview() {
         let store = std::sync::Arc::new(super::SnapshotStore::default());
-        let scope = super::Scope {
-            profile_id: 1,
-            printer_id: "printer".into(),
-            remote_path: "part.gcode".into(),
-            filename: "part.gcode".into(),
-        };
-        let capture = store
-            .begin(
-                scope,
-                serde_json::json!({}),
-                Some("source".into()),
-                Some("source"),
-            )
-            .unwrap();
+        let (_, capture) = begin_capture(&store);
         store.invalidate();
         assert_eq!(capture.finish(), Err(super::SNAPSHOT_EXPIRED));
     }

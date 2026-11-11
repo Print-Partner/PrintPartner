@@ -73,8 +73,8 @@ mod writer_admission;
 #[cfg(feature = "desktop_rebuild")]
 use restore::recover as recover_restore;
 #[cfg(not(feature = "desktop_rebuild"))]
-fn recover_restore(_: &Path) -> Result<()> {
-    Ok(())
+fn recover_restore(_: &Path) -> Result<bool> {
+    Ok(false)
 }
 
 use anyhow::{Context, Result, anyhow, ensure};
@@ -680,18 +680,20 @@ impl WriterOwner {
         }
         let lease = lease::StorageLease::acquire_locked(locked)?;
         let path = lease.data_dir().join("print-partner.db");
-        let _version = match lease.preflight() {
+        let version = match lease.preflight() {
             Ok(version) => version,
             Err(error) => {
                 lease.abandon();
                 return Err(error);
             }
         };
-        if let Err(error) = recover_restore(lease.data_dir()) {
-            lease.abandon();
-            return Err(error);
-        }
-        let version = match lease.preflight() {
+        let version = match recover_restore(lease.data_dir()).and_then(|replayed| {
+            if replayed {
+                lease.preflight()
+            } else {
+                Ok(version)
+            }
+        }) {
             Ok(version) => version,
             Err(error) => {
                 lease.abandon();

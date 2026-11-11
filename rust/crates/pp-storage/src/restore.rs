@@ -485,10 +485,10 @@ fn leftover(path: &Path, name: &str) -> Result<Option<Leftover>> {
 /// other entry, a link, a wrong type, or a `.pp-restore` that is not a real
 /// directory refuses the open without removing anything, because this build
 /// cannot tell whether it holds the only copy of an installation.
-pub(crate) fn recover(data_dir: &Path) -> Result<()> {
+pub(crate) fn recover(data_dir: &Path) -> Result<bool> {
     let work = data_dir.join(WORK_DIR);
     let Ok(metadata) = work.symlink_metadata() else {
-        return Ok(());
+        return Ok(false);
     };
     let refuse = |detail: String| {
         anyhow!(
@@ -501,7 +501,8 @@ pub(crate) fn recover(data_dir: &Path) -> Result<()> {
     }
     journal::validate_work(data_dir)?;
     if journal::recover(data_dir)? {
-        return recover(data_dir);
+        recover(data_dir)?;
+        return Ok(true);
     }
     let mut found = Vec::new();
     for entry in std::fs::read_dir(&work)? {
@@ -520,7 +521,8 @@ pub(crate) fn recover(data_dir: &Path) -> Result<()> {
             Leftover::Incoming | Leftover::JournalTemporary => std::fs::remove_file(path),
         })
         .and_then(|()| std::fs::remove_dir(&work))
-        .map_err(|error| refuse(format!("could not be cleared: {error}")))
+        .map_err(|error| refuse(format!("could not be cleared: {error}")))?;
+    Ok(false)
 }
 
 /// Test hook: [`WriterOwner`]'s shutdown calls it once writer, reader and
